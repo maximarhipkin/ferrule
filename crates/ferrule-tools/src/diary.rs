@@ -93,6 +93,11 @@ impl Tool for DiaryTool {
         f.write_all(line.as_bytes())
             .await
             .map_err(|e| CoreError::ToolFailed { tool: "log_diary".into(), message: e.to_string() })?;
+        // tokio's File hands the write to a blocking task; without flush the
+        // entry may not have landed when we return (or when the next append opens).
+        f.flush()
+            .await
+            .map_err(|e| CoreError::ToolFailed { tool: "log_diary".into(), message: e.to_string() })?;
         Ok(ToolOutput::ok("logged"))
     }
 }

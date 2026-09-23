@@ -22,14 +22,19 @@ that convention yet — ask before introducing one).
   (`ferrule-memory`, FTS5 BM25 + time-decay recall) . No daemon, no
   messaging/channels, no MCP client, no multi-agent orchestration, no OS-level
   sandboxing yet — see gap list below.
-- **Toolchain constraint (important for every future session in this
-  sandbox):** this container has **no Rust toolchain and no root** (`cargo`,
-  `rustc` are both absent; `apt-get install` fails with a dpkg lock-permission
-  error). `cargo check`/`cargo test` cannot be run here. If your session has a
-  working `cargo`, please actually run `cargo check --workspace` and note the
-  result here — until then, changes in this repo from *this* sandbox are only
-  textually/manually verified (grep for stray old names, cross-check
-  `Cargo.toml` package names / path deps / `use` statements by hand).
+- **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
+  apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
+  (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
+  stable toolchain (1.98.1) installed under `/workspace/agent/.cargo-home` +
+  `/workspace/agent/.rustup` (persistent). Env: `RUSTUP_HOME`, `CARGO_HOME`,
+  `CARGO_TARGET_DIR=/workspace/agent/.cargo-target`,
+  `CARGO_HTTP_CAINFO=/tmp/onecli-combined-ca.pem`, prepend `.cargo-home/bin`
+  to `PATH`. **Tests need `NO_PROXY=localhost,127.0.0.1,::1`** — the sandbox's
+  HTTP proxy otherwise swallows the mock-server request in
+  `openai_compat::tests::sends_tools_and_parses_tool_call` (env issue, not a
+  code bug). `clippy` is not installed (`--profile minimal`).
+  **Status: `cargo check --workspace --all-targets` clean, `cargo test
+  --workspace` 24/24 green** (after the diary flush fix below).
 - **Branding:** `docs/branding/logo.png` (512x512 mark) and
   `docs/branding/hero.png` (1600x800 README header), referenced from the top
   of `README.md`. Generated programmatically with Pillow (geometric
@@ -229,3 +234,29 @@ toolchain-constraint note above — this session could only verify the rename
 textually. If picking up the gateway idea, start by reading
 `docs/research-report.md` section 5 (`"Recommended architecture"`) — it
 already sketches a similar crate layout independently.
+
+### 2026-09-23 (late) — First real compile + test run; diary flush bug fixed
+
+Session: Devi (NanoClaw), Opus 5.5.
+
+- Got a working toolchain (see Current State → Toolchain). The rename to
+  Ferrule compiles: `cargo check --workspace --all-targets` clean with no
+  warnings surfaced.
+- `cargo test --workspace`: 24 tests. Two failures investigated:
+  1. `ferrule-providers` `sends_tools_and_parses_tool_call` — environmental
+     (HTTP proxy intercepting loopback). Passes with `NO_PROXY` set. Worth
+     considering: build the test client with `.no_proxy()` so the suite is
+     hermetic regardless of the host's proxy env.
+  2. `ferrule-tools` `diary_appends` — **real, pre-existing bug** (present
+     before the rename too), flaky ~1 in 3 runs. `log_diary` wrote via
+     `tokio::fs::File::write_all` and returned without `flush()`; tokio's File
+     hands the write to a blocking task, so the entry may not have landed when
+     the tool returns or when the next append opens. In production this can
+     drop or reorder diary entries. Fixed by awaiting `f.flush()`. Verified:
+     0/30 failures after the fix, full suite green.
+  - `transcript.rs` appends with `std::fs` (synchronous) — not affected.
+
+**Next:** the gap list in Current State is unchanged (channels, scheduler/
+daemon, MCP client, sandboxing, credential gateway). Now that the tree
+compiles here, the proposed `ferrule-gateway` crate can be built and tested
+for real in this sandbox.
