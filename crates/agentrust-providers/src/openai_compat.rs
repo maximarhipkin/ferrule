@@ -231,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn http_error_surfaces_status() {
         let (url, _h) = mock_server(r#"{"error": {"message": "bad key"}}"#);
-        let p = OpenAiCompatProvider::new("test", url, "bad", "m");
+        let _p = OpenAiCompatProvider::new("test", url, "bad", "m");
         // mock always returns 200 in this helper; assert parse-level behavior instead
         let err_body: Value = serde_json::from_str(r#"{"error": {"message": "bad key"}}"#).unwrap();
         assert!(OpenAiCompatProvider::parse_response(&err_body).is_err());

@@ -5,6 +5,7 @@
 //! model is driven the way it was trained to be driven.
 
 pub mod agent;
+pub mod baseline;
 pub mod error;
 pub mod event;
 pub mod message;
@@ -14,6 +15,7 @@ pub mod tool;
 pub mod transcript;
 
 pub use agent::{Agent, AgentConfig};
+pub use baseline::load_context_baseline;
 pub use error::CoreError;
 pub use event::AgentEvent;
 pub use message::{Message, Role, ToolCall, Usage};

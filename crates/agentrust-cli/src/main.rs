@@ -130,10 +130,25 @@ fn build_agent(
 
     let mut system = format!(
         "You are an autonomous agent running inside agentrust. Workspace: {}. \
-         Use tools to act on the world; verify with evidence; persist important facts with the memory CLI when asked. {}",
+         Use tools to act on the world; verify with evidence; persist important facts with the memory CLI when asked. \
+         For multi-step work, maintain your task list with write_todos and log decisions with log_diary. {}",
         tool_ctx.workspace.display(),
         profile.system_directive
     );
+
+    // Context baseline: living documentation written for agents (AGENTS.md et al).
+    if let Some((name, content)) = agentrust_core::load_context_baseline(&tool_ctx.workspace) {
+        system.push_str(&format!("\n\n[Workspace context baseline: {name}]\n{content}"));
+    }
+
+    // Validation: the build system is truth. Pass = submit; fail = fix forward.
+    if let Some(cmd) = &cfg.agent.verify_command {
+        system.push_str(&format!(
+            "\n\n[Validation policy] Before considering any code change complete, run `{cmd}` via the shell tool. \
+             If it fails, fix forward — do not revert, do not stop until it passes."
+        ));
+    }
+
     if let Ok(store) = MemoryStore::open(config::data_dir()?.join("memory.db")) {
         if let Ok(mem) = store.assemble_context(None, 2_000) {
             if !mem.is_empty() {

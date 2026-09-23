@@ -25,6 +25,12 @@ harness: 13.3% → 38.3% on ARC-AGI-3, with ~6× fewer output tokens (OpenAI,
 - **Append-only JSONL transcripts** per session: resumable, forkable, auditable.
 - **Workspace-scoped tools** with path-escape rejection, shell deny-list,
   output capping, and hard timeouts.
+- **Context baseline**: `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` auto-loaded into
+  the system prefix — living documentation written *for* the agent.
+- **Agent diary**: `write_todos` + `log_diary` tools persist the trajectory to
+  `.agentrust/` so you debug trajectories, not bugs.
+- **Validation policy**: `[agent] verify_command` makes the build system the
+  truth — pass or fix forward.
 - Typed lifecycle events (`RunStarted → ContextReady → Tooling → Compacted →
   RunFinished`) streamed over a channel — observability is structural.
 
@@ -71,6 +77,9 @@ the shell deny-list, and memory recall/budgeting.
 - [ ] Claude driver: `claude -p` subprocess mode (subscription-compliant) +
       native Messages API with cache breakpoints
 - [ ] MCP client (rmcp) + skills loaded on demand
+- [ ] Subagents: Architect/Planner/Implementer/Verifier-style spawn with
+      isolated contexts and summary-only return
+- [ ] Tree-sitter semantic code search via MCP
 - [ ] Gateway daemon: session lanes, cron/heartbeat, channels (Telegram…)
 - [ ] Vector recall (local embeddings) merged with BM25
 - [ ] OS sandbox backends (Landlock / Bubblewrap / Seatbelt), WASM tool plugins

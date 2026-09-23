@@ -18,12 +18,22 @@ fn default_profile() -> String {
     "generic".into()
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AgentSettings {
+    /// Validation command the agent must run green before finishing
+    /// (e.g. "cargo test", "npm test"). "The build system is truth":
+    /// IF verify == PASS THEN submit ELSE fix forward.
+    pub verify_command: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub default_provider: Option<String>,
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub agent: AgentSettings,
 }
 
 pub const EXAMPLE_CONFIG: &str = r#"# agentrust configuration
@@ -49,6 +59,9 @@ profile = "openai"
 # api_key_env = "OLLAMA_API_KEY"   # set to any non-empty value
 # model = "qwen3-coder"
 # profile = "generic"
+
+# [agent]
+# verify_command = "cargo test"   # agent must make this pass before finishing
 "#;
 
 impl Config {
