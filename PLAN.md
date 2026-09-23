@@ -27,7 +27,13 @@ that convention yet — ask before introducing one).
   lane per (channel, chat) with JSONL-transcript resume, a Telegram
   long-polling adapter, and a local stdin/stdout adapter — all wired into
   `ferrule-cli` as `ferrule gateway`, configured via a new `[gateway]`
-  section in `ferrule.toml`. No scheduler/cron yet (M3), no MCP client (M4).
+  section in `ferrule.toml`. **M3 scheduler exists** (Session Log
+  2026-09-24): SQLite-persisted cron (IANA timezone) + one-shot tasks, each
+  running as a turn on its own resumable session, truthful per-run status
+  rows, optional gate script, no-overlap guard, collapse-to-one missed-run
+  policy — `ferrule tasks add|list|pause|resume|delete|runs|run-now`, and
+  `ferrule gateway` runs the scheduler loop alongside the channels,
+  configured via `[scheduler]`. No MCP client yet (M4).
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -40,8 +46,8 @@ that convention yet — ask before introducing one).
   `openai_compat::tests::sends_tools_and_parses_tool_call` (env issue, not a
   code bug). `clippy` is not installed (`--profile minimal`).
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 36/36 green** (24 pre-existing + 12 in `ferrule-gateway`,
-  after M1+M2), `cargo clippy --workspace --all-targets` has one
+  --workspace` 65/65 green** (24 pre-existing + 41 in `ferrule-gateway`,
+  after M1-M3), `cargo clippy --workspace --all-targets` has one
   pre-existing warning in `ferrule-core::agent` (collapsible_if, predates
   the gateway work) and zero warnings in `ferrule-gateway`. `rustup
   component add clippy rustfmt` now done (was missing, only
@@ -59,8 +65,8 @@ that convention yet — ask before introducing one).
 - **Open architectural gaps vs. the "replace NanoClaw and OpenClaw" goal:**
   see the dated session-log entries below for the full writeup; short
   version: channels/messaging now has two working adapters (Telegram,
-  local) reachable via `ferrule gateway`, but still no MCP client (M4), no
-  task scheduler/daemon (M3 next), no skills/plugin system, no
+  local) reachable via `ferrule gateway`, and a task scheduler (M3), but
+  still no MCP client (M4 next), no skills/plugin system, no
   credential-injection gateway, weak sandboxing (substring deny-list only,
   no OS primitives), no cost/observability ledger, no multi-agent
   orchestration. These are the largest deltas.
@@ -461,3 +467,87 @@ was applied here too.
 - Not started: feature-gating channel adapters, OS-level sandboxing — both
   explicitly deferred per `docs/research-report.md`'s own phasing, out of
   scope for this task's tool-call budget.
+
+### 2026-09-24 — ferrule-gateway M3 scheduler (Devi, Opus 5.5)
+
+Built M3 inside `ferrule-gateway` as a `scheduler/` module (not a new
+crate: it needs the gateway's `Router` and session lanes, so a separate
+crate would only add a public seam with a single consumer). Files:
+`scheduler/{mod,store,gate,timing,error}.rs`. New deps: `rusqlite` and
+`uuid` (both already workspace deps), `chrono`, `chrono-tz`, `croner 4`.
+
+**What it does:**
+- Tasks are `cron` (5-field, evaluated in a per-task IANA timezone set by
+  `ferrule tasks add --timezone`) or `once` (RFC 3339 instant). Tasks and
+  runs are stored in `tasks.db` in the data dir (same rusqlite + WAL pattern
+  as `ferrule-memory`).
+- **Every run gets its own row:** `running`, then `succeeded`, `failed` or
+  `skipped`, with timestamps, error text and truncated output. A provider or
+  agent error is recorded as `failed` with the error text, never as
+  `succeeded`. That's the NanoClaw flaw this was designed against, and
+  `provider_error_produces_failed_run_never_succeeded` pins it down. A run
+  still `running` when the daemon starts is recovered as `failed`
+  ("interrupted").
+- **How a task reaches the agent:** each task runs as a turn on its own
+  resumable session (the reserved pseudo-channel `"scheduler"` plus the
+  task id), going through the same `Router`/`Transcript` machinery chat
+  uses, so a task keeps its history across runs. Fire-and-forget
+  `dispatch()` couldn't report whether the turn succeeded, so
+  `Router::dispatch_and_wait` was added. It returns the turn's real
+  `Result`, and the scheduler delivers the output to the task's configured
+  destination (`channel` + `chat_id`) itself. The lane's own reply path
+  no-ops for `"scheduler"` because that pseudo-channel is never registered
+  as a real `Channel`, so the output can't be delivered twice (tested).
+- **Gate script** (optional, per task): same contract as NanoClaw, so
+  existing gate scripts port over unchanged. `{"wakeAgent": false}` means
+  `skipped`, with no agent turn and zero tokens. `{"wakeAgent": true,
+  "context": …}`, or any non-contract stdout, means the agent runs with that
+  output as extra context. **A non-zero exit or a timeout means `failed`**,
+  so a gate crash can't masquerade as "nothing to do". On timeout the child
+  is killed (`kill_on_drop`), not orphaned. The default timeout is
+  `[scheduler] gate_timeout_secs = 60`.
+- **No overlap:** `start_run` refuses a second concurrent run of the same
+  task and returns `RunOutcome::AlreadyRunning` without writing a row.
+  Because the store is SQLite with WAL, this also holds across processes
+  (the daemon and a one-off `ferrule tasks run-now`).
+- **Missed runs:** `next_run_at` is always recomputed as "the next
+  occurrence strictly after now" and never chained from the old value. A
+  cron task that missed N slots during downtime therefore gets exactly one
+  catch-up run, not a burst. A `once` task fires at most once, even late.
+- **CLI:** `ferrule tasks add|list|pause|resume|delete|runs|run-now`, and
+  `ferrule gateway` spawns the scheduler loop next to `Gateway::run()`.
+  `[scheduler]` config: `tick_interval_secs` (30), `gate_timeout_secs` (60),
+  `gate_workspace` (".").
+
+**Real bugs found along the way:** `dispatch_and_wait` moved `sid` into
+one error path and then used it in another (compile error, fixed with a
+clone). `store.rs` had three MutexGuard temporary-lifetime bugs, in
+`list`/`due_tasks`/`runs_for`, where `.prepare()` was called on a lock
+guard dropped at the end of the statement. Each is now bound to a local
+first.
+
+**Verification:** `cargo check --workspace --all-targets` is clean.
+`cargo test --workspace` is **65/65 green**, up from 36: 29 new, covering
+scheduler orchestration (provider error → failed, interrupted recovery,
+no-overlap, gate skip/failure/timeout, one-shot fires once), gate
+contract, store, timing (non-UTC timezone + DST, strictly-after,
+missed-backlog collapse) and 3 `dispatch_and_wait` router tests. `cargo
+clippy`: zero new warnings; the pre-existing `ferrule-core::agent`
+`collapsible_if` is untouched. The new `scheduler/*.rs` files are
+rustfmt-clean.
+
+**Open decision for Max:** the committed M1/M2 code (and some older
+files) is *not* rustfmt-default clean. It uses wider lines and there's no
+`rustfmt.toml`. The M3 work deliberately didn't run a crate-wide
+`cargo fmt`, because that would rewrite unrelated code and cause merge
+conflicts for anyone editing from another machine. Adopting a
+`rustfmt.toml` plus a single format-only commit is a cheap decision, but
+it's his.
+
+**What remains:** M4, the stdio MCP client (`tools/list` → `Tool` impls
+named `mcp__<server>__<tool>`, configured via `[[mcp.servers]]`). Also
+`.no_proxy()` on the Telegram adapter's and the provider test's reqwest
+clients, so tests stop depending on the ambient `NO_PROXY`. Process note:
+this milestone was split across three agent sessions because the host
+blocks all tools on long background sessions. Future milestones should be
+scoped to fit one short session.

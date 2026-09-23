@@ -1,7 +1,9 @@
 mod config;
 
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
-use ferrule_gateway::{Channel, Gateway, LocalChannel, Router, TelegramChannel};
+use ferrule_gateway::{
+    Channel, Gateway, LocalChannel, NewTask, RunOutcome, RunStatus, Router, Scheduler, TaskKind, TaskStore, TelegramChannel,
+};
 use ferrule_memory::MemoryStore;
 use ferrule_providers::OpenAiCompatProvider;
 use ferrule_tools::standard_registry;
@@ -11,6 +13,7 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(Parser)]
@@ -54,6 +57,66 @@ enum Cmd {
     },
     /// Run the long-lived gateway daemon (channel adapters + session router)
     Gateway {
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long, default_value_t = 60)]
+        max_iterations: usize,
+    },
+    /// Scheduled task management (cron / one-shot agent turns)
+    Tasks {
+        #[command(subcommand)]
+        op: TasksCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum TasksCmd {
+    /// Add a new scheduled task
+    Add {
+        name: String,
+        /// "cron" (5-field expression) or "once" (RFC 3339 timestamp)
+        #[arg(long)]
+        kind: String,
+        /// Cron: e.g. "0 9 * * *". Once: e.g. "2026-10-01T09:00:00+03:00".
+        #[arg(long)]
+        schedule: String,
+        /// IANA timezone, consulted for `cron` tasks only.
+        #[arg(long, default_value = "UTC")]
+        timezone: String,
+        /// Destination channel the result is delivered to (e.g. "local").
+        #[arg(long)]
+        channel: String,
+        #[arg(long)]
+        chat_id: String,
+        /// The prompt sent to the agent when the task fires.
+        #[arg(long)]
+        prompt: String,
+        /// Optional shell command run before waking the agent; stdout
+        /// `{"wakeAgent": false}` skips the run. See `ferrule-gateway`'s
+        /// `scheduler::gate` module doc for the full contract.
+        #[arg(long)]
+        gate: Option<String>,
+    },
+    /// List all tasks
+    List,
+    /// Pause a task — it stays configured but never fires until resumed
+    Pause { id: String },
+    /// Resume a paused task
+    Resume { id: String },
+    /// Delete a task and its run history
+    Delete { id: String },
+    /// Show recent run history for a task
+    Runs {
+        id: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Execute a task immediately, once, outside its normal schedule
+    /// (still subject to the no-overlap guard and its gate, if any)
+    RunNow {
+        id: String,
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, default_value = ".")]
@@ -120,6 +183,9 @@ async fn main() -> Result<()> {
         }
         Cmd::Gateway { provider, workspace, max_iterations } => {
             run_gateway(provider, workspace, max_iterations).await?;
+        }
+        Cmd::Tasks { op } => {
+            tasks_cmd(op).await?;
         }
     }
     Ok(())
@@ -271,6 +337,28 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     Ok(())
 }
 
+/// Builds every channel enabled in `[gateway]`, keyed by channel name. Shared
+/// by the long-lived daemon (`run_gateway`) and `ferrule tasks run-now` (which
+/// needs the same destination channels available to deliver its one result,
+/// without starting the daemon's inbound loops).
+fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channel>>> {
+    let mut named_channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+
+    if cfg.gateway.local {
+        let local: Arc<dyn Channel> = Arc::new(LocalChannel::stdio("local"));
+        named_channels.insert(local.name().to_string(), local);
+    }
+
+    if let Some(env_var) = &cfg.gateway.telegram_token_env {
+        let token = std::env::var(env_var)
+            .map_err(|_| anyhow!("env var `{env_var}` not set (needed by [gateway].telegram_token_env)"))?;
+        let telegram: Arc<dyn Channel> = Arc::new(TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone()));
+        named_channels.insert(telegram.name().to_string(), telegram);
+    }
+
+    Ok(named_channels)
+}
+
 async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iterations: usize) -> Result<()> {
     let (cfg, _) = config::Config::load()?;
     let sessions_dir = config::data_dir()?.join("sessions");
@@ -282,34 +370,185 @@ async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iteration
             .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
     });
 
-    let mut named_channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
-    let mut adapters: Vec<Arc<dyn Channel>> = Vec::new();
-
-    if cfg.gateway.local {
-        let local: Arc<dyn Channel> = Arc::new(LocalChannel::stdio("local"));
-        named_channels.insert(local.name().to_string(), local.clone());
-        adapters.push(local);
-    }
-
-    if let Some(env_var) = &cfg.gateway.telegram_token_env {
-        let token = std::env::var(env_var)
-            .map_err(|_| anyhow!("env var `{env_var}` not set (needed by [gateway].telegram_token_env)"))?;
-        let telegram: Arc<dyn Channel> = Arc::new(TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone()));
-        named_channels.insert(telegram.name().to_string(), telegram.clone());
-        adapters.push(telegram);
-    }
-
-    if adapters.is_empty() {
+    let named_channels = build_channels(&cfg)?;
+    if named_channels.is_empty() {
         bail!("no channel enabled in [gateway] — set `local = true` and/or `telegram_token_env` in ferrule.toml");
     }
+    let adapters: Vec<Arc<dyn Channel>> = named_channels.values().cloned().collect();
 
-    let router = Router::new(sessions_dir, agent_factory, named_channels);
+    // Arc'd so the same router serves both the gateway's channel adapters
+    // and the scheduler's task-triggered turns — one router, two front
+    // doors (see `ferrule_gateway::Gateway::new`'s doc comment).
+    let router = Arc::new(Router::new(sessions_dir, agent_factory, named_channels.clone()));
+
+    let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+    let scheduler = Arc::new(Scheduler::new(
+        store,
+        router.clone(),
+        named_channels,
+        Duration::from_secs(cfg.scheduler.tick_interval_secs),
+        Duration::from_secs(cfg.scheduler.gate_timeout_secs),
+        cfg.scheduler.gate_workspace.clone(),
+    )?);
+    let scheduler_handle = {
+        let scheduler = scheduler.clone();
+        tokio::spawn(async move {
+            if let Err(e) = scheduler.run().await {
+                tracing::error!(error = %e, "scheduler stopped");
+            }
+        })
+    };
+
     let mut gateway = Gateway::new(router);
     for channel in adapters {
         gateway.add_channel(channel);
     }
 
     tracing::info!("gateway starting");
-    gateway.run().await?;
+    let result = gateway.run().await;
+    // The scheduler's own `run()` loops forever by design (see its doc
+    // comment); once the gateway is done there is nothing left to serve, so
+    // it's stopped explicitly rather than left dangling.
+    scheduler_handle.abort();
+    result?;
+    Ok(())
+}
+
+fn parse_task_kind(s: &str) -> Result<TaskKind> {
+    match s {
+        "cron" => Ok(TaskKind::Cron),
+        "once" => Ok(TaskKind::Once),
+        other => bail!("kind must be `cron` or `once`, got `{other}`"),
+    }
+}
+
+fn fmt_ts(ts: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339()).unwrap_or_else(|| ts.to_string())
+}
+
+async fn tasks_cmd(op: TasksCmd) -> Result<()> {
+    match op {
+        TasksCmd::Add { name, kind, schedule, timezone, channel, chat_id, prompt, gate } => {
+            let kind = parse_task_kind(&kind)?;
+            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+            let now = chrono::Utc::now();
+            let next_run_at = ferrule_gateway::initial_next_run_at(kind, &schedule, &timezone, now)?;
+            let id = uuid::Uuid::new_v4().to_string();
+            let task = store.add(NewTask { name, kind, schedule, timezone, channel, chat_id, prompt, gate }, id, now.timestamp(), next_run_at)?;
+            println!("added task {} ({})", task.id, task.name);
+            match task.next_run_at {
+                Some(t) => println!("next run: {}", fmt_ts(t)),
+                None => println!("next run: never (no schedule computed)"),
+            }
+        }
+        TasksCmd::List => {
+            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+            let tasks = store.list()?;
+            if tasks.is_empty() {
+                println!("no tasks");
+            }
+            for t in tasks {
+                println!(
+                    "{}  {:<24}  {:<5}  {:<24}  {:<7}  next={}",
+                    t.id,
+                    t.name,
+                    if t.kind == TaskKind::Cron { "cron" } else { "once" },
+                    t.schedule,
+                    if t.enabled { "enabled" } else { "paused" },
+                    t.next_run_at.map(fmt_ts).unwrap_or_else(|| "-".into()),
+                );
+            }
+        }
+        TasksCmd::Pause { id } => {
+            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+            if store.set_enabled(&id, false)? {
+                println!("paused {id}");
+            } else {
+                println!("no such task: {id}");
+            }
+        }
+        TasksCmd::Resume { id } => {
+            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+            if store.set_enabled(&id, true)? {
+                println!("resumed {id}");
+            } else {
+                println!("no such task: {id}");
+            }
+        }
+        TasksCmd::Delete { id } => {
+            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+            if store.delete(&id)? {
+                println!("deleted {id}");
+            } else {
+                println!("no such task: {id}");
+            }
+        }
+        TasksCmd::Runs { id, limit } => {
+            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+            let runs = store.runs_for(&id, limit)?;
+            if runs.is_empty() {
+                println!("no runs for {id}");
+            }
+            for r in runs {
+                let status = match r.status {
+                    RunStatus::Running => "running",
+                    RunStatus::Succeeded => "succeeded",
+                    RunStatus::Failed => "failed",
+                    RunStatus::Skipped => "skipped",
+                };
+                println!(
+                    "{}  {:<10}  started={}  finished={}  {}",
+                    r.id,
+                    status,
+                    fmt_ts(r.started_at),
+                    r.finished_at.map(fmt_ts).unwrap_or_else(|| "-".into()),
+                    r.detail.as_deref().unwrap_or(""),
+                );
+            }
+        }
+        TasksCmd::RunNow { id, provider, workspace, max_iterations } => {
+            tasks_run_now(&id, provider, workspace, max_iterations).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, max_iterations: usize) -> Result<()> {
+    let (cfg, _) = config::Config::load()?;
+    let sessions_dir = config::data_dir()?.join("sessions");
+    let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+    let task = store.get(id)?.ok_or_else(|| anyhow!("task `{id}` not found"))?;
+
+    let factory_provider = provider;
+    let factory_workspace = workspace.clone();
+    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |_session_id, transcript| {
+        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript))
+            .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
+    });
+
+    let named_channels = build_channels(&cfg)?;
+    let router = Arc::new(Router::new(sessions_dir, agent_factory, named_channels.clone()));
+    // Sharing the same db file (via TaskStore::open above) as any running
+    // `ferrule gateway` daemon means the no-overlap guard and interrupted-run
+    // recovery apply here exactly as they do to a scheduled tick — this is
+    // a real, guarded execution, not a bypass.
+    let scheduler = Scheduler::new(
+        store,
+        router,
+        named_channels,
+        Duration::from_secs(cfg.scheduler.tick_interval_secs),
+        Duration::from_secs(cfg.scheduler.gate_timeout_secs),
+        cfg.scheduler.gate_workspace.clone(),
+    )?;
+
+    match scheduler.execute(&task).await {
+        Ok(RunOutcome::Succeeded { answer }) => println!("succeeded:\n{answer}"),
+        Ok(RunOutcome::Skipped { reason }) => println!("skipped: {}", reason.unwrap_or_else(|| "(no reason given)".into())),
+        Ok(RunOutcome::AlreadyRunning) => println!("a run for this task is already in progress; try again shortly"),
+        Err(e) => {
+            eprintln!("run failed: {e}");
+            std::process::exit(1);
+        }
+    }
     Ok(())
 }

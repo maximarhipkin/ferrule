@@ -6,7 +6,7 @@ use ferrule_core::{Agent, Role, Transcript};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Builds a ready-to-run `Agent` for a session: system prompt, provider,
 /// tools and harness profile already applied. Receives the freshly created
@@ -15,6 +15,19 @@ use tokio::sync::{mpsc, Mutex};
 /// decision that belongs to the binary embedding this crate (`ferrule-cli`),
 /// not to the gateway itself — this is the seam.
 pub type AgentFactory = Arc<dyn Fn(&str, Transcript) -> Result<Agent, GatewayError> + Send + Sync>;
+
+/// A message queued onto a lane, plus an optional oneshot the caller can use
+/// to observe the *result* of the agent turn it produces. Plain `dispatch()`
+/// (used by channel adapters via `Gateway::run`) leaves this `None` — fire-
+/// and-forget, matching the original M1/M2 design. The scheduler (M3) needs
+/// more than that: it must know whether a run truly succeeded or errored (a
+/// NanoClaw-style run that silently logs `success` on a provider error is
+/// exactly the bug this crate is meant not to reproduce), so
+/// `dispatch_and_wait` fills this in and awaits it.
+struct LaneJob {
+    msg: InboundMessage,
+    reply: Option<oneshot::Sender<Result<String, String>>>,
+}
 
 /// Routes inbound messages to one agent session per (channel, chat), each
 /// with its own FIFO queue ("lane") so a chat's messages are processed in
@@ -27,7 +40,7 @@ pub struct Router {
     sessions_dir: PathBuf,
     agent_factory: AgentFactory,
     channels: HashMap<String, Arc<dyn Channel>>,
-    lanes: Mutex<HashMap<String, mpsc::Sender<InboundMessage>>>,
+    lanes: Mutex<HashMap<String, mpsc::Sender<LaneJob>>>,
     lane_queue_capacity: usize,
 }
 
@@ -44,14 +57,33 @@ impl Router {
 
     /// Enqueue an inbound message onto its session's lane, spawning the lane
     /// if this is the first message seen for that (channel, chat) pair since
-    /// this router started.
+    /// this router started. Fire-and-forget: the caller only learns the
+    /// message was *queued*, not that the agent turn succeeded.
     pub async fn dispatch(&self, msg: InboundMessage) -> Result<(), GatewayError> {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
         let tx = self.lane_for(&sid, &msg.channel).await?;
-        tx.send(msg).await.map_err(|_| GatewayError::SessionClosed(sid))
+        tx.send(LaneJob { msg, reply: None }).await.map_err(|_| GatewayError::SessionClosed(sid))
     }
 
-    async fn lane_for(&self, session_id: &str, channel_name: &str) -> Result<mpsc::Sender<InboundMessage>, GatewayError> {
+    /// Enqueue an inbound message and await the agent turn's own result:
+    /// `Ok(answer)` on a normal finish, `Err` (carrying the error text) when
+    /// `Agent::run` itself returned an error (provider failure, max
+    /// iterations, etc.). Used by the scheduler, which must be able to tell
+    /// a real failure apart from a normal reply rather than relying on the
+    /// best-effort "internal error: …" string `run_lane` also puts in chat.
+    pub async fn dispatch_and_wait(&self, msg: InboundMessage) -> Result<String, GatewayError> {
+        let sid = session::session_id(&msg.channel, &msg.chat_id);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let tx = self.lane_for(&sid, &msg.channel).await?;
+        tx.send(LaneJob { msg, reply: Some(reply_tx) }).await.map_err(|_| GatewayError::SessionClosed(sid.clone()))?;
+        match reply_rx.await {
+            Ok(Ok(answer)) => Ok(answer),
+            Ok(Err(err_text)) => Err(GatewayError::Channel(err_text)),
+            Err(_) => Err(GatewayError::LaneClosed(sid)),
+        }
+    }
+
+    async fn lane_for(&self, session_id: &str, channel_name: &str) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
         let mut lanes = self.lanes.lock().await;
         if let Some(tx) = lanes.get(session_id) {
             if !tx.is_closed() {
@@ -63,7 +95,7 @@ impl Router {
         Ok(tx)
     }
 
-    fn spawn_lane(&self, session_id: &str, channel_name: &str) -> Result<mpsc::Sender<InboundMessage>, GatewayError> {
+    fn spawn_lane(&self, session_id: &str, channel_name: &str) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
         let transcript = Transcript::create(&self.sessions_dir, session_id)?;
         let history = transcript.read_messages().unwrap_or_default();
         let mut agent = (self.agent_factory)(session_id, transcript)?;
@@ -85,15 +117,19 @@ impl Router {
 /// logged and, when possible, reported back to the chat so the user isn't
 /// left staring at silence (see NanoClaw's task-silent-death lesson: an
 /// error that's only logged and never surfaced is worse than a visible one).
-async fn run_lane(mut agent: Agent, mut rx: mpsc::Receiver<InboundMessage>, channel: Option<Arc<dyn Channel>>, session_id: String) {
-    while let Some(inbound) = rx.recv().await {
+/// The job's own oneshot (if any) always gets the *true* `Result`, separate
+/// from the best-effort chat text.
+async fn run_lane(mut agent: Agent, mut rx: mpsc::Receiver<LaneJob>, channel: Option<Arc<dyn Channel>>, session_id: String) {
+    while let Some(job) = rx.recv().await {
+        let LaneJob { msg: inbound, reply } = job;
         // The agent loop wants a live event sender; the gateway doesn't
         // stream token-by-token to channels (yet), so the receiver is
         // dropped immediately. `Agent::emit` already tolerates a detached
         // receiver by design.
         let (etx, _erx) = mpsc::channel(64);
-        let reply_text = match agent.run(&inbound.text, etx).await {
-            Ok(answer) => answer,
+        let run_result = agent.run(&inbound.text, etx).await;
+        let reply_text = match &run_result {
+            Ok(answer) => answer.clone(),
             Err(e) => {
                 tracing::error!(session = %session_id, error = %e, "agent run failed");
                 format!("internal error: {e}")
@@ -110,6 +146,10 @@ async fn run_lane(mut agent: Agent, mut rx: mpsc::Receiver<InboundMessage>, chan
             if let Err(e) = ch.send(out).await {
                 tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
             }
+        }
+        if let Some(reply_tx) = reply {
+            let outcome = run_result.map_err(|e| e.to_string());
+            let _ = reply_tx.send(outcome); // receiver may have given up (e.g. caller timed out)
         }
     }
     tracing::debug!(session = %session_id, "session lane closed");
@@ -150,6 +190,19 @@ mod tests {
         async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
             let n = req.messages.iter().filter(|m| m.role == Role::User).count();
             Ok(CompletionResponse { message: Message::assistant(Some(format!("count: {n}")), vec![], None), usage: Usage::default() })
+        }
+    }
+
+    /// Always fails — used to prove a provider error surfaces as a true
+    /// `Err` through `dispatch_and_wait`, never a disguised `Ok`.
+    struct FailingProvider;
+    #[async_trait]
+    impl Provider for FailingProvider {
+        fn name(&self) -> &str {
+            "failing"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            Err(CoreError::Provider("simulated provider outage".into()))
         }
     }
 
@@ -202,6 +255,13 @@ mod tests {
     fn counting_factory() -> AgentFactory {
         Arc::new(|_sid, transcript| {
             Ok(Agent::new(Arc::new(CountingProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
+                .with_system_prompt("test"))
+        })
+    }
+
+    fn failing_factory() -> AgentFactory {
+        Arc::new(|_sid, transcript| {
+            Ok(Agent::new(Arc::new(FailingProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
                 .with_system_prompt("test"))
         })
     }
@@ -275,5 +335,47 @@ mod tests {
             wait_until(|| recorder.texts().len() == 2).await;
             assert_eq!(recorder.texts()[1], "count: 2");
         }
+    }
+
+    #[tokio::test]
+    async fn dispatch_and_wait_returns_the_true_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let router = Router::new(dir.path(), echo_factory(), HashMap::new());
+        let answer = router.dispatch_and_wait(inbound("chat-1", "ping")).await.unwrap();
+        assert_eq!(answer, "echo: ping");
+    }
+
+    /// The exact bug class this method exists to prevent: a provider error
+    /// must never be observable as `Ok(..)` through `dispatch_and_wait` —
+    /// unlike the best-effort "internal error: …" text `run_lane` puts in
+    /// chat, this is the caller's one source of truth for pass/fail.
+    #[tokio::test]
+    async fn dispatch_and_wait_surfaces_a_provider_error_as_err_never_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let router = Router::new(dir.path(), failing_factory(), HashMap::new());
+        let result = router.dispatch_and_wait(inbound("chat-1", "ping")).await;
+        assert!(result.is_err(), "provider error must not be reported as success");
+        assert!(result.unwrap_err().to_string().contains("simulated provider outage"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_and_wait_does_not_double_deliver_through_the_channel() {
+        // Scheduler-triggered sessions use a pseudo-channel name that is
+        // deliberately never registered in the router's channel map, so the
+        // lane's own "reply to inbound.channel" path naturally no-ops —
+        // delivery to the task's real destination is the scheduler's job,
+        // done once, after `dispatch_and_wait` returns the true answer.
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let router = Router::new(dir.path(), echo_factory(), channels);
+
+        let mut msg = inbound("chat-1", "ping");
+        msg.channel = "scheduler".into(); // not registered above
+        let answer = router.dispatch_and_wait(msg).await.unwrap();
+
+        assert_eq!(answer, "echo: ping");
+        assert!(recorder.texts().is_empty(), "unregistered pseudo-channel must not receive a delivery");
     }
 }

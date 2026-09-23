@@ -44,6 +44,25 @@ fn default_telegram_base_url() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SchedulerConfig {
+    /// How often the scheduler checks for due tasks.
+    pub tick_interval_secs: u64,
+    /// Gate script timeout before it's killed and the run is marked failed.
+    pub gate_timeout_secs: u64,
+    /// Working directory gate scripts run in. Defaults to the current
+    /// directory so behavior is identical between the daemon and a one-off
+    /// `ferrule tasks run-now`.
+    pub gate_workspace: PathBuf,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self { tick_interval_secs: 30, gate_timeout_secs: 60, gate_workspace: PathBuf::from(".") }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub default_provider: Option<String>,
@@ -53,6 +72,8 @@ pub struct Config {
     pub agent: AgentSettings,
     #[serde(default)]
     pub gateway: GatewayConfig,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
 }
 
 pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration
@@ -86,6 +107,11 @@ profile = "openai"
 # local = true                              # enable the stdin/stdout channel
 # telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
 # telegram_base_url = "https://api.telegram.org"
+
+# [scheduler]
+# tick_interval_secs = 30   # how often to check for due tasks
+# gate_timeout_secs = 60    # kill a gate script that runs longer than this
+# gate_workspace = "."      # working directory for gate scripts
 "#;
 
 impl Config {

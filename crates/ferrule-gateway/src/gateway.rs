@@ -11,11 +11,15 @@ use tokio::sync::mpsc;
 /// "host router" rather than a heavier broker.
 pub struct Gateway {
     channels: Vec<Arc<dyn Channel>>,
-    router: Router,
+    router: Arc<Router>,
 }
 
 impl Gateway {
-    pub fn new(router: Router) -> Self {
+    /// Takes an `Arc<Router>` (rather than owning one outright) so the same
+    /// router can also be handed to the scheduler (M3), which dispatches
+    /// task-triggered turns onto the identical session lanes channel
+    /// adapters use — one router, two front doors.
+    pub fn new(router: Arc<Router>) -> Self {
         Self { channels: Vec::new(), router }
     }
 
@@ -119,7 +123,7 @@ mod tests {
             Ok(Agent::new(Arc::new(EchoProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
                 .with_system_prompt("test"))
         });
-        let router = Router::new(dir.path(), factory, channels);
+        let router = Arc::new(Router::new(dir.path(), factory, channels));
         let mut gateway = Gateway::new(router);
         gateway.add_channel(scripted.clone());
 

@@ -12,6 +12,8 @@ pub enum GatewayError {
     UnknownChannel(String),
     #[error("session `{0}` queue closed")]
     SessionClosed(String),
+    #[error("session `{0}` lane closed before it replied")]
+    LaneClosed(String),
     #[error("{0} not supported by this channel")]
     Unsupported(&'static str),
     #[error("channel error: {0}")]
