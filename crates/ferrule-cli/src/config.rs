@@ -26,6 +26,23 @@ pub struct AgentSettings {
     pub verify_command: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GatewayConfig {
+    /// Enable the stdin/stdout local channel (mostly for smoke-testing the
+    /// gateway itself without any external service).
+    #[serde(default)]
+    pub local: bool,
+    /// Env var holding the Telegram bot token. Unset/absent = Telegram
+    /// channel disabled. Never the token itself in the file.
+    pub telegram_token_env: Option<String>,
+    #[serde(default = "default_telegram_base_url")]
+    pub telegram_base_url: String,
+}
+
+fn default_telegram_base_url() -> String {
+    "https://api.telegram.org".into()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -34,6 +51,8 @@ pub struct Config {
     pub providers: HashMap<String, ProviderConfig>,
     #[serde(default)]
     pub agent: AgentSettings,
+    #[serde(default)]
+    pub gateway: GatewayConfig,
 }
 
 pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration
@@ -62,6 +81,11 @@ profile = "openai"
 
 # [agent]
 # verify_command = "cargo test"   # agent must make this pass before finishing
+
+# [gateway]
+# local = true                              # enable the stdin/stdout channel
+# telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
+# telegram_base_url = "https://api.telegram.org"
 "#;
 
 impl Config {

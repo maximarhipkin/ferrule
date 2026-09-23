@@ -1,11 +1,13 @@
 mod config;
 
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
+use ferrule_gateway::{Channel, Gateway, LocalChannel, Router, TelegramChannel};
 use ferrule_memory::MemoryStore;
 use ferrule_providers::OpenAiCompatProvider;
 use ferrule_tools::standard_registry;
-use anyhow::Result;
+use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,6 +51,15 @@ enum Cmd {
     Config {
         #[command(subcommand)]
         op: ConfigCmd,
+    },
+    /// Run the long-lived gateway daemon (channel adapters + session router)
+    Gateway {
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long, default_value_t = 60)]
+        max_iterations: usize,
     },
 }
 
@@ -107,6 +118,9 @@ async fn main() -> Result<()> {
         Cmd::Chat { provider, workspace } => {
             chat(provider, workspace).await?;
         }
+        Cmd::Gateway { provider, workspace, max_iterations } => {
+            run_gateway(provider, workspace, max_iterations).await?;
+        }
     }
     Ok(())
 }
@@ -117,6 +131,23 @@ fn build_agent(
     max_iterations: usize,
     session_id: &str,
 ) -> Result<Agent> {
+    let sessions_dir = config::data_dir()?.join("sessions");
+    let transcript = Transcript::create(&sessions_dir, session_id).ok();
+    build_agent_from(provider_name, workspace, max_iterations, transcript)
+}
+
+/// Shared assembly logic for every entry point that needs a ready-to-run
+/// `Agent` (one-shot `run`, interactive `chat`, and every gateway session).
+/// Takes an already-created (or reopened) `Transcript` rather than a raw
+/// session id so the gateway's `Router` — which owns transcript lifecycle
+/// for resumable sessions — can hand in the exact same transcript it just
+/// read history from, instead of this function creating a second one.
+fn build_agent_from(
+    provider_name: Option<String>,
+    workspace: PathBuf,
+    max_iterations: usize,
+    transcript: Option<Transcript>,
+) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
     let (name, pcfg, key) = cfg.resolve_provider(provider_name.as_deref())?;
     let provider = Arc::new(OpenAiCompatProvider::new(name, &pcfg.base_url, key, &pcfg.model));
@@ -124,9 +155,6 @@ fn build_agent(
 
     let workspace = workspace.canonicalize().unwrap_or(workspace);
     let tool_ctx = ToolContext { workspace, max_output_chars: 30_000 };
-
-    let sessions_dir = config::data_dir()?.join("sessions");
-    let transcript = Transcript::create(&sessions_dir, session_id).ok();
 
     let mut system = format!(
         "You are an autonomous agent running inside ferrule. Workspace: {}. \
@@ -240,5 +268,48 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
             Err(e) => eprintln!("\x1b[31mrun failed: {e}\x1b[0m"),
         }
     }
+    Ok(())
+}
+
+async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iterations: usize) -> Result<()> {
+    let (cfg, _) = config::Config::load()?;
+    let sessions_dir = config::data_dir()?.join("sessions");
+
+    let factory_provider = provider;
+    let factory_workspace = workspace.clone();
+    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |_session_id, transcript| {
+        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript))
+            .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
+    });
+
+    let mut named_channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+    let mut adapters: Vec<Arc<dyn Channel>> = Vec::new();
+
+    if cfg.gateway.local {
+        let local: Arc<dyn Channel> = Arc::new(LocalChannel::stdio("local"));
+        named_channels.insert(local.name().to_string(), local.clone());
+        adapters.push(local);
+    }
+
+    if let Some(env_var) = &cfg.gateway.telegram_token_env {
+        let token = std::env::var(env_var)
+            .map_err(|_| anyhow!("env var `{env_var}` not set (needed by [gateway].telegram_token_env)"))?;
+        let telegram: Arc<dyn Channel> = Arc::new(TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone()));
+        named_channels.insert(telegram.name().to_string(), telegram.clone());
+        adapters.push(telegram);
+    }
+
+    if adapters.is_empty() {
+        bail!("no channel enabled in [gateway] — set `local = true` and/or `telegram_token_env` in ferrule.toml");
+    }
+
+    let router = Router::new(sessions_dir, agent_factory, named_channels);
+    let mut gateway = Gateway::new(router);
+    for channel in adapters {
+        gateway.add_channel(channel);
+    }
+
+    tracing::info!("gateway starting");
+    gateway.run().await?;
     Ok(())
 }

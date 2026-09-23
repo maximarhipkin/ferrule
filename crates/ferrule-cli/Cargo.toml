@@ -13,6 +13,7 @@ ferrule-core = { path = "../ferrule-core" }
 ferrule-providers = { path = "../ferrule-providers" }
 ferrule-tools = { path = "../ferrule-tools" }
 ferrule-memory = { path = "../ferrule-memory" }
+ferrule-gateway = { path = "../ferrule-gateway" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

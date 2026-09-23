@@ -8,6 +8,7 @@
 //! a router, not a framework.
 
 pub mod channel;
+pub mod channels;
 pub mod error;
 pub mod gateway;
 pub mod message;
@@ -15,6 +16,7 @@ pub mod router;
 pub mod session;
 
 pub use channel::{Channel, ChannelCapabilities};
+pub use channels::{LocalChannel, TelegramChannel};
 pub use error::GatewayError;
 pub use gateway::Gateway;
 pub use message::{Attachment, InboundMessage, OutboundMessage};

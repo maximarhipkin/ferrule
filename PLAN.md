@@ -21,13 +21,13 @@ that convention yet — ask before introducing one).
   todo/diary) from `ferrule-tools`, and a single-file SQLite memory store
   (`ferrule-memory`, FTS5 BM25 + time-decay recall) . No MCP client, no
   multi-agent orchestration, no OS-level sandboxing yet — see gap list below.
-  **A daemon skeleton now exists** (`ferrule-gateway`, see Session Log
-  2026-09-23/24): a `Channel` adapter trait, normalized in/outbound message
-  model, and a `Router`/`Gateway` that give one FIFO session lane per
-  (channel, chat) with JSONL-transcript resume — but it has **zero real
-  channel adapters yet** (Telegram/local stdin land in M2) and isn't wired
-  into `ferrule-cli` as a `gateway` subcommand yet, so end users still can't
-  reach it. No scheduler/cron yet either (M3).
+  **A daemon now exists and is reachable** (`ferrule-gateway`, see Session
+  Log 2026-09-23/24, M1+M2): a `Channel` adapter trait, normalized
+  in/outbound message model, a `Router`/`Gateway` giving one FIFO session
+  lane per (channel, chat) with JSONL-transcript resume, a Telegram
+  long-polling adapter, and a local stdin/stdout adapter — all wired into
+  `ferrule-cli` as `ferrule gateway`, configured via a new `[gateway]`
+  section in `ferrule.toml`. No scheduler/cron yet (M3), no MCP client (M4).
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -40,11 +40,12 @@ that convention yet — ask before introducing one).
   `openai_compat::tests::sends_tools_and_parses_tool_call` (env issue, not a
   code bug). `clippy` is not installed (`--profile minimal`).
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 31/31 green** (24 pre-existing + 7 new in `ferrule-gateway`),
-  `cargo clippy --workspace --all-targets` has one pre-existing warning in
-  `ferrule-core::agent` (collapsible_if, not introduced this session) and
-  zero warnings in `ferrule-gateway`. `rustup component add clippy rustfmt`
-  now done (was missing, only `cargo`/`rust-std`/`rustc` before).
+  --workspace` 36/36 green** (24 pre-existing + 12 in `ferrule-gateway`,
+  after M1+M2), `cargo clippy --workspace --all-targets` has one
+  pre-existing warning in `ferrule-core::agent` (collapsible_if, predates
+  the gateway work) and zero warnings in `ferrule-gateway`. `rustup
+  component add clippy rustfmt` now done (was missing, only
+  `cargo`/`rust-std`/`rustc` before).
 - **Branding:** `docs/branding/logo.png` (512x512 mark) and
   `docs/branding/hero.png` (1600x800 README header), referenced from the top
   of `README.md`. Generated programmatically with Pillow (geometric
@@ -57,13 +58,12 @@ that convention yet — ask before introducing one).
   you do, so the brand doesn't drift session to session.
 - **Open architectural gaps vs. the "replace NanoClaw and OpenClaw" goal:**
   see the dated session-log entries below for the full writeup; short
-  version: channels/messaging is now scaffolded but has **no real adapters**
-  (M2 next: Telegram long-polling + a local stdin/loopback adapter, plus
-  wiring a `ferrule gateway` CLI subcommand), still no MCP client, no task
-  scheduler/daemon (M3), no skills/plugin system, no credential-injection
-  gateway, weak sandboxing (substring deny-list only, no OS primitives), no
-  cost/observability ledger, no multi-agent orchestration. These are the
-  largest deltas.
+  version: channels/messaging now has two working adapters (Telegram,
+  local) reachable via `ferrule gateway`, but still no MCP client (M4), no
+  task scheduler/daemon (M3 next), no skills/plugin system, no
+  credential-injection gateway, weak sandboxing (substring deny-list only,
+  no OS primitives), no cost/observability ledger, no multi-agent
+  orchestration. These are the largest deltas.
 
 ## Session Log
 
@@ -274,13 +274,15 @@ daemon, MCP client, sandboxing, credential gateway). Now that the tree
 compiles here, the proposed `ferrule-gateway` crate can be built and tested
 for real in this sandbox.
 
-### 2026-09-23/24 — ferrule-gateway M1 (Devi, Opus 5.5)
+### 2026-09-23/24 — ferrule-gateway M1-M2 (Devi, Opus 5.5)
 
 Built the first slice of `ferrule-gateway`, the long-running daemon crate
-proposed in `docs/research-report.md` section 5 (Phase 3). This session
-covered **M1 only** — the channel-agnostic daemon skeleton (adapter trait,
-message model, session routing/resume). No real channel adapters, no
-scheduler, no MCP client yet; those are M2/M3/M4.
+proposed in `docs/research-report.md` section 5 (Phase 3), then continued in
+the same session into M2. **M1** is the channel-agnostic daemon skeleton
+(adapter trait, message model, session routing/resume). **M2** (below, after
+the M1 writeup) adds the first two real `Channel` implementations and wires
+the whole thing into `ferrule-cli` as a `gateway` subcommand. M3 (scheduler)
+and M4 (MCP client) are still open — see "What remains" at the end.
 
 **What was built** (`crates/ferrule-gateway/src/`):
 - `message.rs` — `InboundMessage`/`OutboundMessage`, normalized across every
@@ -386,16 +388,67 @@ was applied here too.
 - `rustup component add clippy rustfmt` — both were missing in this sandbox
   (only `cargo`/`rust-std`/`rustc` were installed before); now installed.
 
+**M2 — real channel adapters + CLI wiring:**
+
+- `channels/local.rs` — `LocalChannel<R, W>`, generic over
+  `AsyncBufRead + Unpin + Send` / `AsyncWrite + Unpin + Send` rather than
+  hardcoding `Stdin`/`Stdout`, specifically so it can be driven by
+  `tokio::io::duplex()` in-memory pipes in tests instead of a real terminal.
+  `LocalChannel::stdio(chat_id)` is the real constructor used by the CLI;
+  `LocalChannel::new(chat_id, reader, writer)` is the generic one tests use.
+  One line of input = one `InboundMessage`; blank lines are skipped; `send()`
+  writes the reply text plus a trailing newline. No capabilities (no
+  edits/reactions) — it's the smoke-test channel, not a product surface.
+- `channels/telegram.rs` — `TelegramChannel`, long-polling `getUpdates`
+  (`?timeout=30&offset=N`, `offset` tracked in an `AtomicI64`, advanced past
+  the highest `update_id` seen so it never redelivers), `sendMessage` and
+  `editMessageText` for outbound (`capabilities().edits == true`; `react()`
+  is left at the trait default `Unsupported` since only `edit()` was asked
+  for). `base_url` is a real constructor parameter (`with_base_url`, `new`
+  defaults it to `https://api.telegram.org`) precisely so the test suite
+  never touches the real Telegram API — **there is no live bot token in this
+  environment and none was looked for.** The test spins up a hand-rolled
+  mock Bot API server (`std::net::TcpListener` + a `std::thread` looping on
+  `incoming()`, since long-polling needs more than the one-shot
+  accept-then-respond pattern `openai_compat`'s mock server uses): the first
+  `getUpdates` returns one canned update guarded by an `AtomicBool` so
+  subsequent polls return an empty result instead of redelivering it, and
+  `sendMessage`/`editMessageText` bodies are parsed out of the raw request
+  text and recorded for the test to assert against. Verifies the full round
+  trip: a long-polled update becomes a correctly-shaped `InboundMessage`,
+  and both `send()` and `edit()` produce the right JSON payloads
+  (`chat_id`, `text`, `reply_to_message_id`, `message_id`).
+- `lib.rs` now declares `pub mod channels;` and re-exports `LocalChannel`/
+  `TelegramChannel`; `ferrule-gateway/Cargo.toml` gained one new dependency,
+  `reqwest` (already a workspace dependency via `ferrule-providers`, so no
+  new crate was introduced to the workspace — just a new user of it).
+- **CLI wiring** (`ferrule-cli`): added `[gateway]` to `ferrule.toml`
+  (`config.rs`'s new `GatewayConfig`: `local: bool`, `telegram_token_env:
+  Option<String>`, `telegram_base_url` defaulting to the real API). Added
+  `ferrule gateway [--provider] [--workspace] [--max-iterations]`. Refactored
+  `build_agent` into `build_agent_from(provider, workspace, max_iterations,
+  transcript: Option<Transcript>)` — the actual system-prompt/provider/tool
+  assembly — with the old `build_agent(session_id)` now a thin wrapper that
+  creates its own transcript and delegates; `run_gateway` builds the
+  `AgentFactory` closure around `build_agent_from` (mapping `anyhow::Error`
+  to `GatewayError::Channel` at the seam), constructs whichever channels are
+  enabled in config, registers each one into **both** the `Router`'s
+  name-keyed map (so replies get routed back through the right adapter) and
+  the `Gateway`'s adapter list (so its `run()` loop actually polls it), and
+  `bail!`s with a clear message if `[gateway]` enables nothing.
+
+**M2 verification:**
+- `cargo check --workspace --all-targets` — clean.
+- `cargo test --workspace` — **36/36 green** (31 prior + 5 new: 3 in
+  `channels::local`, 2 in `channels::telegram`).
+- `cargo clippy --workspace --all-targets` — zero new warnings (one caught
+  and fixed mid-milestone: an unused `AsyncWriteExt` import in
+  `channels/local.rs`'s test module, redundant because `use super::*` already
+  brings it in from the parent module's own imports). The one pre-existing
+  `ferrule-core::agent` `collapsible_if` warning from M1 is still there,
+  untouched, in a file this milestone never edited.
+
 **What remains (for the next session):**
-- M2 — Telegram Bot API adapter (long-polling `getUpdates` + `sendMessage`,
-  configurable base URL so it can be pointed at a mock `TcpListener` server
-  using the exact pattern already in
-  `ferrule-providers::openai_compat::tests::mock_server`) and a local
-  stdin/loopback-HTTP adapter, both implementing `Channel`; wire a
-  `ferrule gateway` subcommand into `ferrule-cli` (extend `config.rs` with a
-  gateway/telegram config section, reuse `build_agent`'s wiring style as the
-  `AgentFactory` closure). Needs `reqwest` added to
-  `ferrule-gateway/Cargo.toml` at that point.
 - M3 — cron + one-shot scheduler persisted in SQLite (mirror
   `ferrule-memory`'s `rusqlite` + WAL approach), truthful run-status logging
   (this is the one the brief singles out: a run must never log
