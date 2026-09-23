@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/agentrust-core",
-    "crates/agentrust-providers",
-    "crates/agentrust-tools",
-    "crates/agentrust-memory",
-    "crates/agentrust-cli",
+    "crates/ferrule-core",
+    "crates/ferrule-providers",
+    "crates/ferrule-tools",
+    "crates/ferrule-memory",
+    "crates/ferrule-cli",
 ]
 
 [workspace.dependencies]

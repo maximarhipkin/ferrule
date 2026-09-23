@@ -1,4 +1,4 @@
-# agentrust
+# ferrule
 
 A portable, memory-efficient AI agent runtime in Rust — one static binary you
 can deploy anywhere, with per-model harness profiles so every model is driven
@@ -10,7 +10,7 @@ Design rationale and research: see `docs/research-report.md`.
 
 The harness, not the model, is the performance lever. Same model, different
 harness: 13.3% → 38.3% on ARC-AGI-3, with ~6× fewer output tokens (OpenAI,
-2026). agentrust is built around that fact:
+2026). ferrule is built around that fact:
 
 - **Harness profiles per model** (`HarnessProfile`): context window, compaction
   threshold (~70–75%, not 95%), reasoning retention, system-prompt dialect.
@@ -28,7 +28,7 @@ harness: 13.3% → 38.3% on ARC-AGI-3, with ~6× fewer output tokens (OpenAI,
 - **Context baseline**: `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` auto-loaded into
   the system prefix — living documentation written *for* the agent.
 - **Agent diary**: `write_todos` + `log_diary` tools persist the trajectory to
-  `.agentrust/` so you debug trajectories, not bugs.
+  `.ferrule/` so you debug trajectories, not bugs.
 - **Validation policy**: `[agent] verify_command` makes the build system the
   truth — pass or fix forward.
 - Typed lifecycle events (`RunStarted → ContextReady → Tooling → Compacted →
@@ -38,11 +38,11 @@ harness: 13.3% → 38.3% on ARC-AGI-3, with ~6× fewer output tokens (OpenAI,
 
 ```
 crates/
-  agentrust-core       loop, provider trait, harness profiles, transcripts, events
-  agentrust-providers  OpenAI-compatible driver (Kimi/OpenAI/DeepSeek/local…)
-  agentrust-tools      fs / shell / web_fetch, workspace-scoped and output-capped
-  agentrust-memory     SQLite + FTS5 memory with time decay
-  agentrust-cli        the `agentrust` binary (run / chat / memory / config)
+  ferrule-core       loop, provider trait, harness profiles, transcripts, events
+  ferrule-providers  OpenAI-compatible driver (Kimi/OpenAI/DeepSeek/local…)
+  ferrule-tools      fs / shell / web_fetch, workspace-scoped and output-capped
+  ferrule-memory     SQLite + FTS5 memory with time decay
+  ferrule-cli        the `ferrule` binary (run / chat / memory / config)
 ```
 
 ## Quick start
@@ -50,16 +50,16 @@ crates/
 ```bash
 cargo build --release
 
-./target/release/agentrust config init        # writes agentrust.toml
+./target/release/ferrule config init        # writes ferrule.toml
 export MOONSHOT_API_KEY=sk-...                # or OPENAI_API_KEY etc.
-./target/release/agentrust run "list the files here and summarize the project"
-./target/release/agentrust chat               # interactive session
-./target/release/agentrust memory add "prefers terse answers" --tags pref
-./target/release/agentrust memory search "answers style"
+./target/release/ferrule run "list the files here and summarize the project"
+./target/release/ferrule chat               # interactive session
+./target/release/ferrule memory add "prefers terse answers" --tags pref
+./target/release/ferrule memory search "answers style"
 ```
 
-Config is `agentrust.toml` in the working directory or
-`~/.config/agentrust/config.toml`. API keys always come from env vars.
+Config is `ferrule.toml` in the working directory or
+`~/.config/ferrule/config.toml`. API keys always come from env vars.
 
 ## Tests
 

@@ -11,7 +11,7 @@ pub use fs_tools::{ListDirTool, ReadFileTool, WriteFileTool};
 pub use shell::ShellTool;
 pub use web::WebFetchTool;
 
-use agentrust_core::tool::ToolRegistry;
+use ferrule_core::tool::ToolRegistry;
 use std::sync::Arc;
 
 /// The standard toolbelt every agent gets.

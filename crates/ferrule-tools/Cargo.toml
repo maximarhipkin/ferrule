@@ -1,17 +1,17 @@
 [package]
-name = "agentrust-providers"
+name = "ferrule-tools"
 version = "0.1.0"
 edition = "2021"
-description = "Model provider drivers (OpenAI-compatible, Kimi, Anthropic-compatible)"
+description = "Workspace-scoped built-in tools: fs, shell, web"
 
 [dependencies]
-agentrust-core = { path = "../agentrust-core" }
-reqwest = { workspace = true }
+ferrule-core = { path = "../ferrule-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-tracing = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -4,7 +4,7 @@ use std::path::Path;
 /// specifically for agents, not humans" — the single highest-leverage prep
 /// step in production agentic engineering (Google's Industrial Agentic
 /// Engineering, T3chFest 2026; also Claude Code's CLAUDE.md hierarchy).
-pub const BASELINE_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md", "GEMINI.md", "agentrust.md"];
+pub const BASELINE_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md", "GEMINI.md", "ferrule.md"];
 
 /// Hard cap so a giant baseline can't eat the window; these files should be
 /// short and curated anyway.

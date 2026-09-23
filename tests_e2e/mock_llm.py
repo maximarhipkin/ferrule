@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mock OpenAI-compatible LLM server for agentrust end-to-end smoke tests.
+"""Mock OpenAI-compatible LLM server for ferrule end-to-end smoke tests.
 
 First request  -> assistant message with a tool_call (list_dir on ".")
 Second request -> final text answer echoing what the tool returned

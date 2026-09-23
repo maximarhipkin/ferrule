@@ -36,7 +36,7 @@ pub struct Config {
     pub agent: AgentSettings,
 }
 
-pub const EXAMPLE_CONFIG: &str = r#"# agentrust configuration
+pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration
 # API keys live in environment variables, never in this file.
 
 default_provider = "kimi"
@@ -66,20 +66,20 @@ profile = "openai"
 
 impl Config {
     pub fn load() -> Result<(Self, PathBuf)> {
-        let local = PathBuf::from("agentrust.toml");
+        let local = PathBuf::from("ferrule.toml");
         if local.exists() {
             let text = std::fs::read_to_string(&local)?;
             return Ok((toml::from_str(&text)?, local));
         }
         let global = dirs::config_dir()
             .ok_or_else(|| anyhow!("no config dir"))?
-            .join("agentrust")
+            .join("ferrule")
             .join("config.toml");
         if global.exists() {
             let text = std::fs::read_to_string(&global)?;
             return Ok((toml::from_str(&text)?, global));
         }
-        bail!("no config found. Run `agentrust config init` first.")
+        bail!("no config found. Run `ferrule config init` first.")
     }
 
     pub fn resolve_provider(&self, name: Option<&str>) -> Result<(String, &ProviderConfig, String)> {
@@ -100,7 +100,7 @@ impl Config {
 pub fn data_dir() -> Result<PathBuf> {
     let dir = dirs::data_dir()
         .ok_or_else(|| anyhow!("no data dir"))?
-        .join("agentrust");
+        .join("ferrule");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

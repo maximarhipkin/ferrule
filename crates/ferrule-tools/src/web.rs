@@ -1,5 +1,5 @@
-use agentrust_core::error::CoreError;
-use agentrust_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
+use ferrule_core::error::CoreError;
+use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -76,7 +76,7 @@ impl Tool for WebFetchTool {
         let client = reqwest::Client::builder().timeout(self.timeout).build().map_err(|e| CoreError::Provider(e.to_string()))?;
         let text = client
             .get(url)
-            .header("User-Agent", "agentrust/0.1")
+            .header("User-Agent", "ferrule/0.1")
             .send()
             .await
             .map_err(|e| CoreError::ToolFailed { tool: "web_fetch".into(), message: e.to_string() })?

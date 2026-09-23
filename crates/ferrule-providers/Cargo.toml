@@ -1,17 +1,17 @@
 [package]
-name = "agentrust-core"
+name = "ferrule-providers"
 version = "0.1.0"
 edition = "2021"
-description = "Agent loop, provider trait, harness profiles, transcripts"
+description = "Model provider drivers (OpenAI-compatible, Kimi, Anthropic-compatible)"
 
 [dependencies]
-tokio = { workspace = true }
+ferrule-core = { path = "../ferrule-core" }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

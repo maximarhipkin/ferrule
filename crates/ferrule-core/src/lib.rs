@@ -1,4 +1,4 @@
-//! agentrust-core: provider-agnostic agent runtime.
+//! ferrule-core: provider-agnostic agent runtime.
 //!
 //! The harness, not the model, is the performance lever. This crate owns the
 //! loop; providers and harness profiles are swappable traits/config so each

@@ -1,17 +1,17 @@
 [package]
-name = "agentrust-tools"
+name = "ferrule-core"
 version = "0.1.0"
 edition = "2021"
-description = "Workspace-scoped built-in tools: fs, shell, web"
+description = "Agent loop, provider trait, harness profiles, transcripts"
 
 [dependencies]
-agentrust-core = { path = "../agentrust-core" }
+tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
-tokio = { workspace = true }
-reqwest = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

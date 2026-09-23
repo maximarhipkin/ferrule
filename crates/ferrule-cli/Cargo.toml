@@ -1,18 +1,18 @@
 [package]
-name = "agentrust-cli"
+name = "ferrule-cli"
 version = "0.1.0"
 edition = "2021"
-description = "agentrust binary: run, chat, memory, config"
+description = "ferrule binary: run, chat, memory, config"
 
 [[bin]]
-name = "agentrust"
+name = "ferrule"
 path = "src/main.rs"
 
 [dependencies]
-agentrust-core = { path = "../agentrust-core" }
-agentrust-providers = { path = "../agentrust-providers" }
-agentrust-tools = { path = "../agentrust-tools" }
-agentrust-memory = { path = "../agentrust-memory" }
+ferrule-core = { path = "../ferrule-core" }
+ferrule-providers = { path = "../ferrule-providers" }
+ferrule-tools = { path = "../ferrule-tools" }
+ferrule-memory = { path = "../ferrule-memory" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

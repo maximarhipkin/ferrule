@@ -1,9 +1,9 @@
 mod config;
 
-use agentrust_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
-use agentrust_memory::MemoryStore;
-use agentrust_providers::OpenAiCompatProvider;
-use agentrust_tools::standard_registry;
+use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
+use ferrule_memory::MemoryStore;
+use ferrule_providers::OpenAiCompatProvider;
+use ferrule_tools::standard_registry;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::io::Write as _;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Parser)]
-#[command(name = "agentrust", version, about = "A portable, memory-efficient agent runtime in Rust")]
+#[command(name = "ferrule", version, about = "A portable, memory-efficient agent runtime in Rust")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -45,7 +45,7 @@ enum Cmd {
         #[command(subcommand)]
         op: MemoryCmd,
     },
-    /// Write an example agentrust.toml to the current directory
+    /// Write an example ferrule.toml to the current directory
     Config {
         #[command(subcommand)]
         op: ConfigCmd,
@@ -74,11 +74,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Config { op: ConfigCmd::Init } => {
-            if PathBuf::from("agentrust.toml").exists() {
-                println!("agentrust.toml already exists");
+            if PathBuf::from("ferrule.toml").exists() {
+                println!("ferrule.toml already exists");
             } else {
-                std::fs::write("agentrust.toml", config::EXAMPLE_CONFIG)?;
-                println!("wrote agentrust.toml — edit it, then set the referenced env vars");
+                std::fs::write("ferrule.toml", config::EXAMPLE_CONFIG)?;
+                println!("wrote ferrule.toml — edit it, then set the referenced env vars");
             }
         }
         Cmd::Memory { op } => {
@@ -129,7 +129,7 @@ fn build_agent(
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
 
     let mut system = format!(
-        "You are an autonomous agent running inside agentrust. Workspace: {}. \
+        "You are an autonomous agent running inside ferrule. Workspace: {}. \
          Use tools to act on the world; verify with evidence; persist important facts with the memory CLI when asked. \
          For multi-step work, maintain your task list with write_todos and log decisions with log_diary. {}",
         tool_ctx.workspace.display(),
@@ -137,7 +137,7 @@ fn build_agent(
     );
 
     // Context baseline: living documentation written for agents (AGENTS.md et al).
-    if let Some((name, content)) = agentrust_core::load_context_baseline(&tool_ctx.workspace) {
+    if let Some((name, content)) = ferrule_core::load_context_baseline(&tool_ctx.workspace) {
         system.push_str(&format!("\n\n[Workspace context baseline: {name}]\n{content}"));
     }
 
@@ -221,7 +221,7 @@ async fn run_once(prompt: &str, provider: Option<String>, workspace: PathBuf, ma
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut agent = build_agent(provider, workspace, 60, &session_id)?;
-    println!("agentrust chat — Ctrl-D to exit. Session {session_id}");
+    println!("ferrule chat — Ctrl-D to exit. Session {session_id}");
     let stdin = std::io::stdin();
     loop {
         print!("\n\x1b[1;34myou>\x1b[0m ");

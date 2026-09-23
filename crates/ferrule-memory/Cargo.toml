@@ -1,5 +1,5 @@
 [package]
-name = "agentrust-memory"
+name = "ferrule-memory"
 version = "0.1.0"
 edition = "2021"
 description = "SQLite hybrid memory: FTS5 BM25 keyword recall now, vectors next"

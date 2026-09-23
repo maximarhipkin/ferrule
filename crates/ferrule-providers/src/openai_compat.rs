@@ -1,7 +1,7 @@
-use agentrust_core::error::CoreError;
-use agentrust_core::message::{Message, Role, ToolCall, Usage};
-use agentrust_core::provider::{CompletionRequest, CompletionResponse, Provider};
-use agentrust_core::tool::ToolDefinition;
+use ferrule_core::error::CoreError;
+use ferrule_core::message::{Message, Role, ToolCall, Usage};
+use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
+use ferrule_core::tool::ToolDefinition;
 use serde_json::{json, Value};
 use std::time::Duration;
 
