@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ferrule-core",
+    "crates/ferrule-gateway",
     "crates/ferrule-providers",
     "crates/ferrule-tools",
     "crates/ferrule-memory",

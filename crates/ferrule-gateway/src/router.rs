@@ -1,0 +1,279 @@
+use crate::channel::Channel;
+use crate::error::GatewayError;
+use crate::message::{InboundMessage, OutboundMessage};
+use crate::session;
+use ferrule_core::{Agent, Role, Transcript};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+
+/// Builds a ready-to-run `Agent` for a session: system prompt, provider,
+/// tools and harness profile already applied. Receives the freshly created
+/// (or reopened) `Transcript` so the agent logs into the same file the
+/// router just read history from. Provider/tool wiring is a product
+/// decision that belongs to the binary embedding this crate (`ferrule-cli`),
+/// not to the gateway itself — this is the seam.
+pub type AgentFactory = Arc<dyn Fn(&str, Transcript) -> Result<Agent, GatewayError> + Send + Sync>;
+
+/// Routes inbound messages to one agent session per (channel, chat), each
+/// with its own FIFO queue ("lane") so a chat's messages are processed in
+/// order while different chats run fully concurrently as separate tokio
+/// tasks. Session state is the existing JSONL transcript: a lane started
+/// after a restart replays it into the new `Agent` before serving new
+/// messages, so resume is "just" re-reading a file NanoClaw-style, not a
+/// bespoke session store.
+pub struct Router {
+    sessions_dir: PathBuf,
+    agent_factory: AgentFactory,
+    channels: HashMap<String, Arc<dyn Channel>>,
+    lanes: Mutex<HashMap<String, mpsc::Sender<InboundMessage>>>,
+    lane_queue_capacity: usize,
+}
+
+impl Router {
+    pub fn new(sessions_dir: impl Into<PathBuf>, agent_factory: AgentFactory, channels: HashMap<String, Arc<dyn Channel>>) -> Self {
+        Self {
+            sessions_dir: sessions_dir.into(),
+            agent_factory,
+            channels,
+            lanes: Mutex::new(HashMap::new()),
+            lane_queue_capacity: 64,
+        }
+    }
+
+    /// Enqueue an inbound message onto its session's lane, spawning the lane
+    /// if this is the first message seen for that (channel, chat) pair since
+    /// this router started.
+    pub async fn dispatch(&self, msg: InboundMessage) -> Result<(), GatewayError> {
+        let sid = session::session_id(&msg.channel, &msg.chat_id);
+        let tx = self.lane_for(&sid, &msg.channel).await?;
+        tx.send(msg).await.map_err(|_| GatewayError::SessionClosed(sid))
+    }
+
+    async fn lane_for(&self, session_id: &str, channel_name: &str) -> Result<mpsc::Sender<InboundMessage>, GatewayError> {
+        let mut lanes = self.lanes.lock().await;
+        if let Some(tx) = lanes.get(session_id) {
+            if !tx.is_closed() {
+                return Ok(tx.clone());
+            }
+        }
+        let tx = self.spawn_lane(session_id, channel_name)?;
+        lanes.insert(session_id.to_string(), tx.clone());
+        Ok(tx)
+    }
+
+    fn spawn_lane(&self, session_id: &str, channel_name: &str) -> Result<mpsc::Sender<InboundMessage>, GatewayError> {
+        let transcript = Transcript::create(&self.sessions_dir, session_id)?;
+        let history = transcript.read_messages().unwrap_or_default();
+        let mut agent = (self.agent_factory)(session_id, transcript)?;
+        // The factory already pushed a fresh system prompt (it may embed
+        // live memory recall, workspace path, etc.) — replay only the prior
+        // conversation on top of it, not the old system message.
+        for m in history.into_iter().filter(|m| m.role != Role::System) {
+            agent.messages.push(m);
+        }
+        let channel = self.channels.get(channel_name).cloned();
+        let (tx, rx) = mpsc::channel(self.lane_queue_capacity);
+        tokio::spawn(run_lane(agent, rx, channel, session_id.to_string()));
+        Ok(tx)
+    }
+}
+
+/// One session's serialized worker loop: pull the next message, run one
+/// agent turn, deliver the reply. Errors never crash the lane — they are
+/// logged and, when possible, reported back to the chat so the user isn't
+/// left staring at silence (see NanoClaw's task-silent-death lesson: an
+/// error that's only logged and never surfaced is worse than a visible one).
+async fn run_lane(mut agent: Agent, mut rx: mpsc::Receiver<InboundMessage>, channel: Option<Arc<dyn Channel>>, session_id: String) {
+    while let Some(inbound) = rx.recv().await {
+        // The agent loop wants a live event sender; the gateway doesn't
+        // stream token-by-token to channels (yet), so the receiver is
+        // dropped immediately. `Agent::emit` already tolerates a detached
+        // receiver by design.
+        let (etx, _erx) = mpsc::channel(64);
+        let reply_text = match agent.run(&inbound.text, etx).await {
+            Ok(answer) => answer,
+            Err(e) => {
+                tracing::error!(session = %session_id, error = %e, "agent run failed");
+                format!("internal error: {e}")
+            }
+        };
+        if let Some(ch) = &channel {
+            let out = OutboundMessage {
+                channel: inbound.channel.clone(),
+                chat_id: inbound.chat_id.clone(),
+                text: reply_text,
+                reply_to: Some(inbound.message_id.clone()),
+                attachments: vec![],
+            };
+            if let Err(e) = ch.send(out).await {
+                tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
+            }
+        }
+    }
+    tracing::debug!(session = %session_id, "session lane closed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use ferrule_core::provider::{CompletionRequest, CompletionResponse};
+    use ferrule_core::tool::ToolContext;
+    use ferrule_core::{AgentConfig, CoreError, HarnessProfile, Message, Provider, ToolRegistry, Usage};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{sleep, Duration, Instant};
+
+    /// Echoes the incoming text; used to verify per-lane FIFO ordering.
+    struct EchoProvider;
+    #[async_trait]
+    impl Provider for EchoProvider {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let last_user = req.messages.iter().rev().find(|m| m.role == Role::User).and_then(|m| m.content.clone()).unwrap_or_default();
+            Ok(CompletionResponse { message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None), usage: Usage::default() })
+        }
+    }
+
+    /// Reports how many *user* messages are in context — used to prove that
+    /// a new Router instance pointed at the same sessions_dir resumes prior
+    /// history instead of starting cold.
+    struct CountingProvider;
+    #[async_trait]
+    impl Provider for CountingProvider {
+        fn name(&self) -> &str {
+            "counter"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let n = req.messages.iter().filter(|m| m.role == Role::User).count();
+            Ok(CompletionResponse { message: Message::assistant(Some(format!("count: {n}")), vec![], None), usage: Usage::default() })
+        }
+    }
+
+    struct RecordingChannel {
+        sent: std::sync::Mutex<Vec<OutboundMessage>>,
+    }
+    impl RecordingChannel {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { sent: std::sync::Mutex::new(Vec::new()) })
+        }
+        fn texts(&self) -> Vec<String> {
+            self.sent.lock().unwrap().iter().map(|m| m.text.clone()).collect()
+        }
+    }
+    #[async_trait]
+    impl Channel for RecordingChannel {
+        fn name(&self) -> &str {
+            "test"
+        }
+        async fn run(&self, _tx: mpsc::Sender<InboundMessage>) -> Result<(), GatewayError> {
+            Ok(())
+        }
+        async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError> {
+            self.sent.lock().unwrap().push(msg);
+            Ok(())
+        }
+    }
+
+    fn inbound(chat_id: &str, text: &str) -> InboundMessage {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        InboundMessage {
+            channel: "test".into(),
+            chat_id: chat_id.into(),
+            sender: "user".into(),
+            message_id: format!("m{}", N.fetch_add(1, Ordering::SeqCst)),
+            text: text.into(),
+            attachments: vec![],
+            reply_to: None,
+            ts: 0,
+        }
+    }
+
+    fn echo_factory() -> AgentFactory {
+        Arc::new(|_sid, transcript| {
+            Ok(Agent::new(Arc::new(EchoProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
+                .with_system_prompt("test"))
+        })
+    }
+
+    fn counting_factory() -> AgentFactory {
+        Arc::new(|_sid, transcript| {
+            Ok(Agent::new(Arc::new(CountingProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
+                .with_system_prompt("test"))
+        })
+    }
+
+    /// Polls until `f()` is true or the deadline passes — replies land
+    /// asynchronously on a spawned lane, so tests can't assert immediately
+    /// after `dispatch` returns (dispatch only guarantees the message was
+    /// queued, not processed).
+    async fn wait_until(mut f: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !f() {
+            assert!(Instant::now() < deadline, "condition never became true");
+            sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn same_chat_messages_are_processed_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let router = Router::new(dir.path(), echo_factory(), channels);
+
+        router.dispatch(inbound("chat-1", "one")).await.unwrap();
+        router.dispatch(inbound("chat-1", "two")).await.unwrap();
+        router.dispatch(inbound("chat-1", "three")).await.unwrap();
+
+        wait_until(|| recorder.texts().len() == 3).await;
+        assert_eq!(recorder.texts(), vec!["echo: one", "echo: two", "echo: three"]);
+    }
+
+    #[tokio::test]
+    async fn different_chats_get_independent_lanes() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let router = Router::new(dir.path(), echo_factory(), channels);
+
+        router.dispatch(inbound("chat-a", "hi a")).await.unwrap();
+        router.dispatch(inbound("chat-b", "hi b")).await.unwrap();
+
+        wait_until(|| recorder.texts().len() == 2).await;
+        let mut texts = recorder.texts();
+        texts.sort();
+        assert_eq!(texts, vec!["echo: hi a", "echo: hi b"]);
+    }
+
+    #[tokio::test]
+    async fn resumes_history_from_transcript_across_router_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+
+        // First "process": one message, then the router is dropped —
+        // simulating a gateway restart. Only the JSONL transcript survives.
+        {
+            let router = Router::new(dir.path(), counting_factory(), channels.clone());
+            router.dispatch(inbound("chat-1", "first")).await.unwrap();
+            wait_until(|| recorder.texts().len() == 1).await;
+            assert_eq!(recorder.texts(), vec!["count: 1"]);
+        }
+
+        // Second "process": brand new Router, same sessions_dir. The lane it
+        // spawns must replay the earlier user turn before this new one.
+        {
+            let router = Router::new(dir.path(), counting_factory(), channels);
+            router.dispatch(inbound("chat-1", "second")).await.unwrap();
+            wait_until(|| recorder.texts().len() == 2).await;
+            assert_eq!(recorder.texts()[1], "count: 2");
+        }
+    }
+}

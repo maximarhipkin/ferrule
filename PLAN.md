@@ -19,9 +19,15 @@ that convention yet — ask before introducing one).
   OpenAI-chat-completions-compatible endpoint (`ferrule-providers`), with a
   fixed small toolset (fs read/write/list, shell with a deny-list, web fetch,
   todo/diary) from `ferrule-tools`, and a single-file SQLite memory store
-  (`ferrule-memory`, FTS5 BM25 + time-decay recall) . No daemon, no
-  messaging/channels, no MCP client, no multi-agent orchestration, no OS-level
-  sandboxing yet — see gap list below.
+  (`ferrule-memory`, FTS5 BM25 + time-decay recall) . No MCP client, no
+  multi-agent orchestration, no OS-level sandboxing yet — see gap list below.
+  **A daemon skeleton now exists** (`ferrule-gateway`, see Session Log
+  2026-09-23/24): a `Channel` adapter trait, normalized in/outbound message
+  model, and a `Router`/`Gateway` that give one FIFO session lane per
+  (channel, chat) with JSONL-transcript resume — but it has **zero real
+  channel adapters yet** (Telegram/local stdin land in M2) and isn't wired
+  into `ferrule-cli` as a `gateway` subcommand yet, so end users still can't
+  reach it. No scheduler/cron yet either (M3).
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -34,7 +40,11 @@ that convention yet — ask before introducing one).
   `openai_compat::tests::sends_tools_and_parses_tool_call` (env issue, not a
   code bug). `clippy` is not installed (`--profile minimal`).
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 24/24 green** (after the diary flush fix below).
+  --workspace` 31/31 green** (24 pre-existing + 7 new in `ferrule-gateway`),
+  `cargo clippy --workspace --all-targets` has one pre-existing warning in
+  `ferrule-core::agent` (collapsible_if, not introduced this session) and
+  zero warnings in `ferrule-gateway`. `rustup component add clippy rustfmt`
+  now done (was missing, only `cargo`/`rust-std`/`rustc` before).
 - **Branding:** `docs/branding/logo.png` (512x512 mark) and
   `docs/branding/hero.png` (1600x800 README header), referenced from the top
   of `README.md`. Generated programmatically with Pillow (geometric
@@ -46,11 +56,14 @@ that convention yet — ask before introducing one).
   the same metal-band-binding-a-bundle motif and dark/steel/copper palette if
   you do, so the brand doesn't drift session to session.
 - **Open architectural gaps vs. the "replace NanoClaw and OpenClaw" goal:**
-  see the dated session-log entry below for the full writeup; short version:
-  no channels/messaging layer, no MCP client, no task scheduler/daemon, no
-  skills/plugin system, no credential-injection gateway, weak sandboxing
-  (substring deny-list only, no OS primitives), no cost/observability ledger,
-  no multi-agent orchestration. These are the largest deltas.
+  see the dated session-log entries below for the full writeup; short
+  version: channels/messaging is now scaffolded but has **no real adapters**
+  (M2 next: Telegram long-polling + a local stdin/loopback adapter, plus
+  wiring a `ferrule gateway` CLI subcommand), still no MCP client, no task
+  scheduler/daemon (M3), no skills/plugin system, no credential-injection
+  gateway, weak sandboxing (substring deny-list only, no OS primitives), no
+  cost/observability ledger, no multi-agent orchestration. These are the
+  largest deltas.
 
 ## Session Log
 
@@ -260,3 +273,138 @@ Session: Devi (NanoClaw), Opus 5.5.
 daemon, MCP client, sandboxing, credential gateway). Now that the tree
 compiles here, the proposed `ferrule-gateway` crate can be built and tested
 for real in this sandbox.
+
+### 2026-09-23/24 — ferrule-gateway M1 (Devi, Opus 5.5)
+
+Built the first slice of `ferrule-gateway`, the long-running daemon crate
+proposed in `docs/research-report.md` section 5 (Phase 3). This session
+covered **M1 only** — the channel-agnostic daemon skeleton (adapter trait,
+message model, session routing/resume). No real channel adapters, no
+scheduler, no MCP client yet; those are M2/M3/M4.
+
+**What was built** (`crates/ferrule-gateway/src/`):
+- `message.rs` — `InboundMessage`/`OutboundMessage`, normalized across every
+  future channel: `channel`, `chat_id`, `sender`, `message_id`, `text`,
+  `attachments: Vec<Attachment>`, `reply_to`, `ts`. Plain serde structs, no
+  channel-specific fields leak in — a Telegram update and a stdin line both
+  become the same shape before the router ever sees them.
+- `channel.rs` — `#[async_trait] trait Channel`: `name()`,
+  `capabilities() -> ChannelCapabilities` (reactions/edits/attachments flags,
+  default all-false), `run(tx) -> Result<(), GatewayError>` (the adapter's
+  own inbound loop — polling, listening, reading stdin, whatever — pushing
+  onto a shared `mpsc::Sender<InboundMessage>`), `send(msg)`, and optional
+  `react()`/`edit()` that default to `Err(Unsupported)` so a channel without
+  reaction support doesn't need a no-op override.
+- `session.rs` — `session_id(channel, chat_id)` — deterministic, filesystem-
+  and-Transcript-safe id (`sanitize()` maps anything non-alphanumeric/`-`/`_`
+  to `_`), used both as the lane key and the JSONL transcript filename.
+- `router.rs` — `Router`: one FIFO lane (a spawned tokio task fed by an
+  `mpsc::Receiver<InboundMessage>`) per session id. `dispatch()` looks up or
+  lazily spawns the lane and enqueues; different sessions run fully
+  concurrently, same session is strictly sequential because it's one task
+  draining one queue. `AgentFactory` is a
+  `Fn(&str, Transcript) -> Result<Agent, GatewayError>` closure supplied by
+  the embedding binary (`ferrule-cli` in M2) — the gateway crate has no
+  opinion on which provider/tools/profile a session's agent uses.
+- `gateway.rs` — `Gateway`: owns a set of `Channel`s and one `Router`, fans
+  every adapter's inbound stream into a single funnel channel, dispatches
+  each message, and returns once every adapter's `run()` has finished (the
+  funnel closes when every cloned sender is dropped).
+- `error.rs` — `GatewayError` (thiserror): wraps `ferrule_core::CoreError`,
+  `io`, `serde_json`, plus gateway-specific `UnknownChannel`, `SessionClosed`,
+  `Unsupported(&'static str)`, `Channel(String)`. `Http`/`Sqlite` variants
+  are deliberately not added yet — no `reqwest`/`rusqlite` dependency until
+  M2/M3 actually need them (kept `Cargo.toml` to
+  `ferrule-core, tokio, async-trait, serde, serde_json, thiserror, tracing`
+  + `tempfile` dev-dep, to keep this milestone's diff and dependency
+  footprint scoped to what M1 actually uses).
+
+**Design decision — session persistence without touching `ferrule-core`:**
+the brief asked for "session persistence/resume on top of existing JSONL
+transcripts" without listing `ferrule-core` changes as in scope. Read
+`ferrule-core::transcript::Transcript` closely: `Transcript::create(dir, id)`
+is safe to call repeatedly (it (re)opens the file and always appends a
+`Meta` record — confirmed by its existing round-trip test), and
+`read_messages()` already filters to only `type == "message"` records, i.e.
+it reconstructs prior conversation turns and skips metadata/event noise.
+Combined with `Agent.messages` being a public field, a lane can be (re)built
+statelessly: call `Transcript::create` (creates on first contact, reopens on
+restart), `read_messages()`, hand the transcript to the caller's
+`AgentFactory` (which pushes a fresh system prompt — may embed live memory
+recall, so it should never be replayed from history), then push every
+non-`System` historical message onto the new `Agent.messages` before serving
+the first live message. No new persistence format, no `ferrule-core` diff.
+This is exercised directly by
+`router::tests::resumes_history_from_transcript_across_router_restarts`,
+which builds a `Router`, dispatches one message, **drops the whole `Router`**
+(simulating a gateway restart), builds a **second, independent** `Router`
+pointed at the same `sessions_dir`, dispatches a second message, and asserts
+a `CountingProvider` (replies with the number of `Role::User` messages seen
+in-context) reports 2, not 1 — proving history actually survived a cold
+restart via the JSONL file, not via any in-memory carry-over.
+
+**Design decision — event stream is intentionally dropped in the daemon
+loop:** `Agent::run()` requires an `mpsc::Sender<AgentEvent>` for streaming
+lifecycle events (tool calls, reasoning, compaction, usage). The gateway
+doesn't yet stream anything to channels (no channel adapter speaks
+incremental/typing-indicator updates yet), so `run_lane` creates the channel
+and immediately drops the receiver half. This is safe by construction. not
+a leak or a race, because `Agent::emit` already tolerates a detached
+receiver (`let _ = tx.send(ev).await;` in `ferrule-core::agent`, there for
+exactly this "headless mode" case). Revisit if/when a channel wants
+mid-turn progress updates (e.g. Telegram "typing…" or partial edits).
+
+**Design decision — errors are surfaced to the chat, not just logged:** a
+failed `agent.run()` inside a lane is `tracing::error!`'d *and* turned into
+a best-effort reply (`"internal error: {e}"`) sent back through the
+originating channel, rather than only logged and silently dropped. This is
+a direct response to the brief's NanoClaw warning ("an errored run logged as
+successful must not be reproduced") — even though that specific flaw is
+about the M3 scheduler's run-log, the same silent-failure failure mode
+applies to a chat message that gets no reply at all, so the same discipline
+was applied here too.
+
+**Verification:**
+- `cargo check --workspace --all-targets` — clean, first attempt.
+- `cargo test --workspace` — **31/31 green** (24 pre-existing + 7 new:
+  3 in `session.rs`, 3 in `router.rs`, 1 in `gateway.rs`). One real bug was
+  caught and fixed by the test suite itself: the first version of the
+  `gateway.rs` end-to-end test asserted the reply was delivered immediately
+  after `Gateway::run()` returned, but `run()` only guarantees every inbound
+  message has been *dispatched* onto its session lane — the lane's spawned
+  task still needs to run the agent turn and call `Channel::send()`
+  afterwards. Fixed by polling with a bounded 2s timeout instead of a bare
+  assertion (same pattern already used in the `router.rs` tests' `wait_until`
+  helper). Worth flagging: this is a real race inherent to the design (fire-
+  and-forget lane dispatch), not just a test artifact — a future consumer of
+  `Gateway::run()`'s return should not assume "returned" means "all replies
+  delivered."
+- `cargo clippy --workspace --all-targets` — zero warnings in
+  `ferrule-gateway`; one pre-existing warning in `ferrule-core::agent`
+  (`collapsible_if`) that predates this session and was left untouched
+  (out of scope for this milestone's diff).
+- `rustup component add clippy rustfmt` — both were missing in this sandbox
+  (only `cargo`/`rust-std`/`rustc` were installed before); now installed.
+
+**What remains (for the next session):**
+- M2 — Telegram Bot API adapter (long-polling `getUpdates` + `sendMessage`,
+  configurable base URL so it can be pointed at a mock `TcpListener` server
+  using the exact pattern already in
+  `ferrule-providers::openai_compat::tests::mock_server`) and a local
+  stdin/loopback-HTTP adapter, both implementing `Channel`; wire a
+  `ferrule gateway` subcommand into `ferrule-cli` (extend `config.rs` with a
+  gateway/telegram config section, reuse `build_agent`'s wiring style as the
+  `AgentFactory` closure). Needs `reqwest` added to
+  `ferrule-gateway/Cargo.toml` at that point.
+- M3 — cron + one-shot scheduler persisted in SQLite (mirror
+  `ferrule-memory`'s `rusqlite` + WAL approach), truthful run-status logging
+  (this is the one the brief singles out: a run must never log
+  `status = success` when it errored), optional pre-check "gate" script.
+  Needs `rusqlite` added at that point.
+- M4 (only if time allows) — stdio MCP client via the `Tool` trait; add
+  `.no_proxy()` to provider-test and (new) Telegram-adapter reqwest clients
+  for fully hermetic tests (today `openai_compat`'s mock-server test still
+  relies on the ambient `NO_PROXY` env var rather than being self-contained).
+- Not started: feature-gating channel adapters, OS-level sandboxing — both
+  explicitly deferred per `docs/research-report.md`'s own phasing, out of
+  scope for this task's tool-call budget.
