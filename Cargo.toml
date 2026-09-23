@@ -7,6 +7,7 @@ members = [
     "crates/ferrule-tools",
     "crates/ferrule-mcp",
     "crates/ferrule-skills",
+    "crates/ferrule-sandbox",
     "crates/ferrule-memory",
     "crates/ferrule-cli",
 ]
@@ -26,6 +27,7 @@ clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 dirs = "5"
 tempfile = "3"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

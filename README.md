@@ -47,6 +47,7 @@ crates/
   ferrule-providers  OpenAI-compatible driver (Kimi/OpenAI/DeepSeek/local…)
   ferrule-tools      fs / shell / web_fetch, workspace-scoped and output-capped
   ferrule-memory     SQLite + FTS5 memory with time decay
+  ferrule-sandbox    OS sandbox for shell commands (Landlock + seccomp / Seatbelt)
   ferrule-cli        the `ferrule` binary (run / chat / memory / config)
 ```
 
@@ -61,6 +62,7 @@ export MOONSHOT_API_KEY=sk-...                # or OPENAI_API_KEY etc.
 ./target/release/ferrule chat               # interactive session
 ./target/release/ferrule memory add "prefers terse answers" --tags pref
 ./target/release/ferrule memory search "answers style"
+./target/release/ferrule sandbox            # what the shell sandbox allows here, tested
 ```
 
 Config is `ferrule.toml` in the working directory or
@@ -87,5 +89,6 @@ the shell deny-list, and memory recall/budgeting.
 - [ ] Tree-sitter semantic code search via MCP
 - [ ] Gateway daemon: session lanes, cron/heartbeat, channels (Telegram…)
 - [ ] Vector recall (local embeddings) merged with BM25
-- [ ] OS sandbox backends (Landlock / Bubblewrap / Seatbelt), WASM tool plugins
+- [x] OS sandbox for the shell tool (Landlock + seccomp on Linux, Seatbelt on macOS)
+- [ ] WASM tool plugins
 - [ ] Streaming SSE responses

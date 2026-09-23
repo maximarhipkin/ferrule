@@ -117,6 +117,8 @@ pub struct Config {
     pub mcp: McpConfig,
     #[serde(default)]
     pub skills: SkillsConfig,
+    #[serde(default)]
+    pub sandbox: ferrule_sandbox::Policy,
 }
 
 pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration
@@ -171,6 +173,17 @@ profile = "openai"
 # project = true             # then `paths`, ~/.config/ferrule/skills,
 # paths = []                 # ~/.agents/skills, ~/.claude/skills. First name wins.
 # disabled = []              # skill names to ignore. `ferrule skills` lists them all.
+
+# [sandbox]                 # OS sandbox for the shell tool (Landlock / Seatbelt).
+# mode = "workspace-write"   # or "read-only", or "off". `ferrule sandbox` shows
+#                            # what applies here and tests it.
+# require = false            # true: refuse to start if it can't be applied
+# network = true             # false: shell commands can't open network sockets
+# writable_roots = []        # extra writable dirs, e.g. ["~/.cargo", "~/.cache"]
+#                            # for build caches; relative = inside the workspace
+# tmp = true                 # /tmp and $TMPDIR stay writable
+# scrub_secret_env = true    # drop *KEY*/*TOKEN*/*SECRET*… and api_key_env vars
+# env_passthrough = []       # names to keep anyway, e.g. ["GITHUB_TOKEN"]
 "#;
 
 impl Config {
@@ -212,4 +225,20 @@ pub fn data_dir() -> Result<PathBuf> {
         .join("ferrule");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_config_parses_with_the_sandbox_block_uncommented() {
+        let cfg: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
+        assert_eq!(cfg.sandbox.mode, ferrule_sandbox::Mode::WorkspaceWrite);
+        let block = &EXAMPLE_CONFIG[EXAMPLE_CONFIG.find("# [sandbox]").unwrap()..];
+        let uncommented: String = block.lines().map(|l| format!("{}\n", l.strip_prefix("# ").unwrap_or(l))).collect();
+        let cfg: Config = toml::from_str(&uncommented).unwrap();
+        assert!(cfg.sandbox.network && cfg.sandbox.tmp && cfg.sandbox.scrub_secret_env && !cfg.sandbox.require);
+        assert!(cfg.sandbox.writable_roots.is_empty() && cfg.sandbox.env_passthrough.is_empty());
+    }
 }

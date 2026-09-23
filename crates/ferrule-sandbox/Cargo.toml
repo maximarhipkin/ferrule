@@ -1,0 +1,14 @@
+[package]
+name = "ferrule-sandbox"
+version = "0.1.0"
+edition = "2021"
+description = "OS-level sandbox for agent shell commands: Landlock + seccomp on Linux, Seatbelt on macOS"
+
+[dependencies]
+serde = { workspace = true }
+tracing = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }

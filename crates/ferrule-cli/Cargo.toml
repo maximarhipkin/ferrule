@@ -14,9 +14,11 @@ ferrule-providers = { path = "../ferrule-providers" }
 ferrule-tools = { path = "../ferrule-tools" }
 ferrule-mcp = { path = "../ferrule-mcp" }
 ferrule-skills = { path = "../ferrule-skills" }
+ferrule-sandbox = { path = "../ferrule-sandbox" }
 ferrule-memory = { path = "../ferrule-memory" }
 ferrule-gateway = { path = "../ferrule-gateway" }
 tokio = { workspace = true }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

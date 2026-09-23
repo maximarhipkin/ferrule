@@ -6,6 +6,7 @@ description = "Workspace-scoped built-in tools: fs, shell, web"
 
 [dependencies]
 ferrule-core = { path = "../ferrule-core" }
+ferrule-sandbox = { path = "../ferrule-sandbox" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

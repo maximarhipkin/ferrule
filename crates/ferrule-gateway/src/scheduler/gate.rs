@@ -11,10 +11,10 @@
 //!   field — -> `Proceed`, treating the raw stdout as context. A gate
 //!   script that doesn't speak the JSON contract yet is still useful rather
 //!   than being silently discarded.
-//! - non-zero exit, or exceeding `timeout` -> `Err`. On timeout the child is
-//!   always killed, never left running in the background: `kill_on_drop`
-//!   fires when `tokio::time::timeout` drops the in-flight `wait_with_output`
-//!   future on expiry, since that future owns the `Child` by value.
+//! - non-zero exit, or exceeding `timeout` -> `Err`. On timeout the whole
+//!   process group is killed, so nothing the script started keeps running:
+//!   `kill_on_drop` alone only reaches the `sh` at the top, not a `sleep`
+//!   or `curl` it spawned.
 
 use super::error::SchedulerError;
 use std::path::Path;
@@ -34,6 +34,8 @@ pub async fn run_gate(
     timeout: Duration,
 ) -> Result<GateOutcome, SchedulerError> {
     let mut cmd = Command::new("sh");
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd.arg("-c")
         .arg(command)
         .current_dir(workspace)
@@ -46,10 +48,14 @@ pub async fn run_gate(
         .spawn()
         .map_err(|e| SchedulerError::Gate(format!("failed to spawn gate script: {e}")))?;
 
+    let pid = child.id();
     let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => return Err(SchedulerError::Gate(format!("gate script io error: {e}"))),
         Err(_) => {
+            if let Some(pid) = pid {
+                ferrule_sandbox::kill_process_group(pid);
+            }
             return Err(SchedulerError::Gate(format!(
                 "gate script timed out after {}s (killed)",
                 timeout.as_secs()
@@ -191,5 +197,17 @@ mod tests {
             started.elapsed() < Duration::from_secs(2),
             "run_gate should return promptly on timeout, not wait out the sleep"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_also_kills_what_the_script_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = run_gate("(sleep 1; touch late) & sleep 5", dir.path(), Duration::from_millis(300))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SchedulerError::Gate(_)));
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(!dir.path().join("late").exists(), "a background child outlived the gate timeout");
     }
 }

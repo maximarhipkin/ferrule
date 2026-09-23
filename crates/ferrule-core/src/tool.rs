@@ -70,6 +70,9 @@ impl ToolRegistry {
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
         self.tools.insert(tool.definition().name, tool);
     }
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         let mut defs: Vec<_> = self.tools.values().map(|t| t.definition()).collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));

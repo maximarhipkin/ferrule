@@ -1,5 +1,6 @@
 mod config;
 mod ledger;
+mod memory_tools;
 
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
 use ferrule_core::tool::Tool;
@@ -8,14 +9,16 @@ use ferrule_gateway::{
 };
 use ferrule_memory::MemoryStore;
 use ferrule_providers::OpenAiCompatProvider;
+use ferrule_sandbox::{Mode, Sandbox};
 use ferrule_tools::standard_registry;
+use ferrule_tools::ShellTool;
 use ferrule_mcp::McpServerConfig;
 use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -82,6 +85,14 @@ enum Cmd {
     Skills {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
+    },
+    /// Show the shell sandbox that applies here, and test that it holds
+    Sandbox {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        /// Internal: open a loopback socket and report, run inside the sandbox
+        #[arg(long, hide = true)]
+        probe_net: bool,
     },
 }
 
@@ -207,6 +218,10 @@ async fn main() -> Result<()> {
         Cmd::Skills { workspace } => {
             skills_cmd(workspace);
         }
+        Cmd::Sandbox { probe_net: true, .. } => probe_net(),
+        Cmd::Sandbox { workspace, probe_net: false } => {
+            sandbox_cmd(workspace)?;
+        }
     }
     Ok(())
 }
@@ -265,13 +280,21 @@ fn build_agent_from(
     let tool_ctx = ToolContext { workspace, max_output_chars: 30_000 };
 
     let mut registry = standard_registry();
+    let sandbox = shared_sandbox(&cfg)?;
+    registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone())));
+    if sandbox.policy().mode == Mode::ReadOnly {
+        registry.remove("write_file");
+    }
+    for tool in memory_tools::tools(config::data_dir()?.join("memory.db")) {
+        registry.register(tool);
+    }
     for tool in mcp_tools {
         registry.register(tool.clone());
     }
 
     let mut system = format!(
         "You are an autonomous agent running inside ferrule. Workspace: {}. \
-         Use tools to act on the world; verify with evidence; persist important facts with the memory CLI when asked. \
+         Use tools to act on the world; verify with evidence; persist important facts with the remember tool when asked. \
          For multi-step work, maintain your task list with write_todos and log decisions with log_diary. {}",
         tool_ctx.workspace.display(),
         profile.system_directive
@@ -324,6 +347,27 @@ fn build_agent_from(
         agent = agent.with_ledger(tag.sink, tag.task_shape, tag.origin, pcfg.model.clone());
     }
     Ok(agent)
+}
+
+/// The config's sandbox policy, completed with what only the host knows:
+/// the env vars the config names as holding secrets.
+fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
+    let mut policy = cfg.sandbox.clone();
+    policy.secret_vars.extend(cfg.providers.values().map(|p| p.api_key_env.clone()));
+    policy.secret_vars.extend(cfg.gateway.telegram_token_env.clone());
+    policy
+}
+
+/// Built (and probed) once per process — the gateway builds an agent per
+/// session and shouldn't fork a probe for each. A `[sandbox]` edit takes a
+/// restart to apply.
+fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
+    static SANDBOX: OnceLock<Arc<Sandbox>> = OnceLock::new();
+    if let Some(sandbox) = SANDBOX.get() {
+        return Ok(sandbox.clone());
+    }
+    let sandbox = Arc::new(Sandbox::new(sandbox_policy(cfg)).map_err(|e| anyhow!(e))?);
+    Ok(SANDBOX.get_or_init(|| sandbox).clone())
 }
 
 fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
@@ -677,6 +721,123 @@ fn skills_cmd(workspace: PathBuf) {
                 ferrule_skills::Severity::Skipped => "skip",
             };
             println!("  {level}  {}: {}", d.path.display(), d.message);
+        }
+    }
+}
+
+/// `ferrule sandbox`: the sandbox that applies here, then evidence that it
+/// holds — each check runs through the same `Sandbox::command` the shell
+/// tool uses. Exits non-zero if any check fails.
+fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
+    let policy = match config::Config::load() {
+        Ok((cfg, _)) => sandbox_policy(&cfg),
+        Err(e) => {
+            eprintln!("({e} — showing default [sandbox] settings)");
+            ferrule_sandbox::Policy::default()
+        }
+    };
+    let workspace = workspace.canonicalize()?;
+    let sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
+    let policy = sandbox.policy();
+    let roots = sandbox.writable_roots(&workspace);
+    let withheld = sandbox.scrubbed_vars();
+
+    println!("backend   {}", sandbox.backend());
+    if let Some(why) = sandbox.degraded() {
+        println!("          shell commands run UNSANDBOXED: {why}");
+    }
+    let mode = match policy.mode {
+        Mode::Off => "off",
+        Mode::ReadOnly => "read-only",
+        Mode::WorkspaceWrite => "workspace-write",
+    };
+    println!("mode      {mode}{}", if policy.require { " (required)" } else { "" });
+    if sandbox.is_active() {
+        println!("network   {}", if policy.network { "allowed" } else { "blocked" });
+        println!("writable  {}", if roots.is_empty() { "nothing (except /dev/null)".into() } else { roots[0].display().to_string() });
+        for root in roots.iter().skip(1) {
+            println!("          {}", root.display());
+        }
+    }
+    println!("env       {} secret var(s) withheld{}", withheld.len(), if withheld.is_empty() { String::new() } else { format!(": {}", withheld.join(", ")) });
+
+    let mut failures = 0;
+    let mut report = |what: &str, ok: bool| {
+        println!("  {}  {what}", if ok { "ok  " } else { "FAIL" });
+        failures += usize::from(!ok);
+    };
+    let sh = |script: &str, arg: &Path| -> Result<std::process::Output> {
+        Ok(sandbox
+            .command("/bin/sh", ["-c".as_ref(), script.as_ref(), "sh".as_ref(), arg.as_os_str()], &workspace)?
+            .stdin(std::process::Stdio::null())
+            .output()?)
+    };
+    println!("\nchecks");
+
+    let env = sh("env", Path::new(""))?;
+    let env = String::from_utf8_lossy(&env.stdout);
+    report("secret env vars are not visible to commands", withheld.iter().all(|name| !env.lines().any(|l| l.starts_with(&format!("{name}=")))));
+    if !sandbox.is_active() {
+        println!("  (no sandbox: nothing else to check)");
+        return if failures == 0 { Ok(()) } else { bail!("{failures} check(s) failed") };
+    }
+
+    let probe_name = format!(".ferrule-sandbox-probe-{}", std::process::id());
+    let inside = workspace.join(&probe_name);
+    let wrote = sh("echo probe > \"$1\"", &inside)?.status.success();
+    let _ = std::fs::remove_file(&inside);
+    match policy.mode {
+        Mode::ReadOnly => report("workspace write is refused (read-only)", !wrote),
+        _ => report("workspace write works", wrote),
+    }
+
+    // Aim outside every root, at a place this process itself can write — so
+    // a refusal is the sandbox, not plain file permissions.
+    let candidates = [std::env::var_os("HOME").map(PathBuf::from), Some(PathBuf::from("/var/tmp")), workspace.parent().map(Path::to_path_buf)];
+    let target = candidates.into_iter().flatten().filter_map(|dir| dir.canonicalize().ok()).find(|dir| {
+        let probe = dir.join(&probe_name);
+        let writable = !roots.iter().any(|r| dir.starts_with(r)) && std::fs::write(&probe, "").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        writable
+    });
+    match target {
+        Some(dir) => {
+            let probe = dir.join(&probe_name);
+            let out = sh("echo probe > \"$1\"", &probe)?;
+            let escaped = out.status.success() || probe.exists();
+            let _ = std::fs::remove_file(&probe);
+            report(&format!("write outside the roots is refused ({})", dir.display()), !escaped);
+        }
+        None => println!("  skip  write outside the roots (no writable dir outside them to aim at)"),
+    }
+
+    let me = std::env::current_exe()?;
+    let net = sandbox.command(&me, ["sandbox", "--probe-net"], &workspace)?.stdin(std::process::Stdio::null()).output()?;
+    let opened = net.status.success();
+    if policy.network {
+        report("network sockets open", opened);
+    } else {
+        report("network sockets are refused", !opened && String::from_utf8_lossy(&net.stdout).contains("refused"));
+    }
+    if failures == 0 {
+        Ok(())
+    } else {
+        bail!("{failures} check(s) failed")
+    }
+}
+
+/// Run by `ferrule sandbox` inside the sandbox: can this process open an
+/// inet socket? Loopback only, so the answer doesn't depend on connectivity.
+fn probe_net() {
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0");
+    let tcp = std::net::TcpListener::bind("127.0.0.1:0");
+    match (udp, tcp) {
+        (Ok(_), Ok(_)) => println!("opened"),
+        (udp, tcp) => {
+            let err = udp.err().or(tcp.err()).expect("one of them failed");
+            let refused = err.kind() == std::io::ErrorKind::PermissionDenied;
+            println!("{}: {err}", if refused { "refused" } else { "failed" });
+            std::process::exit(1);
         }
     }
 }

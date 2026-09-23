@@ -4,38 +4,59 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 /// Resolve a model-supplied path against the workspace, rejecting escapes.
+///
+/// The check is on real paths, so a symlink inside the workspace that points
+/// out of it is an escape too. The returned path is the resolved one, and the
+/// tools act on that rather than re-walking the model's string. (A symlink
+/// swapped in between this check and the write still gets through; the
+/// sandbox, not this function, is what holds against a hostile workspace.)
 fn resolve(workspace: &Path, path: &str) -> Result<PathBuf, CoreError> {
     let candidate = if Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {
         workspace.join(path)
     };
-    // Lexical normalization (no symlink chase needed for scope check MVP).
+    let ws = lexical(workspace);
+    let escapes = || CoreError::ToolFailed {
+        tool: "fs".into(),
+        message: format!("path `{path}` escapes workspace `{}`", ws.display()),
+    };
+    let ws_real = ws.canonicalize().unwrap_or_else(|_| ws.clone());
+    match real(&lexical(&candidate)) {
+        Some(resolved) if resolved.starts_with(&ws_real) => Ok(resolved),
+        _ => Err(escapes()),
+    }
+}
+
+/// Drop `.` and apply `..` without touching the filesystem.
+fn lexical(path: &Path) -> PathBuf {
     let mut norm = PathBuf::new();
-    for comp in candidate.components() {
+    for comp in path.components() {
         match comp {
             std::path::Component::ParentDir => {
                 norm.pop();
             }
+            std::path::Component::CurDir => {}
             other => norm.push(other.as_os_str()),
         }
     }
-    let ws = {
-        let mut n = PathBuf::new();
-        for comp in workspace.components() {
-            if comp != std::path::Component::ParentDir {
-                n.push(comp.as_os_str());
-            }
-        }
-        n
-    };
-    if !norm.starts_with(&ws) {
-        return Err(CoreError::ToolFailed {
-            tool: "fs".into(),
-            message: format!("path `{path}` escapes workspace `{}`", ws.display()),
-        });
+    norm
+}
+
+/// Canonicalize the deepest part of `path` that exists and re-append the
+/// rest (the part a write is about to create). `None` when an existing part
+/// can't be resolved — a dangling symlink, say, which a write would follow
+/// to wherever it points.
+fn real(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut rest = Vec::new();
+    while existing.symlink_metadata().is_err() {
+        rest.push(existing.file_name()?);
+        existing = existing.parent()?;
     }
-    Ok(norm)
+    let mut resolved = existing.canonicalize().ok()?;
+    resolved.extend(rest.iter().rev());
+    Some(resolved)
 }
 
 pub struct ReadFileTool;
@@ -152,6 +173,42 @@ mod tests {
         assert!(err.to_string().contains("escapes workspace"), "{err}");
         let err2 = WriteFileTool.call(json!({"path": "/tmp/evil.txt", "content": "x"}), &c).await;
         assert!(err2.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinks_out_of_the_workspace_are_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "s3cret").unwrap();
+        let c = ctx(dir.path());
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("out")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("new"), dir.path().join("dangling")).unwrap();
+
+        let err = ReadFileTool.call(json!({"path": "out/secret"}), &c).await.unwrap_err();
+        assert!(err.to_string().contains("escapes workspace"), "{err}");
+        let err = WriteFileTool.call(json!({"path": "out/planted", "content": "x"}), &c).await.unwrap_err();
+        assert!(err.to_string().contains("escapes workspace"), "{err}");
+        let err = WriteFileTool.call(json!({"path": "dangling", "content": "x"}), &c).await.unwrap_err();
+        assert!(err.to_string().contains("escapes workspace"), "{err}");
+        assert!(!outside.path().join("planted").exists() && !outside.path().join("new").exists());
+
+        // `..` is applied before any lookup, so it can't be walked out of a link.
+        WriteFileTool.call(json!({"path": "out/../ok.txt", "content": "x"}), &c).await.unwrap();
+        assert!(dir.path().join("ok.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinks_within_the_workspace_still_work() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::os::unix::fs::symlink("real", dir.path().join("alias")).unwrap();
+        let c = ctx(dir.path());
+        WriteFileTool.call(json!({"path": "alias/new/f.txt", "content": "hi"}), &c).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("real/new/f.txt")).unwrap(), "hi");
+        let out = ReadFileTool.call(json!({"path": "alias/new/f.txt"}), &c).await.unwrap();
+        assert_eq!(out.content, "hi");
     }
 
     #[tokio::test]

@@ -11,17 +11,17 @@ that convention yet — ask before introducing one).
 ## Current State
 
 - **Name:** Ferrule (renamed from `agentrust` 2026-09-23). GitHub repo is
-  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,gateway,mcp,skills,cli}`,
+  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,gateway,mcp,skills,sandbox,cli}`,
   binary is `ferrule`, config file is `ferrule.toml` /
   `~/.config/ferrule/config.toml`, agent workspace state dir is `.ferrule/`.
 - **What it is today:** a local, single-user CLI agent runtime. `ferrule run`
   / `ferrule chat` drive a ReAct loop (`ferrule-core::Agent`) against any
   OpenAI-chat-completions-compatible endpoint (`ferrule-providers`), with a
-  fixed small toolset (fs read/write/list, shell with a deny-list, web fetch,
-  todo/diary) from `ferrule-tools`, and a single-file SQLite memory store
+  fixed small toolset (fs read/write/list, a sandboxed shell, web fetch,
+  todo/diary, remember/recall) from `ferrule-tools`, and a single-file SQLite memory store
   (`ferrule-memory`, FTS5 BM25 + time-decay recall), plus any tools exposed
   by stdio MCP servers (`ferrule-mcp`, M4). No
-  multi-agent orchestration, no OS-level sandboxing yet — see gap list below.
+  multi-agent orchestration yet — see gap list below.
   **A daemon now exists and is reachable** (`ferrule-gateway`, see Session
   Log 2026-09-23/24, M1+M2): a `Channel` adapter trait, normalized
   in/outbound message model, a `Router`/`Gateway` giving one FIFO session
@@ -51,7 +51,14 @@ that convention yet — ask before introducing one).
   into the system prompt, and the model loads one with `activate_skill`
   and reads its bundled files with `read_skill_file`. Compaction carries
   activated skill instructions forward verbatim. `ferrule skills` lists
-  what a workspace would load.
+  what a workspace would load. **Shell commands run in an OS sandbox**
+  (Session Log 2026-09-24, M6, `ferrule-sandbox`): Landlock (+ a seccomp
+  filter when `network = false`) on Linux, Seatbelt on macOS. By default
+  writes are confined to the workspace and temp dirs, the network is on,
+  and secret-looking env vars never reach the command. Configured by
+  `[sandbox]`, checked by `ferrule sandbox`. Memory writes moved from the
+  `ferrule memory` CLI to native `remember`/`recall` tools, since the
+  shell can no longer write ferrule's data dir.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -92,12 +99,13 @@ that convention yet — ask before introducing one).
   local) reachable via `ferrule gateway`, a task scheduler (M3) and a
   stdio MCP client (M4), Agent Skills (M5), but still no plugin
   (code-extension) system, no
-  credential-injection gateway, weak sandboxing (substring deny-list only,
-  no OS primitives), no multi-agent orchestration, no multi-provider
+  credential-injection gateway, no multi-agent orchestration, no multi-provider
   routing (Phase 1+ of `docs/research-routing-and-local-models.md`, blocked
   on Max's decisions there). These are the largest deltas. (The
   cost/observability ledger gap closed 2026-09-24, Phase 0; the skills
-  half of "skills/plugin system" closed the same day, M5.)
+  half of "skills/plugin system" closed the same day, M5; OS sandboxing
+  for the shell tool closed the same day too, M6. Reads, MCP servers and
+  the macOS backend's real-Mac run are its open edges.)
 
 ## Session Log
 
@@ -235,6 +243,8 @@ inferred from `Cargo.toml`):
    (Landlock/Bubblewrap/Seatbelt — already on the roadmap doc as an idea),
    both point the same direction: this needs real work before Ferrule could
    safely run untrusted or remote-triggered tasks.
+   *(2026-09-24, M6: the shell tool now runs in an OS sandbox and the fs
+   path guard resolves symlinks. See that entry for what is still open.)*
 5. **No credential-injection gateway.** NanoClaw's OneCLI-style pattern
    (transparent HTTPS proxy injecting per-service credentials) has no
    equivalent — any third-party API integration in Ferrule today would need
@@ -862,3 +872,163 @@ file.
 
 **What's next:** OS-level sandboxing is the remaining gap that needs no
 decision. Phase 1 routing still waits on Max.
+
+### 2026-09-24 — M6 OS sandbox for the shell tool (Devi, Opus 5.5)
+
+The last gap that needed no decision from Max. Before this, the only thing
+between a model and the machine was an 11-pattern substring deny-list on
+`shell`, and a lexical-only path check on the fs tools. Now the kernel
+enforces it. The design follows OpenAI Codex's sandbox (read as primary
+source: `codex-rs/linux-sandbox`, `core/src/seatbelt.rs` and its `.sbpl`
+policies), minus its bubblewrap layer, proxy routing and per-path carve-outs.
+
+**New crate `ferrule-sandbox`** (only a `libc` dependency, no landlock or
+seccomp crates):
+- `Policy` is the `[sandbox]` config section. It has `mode`
+  (`workspace-write` by default, or `read-only` / `off`), `require`,
+  `network` (default true), `writable_roots` (`~/` expands, relative means
+  inside the workspace, missing ones are skipped), `tmp` (default true:
+  /tmp, `$TMPDIR`, /dev/shm), `scrub_secret_env` (default true) and
+  `env_passthrough`. Unknown keys are an error, so a misspelt
+  `netwrok = false` can't quietly leave the network on.
+- `Sandbox::new` detects a backend and **probes it by running
+  `sh -c 'exit 0'` under it**, so it fails at startup rather than on the
+  first tool call. On failure it warns and runs unsandboxed, or refuses to
+  start when `require = true`. `Sandbox::command()` returns a ready
+  `std::process::Command`, which the shell tool (and the tests) spawn.
+- **Linux (`linux.rs`):** raw Landlock syscalls (444-446). The ABI is
+  detected at runtime and the handled rights scale with it (REFER from
+  ABI 2, TRUNCATE from 3, IOCTL_DEV from 5). `/` gets read and execute;
+  `/dev/null` and each writable root get write. Rules on files are cut
+  down to file-only rights, which the kernel otherwise rejects. The
+  ruleset is built in the parent. The `pre_exec` hook only calls
+  `prctl(NO_NEW_PRIVS)`, the seccomp install and `landlock_restrict_self`,
+  so it doesn't allocate after fork.
+- **Network off on Linux** is a classic-BPF seccomp filter built by hand,
+  for x86_64 and aarch64:
+  - a wrong arch kills the process;
+  - x32 syscalls get EPERM;
+  - `socket()` with any domain other than AF_UNIX gets EPERM;
+  - `io_uring_setup` gets EPERM, because io_uring can open sockets without
+    going through the `socket` syscall;
+  - everything else is allowed.
+
+  Unix sockets keep working because they are local IPC. The unit tests run
+  the program through a small BPF interpreter.
+- **macOS (`seatbelt.rs`):** `/usr/bin/sandbox-exec -p <profile>` with an
+  absolute path, never resolved through PATH. The profile is Codex's
+  base/network/prefs `.sbpl` policies (Apache-2.0), vendored with a
+  header, plus:
+  - `(allow file-read*)`;
+  - write roots passed as `-D` params rather than spliced into the text, so
+    a path containing `"` can't rewrite the policy;
+  - `file-write-unlink` anchor denies on each root;
+  - an XPC-lookup deny;
+  - the F_MAKECOMPRESSED / F_TRANSFEREXTENTS fcntl deny.
+
+  **Not yet run on a real Mac.** The tests check the profile's structure
+  and the argument order only.
+- Env scrubbing works by name. A variable is dropped if its name contains
+  KEY, SECRET, TOKEN, PASSWORD, PASSWD or CREDENTIAL, or if the config
+  names it (every provider's `api_key_env` and `telegram_token_env`).
+  `env_passthrough` overrides this. Values are never printed; `ferrule
+  sandbox` lists names only.
+
+**Wiring:**
+- **`ShellTool`** now carries an `Arc<Sandbox>`. A bare `ShellTool::default()`
+  gets `Sandbox::off()`, which still scrubs the environment. Each command
+  also:
+  - closes stdin, so an interactive prompt fails instead of hanging;
+  - runs in its own process group, and on timeout the whole group is
+    killed. Before, only `sh` died and anything it had started kept running.
+  - gets a one-line note in its tool description saying where writes are
+    allowed and whether the network is, so the model doesn't retry a
+    "Permission denied" forever.
+- **The scheduler's gate scripts had the same timeout bug:** the old doc
+  comment said `kill_on_drop` killed the child, but only the `sh` died.
+  They now run in a process group and the group is killed. The gates
+  themselves are *not* sandboxed, because they are operator-written config.
+- **fs tools:** `resolve()` now checks real paths. It canonicalizes the
+  deepest existing ancestor and re-appends the part a write will create.
+  A dangling symlink is refused, because a write would follow it anywhere.
+  The tools act on the resolved path, not the model's string.
+- **CLI:**
+  - The sandbox is built once per process (`OnceLock`), so the gateway
+    doesn't probe for each session; a `[sandbox]` edit needs a restart.
+  - In `read-only` mode, `write_file` is removed from the registry
+    (`ToolRegistry::remove`, new in core).
+  - **ferrule's data dir is deliberately not writable** from the shell. It
+    holds `tasks.db`, whose gate commands run unsandboxed, so write access
+    there would be a one-hop escape. That broke the "persist facts with the
+    memory CLI" instruction, so there are now native `remember` and
+    `recall` tools that run in-process and can only add or search
+    memories. The system prompt points at those instead.
+  - New `ferrule sandbox [--workspace]` shows the backend, mode, network,
+    writable roots and withheld variable names. It then runs real checks
+    through the same `Sandbox::command` the shell tool uses:
+    - no secret variable is visible;
+    - a workspace write works (or is refused in read-only mode);
+    - a write to a directory outside every root that this process itself
+      can write ($HOME, /var/tmp or the workspace parent) is refused;
+    - a loopback socket opens or is refused, via a hidden
+      `--probe-net` re-exec.
+
+    It exits non-zero if any check fails.
+
+**Verified:**
+- 127 tests pass workspace-wide. There are 23 new ones (plus one ignored
+  helper), and the 5
+  enforcement tests in `ferrule-sandbox/tests/enforcement.rs` run against
+  the real kernel: Landlock ABI 8 on kernel 7.0 in this container. They
+  skip, with a note, where no sandbox is available. They cover:
+  - an outside write is refused, including from a grandchild `sh`;
+  - read-only mode refuses even the workspace;
+  - temp dirs work, and so do secret variables being scrubbed;
+  - with the network off, the probe must fail with EPERM (errno 1)
+    specifically, so it can't pass by accident. With it on, the probe
+    succeeds, and AF_UNIX still works when it is off.
+- Both process-group timeout tests (shell and gate) were run as controls
+  with the `killpg` removed, and failed as they should.
+- Clippy shows only the old core warning. The new files were rustfmt'd
+  one by one, with no `cargo fmt`.
+- `ferrule sandbox` in the container passed every check in all four
+  modes: default, `network = false` with a `~/.cache` root, `read-only`,
+  and `off`.
+- End to end, the debug `ferrule run` binary ran against a mock LLM. The
+  shell description carried the sandbox note, and `remember` and `recall`
+  were advertised.
+  - One shell call wrote inside the workspace, and its write to
+    `/var/tmp` got "Permission denied". `$MOONSHOT_API_KEY` came through
+    empty although the parent had it set.
+  - `remember` then `recall` round-tripped.
+  - `write_file` through a workspace symlink to `/var/tmp` was refused as
+    an escape.
+
+**Known limits (documented, not fixed):**
+- Reads are not confined. The agent can read anything the user can, such
+  as `~/.ssh` or other sessions' transcripts. Confining reads needs a
+  per-toolchain allowlist, and that is a design question, not a default.
+- On Linux, connecting to a pathname unix socket isn't blocked: seccomp
+  allows AF_UNIX, and Landlock doesn't cover `connect()`. So a reachable
+  `docker.sock` is still a way out, even with the network off.
+- MCP servers run outside the sandbox, because ferrule spawns them itself
+  rather than through the shell. So do the scheduler's gate scripts.
+  Skill scripts run through the shell tool, so they *are* confined.
+- The fs tools have a TOCTOU window: a symlink swapped in between the
+  check and the write gets through. The sandbox is what holds against a
+  hostile workspace; the fs tools are in-process and not sandboxed.
+- Build caches outside the workspace (`~/.cargo`, `~/.cache`, `~/.npm`)
+  aren't writable by default, so `cargo build` or `npm install` fail until
+  they are added to `writable_roots`. The example config says so.
+- There is no Windows backend. It warns and runs unsandboxed there, or
+  refuses to start with `require = true`.
+- Scheduling a task from inside the agent (`ferrule tasks add` via shell)
+  no longer works under the sandbox, which is the point of keeping
+  `tasks.db` out of reach. If agents should schedule, that needs a narrow
+  tool, like `remember`.
+
+**What's next:** every gap that needed no decision from Max is now closed.
+What's left waits on him: Phase 1 routing (the five decisions in
+`docs/research-routing-and-local-models.md`), rustfmt adoption, and
+whether a credential-injection gateway or multi-agent orchestration comes
+next.
