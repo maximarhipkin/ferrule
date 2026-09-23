@@ -5,6 +5,7 @@ members = [
     "crates/ferrule-gateway",
     "crates/ferrule-providers",
     "crates/ferrule-tools",
+    "crates/ferrule-mcp",
     "crates/ferrule-memory",
     "crates/ferrule-cli",
 ]

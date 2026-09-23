@@ -1,12 +1,14 @@
 mod config;
 
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
+use ferrule_core::tool::Tool;
 use ferrule_gateway::{
     Channel, Gateway, LocalChannel, NewTask, RunOutcome, RunStatus, Router, Scheduler, TaskKind, TaskStore, TelegramChannel,
 };
 use ferrule_memory::MemoryStore;
 use ferrule_providers::OpenAiCompatProvider;
 use ferrule_tools::standard_registry;
+use ferrule_mcp::McpServerConfig;
 use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
@@ -191,15 +193,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn build_agent(
+async fn build_agent(
     provider_name: Option<String>,
     workspace: PathBuf,
     max_iterations: usize,
     session_id: &str,
 ) -> Result<Agent> {
+    let (cfg, _) = config::Config::load()?;
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
-    build_agent_from(provider_name, workspace, max_iterations, transcript)
+    build_agent_from(provider_name, workspace, max_iterations, transcript, &mcp_tools)
+}
+
+/// Spawn every configured MCP server once and return its tools. A server
+/// that fails to start is logged and skipped — it never stops the agent.
+/// Callers that build many agents (the gateway, one per session) call this
+/// once and share the result, so N sessions don't mean N copies of each
+/// server process.
+async fn connect_mcp_servers(servers: &[McpServerConfig]) -> Vec<Arc<dyn Tool>> {
+    let mut tools = Vec::new();
+    for server in servers {
+        match ferrule_mcp::connect_and_build_tools(server.clone()).await {
+            Ok(t) => tools.extend(t),
+            Err(e) => tracing::warn!("mcp server `{}` failed to start ({e}); continuing without it", server.name),
+        }
+    }
+    tools
 }
 
 /// Shared assembly logic for every entry point that needs a ready-to-run
@@ -213,6 +233,7 @@ fn build_agent_from(
     workspace: PathBuf,
     max_iterations: usize,
     transcript: Option<Transcript>,
+    mcp_tools: &[Arc<dyn Tool>],
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
     let (name, pcfg, key) = cfg.resolve_provider(provider_name.as_deref())?;
@@ -221,6 +242,11 @@ fn build_agent_from(
 
     let workspace = workspace.canonicalize().unwrap_or(workspace);
     let tool_ctx = ToolContext { workspace, max_output_chars: 30_000 };
+
+    let mut registry = standard_registry();
+    for tool in mcp_tools {
+        registry.register(tool.clone());
+    }
 
     let mut system = format!(
         "You are an autonomous agent running inside ferrule. Workspace: {}. \
@@ -253,7 +279,7 @@ fn build_agent_from(
 
     let agent = Agent::new(
         provider,
-        standard_registry(),
+        registry,
         profile,
         AgentConfig { max_iterations, ..Default::default() },
         tool_ctx,
@@ -295,7 +321,7 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
 
 async fn run_once(prompt: &str, provider: Option<String>, workspace: PathBuf, max_iterations: usize, show_reasoning: bool) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let mut agent = build_agent(provider, workspace, max_iterations, &session_id)?;
+    let mut agent = build_agent(provider, workspace, max_iterations, &session_id).await?;
     let tx = spawn_renderer(show_reasoning);
     let answer = agent.run(prompt, tx).await;
     match answer {
@@ -314,7 +340,7 @@ async fn run_once(prompt: &str, provider: Option<String>, workspace: PathBuf, ma
 
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let mut agent = build_agent(provider, workspace, 60, &session_id)?;
+    let mut agent = build_agent(provider, workspace, 60, &session_id).await?;
     println!("ferrule chat — Ctrl-D to exit. Session {session_id}");
     let stdin = std::io::stdin();
     loop {
@@ -363,10 +389,11 @@ async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iteration
     let (cfg, _) = config::Config::load()?;
     let sessions_dir = config::data_dir()?.join("sessions");
 
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
     let factory_provider = provider;
     let factory_workspace = workspace.clone();
     let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |_session_id, transcript| {
-        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript))
+        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript), &mcp_tools)
             .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
     });
 
@@ -519,10 +546,11 @@ async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, m
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     let task = store.get(id)?.ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
     let factory_provider = provider;
     let factory_workspace = workspace.clone();
     let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |_session_id, transcript| {
-        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript))
+        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript), &mcp_tools)
             .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
     });
 

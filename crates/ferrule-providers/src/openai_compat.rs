@@ -18,10 +18,14 @@ pub struct OpenAiCompatProvider {
 
 impl OpenAiCompatProvider {
     pub fn new(name: impl Into<String>, base_url: impl Into<String>, api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()
-            .expect("reqwest client");
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(600));
+        // Test builds only: bypass any ambient proxy (e.g. the sandbox's
+        // ONECLI gateway) so tests against a local mock server don't depend
+        // on NO_PROXY being set in the environment. Never affects release binaries.
+        if cfg!(test) {
+            builder = builder.no_proxy();
+        }
+        let client = builder.build().expect("reqwest client");
         Self { name: name.into(), base_url: base_url.into().trim_end_matches('/').to_string(), api_key: api_key.into(), model: model.into(), client }
     }
 

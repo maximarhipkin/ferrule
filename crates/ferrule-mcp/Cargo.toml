@@ -1,0 +1,17 @@
+[package]
+name = "ferrule-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "stdio MCP client: spawns MCP servers and exposes their tools as ferrule Tools"
+
+[dependencies]
+ferrule-core = { path = "../ferrule-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

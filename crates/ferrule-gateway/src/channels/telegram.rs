@@ -28,10 +28,16 @@ impl TelegramChannel {
 
     /// Test/self-hosted-Bot-API-server usage: talks to an arbitrary base URL.
     pub fn with_base_url(token: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let mut builder = reqwest::Client::builder();
+        // Test builds only: bypass any ambient proxy so tests against a local
+        // mock server don't depend on NO_PROXY being set. Never affects release binaries.
+        if cfg!(test) {
+            builder = builder.no_proxy();
+        }
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             token: token.into(),
-            client: reqwest::Client::builder().build().expect("reqwest client"),
+            client: builder.build().expect("reqwest client"),
             offset: AtomicI64::new(0),
         }
     }

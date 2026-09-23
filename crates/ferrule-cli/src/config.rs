@@ -62,6 +62,14 @@ impl Default for SchedulerConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct McpConfig {
+    /// One entry per stdio MCP server to spawn at startup. A server that
+    /// fails to start is logged and skipped — it never stops the agent.
+    #[serde(default, rename = "servers")]
+    pub servers: Vec<ferrule_mcp::McpServerConfig>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -74,6 +82,8 @@ pub struct Config {
     pub gateway: GatewayConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration
@@ -112,6 +122,13 @@ profile = "openai"
 # tick_interval_secs = 30   # how often to check for due tasks
 # gate_timeout_secs = 60    # kill a gate script that runs longer than this
 # gate_workspace = "."      # working directory for gate scripts
+
+# [[mcp.servers]]           # each entry spawns one stdio MCP server; its
+# name = "fs"                # tools register as mcp__fs__<tool>
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# env = {}
+# timeout_secs = 60          # per-call timeout, optional (default 60)
 "#;
 
 impl Config {

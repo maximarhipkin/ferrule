@@ -11,7 +11,7 @@ that convention yet — ask before introducing one).
 ## Current State
 
 - **Name:** Ferrule (renamed from `agentrust` 2026-09-23). GitHub repo is
-  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,cli}`,
+  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,gateway,mcp,cli}`,
   binary is `ferrule`, config file is `ferrule.toml` /
   `~/.config/ferrule/config.toml`, agent workspace state dir is `.ferrule/`.
 - **What it is today:** a local, single-user CLI agent runtime. `ferrule run`
@@ -19,7 +19,8 @@ that convention yet — ask before introducing one).
   OpenAI-chat-completions-compatible endpoint (`ferrule-providers`), with a
   fixed small toolset (fs read/write/list, shell with a deny-list, web fetch,
   todo/diary) from `ferrule-tools`, and a single-file SQLite memory store
-  (`ferrule-memory`, FTS5 BM25 + time-decay recall) . No MCP client, no
+  (`ferrule-memory`, FTS5 BM25 + time-decay recall), plus any tools exposed
+  by stdio MCP servers (`ferrule-mcp`, M4). No
   multi-agent orchestration, no OS-level sandboxing yet — see gap list below.
   **A daemon now exists and is reachable** (`ferrule-gateway`, see Session
   Log 2026-09-23/24, M1+M2): a `Channel` adapter trait, normalized
@@ -33,7 +34,11 @@ that convention yet — ask before introducing one).
   rows, optional gate script, no-overlap guard, collapse-to-one missed-run
   policy — `ferrule tasks add|list|pause|resume|delete|runs|run-now`, and
   `ferrule gateway` runs the scheduler loop alongside the channels,
-  configured via `[scheduler]`. No MCP client yet (M4).
+  configured via `[scheduler]`. **M4 stdio MCP client exists** (Session Log
+  2026-09-24, M4): each `[[mcp.servers]]` entry is spawned once per
+  process, its tools are listed and registered as `mcp__<server>__<tool>`,
+  and they're shared by every session. Verified end to end with the real
+  `ferrule run` binary against a mock LLM + mock MCP server.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -44,12 +49,16 @@ that convention yet — ask before introducing one).
   to `PATH`. **Tests need `NO_PROXY=localhost,127.0.0.1,::1`** — the sandbox's
   HTTP proxy otherwise swallows the mock-server request in
   `openai_compat::tests::sends_tools_and_parses_tool_call` (env issue, not a
-  code bug). `clippy` is not installed (`--profile minimal`).
+  code bug). **Since M4 this is no longer needed**: the provider's and the
+  Telegram adapter's reqwest clients call `.no_proxy()` under `cfg!(test)`,
+  and the suite is green with `NO_PROXY` unset. A *binary* talking to a
+  local endpoint still needs `NO_PROXY` in this sandbox.
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 65/65 green** (24 pre-existing + 41 in `ferrule-gateway`,
-  after M1-M3), `cargo clippy --workspace --all-targets` has one
-  pre-existing warning in `ferrule-core::agent` (collapsible_if, predates
-  the gateway work) and zero warnings in `ferrule-gateway`. `rustup
+  --workspace` 72/72 green** (24 pre-existing + 41 in `ferrule-gateway`
+  + 7 in `ferrule-mcp`, after M1-M4), `cargo clippy --workspace
+  --all-targets` has one pre-existing warning in `ferrule-core::agent`
+  (collapsible_if, predates the gateway work) and zero warnings in
+  `ferrule-gateway`/`ferrule-mcp`. `rustup
   component add clippy rustfmt` now done (was missing, only
   `cargo`/`rust-std`/`rustc` before).
 - **Branding:** `docs/branding/logo.png` (512x512 mark) and
@@ -65,8 +74,8 @@ that convention yet — ask before introducing one).
 - **Open architectural gaps vs. the "replace NanoClaw and OpenClaw" goal:**
   see the dated session-log entries below for the full writeup; short
   version: channels/messaging now has two working adapters (Telegram,
-  local) reachable via `ferrule gateway`, and a task scheduler (M3), but
-  still no MCP client (M4 next), no skills/plugin system, no
+  local) reachable via `ferrule gateway`, a task scheduler (M3) and a
+  stdio MCP client (M4), but still no skills/plugin system, no
   credential-injection gateway, weak sandboxing (substring deny-list only,
   no OS primitives), no cost/observability ledger, no multi-agent
   orchestration. These are the largest deltas.
@@ -581,3 +590,89 @@ Biggest first win: Phase 0 + a two-tier cascade on the scheduler's non-interacti
 task turns — lowest risk, no live user waiting. Open decisions for Max in the doc:
 escalation policy, which providers become tiers (need a second live driver first),
 whether to scope down the "local model" framing, Phase-3 hardware, and ToS comfort.
+
+### 2026-09-24 — ferrule-gateway M4 stdio MCP client (Devi, Opus 5.5)
+
+Max: "ותמשיך לעבוד". This is M4, the last gateway milestone from the M1-M4
+plan. It adds a new crate, `crates/ferrule-mcp` (client.rs, tool.rs,
+config.rs, error.rs), rather than a module inside `ferrule-tools`. That
+keeps process-spawning and JSON-RPC code out of the fixed built-in toolset,
+and `ferrule-core` stays untouched: each MCP tool is just another
+`Arc<dyn Tool>`.
+
+**Protocol:** newline-delimited JSON-RPC 2.0 over the child's stdio. The
+handshake sends `initialize` (protocolVersion `2025-06-18`, no client
+capabilities), then `notifications/initialized`. After that the client
+calls `tools/list` and follows `nextCursor` until it runs out. `tools/call`
+is used per tool call. Tools are registered as `mcp__<server>__<tool>`, and
+a result with `isError: true` becomes `CoreError::ToolFailed` carrying the
+server's text, not a panic. Non-JSON stdout lines are skipped, and stderr
+is drained into `tracing::warn`.
+
+**Robustness:**
+- Every call has a timeout: `timeout_secs`, default 60.
+- A dead connection (EOF on stdout, or a failed write) gets exactly one lazy
+  respawn on the next call. There is no retry loop.
+- Children are started with `kill_on_drop`.
+- A server that fails to start is logged and skipped, so the agent still
+  runs without it.
+- Config is `[[mcp.servers]]` with `name`/`command`/`args`/`env`/
+  `timeout_secs` (example in `EXAMPLE_CONFIG`).
+
+**Three bugs found in the first cut, fixed before merge (72 tests, up from 70):**
+1. *One process set per session.* The first version connected MCP servers
+   inside `build_agent_from`, which the gateway's `AgentFactory` calls for
+   every new session. The result was N chats × M servers child processes.
+   It also needed a `block_in_place` bridge, because the factory is a sync
+   `Fn` and that bridge panics on a current-thread runtime. Now
+   `connect_mcp_servers` runs once, async, in `run_gateway` /
+   `tasks_run_now` / `build_agent`, and the resulting `Vec<Arc<dyn Tool>>` is
+   cloned into each agent's registry.
+2. *A slow call blocked every other call to the same server.* The
+   connection mutex was held across the whole response wait. Now a cloneable
+   `Handle` (stdin + pending map + alive flag) is taken out under the lock
+   and the lock is released before waiting. Regression test:
+   `slow_call_does_not_block_other_calls_to_the_same_server`.
+3. *Server-initiated requests were treated as responses.* Any stdout
+   message with a numeric `id` was routed into the pending map, but a
+   server's own request (for example `ping`) carries an id from the
+   *server's* id space, so it could complete one of our calls with garbage.
+   It was also never answered, so the server could hang. Now anything with
+   a `method` is server-initiated: `ping` gets `{}`, other requests get
+   -32601, and notifications are logged. The reply is written from a
+   spawned task, so a full stdin pipe can't stall stdout draining.
+   Regression test:
+   `server_initiated_ping_is_answered_and_not_mistaken_for_a_response`.
+   **Pre-fix control run:** with that branch disabled, the test fails.
+
+**Verification:**
+- `cargo test --workspace` is 72/72 **with `NO_PROXY` unset**. The
+  provider's and the Telegram adapter's reqwest clients now call
+  `.no_proxy()` under `cfg!(test)`, so release binaries are unaffected.
+- `cargo clippy --workspace --all-targets` shows only the old
+  `ferrule-core` warning.
+- New files were rustfmt'd individually. There was no crate-wide
+  `cargo fmt` (that decision is still open, see the M3 entry).
+- End to end: the debug `ferrule run` binary ran against a Python mock
+  OpenAI endpoint plus `tests/fixtures/mock_mcp.py` configured as
+  `[[mcp.servers]]`. The first request advertised all six `mcp__mock__*`
+  tools, the model's `mcp__mock__echo` call reached the MCP server, its
+  output came back as the `tool` message, and the final answer quoted it.
+  No child process survived exit. Not yet tried: a real published MCP
+  server (e.g. `@modelcontextprotocol/server-filesystem` via `npx`) and a
+  real LLM.
+
+**Not in scope, and known:**
+- Only stdio transport. There is no Streamable HTTP/SSE.
+- The client only consumes tools. It ignores resources, prompts, sampling,
+  roots and `notifications/tools/list_changed`, so the tool list is fixed at
+  startup.
+- Only text content blocks are surfaced. Images and resources are dropped.
+- Server `env` is merged over the parent's env, not isolated. That's fine
+  for now, but it matters once the credential-injection gateway exists.
+
+**What's next:** M1-M4 are all done. Of the remaining gaps, the cheapest
+one that needs no decision is Phase 0 from
+`docs/research-routing-and-local-models.md`: a per-call
+cost/latency/outcome ledger. It is also the prerequisite for any routing
+work.
