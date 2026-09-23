@@ -1,4 +1,5 @@
 mod config;
+mod ledger;
 
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
 use ferrule_core::tool::Tool;
@@ -70,6 +71,12 @@ enum Cmd {
     Tasks {
         #[command(subcommand)]
         op: TasksCmd,
+    },
+    /// Per-call provider ledger: calls, errors, tokens, cache hits, latency, cost
+    Ledger {
+        /// Only rows at or after this point: 7d, 12h, 30m or an RFC 3339 time
+        #[arg(long)]
+        since: Option<String>,
     },
 }
 
@@ -189,6 +196,9 @@ async fn main() -> Result<()> {
         Cmd::Tasks { op } => {
             tasks_cmd(op).await?;
         }
+        Cmd::Ledger { since } => {
+            ledger_cmd(since)?;
+        }
     }
     Ok(())
 }
@@ -198,12 +208,14 @@ async fn build_agent(
     workspace: PathBuf,
     max_iterations: usize,
     session_id: &str,
+    task_shape: &str,
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
     let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
+    let ledger = ledger::LedgerTag::new(&ledger::build_sink(&cfg), task_shape, None);
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
-    build_agent_from(provider_name, workspace, max_iterations, transcript, &mcp_tools)
+    build_agent_from(provider_name, workspace, max_iterations, transcript, &mcp_tools, ledger)
 }
 
 /// Spawn every configured MCP server once and return its tools. A server
@@ -234,6 +246,7 @@ fn build_agent_from(
     max_iterations: usize,
     transcript: Option<Transcript>,
     mcp_tools: &[Arc<dyn Tool>],
+    ledger: Option<ledger::LedgerTag>,
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
     let (name, pcfg, key) = cfg.resolve_provider(provider_name.as_deref())?;
@@ -277,7 +290,7 @@ fn build_agent_from(
         }
     }
 
-    let agent = Agent::new(
+    let mut agent = Agent::new(
         provider,
         registry,
         profile,
@@ -286,6 +299,9 @@ fn build_agent_from(
         transcript,
     )
     .with_system_prompt(system);
+    if let Some(tag) = ledger {
+        agent = agent.with_ledger(tag.sink, tag.task_shape, tag.origin, pcfg.model.clone());
+    }
     Ok(agent)
 }
 
@@ -321,7 +337,7 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
 
 async fn run_once(prompt: &str, provider: Option<String>, workspace: PathBuf, max_iterations: usize, show_reasoning: bool) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let mut agent = build_agent(provider, workspace, max_iterations, &session_id).await?;
+    let mut agent = build_agent(provider, workspace, max_iterations, &session_id, "run").await?;
     let tx = spawn_renderer(show_reasoning);
     let answer = agent.run(prompt, tx).await;
     match answer {
@@ -340,7 +356,7 @@ async fn run_once(prompt: &str, provider: Option<String>, workspace: PathBuf, ma
 
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let mut agent = build_agent(provider, workspace, 60, &session_id).await?;
+    let mut agent = build_agent(provider, workspace, 60, &session_id, "chat").await?;
     println!("ferrule chat — Ctrl-D to exit. Session {session_id}");
     let stdin = std::io::stdin();
     loop {
@@ -390,10 +406,13 @@ async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iteration
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
+    let ledger_sink = ledger::build_sink(&cfg);
     let factory_provider = provider;
     let factory_workspace = workspace.clone();
-    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |_session_id, transcript| {
-        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript), &mcp_tools)
+    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
+        let (shape, origin) = ledger::classify_session(session_id);
+        let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
+        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript), &mcp_tools, tag)
             .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
     });
 
@@ -547,10 +566,13 @@ async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, m
     let task = store.get(id)?.ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
     let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
+    let ledger_sink = ledger::build_sink(&cfg);
     let factory_provider = provider;
     let factory_workspace = workspace.clone();
-    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |_session_id, transcript| {
-        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript), &mcp_tools)
+    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
+        let (shape, origin) = ledger::classify_session(session_id);
+        let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
+        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript), &mcp_tools, tag)
             .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
     });
 
@@ -577,6 +599,21 @@ async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, m
             eprintln!("run failed: {e}");
             std::process::exit(1);
         }
+    }
+    Ok(())
+}
+
+fn ledger_cmd(since: Option<String>) -> Result<()> {
+    let since = since.map(|s| ledger::parse_since(&s, chrono::Utc::now())).transpose()?;
+    let path = ledger::ledger_path()?;
+    let (records, malformed) = ledger::read_records(&path, since)?;
+    if records.is_empty() {
+        println!("no ledger rows{} in {}", if since.is_some() { " in that window" } else { "" }, path.display());
+    } else {
+        println!("{}", ledger::render_table(&ledger::aggregate(&records)));
+    }
+    if malformed > 0 {
+        eprintln!("skipped {malformed} malformed line(s)");
     }
     Ok(())
 }

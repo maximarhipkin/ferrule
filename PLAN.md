@@ -38,7 +38,12 @@ that convention yet — ask before introducing one).
   2026-09-24, M4): each `[[mcp.servers]]` entry is spawned once per
   process, its tools are listed and registered as `mcp__<server>__<tool>`,
   and they're shared by every session. Verified end to end with the real
-  `ferrule run` binary against a mock LLM + mock MCP server.
+  `ferrule run` binary against a mock LLM + mock MCP server. **A per-call
+  ledger exists** (Session Log 2026-09-24, Phase 0): every provider call
+  from `run`/`chat`/gateway sessions/scheduler tasks appends one JSONL row
+  (provider, model, task shape, tokens incl. cached, latency, ok/error,
+  cost if priced) to `<data_dir>/ferrule/ledger.jsonl`; `ferrule ledger
+  [--since 7d]` summarizes it.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -54,11 +59,12 @@ that convention yet — ask before introducing one).
   and the suite is green with `NO_PROXY` unset. A *binary* talking to a
   local endpoint still needs `NO_PROXY` in this sandbox.
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 72/72 green** (24 pre-existing + 41 in `ferrule-gateway`
-  + 7 in `ferrule-mcp`, after M1-M4), `cargo clippy --workspace
+  --workspace` 81/81 green** (24 pre-existing + 41 in `ferrule-gateway`
+  + 7 in `ferrule-mcp` + 2 core and 7 cli ledger tests, after M1-M4 and
+  Phase 0), `cargo clippy --workspace
   --all-targets` has one pre-existing warning in `ferrule-core::agent`
   (collapsible_if, predates the gateway work) and zero warnings in
-  `ferrule-gateway`/`ferrule-mcp`. `rustup
+  `ferrule-gateway`/`ferrule-mcp`/the ledger. `rustup
   component add clippy rustfmt` now done (was missing, only
   `cargo`/`rust-std`/`rustc` before).
 - **Branding:** `docs/branding/logo.png` (512x512 mark) and
@@ -77,8 +83,10 @@ that convention yet — ask before introducing one).
   local) reachable via `ferrule gateway`, a task scheduler (M3) and a
   stdio MCP client (M4), but still no skills/plugin system, no
   credential-injection gateway, weak sandboxing (substring deny-list only,
-  no OS primitives), no cost/observability ledger, no multi-agent
-  orchestration. These are the largest deltas.
+  no OS primitives), no multi-agent orchestration, no multi-provider
+  routing (Phase 1+ of `docs/research-routing-and-local-models.md`, blocked
+  on Max's decisions there). These are the largest deltas. (The
+  cost/observability ledger gap closed 2026-09-24, Phase 0.)
 
 ## Session Log
 
@@ -676,3 +684,73 @@ one that needs no decision is Phase 0 from
 `docs/research-routing-and-local-models.md`: a per-call
 cost/latency/outcome ledger. It is also the prerequisite for any routing
 work.
+
+### 2026-09-24 — Phase 0 per-call ledger (Devi, Opus 5.5)
+
+Phase 0 of `docs/research-routing-and-local-models.md`, which needs no
+decision from Max and is the prerequisite for any routing work. Every
+provider call now leaves one row behind, including the ones that fail.
+
+**Seam:** the `Agent` holds an optional `LedgerContext` (a
+`LedgerSink` trait object plus task shape, origin and model), and
+`call_provider` times each `Provider::complete` and records the result.
+Not a `Provider` decorator: a decorator can't see the loop iteration or
+tell a turn from a compaction pass, and the Phase 1 `RouterProvider` will
+itself be a `Provider`, so the ledger has to sit above it to see which tier
+answered. `ferrule-core` gets only the trait and the record type
+(`ledger.rs`, plus a `chrono` dependency); the JSONL file sink lives in
+`ferrule-cli`, so core stays storage-free.
+
+**Row:** timestamp, session_id, task_shape, origin, provider, model,
+iteration, call_kind (`turn` / `compaction`), input_tokens (includes cached,
+OpenAI convention), cached_input_tokens, output_tokens, tool_calls,
+latency_ms, outcome (`ok` / `error`), error_kind, error_message (truncated
+to 500 chars), cost_usd. Written to `<data_dir>/ferrule/ledger.jsonl`, not
+the session transcript: one file across all sessions is what the summary
+and a future classifier read, and it keeps transcript resume untouched.
+Task shape: `run`, `chat`, `gateway` (origin = channel) or `scheduler`
+(origin = task id), derived from the session id the gateway and scheduler
+already build.
+
+**Cost:** optional `price_input_per_mtok`, `price_cached_input_per_mtok`,
+`price_output_per_mtok` per `[providers.*]` entry. Cost is uncached×input +
+cached×cached + output×output, per million tokens. It is computed only when
+all three prices are set (a partial price list silently under-reports) and
+only on ok rows. A sink write failure is logged and never fails the turn.
+
+**`ferrule ledger [--since 7d|12h|30m|<RFC 3339>]`:** groups by
+(task_shape, provider, model): calls, errors, tokens, cache hit %, p50/p95
+latency (nearest rank), cost. Cost shows `-` when a group has no priced
+rows and a `*` suffix when only some are priced. Malformed lines are
+skipped and counted.
+
+**Verification:**
+- `cargo test --workspace` is 81/81 (9 new: 2 in core, including an error
+  row from a failing provider; 7 in the cli module: percentiles, cost,
+  pricing needs all three prices, aggregation, session classification,
+  `--since` parsing including multibyte input, and a sink round-trip).
+- Clippy shows only the old core warning. The two new files were
+  rustfmt'd individually, with no crate-wide `cargo fmt`.
+- End to end, with an isolated `XDG_DATA_HOME`: the debug binary ran
+  against a mock LLM with a mock MCP tool (priced provider, 2 calls, the
+  second 900/1200 cached), against a provider on a closed port (an error
+  row with `error_kind: provider`), and as a scheduler task via
+  `tasks run-now` (`task_shape: scheduler`, origin = task id). Costs
+  matched a hand calculation ($0.00375 + $0.00147). `--since` with a
+  future time, and a bogus value, behaved correctly. The gateway path is
+  covered by the same factory code but wasn't run live (it needs a
+  Telegram token).
+
+**Not recorded yet:** the research doc also suggested "did compaction
+actually shrink the transcript" and "did the turn need a retry". There is
+no retry in the loop yet, and compaction shrink is left for when Phase 1
+needs it. There is no rotation. The file grows about 400 bytes per call.
+
+**Process note:** a background agent built the core half, then had all its
+tools blocked after 44 calls (the known long-session block). The CLI half
+was finished in the main session.
+
+**What's next:** Phase 1 (`RouterProvider`) is blocked on Max's decisions
+in the research doc: escalation policy, and which providers become tiers.
+It also needs a second live driver. Of the remaining gaps, the ones that
+need no decision are the skills/plugin system and OS-level sandboxing.

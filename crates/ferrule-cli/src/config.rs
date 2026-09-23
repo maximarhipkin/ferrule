@@ -12,6 +12,16 @@ pub struct ProviderConfig {
     /// Harness profile: kimi | openai | anthropic | generic
     #[serde(default = "default_profile")]
     pub profile: String,
+    /// Optional USD-per-million-token prices, for the ledger's `cost_usd`
+    /// column (`ferrule ledger`). Absent = cost stays null, never guessed.
+    /// All three must be set for a call to get a cost — a partial price set
+    /// would silently undercount.
+    #[serde(default)]
+    pub price_input_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub price_cached_input_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub price_output_per_mtok: Option<f64>,
 }
 
 fn default_profile() -> String {
@@ -96,6 +106,9 @@ base_url = "https://api.moonshot.ai/v1"
 api_key_env = "MOONSHOT_API_KEY"
 model = "kimi-k2.6"
 profile = "kimi"
+# price_input_per_mtok = 0.60         # USD / 1M input tokens — optional, for
+# price_cached_input_per_mtok = 0.15  # `ferrule ledger`'s cost_usd column.
+# price_output_per_mtok = 2.50        # Omit any of the three and cost stays null.
 
 [providers.openai]
 base_url = "https://api.openai.com/v1"

@@ -1,11 +1,13 @@
 use crate::error::CoreError;
 use crate::event::AgentEvent;
+use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink};
 use crate::message::{Message, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
-use crate::provider::{CompletionRequest, Provider};
+use crate::provider::{CompletionRequest, CompletionResponse, Provider};
 use crate::tool::{ToolContext, ToolRegistry};
 use crate::transcript::Transcript;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -33,6 +35,7 @@ pub struct Agent {
     config: AgentConfig,
     tool_ctx: ToolContext,
     transcript: Option<Transcript>,
+    ledger: Option<LedgerContext>,
     pub messages: Vec<Message>,
     pub usage: Usage,
 }
@@ -46,11 +49,21 @@ impl Agent {
         tool_ctx: ToolContext,
         transcript: Option<Transcript>,
     ) -> Self {
-        Self { provider, tools, profile, config, tool_ctx, transcript, messages: Vec::new(), usage: Usage::default() }
+        Self { provider, tools, profile, config, tool_ctx, transcript, ledger: None, messages: Vec::new(), usage: Usage::default() }
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.messages.push(Message::system(prompt.into()));
+        self
+    }
+
+    /// Attach a per-call ledger sink (Phase 0, see `crate::ledger`). Default
+    /// is no sink — existing callers/tests are unaffected. `task_shape` and
+    /// `origin` identify *why* this session exists (`"run"`, `"chat"`,
+    /// `"gateway"` + channel, `"scheduler"` + task id); `model` is supplied
+    /// by the caller because `Provider` exposes only `name()`, not a model.
+    pub fn with_ledger(mut self, sink: Arc<dyn LedgerSink>, task_shape: impl Into<String>, origin: Option<String>, model: impl Into<String>) -> Self {
+        self.ledger = Some(LedgerContext { sink, task_shape: task_shape.into(), origin, model: model.into() });
         self
     }
 
@@ -62,13 +75,64 @@ impl Agent {
         self.messages.iter().map(|m| m.est_tokens()).sum()
     }
 
-    /// The ReAct loop: call → tool calls → observe → repeat until text-only.
-    pub async fn run(&mut self, goal: &str, tx: mpsc::Sender<AgentEvent>) -> Result<String, CoreError> {
-        let session_id = self
-            .transcript
+    fn session_id(&self) -> String {
+        self.transcript
             .as_ref()
             .and_then(|t| t.path().file_stem().map(|s| s.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "ephemeral".into());
+            .unwrap_or_else(|| "ephemeral".into())
+    }
+
+    /// Time a `provider.complete()` call and, if a ledger sink is attached,
+    /// emit one row for it — success or failure. This is the only place
+    /// that writes to the ledger; both the main loop and the compaction
+    /// summary call go through it.
+    async fn call_provider(&self, req: CompletionRequest, iteration: usize, call_kind: &str) -> Result<CompletionResponse, CoreError> {
+        let start = Instant::now();
+        let result = self.provider.complete(req).await;
+        let latency_ms = start.elapsed().as_millis() as u64;
+        self.record_completion(iteration, call_kind, latency_ms, &result);
+        result
+    }
+
+    fn record_completion(&self, iteration: usize, call_kind: &str, latency_ms: u64, result: &Result<CompletionResponse, CoreError>) {
+        let Some(ledger) = &self.ledger else { return };
+        let (input_tokens, cached_input_tokens, output_tokens, tool_calls, outcome, error_kind, error_message) = match result {
+            Ok(resp) => (
+                resp.usage.input_tokens,
+                resp.usage.cached_input_tokens,
+                resp.usage.output_tokens,
+                resp.message.tool_calls.len(),
+                "ok".to_string(),
+                None,
+                None,
+            ),
+            Err(e) => (0, 0, 0, 0, "error".to_string(), Some(error_kind_of(e)), Some(truncate_error(&e.to_string()))),
+        };
+        let record = LedgerRecord {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            session_id: self.session_id(),
+            task_shape: ledger.task_shape.clone(),
+            origin: ledger.origin.clone(),
+            provider: self.provider.name().to_string(),
+            model: ledger.model.clone(),
+            iteration,
+            call_kind: call_kind.to_string(),
+            input_tokens,
+            cached_input_tokens,
+            output_tokens,
+            tool_calls,
+            latency_ms,
+            outcome,
+            error_kind,
+            error_message,
+            cost_usd: None,
+        };
+        ledger.sink.record(record);
+    }
+
+    /// The ReAct loop: call → tool calls → observe → repeat until text-only.
+    pub async fn run(&mut self, goal: &str, tx: mpsc::Sender<AgentEvent>) -> Result<String, CoreError> {
+        let session_id = self.session_id();
         self.emit(&tx, AgentEvent::RunStarted { session_id, goal: goal.into() }).await;
 
         let user = Message::user(goal);
@@ -76,7 +140,7 @@ impl Agent {
         self.messages.push(user);
 
         for iteration in 0..self.config.max_iterations {
-            self.maybe_compact(&tx).await?;
+            self.maybe_compact(&tx, iteration).await?;
 
             let req = CompletionRequest {
                 messages: self.rendered_messages(),
@@ -85,7 +149,7 @@ impl Agent {
                 temperature: self.config.temperature,
             };
 
-            let resp = self.provider.complete(req).await.map_err(|e| {
+            let resp = self.call_provider(req, iteration, "turn").await.map_err(|e| {
                 let msg = e.to_string();
                 CoreError::Provider(msg)
             })?;
@@ -183,7 +247,7 @@ impl Agent {
 
     /// Compaction: deterministic dedupe first (free), then structured LLM
     /// summary of everything before the trailing verbatim window.
-    async fn maybe_compact(&mut self, tx: &mpsc::Sender<AgentEvent>) -> Result<(), CoreError> {
+    async fn maybe_compact(&mut self, tx: &mpsc::Sender<AgentEvent>, iteration: usize) -> Result<(), CoreError> {
         let before = self.est_context_tokens();
         let trigger = self.profile.compaction_trigger_tokens();
         if before <= trigger {
@@ -218,7 +282,7 @@ impl Agent {
             max_output_tokens: Some(4096),
             temperature: Some(0.0),
         };
-        let summary = self.provider.complete(summary_req).await?.message.content.unwrap_or_default();
+        let summary = self.call_provider(summary_req, iteration, "compaction").await?.message.content.unwrap_or_default();
 
         let mut rebuilt = Vec::with_capacity(keep + 2);
         if let Some(sys) = self.messages.first().filter(|m| m.role == crate::message::Role::System) {
@@ -260,6 +324,32 @@ impl Agent {
             }
         }
     }
+}
+
+fn error_kind_of(e: &CoreError) -> String {
+    match e {
+        CoreError::Provider(_) => "provider",
+        CoreError::MalformedResponse(_) => "malformed_response",
+        CoreError::ToolNotFound(_) => "tool_not_found",
+        CoreError::ToolFailed { .. } => "tool_failed",
+        CoreError::Io(_) => "io",
+        CoreError::Serde(_) => "serde",
+        CoreError::MaxIterations(_) => "max_iterations",
+        CoreError::Aborted(_) => "aborted",
+    }
+    .to_string()
+}
+
+/// Keep ledger rows small: the JSONL file is meant to be grepped/aggregated,
+/// not to hold full error dumps.
+fn truncate_error(s: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    if s.chars().count() <= MAX_CHARS {
+        return s.to_string();
+    }
+    let mut truncated: String = s.chars().take(MAX_CHARS).collect();
+    truncated.push('…');
+    truncated
 }
 
 #[cfg(test)]
@@ -367,5 +457,127 @@ mod tests {
         let (tx2, _rx2) = mpsc::channel(64);
         agent2.run("t", tx2).await.unwrap();
         assert!(agent2.rendered_messages()[1].reasoning.is_some());
+    }
+
+    struct RecordingSink {
+        records: Mutex<Vec<LedgerRecord>>,
+    }
+
+    impl LedgerSink for RecordingSink {
+        fn record(&self, record: LedgerRecord) {
+            self.records.lock().unwrap().push(record);
+        }
+    }
+
+    struct FailingProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for FailingProvider {
+        fn name(&self) -> &str {
+            "failing"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            Err(CoreError::Provider("boom".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn failing_provider_call_still_writes_an_error_row() {
+        let sink = Arc::new(RecordingSink { records: Mutex::new(Vec::new()) });
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool));
+        let mut agent = Agent::new(
+            Arc::new(FailingProvider),
+            reg,
+            HarnessProfile::generic(),
+            AgentConfig::default(),
+            ToolContext::default(),
+            None,
+        )
+        .with_ledger(sink.clone(), "run", None, "test-model");
+
+        let (tx, _rx) = mpsc::channel(64);
+        let result = agent.run("hi", tx).await;
+        assert!(result.is_err());
+
+        let records = sink.records.lock().unwrap();
+        assert_eq!(records.len(), 1, "a failed call must still produce a row");
+        let r = &records[0];
+        assert_eq!(r.outcome, "error");
+        assert_eq!(r.error_kind.as_deref(), Some("provider"));
+        assert!(r.error_message.as_deref().unwrap().contains("boom"));
+        assert_eq!(r.task_shape, "run");
+        assert_eq!(r.model, "test-model");
+        assert_eq!(r.provider, "failing");
+        assert_eq!(r.iteration, 0);
+        assert_eq!(r.input_tokens, 0);
+    }
+
+    /// Like `ScriptProvider` but with per-response usage, so a test can
+    /// assert exact token numbers per ledger row instead of a fixed value.
+    struct ScriptProviderWithUsage {
+        responses: Mutex<Vec<(Message, Usage)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ScriptProviderWithUsage {
+        fn name(&self) -> &str {
+            "script-usage"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let (message, usage) = self.responses.lock().unwrap().remove(0);
+            Ok(CompletionResponse { message, usage })
+        }
+    }
+
+    #[tokio::test]
+    async fn ledger_records_one_row_per_call_with_iteration_and_tokens() {
+        let script = vec![
+            (
+                Message::assistant(
+                    None,
+                    vec![crate::message::ToolCall { id: "1".into(), name: "echo".into(), arguments: serde_json::json!({"text": "hi"}) }],
+                    None,
+                ),
+                Usage { input_tokens: 100, output_tokens: 10, cached_input_tokens: 20 },
+            ),
+            (Message::assistant(Some("done".into()), vec![], None), Usage { input_tokens: 150, output_tokens: 8, cached_input_tokens: 30 }),
+        ];
+        let sink = Arc::new(RecordingSink { records: Mutex::new(Vec::new()) });
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool));
+        let mut agent = Agent::new(
+            Arc::new(ScriptProviderWithUsage { responses: Mutex::new(script) }),
+            reg,
+            HarnessProfile::generic(),
+            AgentConfig::default(),
+            ToolContext::default(),
+            None,
+        )
+        .with_ledger(sink.clone(), "chat", Some("telegram".into()), "test-model");
+
+        let (tx, _rx) = mpsc::channel(64);
+        let answer = agent.run("say hi", tx).await.unwrap();
+        assert_eq!(answer, "done");
+
+        let records = sink.records.lock().unwrap();
+        assert_eq!(records.len(), 2, "one ledger row per provider call, including tool-call iterations");
+
+        assert_eq!(records[0].iteration, 0);
+        assert_eq!(records[0].input_tokens, 100);
+        assert_eq!(records[0].cached_input_tokens, 20);
+        assert_eq!(records[0].output_tokens, 10);
+        assert_eq!(records[0].tool_calls, 1);
+        assert_eq!(records[0].call_kind, "turn");
+        assert_eq!(records[0].outcome, "ok");
+        assert_eq!(records[0].task_shape, "chat");
+        assert_eq!(records[0].origin.as_deref(), Some("telegram"));
+
+        assert_eq!(records[1].iteration, 1);
+        assert_eq!(records[1].input_tokens, 150);
+        assert_eq!(records[1].cached_input_tokens, 30);
+        assert_eq!(records[1].output_tokens, 8);
+        assert_eq!(records[1].tool_calls, 0);
+        assert_eq!(records[1].outcome, "ok");
     }
 }
