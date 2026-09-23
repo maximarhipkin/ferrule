@@ -551,3 +551,33 @@ clients, so tests stop depending on the ambient `NO_PROXY`. Process note:
 this milestone was split across three agent sessions because the host
 blocks all tools on long background sessions. Future milestones should be
 scoped to fit one short session.
+
+### 2026-09-24 — Research: multi-provider routing + runtime local models (Devi, Opus 5.5)
+
+Max asked (voice note): can the agent use several providers in parallel and know
+which to pick, and can it "create a local model while running" for speed/cost.
+Answer: `docs/research-routing-and-local-models.md`. Grounded in `provider.rs`
+(the `Provider` trait is already the right seam — a `RouterProvider` needs no
+core changes), `openai_compat.rs` (already parses cached-token usage, and
+already speaks Ollama's OpenAI-compatible dialect for free), and PLAN.md's own
+gap list (no cost/observability ledger).
+
+Headline numbers: RouteLLM >2x cost cut with no quality loss (arXiv:2406.18665);
+FrugalGPT cascades up to 98% cheaper at GPT-4 quality (arXiv:2305.05176); LoRA
+cuts trainable params ~10,000x with no added inference latency (arXiv:2106.09685).
+Provider ToS (quoted verbatim in the doc): Anthropic/OpenAI/Google all bar
+training *competing* models but each carves out internal classifiers/categorizers
+— a small transcript-trained routing/tool-selection model reads as inside that
+exception (plain reading, not legal advice). Speculative decoding needs white-box
+logit access, so it's off the table against any closed API.
+
+Proposal, phased: (0) a per-call cost/latency/outcome ledger first — nothing else
+can be learned without it; (1) a rule-based `RouterProvider` (cheap tier, escalate
+on error/malformed tool call, routed per-*session* not per-call to protect prompt
+caching); (2) a tiny embedding+kNN classifier once the ledger has data; (3) narrow
+LoRA fine-tunes (via MLX-LM on Max's M1 Pro, confirmed sized right per
+`max-hardware-decision.md`) only once a specific high-volume sub-task justifies it.
+Biggest first win: Phase 0 + a two-tier cascade on the scheduler's non-interactive
+task turns — lowest risk, no live user waiting. Open decisions for Max in the doc:
+escalation policy, which providers become tiers (need a second live driver first),
+whether to scope down the "local model" framing, Phase-3 hardware, and ToS comfort.
