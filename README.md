@@ -1,16 +1,21 @@
-# ferrule
+<p align="center">
+  <img src="docs/branding/hero.png" alt="Ferrule" width="720">
+</p>
+
+# Ferrule
 
 A portable, memory-efficient AI agent runtime in Rust — one static binary you
 can deploy anywhere, with per-model harness profiles so every model is driven
 the way it was trained to be driven.
 
-Design rationale and research: see `docs/research-report.md`.
+Design rationale and research: see `docs/research-report.md`. Current status
+and roadmap: see `PLAN.md`.
 
 ## Why
 
 The harness, not the model, is the performance lever. Same model, different
 harness: 13.3% → 38.3% on ARC-AGI-3, with ~6× fewer output tokens (OpenAI,
-2026). ferrule is built around that fact:
+2026). Ferrule is built around that fact:
 
 - **Harness profiles per model** (`HarnessProfile`): context window, compaction
   threshold (~70–75%, not 95%), reasoning retention, system-prompt dialect.
