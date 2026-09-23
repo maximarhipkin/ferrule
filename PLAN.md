@@ -11,7 +11,7 @@ that convention yet — ask before introducing one).
 ## Current State
 
 - **Name:** Ferrule (renamed from `agentrust` 2026-09-23). GitHub repo is
-  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,gateway,mcp,cli}`,
+  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,gateway,mcp,skills,cli}`,
   binary is `ferrule`, config file is `ferrule.toml` /
   `~/.config/ferrule/config.toml`, agent workspace state dir is `.ferrule/`.
 - **What it is today:** a local, single-user CLI agent runtime. `ferrule run`
@@ -43,7 +43,15 @@ that convention yet — ask before introducing one).
   from `run`/`chat`/gateway sessions/scheduler tasks appends one JSONL row
   (provider, model, task shape, tokens incl. cached, latency, ok/error,
   cost if priced) to `<data_dir>/ferrule/ledger.jsonl`; `ferrule ledger
-  [--since 7d]` summarizes it.
+  [--since 7d]` summarizes it. **Agent Skills exist** (Session Log
+  2026-09-24, M5, `ferrule-skills`): SKILL.md folders in the
+  agentskills.io / Claude format are discovered from the workspace
+  (`.ferrule|.agents|.claude/skills`) and user dirs (`~/.agents/skills`,
+  `~/.claude/skills`, `[skills].paths`), their names and descriptions go
+  into the system prompt, and the model loads one with `activate_skill`
+  and reads its bundled files with `read_skill_file`. Compaction carries
+  activated skill instructions forward verbatim. `ferrule skills` lists
+  what a workspace would load.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -59,12 +67,13 @@ that convention yet — ask before introducing one).
   and the suite is green with `NO_PROXY` unset. A *binary* talking to a
   local endpoint still needs `NO_PROXY` in this sandbox.
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 81/81 green** (24 pre-existing + 41 in `ferrule-gateway`
-  + 7 in `ferrule-mcp` + 2 core and 7 cli ledger tests, after M1-M4 and
-  Phase 0), `cargo clippy --workspace
+  --workspace` 104/104 green** (24 pre-existing + 41 in `ferrule-gateway`
+  + 7 in `ferrule-mcp` + 2 core and 7 cli ledger tests + 21 in
+  `ferrule-skills` and 2 core compaction tests, after M1-M5 and Phase 0),
+  `cargo clippy --workspace
   --all-targets` has one pre-existing warning in `ferrule-core::agent`
   (collapsible_if, predates the gateway work) and zero warnings in
-  `ferrule-gateway`/`ferrule-mcp`/the ledger. `rustup
+  `ferrule-gateway`/`ferrule-mcp`/`ferrule-skills`/the ledger. `rustup
   component add clippy rustfmt` now done (was missing, only
   `cargo`/`rust-std`/`rustc` before).
 - **Branding:** `docs/branding/logo.png` (512x512 mark) and
@@ -81,12 +90,14 @@ that convention yet — ask before introducing one).
   see the dated session-log entries below for the full writeup; short
   version: channels/messaging now has two working adapters (Telegram,
   local) reachable via `ferrule gateway`, a task scheduler (M3) and a
-  stdio MCP client (M4), but still no skills/plugin system, no
+  stdio MCP client (M4), Agent Skills (M5), but still no plugin
+  (code-extension) system, no
   credential-injection gateway, weak sandboxing (substring deny-list only,
   no OS primitives), no multi-agent orchestration, no multi-provider
   routing (Phase 1+ of `docs/research-routing-and-local-models.md`, blocked
   on Max's decisions there). These are the largest deltas. (The
-  cost/observability ledger gap closed 2026-09-24, Phase 0.)
+  cost/observability ledger gap closed 2026-09-24, Phase 0; the skills
+  half of "skills/plugin system" closed the same day, M5.)
 
 ## Session Log
 
@@ -754,3 +765,100 @@ was finished in the main session.
 in the research doc: escalation policy, and which providers become tiers.
 It also needs a second live driver. Of the remaining gaps, the ones that
 need no decision are the skills/plugin system and OS-level sandboxing.
+
+### 2026-09-24 — M5 Agent Skills (Devi, Opus 5.5)
+
+The next gap that needed no decision from Max. Ferrule now reads skills
+in the open Agent Skills format (agentskills.io, the one Claude Code, Codex
+and others share), so an existing skill works here unchanged. Built from
+the spec and its client-implementation guide, both read as primary
+sources.
+
+**New crate `ferrule-skills`**, kept separate from core (same reasoning as
+`ferrule-mcp`: core stays storage- and format-free):
+- `frontmatter.rs`: a small, lenient reader for SKILL.md frontmatter
+  instead of a YAML dependency. It reads top-level scalars (plain, quoted
+  and multi-line, `|`/`>` block scalars), skips nested maps such as
+  `metadata:`, and accepts the invalid-but-common unquoted `key: a: b`,
+  as the guide recommends. It tolerates CRLF and a BOM.
+- `discover.rs`: the scan order is project scope first
+  (`<ws>/.ferrule/skills`, `<ws>/.agents/skills`, `<ws>/.claude/skills`),
+  then user scope (`[skills].paths`, `~/.config/ferrule/skills`,
+  `~/.agents/skills`, `~/.claude/skills`). The first skill to claim a name
+  wins, and later ones are reported as shadowed.
+  - The walk follows symlinks (skill installers symlink directories into
+    place), skips hidden dirs and `node_modules`, doesn't descend into a
+    skill's own subdirectories, and is capped at depth 4 and 2000 dirs.
+  - Validation is lenient: a bad or mismatched name only warns, and a
+    missing name falls back to the directory name. A skill is skipped only
+    when it has no frontmatter or no description.
+  - `disable-model-invocation: true` hides a skill from the model.
+- `tool.rs`: `activate_skill(name)` returns the body with its frontmatter
+  stripped. The result is wrapped in `<skill_content name="…">`, followed
+  by the absolute skill directory and a `<skill_resources>` listing of up
+  to 50 files, which are listed but not read. Further behavior:
+  - The file is read fresh on each activation.
+  - Activation is deduped per session.
+  - Bodies are capped at 60k chars inside the wrapper, so the closing tag
+    always survives.
+- `read_skill_file(name, path)` is needed because the fs tools are
+  workspace-confined and skills usually live outside the workspace. It
+  refuses absolute paths and `..`, and checks containment after resolving
+  symlinks, so a symlink pointing out of the skill is refused too.
+- Both tools take `name` as an enum of the model-visible skills. Neither
+  tool is registered, and the catalog is omitted, when there are none.
+
+**Core change (compaction):** skill instructions are now protected from
+summarization. `maybe_compact` finds `<skill_content>` blocks in the part
+being folded; the constants live in core and the skills crate builds its
+tag from them. Those blocks are appended verbatim to the summary message
+under "Skill instructions activated earlier in this session — still in
+force", unless the verbatim tail still holds them. They're replaced by a
+placeholder in the text sent to the summarizer, so it doesn't paraphrase
+them. A second compaction carries each block once, not twice.
+
+**Wiring:** `build_agent_from` rediscovers skills for every agent it
+builds, so a skill installed while the gateway runs shows up in the next
+session. It appends `[Skills]` plus the catalog to the system prompt,
+after the validation policy and before long-term memory, and registers
+the two tools. Config goes in `[skills]`: `enabled`, `project` (turn it
+off for untrusted repos, because a repo's skills reach the system
+prompt), `paths` (`~` expanded) and `disabled`. `ferrule skills
+[--workspace]` lists each skill's name, scope, whether the model can see
+it, its location, and every warning or skip. It works without a config
+file.
+
+**Verification:**
+- `cargo test --workspace` is 104/104 (23 new): 9 frontmatter, 6
+  discovery, 5 tool and 1 catalog test in `ferrule-skills`, plus 2
+  compaction tests in core (block carried verbatim and hidden from the
+  summarizer across two compactions; not duplicated when still in the
+  tail).
+- Clippy shows only the old core warning. The new crate was rustfmt'd
+  file by file, with no `cargo fmt`.
+- Against the real corpus of 46 installed skills in `~/.claude/skills`
+  (7 of them symlinks), `ferrule skills` found all 46, 17 hidden, with
+  zero diagnostics. All 29 catalog descriptions matched PyYAML's parse
+  exactly.
+- End to end, the debug binary ran against a mock LLM with a
+  project-scope `pdf` skill shadowing the user one. The mock called:
+  - `activate_skill(pdf)`, which returned the project body and resources
+    list;
+  - `read_skill_file(references/NOTE.md)`, which returned the file;
+  - `read_skill_file(../../../../../etc/passwd)`, which was refused;
+  - `activate_skill(pdf)` again, which answered "already active".
+
+  The captured request had 29 names in the tool enum and a catalog of
+  about 11.6k chars (about 100 tokens per skill).
+
+**Not done (deliberately):**
+- User-explicit activation (`/skill-name` in chat or Telegram).
+- Enforcing the experimental `allowed-tools` field.
+- Running a skill in a subagent.
+- A trust prompt for project skills beyond the `project` switch.
+- Per-session dedupe resets when the gateway rebuilds an agent from a
+  transcript, so a re-activation in a new process re-sends the body. That
+  is harmless, and compaction's tool-result dedupe folds exact repeats.
+
+**What's next:** OS-level sandboxing is the remaining gap that needs no
+decision. Phase 1 routing still waits on Max.

@@ -81,6 +81,27 @@ pub struct McpConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SkillsConfig {
+    /// Master switch: false = no catalog in the prompt, no skill tools.
+    pub enabled: bool,
+    /// Load skills from the workspace (`.ferrule/skills`, `.agents/skills`,
+    /// `.claude/skills`). A cloned repo's skills end up in the system
+    /// prompt, so turn this off when pointing the agent at untrusted repos.
+    pub project: bool,
+    /// Extra skill directories, searched before the default user ones.
+    pub paths: Vec<PathBuf>,
+    /// Skill names to ignore wherever they're found.
+    pub disabled: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self { enabled: true, project: true, paths: Vec::new(), disabled: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub default_provider: Option<String>,
@@ -94,6 +115,8 @@ pub struct Config {
     pub scheduler: SchedulerConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub skills: SkillsConfig,
 }
 
 pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration
@@ -142,6 +165,12 @@ profile = "openai"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # env = {}
 # timeout_secs = 60          # per-call timeout, optional (default 60)
+
+# [skills]                  # Agent Skills (SKILL.md folders, Claude-compatible).
+# enabled = true             # Searched: <workspace>/.ferrule|.agents|.claude/skills,
+# project = true             # then `paths`, ~/.config/ferrule/skills,
+# paths = []                 # ~/.agents/skills, ~/.claude/skills. First name wins.
+# disabled = []              # skill names to ignore. `ferrule skills` lists them all.
 "#;
 
 impl Config {

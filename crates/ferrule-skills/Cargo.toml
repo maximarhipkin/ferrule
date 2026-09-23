@@ -1,0 +1,16 @@
+[package]
+name = "ferrule-skills"
+version = "0.1.0"
+edition = "2021"
+description = "Agent Skills (SKILL.md) discovery, catalog and activation tools"
+
+[dependencies]
+ferrule-core = { path = "../ferrule-core" }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

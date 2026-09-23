@@ -11,6 +11,13 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+/// Wrapper the skills system puts around an activated skill's instructions
+/// (`<skill_content name="x">…</skill_content>`). Compaction carries these
+/// blocks forward verbatim instead of summarising them: a summary of "how
+/// to do X" loses exactly the detail the skill exists to provide.
+pub const SKILL_CONTENT_OPEN: &str = "<skill_content name=\"";
+pub const SKILL_CONTENT_CLOSE: &str = "</skill_content>";
+
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
     pub max_iterations: usize,
@@ -265,12 +272,23 @@ impl Agent {
         let split = self.messages.len() - keep;
         let head = &self.messages[..split];
 
+        // Skills activated in the folded part stay in force: their blocks
+        // ride along verbatim (unless the verbatim tail already holds them)
+        // and are kept out of the summarizer's input.
+        let in_tail = skill_blocks(&self.messages[split..]);
+        let carried: Vec<String> = skill_blocks(head)
+            .into_iter()
+            .filter(|(name, _)| !in_tail.iter().any(|(n, _)| n == name))
+            .map(|(_, block)| block)
+            .collect();
+
         // Skip a second compaction if the head is already mostly a summary.
         let transcript_text = head
             .iter()
             .map(|m| {
                 let role = format!("{:?}", m.role).to_lowercase();
                 let body = m.content.clone().unwrap_or_default();
+                let body = if may_hold_skill(m) { elide_skill_blocks(&body) } else { body };
                 format!("{role}: {body}")
             })
             .collect::<Vec<_>>()
@@ -288,9 +306,13 @@ impl Agent {
         if let Some(sys) = self.messages.first().filter(|m| m.role == crate::message::Role::System) {
             rebuilt.push(sys.clone());
         }
-        rebuilt.push(Message::user(format!(
-            "[Compaction summary of earlier session]\n{summary}\n\nContinue from here."
-        )));
+        let mut summary_msg = format!("[Compaction summary of earlier session]\n{summary}");
+        if !carried.is_empty() {
+            summary_msg.push_str("\n\n[Skill instructions activated earlier in this session — still in force]\n");
+            summary_msg.push_str(&carried.join("\n\n"));
+        }
+        summary_msg.push_str("\n\nContinue from here.");
+        rebuilt.push(Message::user(summary_msg));
         rebuilt.extend(self.messages[split..].iter().cloned());
 
         let folded = self.messages.len() - rebuilt.len();
@@ -324,6 +346,61 @@ impl Agent {
             }
         }
     }
+}
+
+/// Skill blocks arrive as tool results and, after a compaction, inside the
+/// summary (a user message). Anything else quoting the tag is left alone.
+fn may_hold_skill(m: &Message) -> bool {
+    matches!(m.role, crate::message::Role::Tool | crate::message::Role::User)
+}
+
+/// Byte ranges and names of the `<skill_content>` blocks in `text`. A block
+/// whose close tag was cut off runs to the end of the text.
+fn skill_spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
+    let mut spans = Vec::new();
+    let mut pos = 0;
+    while let Some(i) = text[pos..].find(SKILL_CONTENT_OPEN) {
+        let start = pos + i;
+        let name_start = start + SKILL_CONTENT_OPEN.len();
+        let Some(name_len) = text[name_start..].find('"') else {
+            break;
+        };
+        let end = text[name_start..]
+            .find(SKILL_CONTENT_CLOSE)
+            .map(|j| name_start + j + SKILL_CONTENT_CLOSE.len())
+            .unwrap_or(text.len());
+        spans.push((start..end, &text[name_start..name_start + name_len]));
+        pos = end;
+    }
+    spans
+}
+
+/// `(name, block)` for every skill activated in `messages`, first-seen
+/// order, the latest copy of each name winning.
+fn skill_blocks(messages: &[Message]) -> Vec<(String, String)> {
+    let mut blocks: Vec<(String, String)> = Vec::new();
+    for text in messages.iter().filter(|m| may_hold_skill(m)).filter_map(|m| m.content.as_deref()) {
+        for (range, name) in skill_spans(text) {
+            let block = text[range].to_string();
+            match blocks.iter_mut().find(|(n, _)| n == name) {
+                Some(slot) => slot.1 = block,
+                None => blocks.push((name.to_string(), block)),
+            }
+        }
+    }
+    blocks
+}
+
+fn elide_skill_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    for (range, name) in skill_spans(text) {
+        out.push_str(&text[pos..range.start]);
+        out.push_str(&format!("[skill `{name}` instructions — carried forward verbatim, not part of this summary]"));
+        pos = range.end;
+    }
+    out.push_str(&text[pos..]);
+    out
 }
 
 fn error_kind_of(e: &CoreError) -> String {
@@ -579,5 +656,87 @@ mod tests {
         assert_eq!(records[1].output_tokens, 8);
         assert_eq!(records[1].tool_calls, 0);
         assert_eq!(records[1].outcome, "ok");
+    }
+
+    /// Records every prompt it is sent and answers with a fixed summary.
+    struct CapturingProvider {
+        prompts: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for CapturingProvider {
+        fn name(&self) -> &str {
+            "capture"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let prompt = req.messages.iter().filter_map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
+            self.prompts.lock().unwrap().push(prompt);
+            Ok(CompletionResponse { message: Message::assistant(Some("SUMMARY".into()), vec![], None), usage: Usage::default() })
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_carries_skill_instructions_forward_verbatim() {
+        let provider = Arc::new(CapturingProvider { prompts: Mutex::new(Vec::new()) });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 1_000;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 0.1; // compact above ~100 tokens
+        let config = AgentConfig { compaction_keep_last: 2, ..Default::default() };
+        let mut agent = Agent::new(provider.clone(), ToolRegistry::new(), profile, config, ToolContext::default(), None)
+            .with_system_prompt("sys");
+
+        let block = format!("{SKILL_CONTENT_OPEN}pdf\">\nALWAYS-RUN-EXTRACT-FIRST\n{SKILL_CONTENT_CLOSE}");
+        let call = crate::message::ToolCall { id: "1".into(), name: "activate_skill".into(), arguments: serde_json::json!({"name": "pdf"}) };
+        agent.messages.push(Message::user("convert the pdf"));
+        agent.messages.push(Message::assistant(None, vec![call], None));
+        agent.messages.push(Message::tool_result("1", block.clone()));
+        let filler = |i: usize| Message::user(format!("{}{i}", "filler ".repeat(50)));
+        agent.messages.extend((0..4).map(filler));
+
+        let summary_text = |agent: &Agent| {
+            agent.messages.iter().filter_map(|m| m.content.clone()).find(|c| c.starts_with("[Compaction summary")).unwrap()
+        };
+        let (tx, _rx) = mpsc::channel(64);
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        let first = summary_text(&agent);
+        assert!(first.contains(&block), "skill block must survive compaction verbatim:\n{first}");
+        assert!(first.ends_with("Continue from here."));
+        {
+            let prompts = provider.prompts.lock().unwrap();
+            assert_eq!(prompts.len(), 1);
+            assert!(!prompts[0].contains("ALWAYS-RUN-EXTRACT-FIRST"), "the summarizer must not see (and paraphrase) the skill body");
+            assert!(prompts[0].contains("[skill `pdf` instructions"));
+        }
+
+        // A second compaction folds the first summary; the block rides along
+        // once more, not twice.
+        agent.messages.extend((4..6).map(filler));
+        agent.maybe_compact(&tx, 1).await.unwrap();
+        let second = summary_text(&agent);
+        assert_eq!(second.matches(&block).count(), 1, "{second}");
+        assert_eq!(provider.prompts.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn skill_block_still_in_the_verbatim_tail_is_not_duplicated() {
+        let provider = Arc::new(CapturingProvider { prompts: Mutex::new(Vec::new()) });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 1_000;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 0.1;
+        let config = AgentConfig { compaction_keep_last: 2, ..Default::default() };
+        let mut agent = Agent::new(provider, ToolRegistry::new(), profile, config, ToolContext::default(), None);
+
+        let block = format!("{SKILL_CONTENT_OPEN}pdf\">\nbody\n{SKILL_CONTENT_CLOSE}");
+        agent.messages.extend((0..4).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50)))));
+        agent.messages.push(Message::tool_result("1", block.clone()));
+        agent.messages.push(Message::tool_result("2", format!("{block} again")));
+
+        let (tx, _rx) = mpsc::channel(64);
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        let summary = agent.messages[0].content.clone().unwrap();
+        assert!(summary.starts_with("[Compaction summary"));
+        assert!(!summary.contains(&block), "the tail already holds it");
     }
 }

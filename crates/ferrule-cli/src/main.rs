@@ -14,7 +14,7 @@ use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -77,6 +77,11 @@ enum Cmd {
         /// Only rows at or after this point: 7d, 12h, 30m or an RFC 3339 time
         #[arg(long)]
         since: Option<String>,
+    },
+    /// List the Agent Skills (SKILL.md) an agent in this workspace would load
+    Skills {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
     },
 }
 
@@ -199,6 +204,9 @@ async fn main() -> Result<()> {
         Cmd::Ledger { since } => {
             ledger_cmd(since)?;
         }
+        Cmd::Skills { workspace } => {
+            skills_cmd(workspace);
+        }
     }
     Ok(())
 }
@@ -280,6 +288,19 @@ fn build_agent_from(
             "\n\n[Validation policy] Before considering any code change complete, run `{cmd}` via the shell tool. \
              If it fails, fix forward — do not revert, do not stop until it passes."
         ));
+    }
+
+    // Agent Skills: names + descriptions in the prompt, full instructions
+    // loaded on demand through the activate_skill tool. Rescanned per agent,
+    // so a skill installed while the gateway runs shows up in new sessions.
+    if cfg.skills.enabled {
+        let skills = Arc::new(discover_skills(&cfg.skills, &tool_ctx.workspace));
+        if let Some(catalog) = skills.catalog() {
+            system.push_str(&format!("\n\n[Skills]\n{catalog}"));
+        }
+        for tool in ferrule_skills::tools(skills) {
+            registry.register(tool);
+        }
     }
 
     if let Ok(store) = MemoryStore::open(config::data_dir()?.join("memory.db")) {
@@ -601,6 +622,63 @@ async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, m
         }
     }
     Ok(())
+}
+
+fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skills::SkillSet {
+    let paths: Vec<PathBuf> = cfg.paths.iter().map(|p| expand_home(p)).collect();
+    let roots = ferrule_skills::default_roots(workspace, cfg.project, &paths);
+    let set = ferrule_skills::discover(&roots, &cfg.disabled);
+    for d in &set.diagnostics {
+        tracing::debug!(path = %d.path.display(), severity = ?d.severity, "skill: {}", d.message);
+    }
+    set
+}
+
+fn expand_home(path: &Path) -> PathBuf {
+    match (path.strip_prefix("~"), dirs::home_dir()) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
+fn skills_cmd(workspace: PathBuf) {
+    // Listing works without a config file: the defaults are what an agent
+    // would use too.
+    let cfg = match config::Config::load() {
+        Ok((cfg, _)) => cfg.skills,
+        Err(e) => {
+            eprintln!("({e} — showing default [skills] settings)");
+            config::SkillsConfig::default()
+        }
+    };
+    if !cfg.enabled {
+        println!("skills are off ([skills] enabled = false) — agents load none of these");
+    }
+    let workspace = workspace.canonicalize().unwrap_or(workspace);
+    let set = discover_skills(&cfg, &workspace);
+    println!(
+        "{} skill(s), {} offered to the model{}",
+        set.skills.len(),
+        set.invocable().count(),
+        if cfg.project { "" } else { " (project skills off)" }
+    );
+    for s in &set.skills {
+        let offered = if s.model_invocable { "model" } else { "hidden" };
+        println!("  {:<32} {:<8} {:<7} {}", s.name, s.scope.as_str(), offered, s.location.display());
+    }
+    if set.skills.iter().any(|s| !s.model_invocable) {
+        println!("  (hidden = `disable-model-invocation: true`; not in the catalog, no tool can load it)");
+    }
+    if !set.diagnostics.is_empty() {
+        println!("\n{} note(s):", set.diagnostics.len());
+        for d in &set.diagnostics {
+            let level = match d.severity {
+                ferrule_skills::Severity::Warning => "warn",
+                ferrule_skills::Severity::Skipped => "skip",
+            };
+            println!("  {level}  {}: {}", d.path.display(), d.message);
+        }
+    }
 }
 
 fn ledger_cmd(since: Option<String>) -> Result<()> {
