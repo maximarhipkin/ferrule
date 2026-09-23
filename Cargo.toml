@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/agentrust-core",
+    "crates/agentrust-providers",
+    "crates/agentrust-tools",
+    "crates/agentrust-memory",
+    "crates/agentrust-cli",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

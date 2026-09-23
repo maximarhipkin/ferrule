@@ -1,0 +1,25 @@
+[package]
+name = "agentrust-cli"
+version = "0.1.0"
+edition = "2021"
+description = "agentrust binary: run, chat, memory, config"
+
+[[bin]]
+name = "agentrust"
+path = "src/main.rs"
+
+[dependencies]
+agentrust-core = { path = "../agentrust-core" }
+agentrust-providers = { path = "../agentrust-providers" }
+agentrust-tools = { path = "../agentrust-tools" }
+agentrust-memory = { path = "../agentrust-memory" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { workspace = true }

@@ -1,0 +1,17 @@
+[package]
+name = "agentrust-providers"
+version = "0.1.0"
+edition = "2021"
+description = "Model provider drivers (OpenAI-compatible, Kimi, Anthropic-compatible)"
+
+[dependencies]
+agentrust-core = { path = "../agentrust-core" }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
