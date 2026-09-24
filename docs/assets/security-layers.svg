@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="608" viewBox="0 0 960 608" role="img" aria-label="Secure by default: four layers between a prompt-injected shell command and your real tokens — OS sandbox, placeholder tokens, TLS-intercepting loopback proxy, bound hosts only">
+  <defs>
+    <marker id="al" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#96a0aa"/></marker>
+    <style>
+      text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #cdd4da; font-size: 12px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .t { font-size: 20px; font-weight: 700; fill: #e09668; }
+      .h { font-size: 15px; font-weight: 700; }
+      .s { fill: #96a0aa; }
+      .c { fill: #e09668; }
+      .m { fill: #6b737b; }
+      .l { font-size: 11px; }
+      .num { font-size: 12px; font-weight: 700; fill: #0d0f12; }
+      .ar { stroke: #96a0aa; stroke-width: 2; fill: none; }
+      .b { fill: #17191c; stroke: #2a2e33; }
+    </style>
+  </defs>
+  <rect width="960" height="608" rx="16" fill="#0d0f12"/>
+  <text x="32" y="44" class="t">Secure by default</text>
+  <text x="32" y="66" class="s" style="font-size:13px">Four layers between a prompt-injected command and your real tokens. Every layer ships today.</text>
+
+  <rect x="32" y="88" width="352" height="56" rx="10" class="b"/>
+  <text x="48" y="112" class="h">the agent's shell command</text>
+  <text x="48" y="132" class="s"><tspan class="mono">gh</tspan> · <tspan class="mono">git</tspan> · <tspan class="mono">curl</tspan> — anything the model runs</text>
+  <path d="M208 144V162" class="ar" marker-end="url(#al)"/>
+
+  <rect x="32" y="166" width="896" height="76" rx="12" class="b"/>
+  <circle cx="66" cy="204" r="12" fill="#c4764a"/><text x="66" y="209" text-anchor="middle" class="num">1</text>
+  <text x="92" y="192" class="h">OS sandbox — Landlock + seccomp (Linux) · Seatbelt (macOS)</text>
+  <text x="92" y="212" class="s">writes confined to the workspace and temp dirs · secret-looking env vars stripped</text>
+  <text x="92" y="230" class="s">(<tspan class="mono">*KEY*</tspan> · <tspan class="mono">*TOKEN*</tspan> · <tspan class="mono">*SECRET*</tspan> …) · network can be hard-off via seccomp</text>
+  <path d="M208 242V260" class="ar" marker-end="url(#al)"/>
+
+  <rect x="32" y="264" width="896" height="76" rx="12" class="b"/>
+  <circle cx="66" cy="302" r="12" fill="#c4764a"/><text x="66" y="307" text-anchor="middle" class="num">2</text>
+  <text x="92" y="290" class="h">Placeholder tokens</text>
+  <text x="92" y="310" class="s">the command's <tspan class="mono">$GITHUB_TOKEN</tspan> is <tspan class="mono c">ghp_3f9c…</tspan> — same shape, no value</text>
+  <text x="92" y="328" class="s">real keys live in <tspan class="mono">secrets.env</tspan> (0600 in a 0700 dir) the agent's tools and shell can't reach</text>
+  <path d="M208 340V358" class="ar" marker-end="url(#al)"/>
+
+  <rect x="32" y="362" width="896" height="76" rx="12" class="b"/>
+  <circle cx="66" cy="400" r="12" fill="#c4764a"/><text x="66" y="405" text-anchor="middle" class="num">3</text>
+  <text x="92" y="388" class="h">TLS-intercepting loopback proxy</text>
+  <text x="92" y="408" class="s"><tspan class="mono">127.0.0.1</tspan> only · per-run auth token · CONNECT-only · placeholder → real only in</text>
+  <text x="92" y="426" class="s"><tspan class="mono">Authorization</tspan> and credential-named headers · URL only with <tspan class="mono c">in_url = true</tspan> · bodies never</text>
+  <path d="M208 438V456" class="ar" marker-end="url(#al)"/>
+
+  <rect x="32" y="460" width="896" height="76" rx="12" class="b"/>
+  <circle cx="66" cy="498" r="12" fill="#c4764a"/><text x="66" y="503" text-anchor="middle" class="num">4</text>
+  <text x="92" y="486" class="h">Bound hosts only</text>
+  <text x="92" y="506" class="s">the real value leaves only to the hosts you listed for that key · responses scrubbed</text>
+  <text x="92" y="524" class="s">back to placeholders · every other host gets a blind tunnel carrying a useless string</text>
+
+  <path d="M208 536V552" class="ar" marker-end="url(#al)"/>
+  <path d="M724 536V552" class="ar" marker-end="url(#al)"/>
+  <rect x="32" y="556" width="436" height="44" rx="10" fill="#17191c" stroke="#c4764a" stroke-width="1.5"/>
+  <text x="48" y="575" class="h c" style="font-size:13px">bound host — api.github.com</text>
+  <text x="48" y="592" class="s l">receives the real token, in the right header</text>
+  <rect x="492" y="556" width="436" height="44" rx="10" class="b"/>
+  <text x="508" y="575" class="h s" style="font-size:13px">every other host</text>
+  <text x="508" y="592" class="s l">a blind CONNECT tunnel — sees only the placeholder</text>
+</svg>

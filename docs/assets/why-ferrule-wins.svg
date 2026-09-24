@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="512" viewBox="0 0 960 512" role="img" aria-label="Why ferrule wins: a for-loop around an API call versus the ferrule harness — per-model harness profiles, structured compaction, verify_command as judge, never-stuck recovery and a per-call ledger; OpenAI measured the same model at 13.3% versus 38.3% on ARC-AGI-3 depending on the harness">
+  <defs>
+    <style>
+      text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #cdd4da; font-size: 12px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .t { font-size: 20px; font-weight: 700; fill: #e09668; }
+      .h { font-size: 15px; font-weight: 700; }
+      .s { fill: #96a0aa; }
+      .c { fill: #e09668; }
+      .m { fill: #6b737b; }
+      .l { font-size: 11px; }
+      .n { font-size: 20px; font-weight: 700; }
+    </style>
+  </defs>
+  <rect width="960" height="512" rx="16" fill="#0d0f12"/>
+  <text x="32" y="44" class="t">Why ferrule wins</text>
+  <text x="32" y="66" class="s" style="font-size:13px">Same model, same prompt. The harness around the call is the difference.</text>
+
+  <rect x="32" y="88" width="424" height="308" rx="12" fill="#17191c" stroke="#2a2e33"/>
+  <text x="52" y="118" class="h s">A for-loop around an API call</text>
+  <text x="52" y="136" class="m l">the do-it-yourself agent loop</text>
+  <text x="52" y="172" class="m">✗</text><text x="76" y="172" class="s">one prompt shape for every model</text>
+  <text x="52" y="208" class="m">✗</text><text x="76" y="208" class="s">reasoning thrown away after each turn</text>
+  <text x="52" y="244" class="m">✗</text><text x="76" y="244" class="s">history truncated at ~95% of the window</text>
+  <text x="52" y="280" class="m">✗</text><text x="76" y="280" class="s">finished when the model says it's finished</text>
+  <text x="52" y="316" class="m">✗</text><text x="76" y="316" class="s">a repeated tool loop ends in an error</text>
+  <text x="52" y="374" class="m l">fine for a demo — then the model outgrows it</text>
+
+  <circle cx="480" cy="242" r="20" fill="#0d0f12" stroke="#2a2e33"/>
+  <text x="480" y="248" text-anchor="middle" class="h s">vs</text>
+
+  <rect x="504" y="88" width="424" height="308" rx="12" fill="#17191c" stroke="#c4764a" stroke-width="1.5"/>
+  <text x="524" y="118" class="h c">The ferrule harness</text>
+  <text x="524" y="136" class="m l">ships today, wraps every provider</text>
+  <text x="524" y="166" class="c">✓</text><text x="548" y="166">harness profile per model</text>
+  <text x="548" y="182" class="s l">context window · compaction point · reasoning retention · dialect</text>
+  <text x="524" y="214" class="c">✓</text><text x="548" y="214">structured compaction at ~70–75%</text>
+  <text x="548" y="230" class="s l">tool results deduplicated for free, then a checklist summary</text>
+  <text x="524" y="262" class="c">✓</text><text x="548" y="262"><tspan class="mono">verify_command</tspan> — the build is the judge</text>
+  <text x="548" y="278" class="s l">the run can't finish until <tspan class="mono">cargo test</tspan> (or yours) passes</text>
+  <text x="524" y="310" class="c">✓</text><text x="548" y="310">never stuck</text>
+  <text x="548" y="326" class="s l">jittered retries · loop detector · a truthful status at every stop</text>
+  <text x="524" y="358" class="c">✓</text><text x="548" y="358">per-call ledger</text>
+  <text x="548" y="374" class="s l">tokens · cache hits · latency · cost — <tspan class="mono">ferrule ledger --since 7d</tspan></text>
+
+  <rect x="32" y="424" width="896" height="64" rx="10" fill="#17191c" stroke="#2a2e33"/>
+  <text x="56" y="450" class="n m">13.3%</text>
+  <text x="56" y="470" class="m l">default harness</text>
+  <text x="142" y="456" class="s" style="font-size:16px">→</text>
+  <text x="180" y="450" class="n c">38.3%</text>
+  <text x="180" y="470" class="m l">engineered harness</text>
+  <line x1="348" y1="436" x2="348" y2="476" stroke="#2a2e33"/>
+  <text x="372" y="450">Same model (GPT-5.6 Sol) on ARC-AGI-3 — and ~6× fewer output tokens.</text>
+  <text x="372" y="470" class="s">OpenAI, 2026 · sources in <tspan class="mono">docs/research-report.md</tspan></text>
+</svg>

@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="368" viewBox="0 0 960 368" role="img" aria-label="Quick start flow: one-line install, the ferrule setup wizard, then chat in the terminal, Telegram, or cron tasks; ferrule doctor checks everything">
+  <defs>
+    <marker id="aq" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#96a0aa"/></marker>
+    <style>
+      text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #cdd4da; font-size: 12px; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .t { font-size: 20px; font-weight: 700; fill: #e09668; }
+      .h { font-size: 15px; font-weight: 700; }
+      .s { fill: #96a0aa; }
+      .c { fill: #e09668; }
+      .l { font-size: 11px; }
+      .ar { stroke: #96a0aa; stroke-width: 2; fill: none; }
+      .b { fill: #17191c; stroke: #2a2e33; }
+    </style>
+  </defs>
+  <rect width="960" height="368" rx="16" fill="#0d0f12"/>
+  <text x="32" y="44" class="t">From zero to a running agent in about a minute</text>
+  <text x="32" y="66" class="s" style="font-size:13px">One line installs it. One wizard configures it. <tspan class="mono">ferrule doctor</tspan> proves it.</text>
+
+  <rect x="32" y="104" width="280" height="128" rx="12" class="b"/>
+  <text x="48" y="132" class="h">1 · Install</text>
+  <text x="48" y="160" class="mono l">$ curl -fsSL …/install.sh | sh</text>
+  <text x="48" y="188" class="s">one ~10 MB binary, SHA-256 checked</text>
+  <text x="48" y="208" class="s">re-run to upgrade — settings kept</text>
+  <path d="M312 168H352" class="ar" marker-end="url(#aq)"/>
+
+  <rect x="356" y="88" width="280" height="160" rx="12" fill="#17191c" stroke="#c4764a" stroke-width="1.5"/>
+  <text x="372" y="116" class="h c">2 · ferrule setup</text>
+  <text x="372" y="142" class="s">tests your key live, then offers</text>
+  <text x="372" y="160" class="s">the models the key can use</text>
+  <text x="372" y="182" class="s">Telegram bot + chat allow-list</text>
+  <text x="372" y="200" class="s">tool credentials bound to hosts</text>
+  <text x="372" y="218" class="s">sandbox policy · background service</text>
+
+  <path d="M640 160L672 124" class="ar" marker-end="url(#aq)"/>
+  <path d="M640 168L672 180" class="ar" marker-end="url(#aq)"/>
+  <path d="M640 176L672 236" class="ar" marker-end="url(#aq)"/>
+  <rect x="676" y="100" width="252" height="48" rx="10" class="b"/>
+  <text x="692" y="120" class="h" style="font-size:13px">ferrule chat</text>
+  <text x="692" y="137" class="s l">one-shot or interactive, terminal</text>
+  <rect x="676" y="156" width="252" height="48" rx="10" class="b"/>
+  <text x="692" y="176" class="h" style="font-size:13px">Telegram</text>
+  <text x="692" y="193" class="s l">one session lane per chat</text>
+  <rect x="676" y="212" width="252" height="48" rx="10" class="b"/>
+  <text x="692" y="232" class="h" style="font-size:13px">cron + one-shot tasks</text>
+  <text x="692" y="249" class="s l">gate scripts · truthful status</text>
+
+  <rect x="32" y="288" width="896" height="56" rx="10" class="b"/>
+  <text x="48" y="312" class="mono s"><tspan class="c">$ ferrule doctor</tspan>  — config, keys, Telegram, sandbox, service: checked, with fixes</text>
+  <text x="48" y="332" class="s">then <tspan class="mono">ferrule run "list the files here and summarise the project"</tspan></text>
+</svg>

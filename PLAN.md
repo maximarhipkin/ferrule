@@ -1623,3 +1623,42 @@ pexpect, so CI runs it.
 need a forward HTTP mode), the Streamable HTTP GET stream, Chrome checks
 on macOS and Windows runners, and the unconfined-server caveat above.
 Next: M11 browser, M12 multi-agent, M13 self-extension (msg 3090).
+### 2026-09-24 — README sales rewrite (Kimi Code)
+
+Rewrote `README.md` around the approved sales arc: hero + badges (CI,
+release v0.1.0, platforms, ~10 MB binary, 180 tests), a three-punch pitch
+(harness, security, ease), a "60 seconds to your first agent run" section,
+"Why ferrule wins" (ARC-AGI-3 13.3% → 38.3% + the harness story: profiles,
+structured compaction, verify-as-judge, never-stuck), "Secure by default"
+(the four layers), then the tightened reference sections. Nav links match
+the new anchors; the private-repo `GITHUB_TOKEN` install notes, the
+Windows no-sandbox honesty and the truthful roadmap are kept.
+
+New images, all under `docs/assets/`:
+
+- `why-ferrule-wins.svg`, `security-layers.svg`, `quickstart-flow.svg` —
+  hand-written in the existing brand style (same palette, fonts and box
+  language as `architecture.svg`); each validated as XML.
+- `term-help.png`, `term-doctor.png`, `term-sandbox.png` — real output of
+  the release binary (`cargo build --release -p ferrule-cli`, rustc
+  1.98.1), run in a scratch HOME (`/tmp/ferrule-demo`) so no personal
+  config, keys or skill lists leak into the shots. `ferrule doctor`'s
+  provider row is green against a tiny local mock `/v1/models` server (the
+  machine's real Ollama answers `data:null`, which doctor correctly flags
+  as an unexpected shape). Rendering: kimi-cu screenshots of Terminal.app
+  were tried first, but this Mac's Terminal default profile is white
+  80×24 and stamps the owner's name/hostname in the title bar, so the real
+  captured output was rendered into dark terminal-styled PNGs with Pillow
+  (Menlo, brand colours) — the sanctioned fallback. No `run`/`chat`/
+  `gateway`/`setup` was executed (no model tokens spent).
+- `docs/branding/hero.png` unchanged: the AI regeneration was attempted
+  per the brandkit skill, but no working image-generation backend exists
+  on this machine — the `gemini` CLI's individual tier was retired by
+  Google (`IneligibleTierError`), there are no image API keys in the
+  environment and no image-gen CLIs installed. Keeping the current
+  on-brand hero rather than shipping an off-brand replacement.
+
+Verified: all referenced images exist, all relative links resolve, every
+quoted `ferrule` command matches the built binary's `--help`, all SVGs
+parse as XML, and the README re-read end to end against the honesty
+constraints. Nothing committed; `target/` stays untracked.

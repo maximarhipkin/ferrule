@@ -8,8 +8,18 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.1.0-c4764a" alt="release v0.1.0"></a>
+  <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
+  <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
+  <img src="https://img.shields.io/badge/tests-180-8a929a" alt="180 workspace tests">
+</p>
+
+<p align="center">
+  <a href="#60-seconds-to-your-first-agent-run">60-second start</a> ·
+  <a href="#why-ferrule-wins">Why ferrule wins</a> ·
+  <a href="#secure-by-default">Secure by default</a> ·
   <a href="#install">Install</a> ·
-  <a href="#quick-start">Quick start</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#credential-gateway">Credential gateway</a> ·
   <a href="#roadmap">Roadmap</a> ·
@@ -18,42 +28,142 @@
 
 ---
 
+## The pitch
+
 Ferrule runs a coding and operations agent against any OpenAI-compatible
-model. You can use it from the terminal, from Telegram, or on a cron
-schedule. Its shell commands run in an OS sandbox, and API tokens reach
-them only as placeholders that a built-in proxy swaps for the real value,
-and only on the hosts you allow.
+model — from the terminal, from Telegram, or on a cron schedule. It's one
+binary of about 10 MB with nothing to install beside it (the Linux builds
+are fully static): `ferrule --version` starts in about 4 ms, and the idle
+gateway daemon uses about 9 MB of RAM. All state lives in files you can
+read: SQLite for memory and tasks, JSONL for transcripts and the cost
+ledger.
 
-It's one binary of about 10 MB with nothing to install beside it; the Linux
-release builds are fully static. Measured on Linux x86-64:
+Three reasons to pick ferrule over a for-loop around an API call:
 
-- `ferrule --version` starts in about 4 ms.
-- The idle gateway daemon uses about 9 MB of RAM.
+1. **The harness is the performance lever — ferrule is the harness.** In
+   OpenAI's 2026 ARC-AGI-3 runs, the *same* model scored 13.3% with a
+   default harness and 38.3% with an engineered one, on ~6× fewer output
+   tokens. Ferrule is built around that result: per-model harness profiles,
+   structured compaction, a verifier that won't let the agent stop early,
+   and a loop that never gets stuck. [The evidence.](#why-ferrule-wins)
+2. **Safe by default, not by configuration.** Every shell command the
+   agent runs sits inside an OS sandbox, and API tokens reach commands only
+   as same-shaped placeholders — a local proxy swaps in the real value on
+   the wire, only for the hosts you allow. [The layers.](#secure-by-default)
+3. **The easiest runtime to actually run.** One-line install, a setup
+   wizard that tests your keys live and offers the models they can use, and
+   `ferrule doctor` to re-check everything later and say what to fix.
+   [See for yourself.](#60-seconds-to-your-first-agent-run)
 
-All state lives in files you can read: SQLite for memory and tasks, and
-JSONL for transcripts and the cost ledger.
+## 60 seconds to your first agent run
 
-## Why
+<p align="center">
+  <img src="docs/assets/quickstart-flow.svg" alt="Quick start: one-line install, the ferrule setup wizard, then chat in the terminal, Telegram or cron; ferrule doctor checks it all" width="860">
+</p>
 
-The harness, not the model, is the performance lever. In OpenAI's 2026
-ARC-AGI-3 runs, the same model scored 13.3% with a default harness and 38.3%
-with an engineered one, with about 6× fewer output tokens. Ferrule is built
-around that result:
+```bash
+curl -fsSL https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.sh | sh
+ferrule setup        # provider + key (tested live), Telegram, credentials, sandbox, service
+ferrule run "list the files here and summarise the project"
+```
+
+While the repo is private the installer needs a GitHub token — one extra
+line, see [Install](#install). On Windows it's `irm … install.ps1 | iex`.
+
+And this is what you get: real output, unedited (macOS build; on Linux the
+sandbox rows read Landlock + seccomp instead of Seatbelt). Here the
+provider is a local model, so no cloud key was involved:
+
+<table align="center">
+  <tr>
+    <td><img src="docs/assets/term-doctor.png" alt="ferrule doctor: config, keys, provider, sandbox, binary — all checks green, 'All good.'" width="440"></td>
+    <td><img src="docs/assets/term-sandbox.png" alt="ferrule sandbox: seatbelt backend, workspace-write mode, secret env var withheld, every check ok" width="560"></td>
+  </tr>
+</table>
+
+`ferrule doctor` checks the config, the saved keys' file permissions, the
+provider key **live**, Telegram, the sandbox and the background service —
+and each red line comes with the exact fix. `ferrule sandbox` doesn't just
+print the policy, it runs the promises: write inside the workspace works,
+write outside is refused, the saved keys are unreadable, secret env vars
+are withheld.
+
+## Why ferrule wins
+
+The model you wrap matters less than how you wrap it. In OpenAI's 2026
+ARC-AGI-3 investigation, the *same* model scored **13.3%** with a default
+harness — reasoning discarded after every action, history silently
+truncated at the limit — and **38.3%** with an engineered one (retained
+reasoning plus compaction), while output-token use dropped ~6×. Nothing
+about the model changed.
 
 <p align="center">
   <img src="docs/assets/chart-harness.png" alt="Same model, different harness: 13.3% vs 38.3% on ARC-AGI-3, 6x fewer output tokens" width="820">
 </p>
 
-- **A harness profile per model**: context window, when to compact (at
+Ferrule is that engineered harness, for every model it drives:
+
+<p align="center">
+  <img src="docs/assets/why-ferrule-wins.svg" alt="A for-loop around an API call versus the ferrule harness: per-model profiles, structured compaction, verify_command, never-stuck recovery, per-call ledger" width="860">
+</p>
+
+- **A harness profile per model.** Context window, when to compact (at
   about 70–75% of the window, not 95%), whether reasoning is carried across
   turns, and the system-prompt dialect. Kimi K2's interleaved thinking is
-  kept across turns, and unknown endpoints get a conservative profile.
-- **Structured compaction**: tool results are deduplicated for free before
-  a checklist summary spends any tokens.
-- **The build is the judge**: with `[agent] verify_command = "cargo test"`,
-  the agent can't finish until the command passes.
+  kept across turns, and an endpoint ferrule doesn't know gets a
+  conservative profile.
+- **Structured compaction.** Tool results are deduplicated for free before
+  a checklist summary spends any tokens — and your original request is
+  pinned into the summary verbatim, so long runs don't drift off-task.
+- **The build is the judge.** With `[agent] verify_command = "cargo test"`,
+  a run that changed files can't finish until the command passes; a failure
+  goes back to the model with the tail of the output.
+- **Never stuck.** Transient provider errors are retried with capped,
+  jittered backoff (honouring `Retry-After`). A stuck detector — the same
+  call 4×, the same failure 3×, two calls ping-ponging 6× — warns the model
+  once, then stops the run. Every stop ends in a truthful status (what's
+  done, what's left, what blocks it), never a bare error.
+- **A ledger for every call.** Tokens, cache hits, latency, errors and
+  cost, per provider call: `ferrule ledger --since 7d`.
 
-Research and sources are in [`docs/research-report.md`](docs/research-report.md).
+The evidence and the design behind it:
+[`docs/research-report.md`](docs/research-report.md).
+
+## Secure by default
+
+An agent that can run shell commands and hold API tokens is one prompt
+injection away from posting your keys anywhere. Ferrule puts four layers
+between the model and your real tokens — all on by default:
+
+<p align="center">
+  <img src="docs/assets/security-layers.svg" alt="Four layers: OS sandbox, placeholder tokens, TLS-intercepting loopback proxy, bound hosts only" width="860">
+</p>
+
+1. **An OS sandbox around every shell command** — Landlock + seccomp on
+   Linux, Seatbelt on macOS. Writes are confined to the workspace,
+   secret-looking env vars (`*KEY*`, `*TOKEN*`, `*SECRET*`…) are stripped,
+   and the network can be hard-off via seccomp. (Native Windows has no
+   sandbox yet — [use WSL2](#windows).)
+2. **Placeholders, not tokens.** Commands see `$GITHUB_TOKEN` as a
+   same-shaped placeholder. Saved keys live in `secrets.env` (0600, in a
+   0700 directory) that the agent's file tools and sandboxed shell can't
+   reach.
+3. **A TLS-intercepting loopback proxy.** Per-run auth token, CONNECT-only.
+   It swaps the placeholder for the real value on the wire, and only in
+   `Authorization` or credential-named headers — the URL only with explicit
+   `in_url = true`, bodies never.
+4. **Bound hosts only.** The real value leaves the machine exclusively to
+   the hosts you listed for that key. Responses are scrubbed back to
+   placeholders; every other host gets a blind tunnel carrying a useless
+   string.
+
+<p align="center">
+  <img src="docs/assets/credential-gateway.svg" alt="Credential gateway: sandbox → local proxy → real token only to bound hosts" width="860">
+</p>
+
+The details, the threat model and the honest list of limits:
+[Sandbox](#sandbox) and [Credential gateway](#credential-gateway) below,
+and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md).
 
 ## What's inside
 
@@ -191,6 +301,12 @@ The workspace is the directory the agent works in: its file tools stay
 inside it, and sandboxed commands can write only there. Keep it apart from
 ferrule's own data directory.
 
+The full command surface, from the binary itself:
+
+<p align="center">
+  <img src="docs/assets/term-help.png" alt="ferrule --help: setup, doctor, run, chat, memory, config, gateway, tasks, ledger, skills, sandbox" width="820">
+</p>
+
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | Config | `~/.config/ferrule/config.toml` | `~/Library/Application Support/ferrule/config.toml` | `%APPDATA%\ferrule\config.toml` |
@@ -302,10 +418,6 @@ needs its key. Handing the command the real token means a prompt-injected
 model can print it or post it anywhere. Ferrule gives the command a
 **placeholder** of the same shape instead, and swaps in the real value on
 the wire, only for the hosts you name:
-
-<p align="center">
-  <img src="docs/assets/credential-gateway.svg" alt="Credential gateway: sandbox → local proxy → real token only to bound hosts" width="860">
-</p>
 
 ```toml
 [secrets]
