@@ -149,7 +149,7 @@ impl Extensions {
 
 /// Build the process's manager: connect the configured servers (scanned,
 /// and re-scanned on `list_changed`), load the lock's active entries, and
-/// follow the lock from then on.
+/// follow the lock and the config file from then on.
 pub async fn start(
     servers: Vec<McpServerConfig>,
     sandbox: Arc<Sandbox>,
@@ -170,6 +170,7 @@ pub async fn start(
     });
     manager.start(servers).await;
     manager.spawn_sync();
+    crate::config_follow::spawn(&manager, &cfg, &path, allow_trusted(&path));
     Ok(Extensions {
         manager,
         enabled: cfg.extensions.enabled,

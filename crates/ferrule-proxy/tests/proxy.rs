@@ -216,6 +216,56 @@ async fn other_hosts_get_a_blind_tunnel_so_the_placeholder_is_useless_there() {
     assert!(body.contains(&format!("echo={TOKEN}")), "{body}");
 }
 
+/// M17: a secret bound into the running proxy is swapped on the next
+/// tunnel, and commands started from then on get its placeholder.
+#[tokio::test]
+async fn a_secret_bound_while_running_is_swapped_from_then_on() {
+    let s = setup().await;
+    let rule = SecretRule {
+        hosts: vec!["localhost".to_string()],
+        in_url: false,
+    };
+    assert!(s.broker.bind("LATE-KEY", &rule, TOKEN).is_err());
+    assert!(s
+        .broker
+        .bind("LATE", &SecretRule::default(), TOKEN)
+        .is_err());
+    s.broker.bind("LATE", &rule, TOKEN).unwrap();
+    let env: BTreeMap<String, String> = s.broker.child_env().into_iter().collect();
+    let late = &env["LATE"];
+    assert!(late != TOKEN && late != &s.placeholders["TOKEN"]);
+    assert_eq!(env["TOKEN"], s.placeholders["TOKEN"], "the others stay");
+    assert!(s.broker.model_note().contains("- $LATE: localhost"));
+
+    let resp = s
+        .client
+        .get(format!("https://localhost:{}/check", s.origin_port))
+        .bearer_auth(late)
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("bearer=true"), "{body}");
+    assert!(!body.contains(TOKEN), "scrubbed on the way back: {body}");
+
+    // A new value: a new placeholder, and the old one still works.
+    s.broker
+        .bind("LATE", &rule, "ghp_another_value_000000000000000000")
+        .unwrap();
+    let infos = s.broker.secrets();
+    let now = infos.iter().find(|i| i.name == "LATE").unwrap();
+    assert_ne!(&now.placeholder, late);
+    assert_eq!(infos.len(), 3);
+    let resp = s
+        .client
+        .get(format!("https://localhost:{}/check", s.origin_port))
+        .bearer_auth(late)
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.text().await.unwrap().contains("bearer=true"));
+}
+
 #[tokio::test]
 async fn a_host_header_for_another_site_is_refused() {
     let s = setup().await;

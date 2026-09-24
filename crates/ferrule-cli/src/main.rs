@@ -1,6 +1,7 @@
 mod agents;
 mod browser;
 mod config;
+mod config_follow;
 mod doctor;
 mod eval;
 mod ledger;
@@ -809,20 +810,24 @@ fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
     let broker = if cfg.secrets.is_empty() {
         None
     } else {
-        let cfg = BrokerConfig {
-            secrets: cfg
-                .secrets
-                .iter()
-                .map(|(name, spec)| (name.clone(), spec.into()))
-                .collect(),
-            state_dir: config::data_dir()?.join("proxy"),
-            upstream: Upstream::from_env()?,
-            ca_bundle: None,
-        };
-        Broker::start(cfg, |name| std::env::var(name).ok())?
+        Broker::start(broker_config(cfg)?, |name| std::env::var(name).ok())?
     };
     // A racing caller's broker is dropped (and stopped) here; both get the winner.
     Ok(BROKER.get_or_init(|| broker).as_ref())
+}
+
+/// The proxy's settings for `cfg`'s `[secrets]`.
+fn broker_config(cfg: &config::Config) -> Result<BrokerConfig> {
+    Ok(BrokerConfig {
+        secrets: cfg
+            .secrets
+            .iter()
+            .map(|(name, spec)| (name.clone(), spec.into()))
+            .collect(),
+        state_dir: config::data_dir()?.join("proxy"),
+        upstream: Upstream::from_env()?,
+        ca_bundle: None,
+    })
 }
 
 /// What makes `[secrets]` weaker than it looks in this setup.
@@ -1581,14 +1586,14 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         sh("env", Path::new(""))?
     };
     let env = String::from_utf8_lossy(&env.stdout);
-    let brokered: Vec<&str> = broker
-        .map(|b| b.secrets().iter().map(|s| s.name.as_str()).collect())
+    let brokered: Vec<String> = broker
+        .map(|b| b.secrets().into_iter().map(|s| s.name).collect())
         .unwrap_or_default();
     report(
         "secret env vars are not visible to commands",
         withheld
             .iter()
-            .filter(|name| !brokered.contains(&name.as_str()))
+            .filter(|name| !brokered.contains(name))
             .all(|name| !env.lines().any(|l| l.starts_with(&format!("{name}=")))),
     );
     if let Some(broker) = broker {

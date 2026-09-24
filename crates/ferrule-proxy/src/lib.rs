@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Every variable a common HTTPS client reads its CA bundle from.
 const CA_BUNDLE_VARS: &[&str] = &[
@@ -92,7 +92,9 @@ pub struct SecretInfo {
 pub struct Broker {
     addr: SocketAddr,
     token: String,
-    secrets: Vec<SecretInfo>,
+    secrets: RwLock<Vec<SecretInfo>>,
+    seed: Vec<u8>,
+    shared: Arc<server::Shared>,
     ca_cert_path: PathBuf,
     ca_spki_sha256: String,
     bundle: Option<PathBuf>,
@@ -113,18 +115,7 @@ impl Broker {
         let mut warnings = Vec::new();
         let mut active = Vec::new();
         for (name, rule) in &cfg.secrets {
-            let raw_hosts = &rule.hosts;
-            if !valid_env_name(name) {
-                bail!("[secrets]: `{name}` isn't a valid environment variable name");
-            }
-            if raw_hosts.is_empty() {
-                bail!("[secrets]: `{name}` has no hosts; list the hosts allowed to receive it");
-            }
-            let hosts = raw_hosts
-                .iter()
-                .map(|h| HostPattern::parse(h))
-                .collect::<Result<Vec<_>>>()
-                .with_context(|| format!("[secrets]: `{name}`"))?;
+            let hosts = checked_hosts(name, rule)?;
             match lookup(name).filter(|v| !v.is_empty()) {
                 Some(real) => active.push((name.clone(), hosts, real, rule.in_url)),
                 None => warnings.push(format!(
@@ -175,26 +166,8 @@ impl Broker {
         };
         let tls_client = client_config(provider, base.as_deref())?;
 
-        if let Some(np) = std::env::var("NO_PROXY")
-            .ok()
-            .or_else(|| std::env::var("no_proxy").ok())
-        {
-            let bypass = Upstream::parse("http://unused", &np)?;
-            for s in &infos {
-                for h in &s.hosts {
-                    let probe = match h {
-                        HostPattern::Exact(h) => h.clone(),
-                        HostPattern::Subdomains(s) => format!("ferrule-probe.{s}"),
-                    };
-                    if bypass.bypasses(&probe) {
-                        warnings.push(format!(
-                            "NO_PROXY covers {h}, so commands would skip the proxy there and send `{}`'s \
-                             placeholder unswapped; remove it from NO_PROXY",
-                            s.name
-                        ));
-                    }
-                }
-            }
+        for s in &infos {
+            warnings.extend(no_proxy_warnings(s)?);
         }
 
         let mut raw = [0u8; 16];
@@ -219,18 +192,20 @@ impl Broker {
         let shared = Arc::new(server::Shared {
             expected_auth: format!("ferrule:{token}").into_bytes(),
             ca,
-            secrets,
+            secrets: RwLock::new(secrets),
             upstream: cfg.upstream,
             tls_client,
         });
-        let task = handle.spawn(server::serve(listener, shared));
+        let task = handle.spawn(server::serve(listener, shared.clone()));
         for w in &warnings {
             tracing::warn!("{w}");
         }
         Ok(Some(Self {
             addr,
             token,
-            secrets: infos,
+            secrets: RwLock::new(infos),
+            seed,
+            shared,
             ca_cert_path,
             ca_spki_sha256,
             bundle,
@@ -243,8 +218,54 @@ impl Broker {
         self.addr
     }
 
-    pub fn secrets(&self) -> &[SecretInfo] {
-        &self.secrets
+    /// The secrets bound now, in the order they were bound.
+    pub fn secrets(&self) -> Vec<SecretInfo> {
+        self.secrets.read().unwrap().clone()
+    }
+
+    /// Bind one more secret while running (M17: a `[secrets]` entry added
+    /// to the config of a running process). New tunnels swap it; tunnels
+    /// already open keep the swaps they started with. Re-binding a name
+    /// with new hosts moves it; with a new value it gets a new placeholder
+    /// and the old one keeps working, since commands and servers started
+    /// earlier still hold it. The warnings, for the log.
+    pub fn bind(&self, name: &str, rule: &SecretRule, real: &str) -> Result<Vec<String>> {
+        let hosts = checked_hosts(name, rule)?;
+        if real.is_empty() {
+            bail!("[secrets]: `{name}` has an empty value");
+        }
+        let placeholder = placeholder::placeholder(&self.seed, name, real);
+        let info = SecretInfo {
+            name: name.to_string(),
+            hosts: hosts.clone(),
+            placeholder: placeholder.clone(),
+            in_url: rule.in_url,
+        };
+        let warnings = no_proxy_warnings(&info)?;
+        {
+            let mut live = self.shared.secrets.write().unwrap();
+            match live.iter_mut().find(|s| s.placeholder == placeholder) {
+                Some(s) => {
+                    s.hosts = hosts;
+                    s.in_url = rule.in_url;
+                }
+                None => live.push(server::Secret {
+                    hosts,
+                    placeholder,
+                    real: real.to_string(),
+                    in_url: rule.in_url,
+                }),
+            }
+        }
+        let mut infos = self.secrets.write().unwrap();
+        match infos.iter_mut().find(|s| s.name == name) {
+            Some(s) => *s = info,
+            None => infos.push(info),
+        }
+        for w in &warnings {
+            tracing::warn!("{w}");
+        }
+        Ok(warnings)
     }
 
     pub fn warnings(&self) -> &[String] {
@@ -279,6 +300,8 @@ impl Broker {
     pub fn child_env(&self) -> Vec<(String, String)> {
         let mut env: Vec<(String, String)> = self
             .secrets
+            .read()
+            .unwrap()
             .iter()
             .map(|s| (s.name.clone(), s.placeholder.clone()))
             .collect();
@@ -313,7 +336,7 @@ impl Broker {
              URL. Anywhere else (other headers, request bodies, other hosts) the placeholder \
              stays a useless string, and printing it reveals nothing.\n",
         );
-        for s in &self.secrets {
+        for s in self.secrets.read().unwrap().iter() {
             let hosts: Vec<String> = s.hosts.iter().map(ToString::to_string).collect();
             let url = if s.in_url { " (URL too)" } else { "" };
             let _ = writeln!(note, "- ${}: {}{url}", s.name, hosts.join(", "));
@@ -326,6 +349,46 @@ impl Drop for Broker {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// A `[secrets]` entry's name and hosts, checked.
+fn checked_hosts(name: &str, rule: &SecretRule) -> Result<Vec<HostPattern>> {
+    if !valid_env_name(name) {
+        bail!("[secrets]: `{name}` isn't a valid environment variable name");
+    }
+    if rule.hosts.is_empty() {
+        bail!("[secrets]: `{name}` has no hosts; list the hosts allowed to receive it");
+    }
+    rule.hosts
+        .iter()
+        .map(|h| HostPattern::parse(h))
+        .collect::<Result<Vec<_>>>()
+        .with_context(|| format!("[secrets]: `{name}`"))
+}
+
+/// Hosts of `s` that `NO_PROXY` would route around the proxy.
+fn no_proxy_warnings(s: &SecretInfo) -> Result<Vec<String>> {
+    let mut warnings = Vec::new();
+    if let Some(np) = std::env::var("NO_PROXY")
+        .ok()
+        .or_else(|| std::env::var("no_proxy").ok())
+    {
+        let bypass = Upstream::parse("http://unused", &np)?;
+        for h in &s.hosts {
+            let probe = match h {
+                HostPattern::Exact(h) => h.clone(),
+                HostPattern::Subdomains(s) => format!("ferrule-probe.{s}"),
+            };
+            if bypass.bypasses(&probe) {
+                warnings.push(format!(
+                    "NO_PROXY covers {h}, so commands would skip the proxy there and send `{}`'s \
+                     placeholder unswapped; remove it from NO_PROXY",
+                    s.name
+                ));
+            }
+        }
+    }
+    Ok(warnings)
 }
 
 fn valid_env_name(name: &str) -> bool {
