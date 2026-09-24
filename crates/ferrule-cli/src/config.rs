@@ -160,6 +160,9 @@ pub struct Config {
     /// Sub-agents: whether an agent may start them, and their limits.
     #[serde(default)]
     pub agents: AgentsConfig,
+    /// Lifecycle hooks (M18); read only from a trusted config file.
+    #[serde(default)]
+    pub hooks: ferrule_hooks::HooksConfig,
     /// M16's learning pass and the playbook in prompts.
     #[serde(default)]
     pub learning: crate::learn::LearningConfig,

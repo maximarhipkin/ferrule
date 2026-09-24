@@ -5,18 +5,21 @@
 
 use crate::error::AgentsError;
 use crate::fence::{cap, fence, first_line};
+use crate::lifecycle;
 use crate::prompts;
 use crate::store::{AgentRow, AgentStore, Status};
 use crate::tools;
 use crate::worktree;
 use ferrule_core::message::Role as MsgRole;
-use ferrule_core::{Agent, Budget, CoreError, Inbox, StopFlag, Transcript, Usage};
+use ferrule_core::{
+    Agent, Budget, CoreError, HookEvent, HookSet, Inbox, StopFlag, Transcript, Usage,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -245,6 +248,9 @@ pub struct Supervisor {
     /// Where children's worktrees go; none, and every child shares its
     /// parent's workspace.
     worktrees: RwLock<Option<PathBuf>>,
+    /// The root's hooks: children inherit PreToolUse/PostToolUse, and
+    /// SubagentStart/Stop fire around their runs (M18).
+    hooks: RwLock<HookSet>,
     /// Runs that have stopped and whose notice is still being delivered.
     finishing: AtomicUsize,
     me: Weak<Supervisor>,
@@ -283,6 +289,7 @@ impl Supervisor {
             tick: watch::channel(0).0,
             waker: RwLock::new(None),
             worktrees: RwLock::new(None),
+            hooks: RwLock::new(HookSet::default()),
             finishing: AtomicUsize::new(0),
             me: me.clone(),
         }))
@@ -334,7 +341,10 @@ impl Supervisor {
 
     /// Makes `agent` the root of a tree (its id is its session id): gives
     /// it the agent tools, the prompt addition and its inbox. The root's
-    /// own spending isn't charged to the tree's budget.
+    /// own spending isn't charged to the tree's budget. Its hooks become
+    /// the ones every child's run is wrapped in (M18, [`crate::lifecycle`]):
+    /// one process has one config and workspace, so every root's are the
+    /// same.
     pub fn attach_root(
         &self,
         agent: Agent,
@@ -373,6 +383,7 @@ impl Supervisor {
                 "{root} is a spawned agent, not a root"
             )));
         }
+        *self.hooks.write().unwrap() = agent.hooks().clone();
         Ok(self.equip(agent, &row))
     }
 
@@ -585,6 +596,27 @@ impl Supervisor {
         agent
             .messages
             .extend(history.into_iter().filter(|m| m.role != MsgRole::System));
+        let hooks = self.hooks.read().unwrap().clone();
+        let parent = row
+            .parent
+            .as_deref()
+            .and_then(|p| self.store.get(p).ok().flatten());
+        let child = lifecycle::ChildRun {
+            id: row.id.clone(),
+            role: role.as_str().to_string(),
+            task: row.task.clone(),
+            parent_session: parent
+                .as_ref()
+                .map(|p| p.session.clone())
+                .unwrap_or_default(),
+            cwd: parent
+                .map(|p| p.workspace)
+                .unwrap_or_else(|| row.workspace.clone()),
+        };
+        if !hooks.is_empty() {
+            agent.add_hooks(hooks.for_child(&row.id, &child.parent_session));
+        }
+        let hooks = hooks.only(&[HookEvent::SubagentStart, HookEvent::SubagentStop]);
         let stop = self.stop_flag(&row.id);
         stop.reset();
         let agent = agent
@@ -603,11 +635,7 @@ impl Supervisor {
         let mut live = self.live.lock().unwrap();
         let handle = tokio::spawn(async move {
             let mut agent = agent;
-            // Nobody watches a child's events; a closed channel makes
-            // every send return at once.
-            let (tx, rx) = mpsc::channel(1);
-            drop(rx);
-            let result = agent.run(&message, tx).await;
+            let result = lifecycle::run_child(&mut agent, &hooks, &child, message).await;
             sup.finished(&id, result);
         });
         drop(live.get_mut(&row.id).map(|l| l.handle.replace(handle)));

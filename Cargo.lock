@@ -556,6 +556,7 @@ dependencies = [
  "ferrule-eval",
  "ferrule-extensions",
  "ferrule-gateway",
+ "ferrule-hooks",
  "ferrule-learn",
  "ferrule-mcp",
  "ferrule-memory",
@@ -653,6 +654,23 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "ferrule-hooks"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrule-core",
+ "ferrule-sandbox",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

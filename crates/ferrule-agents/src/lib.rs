@@ -6,6 +6,7 @@
 pub mod board;
 pub mod error;
 pub mod fence;
+mod lifecycle;
 pub mod prompts;
 mod shared;
 pub mod store;

@@ -1,0 +1,20 @@
+[package]
+name = "ferrule-hooks"
+version = "0.1.0"
+edition = "2021"
+description = "Lifecycle hooks: command hooks, [hooks] config, workspace trust, the audit log"
+
+[dependencies]
+ferrule-core = { path = "../ferrule-core" }
+ferrule-sandbox = { path = "../ferrule-sandbox" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+ring = "0.17"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
