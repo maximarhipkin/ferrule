@@ -371,6 +371,7 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
         max_iterations: p.task.max_iterations(p.suite),
         check: p.task.check.as_deref(),
         transcript,
+        playbook: None,
     });
     let mut agent = agent
         .with_ledger(

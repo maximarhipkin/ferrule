@@ -490,6 +490,124 @@ impl MemoryStore {
     }
 }
 
+impl MemoryStore {
+    /// The largest id ever written (0 for an empty store). A write whose
+    /// id is above the value read before it created a row.
+    pub fn max_id(&self) -> Result<i64, MemoryError> {
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM memories", [], |r| {
+                r.get(0)
+            })?)
+    }
+
+    /// Groups of near-duplicate live facts: among the newest `max_rows`
+    /// live facts, two are linked when their content-word sets have a
+    /// Jaccard similarity of at least `threshold`, and each connected group
+    /// of two or more is returned (largest first, then newest first; each
+    /// group's facts in id order). No model involved — the M16 learning
+    /// pass asks one about each group.
+    pub fn similar_clusters(
+        &self,
+        threshold: f64,
+        max_rows: usize,
+    ) -> Result<Vec<Vec<Memory>>, MemoryError> {
+        let rows = self.recent(max_rows)?;
+        let sets: Vec<_> = rows.iter().map(|m| word_set(&m.content)).collect();
+        let mut parent: Vec<usize> = (0..rows.len()).collect();
+        fn find(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        for i in 0..rows.len() {
+            if sets[i].is_empty() {
+                continue;
+            }
+            for j in i + 1..rows.len() {
+                if !sets[j].is_empty() && jaccard(&sets[i], &sets[j]) >= threshold {
+                    let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                    if a != b {
+                        parent[a] = b;
+                    }
+                }
+            }
+        }
+        let mut groups: std::collections::HashMap<usize, Vec<Memory>> =
+            std::collections::HashMap::new();
+        for (i, row) in rows.iter().enumerate() {
+            let root = find(&mut parent, i);
+            groups.entry(root).or_default().push(row.clone());
+        }
+        let mut out: Vec<Vec<Memory>> = groups
+            .into_values()
+            .filter(|g| g.len() >= 2)
+            .map(|mut g| {
+                g.sort_by_key(|m| m.id);
+                g
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.len()
+                .cmp(&a.len())
+                .then(b.last().map(|m| m.id).cmp(&a.last().map(|m| m.id)))
+        });
+        Ok(out)
+    }
+
+    /// Undo one UPDATE made by [`MemoryStore::insert`]: the `replaced` rows
+    /// that still point at `new_id` become live again, and `new_id` is
+    /// deleted when the write `created` it. Refused when `new_id` is gone
+    /// or has itself been replaced since — undoing would lose that later
+    /// correction. Returns the ids made live again.
+    pub fn undo_update(
+        &self,
+        new_id: i64,
+        replaced: &[i64],
+        created: bool,
+    ) -> Result<Vec<i64>, MemoryError> {
+        let row = self
+            .get(new_id)?
+            .ok_or_else(|| MemoryError::Refused(format!("there is no memory #{new_id}")))?;
+        if let Some(by) = row.superseded_by {
+            let head = self.head(new_id)?.unwrap_or(by);
+            return Err(MemoryError::Refused(format!(
+                "#{new_id} has since been replaced by #{head}; not undoing"
+            )));
+        }
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut restored = Vec::new();
+        for &old in replaced {
+            let n = self.conn.execute(
+                "UPDATE memories SET superseded_by = NULL, superseded_at = NULL
+                 WHERE id = ?1 AND superseded_by = ?2",
+                params![old, new_id],
+            )?;
+            if n > 0 {
+                restored.push(old);
+            }
+        }
+        if created {
+            // Anything else that points at it (a later write replacing an
+            // unrelated fact with this one) goes back to live too.
+            self.conn.execute(
+                "UPDATE memories SET superseded_by = NULL, superseded_at = NULL
+                 WHERE superseded_by = ?1",
+                params![new_id],
+            )?;
+            self.conn
+                .execute("DELETE FROM memories WHERE id = ?1", params![new_id])?;
+        }
+        tx.commit()?;
+        Ok(restored)
+    }
+}
+
 /// 0 → 1: the `superseded_by` / `superseded_at` columns, their index and an
 /// update trigger for FTS. Idempotent, and serialized across processes by
 /// `BEGIN IMMEDIATE`.
@@ -866,5 +984,77 @@ mod tests {
         let store = MemoryStore::in_memory().unwrap();
         store.remember("something safe", &[]).unwrap();
         let _ = store.recall("what's OR (broken \"syntax\"", 10).unwrap();
+    }
+
+    #[test]
+    fn similar_clusters_group_near_duplicates_only() {
+        let store = MemoryStore::in_memory().unwrap();
+        let a = store
+            .remember("deploys go to render via the cli", &[])
+            .unwrap();
+        let b = store.remember("deploys go to render via cli", &[]).unwrap();
+        let c = store
+            .remember("deploys go to render with the render cli", &[])
+            .unwrap();
+        store
+            .remember("postgres listens on port 5781", &[])
+            .unwrap();
+        store.remember("redis listens on port 6379", &[]).unwrap();
+        let groups = store.similar_clusters(0.5, 100).unwrap();
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        let ids: Vec<i64> = groups[0].iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![a, b, c]);
+        // Replaced facts are never clustered.
+        store
+            .insert("deploys go to render", &[], &[a, b, c])
+            .unwrap();
+        assert!(store.similar_clusters(0.5, 100).unwrap().is_empty());
+    }
+
+    #[test]
+    fn undo_update_restores_the_replaced_facts() {
+        let store = MemoryStore::in_memory().unwrap();
+        let a = store.remember("the api runs on port 8080", &[]).unwrap();
+        let b = store.remember("api runs on port 8080 in dev", &[]).unwrap();
+        let before = store.max_id().unwrap();
+        let r = store
+            .insert("The API runs on port 8080 (dev and prod)", &[], &[a, b])
+            .unwrap();
+        assert!(r.id > before);
+        assert_eq!(store.recent(10).unwrap().len(), 1);
+        let restored = store.undo_update(r.id, &r.replaced, true).unwrap();
+        assert_eq!(restored, vec![a, b]);
+        assert!(store.get(r.id).unwrap().is_none());
+        let live: Vec<i64> = store.recent(10).unwrap().iter().map(|m| m.id).collect();
+        assert_eq!(live, vec![b, a]);
+        assert_eq!(store.recall("8080", 5).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn undo_update_of_a_reused_row_keeps_it_and_refuses_after_a_correction() {
+        let store = MemoryStore::in_memory().unwrap();
+        let a = store.remember("ci runs on github actions", &[]).unwrap();
+        let b = store.remember("CI runs on GitHub Actions.", &[]).unwrap();
+        let before = store.max_id().unwrap();
+        let r = store
+            .insert("ci runs on github actions", &[], &[a, b])
+            .unwrap();
+        assert_eq!(r.decision, Decision::Updated);
+        assert!(r.id <= before, "reused an existing row");
+        let restored = store.undo_update(r.id, &r.replaced, false).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(store.recent(10).unwrap().len(), 2);
+
+        // Merge again, then correct the merged fact: undo is refused.
+        let r = store
+            .insert("CI runs on GitHub Actions and Buildkite", &[], &[a, b])
+            .unwrap();
+        store
+            .supersede(r.id, "CI runs on Buildkite only", &[])
+            .unwrap();
+        assert!(matches!(
+            store.undo_update(r.id, &r.replaced, true),
+            Err(MemoryError::Refused(_))
+        ));
     }
 }

@@ -255,7 +255,11 @@ An add or an edit is kept only if it demonstrably helps (ACE's
    lesson is exactly what ACE shows goes wrong.
 2. **Scratch copy.** The pass workspace (`--workspace`, or the gateway's
    workspace for scheduled passes) is copied into
-   `learn/passes/<pass>/scratch-<n>/`.
+   `<temp dir>/scratch-<pass>-<n>/workspace`, with the gate agent's own
+   state dir beside it. It isn't under `data/learn`: the data dir is a
+   hidden path to the file tools, so an agent working there couldn't see
+   its own workspace. The gate agent's transcript still goes to
+   `learn/passes/<pass>/gate-<n>.jsonl`.
    - Skipped: `.git/objects` stays out (only `.git`'s small files are
      copied, so `git status` works), and so do `target/`,
      `node_modules/` and the data dir if it is inside.

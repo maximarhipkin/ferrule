@@ -655,6 +655,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrule-learn"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "ferrule-core",
+ "ferrule-eval",
+ "ferrule-memory",
+ "ferrule-sandbox",
+ "ferrule-tools",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrule-mcp"
 version = "0.1.0"
 dependencies = [
