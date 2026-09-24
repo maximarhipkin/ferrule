@@ -104,21 +104,6 @@ running background service is restarted on the new binary.
 Both scripts read `FERRULE_VERSION` (a tag such as `v0.2.0`; default the
 latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 
-> **While the repository is private**, the scripts and the release both
-> need a GitHub token that can read it:
->
-> ```bash
-> export GITHUB_TOKEN=github_pat_...
-> curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github.raw" \
->   https://api.github.com/repos/maximarhipkin/ferrule/contents/install.sh | sh
-> ```
->
-> ```powershell
-> $env:GITHUB_TOKEN = 'github_pat_...'
-> irm -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github.raw' } `
->   https://api.github.com/repos/maximarhipkin/ferrule/contents/install.ps1 | iex
-> ```
-
 ### Setup
 
 `ferrule setup` walks through everything, testing keys and tokens as you

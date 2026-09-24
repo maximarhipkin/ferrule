@@ -78,9 +78,9 @@ that convention yet — ask before introducing one).
   no OS sandbox (Git Bash or PowerShell as the shell). CI
   (`.github/workflows/ci.yml`) tests Linux, macOS and Windows, all three
   green since `cee5de1`;
-  `release.yml` builds 5 targets on a `v*` tag. **No release has been
-  tagged yet**, so the install one-liners have nothing to download until
-  Max tags one.
+  `release.yml` builds 5 targets on a `v*` tag. **The repo is public and
+  `v0.1.0` is released** (2026-09-24, msg 3074); the Linux one-liner was
+  run for real against it.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -142,9 +142,11 @@ that convention yet — ask before introducing one).
   detector, a graceful stop at `max_iterations`, `verify_command`
   enforced by the runtime), M10 MCP servers and `web_fetch` under the
   sandbox and the credential proxy, M11 a browser via agent-browser's MCP
-  server, M12 self-extension (skills and MCP servers installed with owner
-  approval and hot-loaded). Waiting on Max's four decisions in §9 there
-  (approval model, Chromium download, order, Windows sandbox priority).
+  server, M12 self-extension (skills and MCP servers hot-loaded). Max's
+  answers (msg 3074): this order; self-install from an **allow-list of
+  approved sources** without asking; the browser **detects** an installed
+  Chrome, no download; a native **Windows sandbox is researched now**
+  (`docs/research-windows-sandbox.md`).
 
 ## Session Log
 
@@ -1392,3 +1394,17 @@ The main findings:
   (self-install).
 - Speed: tools run one after another and the provider doesn't stream.
   Both are loop fixes, measurable with the ledger's `latency_ms`.
+
+### 2026-09-24 — v0.1.0 released, repo public (Devi, Opus 5.5)
+
+Max said yes to both (msg 3074). Before the visibility flip, the whole
+history (22 commits) was scanned for key shapes (OpenAI/Anthropic `sk-`,
+`ghp_`/`github_pat_`, Slack, AWS, Telegram bot tokens, Google, PEM,
+JWT) and for client data. The only hits were test fixtures (a fake bot id
+`123456789:…`, dummy `ghp_…`). Tagged `v0.1.0` on `9ab612e`, and
+`release.yml` published all 5 archives, their `.sha256` and both install
+scripts. No stray raw binary this time. `curl -fsSL …/install.sh | sh`
+run for real in a scratch HOME: downloads, verifies, installs
+`ferrule 0.1.0`, and `ferrule sandbox` passes. README drops the
+private-repo token instructions (the scripts still accept
+`GITHUB_TOKEN`, for private forks).

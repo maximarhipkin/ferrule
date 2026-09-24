@@ -12,7 +12,7 @@
 #   FERRULE_VERSION      a release tag such as v0.2.0 (default: the latest)
 #   FERRULE_INSTALL_DIR  where the binary goes (default: ~/.local/bin)
 #   FERRULE_NO_SETUP=1   install only, don't start the wizard
-#   GITHUB_TOKEN         only while the repository is private
+#   GITHUB_TOKEN         optional: download through the API (a private fork)
 #
 # On Windows, use install.ps1 instead.
 

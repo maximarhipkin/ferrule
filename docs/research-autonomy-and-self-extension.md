@@ -436,3 +436,11 @@ here.
    earlier with a warning that it runs unconfined until M10?
 4. **Windows sandbox priority.** Research it now (§6), or leave it until
    there are real Windows users?
+
+**Max's answers (msg 3074, September 24, 2026):**
+1. Self-install: an **allow-list of approved sources**. Installs from those
+   go ahead without asking. Anything else still needs the owner.
+2. Chrome: **detect an existing install only**. Setup doesn't download a
+   browser.
+3. Order: **M9 → M10 → M11 → M12** as proposed.
+4. Windows sandbox: **research it now**.
