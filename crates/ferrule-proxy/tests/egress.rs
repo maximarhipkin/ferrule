@@ -252,6 +252,12 @@ async fn an_mcp_server_by_url_gets_the_real_token_through_the_proxy() {
 
 #[tokio::test]
 async fn without_a_proxy_an_mcp_server_by_url_is_reached_directly() {
+    // Without a credential proxy the client honours the system proxy, as it
+    // should; a machine that has one (this repo's dev sandbox does) would
+    // send the loopback origin through it. The other tests here set their
+    // proxy explicitly, which NO_PROXY doesn't touch.
+    std::env::set_var("NO_PROXY", "localhost,127.0.0.1,::1");
+    std::env::set_var("no_proxy", "localhost,127.0.0.1,::1");
     let port = common::plain_origin(handler()).await;
     let cfg = remote(format!("http://127.0.0.1:{port}/mcp"), "Bearer plain");
     let tools = connect_and_build_tools(cfg, host(Sandbox::off()))
