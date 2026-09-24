@@ -37,6 +37,13 @@ pub enum AgentEvent {
         est_tokens_before: usize,
         est_tokens_after: usize,
     },
+    /// Old large tool results were shortened to a preview and a reference
+    /// `search_history` can fetch back (the first, free stage of compaction).
+    ToolResultsShortened {
+        shortened: usize,
+        est_tokens_before: usize,
+        est_tokens_after: usize,
+    },
     /// Context was truncated (the naive harness `ferrule eval` compares
     /// against): the oldest messages were dropped, nothing summarized.
     Truncated {

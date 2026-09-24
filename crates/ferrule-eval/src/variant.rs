@@ -165,6 +165,10 @@ pub fn build(b: Build<'_>) -> Agent {
                     registry.register(tool);
                 }
             }
+            // M15: what compaction shortens or drops stays reachable.
+            if let Some(t) = &b.transcript {
+                registry.register(Arc::new(ferrule_core::SearchHistoryTool::new(t)));
+            }
             system
         }
     };
