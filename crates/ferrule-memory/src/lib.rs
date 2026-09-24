@@ -14,7 +14,24 @@ use thiserror::Error;
 pub enum MemoryError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    /// The store was written by a newer ferrule; refusing to touch a schema
+    /// this build does not know.
+    #[error("memory store has schema version {0}, newer than this ferrule understands ({SCHEMA_VERSION}); upgrade ferrule")]
+    NewerSchema(i64),
+    /// A write the store refuses on purpose (unknown id, an already
+    /// replaced fact). The message is written for the model to act on.
+    #[error("{0}")]
+    Refused(String),
 }
+
+/// The schema this build writes, kept in `PRAGMA user_version`.
+/// 0: before M15. 1: M15 — `superseded_by` / `superseded_at`.
+pub const SCHEMA_VERSION: i64 = 1;
+
+/// Token-set Jaccard at or above which a new fact is the same fact (NOOP).
+const DUPLICATE_JACCARD: f64 = 0.9;
+/// Jaccard at or above which a live fact is shown back as "similar".
+const SIMILAR_JACCARD: f64 = 0.3;
 
 #[derive(Debug, Clone)]
 pub struct Memory {
@@ -23,14 +40,45 @@ pub struct Memory {
     pub tags: Vec<String>,
     pub created_at: i64,
     pub score: f64,
+    /// The row that replaced this one; `None` while the fact is live.
+    pub superseded_by: Option<i64>,
+}
+
+/// What [`MemoryStore::insert`] did with a fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// Inserted as a new live fact.
+    Added,
+    /// Already known: nothing written, `id` is the existing live fact.
+    Noop,
+    /// Became the live replacement of the ids in `replaced`.
+    Updated,
+}
+
+#[derive(Debug, Clone)]
+pub struct Inserted {
+    pub id: i64,
+    pub decision: Decision,
+    /// Ids this write superseded (empty unless `Updated`).
+    pub replaced: Vec<i64>,
+    /// Live facts that look related but are not duplicates — the model
+    /// decides whether the new fact corrects one of them.
+    pub similar: Vec<Memory>,
 }
 
 pub struct MemoryStore {
     conn: Connection,
 }
 
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 impl MemoryStore {
-    /// Open (or create) a memory database. Pass ":memory:" for tests.
+    /// Open (or create) a memory database, migrating an older schema in place.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MemoryError> {
         let conn = Connection::open(path)?;
         Self::init(conn)
@@ -41,6 +89,15 @@ impl MemoryStore {
     }
 
     fn init(conn: Connection) -> Result<Self, MemoryError> {
+        // The gateway and a `ferrule memory` command may write at once: wait
+        // instead of failing with "database is locked". secure_delete zeroes
+        // the pages a `forget` frees.
+        conn.busy_timeout(std::time::Duration::from_millis(5_000))?;
+        conn.execute_batch("PRAGMA secure_delete = ON;")?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version > SCHEMA_VERSION {
+            return Err(MemoryError::NewerSchema(version));
+        }
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS memories (
@@ -60,83 +117,269 @@ impl MemoryStore {
                  INSERT INTO memories_fts(memories_fts, rowid, content, tags) VALUES('delete', old.id, old.content, old.tags);
              END;",
         )?;
+        if version < SCHEMA_VERSION {
+            migrate(&conn)?;
+        }
         Ok(Self { conn })
     }
 
+    /// Plain insert, no decision: the pre-M15 behaviour, kept for callers
+    /// that want every call to be a new row.
     pub fn remember(&self, content: &str, tags: &[&str]) -> Result<i64, MemoryError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
         self.conn.execute(
             "INSERT INTO memories (content, tags, created_at) VALUES (?1, ?2, ?3)",
-            params![content, tags.join(","), now],
+            params![content, tags.join(","), now_secs()],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// The M15 write path. With `replaces` empty: NOOP when a live fact
+    /// already says the same thing, otherwise ADD (and report similar live
+    /// facts). With `replaces`: the new fact becomes the live replacement of
+    /// those ids (UPDATE); a live identical row is reused rather than
+    /// duplicated. Replaced rows are kept, marked `superseded_by`.
+    pub fn insert(
+        &self,
+        content: &str,
+        tags: &[&str],
+        replaces: &[i64],
+    ) -> Result<Inserted, MemoryError> {
+        let content = content.trim();
+        if content.is_empty() {
+            return Err(MemoryError::Refused(
+                "refusing to store an empty fact".into(),
+            ));
+        }
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut replaces: Vec<i64> = replaces.to_vec();
+        replaces.sort_unstable();
+        replaces.dedup();
+        let mut inherited: Vec<String> = Vec::new();
+        for &id in &replaces {
+            match self.get(id)? {
+                None => return Err(MemoryError::Refused(format!("there is no memory #{id}"))),
+                Some(m) => {
+                    if m.superseded_by.is_some() {
+                        let head = self.head(id)?.unwrap_or(id);
+                        return Err(MemoryError::Refused(format!(
+                            "#{id} was already replaced by #{head} — update #{head} instead"
+                        )));
+                    }
+                    for t in m.tags {
+                        if !inherited.contains(&t) {
+                            inherited.push(t);
+                        }
+                    }
+                }
+            }
+        }
+
+        let candidates = self.live_candidates(content)?;
+        let norm = normalize(content);
+        let words = word_set(content);
+        let duplicate = candidates.iter().find(|m| {
+            normalize(&m.content) == norm
+                || (!words.is_empty()
+                    && jaccard(&words, &word_set(&m.content)) >= DUPLICATE_JACCARD)
+        });
+        let similar: Vec<Memory> = candidates
+            .iter()
+            .filter(|m| {
+                Some(m.id) != duplicate.map(|d| d.id)
+                    && !replaces.contains(&m.id)
+                    && !words.is_empty()
+                    && jaccard(&words, &word_set(&m.content)) >= SIMILAR_JACCARD
+            })
+            .take(5)
+            .cloned()
+            .collect();
+
+        if let Some(dup) = duplicate {
+            let id = dup.id;
+            let rest: Vec<i64> = replaces.iter().copied().filter(|&r| r != id).collect();
+            if rest.is_empty() {
+                tx.commit()?;
+                return Ok(Inserted {
+                    id,
+                    decision: Decision::Noop,
+                    replaced: vec![],
+                    similar,
+                });
+            }
+            self.mark_superseded(&rest, id)?;
+            tx.commit()?;
+            return Ok(Inserted {
+                id,
+                decision: Decision::Updated,
+                replaced: rest,
+                similar,
+            });
+        }
+
+        let tags: Vec<String> = if tags.is_empty() && !replaces.is_empty() {
+            inherited
+        } else {
+            tags.iter().map(|t| t.to_string()).collect()
+        };
+        self.conn.execute(
+            "INSERT INTO memories (content, tags, created_at) VALUES (?1, ?2, ?3)",
+            params![content, tags.join(","), now_secs()],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        self.mark_superseded(&replaces, id)?;
+        tx.commit()?;
+        let decision = if replaces.is_empty() {
+            Decision::Added
+        } else {
+            Decision::Updated
+        };
+        Ok(Inserted {
+            id,
+            decision,
+            replaced: replaces,
+            similar,
+        })
+    }
+
+    /// `insert(content, tags, [id])`: replace one live fact.
+    pub fn supersede(
+        &self,
+        id: i64,
+        content: &str,
+        tags: &[&str],
+    ) -> Result<Inserted, MemoryError> {
+        self.insert(content, tags, &[id])
+    }
+
+    fn mark_superseded(&self, ids: &[i64], by: i64) -> Result<(), MemoryError> {
+        let now = now_secs();
+        for &old in ids {
+            self.conn.execute(
+                "UPDATE memories SET superseded_by = ?1, superseded_at = ?2 WHERE id = ?3",
+                params![by, now, old],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// One row by id, live or not.
+    pub fn get(&self, id: i64) -> Result<Option<Memory>, MemoryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, tags, created_at, superseded_by FROM memories WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], row_to_memory)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// The live end of `id`'s chain (`id` itself when it is live).
+    /// `None` when `id` does not exist.
+    pub fn head(&self, id: i64) -> Result<Option<i64>, MemoryError> {
+        let mut cur = match self.get(id)? {
+            None => return Ok(None),
+            Some(m) => m,
+        };
+        // A chain only ever points at larger ids, so this terminates; the
+        // bound guards a hand-edited store.
+        for _ in 0..10_000 {
+            match cur.superseded_by {
+                None => break,
+                Some(next) => match self.get(next)? {
+                    Some(m) => cur = m,
+                    // Dangling pointer (a hand edit): treat as live.
+                    None => break,
+                },
+            }
+        }
+        Ok(Some(cur.id))
+    }
+
+    /// Live facts sharing words with `content`: the candidate pool for the
+    /// NOOP and "similar" checks.
+    fn live_candidates(&self, content: &str) -> Result<Vec<Memory>, MemoryError> {
+        let query = fts_escape(&capped_words(content, 32).join(" "));
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT m.id, m.content, m.tags, m.created_at, m.superseded_by
+             FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
+             WHERE memories_fts MATCH ?1 AND m.superseded_by IS NULL
+             ORDER BY bm25(memories_fts) LIMIT 20",
+        )?;
+        let rows = stmt.query_map(params![query], row_to_memory)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// BM25 keyword search with time-decay scoring: score = bm25 * decay,
     /// where decay halves every 7 days (ZeroClaw's proven half-life).
+    /// Every row is searched, but each hit is reported as the live head of
+    /// its chain: a query matching only a replaced fact's wording returns
+    /// the correction, never the stale fact.
     pub fn recall(&self, query: &str, limit: usize) -> Result<Vec<Memory>, MemoryError> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as f64)
-            .unwrap_or(0.0);
+        let now = now_secs() as f64;
         let half_life_secs = 7.0 * 24.0 * 3600.0;
+        let escaped = fts_escape(query);
+        if escaped.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
 
         let mut stmt = self.conn.prepare(
-            "SELECT m.id, m.content, m.tags, m.created_at, bm25(memories_fts) AS rank
+            "SELECT m.id, m.created_at, m.superseded_by, bm25(memories_fts) AS rank
              FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
              WHERE memories_fts MATCH ?1
              ORDER BY rank LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![fts_escape(query), limit as i64], |row| {
+        let rows = stmt.query_map(params![escaped, (limit * 5 + 20) as i64], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, f64>(4)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, f64>(3)?,
             ))
         })?;
 
-        let mut out = Vec::new();
+        let mut best: Vec<(i64, f64)> = Vec::new();
         for row in rows {
-            let (id, content, tags, created_at, rank) = row?;
+            let (id, created_at, superseded_by, rank) = row?;
             let age_secs = (now - created_at as f64).max(0.0);
             let decay = 0.5f64.powf(age_secs / half_life_secs);
             // bm25 returns negative values; more negative = better match.
             let score = (-rank) * decay;
-            out.push(Memory {
-                id,
-                content,
-                tags: split_tags(&tags),
-                created_at,
-                score,
-            });
+            let head = match superseded_by {
+                None => id,
+                Some(_) => match self.head(id)? {
+                    Some(h) => h,
+                    None => continue,
+                },
+            };
+            match best.iter_mut().find(|(h, _)| *h == head) {
+                Some(entry) => entry.1 = entry.1.max(score),
+                None => best.push((head, score)),
+            }
         }
-        out.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        best.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        best.truncate(limit);
+
+        let mut out = Vec::with_capacity(best.len());
+        for (id, score) in best {
+            if let Some(mut m) = self.get(id)? {
+                m.score = score;
+                out.push(m);
+            }
+        }
         Ok(out)
     }
 
-    /// Most recent memories, for session-start context assembly.
+    /// Most recent live memories, for session-start context assembly.
     pub fn recent(&self, limit: usize) -> Result<Vec<Memory>, MemoryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, content, tags, created_at FROM memories ORDER BY id DESC LIMIT ?1",
+            "SELECT id, content, tags, created_at, superseded_by FROM memories
+             WHERE superseded_by IS NULL ORDER BY id DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                content: row.get(1)?,
-                tags: split_tags(&row.get::<_, String>(2)?),
-                created_at: row.get(3)?,
-                score: 0.0,
-            })
-        })?;
+        let rows = stmt.query_map(params![limit as i64], row_to_memory)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
@@ -169,11 +412,129 @@ impl MemoryStore {
         Ok(parts.join("\n"))
     }
 
-    pub fn forget(&self, id: i64) -> Result<(), MemoryError> {
-        self.conn
-            .execute("DELETE FROM memories WHERE id = ?1", params![id])?;
-        Ok(())
+    /// The session-start memory block for a goal: facts matching the goal
+    /// first (top 10), then the newest live facts (up to 5) to fill the
+    /// budget. Each line is `- #id fact`, so the model can correct a fact
+    /// by id in one call.
+    pub fn assemble_for_goal(&self, goal: &str, char_budget: usize) -> Result<String, MemoryError> {
+        let mut seen = std::collections::HashSet::new();
+        let mut used = 0usize;
+        let mut parts = Vec::new();
+        let mut push = |m: &Memory| {
+            let line = format!("- #{} {}", m.id, m.content);
+            if seen.insert(m.id) && used + line.len() <= char_budget {
+                used += line.len() + 1;
+                parts.push(line);
+            }
+        };
+        let query = goal_query(goal);
+        if !query.is_empty() {
+            for m in self.recall(&query, 10)? {
+                push(&m);
+            }
+        }
+        for m in self.recent(5)? {
+            push(&m);
+        }
+        Ok(parts.join("\n"))
     }
+
+    /// Hard-delete a fact. Forgetting a live fact deletes it and every
+    /// older version in its chain; forgetting an old version deletes just
+    /// that row (the chain is re-linked around it). The FTS index is merged
+    /// and the WAL truncated so no copy of the text stays in the files.
+    /// Returns the deleted ids — empty when `id` does not exist.
+    pub fn forget(&self, id: i64) -> Result<Vec<i64>, MemoryError> {
+        let row = match self.get(id)? {
+            None => return Ok(Vec::new()),
+            Some(m) => m,
+        };
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let deleted: Vec<i64> = if row.superseded_by.is_some() {
+            self.conn.execute(
+                "UPDATE memories SET superseded_by = ?1 WHERE superseded_by = ?2",
+                params![row.superseded_by, id],
+            )?;
+            self.conn
+                .execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+            vec![id]
+        } else {
+            let mut stmt = self.conn.prepare(
+                "WITH RECURSIVE chain(id) AS (
+                     SELECT ?1
+                     UNION SELECT m.id FROM memories m JOIN chain c ON m.superseded_by = c.id
+                 ) SELECT id FROM chain ORDER BY id",
+            )?;
+            let ids = stmt
+                .query_map(params![id], |r| r.get::<_, i64>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for &d in &ids {
+                self.conn
+                    .execute("DELETE FROM memories WHERE id = ?1", params![d])?;
+            }
+            ids
+        };
+        tx.commit()?;
+        // An FTS5 delete is logical until the segments merge; merge now so the
+        // tokens leave the index b-tree, then drop the WAL's copies.
+        self.conn.execute(
+            "INSERT INTO memories_fts(memories_fts) VALUES('optimize')",
+            [],
+        )?;
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(deleted)
+    }
+}
+
+/// 0 → 1: the `superseded_by` / `superseded_at` columns, their index and an
+/// update trigger for FTS. Idempotent, and serialized across processes by
+/// `BEGIN IMMEDIATE`.
+fn migrate(conn: &Connection) -> Result<(), MemoryError> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version > SCHEMA_VERSION {
+        return Err(MemoryError::NewerSchema(version));
+    }
+    if version < 1 {
+        let mut cols = Vec::new();
+        {
+            let mut stmt = conn.prepare("PRAGMA table_info(memories)")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            for c in rows {
+                cols.push(c?);
+            }
+        }
+        for col in ["superseded_by", "superseded_at"] {
+            if !cols.iter().any(|c| c == col) {
+                conn.execute_batch(&format!("ALTER TABLE memories ADD COLUMN {col} INTEGER;"))?;
+            }
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS memories_superseded ON memories(superseded_by);
+             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE OF content, tags ON memories BEGIN
+                 INSERT INTO memories_fts(memories_fts, rowid, content, tags) VALUES('delete', old.id, old.content, old.tags);
+                 INSERT INTO memories_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
+             END;
+             PRAGMA user_version = 1;",
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
+    Ok(Memory {
+        id: row.get(0)?,
+        content: row.get(1)?,
+        tags: split_tags(&row.get::<_, String>(2)?),
+        created_at: row.get(3)?,
+        score: 0.0,
+        superseded_by: row.get(4)?,
+    })
 }
 
 fn split_tags(tags: &str) -> Vec<String> {
@@ -183,13 +544,87 @@ fn split_tags(tags: &str) -> Vec<String> {
         .collect()
 }
 
+/// Lowercase, collapse whitespace, strip trailing punctuation: two facts
+/// equal after this are the same fact.
+fn normalize(s: &str) -> String {
+    let lower = s.to_lowercase();
+    let collapsed = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed
+        .trim_end_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+        .to_string()
+}
+
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "into", "you",
+    "your", "our", "has", "have", "had", "not", "but", "can", "will", "would", "should", "could",
+    "all", "any", "its", "his", "her", "their", "they", "them", "what", "which", "who", "when",
+    "where", "how", "why", "about", "then", "than", "there", "here", "also", "just", "some",
+    "please", "does", "did", "done", "been", "being", "use", "using",
+];
+
+/// Lowercased alphanumeric runs (Unicode-aware, so Hebrew counts).
+fn words(s: &str) -> impl Iterator<Item = String> + '_ {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+}
+
+/// Content words for the similarity checks: stopwords and one-letter words
+/// dropped, but numbers always kept ("port 5781" and "port 5782" differ).
+fn word_set(s: &str) -> std::collections::HashSet<String> {
+    words(s)
+        .filter(|w| {
+            w.chars().any(|c| c.is_numeric())
+                || (w.chars().count() >= 2 && !STOPWORDS.contains(&w.as_str()))
+        })
+        .collect()
+}
+
+fn jaccard(a: &std::collections::HashSet<String>, b: &std::collections::HashSet<String>) -> f64 {
+    let union = a.union(b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    a.intersection(b).count() as f64 / union as f64
+}
+
+/// The first `max` distinct words of `s`, in order.
+fn capped_words(s: &str, max: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in words(s) {
+        if !out.contains(&w) {
+            out.push(w);
+            if out.len() == max {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// A goal turned into a recall query: words of three or more characters,
+/// stopwords dropped, the first 32 distinct.
+pub fn goal_query(goal: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for w in words(goal) {
+        if w.chars().count() >= 3 && !STOPWORDS.contains(&w.as_str()) && !out.contains(&w) {
+            out.push(w);
+            if out.len() == 32 {
+                break;
+            }
+        }
+    }
+    out.join(" ")
+}
+
 /// FTS5 query strings are a mini-language; quote terms to keep user/model
 /// queries from blowing up the parser.
 fn fts_escape(query: &str) -> String {
     query
         .split_whitespace()
+        .map(|t| t.replace('"', ""))
         .filter(|t| !t.is_empty())
-        .map(|t| format!("\"{}\"", t.replace('"', "")))
+        .map(|t| format!("\"{t}\""))
         .collect::<Vec<_>>()
         .join(" OR ")
 }
@@ -233,6 +668,197 @@ mod tests {
         let ctx = store.assemble_context(None, 300).unwrap();
         assert!(ctx.len() < 320);
         assert!(ctx.contains("fact number 9"));
+    }
+
+    #[test]
+    fn insert_decides_noop_add_and_reports_similar() {
+        let store = MemoryStore::in_memory().unwrap();
+        let a = store
+            .insert("The deploy target is fly.io, region ams", &["infra"], &[])
+            .unwrap();
+        assert_eq!(a.decision, Decision::Added);
+
+        // Same fact, different case/whitespace/trailing punctuation: NOOP.
+        let b = store
+            .insert("the deploy  target is fly.io, region ams.", &[], &[])
+            .unwrap();
+        assert_eq!(b.decision, Decision::Noop);
+        assert_eq!(b.id, a.id);
+
+        // Related but different: ADD, and the old one is shown as similar.
+        let c = store
+            .insert("The deploy target is render, region frankfurt", &[], &[])
+            .unwrap();
+        assert_eq!(c.decision, Decision::Added);
+        assert_ne!(c.id, a.id);
+        assert_eq!(
+            c.similar.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![a.id]
+        );
+
+        // Unrelated: plain ADD, nothing similar.
+        let d = store
+            .insert("Max drinks his coffee black", &[], &[])
+            .unwrap();
+        assert_eq!(d.decision, Decision::Added);
+        assert!(d.similar.is_empty());
+        assert_eq!(store.recent(10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn supersede_prefers_the_live_fact_on_old_wording() {
+        let store = MemoryStore::in_memory().unwrap();
+        let old = store
+            .insert("The deploy target is fly.io", &["infra"], &[])
+            .unwrap()
+            .id;
+        let new = store
+            .supersede(old, "The deploy target is render.com", &[])
+            .unwrap();
+        assert_eq!(new.decision, Decision::Updated);
+        assert_eq!(new.replaced, vec![old]);
+
+        // A query that only matches the old wording returns the correction.
+        let hits = store.recall("fly.io", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, new.id);
+        assert!(hits[0].content.contains("render.com"));
+        // Tags were inherited.
+        assert_eq!(hits[0].tags, vec!["infra".to_string()]);
+        // A query matching both returns the live head once.
+        let hits = store.recall("deploy target", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, new.id);
+        // recent() lists live rows only; the old row is kept for audit.
+        assert_eq!(store.recent(10).unwrap().len(), 1);
+        assert_eq!(store.get(old).unwrap().unwrap().superseded_by, Some(new.id));
+        assert_eq!(store.head(old).unwrap(), Some(new.id));
+    }
+
+    #[test]
+    fn superseding_twice_or_unknown_ids_is_refused() {
+        let store = MemoryStore::in_memory().unwrap();
+        let a = store.insert("port is 5781", &[], &[]).unwrap().id;
+        let b = store.supersede(a, "port is 5782", &[]).unwrap().id;
+        let err = store
+            .supersede(a, "port is 5783", &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(&format!("already replaced by #{b}")), "{err}");
+        let err = store.supersede(999, "x", &[]).unwrap_err().to_string();
+        assert!(err.contains("no memory #999"), "{err}");
+        // Nothing was written by the refused calls.
+        assert_eq!(store.recent(10).unwrap().len(), 1);
+        assert!(store.recall("5783", 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_to_an_existing_live_fact_reuses_it() {
+        let store = MemoryStore::in_memory().unwrap();
+        let old = store
+            .insert("staging runs postgres 16", &[], &[])
+            .unwrap()
+            .id;
+        let noted = store
+            .insert("staging runs postgres 18 now", &[], &[])
+            .unwrap()
+            .id;
+        let r = store
+            .supersede(old, "Staging runs Postgres 18 now.", &[])
+            .unwrap();
+        assert_eq!(r.decision, Decision::Updated);
+        assert_eq!(r.id, noted, "no duplicate row for the correction");
+        assert_eq!(store.recent(10).unwrap().len(), 1);
+        // Updating a fact to its own text is a NOOP.
+        let r = store
+            .supersede(noted, "staging runs postgres 18 now", &[])
+            .unwrap();
+        assert_eq!(r.decision, Decision::Noop);
+    }
+
+    #[test]
+    fn forget_deletes_the_chain_and_leaves_no_trace_in_fts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let store = MemoryStore::open(&path).unwrap();
+        let a = store
+            .insert("home address zanzibarstreet 12", &[], &[])
+            .unwrap()
+            .id;
+        let b = store
+            .supersede(a, "home address quokkalane 7", &[])
+            .unwrap()
+            .id;
+        let keep = store.insert("unrelated fact stays", &[], &[]).unwrap().id;
+        let deleted = store.forget(b).unwrap();
+        assert_eq!(deleted, vec![a, b]);
+        assert!(store.get(a).unwrap().is_none());
+        assert!(store.recall("zanzibarstreet", 5).unwrap().is_empty());
+        assert!(store.recall("quokkalane", 5).unwrap().is_empty());
+        assert!(store.get(keep).unwrap().is_some());
+        assert!(store.forget(12345).unwrap().is_empty());
+        drop(store);
+        // No copy of the text left in the database or WAL bytes.
+        for f in ["memory.db", "memory.db-wal"] {
+            if let Ok(bytes) = std::fs::read(dir.path().join(f)) {
+                for needle in ["zanzibarstreet", "quokkalane"] {
+                    assert!(
+                        !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                        "{needle} still in {f}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn forgetting_an_old_version_keeps_the_live_fact_linked() {
+        let store = MemoryStore::in_memory().unwrap();
+        let a = store.insert("editor is vim", &[], &[]).unwrap().id;
+        let b = store.supersede(a, "editor is helix", &[]).unwrap().id;
+        let c = store.supersede(b, "editor is zed", &[]).unwrap().id;
+        assert_eq!(store.forget(b).unwrap(), vec![b]);
+        assert_eq!(store.get(a).unwrap().unwrap().superseded_by, Some(c));
+        assert_eq!(store.recall("vim", 5).unwrap()[0].id, c);
+    }
+
+    #[test]
+    fn assemble_for_goal_puts_goal_matches_first_with_ids() {
+        let store = MemoryStore::in_memory().unwrap();
+        let port = store
+            .insert("The staging database listens on port 5781", &[], &[])
+            .unwrap()
+            .id;
+        for i in 0..8 {
+            store.insert(&format!("filler fact {i}"), &[], &[]).unwrap();
+        }
+        let block = store
+            .assemble_for_goal("Which port does the staging database use?", 2_000)
+            .unwrap();
+        let first = block.lines().next().unwrap();
+        assert_eq!(
+            first,
+            format!("- #{port} The staging database listens on port 5781")
+        );
+        // The newest facts fill the rest.
+        assert!(block.contains("filler fact 7"), "{block}");
+        assert!(!block.contains("filler fact 2"));
+        let tiny = store
+            .assemble_for_goal("staging database port", 60)
+            .unwrap();
+        assert!(tiny.len() <= 60);
+    }
+
+    #[test]
+    fn a_newer_schema_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        drop(MemoryStore::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA user_version = 2;").unwrap();
+        drop(conn);
+        let err = MemoryStore::open(&path).err().unwrap();
+        assert!(matches!(err, MemoryError::NewerSchema(2)), "{err}");
     }
 
     #[test]
