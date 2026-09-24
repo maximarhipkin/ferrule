@@ -76,7 +76,8 @@ that convention yet — ask before introducing one).
   file tools. `ferrule doctor` checks everything, `ferrule config
   path|edit|example` covers hand edits. **Windows builds and runs**, with
   no OS sandbox (Git Bash or PowerShell as the shell). CI
-  (`.github/workflows/ci.yml`) tests Linux, macOS and Windows;
+  (`.github/workflows/ci.yml`) tests Linux, macOS and Windows, all three
+  green since `cee5de1`;
   `release.yml` builds 5 targets on a `v*` tag. **No release has been
   tagged yet**, so the install one-liners have nothing to download until
   Max tags one.
@@ -129,13 +130,21 @@ that convention yet — ask before introducing one).
   were dropped by Max on 2026-09-24, msg 3070). These are the largest deltas. (The
   cost/observability ledger gap closed 2026-09-24, Phase 0; the skills
   half of "skills/plugin system" closed the same day, M5; OS sandboxing
-  for the shell tool closed the same day too, M6. Reads, MCP servers and
-  the macOS backend's real-Mac run are its open edges. The
+  for the shell tool closed the same day too, M6. Reads and MCP servers
+  are its open edges; the macOS backend passed on a real Mac in CI. The
   credential-injection gateway closed the same day, M7; its open edges
   are HTTP/2 and websockets on bound hosts, body injection, MCP servers
   and `web_fetch` bypassing it, and a real-Mac run. The Telegram sender
   allow-list closed with M8. Native Windows has no sandbox backend;
   AppContainer or a restricted token is the research item.)
+- **Next milestones, proposed** (`docs/research-autonomy-and-self-extension.md`,
+  msg 3066): M9 never stuck (provider retry and backoff, a stuck
+  detector, a graceful stop at `max_iterations`, `verify_command`
+  enforced by the runtime), M10 MCP servers and `web_fetch` under the
+  sandbox and the credential proxy, M11 a browser via agent-browser's MCP
+  server, M12 self-extension (skills and MCP servers installed with owner
+  approval and hot-loaded). Waiting on Max's four decisions in §9 there
+  (approval model, Chromium download, order, Windows sandbox priority).
 
 ## Session Log
 
@@ -1325,3 +1334,61 @@ LEAK/TAMPERED/PLANTED all False.
   terminal or Task Scheduler for now.
 - The Landlock carve makes the workspace top level read-only when the
   workspace contains the data dir (see above).
+
+**First CI runs** (after the M8 push; fixes in `30fd260`, `cee5de1`):
+- **Linux:** green on the first run, including the sandbox self-test and
+  both `tests_e2e` scripts.
+- **macOS (macos-14, first run on a real Mac):** Seatbelt enforced
+  everything: hidden paths, network off, read-only, env scrubbing, temp
+  dirs. Two tests failed only on the message text: Seatbelt refuses with
+  EPERM ("Operation not permitted"), Landlock with EACCES ("Permission
+  denied"). `ferrule_sandbox::DENIED` now holds the right one per OS. The
+  shell tool's note to the model quotes it too, so on a Mac the model is
+  told the text it will actually see. `ferrule sandbox` passes all checks
+  on the runner.
+- **Windows (windows-latest, first run anywhere):** one real bug. The MCP
+  `initialize` handshake used the per-call `timeout_secs`, so a server
+  that is slow to start failed at connect. The test's 1 s timeout met a
+  cold Python on the runner, and an `npx` server would hit the same thing
+  in use. Startup (`initialize` + `tools/list`) now gets at least 60 s
+  (`McpServerConfig::startup_timeout`), and `tools/call` keeps
+  `timeout_secs`. Every other crate, sandbox and cli included, passed on
+  Windows.
+- `ci.yml` runs `cargo test --no-fail-fast`. Before, the Windows run
+  stopped at the first failing crate and never tested the rest.
+- **Release dry run** (`release.yml` by hand, nothing published): all 5
+  targets build and print `ferrule 0.1.0`; the arm64 Linux runner works
+  on the private repo. The x86_64 musl artifact, downloaded here, passes
+  its sha256, is static-pie (10.6 MB, 4.4 MB as .tar.gz) and passes every
+  `ferrule sandbox` check. The run showed one bug: the Package step's
+  version check unpacked `ferrule` into `dist/`, so the raw binary was
+  uploaded next to the archive, and in a release the four Unix targets'
+  `ferrule` files would have collided. It now unpacks outside `dist/`
+  (checked locally, not re-run on CI).
+- Cost note: the repo is private, so Actions minutes are billed, with
+  macOS at 10x and Windows at 2x the Linux rate.
+
+### 2026-09-24 — Research: never stuck, self-extension, a browser, speed (Devi, Opus 5.5)
+
+Max (msg 3066) asked how to make Ferrule smart and fast: an architecture
+review, never getting stuck, its own browser, and installing skills and
+plugins for itself. Written up in
+`docs/research-autonomy-and-self-extension.md` (code refs to `f3cd7e0`).
+The main findings:
+- Nothing in the loop recovers. A provider error fails the turn (no
+  retry anywhere), an MCP call gets one respawn, hitting `max_iterations`
+  sends `internal error: …` to Telegram, and repeats go unnoticed.
+  OpenHands' `StuckDetector` (five loop signatures) ports in about 100
+  lines over data `Agent` already has.
+- `verify_command` is only a sentence in the system prompt. It should be
+  run by the runtime, with the failure fed back, as Claude Code's Stop
+  hook does.
+- Browser: `vercel-labs/agent-browser` (Rust, Apache-2.0, CDP) ships an
+  MCP server, so it needs config, not code. Its proxy and domain flags fit
+  the credential proxy.
+- Self-install is the risky part: MCPTox measured 36.5% average attack
+  success from poisoned tool descriptions. MCP servers run outside the
+  sandbox and the proxy today, so M10 (confine them) goes before M12
+  (self-install).
+- Speed: tools run one after another and the provider doesn't stream.
+  Both are loop fixes, measurable with the ledger's `latency_ms`.
