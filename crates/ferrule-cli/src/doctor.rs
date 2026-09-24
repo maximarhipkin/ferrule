@@ -1,7 +1,6 @@
 //! `ferrule doctor`: one pass over everything setup configures — the
 //! config, the saved keys, each provider, Telegram, the sandbox, the
-//! background service, the binary itself and, for information, the browser
-//! — with a line per check and what to do about each problem. Exits
+//! background service, the binary itself and the browser — with a line per check and what to do about each problem. Exits
 //! non-zero if anything is broken.
 
 use crate::setup::tilde;
@@ -111,7 +110,7 @@ pub async fn run(offline: bool) -> Result<bool> {
                 r.hint("run `ferrule setup`");
             }
             binary(&mut r);
-            browser_check(&mut r);
+            browser_check(&mut r, None);
             return Ok(r.finish());
         }
     };
@@ -126,7 +125,7 @@ pub async fn run(offline: bool) -> Result<bool> {
     proxy(&mut r, &cfg);
     service_check(&mut r, &path, telegram_on)?;
     binary(&mut r);
-    browser_check(&mut r);
+    browser_check(&mut r, Some(&cfg));
     Ok(r.finish())
 }
 
@@ -571,35 +570,106 @@ fn binary(r: &mut Report) {
     }
 }
 
-/// Is there a Chrome or Chromium, and does it start headless? For
-/// information only: nothing needs it yet, and nothing is downloaded.
-fn browser_check(r: &mut Report) {
-    match browser::find() {
-        None => r.note(
-            "browser",
-            "no Chrome or Chromium found (set CHROME_PATH to point at one)",
-        ),
-        Some(exe) => {
-            let timeout = std::time::Duration::from_secs(20);
-            match browser::launch_test(&exe, service::is_root(), timeout) {
-                Ok(()) => r.ok("browser", format!("{} · starts headless", tilde(&exe))),
-                Err(why) => r.note(
-                    "browser",
-                    format!("{} didn't start headless: {why}", tilde(&exe)),
-                ),
-            }
+/// Is there a Chrome or Chromium, does it start headless the way the
+/// browser server would run it, and is `[browser]` ready? Problems only
+/// count as failures when `[browser]` is on; otherwise they're notes.
+fn browser_check(r: &mut Report, cfg: Option<&config::Config>) {
+    let fallback = ferrule_mcp::BrowserConfig::default();
+    let b = cfg.map_or(&fallback, |c| &c.browser);
+    let on = b.enabled;
+    let problem = |r: &mut Report, text: String| {
+        if on {
+            r.fail("browser", text)
+        } else {
+            r.note("browser", text)
         }
-    }
-    // Ubuntu 24.04 and later: a browser's own sandbox needs an AppArmor
-    // profile that allows it user namespaces.
-    let restricted =
-        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-            .is_ok_and(|v| v.trim() == "1");
-    if restricted {
-        r.note(
+    };
+    let Some(chrome) = browser::chrome(b) else {
+        problem(
+            r,
+            "no Chrome or Chromium found (set CHROME_PATH, or `chrome` in [browser])".into(),
+        );
+        return;
+    };
+    let is_root = service::is_root();
+    let blocker = ferrule_mcp::browser::chrome_sandbox_blocker(is_root);
+    let no_sandbox = !b.chrome_sandbox || blocker.is_some();
+    let started = match cfg {
+        Some(cfg) => browser::launch_test(cfg, &chrome, no_sandbox),
+        None => {
+            ferrule_mcp::browser::launch_test(&chrome, no_sandbox, browser::LAUNCH_TIMEOUT, None)
+        }
+    };
+    match started {
+        Ok(()) if no_sandbox => r.ok(
             "browser",
-            "AppArmor restricts unprivileged user namespaces, so Chrome's sandbox needs a profile \
-             (the google-chrome .deb and the Chromium snap bring one)",
+            format!(
+                "{} · starts headless, without its own sandbox",
+                tilde(&chrome)
+            ),
+        ),
+        Ok(()) => r.ok("browser", format!("{} · starts headless", tilde(&chrome))),
+        Err(why) if !no_sandbox && ferrule_mcp::browser::is_sandbox_failure(&why) => {
+            problem(
+                r,
+                format!(
+                    "{}: Chrome's own sandbox can't start: {why}",
+                    tilde(&chrome)
+                ),
+            );
+            // Ubuntu 24.04 and later: it needs user namespaces, which
+            // AppArmor only grants to a program with a profile saying so.
+            let restricted =
+                std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+                    .is_ok_and(|v| v.trim() == "1");
+            if restricted {
+                r.hint(format!(
+                    "AppArmor restricts user namespaces here. Best: a profile allowing `userns` \
+                     for {} (docs/browser.md). Else `sudo sysctl \
+                     kernel.apparmor_restrict_unprivileged_userns=0` for the whole system",
+                    chrome.display()
+                ));
+            }
+            r.hint("last resort: `chrome_sandbox = false` in [browser] (docs/browser.md)");
+        }
+        Err(why) => problem(
+            r,
+            format!("{} didn't start headless: {why}", tilde(&chrome)),
+        ),
+    }
+    let command = ferrule_mcp::browser::find_agent_browser(&b.command);
+    if !on {
+        let how = match &command {
+            Ok(_) => "`ferrule setup` → Browser turns it on".to_string(),
+            Err(why) => format!("{why}, then `ferrule setup` → Browser"),
+        };
+        r.note("browser", format!("off for the agent: {how}"));
+        return;
+    }
+    match &command {
+        Ok(path) => r.ok("browser", format!("driven by {}", tilde(path))),
+        Err(why) => r.fail("browser", why.clone()),
+    }
+    if let Some(why) = blocker.filter(|_| b.chrome_sandbox) {
+        r.fail(
+            "browser",
+            format!("{why}, so the agent won't get the browser"),
+        );
+        r.hint("`chrome_sandbox = false` in [browser] accepts that (docs/browser.md)");
+    } else if !b.chrome_sandbox {
+        r.warn(
+            "browser",
+            "Chrome runs without its own sandbox (chrome_sandbox = false); ferrule's still confines it",
         );
     }
+    let route = match cfg {
+        Some(cfg) if !cfg.secrets.is_empty() => "through the credential proxy",
+        _ => "straight out (no [secrets], so no proxy)",
+    };
+    let domains = if b.allowed_domains.is_empty() {
+        "any site".to_string()
+    } else {
+        b.allowed_domains.join(", ")
+    };
+    r.ok("browser", format!("on · {domains} · {route}"));
 }

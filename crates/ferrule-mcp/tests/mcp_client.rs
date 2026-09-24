@@ -20,6 +20,7 @@ fn fixture_cfg(name: &str, timeout_secs: Option<u64>) -> McpServerConfig {
         timeout_secs,
         sandbox: true,
         writable_roots: vec![],
+        ..Default::default()
     }
 }
 
@@ -190,4 +191,61 @@ async fn server_initiated_ping_is_answered_and_not_mistaken_for_a_response() {
         .await
         .expect("call ok");
     assert_eq!(out.content, "pong-ok");
+}
+
+#[tokio::test]
+async fn hidden_arguments_are_neither_shown_nor_sent() {
+    let cfg = McpServerConfig {
+        hide_args: vec!["a".into()],
+        ..fixture_cfg("test", Some(5))
+    };
+    let tools = connect_and_build_tools(cfg, host()).await.expect("connect");
+    let add = tools
+        .iter()
+        .find(|t| t.definition().name == "mcp__test__add")
+        .expect("add tool");
+    let props = add.definition().parameters["properties"].clone();
+    assert!(
+        props.get("a").is_none() && props.get("b").is_some(),
+        "{props}"
+    );
+    let out = add
+        .call(json!({"a": 40, "b": 2}), &ToolContext::default())
+        .await
+        .expect("call ok");
+    assert_eq!(out.content, "2");
+}
+
+#[tokio::test]
+async fn env_remove_takes_a_variable_out_but_env_still_sets_one() {
+    let mut cfg = fixture_cfg("test", Some(5));
+    cfg.env_remove = vec![
+        "FERRULE_TEST_GONE".into(),
+        "FERRULE_TEST_PRE_*".into(),
+        "FERRULE_TEST_BACK".into(),
+    ];
+    cfg.env.insert("FERRULE_TEST_BACK".into(), "set".into());
+    std::env::set_var("FERRULE_TEST_GONE", "inherited");
+    std::env::set_var("FERRULE_TEST_PRE_X", "inherited");
+    let tools = connect_and_build_tools(cfg, host()).await.expect("connect");
+    let env = tools
+        .iter()
+        .find(|t| t.definition().name == "mcp__test__env")
+        .expect("env tool");
+    let ctx = ToolContext::default();
+    let gone = env
+        .call(json!({"name": "FERRULE_TEST_GONE"}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(gone.content, "<unset>");
+    let pre = env
+        .call(json!({"name": "FERRULE_TEST_PRE_X"}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(pre.content, "<unset>");
+    let back = env
+        .call(json!({"name": "FERRULE_TEST_BACK"}), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(back.content, "set");
 }

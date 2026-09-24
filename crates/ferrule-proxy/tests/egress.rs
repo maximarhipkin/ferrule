@@ -48,6 +48,10 @@ async fn respond(req: Request<Incoming>, sessions: Sessions) -> Reply {
             format!("<html><script>x()</script><p>hello</p><p>key_real={real}</p></html>"),
         );
     }
+    if req.method() == http::Method::GET {
+        // A browser also asks for /favicon.ico.
+        return text(StatusCode::NOT_FOUND, "");
+    }
     let auth = if header("authorization") == format!("Bearer {TOKEN}") {
         "real".to_string()
     } else {
@@ -204,6 +208,7 @@ fn remote(url: String, auth: &str) -> McpServerConfig {
         timeout_secs: Some(10),
         sandbox: true,
         writable_roots: vec![],
+        ..Default::default()
     }
 }
 
@@ -283,4 +288,91 @@ async fn a_header_variable_that_is_not_there_stops_the_server() {
         err.to_string().contains("FERRULE_TEST_NO_SUCH_VAR"),
         "{err}"
     );
+}
+
+/// A real headless Chrome, driven by agent-browser, loads a page through
+/// the proxy: it trusts the proxy's CA by key only (the origin's own CA
+/// isn't trusted anywhere), answers its `407`, and the placeholder in the
+/// URL reaches the origin as the real token. Skipped like
+/// `ferrule-mcp/tests/browser.rs` when there's no Chrome or agent-browser.
+#[tokio::test]
+async fn the_browser_goes_through_the_proxy_and_trusts_its_ca() {
+    use ferrule_mcp::browser;
+    let agent_browser = std::env::var_os("FERRULE_AGENT_BROWSER")
+        .map(std::path::PathBuf::from)
+        .or_else(|| browser::find_agent_browser("agent-browser").ok());
+    let Some((chrome, agent_browser)) = browser::find().zip(agent_browser) else {
+        let required = std::env::var("FERRULE_REQUIRE_BROWSER_TEST").is_ok_and(|v| v == "1");
+        assert!(
+            !required,
+            "FERRULE_REQUIRE_BROWSER_TEST=1 but Chrome or agent-browser is missing"
+        );
+        eprintln!("skipped: no Chrome, or no agent-browser");
+        return;
+    };
+    let s = setup().await;
+    let (addr, username, password) = s.broker.proxy_auth();
+    let proxy = browser::BrowserProxy {
+        addr,
+        username: username.into(),
+        password: password.into(),
+        ca_spki_sha256: s.broker.ca_spki_sha256().into(),
+    };
+    #[cfg(unix)]
+    let is_root = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0)
+    };
+    #[cfg(not(unix))]
+    let is_root = false;
+    let cfg = ferrule_mcp::BrowserConfig {
+        enabled: true,
+        chrome_sandbox: browser::chrome_sandbox_blocker(is_root).is_none(),
+        timeout_secs: Some(90),
+        ..Default::default()
+    };
+    let state = tempfile::tempdir().unwrap();
+    let mut server = cfg
+        .server_config(&chrome, state.path(), Some(&proxy))
+        .unwrap();
+    server.command = agent_browser.to_string_lossy().into_owned();
+    // Chrome never proxies loopback unless told to; the origin is on it.
+    server
+        .env
+        .insert("AGENT_BROWSER_PROXY_BYPASS".into(), "<-loopback>".into());
+    let sandbox = Sandbox::new(ferrule_sandbox::Policy::default())
+        .unwrap()
+        .with_env(s.broker.child_env());
+    let host = ServerHost {
+        sandbox: Arc::new(sandbox),
+        workspace: tempfile::tempdir().unwrap().keep(),
+        state_dir: state.path().to_path_buf(),
+    };
+    let tools = connect_and_build_tools(server, host)
+        .await
+        .expect("connect");
+    let tool = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t.definition().name == format!("mcp__browser__agent_browser_{name}"))
+            .expect("tool")
+            .clone()
+    };
+    let ctx = ToolContext::default();
+    let url = format!(
+        "https://127.0.0.1:{}/page?key={}",
+        s.port,
+        placeholder(&s.broker)
+    );
+    tool("open")
+        .call(json!({ "url": url }), &ctx)
+        .await
+        .expect("open through the proxy");
+    let text = tool("get_text")
+        .call(json!({ "selector": "body" }), &ctx)
+        .await
+        .expect("page text")
+        .content;
+    assert!(text.contains("key_real=true"), "{text}");
+    let _ = tool("close").call(json!({}), &ctx).await;
 }

@@ -222,8 +222,8 @@ impl McpClient {
     /// writes confined to the workspace, temp dirs and the server's state
     /// dir. The network stays open. A confined server also gets its home,
     /// caches and temp dir inside the state dir, since `npx` and `uvx`
-    /// can't start without writing somewhere; its `env` config comes last
-    /// and can override any of it.
+    /// can't start without writing somewhere. Its `env_remove` config is
+    /// applied next and its `env` last, overriding any of it.
     fn build_command(&self) -> Result<tokio::process::Command, McpError> {
         let program = resolve_program(&self.cfg.command);
         let std_cmd = self
@@ -243,6 +243,20 @@ impl McpClient {
                 .env("npm_config_cache", state.join(".npm"))
                 .env("UV_CACHE_DIR", state.join(".cache/uv"))
                 .env("TMPDIR", tmp);
+        }
+        for name in &self.cfg.env_remove {
+            match name.strip_suffix('*') {
+                Some(prefix) => {
+                    for (var, _) in std::env::vars_os() {
+                        if var.to_string_lossy().starts_with(prefix) {
+                            cmd.env_remove(var);
+                        }
+                    }
+                }
+                None => {
+                    cmd.env_remove(name);
+                }
+            }
         }
         cmd.envs(&self.cfg.env);
         Ok(cmd)

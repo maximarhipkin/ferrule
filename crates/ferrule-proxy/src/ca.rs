@@ -29,6 +29,9 @@ pub(crate) struct Ca {
     cert_der: CertificateDer<'static>,
     pub cert_pem: String,
     pub cert_path: PathBuf,
+    /// Base64 SHA-256 of the CA's SubjectPublicKeyInfo, the form Chrome's
+    /// `--ignore-certificate-errors-spki-list` takes.
+    pub spki_sha256: String,
     provider: Arc<CryptoProvider>,
     leaves: Mutex<HashMap<String, Arc<ServerConfig>>>,
 }
@@ -53,6 +56,7 @@ pub(crate) fn load_or_create(
     }
     let key_pem = fs::read_to_string(dir.join("ca.key"))?;
     let key = KeyPair::from_pem(&key_pem).context("parsing the proxy CA key")?;
+    let spki_sha256 = spki_sha256(&key);
     let cert_path = dir.join("ca.pem");
     let cert_pem = fs::read_to_string(&cert_path)?;
     let cert_der = CertificateDer::from_pem_slice(cert_pem.as_bytes())
@@ -66,6 +70,7 @@ pub(crate) fn load_or_create(
         cert_der,
         cert_pem,
         cert_path,
+        spki_sha256,
         provider,
         leaves: Mutex::new(HashMap::new()),
     };
@@ -110,6 +115,13 @@ fn create(state_dir: &Path, dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn spki_sha256(key: &KeyPair) -> String {
+    use base64::Engine as _;
+    use rcgen::PublicKeyData as _;
+    let hash = digest::digest(&digest::SHA256, &key.subject_public_key_info());
+    base64::engine::general_purpose::STANDARD.encode(hash.as_ref())
 }
 
 fn ca_params(seed: &[u8]) -> CertificateParams {

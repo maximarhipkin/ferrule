@@ -31,6 +31,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # The browser tests drive the runner's own Chrome; only agent-browser
+      # is fetched, pinned to the version the code is built against.
+      - name: agent-browser
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) asset=agent-browser-linux-x64 ;;
+            macOS) asset=agent-browser-darwin-arm64 ;;
+            Windows) asset=agent-browser-win32-x64.exe ;;
+          esac
+          dir="$RUNNER_TEMP/agent-browser"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/$asset" \
+            "https://github.com/vercel-labs/agent-browser/releases/download/v0.38.1/$asset"
+          chmod +x "$dir/$asset"
+          "$dir/$asset" --version
+          echo "FERRULE_AGENT_BROWSER=$dir/$asset" >> "$GITHUB_ENV"
+          echo "FERRULE_REQUIRE_BROWSER_TEST=1" >> "$GITHUB_ENV"
+
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
 

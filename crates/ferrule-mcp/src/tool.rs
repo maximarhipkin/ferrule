@@ -17,6 +17,7 @@ pub struct McpRemoteTool {
     input_schema: Value,
     read_only: bool,
     timeout: Duration,
+    hidden: Arc<[String]>,
 }
 
 #[async_trait::async_trait]
@@ -33,7 +34,12 @@ impl Tool for McpRemoteTool {
         }
     }
 
-    async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
+    async fn call(&self, mut args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
+        if let Some(obj) = args.as_object_mut() {
+            for name in self.hidden.iter() {
+                obj.remove(name);
+            }
+        }
         match self
             .client
             .call_tool(&self.remote_name, args, self.timeout)
@@ -73,6 +79,7 @@ pub async fn connect_and_build_tools(
 ) -> Result<Vec<Arc<dyn Tool>>, McpError> {
     let server_name = cfg.name.clone();
     let timeout = cfg.timeout();
+    let hidden: Arc<[String]> = cfg.hide_args.clone().into();
     let client = Arc::new(McpClient::new(cfg, host)?);
     if let Some(reason) = client.sandbox_degraded() {
         tracing::warn!(
@@ -90,10 +97,54 @@ pub async fn connect_and_build_tools(
                 full_name: format!("mcp__{server_name}__{}", info.name),
                 remote_name: info.name,
                 description: info.description,
-                input_schema: info.input_schema,
+                input_schema: hide_properties(info.input_schema, &hidden),
                 read_only: info.annotations.read_only,
                 timeout,
+                hidden: hidden.clone(),
             }) as Arc<dyn Tool>
         })
         .collect())
+}
+
+/// `schema` without the properties named in `hidden`, in `properties` and
+/// in `required`.
+fn hide_properties(mut schema: Value, hidden: &[String]) -> Value {
+    if hidden.is_empty() {
+        return schema;
+    }
+    if let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        for name in hidden {
+            props.remove(name);
+        }
+    }
+    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|r| !r.as_str().is_some_and(|r| hidden.iter().any(|h| h == r)));
+    }
+    schema
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn hidden_arguments_leave_the_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"url": {"type": "string"}, "extraArgs": {}, "caCert": {}},
+            "required": ["url", "caCert"],
+        });
+        let hidden = ["extraArgs".to_string(), "caCert".to_string()];
+        let got = hide_properties(schema.clone(), &hidden);
+        assert_eq!(
+            got,
+            json!({
+                "type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"],
+            })
+        );
+        assert_eq!(hide_properties(schema.clone(), &[]), schema);
+    }
 }

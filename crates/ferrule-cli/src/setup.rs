@@ -1,13 +1,13 @@
 //! `ferrule setup`: the interactive installer. The first run walks through
-//! a model provider and its key, Telegram, tool credentials, the sandbox
-//! and the background service; later runs open a menu to change any one
+//! a model provider and its key, Telegram, tool credentials, the sandbox,
+//! the browser and the background service; later runs open a menu to change any one
 //! part. Answers are checked live where they can be (the key opens the
 //! model list, the bot token answers `getMe`) and saved the moment they're
 //! confirmed, so Ctrl-C never loses what's done. Keys go to the private
 //! secrets file, never into the config, and config edits keep the file's
 //! comments and layout.
 
-use crate::{config, probe, secrets, service};
+use crate::{browser, config, probe, secrets, service};
 use anyhow::{anyhow, bail, Context, Result};
 use ferrule_sandbox::{Mode, Sandbox};
 use inquire::validator::Validation;
@@ -87,6 +87,10 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(sandbox_step(t, true))?.quit() {
         return Ok(false);
     }
+    heading("Browser");
+    if settle(browser_step(t))?.quit() {
+        return Ok(false);
+    }
     if t.config()?.gateway.telegram_token_env.is_some() {
         heading("Background service");
         if settle(service_step(t, true))?.quit() {
@@ -106,6 +110,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Telegram             {}", telegram_summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Sandbox              {}", sandbox_summary(&cfg)),
+            format!("Browser              {}", browser_summary(&cfg)),
             format!("Background service   {}", service_summary(&service)),
             "Done".to_string(),
         ];
@@ -124,7 +129,8 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             1 => telegram_step(t, http, false).await,
             2 => credentials_step(t, http, false).await,
             3 => sandbox_step(t, false),
-            4 => service_step(t, false),
+            4 => browser_step(t),
+            5 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -406,6 +412,14 @@ fn sandbox_summary(cfg: &config::Config) -> String {
         "network off"
     };
     format!("{} · {network}", mode_name(cfg.sandbox.mode))
+}
+
+fn browser_summary(cfg: &config::Config) -> String {
+    match (cfg.browser.enabled, cfg.browser.chrome_sandbox) {
+        (false, _) => "off".into(),
+        (true, true) => "on".into(),
+        (true, false) => "on · without Chrome's own sandbox".into(),
+    }
 }
 
 fn service_summary(status: &service::Status) -> String {
@@ -1516,6 +1530,75 @@ fn sandbox_step(t: &mut Target, guided: bool) -> Result<()> {
             sandbox.degraded().unwrap_or("the sandbox is off")
         )),
         Err(e) => warn(e),
+    }
+    Ok(())
+}
+
+// ── Browser ────────────────────────────────────────────────────────────
+
+/// Offer the browser when there's a Chrome and agent-browser to drive it,
+/// and turn it on only once Chrome has started the way the agent would run
+/// it. Nothing is downloaded.
+fn browser_step(t: &mut Target) -> Result<()> {
+    let cfg = t.config()?;
+    let b = &cfg.browser;
+    info("The agent can use a real headless Chrome for pages that need JavaScript, a login or clicks.");
+    let Some(chrome) = browser::chrome(b) else {
+        info("No Chrome or Chromium found, so there's nothing to turn on. ferrule never downloads one: install it, then come back here.");
+        return Ok(());
+    };
+    if let Err(why) = ferrule_mcp::browser::find_agent_browser(&b.command) {
+        info(format!(
+            "Found {}, but agent-browser, which drives it, isn't ready: {why}. Then come back here.",
+            tilde(&chrome)
+        ));
+        return Ok(());
+    }
+    let want = Confirm::new(&format!("Let the agent use {}?", tilde(&chrome)))
+        .with_default(b.enabled)
+        .prompt()?;
+    let mut chrome_sandbox = b.chrome_sandbox;
+    let mut on = want;
+    if want {
+        if let Some(why) = ferrule_mcp::browser::chrome_sandbox_blocker(service::is_root()) {
+            warn(format!("{why}."));
+            info("ferrule's sandbox still confines it, but a page that breaks out of Chrome's renderer would get everything the agent's commands can reach. docs/browser.md has the details.");
+            chrome_sandbox = !Confirm::new("Run Chrome without its own sandbox?")
+                .with_default(!b.chrome_sandbox)
+                .prompt()?;
+            on = !chrome_sandbox;
+        }
+    }
+    if on {
+        match browser::launch_test(&cfg, &chrome, !chrome_sandbox) {
+            Ok(()) => ok("Chrome starts headless inside the sandbox"),
+            Err(why) => {
+                warn(format!("Chrome didn't start: {why}"));
+                if chrome_sandbox && ferrule_mcp::browser::is_sandbox_failure(&why) {
+                    info("Its own sandbox can't start here. `ferrule doctor` and docs/browser.md say how to fix that.");
+                }
+                on = false;
+            }
+        }
+    }
+    if on == b.enabled && chrome_sandbox == b.chrome_sandbox {
+        if want && !on {
+            info("The browser stays off.");
+        }
+        return Ok(());
+    }
+    let tbl = table(t.root(), &["browser"])?;
+    put(tbl, "enabled", on);
+    if on && !chrome_sandbox {
+        put(tbl, "chrome_sandbox", false);
+    } else if chrome_sandbox && !b.chrome_sandbox {
+        tbl.remove("chrome_sandbox");
+    }
+    t.save()?;
+    if on {
+        ok("browser on: the agent gets it the next time it starts");
+    } else {
+        info("The browser is off.");
     }
     Ok(())
 }

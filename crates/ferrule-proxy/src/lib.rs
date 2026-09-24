@@ -94,6 +94,7 @@ pub struct Broker {
     token: String,
     secrets: Vec<SecretInfo>,
     ca_cert_path: PathBuf,
+    ca_spki_sha256: String,
     bundle: Option<PathBuf>,
     warnings: Vec<String>,
     task: tokio::task::JoinHandle<()>,
@@ -214,6 +215,7 @@ impl Broker {
             tokio::net::TcpListener::from_std(listener)?
         };
         let ca_cert_path = ca.cert_path.clone();
+        let ca_spki_sha256 = ca.spki_sha256.clone();
         let shared = Arc::new(server::Shared {
             expected_auth: format!("ferrule:{token}").into_bytes(),
             ca,
@@ -230,6 +232,7 @@ impl Broker {
             token,
             secrets: infos,
             ca_cert_path,
+            ca_spki_sha256,
             bundle,
             warnings,
             task,
@@ -251,6 +254,19 @@ impl Broker {
     /// The proxy CA's certificate, alone.
     pub fn ca_cert_path(&self) -> &Path {
         &self.ca_cert_path
+    }
+
+    /// Base64 SHA-256 of the proxy CA's public key (SubjectPublicKeyInfo),
+    /// for Chrome's `--ignore-certificate-errors-spki-list`: Chrome then
+    /// accepts the proxy's certificates without the CA in any trust store.
+    pub fn ca_spki_sha256(&self) -> &str {
+        &self.ca_spki_sha256
+    }
+
+    /// The proxy's `host:port` and the credentials it asks for, apart, for
+    /// a client that takes them separately (Chrome).
+    pub fn proxy_auth(&self) -> (String, &str, &str) {
+        (self.addr.to_string(), "ferrule", &self.token)
     }
 
     /// The URL commands use as `HTTPS_PROXY`, credentials included.

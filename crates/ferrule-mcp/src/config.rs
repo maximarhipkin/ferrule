@@ -42,6 +42,34 @@ pub struct McpServerConfig {
     /// false`.
     #[serde(default)]
     pub writable_roots: Vec<PathBuf>,
+    /// Variables removed from the server's environment before `env` is
+    /// applied, e.g. `CI`, which some servers read as "turn safety off".
+    /// A trailing `*` removes every inherited variable with that prefix.
+    #[serde(default)]
+    pub env_remove: Vec<String>,
+    /// Tool arguments the model never sees and can't send: removed from
+    /// every tool's input schema and dropped from each call's arguments.
+    /// For arguments that would let the model loosen what the owner set.
+    #[serde(default)]
+    pub hide_args: Vec<String>,
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            timeout_secs: None,
+            sandbox: true,
+            writable_roots: Vec::new(),
+            env_remove: Vec::new(),
+            hide_args: Vec::new(),
+        }
+    }
 }
 
 fn default_true() -> bool {

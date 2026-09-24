@@ -152,6 +152,9 @@ pub struct Config {
     /// Env var name → where its value may go (credential gateway).
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretSpec>,
+    /// A real browser for the agent, off unless turned on.
+    #[serde(default)]
+    pub browser: ferrule_mcp::BrowserConfig,
 }
 
 /// A `[secrets]` entry: the allowed hosts, or a table that also opts the
@@ -274,6 +277,18 @@ profile = "openai"
 #                            # APIs that take the key in the URL need an opt-in:
 #                            # hosts often keep URLs where the model can read them.
 # TELEGRAM_BOT_TOKEN = { hosts = ["api.telegram.org"], in_url = true }
+
+# [browser]                 # A real headless Chrome for pages that need
+# enabled = false            # JavaScript, a login or clicks, driven by
+#                            # agent-browser 0.38+ (npm i -g agent-browser).
+#                            # Only an installed Chrome is used; `ferrule
+#                            # setup` → Browser turns it on. It runs in the
+#                            # sandbox, with its profile under the data dir,
+#                            # and through the credential proxy with [secrets].
+# chrome = "/usr/bin/google-chrome"   # unset = the first one found
+# allowed_domains = []       # e.g. ["example.com", "*.example.org"]; empty = any
+# chrome_sandbox = true      # false: Chrome without its own sandbox, for root
+#                            # and containers. See docs/browser.md first.
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).
@@ -357,7 +372,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn example_config_parses_with_the_sandbox_and_secrets_blocks_uncommented() {
+    fn example_config_parses_with_the_sandbox_secrets_and_browser_blocks_uncommented() {
         let cfg: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
         assert_eq!(cfg.sandbox.mode, ferrule_sandbox::Mode::WorkspaceWrite);
         let block = &EXAMPLE_CONFIG[EXAMPLE_CONFIG.find("# [sandbox]").unwrap()..];
@@ -381,6 +396,8 @@ mod tests {
         assert!(!rule("GITHUB_TOKEN").in_url);
         assert_eq!(rule("TELEGRAM_BOT_TOKEN").hosts, ["api.telegram.org"]);
         assert!(rule("TELEGRAM_BOT_TOKEN").in_url);
+        assert!(!cfg.browser.enabled && cfg.browser.chrome_sandbox);
+        assert!(cfg.browser.chrome.is_some() && cfg.browser.allowed_domains.is_empty());
     }
 
     #[test]

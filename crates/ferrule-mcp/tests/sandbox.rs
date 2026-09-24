@@ -60,6 +60,7 @@ fn server(sandboxed: bool, extra: &Path) -> McpServerConfig {
         timeout_secs: Some(20),
         sandbox: sandboxed,
         writable_roots: vec![extra.to_path_buf()],
+        ..Default::default()
     }
 }
 
