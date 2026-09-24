@@ -229,6 +229,16 @@ matter, with mock-LLM tests proving the machinery in CI.
 
 ### M15 — memory update pipeline + reversible compaction
 
+**Status.** Built (`docs/m15-memory.md`; PR open). `remember` recognises a
+fact it already has and shows similar ones; `update_memory` supersedes a fact
+(`superseded_by`) and recall returns the correction even for the old wording;
+`forget` deletes a chain for good. The session-start memory block comes from
+the session's goal. When compaction triggers, old large tool results shrink to
+a preview plus a ref, and `search_history` fetches them, or anything a summary
+dropped, from the session transcript. Sub-agents: writing children add only,
+read-only children recall only. Checked on Linux; the macOS/Windows pass runs
+with the batch CI.
+
 **Goal.** Memory stops only growing, and compaction stops being one-way.
 
 **Scope.** Update and delete tools over the memory store (an

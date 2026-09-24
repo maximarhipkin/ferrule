@@ -81,8 +81,10 @@ seconds). `NULL` means the row is live.
 - **Only live rows can be superseded.** Updating a row that was already
   replaced fails with `#3 was already replaced by #7 — update #7`. That way
   two corrections never race silently, and a chain is always a line, never a
-  tree. A replacement always has a larger id than what it replaces, so cycles
-  can't happen.
+  tree. Cycles can't happen either: a row can only be pointed at while it's
+  live, and once it points at its replacement it's never live again. (The
+  replacement is usually the newer row, but not always: `update_memory` with
+  text an older live row already holds reuses that row.)
 - A replacement with no tags inherits the tags of the rows it replaces.
 - **Recall prefers the live fact.** Recall searches every row, then maps each
   hit to the live head of its chain, dedupes the heads and keeps the best
@@ -196,8 +198,9 @@ owner deletes them, and M15 doesn't change it (open edge).
 ## 6. Shortening old large tool results: the reference format
 
 When the context passes the compaction trigger, `ContextOverflow::Compact`
-now runs three stages. It re-measures after each one and stops as soon as
-the context fits:
+now runs three stages. After stage 2 it re-measures and stops if that
+stage shortened anything and the context now fits (dedupe alone never skips
+the summary, as before M15):
 
 1. dedupe identical tool results (existing, free);
 2. **shorten old large tool results** (new, free). A tool result is
