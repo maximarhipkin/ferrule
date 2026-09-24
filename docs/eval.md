@@ -207,12 +207,45 @@ Every model call also lands in the ledger (`ferrule ledger`) with
 `task_shape = "eval"` and a session id of `<run id>/<task>--<variant>`,
 so eval spend never mixes with normal use.
 
+### Since the last run
+
+Every report ends with what changed since the previous saved run of the
+same suite, with the same kind and model, variant by variant:
+
+```
+since the last run (same suite, kind and model):
+  naive vs run 20260924T160102-3f9c21: pass rate 2/2 (100%) → 1/2 (50%), -50 pts; tokens +1.2k; cost +$0.0011
+    NEWLY FAILING: sales-summary (task changed)
+```
+
+- `NEWLY FAILING` and `newly passing` list the tasks whose verdict
+  flipped. A task counts as passed only if every graded repeat passed;
+  runs the budget stopped don't count either way.
+- `(task changed)`: the task's entry in `suite.toml` (prompt, grader and
+  check commands, …) or its fixture files differ from last time (a
+  fingerprint of them is saved per run), so the flip may be the suite's
+  doing, not the model's. Scripts the commands call, such as
+  `graders/*.py`, are not part of the fingerprint.
+- `new` and `not run this time`: tasks only one of the two runs had.
+- The first run of a suite says `no earlier run to compare with`.
+
+The comparison is read from the saved `run.json` files, not the ledger.
+To print a saved run again, with its diff:
+
+```sh
+ferrule eval report                  # the latest run of any suite
+ferrule eval report starter          # the latest run of this suite
+ferrule eval report starter --run 20260924T15   # a run id or a prefix of one
+```
+
 ### Exit status
 
 - `0`: the suite ran. In a `capability` suite (like the starter one),
   failed tasks are results, not errors.
 - `1`: a grader couldn't decide (for example it crashed or timed out), a
-  task in a `regression` suite failed, or ferrule itself failed.
+  task failed under the engineered variant in a `regression` suite, or
+  ferrule itself failed. (Naive is the baseline: its failures never fail
+  the run.)
 - `3`: the budget cap stopped the suite.
 
 ### On macOS

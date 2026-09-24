@@ -66,12 +66,12 @@ pub fn usd(c: Option<f64>) -> String {
     }
 }
 
-fn signed_tokens(d: i128) -> String {
+pub(crate) fn signed_tokens(d: i128) -> String {
     let sign = if d < 0 { "-" } else { "+" };
     format!("{sign}{}", tokens(d.unsigned_abs() as u64))
 }
 
-fn signed_usd(d: f64) -> String {
+pub(crate) fn signed_usd(d: f64) -> String {
     if d < 0.0 {
         format!("-${:.4}", -d)
     } else {

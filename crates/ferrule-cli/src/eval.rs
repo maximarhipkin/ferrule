@@ -7,7 +7,7 @@ use crate::ledger;
 use anyhow::{anyhow, Result};
 use clap::Subcommand;
 use ferrule_core::HarnessProfile;
-use ferrule_eval::{plan, report, Caps, Env, Options, Pricing, Suite, SuiteKind, Variant};
+use ferrule_eval::{history, plan, report, Caps, Env, Options, Pricing, Suite, SuiteKind, Variant};
 use ferrule_providers::OpenAiCompatProvider;
 use ferrule_sandbox::Sandbox;
 use std::path::PathBuf;
@@ -58,6 +58,14 @@ pub enum EvalCmd {
         /// Keep each task's workspace (their paths are printed)
         #[arg(long)]
         keep: bool,
+    },
+    /// Print a saved run's report and its diff against the run before it
+    Report {
+        /// Only runs of this suite (by its name); default: any
+        suite: Option<String>,
+        /// This run (its id, or the start of it) instead of the latest
+        #[arg(long)]
+        run: Option<String>,
     },
 }
 
@@ -164,7 +172,12 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 progress: Some(Arc::new(|line: &str| eprintln!("{line}"))),
             };
             let run = ferrule_eval::run_suite(&suite, &env, &opts).await?;
-            let text = report::render(&run);
+            let earlier = history::load_runs(&data.join("eval"));
+            let text = format!(
+                "{}{}",
+                report::render(&run),
+                history::render(&history::diffs(&earlier, &run))
+            );
             print!("\n{text}");
             let dir = data.join("eval").join(&run.run_id);
             std::fs::create_dir_all(&dir)?;
@@ -182,18 +195,48 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
             }
             std::process::exit(exit_code(&suite, &run));
         }
+        EvalCmd::Report { suite, run } => {
+            let root = config::data_dir()?.join("eval");
+            let runs = history::load_runs(&root);
+            let found = runs.iter().rev().find(|r| {
+                suite.as_ref().is_none_or(|s| &r.suite == s)
+                    && run
+                        .as_ref()
+                        .is_none_or(|id| r.run_id.starts_with(id.as_str()))
+            });
+            let Some(found) = found else {
+                return Err(anyhow!(
+                    "no saved eval run{}{} under {}",
+                    suite
+                        .map(|s| format!(" of suite `{s}`"))
+                        .unwrap_or_default(),
+                    run.map(|id| format!(" with id `{id}`")).unwrap_or_default(),
+                    root.display()
+                ));
+            };
+            print!(
+                "{}{}",
+                report::render(found),
+                history::render(&history::diffs(&runs, found))
+            );
+            Ok(())
+        }
     }
 }
 
 /// 3 when the budget stopped the suite; 1 when a grader couldn't decide,
-/// or a regression suite has a failure; else 0.
+/// or a regression suite has a failure in the variant it gates (ferrule's
+/// own: the naive baseline is expected to fail); else 0.
 fn exit_code(suite: &Suite, run: &ferrule_eval::SuiteRun) -> i32 {
     use ferrule_eval::Outcome;
     if run.budget_stop.is_some() {
         return EXIT_BUDGET;
     }
     let error = run.results.iter().any(|r| r.outcome == Outcome::Error);
-    let failed = run.results.iter().any(|r| r.outcome == Outcome::Fail);
+    let failed = run
+        .results
+        .iter()
+        .any(|r| r.outcome == Outcome::Fail && r.variant == ferrule_eval::Variant::Engineered);
     if error || (suite.kind == SuiteKind::Regression && failed) {
         1
     } else {

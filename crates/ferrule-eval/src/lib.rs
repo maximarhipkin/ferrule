@@ -5,6 +5,7 @@
 
 pub mod fixture;
 pub mod grade;
+pub mod history;
 pub mod plan;
 pub mod report;
 pub mod runner;

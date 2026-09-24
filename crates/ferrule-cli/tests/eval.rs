@@ -266,3 +266,102 @@ fn the_dry_run_prices_the_worst_case_and_calls_nothing() {
         assert!(stdout.contains(want), "{want:?} not in:\n{stdout}");
     }
 }
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if src.is_dir() {
+            copy_dir(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).unwrap();
+        }
+    }
+}
+
+/// The run id a report names in its first line.
+fn run_id(report: &str) -> String {
+    report
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("ferrule eval — ")
+                .and_then(|l| l.rsplit(", run ").next())
+        })
+        .expect("the report's header")
+        .to_string()
+}
+
+#[test]
+fn a_second_run_reports_its_diff_against_the_first() {
+    if !have_python() {
+        return;
+    }
+    let mock = Mock::start();
+    let home = home(&mock.url);
+    // A copy of the suite, so a task can change between the runs.
+    let suite = home.path().join("suite");
+    copy_dir(&self::suite(), &suite);
+    let args = [
+        "eval",
+        "run",
+        suite.to_str().unwrap(),
+        "--task",
+        "fix-median",
+        "--task",
+        "sales-summary",
+        "--variant",
+        "naive",
+    ];
+
+    let out = ferrule(home.path(), &args);
+    let (first, stderr) = texts(&out);
+    assert_eq!(out.status.code(), Some(0), "{first}\n{stderr}");
+    assert!(
+        first.contains("naive: no earlier run to compare with"),
+        "{first}"
+    );
+    let first_id = run_id(&first);
+
+    // sales-summary's grader now rejects everything.
+    let toml = std::fs::read_to_string(suite.join("suite.toml")).unwrap();
+    let broken = toml.replace(
+        r#"command = 'python3 "{suite_dir}/graders/sales-summary.py"'"#,
+        r#"command = 'python3 -c "import sys; sys.exit(\"the grader changed\")"'"#,
+    );
+    assert_ne!(toml, broken);
+    std::fs::write(suite.join("suite.toml"), broken).unwrap();
+
+    let out = ferrule(home.path(), &args);
+    let (second, stderr) = texts(&out);
+    assert_eq!(out.status.code(), Some(0), "{second}\n{stderr}");
+    let want = format!("naive vs run {first_id}: pass rate 2/2 (100%) → 1/2 (50%), -50 pts");
+    assert!(second.contains(&want), "{want:?} not in:\n{second}");
+    assert!(
+        second.contains("NEWLY FAILING: sales-summary (task changed)"),
+        "{second}"
+    );
+    let second_id = run_id(&second);
+
+    // `eval report` re-prints the latest run with the same diff...
+    let out = ferrule(home.path(), &["eval", "report"]);
+    let (report, stderr) = texts(&out);
+    assert!(out.status.success(), "{report}\n{stderr}");
+    assert!(report.contains(&format!("run {second_id}")), "{report}");
+    assert!(report.contains(&want), "{report}");
+    // ...and an older one by id, which has nothing before it.
+    let out = ferrule(
+        home.path(),
+        &["eval", "report", "starter", "--run", &first_id],
+    );
+    let (report, _) = texts(&out);
+    assert!(out.status.success(), "{report}");
+    assert!(report.contains(&format!("run {first_id}")), "{report}");
+    assert!(
+        report.contains("naive: no earlier run to compare with"),
+        "{report}"
+    );
+    // An unknown suite is an error that says where it looked.
+    let out = ferrule(home.path(), &["eval", "report", "nope"]);
+    assert!(!out.status.success());
+    assert!(texts(&out).1.contains("no saved eval run of suite `nope`"));
+}
