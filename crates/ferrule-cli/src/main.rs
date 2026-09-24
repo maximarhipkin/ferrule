@@ -118,12 +118,12 @@ enum Cmd {
         #[command(subcommand)]
         op: TasksCmd,
     },
-    /// Per-call provider ledger: calls, errors, tokens, cache hits, latency, cost
     /// The learning loop: run a pass, show the playbook, diff or revert a pass
     Learn {
         #[command(subcommand)]
         op: learn::LearnCmd,
     },
+    /// Per-call provider ledger: calls, errors, tokens, cache hits, latency, cost
     Ledger {
         /// Only rows at or after this point: 7d, 12h, 30m or an RFC 3339 time
         #[arg(long)]

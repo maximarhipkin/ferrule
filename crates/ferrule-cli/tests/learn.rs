@@ -629,3 +629,22 @@ fn a_sub_agent_reads_the_playbook_but_cannot_write_it() {
     );
     assert!(Path::new(&home.playbook()).exists());
 }
+
+#[test]
+fn learn_and_ledger_each_have_their_own_help() {
+    let (url, _seen) = model_server(Arc::new(|_req: &Value| answer("unused")));
+    let home = Home::new(&url, "");
+    let out = home.ok(&["--help"]);
+    let line = |cmd: &str| {
+        out.lines()
+            .find(|l| l.trim_start().starts_with(cmd))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(line("learn ").contains("The learning loop"), "{out}");
+    assert!(!line("learn ").contains("ledger"), "{out}");
+    assert!(
+        line("ledger ").contains("Per-call provider ledger"),
+        "{out}"
+    );
+}

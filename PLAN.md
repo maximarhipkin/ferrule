@@ -2426,6 +2426,9 @@ after the roadmap batch. No real model was called: everything ran against mocks.
     skipped); eval sees the playbook only on opt-in and only in the engineered
     variant; a sub-agent sees the playbook in its prompt and its `write_file` to
     `data/learn/playbook.md` is refused (data dir inside the workspace, sandbox off)
+- a follow-up fix after the merge with `main`: `ferrule --help` showed the ledger's
+  description glued onto `learn`'s and none on `ledger` (a doc comment left above
+  the wrong variant in part 2); a binary test now checks both lines.
 
 **Measured on the mock** (the real binary, all 20 tasks, `--variant ab`, with a
 canary playbook in the data dir): engineered 20/20, naive 11/20 (+45 pts), identical
