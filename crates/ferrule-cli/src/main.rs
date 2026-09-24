@@ -5,6 +5,7 @@ mod config_follow;
 mod doctor;
 mod eval;
 mod ledger;
+mod mcp_config;
 mod memory_tools;
 mod probe;
 mod secrets;

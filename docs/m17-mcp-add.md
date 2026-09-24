@@ -69,7 +69,7 @@ answer is then an error, and nothing gets written.
 7. **Write.** The secret values go to the private secrets file (0600). Then
    `[secrets] NAME = [hosts]` and the new `[[mcp.servers]]` table go into the
    config through `toml_edit`. That keeps the file's comments and order and
-   appends the new table at the end. The edited document is re-parsed as a
+   puts the new table after the last server. The edited document is re-parsed as a
    `Config` before it is written, and the write is atomic (temp file plus
    rename, as `ferrule setup` does).
 8. **Doctor.** Re-run `ferrule doctor --offline`. Its MCP line now names the

@@ -64,7 +64,7 @@ pub async fn run() -> Result<()> {
 /// Is there a terminal to ask on? inquire reads `/dev/tty` when stdin
 /// isn't one, so `curl … | sh` installers work with `< /dev/tty` or even
 /// without it.
-fn has_terminal() -> bool {
+pub(crate) fn has_terminal() -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal() || (cfg!(unix) && std::fs::File::open("/dev/tty").is_ok())
 }
@@ -196,19 +196,19 @@ async fn interruptible<T>(fut: impl Future<Output = T>) -> Result<T> {
     }
 }
 
-fn heading(title: &str) {
+pub(crate) fn heading(title: &str) {
     println!("\n── {title}");
 }
 
-fn ok(text: impl std::fmt::Display) {
+pub(crate) fn ok(text: impl std::fmt::Display) {
     println!("  ✓ {text}");
 }
 
-fn warn(text: impl std::fmt::Display) {
+pub(crate) fn warn(text: impl std::fmt::Display) {
     println!("  ! {text}");
 }
 
-fn info(text: impl std::fmt::Display) {
+pub(crate) fn info(text: impl std::fmt::Display) {
     println!("  {text}");
 }
 
@@ -230,15 +230,15 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 // ── The config file ────────────────────────────────────────────────────
 
 /// The config file being edited, as a document that keeps comments.
-struct Target {
-    path: PathBuf,
+pub(crate) struct Target {
+    pub(crate) path: PathBuf,
     doc: DocumentMut,
     /// Something was saved this run (config or a key): worth a restart.
     changed: bool,
 }
 
 impl Target {
-    fn load(path: PathBuf) -> Result<Self> {
+    pub(crate) fn load(path: PathBuf) -> Result<Self> {
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -260,16 +260,23 @@ impl Target {
         Ok(t)
     }
 
-    fn config(&self) -> Result<config::Config> {
+    pub(crate) fn config(&self) -> Result<config::Config> {
         toml::from_str(&self.doc.to_string()).map_err(|e| anyhow!("{e}"))
     }
 
-    fn root(&mut self) -> &mut dyn TableLike {
+    pub(crate) fn root(&mut self) -> &mut dyn TableLike {
         self.doc.as_table_mut()
     }
 
     /// Check the edit still makes a valid config, then write it in one go.
-    fn save(&mut self) -> Result<()> {
+    pub(crate) fn save(&mut self) -> Result<()> {
+        self.save_then(|| Ok(()))
+    }
+
+    /// [`Self::save`], running `before` once the new text is checked and
+    /// written next to the config, just before it replaces it. If `before`
+    /// fails the config is left as it was.
+    pub(crate) fn save_then(&mut self, before: impl FnOnce() -> Result<()>) -> Result<()> {
         self.config()
             .context("that change would break the config, so it wasn't saved")?;
         let mut text = self.doc.to_string();
@@ -283,8 +290,14 @@ impl Target {
             .path
             .with_extension(format!("toml.tmp-{}", std::process::id()));
         std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path)
-            .with_context(|| format!("writing {}", self.path.display()))?;
+        let done = before().and_then(|()| {
+            std::fs::rename(&tmp, &self.path)
+                .with_context(|| format!("writing {}", self.path.display()))
+        });
+        if done.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        done?;
         self.changed = true;
         Ok(())
     }
@@ -320,7 +333,10 @@ impl Target {
 
 /// The table at `path`, created (as implicit, so an empty one isn't
 /// written) where missing.
-fn table<'a>(root: &'a mut dyn TableLike, path: &[&str]) -> Result<&'a mut dyn TableLike> {
+pub(crate) fn table<'a>(
+    root: &'a mut dyn TableLike,
+    path: &[&str],
+) -> Result<&'a mut dyn TableLike> {
     let mut tbl = root;
     for key in path {
         let item = tbl.entry(key).or_insert_with(|| {
@@ -336,7 +352,7 @@ fn table<'a>(root: &'a mut dyn TableLike, path: &[&str]) -> Result<&'a mut dyn T
 }
 
 /// Set `key`, keeping the old value's comment and spacing.
-fn put(tbl: &mut dyn TableLike, key: &str, new: impl Into<Value>) {
+pub(crate) fn put(tbl: &mut dyn TableLike, key: &str, new: impl Into<Value>) {
     let mut new = new.into();
     if let Some(old) = tbl.get(key).and_then(Item::as_value) {
         *new.decor_mut() = old.decor().clone();
@@ -435,7 +451,7 @@ fn service_summary(status: &service::Status) -> String {
 
 /// A masked prompt. With `keep`, Enter keeps the saved value (`None`).
 /// `shape` returns why a value can't be right, if it can tell.
-fn ask_secret(
+pub(crate) fn ask_secret(
     prompt: &str,
     keep: bool,
     shape: fn(&str) -> Option<&'static str>,
@@ -468,7 +484,7 @@ fn ask_secret(
     Ok((!value.is_empty()).then(|| value.to_string()))
 }
 
-fn no_shape(_: &str) -> Option<&'static str> {
+pub(crate) fn no_shape(_: &str) -> Option<&'static str> {
     None
 }
 
@@ -1391,7 +1407,7 @@ async fn ask_token_value(
     }
 }
 
-fn ask_hosts(current: &[String]) -> Result<Vec<String>> {
+pub(crate) fn ask_hosts(current: &[String]) -> Result<Vec<String>> {
     let current = current.join(", ");
     let answer = Text::new("Hosts it may be sent to, comma-separated")
         .with_initial_value(&current)
@@ -1413,7 +1429,7 @@ fn ask_hosts(current: &[String]) -> Result<Vec<String>> {
     Ok(split_hosts(&answer))
 }
 
-fn split_hosts(text: &str) -> Vec<String> {
+pub(crate) fn split_hosts(text: &str) -> Vec<String> {
     text.split(',')
         .map(str::trim)
         .filter(|h| !h.is_empty())
@@ -1423,7 +1439,11 @@ fn split_hosts(text: &str) -> Vec<String> {
 
 /// Point `[secrets] NAME` at `hosts`; a table-form entry keeps its other
 /// keys (`in_url`).
-fn write_secret_hosts(root: &mut dyn TableLike, name: &str, hosts: &[String]) -> Result<()> {
+pub(crate) fn write_secret_hosts(
+    root: &mut dyn TableLike,
+    name: &str,
+    hosts: &[String],
+) -> Result<()> {
     let secrets = table(root, &["secrets"])?;
     let hosts = toml_edit::Array::from_iter(hosts.iter().map(String::as_str));
     match secrets.get_mut(name).and_then(Item::as_table_like_mut) {

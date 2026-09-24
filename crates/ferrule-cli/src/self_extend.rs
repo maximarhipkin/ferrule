@@ -236,8 +236,8 @@ pub enum ExtCmd {
     },
     /// Drop a pending request (nothing of it was fetched)
     Deny { id: String },
-    /// Remove an installed server or skill; running agents drop it within
-    /// seconds
+    /// Remove a configured or installed server, or a skill; running agents
+    /// drop it within seconds
     Remove {
         name: String,
         /// Delete the server's state dir too
@@ -347,6 +347,20 @@ pub async fn run(op: ExtCmd) -> Result<()> {
             }
         }
         ExtCmd::Remove { name, purge } => {
+            if let Some(removed) = crate::mcp_config::remove_configured(
+                crate::mcp_config::config_file()?,
+                &name,
+                purge,
+            )? {
+                println!(
+                    "removed `{name}` from {}; running agents stop it within a few seconds",
+                    crate::setup::tilde(&removed.path)
+                );
+                for secret in removed.secrets_kept {
+                    println!("  [secrets] {secret} is kept (nothing else here names it; `ferrule setup` → Tool credentials removes it)");
+                }
+                return Ok(());
+            }
             let m = owner_manager(Path::new("."))?;
             if m.lock()?.servers.contains_key(&name) {
                 m.remove_server(&name, true, purge).await?;
