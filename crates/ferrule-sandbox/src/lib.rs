@@ -32,6 +32,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// What a refused write prints: Seatbelt denies with EPERM, Landlock with
+/// EACCES.
+pub const DENIED: &str = if cfg!(target_os = "macos") {
+    "Operation not permitted"
+} else {
+    "Permission denied"
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mode {
@@ -310,7 +318,7 @@ impl Sandbox {
     }
 
     /// One line for the shell tool's description, so the model knows why a
-    /// write fails with "Permission denied" instead of retrying it forever.
+    /// write is refused instead of retrying it forever.
     pub fn model_note(&self) -> Option<String> {
         if !self.is_active() {
             return None;
@@ -331,7 +339,7 @@ impl Sandbox {
                 } else {
                     format!("{} and {last}", places.join(", "))
                 };
-                format!("Writes are only allowed in {places}; elsewhere they fail with \"Permission denied\".")
+                format!("Writes are only allowed in {places}; elsewhere they fail with \"{DENIED}\".")
             }
         };
         let net = if self.policy.network {

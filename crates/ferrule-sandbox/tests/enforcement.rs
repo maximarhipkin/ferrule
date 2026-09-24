@@ -72,12 +72,8 @@ fn writes_land_in_the_workspace_and_nowhere_else() {
     );
     assert!(!out.status.success());
     assert!(!target.exists(), "write outside the workspace went through");
-    // Landlock refuses with EACCES, Seatbelt with EPERM.
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("Permission denied") || stderr.contains("Operation not permitted"),
-        "{stderr}"
-    );
+    assert!(stderr.contains(ferrule_sandbox::DENIED), "{stderr}");
 
     // Reads outside stay open — the agent needs the toolchain.
     let out = sh(

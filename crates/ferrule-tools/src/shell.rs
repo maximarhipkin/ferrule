@@ -189,6 +189,6 @@ mod tests {
             .unwrap();
         assert!(ws.path().join("ok").exists());
         assert!(!target.exists());
-        assert!(out.content.contains("Permission denied"), "{}", out.content);
+        assert!(out.content.contains(ferrule_sandbox::DENIED), "{}", out.content);
     }
 }
