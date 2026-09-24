@@ -140,6 +140,17 @@ pub fn render(run: &SuiteRun) -> String {
         tokens(run.context_window as u64),
         run.run_id
     );
+    if let Some(judge) = &run.judge {
+        let _ = writeln!(
+            out,
+            "rubrics judged by {judge}{}",
+            if run.self_judged {
+                " — self-judged: the model under test grades its own work"
+            } else {
+                ""
+            }
+        );
+    }
     let variants: Vec<Variant> = {
         let mut v: Vec<Variant> = run.results.iter().map(|r| r.variant).collect();
         v.sort();

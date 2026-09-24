@@ -7,7 +7,9 @@ use crate::ledger;
 use anyhow::{anyhow, Result};
 use clap::Subcommand;
 use ferrule_core::HarnessProfile;
-use ferrule_eval::{history, plan, report, Caps, Env, Options, Pricing, Suite, SuiteKind, Variant};
+use ferrule_eval::{
+    history, plan, report, Caps, Env, Judge, Options, Pricing, Suite, SuiteKind, Variant,
+};
 use ferrule_providers::OpenAiCompatProvider;
 use ferrule_sandbox::Sandbox;
 use std::path::PathBuf;
@@ -58,6 +60,11 @@ pub enum EvalCmd {
         /// Keep each task's workspace (their paths are printed)
         #[arg(long)]
         keep: bool,
+        /// A `[providers.*]` entry (with its configured model) to grade
+        /// rubrics; default: the provider under test, and the report says
+        /// the run was self-judged
+        #[arg(long)]
+        judge_provider: Option<String>,
     },
     /// Print a saved run's report and its diff against the run before it
     Report {
@@ -84,6 +91,7 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
             max_tokens,
             dry_run,
             keep,
+            judge_provider,
         } => {
             let variants = Variant::parse(&variant)
                 .ok_or_else(|| anyhow!("--variant: `{variant}` isn't engineered, naive or ab"))?;
@@ -101,11 +109,14 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 .get(&name)
                 .ok_or_else(|| anyhow!("provider `{name}` not in config"))?;
             let model = model.unwrap_or_else(|| pcfg.model.clone());
-            let pricing = ledger::ProviderPricing::from_config(pcfg).map(|p| Pricing {
-                input: p.input,
-                cached_input: p.cached_input,
-                output: p.output,
-            });
+            let prices = |pcfg| {
+                ledger::ProviderPricing::from_config(pcfg).map(|p| Pricing {
+                    input: p.input,
+                    cached_input: p.cached_input,
+                    output: p.output,
+                })
+            };
+            let pricing = prices(pcfg);
             let base = HarnessProfile::by_name(&pcfg.profile);
             let window = context_window.or(suite.context_window);
 
@@ -148,6 +159,27 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                         .unwrap_or_else(|| "none".into())
                 );
             }
+            let judge = match &judge_provider {
+                Some(jname) => {
+                    let jcfg = cfg
+                        .providers
+                        .get(jname)
+                        .ok_or_else(|| anyhow!("--judge-provider: `{jname}` not in config"))?;
+                    let (_, _, jkey) = cfg.resolve_provider(Some(jname))?;
+                    Some(Judge {
+                        provider: Arc::new(OpenAiCompatProvider::new(
+                            jname.clone(),
+                            &jcfg.base_url,
+                            jkey,
+                            &jcfg.model,
+                        )),
+                        provider_name: jname.clone(),
+                        model: jcfg.model.clone(),
+                        pricing: prices(jcfg),
+                    })
+                }
+                None => None,
+            };
             let data = config::data_dir()?;
             let env = Env {
                 provider,
@@ -159,6 +191,7 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 ledger: ledger::build_sink(&cfg),
                 pricing,
                 transcripts: Some(data.join("eval")),
+                judge,
             };
             let opts = Options {
                 variants,

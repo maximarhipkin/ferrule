@@ -3,6 +3,7 @@
 
 use crate::fixture::Fixture;
 use crate::grade::{self, GraderResult};
+use crate::rubric::{self, Judge};
 use crate::sink::{Caps, EvalSink, Pricing, Totals};
 use crate::suite::{Suite, Task};
 use crate::variant::{self, MemoryTools, Variant};
@@ -36,6 +37,26 @@ pub struct Env {
     pub pricing: Option<Pricing>,
     /// Transcripts go to `<dir>/<run_id>/<task>--<variant>.jsonl`.
     pub transcripts: Option<PathBuf>,
+    /// Grades rubrics. `None`: the run's own provider and model, and the
+    /// report says the run was self-judged.
+    pub judge: Option<Judge>,
+}
+
+impl Env {
+    fn judge(&self) -> (Judge, bool) {
+        match &self.judge {
+            Some(j) => (j.clone(), false),
+            None => (
+                Judge {
+                    provider: self.provider.clone(),
+                    provider_name: self.provider_name.clone(),
+                    model: self.model.clone(),
+                    pricing: self.pricing,
+                },
+                true,
+            ),
+        }
+    }
 }
 
 pub type Progress = Arc<dyn Fn(&str) + Send + Sync>;
@@ -143,10 +164,21 @@ pub struct SuiteRun {
     pub budget_stop: Option<String>,
     /// (task, variant, repeat) runs the budget stop left unstarted.
     pub not_run: usize,
+    /// Who judged the rubrics (`<model> via <provider>`), if any task has
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<String>,
+    /// The judge is the model under test.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_judged: bool,
 }
 
+/// `<UTC time to the millisecond>-<random>`: ids sort in the order the runs
+/// started, which is how the diff finds the run before. (Ids from before
+/// the milliseconds were added, `…T153312-a8ae1c`, still sort first within
+/// their second: `-` sorts before `.`.)
 pub fn new_run_id() -> String {
-    let now = chrono::Utc::now().format("%Y%m%dT%H%M%S");
+    let now = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f");
     let short = uuid::Uuid::new_v4().simple().to_string();
     format!("{now}-{}", &short[..6])
 }
@@ -233,7 +265,11 @@ pub async fn run_suite(suite: &Suite, env: &Env, opts: &Options) -> Result<Suite
         }
     }
     let not_run = planned - results.len();
+    let (judge, self_judged) = env.judge();
+    let rubrics = tasks.iter().any(|t| t.grade.rubric.is_some());
     Ok(SuiteRun {
+        judge: rubrics.then(|| judge.label()),
+        self_judged: rubrics && self_judged,
         run_id,
         suite: suite.name.clone(),
         kind: suite.kind.as_str().into(),
@@ -314,6 +350,12 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
             return finish(p, tag, result, started);
         }
     };
+    let before = p
+        .task
+        .grade
+        .rubric
+        .is_some()
+        .then(|| rubric::Snapshot::take(&fixture.workspace));
     let transcript = p
         .transcripts
         .and_then(|dir| Transcript::create(dir, p.label).ok());
@@ -360,39 +402,73 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
     let incomplete = agent.incomplete.clone();
     drop(agent);
     let seen = watcher.await.unwrap_or_default();
-    result.totals = p.sink.end();
-    result.iterations = seen.iterations.max(result.totals.turns as usize);
     result.truncations = seen.truncations;
     result.compactions = seen.compactions;
     result.verify_failures = seen.verify_failures;
+    // Totals are taken after grading, so they include the judge's call.
+    let end = |result: &mut TaskResult| {
+        result.totals = p.sink.end();
+        result.iterations = seen.iterations.max(result.totals.turns as usize);
+    };
 
-    match ran {
-        Err(_) => result.stopped_early = Some(format!("timed out after {}s", timeout.as_secs())),
+    let answer = match ran {
+        Err(_) => {
+            result.stopped_early = Some(format!("timed out after {}s", timeout.as_secs()));
+            None
+        }
         Ok(Err(CoreError::Aborted(_))) if p.sink.exceeded().is_some() => {
+            end(&mut result);
             result.outcome = Outcome::Stopped;
             result.stopped_early = p.sink.exceeded();
             return finish(p, tag, result, started);
         }
         Ok(Err(e)) => {
             // A provider that's down says nothing about the harness.
+            end(&mut result);
             result.stopped_early = Some(format!("agent error: {e}"));
             return finish(p, tag, result, started);
         }
-        Ok(Ok(_)) => result.stopped_early = incomplete,
-    }
+        Ok(Ok(answer)) => {
+            result.stopped_early = incomplete;
+            Some(answer)
+        }
+    };
 
     // Graded even after a timeout or an early stop: the work is what it is.
-    if let Some(g) = grade::command(p.task, &fixture.workspace, &p.env.sandbox).await {
+    let command = grade::command(p.task, &fixture.workspace, &p.env.sandbox).await;
+    if let (Some(rubric), Some(before)) = (&p.task.grade.rubric, &before) {
+        if let Some(why) = p.sink.exceeded() {
+            // No budget left to ask the judge: no verdict either way.
+            end(&mut result);
+            result.outcome = Outcome::Stopped;
+            result.stopped_early = Some(format!("not judged: {why}"));
+            return finish(p, tag, result, started);
+        }
+        let bundle = rubric::bundle(
+            before,
+            &fixture.workspace,
+            command.as_ref(),
+            answer.as_deref(),
+        );
+        let (judge, _) = p.env.judge();
+        let g = rubric::grade(
+            &judge,
+            p.sink,
+            rubric::Ask {
+                session_id: format!("{}/{}", p.run_id, p.label),
+                iteration: seen.iterations,
+                prompt: &p.task.prompt,
+                rubric,
+            },
+            &bundle,
+        )
+        .await;
+        result.graders.extend(command);
         result.graders.push(g);
+    } else {
+        result.graders.extend(command);
     }
-    if p.task.grade.rubric.is_some() {
-        result.graders.push(GraderResult {
-            kind: "rubric".into(),
-            passed: false,
-            error: true,
-            detail: "the rubric grader isn't built yet".into(),
-        });
-    }
+    end(&mut result);
     result.outcome = if result.graders.iter().any(|g| g.error) {
         Outcome::Error
     } else if result.graders.iter().all(|g| g.passed) {

@@ -214,7 +214,7 @@ same suite, with the same kind and model, variant by variant:
 
 ```
 since the last run (same suite, kind and model):
-  naive vs run 20260924T160102-3f9c21: pass rate 2/2 (100%) → 1/2 (50%), -50 pts; tokens +1.2k; cost +$0.0011
+  naive vs run 20260924T160102.418-3f9c21: pass rate 2/2 (100%) → 1/2 (50%), -50 pts; tokens +1.2k; cost +$0.0011
     NEWLY FAILING: sales-summary (task changed)
 ```
 
@@ -333,6 +333,43 @@ command = 'python3 "{suite_dir}/graders/fix-median.py"'   # exit 0 = pass
 `check` and `grade.command`. Commands run in the task's workspace. The
 full format, including `files` for inline fixtures and per-task overrides,
 is in [`m14-eval.md`](m14-eval.md#suite-file-format).
+
+### Grading with a rubric
+
+When exit codes can't capture it (is the summary accurate? is the error
+message helpful?), give the task a rubric, one criterion per line. It can
+replace `command` or come with it. With both, the task has to pass both.
+
+```toml
+[task.grade]
+command = "python3 -m unittest -q"
+rubric = """
+- CHANGELOG.md has an entry for the new --dry-run flag
+- the error for a missing config file names the path it looked for
+"""
+```
+
+A judge model reads the task's prompt, the rubric and the evidence
+ferrule collects itself: every file the run added, changed or deleted (up
+to 12k characters each, 60k in all; `.git` is left out) and the command
+grader's output. The agent's final answer goes in too, but marked as its
+claims, not as evidence. The judge answers in JSON, one entry per
+criterion. ferrule then decides:
+- The task passes only if every criterion is met.
+- A criterion counts as met only if the judge quotes the evidence and the
+  quote really is in the evidence. The quote needs 4 characters or more,
+  and runs of whitespace are ignored in the comparison. A quote taken
+  from the agent's own answer doesn't count.
+- A reply that isn't the asked-for JSON, or has the wrong number of
+  entries, is an `error` for that task, not a pass or a fail.
+
+The judge is the model under test unless you pass
+`--judge-provider NAME` (a `[providers.*]` entry, with its configured
+model). The report says which model judged, and flags a self-judged run.
+Each judge call is one call at temperature 0. It shows up in the ledger
+with `call_kind = "judge"` and counts against the budget. The dry run
+counts one judge call per rubric task run. The starter suite grades with
+commands only.
 
 Other flags:
 - `--task ID` (repeatable) runs single tasks.

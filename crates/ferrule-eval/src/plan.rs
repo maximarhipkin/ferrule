@@ -24,7 +24,8 @@ pub struct PlanInput<'a> {
 }
 
 /// The most calls one run can make: every step, a compaction summary per
-/// step for the engineered variant, and the closing status answer.
+/// step for the engineered variant, and the closing status answer. A
+/// rubric adds one judge call per run on top.
 pub fn max_calls(v: Variant, max_iterations: usize) -> u64 {
     let steps = max_iterations as u64;
     match v {
@@ -82,6 +83,12 @@ pub fn render(p: &PlanInput<'_>) -> Result<String> {
             all_calls += calls;
             all_in += calls * window;
             all_out += calls * reserve;
+            if t.grade.rubric.is_some() {
+                let judged = repeat as u64;
+                all_calls += judged;
+                all_in += judged * crate::rubric::JUDGE_MAX_INPUT;
+                all_out += judged * crate::rubric::JUDGE_MAX_OUTPUT as u64;
+            }
         }
     }
     let runs = tasks.len() * p.variants.len() * repeat as usize;

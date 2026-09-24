@@ -152,10 +152,12 @@ impl EvalSink {
     }
 }
 
-impl LedgerSink for EvalSink {
-    fn record(&self, mut record: LedgerRecord) {
+impl EvalSink {
+    /// Like [`LedgerSink::record`], priced with `pricing` instead of the
+    /// run's (a judge on another provider has its own prices).
+    pub fn record_priced(&self, mut record: LedgerRecord, pricing: Option<Pricing>) {
         if record.cost_usd.is_none() {
-            if let Some(p) = self.pricing {
+            if let Some(p) = pricing {
                 record.cost_usd = Some(p.cost(
                     record.input_tokens,
                     record.cached_input_tokens,
@@ -192,5 +194,11 @@ impl LedgerSink for EvalSink {
         if let Some(inner) = &self.inner {
             inner.record(record);
         }
+    }
+}
+
+impl LedgerSink for EvalSink {
+    fn record(&self, record: LedgerRecord) {
+        self.record_priced(record, self.pricing);
     }
 }

@@ -6,7 +6,7 @@ use ferrule_core::{
     CompletionRequest, CompletionResponse, CoreError, HarnessProfile, LedgerRecord, LedgerSink,
     Message, Provider, Role, ToolCall, Usage,
 };
-use ferrule_eval::{run_suite, Caps, Env, Options, Outcome, Suite, Variant, RESULT_KIND};
+use ferrule_eval::{run_suite, Caps, Env, Judge, Options, Outcome, Suite, Variant, RESULT_KIND};
 use ferrule_sandbox::Sandbox;
 use serde_json::json;
 use std::collections::HashMap;
@@ -56,7 +56,10 @@ impl Provider for Scripted {
     }
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let first = req.messages[0].content.as_deref().unwrap_or("");
-        let message = if first.starts_with("Summarize this agent session") {
+        let message = if first.starts_with("You grade an AI agent's work") {
+            // Self-judging: the model under test is asked for a verdict.
+            Message::assistant(Some(JUDGED_MET.into()), vec![], None)
+        } else if first.starts_with("Summarize this agent session") {
             Message::assistant(
                 Some("## Session Intent\nreading files".into()),
                 vec![],
@@ -126,6 +129,7 @@ fn env(provider: Scripted, rows: Arc<Rows>) -> Env {
         ledger: Some(rows),
         pricing: None,
         transcripts: None,
+        judge: None,
     }
 }
 
@@ -391,4 +395,202 @@ fn the_dry_run_lists_every_run_and_a_worst_case_against_the_caps() {
     assert!(text.contains("alpha") && text.contains("gamma"), "{text}");
     assert!(text.contains("worst-case cost: $"), "{text}");
     assert!(text.contains("budget cap: $5.00"), "{text}");
+}
+
+/// Every criterion met, quoting "roses are red".
+const JUDGED_MET: &str =
+    r#"{"criteria": [{"criterion": 1, "met": true, "evidence": "roses are red"}]}"#;
+
+/// A judge that says every criterion is met, quoting "roses are red",
+/// except on the task that asks for gibberish, where it rambles.
+#[derive(Default)]
+struct Judging(Mutex<Vec<CompletionRequest>>);
+
+#[async_trait::async_trait]
+impl Provider for Judging {
+    fn name(&self) -> &str {
+        "judge"
+    }
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let asked = req.messages[1].content.clone().unwrap_or_default();
+        self.0.lock().unwrap().push(req);
+        let reply = if asked.contains("gibberish") {
+            "Looks great, everything is met!".to_string()
+        } else {
+            JUDGED_MET.to_string()
+        };
+        Ok(CompletionResponse {
+            message: Message::assistant(Some(reply), vec![], None),
+            usage: usage(500, 40),
+        })
+    }
+}
+
+const RUBRIC: &str = r#"
+[suite]
+name = "rubric"
+
+[[task]]
+id = "poem"
+prompt = "Write a short poem about roses to poem.txt."
+[task.grade]
+rubric = "- poem.txt is a poem about roses"
+
+[[task]]
+id = "claim"
+prompt = "Write a short poem about roses to poem.txt."
+[task.grade]
+rubric = "- poem.txt is a poem about roses"
+
+[[task]]
+id = "garbled"
+prompt = "Write a short poem about roses to poem.txt, then some gibberish."
+[task.grade]
+rubric = "- poem.txt is a poem about roses"
+"#;
+
+/// Writes the poem, except on `claim`, where it only says it did.
+fn rubric_script(t: &Turn<'_>) -> Message {
+    match (t.task, t.step) {
+        ("claim", _) => Message::assistant(
+            Some("Done: poem.txt now reads \"roses are red\".".into()),
+            vec![],
+            None,
+        ),
+        (_, 0) => call(
+            "write_file",
+            json!({"path": "poem.txt", "content": "roses are red\nviolets are blue\n"}),
+        ),
+        _ => done(),
+    }
+}
+
+#[tokio::test]
+async fn a_rubric_is_judged_on_the_evidence_and_a_claimed_quote_does_not_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let s = suite(dir.path(), RUBRIC);
+    let rows = Arc::new(Rows::default());
+    let judging = Arc::new(Judging::default());
+    let mut env = env(Scripted::new(usage(100, 10), rubric_script), rows.clone());
+    env.judge = Some(Judge {
+        provider: judging.clone(),
+        provider_name: "judge".into(),
+        model: "judge-1".into(),
+        pricing: None,
+    });
+    let run = run_suite(&s, &env, &opts(work.path(), vec![Variant::Engineered]))
+        .await
+        .unwrap();
+
+    let result = |id: &str| run.results.iter().find(|r| r.task == id).unwrap();
+    assert_eq!(result("poem").outcome, Outcome::Pass);
+    // The quote is only in the agent's own answer, not in any file.
+    let claim = result("claim");
+    assert_eq!(claim.outcome, Outcome::Fail);
+    assert!(
+        claim.graders[0]
+            .detail
+            .contains("quote isn't in the evidence"),
+        "{:?}",
+        claim.graders
+    );
+    // A reply that isn't the JSON is no verdict at all.
+    assert_eq!(result("garbled").outcome, Outcome::Error);
+    // The judge call is part of the task run's totals.
+    assert_eq!(result("poem").totals.calls, 3);
+    assert_eq!(run.judge.as_deref(), Some("judge-1 via judge"));
+    assert!(!run.self_judged);
+
+    {
+        let asked = judging.0.lock().unwrap();
+        assert_eq!(asked.len(), 3);
+        for req in asked.iter() {
+            assert_eq!(req.temperature, Some(0.0));
+            assert!(req.tools.is_empty());
+            let user = req.messages[1].content.as_deref().unwrap();
+            assert!(user.contains("# The rubric\n1. poem.txt is a poem about roses"));
+            assert!(user.contains("(its claims, not evidence)"));
+        }
+
+        let rows = rows.0.lock().unwrap();
+        let judged: Vec<_> = rows.iter().filter(|r| r.call_kind == "judge").collect();
+        assert_eq!(judged.len(), 3);
+        for r in &judged {
+            assert_eq!(r.task_shape, "eval");
+            assert_eq!(r.provider, "judge");
+            assert_eq!(r.input_tokens, 500);
+            let tag = r.eval.as_ref().unwrap();
+            assert_eq!(
+                r.session_id,
+                format!("{}/{}--engineered", run.run_id, tag.task)
+            );
+        }
+        let report = ferrule_eval::report::render(&run);
+        assert!(
+            report.contains("rubrics judged by judge-1 via judge\n"),
+            "{report}"
+        );
+    }
+
+    // With no judge given, the model under test judges, and the report says so.
+    env.judge = None;
+    let run = run_suite(
+        &s,
+        &env,
+        &Options {
+            tasks: vec!["poem".into()],
+            ..opts(work.path(), vec![Variant::Naive])
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.results[0].outcome, Outcome::Pass);
+    assert!(run.self_judged);
+    let report = ferrule_eval::report::render(&run);
+    assert!(
+        report.contains("rubrics judged by script-1 via scripted — self-judged"),
+        "{report}"
+    );
+}
+
+#[test]
+fn the_dry_run_counts_one_judge_call_per_rubric_run() {
+    let calls = |toml: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let s = suite(dir.path(), toml);
+        let profile = ferrule_eval::variant::windowed(&HarnessProfile::generic(), Some(32_000));
+        let text = ferrule_eval::plan::render(&ferrule_eval::plan::PlanInput {
+            suite: &s,
+            tags: &[],
+            tasks: &[],
+            variants: &[Variant::Engineered, Variant::Naive],
+            repeat: 2,
+            profile: &profile,
+            provider: "p",
+            model: "m",
+            pricing: None,
+            caps: Caps::default(),
+        })
+        .unwrap();
+        let line = text.lines().find(|l| l.starts_with("worst case")).unwrap();
+        let n: u64 = line
+            .split(": ")
+            .nth(1)
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        (n, text)
+    };
+    let (judged, text) = calls(RUBRIC);
+    let (plain, _) = calls(&RUBRIC.replace(
+        r#"rubric = "- poem.txt is a poem about roses""#,
+        r#"command = "true""#,
+    ));
+    // 3 tasks × 2 variants × 2 repeats.
+    assert_eq!(judged, plain + 12, "{text}");
+    assert!(text.contains("graders: rubric;"), "{text}");
 }

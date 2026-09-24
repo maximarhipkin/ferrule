@@ -244,6 +244,8 @@ mod tests {
             totals: Totals::default(),
             budget_stop: None,
             not_run: 0,
+            judge: None,
+            self_judged: false,
         }
     }
 

@@ -8,11 +8,13 @@ pub mod grade;
 pub mod history;
 pub mod plan;
 pub mod report;
+pub mod rubric;
 pub mod runner;
 pub mod sink;
 pub mod suite;
 pub mod variant;
 
+pub use rubric::Judge;
 pub use runner::{run_suite, Env, Options, Outcome, SuiteRun, TaskResult, RESULT_KIND};
 pub use sink::{Caps, Pricing, Totals};
 pub use suite::{Suite, SuiteKind, Task};
