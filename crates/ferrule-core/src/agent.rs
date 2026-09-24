@@ -599,10 +599,12 @@ impl Agent {
         let mut latest: std::collections::HashSet<usize> = seen.values().cloned().collect();
         latest.insert(self.messages.len().saturating_sub(1));
         for (i, m) in self.messages.iter_mut().enumerate() {
-            if m.role == crate::message::Role::Tool && !latest.contains(&i) && m.content.is_some() {
-                if seen.contains_key(m.content.as_ref().unwrap()) {
-                    m.content = Some("[superseded by identical later tool result]".into());
-                }
+            if m.role == crate::message::Role::Tool
+                && !latest.contains(&i)
+                && m.content.is_some()
+                && seen.contains_key(m.content.as_ref().unwrap())
+            {
+                m.content = Some("[superseded by identical later tool result]".into());
             }
         }
     }

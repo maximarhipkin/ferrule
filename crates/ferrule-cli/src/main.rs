@@ -289,7 +289,8 @@ async fn build_agent(
     task_shape: &str,
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
-    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
+    let sandbox = shared_sandbox(&cfg)?;
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox).await;
     let ledger = ledger::LedgerTag::new(&ledger::build_sink(&cfg), task_shape, None);
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
@@ -301,15 +302,39 @@ async fn build_agent(
 /// Callers that build many agents (the gateway, one per session) call this
 /// once and share the result, so N sessions don't mean N copies of each
 /// server process.
-async fn connect_mcp_servers(servers: &[McpServerConfig]) -> Vec<Arc<dyn Tool>> {
+///
+/// Each server gets its own writable state/cache dir under the data dir
+/// (`mcp/<sanitized name>`) and is spawned through `sandbox` — the same
+/// `Sandbox::command` path the shell tool uses — so its writes are confined
+/// there and secret-looking env vars never reach it unscrubbed.
+async fn connect_mcp_servers(servers: &[McpServerConfig], sandbox: Arc<Sandbox>) -> Vec<Arc<dyn Tool>> {
     let mut tools = Vec::new();
     for server in servers {
-        match ferrule_mcp::connect_and_build_tools(server.clone()).await {
+        let state_dir = match mcp_state_dir(&server.name) {
+            Ok(dir) => dir,
+            Err(e) => {
+                tracing::warn!("mcp server `{}`: couldn't create its state dir ({e}); continuing without it", server.name);
+                continue;
+            }
+        };
+        match ferrule_mcp::connect_and_build_tools(server.clone(), sandbox.clone(), state_dir).await {
             Ok(t) => tools.extend(t),
             Err(e) => tracing::warn!("mcp server `{}` failed to start ({e}); continuing without it", server.name),
         }
     }
     tools
+}
+
+/// `<data dir>/mcp/<name>`, created if missing — one server's writable
+/// cache/state dir and the one writable root its sandboxed command gets.
+fn mcp_state_dir(server_name: &str) -> Result<PathBuf> {
+    let safe: String = server_name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let dir = config::data_dir()?.join("mcp").join(safe);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 /// Shared assembly logic for every entry point that needs a ready-to-run
@@ -676,7 +701,8 @@ async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iteration
     let (cfg, _) = config::Config::load()?;
     let sessions_dir = config::data_dir()?.join("sessions");
 
-    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
+    let sandbox = shared_sandbox(&cfg)?;
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox).await;
     let ledger_sink = ledger::build_sink(&cfg);
     let factory_provider = provider;
     let factory_workspace = workspace.clone();
@@ -837,7 +863,8 @@ async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, m
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     let task = store.get(id)?.ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
-    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers).await;
+    let sandbox = shared_sandbox(&cfg)?;
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox).await;
     let ledger_sink = ledger::build_sink(&cfg);
     let factory_provider = provider;
     let factory_workspace = workspace.clone();

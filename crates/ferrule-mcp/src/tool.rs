@@ -3,7 +3,9 @@ use crate::config::McpServerConfig;
 use crate::error::McpError;
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
+use ferrule_sandbox::Sandbox;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -63,10 +65,41 @@ impl Tool for McpRemoteTool {
 /// as a `mcp__<server>__<tool>` `Tool`. On any failure the caller should log
 /// a warning and continue without this server — never let one bad MCP server
 /// stop the agent from starting.
-pub async fn connect_and_build_tools(cfg: McpServerConfig) -> Result<Vec<Arc<dyn Tool>>, McpError> {
+///
+/// `sandbox` is the host's process-wide `Sandbox` (already carrying the
+/// credential proxy's env, if any); `state_dir` is this server's own
+/// writable cache/state directory (e.g. `<data dir>/mcp/<name>`), created by
+/// the caller. When `cfg.sandbox` is `false`, or this OS has no sandbox
+/// backend, the server runs unconfined — still with secrets scrubbed and the
+/// proxy env set — and that is logged loudly, once, here.
+pub async fn connect_and_build_tools(
+    cfg: McpServerConfig,
+    sandbox: Arc<Sandbox>,
+    state_dir: PathBuf,
+) -> Result<Vec<Arc<dyn Tool>>, McpError> {
     let server_name = cfg.name.clone();
     let timeout = cfg.timeout();
-    let client = Arc::new(McpClient::new(cfg));
+    let effective = if !cfg.sandbox {
+        Arc::new(sandbox.unconfined(format!(
+            "mcp.servers.{server_name}: sandbox = false in config"
+        )))
+    } else if sandbox.is_active() && !cfg.writable_roots.is_empty() {
+        Arc::new(
+            (*sandbox)
+                .clone()
+                .with_extra_writable_roots(cfg.writable_roots.clone()),
+        )
+    } else {
+        sandbox.clone()
+    };
+    if let Some(reason) = effective.degraded() {
+        tracing::warn!(
+            server = %server_name,
+            "mcp server `{server_name}` runs UNSANDBOXED: {reason} — it can read ferrule's \
+             environment (secrets aside) and write anywhere its own OS user can"
+        );
+    }
+    let client = Arc::new(McpClient::new(cfg, effective, state_dir));
     let infos = client.list_tools().await?;
     Ok(infos
         .into_iter()

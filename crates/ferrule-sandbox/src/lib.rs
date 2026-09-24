@@ -209,6 +209,33 @@ impl Sandbox {
         self
     }
 
+    /// Extra writable roots on top of the configured ones, scoped to
+    /// whichever `Sandbox` clone this is called on — for a caller (an MCP
+    /// server's own cache dir, say) that needs a writable path the
+    /// process-wide policy doesn't grant everyone else. Does not affect the
+    /// original `Sandbox` this was cloned from.
+    pub fn with_extra_writable_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.policy.writable_roots.extend(roots);
+        self
+    }
+
+    /// The same secret-scrubbing and credential env as `self`, but with
+    /// OS write-confinement turned off — the escape hatch for a caller that
+    /// explicitly opted a specific command out of sandboxing (e.g. an MCP
+    /// server with `sandbox = false`, or no backend exists on this OS).
+    /// `reason` is surfaced by `degraded()` for logs and `doctor`.
+    pub fn unconfined(&self, reason: impl Into<String>) -> Self {
+        Self {
+            policy: Policy {
+                mode: Mode::Off,
+                ..self.policy.clone()
+            },
+            backend: Backend::None,
+            degraded: Some(reason.into()),
+            extra_env: self.extra_env.clone(),
+        }
+    }
+
     /// A `Command` for `program args…` that runs in `workspace` under the
     /// sandbox with a scrubbed environment. Callers add stdio and spawn.
     pub fn command<I, S>(
@@ -339,7 +366,9 @@ impl Sandbox {
                 } else {
                     format!("{} and {last}", places.join(", "))
                 };
-                format!("Writes are only allowed in {places}; elsewhere they fail with \"{DENIED}\".")
+                format!(
+                    "Writes are only allowed in {places}; elsewhere they fail with \"{DENIED}\"."
+                )
             }
         };
         let net = if self.policy.network {
@@ -485,7 +514,10 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         let cmd = sb.command("true", [""; 0], ws.path()).unwrap();
         let home: Vec<_> = cmd.get_envs().filter(|(k, _)| *k == "HOME").collect();
-        assert_eq!(home, [(OsStr::new("HOME"), Some(OsStr::new("placeholder")))]);
+        assert_eq!(
+            home,
+            [(OsStr::new("HOME"), Some(OsStr::new("placeholder")))]
+        );
     }
 
     #[test]
@@ -512,6 +544,48 @@ mod tests {
             ..sb
         };
         assert!(ro.writable_roots(ws.path()).is_empty());
+    }
+
+    #[test]
+    fn extra_writable_roots_add_without_mutating_the_original() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir(ws.path().join("cache")).unwrap();
+        let base = Sandbox {
+            policy: policy(Mode::WorkspaceWrite),
+            backend: Backend::None,
+            degraded: None,
+            extra_env: Vec::new(),
+        };
+        let extended = base
+            .clone()
+            .with_extra_writable_roots(vec![ws.path().join("cache")]);
+        assert!(base.policy.writable_roots.is_empty(), "original untouched");
+        assert_eq!(
+            extended.policy.writable_roots,
+            vec![ws.path().join("cache")]
+        );
+    }
+
+    #[test]
+    fn unconfined_keeps_scrubbing_and_env_but_drops_the_backend() {
+        let sb = Sandbox {
+            policy: Policy {
+                secret_vars: vec!["MY_PROVIDER".into()],
+                ..policy(Mode::WorkspaceWrite)
+            },
+            backend: Backend::Seatbelt,
+            degraded: None,
+            extra_env: vec![("HTTPS_PROXY".into(), "http://127.0.0.1:1".into())],
+        };
+        let un = sb.unconfined("mcp.servers.foo: sandbox = false");
+        assert_eq!(un.backend(), Backend::None);
+        assert!(!un.is_active());
+        assert_eq!(un.degraded(), Some("mcp.servers.foo: sandbox = false"));
+        assert!(
+            un.is_secret_var("MY_PROVIDER"),
+            "kept the caller's secret_vars"
+        );
+        assert_eq!(un.extra_env, sb.extra_env, "credential env is preserved");
     }
 
     #[test]

@@ -3,7 +3,9 @@
 
 use ferrule_core::tool::ToolContext;
 use ferrule_mcp::{connect_and_build_tools, McpServerConfig};
+use ferrule_sandbox::Sandbox;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn fixture_cfg(name: &str, timeout_secs: Option<u64>) -> McpServerConfig {
@@ -14,12 +16,27 @@ fn fixture_cfg(name: &str, timeout_secs: Option<u64>) -> McpServerConfig {
         args: vec![script.into()],
         env: Default::default(),
         timeout_secs,
+        sandbox: true,
+        writable_roots: vec![],
     }
+}
+
+/// Off, not a real probed backend: these tests exercise the MCP protocol,
+/// not sandbox enforcement (covered separately in `client.rs`'s own unit
+/// tests), and should stay hermetic on every OS/CI runner.
+fn test_sandbox() -> Arc<Sandbox> {
+    Arc::new(Sandbox::off())
+}
+
+/// A fresh writable state dir per call, leaked on purpose — these are
+/// short-lived test processes and each server invocation needs its own.
+fn state_dir() -> std::path::PathBuf {
+    tempfile::tempdir().unwrap().keep()
 }
 
 #[tokio::test]
 async fn handshake_lists_paginated_tools_with_namespaced_names() {
-    let tools = connect_and_build_tools(fixture_cfg("test", None))
+    let tools = connect_and_build_tools(fixture_cfg("test", None), test_sandbox(), state_dir())
         .await
         .expect("connect");
     let mut names: Vec<String> = tools.iter().map(|t| t.definition().name).collect();
@@ -39,7 +56,7 @@ async fn handshake_lists_paginated_tools_with_namespaced_names() {
 
 #[tokio::test]
 async fn successful_call_returns_text_content() {
-    let tools = connect_and_build_tools(fixture_cfg("test", None))
+    let tools = connect_and_build_tools(fixture_cfg("test", None), test_sandbox(), state_dir())
         .await
         .expect("connect");
     let echo = tools
@@ -57,7 +74,7 @@ async fn successful_call_returns_text_content() {
 
 #[tokio::test]
 async fn is_error_result_becomes_a_tool_error_not_a_panic() {
-    let tools = connect_and_build_tools(fixture_cfg("test", None))
+    let tools = connect_and_build_tools(fixture_cfg("test", None), test_sandbox(), state_dir())
         .await
         .expect("connect");
     let boom = tools
@@ -74,7 +91,7 @@ async fn is_error_result_becomes_a_tool_error_not_a_panic() {
 
 #[tokio::test]
 async fn call_timeout_is_reported_not_hung() {
-    let tools = connect_and_build_tools(fixture_cfg("test", Some(1)))
+    let tools = connect_and_build_tools(fixture_cfg("test", Some(1)), test_sandbox(), state_dir())
         .await
         .expect("connect");
     let slow = tools
@@ -96,7 +113,7 @@ async fn call_timeout_is_reported_not_hung() {
 
 #[tokio::test]
 async fn crashed_server_is_respawned_lazily_on_next_call() {
-    let tools = connect_and_build_tools(fixture_cfg("test", None))
+    let tools = connect_and_build_tools(fixture_cfg("test", None), test_sandbox(), state_dir())
         .await
         .expect("connect");
     let crash = tools
@@ -127,7 +144,7 @@ async fn crashed_server_is_respawned_lazily_on_next_call() {
 
 #[tokio::test]
 async fn slow_call_does_not_block_other_calls_to_the_same_server() {
-    let tools = connect_and_build_tools(fixture_cfg("test", Some(5)))
+    let tools = connect_and_build_tools(fixture_cfg("test", Some(5)), test_sandbox(), state_dir())
         .await
         .expect("connect");
     let find = |n: &str| {
@@ -159,7 +176,7 @@ async fn slow_call_does_not_block_other_calls_to_the_same_server() {
 
 #[tokio::test]
 async fn server_initiated_ping_is_answered_and_not_mistaken_for_a_response() {
-    let tools = connect_and_build_tools(fixture_cfg("test", Some(5)))
+    let tools = connect_and_build_tools(fixture_cfg("test", Some(5)), test_sandbox(), state_dir())
         .await
         .expect("connect");
     let ping_first = tools
