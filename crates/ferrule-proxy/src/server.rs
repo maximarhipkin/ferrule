@@ -1,0 +1,504 @@
+//! The proxy itself: an HTTP/1 CONNECT proxy on loopback. Tunnels to hosts no
+//! secret is bound to are passed through untouched; tunnels to bound hosts
+//! are terminated with a local certificate so each request can have its
+//! placeholders swapped for real values, and each response scrubbed back.
+
+use crate::ca::Ca;
+use crate::hosts::HostPattern;
+use crate::subst::{Scrubbed, Swaps};
+use crate::upstream::{self, Upstream};
+use anyhow::{Context as _, Result};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
+use bytes::Bytes;
+use http::header::{self, HeaderMap, HeaderName, HeaderValue};
+use http::{Method, Request, Response, StatusCode, Uri, Version};
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt as _, Full};
+use hyper::body::Incoming;
+use hyper::client::conn::http1::SendRequest;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
+use rustls::ClientConfig;
+use rustls_pki_types::ServerName;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tracing::debug;
+
+pub(crate) type ProxyBody = BoxBody<Bytes, hyper::Error>;
+
+pub(crate) struct Secret {
+    pub hosts: Vec<HostPattern>,
+    pub placeholder: String,
+    pub real: String,
+    /// Also swapped in the URL, not just credential headers.
+    pub in_url: bool,
+}
+
+pub(crate) struct Shared {
+    /// Decoded `Proxy-Authorization` credentials a request must carry.
+    pub expected_auth: Vec<u8>,
+    pub ca: Ca,
+    pub secrets: Vec<Secret>,
+    pub upstream: Option<Upstream>,
+    pub tls_client: Arc<ClientConfig>,
+}
+
+impl Shared {
+    /// Every secret bound to `host`, or `None` when the tunnel stays blind.
+    fn swaps_for(&self, host: &str) -> Option<Arc<Swaps>> {
+        let pairs: Vec<_> = self
+            .secrets
+            .iter()
+            .filter(|s| s.hosts.iter().any(|h| h.matches(host)))
+            .map(|s| (s.placeholder.clone(), s.real.clone(), s.in_url))
+            .collect();
+        (!pairs.is_empty()).then(|| Arc::new(Swaps::new(pairs)))
+    }
+}
+
+pub(crate) async fn serve(listener: TcpListener, shared: Arc<Shared>) {
+    loop {
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                // Out of descriptors, usually; don't spin.
+                debug!("proxy accept failed: {e}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            let svc = service_fn(move |req| handle(req, shared.clone()));
+            let conn = http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), svc)
+                .with_upgrades();
+            if let Err(e) = conn.await {
+                debug!("proxy connection ended: {e}");
+            }
+        });
+    }
+}
+
+async fn handle(
+    mut req: Request<Incoming>,
+    shared: Arc<Shared>,
+) -> Result<Response<ProxyBody>, Infallible> {
+    if !authorized(req.headers(), &shared.expected_auth) {
+        let mut resp = text(
+            StatusCode::PROXY_AUTHENTICATION_REQUIRED,
+            "ferrule proxy: credentials required\n",
+        );
+        resp.headers_mut().insert(
+            header::PROXY_AUTHENTICATE,
+            HeaderValue::from_static("Basic realm=\"ferrule\""),
+        );
+        return Ok(resp);
+    }
+    if req.method() != Method::CONNECT {
+        return Ok(text(
+            StatusCode::BAD_REQUEST,
+            "ferrule proxy: only HTTPS (CONNECT) is proxied; plain HTTP never gets secrets\n",
+        ));
+    }
+    let Some((host, port)) = connect_target(req.uri()) else {
+        return Ok(text(
+            StatusCode::BAD_REQUEST,
+            "ferrule proxy: CONNECT needs host:port\n",
+        ));
+    };
+    // Connect before answering, so a dead host is a 502 the client can
+    // report rather than a tunnel that closes on the first byte.
+    let tcp = match upstream::connect(shared.upstream.as_ref(), &host, port).await {
+        Ok(tcp) => tcp,
+        Err(e) => {
+            return Ok(text(
+                StatusCode::BAD_GATEWAY,
+                &format!("ferrule proxy: {e:#}\n"),
+            ))
+        }
+    };
+    let swaps = shared.swaps_for(&host);
+    let on_upgrade = hyper::upgrade::on(&mut req);
+    tokio::spawn(async move {
+        let client = match on_upgrade.await {
+            Ok(u) => TokioIo::new(u),
+            Err(e) => return debug!("CONNECT {host}:{port} upgrade failed: {e}"),
+        };
+        let result = match swaps {
+            None => blind(client, tcp).await,
+            Some(swaps) => mitm(client, tcp, host.clone(), port, swaps, shared).await,
+        };
+        if let Err(e) = result {
+            debug!("tunnel to {host}:{port} ended: {e:#}");
+        }
+    });
+    Ok(Response::new(empty()))
+}
+
+async fn blind(mut client: TokioIo<hyper::upgrade::Upgraded>, mut tcp: TcpStream) -> Result<()> {
+    tokio::io::copy_bidirectional(&mut client, &mut tcp).await?;
+    Ok(())
+}
+
+async fn mitm(
+    client: TokioIo<hyper::upgrade::Upgraded>,
+    tcp: TcpStream,
+    host: String,
+    port: u16,
+    swaps: Arc<Swaps>,
+    shared: Arc<Shared>,
+) -> Result<()> {
+    let acceptor = TlsAcceptor::from(shared.ca.server_config(&host)?);
+    let tls = acceptor
+        .accept(client)
+        .await
+        .with_context(|| format!("TLS from the client for {host} (does it trust ferrule's CA?)"))?;
+    let origin = Arc::new(Origin {
+        host,
+        port,
+        shared,
+        first: std::sync::Mutex::new(Some(tcp)),
+        sender: Mutex::new(None),
+    });
+    let svc = service_fn(move |req| forward(req, origin.clone(), swaps.clone()));
+    http1::Builder::new()
+        .serve_connection(TokioIo::new(tls), svc)
+        .await?;
+    Ok(())
+}
+
+/// The real server behind one intercepted tunnel. The TLS connection to it
+/// is made on the first request and remade if the server closes it.
+struct Origin {
+    host: String,
+    port: u16,
+    shared: Arc<Shared>,
+    /// The socket opened before the CONNECT was answered, used by the first dial.
+    first: std::sync::Mutex<Option<TcpStream>>,
+    sender: Mutex<Option<SendRequest<Incoming>>>,
+}
+
+impl Origin {
+    async fn dial(&self) -> Result<SendRequest<Incoming>> {
+        let first = self.first.lock().unwrap().take();
+        let tcp = match first {
+            Some(tcp) => tcp,
+            None => upstream::connect(self.shared.upstream.as_ref(), &self.host, self.port).await?,
+        };
+        let name = ServerName::try_from(self.host.clone())?;
+        let tls = TlsConnector::from(self.shared.tls_client.clone())
+            .connect(name, tcp)
+            .await
+            .with_context(|| format!("TLS to {}", self.host))?;
+        let (sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await?;
+        let host = self.host.clone();
+        tokio::spawn(async move {
+            if let Err(e) = conn.await {
+                debug!("connection to {host} ended: {e}");
+            }
+        });
+        Ok(sender)
+    }
+
+    /// Sends on the open connection, redialling once if the server had
+    /// closed it before the request went out (safe: nothing was sent).
+    async fn send(&self, mut req: Request<Incoming>) -> Result<Response<Incoming>> {
+        let mut guard = self.sender.lock().await;
+        let mut retried = false;
+        loop {
+            if guard.as_ref().is_none_or(|s| s.is_closed()) {
+                *guard = Some(self.dial().await?);
+            }
+            let sender = guard.as_mut().expect("dialled above");
+            if let Err(e) = sender.ready().await {
+                *guard = None;
+                if retried {
+                    return Err(e.into());
+                }
+                retried = true;
+                continue;
+            }
+            match sender.try_send_request(req).await {
+                Ok(resp) => return Ok(resp),
+                Err(mut e) => {
+                    *guard = None;
+                    match e.take_message() {
+                        Some(back) if !retried => {
+                            retried = true;
+                            req = back;
+                        }
+                        _ => return Err(e.into_error().into()),
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn forward(
+    req: Request<Incoming>,
+    origin: Arc<Origin>,
+    swaps: Arc<Swaps>,
+) -> Result<Response<ProxyBody>, Infallible> {
+    let (mut parts, body) = req.into_parts();
+    // A Host naming another site would let a shared front end (a CDN, say)
+    // route the real secret to someone else's app.
+    let named = parts.uri.host().map(str::to_string).or_else(|| {
+        parts
+            .headers
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .map(host_of)
+    });
+    if let Some(named) = named {
+        if !named
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case(&origin.host)
+        {
+            return Ok(text(
+                StatusCode::MISDIRECTED_REQUEST,
+                &format!(
+                    "ferrule proxy: request for {named} on a tunnel to {}\n",
+                    origin.host
+                ),
+            ));
+        }
+    }
+    if parts.headers.contains_key(header::UPGRADE) {
+        return Ok(text(
+            StatusCode::NOT_IMPLEMENTED,
+            "ferrule proxy: protocol upgrades (websockets) aren't supported on hosts with secrets\n",
+        ));
+    }
+
+    strip_hop_by_hop(&mut parts.headers);
+    // Identity bodies only, so the response can be scrubbed.
+    parts.headers.remove(header::ACCEPT_ENCODING);
+    parts.headers.remove(header::EXPECT);
+    if !parts.headers.contains_key(header::HOST) {
+        let host = if origin.port == 443 {
+            origin.host.clone()
+        } else {
+            format!("{}:{}", origin.host, origin.port)
+        };
+        if let Ok(v) = HeaderValue::from_str(&host) {
+            parts.headers.insert(header::HOST, v);
+        }
+    }
+    for (name, value) in parts.headers.iter_mut() {
+        if let Some(real) = swaps.inject_header(name, value) {
+            *value = real;
+        }
+    }
+    let pq = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
+    let pq = swaps.inject_uri(pq).unwrap_or_else(|| pq.to_string());
+    parts.uri = match pq.parse::<Uri>() {
+        Ok(uri) => uri,
+        Err(_) => {
+            return Ok(text(
+                StatusCode::BAD_REQUEST,
+                "ferrule proxy: bad request target\n",
+            ))
+        }
+    };
+    parts.version = Version::HTTP_11;
+
+    let resp = match origin.send(Request::from_parts(parts, body)).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            return Ok(text(
+                StatusCode::BAD_GATEWAY,
+                &format!("ferrule proxy: {}: {e:#}\n", origin.host),
+            ))
+        }
+    };
+    Ok(scrub_response(resp, swaps))
+}
+
+fn scrub_response(resp: Response<Incoming>, swaps: Arc<Swaps>) -> Response<ProxyBody> {
+    let (mut parts, body) = resp.into_parts();
+    strip_hop_by_hop(&mut parts.headers);
+    for value in parts.headers.values_mut() {
+        if let Some(fake) = swaps
+            .scrub(value.as_bytes())
+            .and_then(|b| HeaderValue::from_bytes(&b).ok())
+        {
+            *value = fake;
+        }
+    }
+    let encoded = parts
+        .headers
+        .get(header::CONTENT_ENCODING)
+        .is_some_and(|v| !v.as_bytes().eq_ignore_ascii_case(b"identity"));
+    let body = if encoded {
+        // Compressed despite the stripped Accept-Encoding: can't scrub it.
+        body.boxed()
+    } else {
+        if !swaps.same_lengths() {
+            parts.headers.remove(header::CONTENT_LENGTH);
+        }
+        Scrubbed::new(body, swaps).boxed()
+    };
+    Response::from_parts(parts, body)
+}
+
+fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    let named: Vec<HeaderName> = headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .filter_map(|t| HeaderName::from_bytes(t.trim().as_bytes()).ok())
+        .collect();
+    for name in named {
+        headers.remove(name);
+    }
+    for name in [
+        header::CONNECTION,
+        HeaderName::from_static("proxy-connection"),
+        HeaderName::from_static("keep-alive"),
+        header::PROXY_AUTHENTICATE,
+        header::PROXY_AUTHORIZATION,
+        header::TE,
+        header::TRAILER,
+        header::TRANSFER_ENCODING,
+        header::UPGRADE,
+    ] {
+        headers.remove(name);
+    }
+}
+
+fn authorized(headers: &HeaderMap, expected: &[u8]) -> bool {
+    let Some(v) = headers.get(header::PROXY_AUTHORIZATION) else {
+        return false;
+    };
+    let v = v.as_bytes();
+    if v.len() < 6 || !v[..6].eq_ignore_ascii_case(b"basic ") {
+        return false;
+    }
+    STANDARD
+        .decode(v[6..].trim_ascii())
+        .is_ok_and(|got| constant_time_eq(&got, expected))
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// `host:port` from a CONNECT target, brackets stripped from IPv6 literals.
+fn connect_target(uri: &Uri) -> Option<(String, u16)> {
+    let auth = uri.authority()?;
+    let host = auth.host().trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return None;
+    }
+    Some((host.to_ascii_lowercase(), auth.port_u16().unwrap_or(443)))
+}
+
+/// The host part of a `Host` header value.
+fn host_of(value: &str) -> String {
+    match value.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default().to_string(),
+        None => value.rsplit_once(':').map_or(value, |(h, _)| h).to_string(),
+    }
+}
+
+fn text(status: StatusCode, msg: &str) -> Response<ProxyBody> {
+    let mut resp = Response::new(
+        Full::new(Bytes::from(msg.to_string()))
+            .map_err(|never| match never {})
+            .boxed(),
+    );
+    *resp.status_mut() = status;
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    resp
+}
+
+fn empty() -> ProxyBody {
+    http_body_util::Empty::new()
+        .map_err(|never| match never {})
+        .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_credentials_are_checked_exactly() {
+        let expected = b"ferrule:secret-token";
+        let mut h = HeaderMap::new();
+        assert!(!authorized(&h, expected));
+        let with = |v: String| {
+            let mut h = HeaderMap::new();
+            h.insert(
+                header::PROXY_AUTHORIZATION,
+                HeaderValue::from_str(&v).unwrap(),
+            );
+            h
+        };
+        assert!(authorized(
+            &with(format!("Basic {}", STANDARD.encode(expected))),
+            expected
+        ));
+        assert!(authorized(
+            &with(format!("basic  {}", STANDARD.encode(expected))),
+            expected
+        ));
+        assert!(!authorized(
+            &with(format!("Basic {}", STANDARD.encode("ferrule:secret-tokem"))),
+            expected
+        ));
+        assert!(!authorized(
+            &with(format!("Bearer {}", STANDARD.encode(expected))),
+            expected
+        ));
+        h.insert(
+            header::PROXY_AUTHORIZATION,
+            HeaderValue::from_static("Basic ???"),
+        );
+        assert!(!authorized(&h, expected));
+    }
+
+    #[test]
+    fn hop_by_hop_headers_and_the_ones_connection_names_are_dropped() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::CONNECTION,
+            HeaderValue::from_static("keep-alive, X-Private"),
+        );
+        h.insert("x-private", HeaderValue::from_static("1"));
+        h.insert("keep-alive", HeaderValue::from_static("timeout=5"));
+        h.insert(
+            header::PROXY_AUTHORIZATION,
+            HeaderValue::from_static("Basic x"),
+        );
+        h.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer y"));
+        strip_hop_by_hop(&mut h);
+        assert_eq!(h.len(), 1);
+        assert!(h.contains_key(header::AUTHORIZATION));
+    }
+
+    #[test]
+    fn connect_targets_and_host_headers_parse() {
+        let t = |s: &str| connect_target(&s.parse::<Uri>().unwrap());
+        assert_eq!(
+            t("API.GitHub.com:443"),
+            Some(("api.github.com".into(), 443))
+        );
+        assert_eq!(t("[::1]:8443"), Some(("::1".into(), 8443)));
+        assert_eq!(host_of("api.github.com:443"), "api.github.com");
+        assert_eq!(host_of("api.github.com"), "api.github.com");
+        assert_eq!(host_of("[::1]:443"), "::1");
+    }
+}

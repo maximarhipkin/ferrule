@@ -2,93 +2,337 @@
   <img src="docs/branding/hero.png" alt="Ferrule" width="720">
 </p>
 
-# Ferrule
+<p align="center">
+  <b>An AI agent runtime in one small Rust binary.</b><br>
+  Chat, schedule, sandbox and hand out credentials without handing over the secret.
+</p>
 
-A portable, memory-efficient AI agent runtime in Rust — one static binary you
-can deploy anywhere, with per-model harness profiles so every model is driven
-the way it was trained to be driven.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#credential-gateway">Credential gateway</a> ·
+  <a href="#roadmap">Roadmap</a> ·
+  <a href="PLAN.md">PLAN.md</a>
+</p>
 
-Design rationale and research: see `docs/research-report.md`. Current status
-and roadmap: see `PLAN.md`.
+---
+
+Ferrule runs a coding and operations agent against any OpenAI-compatible
+model. You can use it from the terminal, from Telegram, or on a cron
+schedule. Its shell commands run in an OS sandbox, and API tokens reach
+them only as placeholders that a built-in proxy swaps for the real value,
+and only on the hosts you allow.
+
+It's one binary of about 9 MB. Its only dependency is the system C
+library. Measured on Linux x86-64:
+
+- `ferrule --version` starts in about 4 ms.
+- The idle gateway daemon uses about 9 MB of RAM.
+
+All state lives in files you can read: SQLite for memory and tasks, and
+JSONL for transcripts and the cost ledger.
 
 ## Why
 
-The harness, not the model, is the performance lever. Same model, different
-harness: 13.3% → 38.3% on ARC-AGI-3, with ~6× fewer output tokens (OpenAI,
-2026). Ferrule is built around that fact:
+The harness, not the model, is the performance lever. In OpenAI's 2026
+ARC-AGI-3 runs, the same model scored 13.3% with a default harness and 38.3%
+with an engineered one, with about 6× fewer output tokens. Ferrule is built
+around that result:
 
-- **Harness profiles per model** (`HarnessProfile`): context window, compaction
-  threshold (~70–75%, not 95%), reasoning retention, system-prompt dialect.
-  Kimi K2's interleaved thinking is preserved across turns; generic endpoints
-  get a conservative profile.
-- **Structured compaction** with checklist templates + deterministic tool-result
-  dedup (free 15–30% context savings) before any tokens are spent summarizing.
-- **OpenAI-compatible driver** covers Kimi, OpenAI, DeepSeek, OpenRouter,
-  Groq, Ollama, llama.cpp, vLLM out of the box.
-- **SQLite hybrid memory** (FTS5 BM25 + 7-day time decay, token-budgeted
-  recall) in a single file you can read and back up.
-- **Append-only JSONL transcripts** per session: resumable, forkable, auditable.
-- **Workspace-scoped tools** with path-escape rejection, shell deny-list,
-  output capping, and hard timeouts.
-- **Context baseline**: `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` auto-loaded into
-  the system prefix — living documentation written *for* the agent.
-- **Agent diary**: `write_todos` + `log_diary` tools persist the trajectory to
-  `.ferrule/` so you debug trajectories, not bugs.
-- **Validation policy**: `[agent] verify_command` makes the build system the
-  truth — pass or fix forward.
-- Typed lifecycle events (`RunStarted → ContextReady → Tooling → Compacted →
-  RunFinished`) streamed over a channel — observability is structural.
+<p align="center">
+  <img src="docs/assets/chart-harness.png" alt="Same model, different harness: 13.3% vs 38.3% on ARC-AGI-3, 6x fewer output tokens" width="820">
+</p>
 
-## Layout
+- **A harness profile per model**: context window, when to compact (at
+  about 70–75% of the window, not 95%), whether reasoning is carried across
+  turns, and the system-prompt dialect. Kimi K2's interleaved thinking is
+  kept across turns, and unknown endpoints get a conservative profile.
+- **Structured compaction**: tool results are deduplicated for free before
+  a checklist summary spends any tokens.
+- **The build is the judge**: with `[agent] verify_command = "cargo test"`,
+  the agent can't finish until the command passes.
 
+Research and sources are in [`docs/research-report.md`](docs/research-report.md).
+
+## What's inside
+
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="Ferrule architecture" width="860">
+</p>
+
+| | |
+|---|---|
+| **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
+| **Providers** | One OpenAI-compatible driver: Kimi, OpenAI, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. |
+| **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. |
+| **MCP** | stdio MCP servers. Their tools register as `mcp__<server>__<tool>`. |
+| **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. |
+| **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall. |
+| **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. |
+| **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
+| **OS sandbox** | Every shell command runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, and secret env vars are stripped. |
+| **Credential gateway** | Commands get a placeholder token. A local proxy swaps in the real one only for the hosts you allow. |
+| **Ledger** | Every model call is logged: tokens, cache hits, latency, errors, cost. |
+| **Context baseline** | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `ferrule.md` in the workspace goes into the system prompt. |
+
+## Install
+
+You need:
+
+- **Rust 1.85 or newer.** Dependencies use edition 2024; install with
+  [rustup](https://rustup.rs).
+- **A C compiler** (`cc`/`clang`) for the bundled SQLite and `ring`.
+- **Linux 5.13 or newer** for the Landlock sandbox. On older kernels
+  commands run unsandboxed, or ferrule refuses to start if
+  `[sandbox] require = true`. The macOS backend (Seatbelt) is written and
+  unit-tested but hasn't yet been run on a real Mac.
+
+```bash
+git clone https://github.com/maximarhipkin/ferrule
+cd ferrule
+cargo install --path crates/ferrule-cli     # puts `ferrule` in ~/.cargo/bin
 ```
-crates/
-  ferrule-core       loop, provider trait, harness profiles, transcripts, events
-  ferrule-providers  OpenAI-compatible driver (Kimi/OpenAI/DeepSeek/local…)
-  ferrule-tools      fs / shell / web_fetch, workspace-scoped and output-capped
-  ferrule-memory     SQLite + FTS5 memory with time decay
-  ferrule-sandbox    OS sandbox for shell commands (Landlock + seccomp / Seatbelt)
-  ferrule-cli        the `ferrule` binary (run / chat / memory / config)
-```
+
+Or build without installing: `cargo build --release`, and the binary is
+`target/release/ferrule`.
 
 ## Quick start
 
 ```bash
-cargo build --release
-
-./target/release/ferrule config init        # writes ferrule.toml
-export MOONSHOT_API_KEY=sk-...                # or OPENAI_API_KEY etc.
-./target/release/ferrule run "list the files here and summarize the project"
-./target/release/ferrule chat               # interactive session
-./target/release/ferrule memory add "prefers terse answers" --tags pref
-./target/release/ferrule memory search "answers style"
-./target/release/ferrule sandbox            # what the shell sandbox allows here, tested
+mkdir my-project && cd my-project
+ferrule config init                  # writes an annotated ferrule.toml here
+export MOONSHOT_API_KEY=sk-...       # or OPENAI_API_KEY, or point it at Ollama
+ferrule sandbox                      # what the shell sandbox allows here, tested live
+ferrule run "list the files here and summarise the project"
+ferrule chat                         # interactive, Ctrl-D to exit
 ```
 
-Config is `ferrule.toml` in the working directory or
-`~/.config/ferrule/config.toml`. API keys always come from env vars.
+API keys always come from environment variables. The config file only
+names them.
 
-## Tests
+| | Linux | macOS |
+|---|---|---|
+| Config | `./ferrule.toml`, else `~/.config/ferrule/config.toml` | `./ferrule.toml`, else `~/Library/Application Support/ferrule/config.toml` |
+| Data | `~/.local/share/ferrule/` | `~/Library/Application Support/ferrule/` |
+
+The data directory holds:
+
+- `memory.db`
+- `sessions/` (transcripts)
+- `tasks.db`
+- `ledger.jsonl`
+- `proxy/` (the credential gateway's CA and seed)
+
+## Configuration
+
+`ferrule config init` writes every option, commented. The main ones:
+
+**A local model** (any OpenAI-compatible endpoint):
+
+```toml
+default_provider = "local"
+
+[providers.local]
+base_url = "http://localhost:11434/v1"   # Ollama
+api_key_env = "OLLAMA_API_KEY"           # any non-empty value
+model = "qwen3-coder"
+profile = "generic"
+```
+
+Pick a provider per run with `--provider NAME`. `run`, `chat` and `gateway`
+also take `--workspace DIR` and `--max-iterations N`.
+
+**Telegram:**
+
+```toml
+[gateway]
+telegram_token_env = "TELEGRAM_BOT_TOKEN"
+```
 
 ```bash
-cargo test --workspace
+export TELEGRAM_BOT_TOKEN=123456:ABC...
+ferrule gateway          # long-polls Telegram; one session per chat
 ```
 
-Covers the loop (tool dispatch, error recovery, reasoning retention), the
-provider wire format against a mock HTTP server, workspace-escape rejection,
-the shell deny-list, and memory recall/budgeting.
+> The bot answers anyone who messages it. There's no sender allow-list yet,
+> so keep the bot's username private.
+
+**Scheduled tasks** run inside `ferrule gateway`, so it has to be running:
+
+```bash
+ferrule tasks add morning-brief --kind cron --schedule "0 9 * * *" \
+  --timezone Asia/Jerusalem --channel telegram --chat-id 123456789 \
+  --prompt "Summarise yesterday's commits in this repo"
+ferrule tasks add remind --kind once --schedule 2026-10-01T09:00:00+03:00 \
+  --channel local --chat-id local --prompt "Remind me to renew the domain"
+ferrule tasks list                    # ids, schedules, next run
+ferrule tasks runs <ID>               # truthful status for every run
+```
+
+`--gate "script"` runs before the agent wakes. If it prints
+`{"wakeAgent": false}`, the run is skipped at zero token cost.
+
+**MCP servers and skills:**
+
+```toml
+[[mcp.servers]]
+name = "fs"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+```
+
+Skills are found in `.ferrule/skills`, `.agents/skills` or `.claude/skills`
+in the workspace, and in `~/.agents/skills` or `~/.claude/skills`.
+`ferrule skills` lists what a workspace would load.
+
+**Cost:** add `price_*_per_mtok` to a provider, then run
+`ferrule ledger --since 7d`.
+
+## Sandbox
+
+Every command the agent runs through the `shell` tool is sandboxed:
+
+- **Writes:** only the workspace, temp dirs and any `writable_roots` you
+  add.
+- **Network:** on by default, off with `network = false` (seccomp).
+- **Env:** variables that look like secrets (`*KEY*`, `*TOKEN*`,
+  `*SECRET*`…) and every provider's `api_key_env` are stripped.
+
+```bash
+ferrule sandbox                       # shows the policy and tests each promise
+ferrule sandbox -- sh -c 'touch /etc/x'   # run anything the way the agent would
+```
+
+Reads are still open. Keep secrets out of files the agent can read, and use
+the credential gateway instead.
+
+## Credential gateway
+
+Agents need tokens: `gh` needs `GITHUB_TOKEN`, and a `curl` to an API
+needs its key. Handing the command the real token means a prompt-injected
+model can print it or post it anywhere. Ferrule gives the command a
+**placeholder** of the same shape instead, and swaps in the real value on
+the wire, only for the hosts you name:
+
+<p align="center">
+  <img src="docs/assets/credential-gateway.svg" alt="Credential gateway: sandbox → local proxy → real token only to bound hosts" width="860">
+</p>
+
+```toml
+[secrets]
+GITHUB_TOKEN = ["api.github.com", "*.githubusercontent.com"]
+# APIs that want the key in the URL need an explicit opt-in:
+TELEGRAM_BOT_TOKEN = { hosts = ["api.telegram.org"], in_url = true }
+```
+
+```bash
+ferrule sandbox -- gh api user              # works; the command never saw the token
+ferrule sandbox -- sh -c 'echo $GITHUB_TOKEN'   # ghp_3f9c…, a placeholder
+```
+
+How it works:
+
+- **Where the real value goes in.** It's swapped only in the
+  `Authorization` header (Bearer or Basic) and credential-named headers
+  such as `x-api-key` or `PRIVATE-TOKEN`. The URL is covered only with
+  `in_url = true`. Bodies are never touched, so a hijacked model can't get
+  a host to store the token in a file name or a message.
+- **Where it comes back out.** Responses from those hosts are scrubbed back
+  to the placeholder.
+- **Other hosts.** Traffic to them goes through a plain tunnel, not
+  decrypted. A placeholder sent there is just a useless string.
+- **The environment.** On Linux the sandbox also stops commands from
+  reading ferrule's own environment, where the real value lives.
+
+Limits:
+
+- Only the shell tool goes through the proxy.
+- HTTP/2 and websockets aren't supported on bound hosts.
+- Anything the bound host itself can do with the token, the agent can
+  too, so scope tokens tightly.
+
+The full design, threat model, prior art (Deno Sandbox, fly.io tokenizer,
+Anthropic's sandbox-runtime and others) and the complete list of limits
+are in [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md).
+
+## Project layout
+
+```
+crates/
+  ferrule-core       agent loop, provider trait, harness profiles, compaction, transcripts
+  ferrule-providers  OpenAI-compatible driver
+  ferrule-tools      fs / shell / web_fetch / diary / memory tools
+  ferrule-memory     SQLite + FTS5 memory with time decay
+  ferrule-gateway    daemon: channels (Telegram, local), session router, scheduler
+  ferrule-mcp        stdio MCP client
+  ferrule-skills     Agent Skills discovery and loading
+  ferrule-sandbox    OS sandbox for shell commands (Landlock + seccomp / Seatbelt)
+  ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing
+  ferrule-cli        the `ferrule` binary
+```
+
+## Development
+
+```bash
+cargo test --workspace                     # 156 tests
+cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
+cargo clippy --workspace --all-targets
+```
+
+Please don't run `cargo fmt` over the whole tree. Format only the files
+you touch (`rustfmt --edition 2021 path/to/file.rs`), so diffs stay
+reviewable. [`PLAN.md`](PLAN.md) is the shared working log: current
+state, open gaps and a dated entry for every session.
 
 ## Roadmap
 
-- [ ] Codex Responses-API driver (retained reasoning, `/responses/compact`)
-- [ ] Claude driver: `claude -p` subprocess mode (subscription-compliant) +
-      native Messages API with cache breakpoints
-- [ ] MCP client (rmcp) + skills loaded on demand
-- [ ] Subagents: Architect/Planner/Implementer/Verifier-style spawn with
-      isolated contexts and summary-only return
-- [ ] Tree-sitter semantic code search via MCP
-- [ ] Gateway daemon: session lanes, cron/heartbeat, channels (Telegram…)
+<p align="center">
+  <img src="docs/assets/roadmap.svg" alt="Ferrule roadmap" width="860">
+</p>
+
+**Shipped**
+
+- [x] M1–M2: gateway daemon, Telegram and local channels, session lanes
+- [x] M3: cron and one-shot scheduler with gate scripts
+- [x] M4: stdio MCP client
+- [x] Phase 0: per-call cost and latency ledger
+- [x] M5: Agent Skills
+- [x] M6: OS sandbox for the shell tool
+- [x] M7: credential gateway
+
+**Next** (designed, waiting on a decision)
+
+- [ ] Multi-provider routing, Phase 1: rule-based routing between providers
+      by task shape, fed by the ledger
+      ([research](docs/research-routing-and-local-models.md))
+- [ ] Multi-agent orchestration: planner, implementer and verifier
+      subagents with isolated contexts that return summaries only
+- [ ] Codex Responses-API and Claude drivers
+- [ ] Sandbox the open edges: file reads, and MCP servers (they get the
+      real environment today)
+- [ ] Telegram sender allow-list
+- [ ] Code-extension plugins
+
+**Planned**
+
+- [ ] Learned router (Phase 2) and on-the-fly local LoRA (Phase 3)
 - [ ] Vector recall (local embeddings) merged with BM25
-- [x] OS sandbox for the shell tool (Landlock + seccomp on Linux, Seatbelt on macOS)
-- [ ] WASM tool plugins
 - [ ] Streaming SSE responses
+- [ ] WASM tool plugins
+- [ ] Tree-sitter semantic code search
+- [ ] More channels
+
+To replace a full agent platform such as OpenClaw or NanoClaw, Ferrule
+still needs the biggest three: multi-agent orchestration, provider
+routing, and a plugin system. They're tracked in [`PLAN.md`](PLAN.md).
+
+## Docs
+
+- [`docs/research-report.md`](docs/research-report.md): why the harness
+  matters, and the design behind Ferrule
+- [`docs/research-routing-and-local-models.md`](docs/research-routing-and-local-models.md):
+  multi-provider routing and local fine-tuning, phases and open decisions
+- [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md):
+  the credential gateway's design, threat model and limits
+- [`PLAN.md`](PLAN.md): current state and session log

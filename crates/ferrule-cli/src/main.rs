@@ -9,6 +9,7 @@ use ferrule_gateway::{
 };
 use ferrule_memory::MemoryStore;
 use ferrule_providers::OpenAiCompatProvider;
+use ferrule_proxy::{Broker, BrokerConfig, Upstream};
 use ferrule_sandbox::{Mode, Sandbox};
 use ferrule_tools::standard_registry;
 use ferrule_tools::ShellTool;
@@ -86,13 +87,17 @@ enum Cmd {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
     },
-    /// Show the shell sandbox that applies here, and test that it holds
+    /// Show the shell sandbox that applies here, and test that it holds.
+    /// `ferrule sandbox -- CMD…` runs CMD the way the agent's shell tool would
     Sandbox {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
         /// Internal: open a loopback socket and report, run inside the sandbox
         #[arg(long, hide = true)]
         probe_net: bool,
+        /// Command to run under the sandbox (and `[secrets]` placeholders)
+        #[arg(last = true)]
+        exec: Vec<String>,
     },
 }
 
@@ -219,7 +224,12 @@ async fn main() -> Result<()> {
             skills_cmd(workspace);
         }
         Cmd::Sandbox { probe_net: true, .. } => probe_net(),
-        Cmd::Sandbox { workspace, probe_net: false } => {
+        Cmd::Sandbox { workspace, probe_net: false, exec } if !exec.is_empty() => {
+            let (cfg, _) = config::Config::load()?;
+            let status = shared_sandbox(&cfg)?.command(&exec[0], &exec[1..], &workspace.canonicalize()?)?.status()?;
+            std::process::exit(status.code().unwrap_or(1));
+        }
+        Cmd::Sandbox { workspace, probe_net: false, .. } => {
             sandbox_cmd(workspace)?;
         }
     }
@@ -281,6 +291,7 @@ fn build_agent_from(
 
     let mut registry = standard_registry();
     let sandbox = shared_sandbox(&cfg)?;
+    let broker = shared_broker(&cfg)?;
     registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone())));
     if sandbox.policy().mode == Mode::ReadOnly {
         registry.remove("write_file");
@@ -299,6 +310,10 @@ fn build_agent_from(
         tool_ctx.workspace.display(),
         profile.system_directive
     );
+
+    if let Some(broker) = broker {
+        system.push_str(&format!("\n\n[Credentials]\n{}", broker.model_note().trim_end()));
+    }
 
     // Context baseline: living documentation written for agents (AGENTS.md et al).
     if let Some((name, content)) = ferrule_core::load_context_baseline(&tool_ctx.workspace) {
@@ -355,6 +370,8 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     let mut policy = cfg.sandbox.clone();
     policy.secret_vars.extend(cfg.providers.values().map(|p| p.api_key_env.clone()));
     policy.secret_vars.extend(cfg.gateway.telegram_token_env.clone());
+    // Commands get these back as placeholders, from the credential proxy.
+    policy.secret_vars.extend(cfg.secrets.keys().cloned());
     policy
 }
 
@@ -366,8 +383,67 @@ fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
     if let Some(sandbox) = SANDBOX.get() {
         return Ok(sandbox.clone());
     }
-    let sandbox = Arc::new(Sandbox::new(sandbox_policy(cfg)).map_err(|e| anyhow!(e))?);
-    Ok(SANDBOX.get_or_init(|| sandbox).clone())
+    let mut sandbox = Sandbox::new(sandbox_policy(cfg)).map_err(|e| anyhow!(e))?;
+    let broker = shared_broker(cfg)?;
+    for w in secrets_warnings(cfg, &sandbox, broker) {
+        eprintln!("ferrule: {w}");
+    }
+    if let Some(broker) = broker {
+        sandbox = sandbox.with_env(broker.child_env());
+    }
+    Ok(SANDBOX.get_or_init(|| Arc::new(sandbox)).clone())
+}
+
+/// The credential proxy behind `[secrets]`, started once per process on the
+/// current runtime and kept for its lifetime. `None` without `[secrets]`, or
+/// when none of them is set.
+fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
+    static BROKER: OnceLock<Option<Broker>> = OnceLock::new();
+    if let Some(broker) = BROKER.get() {
+        return Ok(broker.as_ref());
+    }
+    let broker = if cfg.secrets.is_empty() {
+        None
+    } else {
+        let cfg = BrokerConfig {
+            secrets: cfg.secrets.iter().map(|(name, spec)| (name.clone(), spec.into())).collect(),
+            state_dir: config::data_dir()?.join("proxy"),
+            upstream: Upstream::from_env()?,
+            ca_bundle: None,
+        };
+        Broker::start(cfg, |name| std::env::var(name).ok())?
+    };
+    // A racing caller's broker is dropped (and stopped) here; both get the winner.
+    Ok(BROKER.get_or_init(|| broker).as_ref())
+}
+
+/// What makes `[secrets]` weaker than it looks in this setup.
+fn secrets_warnings(cfg: &config::Config, sandbox: &Sandbox, broker: Option<&Broker>) -> Vec<String> {
+    if cfg.secrets.is_empty() {
+        return Vec::new();
+    }
+    let Some(broker) = broker else {
+        let names: Vec<&str> = cfg.secrets.keys().map(String::as_str).collect();
+        return vec![format!(
+            "[secrets]: none of {} is set in ferrule's environment, so commands get none of them",
+            names.join(", ")
+        )];
+    };
+    let mut warnings = broker.warnings().to_vec();
+    if !sandbox.is_active() {
+        warnings.push(
+            "[secrets] without an active sandbox: commands can read ferrule's own environment, \
+             real values included; the placeholders only keep them out of the transcript"
+                .into(),
+        );
+    } else if !sandbox.policy().network {
+        warnings.push(
+            "[sandbox] network = false: commands can't reach the credential proxy, so [secrets] \
+             can't be used"
+                .into(),
+        );
+    }
+    warnings
 }
 
 fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
@@ -729,15 +805,24 @@ fn skills_cmd(workspace: PathBuf) {
 /// holds — each check runs through the same `Sandbox::command` the shell
 /// tool uses. Exits non-zero if any check fails.
 fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
-    let policy = match config::Config::load() {
-        Ok((cfg, _)) => sandbox_policy(&cfg),
+    let cfg = match config::Config::load() {
+        Ok((cfg, _)) => Some(cfg),
         Err(e) => {
             eprintln!("({e} — showing default [sandbox] settings)");
-            ferrule_sandbox::Policy::default()
+            None
         }
     };
+    let policy = cfg.as_ref().map(sandbox_policy).unwrap_or_default();
     let workspace = workspace.canonicalize()?;
-    let sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
+    let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
+    let broker = match &cfg {
+        Some(cfg) => shared_broker(cfg)?,
+        None => None,
+    };
+    let warnings = cfg.as_ref().map(|cfg| secrets_warnings(cfg, &sandbox, broker)).unwrap_or_default();
+    if let Some(broker) = broker {
+        sandbox = sandbox.with_env(broker.child_env());
+    }
     let policy = sandbox.policy();
     let roots = sandbox.writable_roots(&workspace);
     let withheld = sandbox.scrubbed_vars();
@@ -760,6 +845,17 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         }
     }
     println!("env       {} secret var(s) withheld{}", withheld.len(), if withheld.is_empty() { String::new() } else { format!(": {}", withheld.join(", ")) });
+    if let Some(broker) = broker {
+        for (i, s) in broker.secrets().iter().enumerate() {
+            let hosts: Vec<String> = s.hosts.iter().map(ToString::to_string).collect();
+            let url = if s.in_url { " (URL too)" } else { "" };
+            println!("{}{} → {}{url}", if i == 0 { "secrets   " } else { "          " }, s.name, hosts.join(", "));
+        }
+        println!("          placeholders swapped by the proxy on {}", broker.addr());
+    }
+    for w in &warnings {
+        println!("warning   {w}");
+    }
 
     let mut failures = 0;
     let mut report = |what: &str, ok: bool| {
@@ -776,7 +872,15 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
 
     let env = sh("env", Path::new(""))?;
     let env = String::from_utf8_lossy(&env.stdout);
-    report("secret env vars are not visible to commands", withheld.iter().all(|name| !env.lines().any(|l| l.starts_with(&format!("{name}=")))));
+    let brokered: Vec<&str> = broker.map(|b| b.secrets().iter().map(|s| s.name.as_str()).collect()).unwrap_or_default();
+    report("secret env vars are not visible to commands", withheld.iter().filter(|name| !brokered.contains(&name.as_str())).all(|name| !env.lines().any(|l| l.starts_with(&format!("{name}=")))));
+    if let Some(broker) = broker {
+        let placeholders_only = broker.secrets().iter().all(|s| {
+            env.lines().any(|l| l == format!("{}={}", s.name, s.placeholder))
+                && std::env::var(&s.name).map_or(true, |real| !env.contains(&real))
+        });
+        report("[secrets] reach commands as placeholders only", placeholders_only);
+    }
     if !sandbox.is_active() {
         println!("  (no sandbox: nothing else to check)");
         return if failures == 0 { Ok(()) } else { bail!("{failures} check(s) failed") };
@@ -809,6 +913,14 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
             report(&format!("write outside the roots is refused ({})", dir.display()), !escaped);
         }
         None => println!("  skip  write outside the roots (no writable dir outside them to aim at)"),
+    }
+
+    // Scrubbing the env is moot if a command can read it out of ferrule
+    // itself; Landlock's ptrace scoping is what refuses this.
+    if cfg!(target_os = "linux") {
+        let environ = PathBuf::from(format!("/proc/{}/environ", std::process::id()));
+        let read = sh("cat \"$1\" > /dev/null", &environ)?.status.success();
+        report("ferrule's own environment is unreadable (/proc/<pid>/environ)", !read);
     }
 
     let me = std::env::current_exe()?;

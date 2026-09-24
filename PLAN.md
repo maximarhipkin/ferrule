@@ -11,7 +11,7 @@ that convention yet — ask before introducing one).
 ## Current State
 
 - **Name:** Ferrule (renamed from `agentrust` 2026-09-23). GitHub repo is
-  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,gateway,mcp,skills,sandbox,cli}`,
+  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,gateway,mcp,skills,sandbox,proxy,cli}`,
   binary is `ferrule`, config file is `ferrule.toml` /
   `~/.config/ferrule/config.toml`, agent workspace state dir is `.ferrule/`.
 - **What it is today:** a local, single-user CLI agent runtime. `ferrule run`
@@ -58,7 +58,15 @@ that convention yet — ask before introducing one).
   and secret-looking env vars never reach the command. Configured by
   `[sandbox]`, checked by `ferrule sandbox`. Memory writes moved from the
   `ferrule memory` CLI to native `remember`/`recall` tools, since the
-  shell can no longer write ferrule's data dir.
+  shell can no longer write ferrule's data dir. **A credential gateway
+  exists** (Session Log 2026-09-24, M7, `ferrule-proxy`): each `[secrets]`
+  entry maps an env var to the hosts allowed to receive it. Shell commands
+  get a same-shaped placeholder in that variable, and a loopback
+  TLS-intercepting proxy swaps the real value in only on requests to
+  those hosts, only in `Authorization` or credential-named headers (the
+  URL too with `in_url = true`, never bodies), and scrubs it back out of
+  their responses. Other hosts get a blind tunnel. Design, threat model,
+  prior art and limits: `docs/research-credential-gateway.md`.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -74,9 +82,9 @@ that convention yet — ask before introducing one).
   and the suite is green with `NO_PROXY` unset. A *binary* talking to a
   local endpoint still needs `NO_PROXY` in this sandbox.
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 104/104 green** (24 pre-existing + 41 in `ferrule-gateway`
-  + 7 in `ferrule-mcp` + 2 core and 7 cli ledger tests + 21 in
-  `ferrule-skills` and 2 core compaction tests, after M1-M5 and Phase 0),
+  --workspace` 156/156 green after M7** (27 of them in `ferrule-proxy`:
+  23 unit + 4 integration, plus 1 `#[ignore]`d live end-to-end test run
+  with `-- --ignored`),
   `cargo clippy --workspace
   --all-targets` has one pre-existing warning in `ferrule-core::agent`
   (collapsible_if, predates the gateway work) and zero warnings in
@@ -98,14 +106,17 @@ that convention yet — ask before introducing one).
   version: channels/messaging now has two working adapters (Telegram,
   local) reachable via `ferrule gateway`, a task scheduler (M3) and a
   stdio MCP client (M4), Agent Skills (M5), but still no plugin
-  (code-extension) system, no
-  credential-injection gateway, no multi-agent orchestration, no multi-provider
+  (code-extension) system, no multi-agent orchestration, no multi-provider
   routing (Phase 1+ of `docs/research-routing-and-local-models.md`, blocked
   on Max's decisions there). These are the largest deltas. (The
   cost/observability ledger gap closed 2026-09-24, Phase 0; the skills
   half of "skills/plugin system" closed the same day, M5; OS sandboxing
   for the shell tool closed the same day too, M6. Reads, MCP servers and
-  the macOS backend's real-Mac run are its open edges.)
+  the macOS backend's real-Mac run are its open edges. The
+  credential-injection gateway closed the same day, M7; its open edges
+  are HTTP/2 and websockets on bound hosts, body injection, MCP servers
+  and `web_fetch` bypassing it, and a real-Mac run. The Telegram channel
+  has no sender allow-list: anyone who finds the bot can drive it.)
 
 ## Session Log
 
@@ -1032,3 +1043,158 @@ What's left waits on him: Phase 1 routing (the five decisions in
 `docs/research-routing-and-local-models.md`), rustfmt adoption, and
 whether a credential-injection gateway or multi-agent orchestration comes
 next.
+
+### 2026-09-24 — M7 credential gateway (Devi, Opus 5.5)
+
+Max picked the credential gateway as the next milestone (msg 3050) and
+asked for something simpler than OneCLI's connect-per-service flow (msg
+3052). The result is one line of config per secret:
+
+```toml
+[secrets]
+GITHUB_TOKEN = ["api.github.com", "*.githubusercontent.com"]
+TELEGRAM_BOT_TOKEN = { hosts = ["api.telegram.org"], in_url = true }
+```
+
+**New crate `ferrule-proxy`** (hyper 1 + rustls/ring + rcgen, ~2,200
+lines with tests):
+- **Placeholders.** `placeholder.rs` keeps a known prefix (`ghp_`,
+  `github_pat_`, `glpat-`, `sk-ant-`, `sk-`, `xoxb-`, `hf_`, `sk_live_`…)
+  when at least 16 random characters remain. The rest is hex of
+  SHA-256(seed ‖ name ‖ counter), the same length as the real value (at
+  least 16). It is stable across restarts and across a same-shape
+  rotation.
+- **CA and seed.** `ca.rs` creates `<data_dir>/ferrule/proxy/keys/` (dir
+  0700, `ca.key` and `seed` 0600) atomically through a temp dir and a
+  rename. The CA is valid 10 years; leaf certificates are valid 1 year and
+  cached per host. It also writes a combined bundle (system bundle + the
+  CA) for the child.
+- **Host patterns** (`hosts.rs`) are exact names or `*.suffix` with at
+  least two labels. URLs, ports, paths and a bare `*` are rejected.
+- **The proxy** (`server.rs`) is loopback-only.
+  - It requires a per-run token (407 + `Proxy-Authenticate` otherwise)
+    and accepts only CONNECT.
+  - It connects upstream before answering, so a dead host is a 502.
+  - Unbound hosts get `copy_bidirectional`. Bound hosts are intercepted
+    with ALPN http/1.1: 421 on a Host/authority mismatch, 501 on Upgrade.
+    Hop-by-hop, `Accept-Encoding` and `Expect` headers are stripped.
+- **Upstream chaining** (`upstream.rs`) follows `HTTPS_PROXY` /
+  `ALL_PROXY` (http:// only, userinfo becomes Basic) and `NO_PROXY`.
+  Without it, the proxy would be useless in this container, where all
+  egress goes through OneCLI.
+- **Substitution** (`subst.rs`):
+  - Injection is covered below under hardening.
+  - Response headers and identity bodies are scrubbed with a streaming
+    matcher that carries `maxlen-1` bytes across chunks.
+  - `Content-Length` is dropped when the length changes.
+- **The child's environment** (`Broker::child_env`):
+  - `NAME=placeholder`
+  - `HTTPS_PROXY`/`https_proxy` with the token
+  - `NODE_USE_ENV_PROXY=1`
+  - 8 CA-bundle variables, or only `NODE_EXTRA_CA_CERTS` when no base
+    bundle is found (with a warning)
+- **The model** gets a `[Credentials]` note in the system prompt: which
+  names exist, for which hosts, and where the placeholders work.
+
+**CLI wiring** (`ferrule-cli`):
+- `[secrets]` accepts the list form or `{ hosts, in_url }`
+  (`deny_unknown_fields`, so a misspelt `in_uri` is an error).
+- The secret names join the sandbox's `secret_vars`, so the real variable
+  is scrubbed before the placeholder is set. The sandbox gained
+  `with_env`/`extra_env` for that.
+- One broker is shared by `run`, `chat` and `gateway`.
+- The warnings cover three cases: none of the secrets set, no active
+  sandbox, and `network = false`.
+- `ferrule sandbox` lists each secret with its hosts and "(URL too)". It
+  adds two checks: that commands see only placeholders, and that
+  `/proc/<ferrule>/environ` is unreadable.
+- `ferrule sandbox -- CMD…` runs a command exactly as the agent's shell
+  tool would.
+
+**Hardening pass, the same day.** The first version swapped placeholders
+anywhere in the request: headers, URL and body. That lets a hijacked model
+get a *bound* host to store the real value where the model can read it
+back:
+- a GitHub contents path named after the token
+- a Telegram `sendMessage` text
+- a `Dropbox-API-Arg` JSON header
+
+Injection is now only in `Authorization` (Bearer, and Basic
+decoded/re-encoded) and in headers whose name contains auth, key, token,
+secret, password, passwd, credential or cookie. The URL path and query are
+swapped only for secrets marked `in_url = true`, and bodies never. The
+fly.io tokenizer documents the same echo attack for its own design.
+
+**A correction to what Max was told earlier.** A placeholder sent to an
+*unbound* host is not blocked. It passes through the blind tunnel as a
+useless string. Blocking it would mean intercepting every host, which
+would break tools that pin their own roots, and it would protect nothing,
+because the placeholder isn't the secret.
+
+**Verification:**
+- `cargo test --workspace` is 156/156. `ferrule-proxy` has 23 unit and
+  4 integration tests. The integration tests run a TLS origin through the
+  real proxy with reqwest:
+  - Bearer, Basic and `x-api-key` arrive real.
+  - A non-credential `x-title` header keeps the placeholder.
+  - The path and an `in_url` query arrive real; a non-`in_url` query
+    stays a placeholder.
+  - A 200 KB response is scrubbed across chunk boundaries.
+  - An unbound host gets a tunnel.
+  - A wrong token gets 407, and a dead host 502.
+- The ignored live test goes through this container's real upstream proxy
+  to httpbin.org and passes. Run it with `cargo test -p ferrule-proxy --
+  --ignored`.
+- **CLI checks**, all with `ferrule sandbox -- sh -c …` against
+  `https://httpbin.org/basic-auth/user/…` and `curl -u user:$DEMO_PASSWORD`:
+  - List form: 401 when the placeholder is in the URL (the URL isn't
+    swapped), 200 when the real value is in the URL (control).
+  - `in_url = true`: 200 on both.
+- `cat /proc/$PPID/environ` is denied under Landlock and readable without
+  it (control).
+- Clippy shows only the old `ferrule-core` warning. The new files were
+  rustfmt'd one by one.
+- Release binary: 9.3 MB (already stripped: `strip = true`, fat LTO). It
+  links only libc, libm and libgcc_s. `ferrule --version` takes about 4
+  ms. An idle `ferrule gateway` uses about 9 MB RSS.
+
+**Docs:**
+- New: `docs/research-credential-gateway.md`, covering design, threat
+  model, prior art with primary sources (Deno Sandbox, fly.io tokenizer,
+  Anthropic sandbox-runtime, Codex, httpjail, Cloudflare Sandboxes, GitHub
+  Actions masking), limits and verification.
+- **README rewritten** at Max's request (msg 3062). It covers install,
+  quick start, configuration recipes, the sandbox, the gateway, layout and
+  development, and a roadmap split into shipped / next / planned.
+- Three hand-written SVGs in `docs/assets/`: `architecture.svg`,
+  `credential-gateway.svg` and `roadmap.svg`. They use the steel/copper
+  palette from the branding.
+- `chart-architecture.png` is left in place but no longer referenced. It
+  still says "AgentRust".
+
+**History rewrite (msg 3064).** Max didn't want Claude listed as a
+co-author. Every commit was rewritten to drop the `Co-Authored-By: Claude`
+trailers and force-pushed, so M6 is now `8f30ca7`. **From now on commits
+carry no Claude trailer**, and the author is
+`maxim <max@lizo.ai>`.
+
+**Known limits (documented, not fixed):**
+- No body injection, so OAuth `client_secret` POSTs don't work.
+- No HTTP/2 or websockets on bound hosts. Any port on a bound host is
+  intercepted, not just 443.
+- `web_fetch` and MCP servers bypass the proxy. MCP servers still get
+  ferrule's real environment.
+- A bound host that echoes a credential in another encoding (e.g. Basic
+  credentials as base64 from httpbin's `/headers`), or compresses its
+  response anyway, isn't scrubbed.
+- macOS: Go tools such as `gh` ignore `SSL_CERT_FILE` and need the CA in
+  the keychain. Seatbelt's protection of ferrule's environment is
+  unverified until a real-Mac run.
+- The Telegram channel has no sender allow-list (found while writing the
+  README). Anyone who finds the bot drives an agent with a shell and
+  bound credentials. This is the cheapest high-value fix left and needs no
+  decision.
+
+**What's next:** the Telegram allow-list, then whatever Max picks from the
+decision-blocked list: Phase 1 routing, multi-agent orchestration, or
+code-extension plugins.

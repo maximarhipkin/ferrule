@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -119,6 +119,35 @@ pub struct Config {
     pub skills: SkillsConfig,
     #[serde(default)]
     pub sandbox: ferrule_sandbox::Policy,
+    /// Env var name → where its value may go (credential gateway).
+    #[serde(default)]
+    pub secrets: BTreeMap<String, SecretSpec>,
+}
+
+/// A `[secrets]` entry: the allowed hosts, or a table that also opts the
+/// secret into URL substitution.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum SecretSpec {
+    Hosts(Vec<String>),
+    Table(SecretTable),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretTable {
+    pub hosts: Vec<String>,
+    #[serde(default)]
+    pub in_url: bool,
+}
+
+impl From<&SecretSpec> for ferrule_proxy::SecretRule {
+    fn from(spec: &SecretSpec) -> Self {
+        match spec {
+            SecretSpec::Hosts(hosts) => hosts.clone().into(),
+            SecretSpec::Table(t) => Self { hosts: t.hosts.clone(), in_url: t.in_url },
+        }
+    }
 }
 
 pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration
@@ -184,6 +213,19 @@ profile = "openai"
 # tmp = true                 # /tmp and $TMPDIR stay writable
 # scrub_secret_env = true    # drop *KEY*/*TOKEN*/*SECRET*… and api_key_env vars
 # env_passthrough = []       # names to keep anyway, e.g. ["GITHUB_TOKEN"]
+
+# [secrets]                 # Credential gateway: the shell tool's commands get a
+#                            # same-shaped placeholder in $NAME, never the real
+#                            # value. ferrule's local HTTPS proxy swaps the real
+#                            # value in only on requests to the listed hosts, in
+#                            # the Authorization header or a credential-named one
+#                            # (x-api-key, PRIVATE-TOKEN…), and back out of their
+#                            # responses. Anywhere else it stays a placeholder.
+#                            # Name = env var ferrule reads; value = allowed hosts.
+# GITHUB_TOKEN = ["api.github.com", "*.githubusercontent.com"]
+#                            # APIs that take the key in the URL need an opt-in:
+#                            # hosts often keep URLs where the model can read them.
+# TELEGRAM_BOT_TOKEN = { hosts = ["api.telegram.org"], in_url = true }
 "#;
 
 impl Config {
@@ -232,7 +274,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn example_config_parses_with_the_sandbox_block_uncommented() {
+    fn example_config_parses_with_the_sandbox_and_secrets_blocks_uncommented() {
         let cfg: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
         assert_eq!(cfg.sandbox.mode, ferrule_sandbox::Mode::WorkspaceWrite);
         let block = &EXAMPLE_CONFIG[EXAMPLE_CONFIG.find("# [sandbox]").unwrap()..];
@@ -240,5 +282,17 @@ mod tests {
         let cfg: Config = toml::from_str(&uncommented).unwrap();
         assert!(cfg.sandbox.network && cfg.sandbox.tmp && cfg.sandbox.scrub_secret_env && !cfg.sandbox.require);
         assert!(cfg.sandbox.writable_roots.is_empty() && cfg.sandbox.env_passthrough.is_empty());
+        let rule = |name: &str| ferrule_proxy::SecretRule::from(&cfg.secrets[name]);
+        assert_eq!(rule("GITHUB_TOKEN").hosts, ["api.github.com", "*.githubusercontent.com"]);
+        assert!(!rule("GITHUB_TOKEN").in_url);
+        assert_eq!(rule("TELEGRAM_BOT_TOKEN").hosts, ["api.telegram.org"]);
+        assert!(rule("TELEGRAM_BOT_TOKEN").in_url);
+    }
+
+    #[test]
+    fn a_misspelt_secret_table_is_an_error() {
+        assert!(toml::from_str::<Config>("[secrets]\nT = { hosts = [\"x.com\"], in_uri = true }").is_err());
+        let cfg: Config = toml::from_str("[secrets]\nT = { hosts = [\"x.com\"] }").unwrap();
+        assert!(!ferrule_proxy::SecretRule::from(&cfg.secrets["T"]).in_url);
     }
 }

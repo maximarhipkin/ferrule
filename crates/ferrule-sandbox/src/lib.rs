@@ -111,6 +111,9 @@ pub struct Sandbox {
     policy: Policy,
     backend: Backend,
     degraded: Option<String>,
+    /// Set on every command after scrubbing (the credential proxy's
+    /// placeholders and proxy settings).
+    extra_env: Vec<(String, String)>,
 }
 
 impl Sandbox {
@@ -123,6 +126,7 @@ impl Sandbox {
             },
             backend: Backend::None,
             degraded: Some("disabled (sandbox.mode = \"off\")".into()),
+            extra_env: Vec::new(),
         }
     }
 
@@ -141,6 +145,7 @@ impl Sandbox {
                 policy: policy.clone(),
                 backend,
                 degraded: None,
+                extra_env: Vec::new(),
             };
             sandbox.probe()?;
             Ok(sandbox)
@@ -156,6 +161,7 @@ impl Sandbox {
                     policy,
                     backend: Backend::None,
                     degraded: Some(reason),
+                    extra_env: Vec::new(),
                 })
             }
         }
@@ -176,6 +182,13 @@ impl Sandbox {
 
     pub fn is_active(&self) -> bool {
         self.backend != Backend::None
+    }
+
+    /// Variables to set on every command, after secrets are scrubbed — so a
+    /// scrubbed name can come back holding a placeholder.
+    pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
+        self.extra_env = env;
+        self
     }
 
     /// A `Command` for `program args…` that runs in `workspace` under the
@@ -203,6 +216,7 @@ impl Sandbox {
         for name in self.scrubbed_vars() {
             cmd.env_remove(name);
         }
+        cmd.envs(self.extra_env.iter().map(|(k, v)| (k, v)));
         #[cfg(target_os = "linux")]
         if let Backend::Landlock { abi } = self.backend {
             linux::apply(&mut cmd, abi, self.policy.network, &roots)?;
@@ -400,6 +414,7 @@ mod tests {
             },
             backend: Backend::None,
             degraded: None,
+            extra_env: Vec::new(),
         };
         for secret in [
             "OPENAI_API_KEY",
@@ -416,6 +431,25 @@ mod tests {
     }
 
     #[test]
+    fn extra_env_is_set_after_scrubbing() {
+        // HOME is always set; listing it as a secret makes it scrubbed.
+        let sb = Sandbox {
+            policy: Policy {
+                secret_vars: vec!["HOME".into()],
+                ..Policy::default()
+            },
+            backend: Backend::None,
+            degraded: None,
+            extra_env: Vec::new(),
+        }
+        .with_env(vec![("HOME".into(), "placeholder".into())]);
+        let ws = tempfile::tempdir().unwrap();
+        let cmd = sb.command("true", [""; 0], ws.path()).unwrap();
+        let home: Vec<_> = cmd.get_envs().filter(|(k, _)| *k == "HOME").collect();
+        assert_eq!(home, [(OsStr::new("HOME"), Some(OsStr::new("placeholder")))]);
+    }
+
+    #[test]
     fn writable_roots_resolve_and_skip_missing() {
         let ws = tempfile::tempdir().unwrap();
         std::fs::create_dir(ws.path().join("out")).unwrap();
@@ -426,6 +460,7 @@ mod tests {
             },
             backend: Backend::None,
             degraded: None,
+            extra_env: Vec::new(),
         };
         let ws_c = ws.path().canonicalize().unwrap();
         assert_eq!(
@@ -455,6 +490,7 @@ mod tests {
                 policy,
                 backend: Backend::Seatbelt,
                 degraded: None,
+                extra_env: Vec::new(),
             }
             .model_note()
             .unwrap()

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="580" viewBox="0 0 960 580" role="img" aria-label="Ferrule architecture as built: channels, scheduler and CLI feed the agent loop, which calls providers, tools, MCP, skills and memory; shell commands run in an OS sandbox behind the credential gateway">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#96a0aa"/></marker>
+    <style>
+      text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #cdd4da; font-size: 12px; }
+      .t { font-size: 20px; font-weight: 700; fill: #e09668; }
+      .h { font-size: 15px; font-weight: 700; }
+      .s { fill: #96a0aa; }
+      .c { fill: #e09668; }
+      .b { fill: #17191c; stroke: #2a2e33; }
+      .bc { fill: #17191c; stroke: #c4764a; stroke-width: 1.5; }
+      .ar { stroke: #96a0aa; stroke-width: 2; fill: none; }
+    </style>
+  </defs>
+  <rect width="960" height="580" rx="16" fill="#0d0f12"/>
+  <text x="32" y="44" class="t">How Ferrule fits together</text>
+  <text x="32" y="66" class="s" style="font-size:13px">One binary, one process. Everything below ships today.</text>
+
+  <rect x="32" y="88" width="280" height="64" rx="10" class="b"/>
+  <text x="48" y="114" class="h">ferrule run · chat</text><text x="48" y="134" class="s">one-shot or interactive, from the CLI</text>
+  <rect x="340" y="88" width="280" height="64" rx="10" class="b"/>
+  <text x="356" y="114" class="h">Channels</text><text x="356" y="134" class="s">Telegram · local stdin/stdout</text>
+  <rect x="648" y="88" width="280" height="64" rx="10" class="b"/>
+  <text x="664" y="114" class="h">Scheduler</text><text x="664" y="134" class="s">cron · one-shot · gate scripts · SQLite</text>
+
+  <rect x="340" y="184" width="588" height="56" rx="10" class="b"/>
+  <text x="356" y="208" class="h">Gateway daemon</text><text x="356" y="228" class="s">one FIFO session lane per chat · sessions resume from their JSONL transcripts</text>
+  <path d="M480 152V182" class="ar" marker-end="url(#a)"/>
+  <path d="M788 152V182" class="ar" marker-end="url(#a)"/>
+  <path d="M172 152V270" class="ar" marker-end="url(#a)"/>
+  <path d="M480 240V270" class="ar" marker-end="url(#a)"/>
+
+  <rect x="32" y="272" width="652" height="88" rx="12" class="bc"/>
+  <text x="48" y="298" class="h c">Agent loop (ReAct)</text>
+  <text x="48" y="320">harness profile per model · reasoning retained across turns · structured compaction at ~70%</text>
+  <text x="48" y="340" class="s">tool dispatch · typed lifecycle events · append-only JSONL transcripts · verify_command</text>
+  <rect x="716" y="272" width="212" height="88" rx="10" class="b"/>
+  <text x="732" y="298" class="h">Providers</text><text x="732" y="318">OpenAI-compatible driver</text><text x="732" y="338" class="s">Kimi · OpenAI · Ollama… + ledger</text>
+  <path d="M688 316H712" class="ar" marker-end="url(#a)" marker-start="url(#a)"/>
+
+  <rect x="32" y="392" width="212" height="64" rx="10" class="b"/>
+  <text x="48" y="418" class="h">Built-in tools</text><text x="48" y="438" class="s">fs · shell · web_fetch · todos</text>
+  <rect x="260" y="392" width="212" height="64" rx="10" class="b"/>
+  <text x="276" y="418" class="h">MCP tools</text><text x="276" y="438" class="s">stdio servers → mcp__server__tool</text>
+  <rect x="488" y="392" width="212" height="64" rx="10" class="b"/>
+  <text x="504" y="418" class="h">Skills</text><text x="504" y="438" class="s">SKILL.md, loaded on demand</text>
+  <rect x="716" y="392" width="212" height="64" rx="10" class="b"/>
+  <text x="732" y="418" class="h">Memory</text><text x="732" y="438" class="s">SQLite FTS5 BM25 + time decay</text>
+  <path d="M138 360V390" class="ar" marker-end="url(#a)"/>
+  <path d="M366 360V390" class="ar" marker-end="url(#a)"/>
+  <path d="M594 360V390" class="ar" marker-end="url(#a)"/>
+  <path d="M664 360V376H822V390" class="ar" marker-end="url(#a)"/>
+
+  <rect x="32" y="488" width="408" height="64" rx="10" class="b"/>
+  <text x="48" y="514" class="h">OS sandbox for every shell command</text><text x="48" y="534" class="s">Landlock + seccomp on Linux · Seatbelt on macOS</text>
+  <rect x="456" y="488" width="472" height="64" rx="10" class="bc"/>
+  <text x="472" y="514" class="h c">Credential gateway</text><text x="472" y="534" class="s">$SECRET holds a placeholder; the real value goes only to the listed hosts</text>
+  <path d="M138 456V486" class="ar" marker-end="url(#a)"/>
+  <path d="M440 520H454" class="ar" marker-end="url(#a)"/>
+</svg>

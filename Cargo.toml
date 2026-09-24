@@ -8,6 +8,7 @@ members = [
     "crates/ferrule-mcp",
     "crates/ferrule-skills",
     "crates/ferrule-sandbox",
+    "crates/ferrule-proxy",
     "crates/ferrule-memory",
     "crates/ferrule-cli",
 ]
