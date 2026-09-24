@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
-use tokio::sync::{oneshot, Mutex as AsyncMutex};
+use tokio::sync::{oneshot, watch, Mutex as AsyncMutex};
 
 pub(crate) const PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -66,6 +66,12 @@ pub struct McpClient {
     state_dir: PathBuf,
     conn: AsyncMutex<Option<Connection>>,
     next_id: AtomicU64,
+    /// Bumped on every `notifications/tools/list_changed` from any of this
+    /// server's connections, respawns included. M13 re-lists and re-scans on
+    /// it; nothing else reads it.
+    list_changed: watch::Sender<u64>,
+    /// Set by `shutdown`: no respawn after that.
+    closed: AtomicBool,
 }
 
 pub(crate) fn extract_result(resp: Value) -> Result<Value, McpError> {
@@ -121,11 +127,37 @@ impl McpClient {
             state_dir: host.state_dir,
             conn: AsyncMutex::new(None),
             next_id: AtomicU64::new(1),
+            list_changed: watch::channel(0).0,
+            closed: AtomicBool::new(false),
         })
     }
 
     pub fn name(&self) -> &str {
         &self.cfg.name
+    }
+
+    pub fn config(&self) -> &McpServerConfig {
+        &self.cfg
+    }
+
+    /// Wakes whenever the server sends `notifications/tools/list_changed`.
+    /// Only stdio servers can: a URL server would need the server-initiated
+    /// stream this client doesn't open.
+    pub fn subscribe_list_changed(&self) -> watch::Receiver<u64> {
+        self.list_changed.subscribe()
+    }
+
+    /// Stop the server for good: kill the process, wait for it, and refuse
+    /// to respawn. Calls in flight end with `ConnectionClosed`.
+    pub async fn shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let conn = self.conn.lock().await.take();
+        if let Some(mut conn) = conn {
+            let _ = conn._child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_secs(5), conn._child.wait()).await;
+            conn._reader.abort();
+            conn._stderr.abort();
+        }
     }
 
     /// Why this server runs without the OS sandbox, if it does:
@@ -151,6 +183,9 @@ impl McpClient {
         if let Some(http) = &self.http {
             let resp = http.request(&self.next_id, method, params, timeout).await?;
             return extract_result(resp);
+        }
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(McpError::NotConnected);
         }
         let handle = {
             let mut guard = self.conn.lock().await;
@@ -323,6 +358,7 @@ impl McpClient {
         let reader_stdin = stdin.clone();
         let reader_pending = pending.clone();
         let reader_alive = alive.clone();
+        let reader_changed = self.list_changed.clone();
         let server = self.cfg.name.clone();
         let reader_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -365,6 +401,10 @@ impl McpClient {
                                         let _ = w.write_all(line.as_bytes()).await;
                                         let _ = w.flush().await;
                                     });
+                                }
+                                None if method == "notifications/tools/list_changed" => {
+                                    tracing::info!(server = %server, "mcp tool list changed");
+                                    reader_changed.send_modify(|n| *n += 1);
                                 }
                                 None => {
                                     tracing::debug!(server = %server, "mcp notification: {value}")

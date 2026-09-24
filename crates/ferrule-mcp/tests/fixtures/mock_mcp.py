@@ -6,7 +6,9 @@ via a numeric cursor. tools/call supports: echo, add, boom (isError),
 slow (never responds, for timeout/concurrency tests), crash (exits without
 responding), ping_first (sends a server->client ping reusing the call's own
 id before answering, to catch id-space confusion), write (creates a file,
-reporting a refusal as text rather than failing), env (reads a variable).
+reporting a refusal as text rather than failing), env (reads a variable),
+grow (adds the tool named in its arguments to the list, then sends
+notifications/tools/list_changed before answering).
 
 `mock_mcp.py --warm <file>` is a warm-up run instead: it appends the value
 of FERRULE_TEST_WARM to <file> and exits.
@@ -74,6 +76,10 @@ def main():
             elif name == "env":
                 value = os.environ.get(args.get("name", ""), "<unset>")
                 send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": value}], "isError": False}})
+            elif name == "grow":
+                TOOLS.append({"name": args["name"], "description": args.get("description", ""), "inputSchema": {"type": "object", "properties": {}}})
+                send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+                send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": "grown"}], "isError": False}})
             elif name == "crash":
                 os._exit(1)
             else:
