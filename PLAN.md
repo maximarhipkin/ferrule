@@ -216,10 +216,22 @@ that convention yet — ask before introducing one).
     tool-description poisoning scan before activation (MCPTox: 36.5%
     average attack success), version pinning, and a
     `tools/list_changed` re-scan.
-  - **M14 `ferrule eval`** (§4.2): task suites (prompt, workspace fixture,
-    verify_command/LLM-rubric grader) run through the real agent, results
-    into the ledger with `task_shape="eval"` — makes every harness change
-    regression-testable.
+  - **M14 `ferrule eval`**: **parts 1–5 done** (2026-09-24, branch
+    `m14-eval`; see the M14 session-log entry). It was scoped in §4.2:
+    task suites (a prompt, a workspace fixture, a verify_command and/or
+    LLM-rubric grader) run through the real agent, with results written
+    to the ledger with `task_shape="eval"`. Every harness change becomes
+    regression-testable. `ferrule eval run` runs a suite. It does a
+    naive/engineered A/B on one model, from any provider, and prints the
+    diff against the last run. `ferrule eval report` re-prints a saved
+    run. There is a 20-task starter suite with a stdlib mock model.
+    `docs/eval.md` is the user doc; `docs/m14-eval.md` is the design.
+    **Not done:** the measured chart in the README. It needs a real
+    model run, and the README was off-limits for this batch.
+    **Next: the real A/B.** Max's other agent runs it, following the
+    steps in `docs/eval.md` § "Handoff: running the real A/B": the free
+    mock check first, then a dry run, the smoke subset under a small
+    cap, and the full suite with `--repeat 3`.
   - **M15 memory pipeline + reversible compaction** (§4.3/§4.4): memory
     update/delete tools (Mem0-style ADD/UPDATE/DELETE), goal-driven
     session-start recall, `superseded_by`; a `search_history` tool over
@@ -1902,3 +1914,103 @@ shared one.
 - The e2e test's environment isolation (`APPDATA`/`LOCALAPPDATA`/
   `USERPROFILE` on Windows, `dirs` resolution on macOS).
 - `ferrule doctor`'s git check.
+
+### 2026-09-24 — M14 `ferrule eval` (Devi, Opus 5.5)
+
+New crate: `crates/ferrule-eval`. There's a CLI command, `ferrule eval run|report`, and a
+starter suite in `evals/starter`. The user doc is `docs/eval.md`, which opens with "Run
+the A/B in 5 minutes". The design is `docs/m14-eval.md`. The work is on branch
+`m14-eval`, against `main`.
+
+Every part was checked locally on Linux: fmt, clippy `-D warnings`, and
+`cargo test --workspace`. **CI was deferred at Max's request**; a full 3-OS pass runs
+after the roadmap batch. No real model was called: everything ran against mocks.
+
+**Commits:**
+- `66620e3` design: the suite format, fixtures, graders, ledger rows, the naive and
+  engineered knobs, the reports, and the cost guards.
+- `10200b0` part 1, core hooks:
+  - a truncation path for the naive harness. It drops the oldest messages, keeps the
+    system prompt and the last message, and leaves no orphaned tool results
+  - a switch to turn off the stuck detector
+  - a `Truncated` event
+  - an eval tag on ledger rows
+- `0917921` part 2, the crate:
+  - suite loading and fixtures
+  - the two variants
+  - the command grader
+  - eval-tagged ledger rows under a budget cap
+  - the A/B report and the dry-run plan
+- `ab2a5c0` part 3, the CLI and the starter suite:
+  - `ferrule eval run`
+  - 20 tasks with hidden graders and reference solutions, tagged smoke, context,
+    verify-to-fix, code and data
+  - the mock model
+  - an oracle test, a real-binary A/B, and tests of the budget stop and the dry run
+- `66e6f4e` part 4, the diff against the last run:
+  - what changed since the last saved run of the same suite, kind and model: pass
+    rate, tokens, cost, and tasks newly failing or passing, flagged when the task
+    itself changed
+  - `ferrule eval report`
+  - regression suites gated on the engineered variant only
+- `ce1ccfc` part 5, the LLM-rubric grader:
+  - The judge sees the evidence: files that changed, were added or were deleted,
+    plus the command grader's output.
+  - The agent's answer is fenced off as claims.
+  - ferrule computes each criterion. A criterion counts as met only when the judge's
+    quote (at least 4 chars, whitespace collapsed) is found in the evidence.
+  - `--judge-provider` picks a separate judge. When the model under test judges its
+    own work, the report flags it as self-judged.
+  - Judge calls go on the ledger as `call_kind = "judge"`. They are priced at the
+    judge's rates and counted in the budget and the dry run.
+  - Run ids now go to the millisecond.
+
+**Measured on the mock** (the real binary, smoke subset):
+- engineered 4/4, naive 2/4 (+50 pts)
+- naive fails `release-notes` (the request was truncated away) and `slugify` (it
+  never sees the failed check)
+- full suite: engineered 20/20, naive 11/20 (+45 pts), $0.63 vs $0.45 at the mock's
+  test prices
+
+These numbers show the machinery works. They are not a measurement of a real model.
+The Ollama small-window run and its README chart are still to do.
+
+**Design defaults for Max to confirm:**
+- The naive variant compacts at a threshold of 1.0, so it truncates only when the
+  window is full.
+- The default budget cap is $5 / 20M tokens per run.
+- Exit codes: 0 passed, 1 failed, 3 stopped by the budget.
+- The starter suite runs at a 32k context window.
+- "What changed since the last run" is read from each run's `run.json`, not from
+  the ledger (the roadmap said "from the ledger"). The ledger still holds every
+  call.
+- A diff matches on suite, kind and model.
+- A regression suite fails only on engineered failures.
+- The judge defaults to the model under test (flagged as self-judged).
+- Evidence caps: 12k chars per file and 60k in total.
+- Judge calls count toward the task's totals.
+
+**M14 open edges:**
+- The measured A/B on a real small local model (Ollama at 8–32k), and the chart for
+  the README.
+- The rubric grader has no starter-suite task. The starter suite grades with
+  commands only; the rubric is covered by the crate tests.
+- The task fingerprint used for "task changed" covers the suite.toml entry and the
+  fixture files, not the grader scripts.
+
+**Unverified on macOS/Windows until the batch CI pass:**
+- The starter suite's `python3` graders, checks and solve scripts, and the mock model
+  (`python3` vs `py` on Windows, CRLF).
+- Grader commands run through the platform shell.
+- The grader timeout killing the process tree.
+- Git fixtures created with `-c core.hooksPath=/dev/null`, since there's no
+  `/dev/null` on Windows.
+- Workspace temp paths and `canonicalize`: `/private/var` on macOS, `\\?\` on Windows.
+- Workspace cleanup while Windows holds files open.
+- Both variants and the graders under the Seatbelt sandbox; with no sandbox on
+  Windows.
+- `OLLAMA_CONTEXT_LENGTH` for the Ollama app on macOS (`launchctl setenv`) and on
+  Windows.
+- The rubric evidence's relative paths (separators) and the `.git` skip.
+- The saved-run directory under `~/Library/Application Support` and `%APPDATA%`.
+- The CLI tests' environment isolation.

@@ -60,6 +60,29 @@ pub struct LedgerRecord {
     pub error_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Set on rows `ferrule eval` writes: which suite run, task and variant
+    /// the call belongs to. `None` everywhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval: Option<EvalTag>,
+}
+
+/// Where an eval row belongs. The per-call rows carry it with `result`
+/// empty; the one `call_kind = "eval_result"` row per task run carries the
+/// verdict in `result` (its shape is `ferrule-eval`'s, kept as JSON here so
+/// core doesn't depend on it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvalTag {
+    pub run_id: String,
+    pub suite: String,
+    /// `"capability"` | `"regression"`.
+    pub kind: String,
+    pub task: String,
+    /// `"engineered"` | `"naive"`.
+    pub variant: String,
+    #[serde(default)]
+    pub repeat: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
 }
 
 fn default_call_kind() -> String {

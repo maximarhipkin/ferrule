@@ -1,0 +1,6 @@
+[x] Buy milk
+[ ] Call the "garage" about the brakes
+[ ] Renew passport
+
+[x] Pay rent
+[ ] Book flights, then hotels

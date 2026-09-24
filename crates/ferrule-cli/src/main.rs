@@ -2,6 +2,7 @@ mod agents;
 mod browser;
 mod config;
 mod doctor;
+mod eval;
 mod ledger;
 mod memory_tools;
 mod probe;
@@ -128,6 +129,12 @@ enum Cmd {
     Skills {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
+    },
+    /// Evaluate the harness: run a task suite, as ferrule and as a naive
+    /// baseline, and report pass rates, tokens and cost (docs/eval.md)
+    Eval {
+        #[command(subcommand)]
+        op: eval::EvalCmd,
     },
     /// Show the shell sandbox that applies here, and test that it holds.
     /// `ferrule sandbox -- CMD…` runs CMD the way the agent's shell tool would
@@ -376,6 +383,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 agents::close(&cfg.agents, &id).await?;
             }
         },
+        Cmd::Eval { op } => eval::cmd(op).await?,
         Cmd::Skills { workspace } => {
             skills_cmd(workspace);
         }
