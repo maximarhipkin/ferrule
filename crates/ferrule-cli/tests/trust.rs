@@ -62,6 +62,18 @@ fn reply(req: &Value) -> Value {
             (false, true) => answer("EXECUTED"),
         };
     }
+    if task.contains("HOOKED") {
+        let results: Vec<String> = messages
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(text)
+            .collect();
+        return match results.len() {
+            0 => call("shell", json!({"command": "rm -rf victim"})),
+            1 => call("shell", json!({"command": "echo hi"})),
+            _ => answer(&format!("SAW {}", results.join(" || "))),
+        };
+    }
     if task.contains("LOOP") {
         return call("shell", json!({"command": "echo again"}));
     }
@@ -954,4 +966,167 @@ fn doctor_reports_the_switch_the_caps_and_who_approves() {
         .success());
     let out = plain(&ferrule(home, &["doctor", "--offline"]).stdout);
     assert!(out.contains("Ferrule is stopped (by ferrule stop"), "{out}");
+}
+
+// ---- M19 next to M18's hooks (docs/m19-trust-cost.md §13) ----
+
+/// A PreToolUse hook for every tool that logs each payload and answers
+/// Claude Code's "allow" with a note for the model.
+#[cfg(unix)]
+fn allowing_hook(home: &Path, event: &str) -> String {
+    let log = home.join(format!("{event}.log"));
+    format!(
+        r#"
+[[hooks.{event}]]
+command = '''cat >> "{log}"; echo >> "{log}"; printf '%s' '{{"hookSpecificOutput":{{"hookEventName":"{event}","permissionDecision":"allow","additionalContext":"HOOK_NOTE"}}}}''''
+"#,
+        log = log.display()
+    )
+}
+
+/// Appends an [`allowing_hook`] for each event to the home's config.
+#[cfg(unix)]
+fn with_hooks(home: &Path, events: &[&str]) {
+    let cfg = home.join("ferrule.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    for event in events {
+        text.push_str(&allowing_hook(home, event));
+    }
+    std::fs::write(&cfg, text).unwrap();
+}
+
+#[cfg(unix)]
+fn hook_log(home: &Path, event: &str) -> Vec<String> {
+    std::fs::read_to_string(home.join(format!("{event}.log")))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// One session, one gated command and one plain one, with a PreToolUse
+/// hook that allows everything: the gate answers first, so the hook never
+/// sees the refused call, and its "allow" and note can't carry it past.
+#[cfg(unix)]
+#[test]
+fn the_gate_answers_before_pre_tool_use_hooks_and_no_hook_can_approve_past_it() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    with_hooks(dir.path(), &["PreToolUse"]);
+    let home = dir.path();
+
+    let out = ferrule(home, &["run", "HOOKED please"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(home.join("work/victim/keep.txt").exists(), "the rm ran");
+    let results = tool_results(&seen);
+    assert_eq!(results.len(), 2, "{results:?}");
+    // The refusal is the gate's, with no hook note: the hook never ran.
+    assert!(
+        results[0].starts_with("refused by ferrule:"),
+        "{}",
+        results[0]
+    );
+    assert!(results[0].contains("no terminal to ask"), "{}", results[0]);
+    assert!(!results[0].contains("HOOK_NOTE"), "{}", results[0]);
+    // The call the gate allowed went on to the hook, then the tool.
+    assert!(results[1].starts_with("hi"), "{}", results[1]);
+    assert!(
+        results[1].contains("[hook: PreToolUse] HOOK_NOTE"),
+        "{}",
+        results[1]
+    );
+    let log = hook_log(home, "PreToolUse");
+    assert_eq!(log.len(), 1, "{log:?}");
+    let payload: Value = serde_json::from_str(&log[0]).unwrap();
+    assert_eq!(payload["tool_input"]["command"], "echo hi");
+    let hook_runs: Vec<Value> = jsonl(&home.join("data/hooks/runs.jsonl"))
+        .into_iter()
+        .filter(|r| r["event"] == "PreToolUse")
+        .collect();
+    assert_eq!(hook_runs.len(), 1, "{hook_runs:?}");
+    let refused = jsonl(&home.join("data/trust/audit.jsonl"))
+        .into_iter()
+        .filter(|e| e["event"] == "approval_answered" && e["detail"]["answer"] == "unattended")
+        .count();
+    assert_eq!(refused, 1);
+}
+
+/// A Stop hook that always sends the run back can't get around the run
+/// cap: each send-back's model call is asked about first.
+#[cfg(unix)]
+#[test]
+fn a_stop_hook_sending_the_run_back_still_meets_the_run_cap() {
+    let (url, seen) = model_server();
+    // 110 tokens a call: the third call would start at 220. Without the
+    // cap, the hook's default of 3 send-backs would allow 4 calls.
+    let dir = home(
+        &url,
+        "max_tokens_per_run = 200\n\n[[hooks.Stop]]\ncommand = \"echo 'not done' >&2; exit 2\"\n",
+    );
+    let home = dir.path();
+    let out = ferrule(home, &["run", "say something"]);
+    assert_eq!(out.status.code(), Some(2), "{}", describe(&out));
+    let stdout = plain(&out.stdout);
+    assert!(
+        stdout.contains("this run reached its token cap (max_tokens_per_run = 200)"),
+        "{stdout}"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let stops = jsonl(&home.join("data/hooks/runs.jsonl"))
+        .into_iter()
+        .filter(|r| r["event"] == "Stop")
+        .count();
+    assert_eq!(stops, 2);
+}
+
+/// Hooks run as the owner, outside the sandbox, so a planning run fires
+/// none; the approved plan's run does.
+#[cfg(unix)]
+#[test]
+fn a_planning_run_fires_no_hooks_and_the_approved_plan_does() {
+    let (url, _seen) = model_server();
+    let dir = home(&url, "");
+    with_hooks(dir.path(), &["PreToolUse", "SessionStart"]);
+    let home = dir.path();
+
+    let out = ferrule(home, &["run", "--plan", "PLAN_IT"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let stdout = plain(&out.stdout);
+    let id = stdout
+        .split("`ferrule plan approve ")
+        .nth(1)
+        .and_then(|r| r.split('`').next())
+        .unwrap_or_else(|| panic!("no plan id: {stdout}"))
+        .to_string();
+    assert!(hook_log(home, "PreToolUse").is_empty());
+    assert!(hook_log(home, "SessionStart").is_empty());
+    assert!(!home.join("data/hooks/runs.jsonl").exists());
+
+    let out = ferrule(home, &["plan", "approve", &id]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(home.join("work/made.txt").exists());
+    assert_eq!(hook_log(home, "PreToolUse").len(), 1);
+    assert_eq!(hook_log(home, "SessionStart").len(), 1);
+}
+
+/// Opted into the owner's trust, an eval still fires none of the owner's
+/// hooks.
+#[cfg(unix)]
+#[test]
+fn an_eval_that_opts_into_the_owners_trust_still_fires_no_hooks() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    with_hooks(dir.path(), &["PreToolUse", "Stop"]);
+    let home = dir.path();
+    let suite = eval_suite(home, "owner_trust = true");
+    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let results = tool_results(&seen);
+    assert_eq!(results.len(), 2, "{}", describe(&out));
+    assert!(results.iter().all(|r| r.contains("refused by ferrule")));
+    assert!(results.iter().all(|r| !r.contains("HOOK_NOTE")));
+    assert!(hook_log(home, "PreToolUse").is_empty());
+    assert!(hook_log(home, "Stop").is_empty());
+    assert!(!home.join("data/hooks/runs.jsonl").exists());
 }

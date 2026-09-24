@@ -290,10 +290,30 @@ that convention yet — ask before introducing one).
     restart (a 2 s config follower), `enabled_tools` and output caps, a
     setup-wizard MCP step, `ferrule mcp list`/`remove`.
     `docs/m17-mcp-add.md` is the design.
-  - **M18 lifecycle hooks** (§4.6): SessionStart / PreToolUse /
-    PostToolUse / Stop / PreCompact events; command handlers where exit 2
-    blocks and feeds stderr back to the model; `additionalContext`
-    injection.
+  - **M18 lifecycle hooks** (§4.6): **parts 1–4 done** (2026-09-25,
+    branch `m18-hooks`; see the M18 session-log entry). Ten events with
+    Claude Code's payload and exit-code contract (0 proceeds, 2 blocks
+    with stderr as the reason, anything else is logged and shown to the
+    owner only), command hooks with a per-hook timeout and a process-tree
+    kill, `additionalContext` appended after the cached prefix (capped),
+    `verify_command` as the built-in Stop check with its old behaviour,
+    user hooks from the trusted config only, workspace hooks behind
+    `[hooks] project` plus `ferrule hooks trust` pinned to the file's
+    SHA-256, children inheriting PreToolUse/PostToolUse with
+    SubagentStart/Stop in the parent, a JSONL audit log and `ferrule
+    hooks list`. Hooks run as the owner, outside the sandbox.
+    `docs/m18-hooks.md` is the design. **Open edges:** a `--config` inside
+    a writable workspace is trusted; `[sandbox] mode = "off"` lets the
+    shell write the trust record; a workspace hook's relative command
+    runs from the root's workspace even for a child in a worktree;
+    gateway sessions never fire SessionEnd. **Unverified on
+    macOS/Windows until the batch CI pass:** the shell choice (`sh -c`,
+    Git Bash, or PowerShell; `sh -c` vs `cmd /C`/PowerShell), exit codes
+    (2 from PowerShell), killing a timed-out process tree (`killpg` on
+    macOS, `taskkill /T /F` on Windows), stdin/stdout piping of the
+    payload and output, the trust and audit files' permissions, and the
+    `canonicalize`d workspace key; the integration tests are
+    `#[cfg(unix)]`.
   - **M19 trust & cost** (§4.11–4.13): **built** (2026-09-25, parts 1–6
     on branch `m19-trust-cost`, PR to main open, not merged; CI deferred
     to the roadmap batch; see the M19 session-log entry). Design:
@@ -2494,6 +2514,86 @@ to M15 to the token (engineered 513.5k input / 88 calls / 13 compactions, naive
 - The binary tests (`tests/learn.rs`): environment isolation and the scripted
   server on each OS.
 
+### 2026-09-25 — M18 lifecycle hooks (Devi, Opus 5.5)
+
+Branch `m18-hooks`, cut from main at a1f06ce. Design first
+(`docs/m18-hooks.md`), then four parts:
+
+- **Part 1:** `ferrule-core::lifecycle`: ten events, Claude Code's payload
+  and its exit-code/JSON-output contract, name-or-glob matchers, an
+  ordered `HookSet` (built-in, then user, then workspace; the first block
+  wins) with caps and an audit trait.
+  - `verify_command` is the built-in Stop check, with the same message,
+    `max_verify_rounds`, events and `needs_check` rule as before.
+  - PreToolUse/PostToolUse around every tool call; notes appended to the
+    tool result or as a user message after the prompt, never in the
+    system prompt; Stop capped at `max_stop_blocks`; Pre/PostCompact,
+    SessionEnd, and a `HookFinished` event.
+- **Part 2:** `ferrule-hooks`: command hooks (payload on stdin, per-hook
+  timeout, the process group or tree killed on timeout, 64 KiB output
+  caps), `[hooks]` and `.ferrule/hooks.toml` with unknown keys as
+  errors, the trust record pinned to the file's SHA-256 under
+  `private/`, the JSONL audit log and the `hooks list` rendering.
+- **Part 3:** the CLI and the supervisor. `[hooks]` counts only from a
+  trusted config; every top-level agent gets the user's and trusted
+  workspace hooks; the untrusted notice once per process; children get
+  the root's PreToolUse/PostToolUse via `attach_root`, and
+  SubagentStart/Stop fire in the parent around each child run; SessionEnd
+  for `run`/`chat`; `ferrule hooks list|trust|untrust` (trust only at a
+  terminal, and only what was shown); a doctor check.
+- **Part 4:** `tests/hooks.rs`, ten real-binary tests against a scripted
+  model, one per "done means" item: the built-in check, a PreToolUse exit
+  2 (reason in the next request, tool never ran, audited),
+  `additionalContext` after the cached prefix, untrusted → trusted →
+  edited workspace hooks, a hung hook killed with its child at 1 s, an
+  always-blocking Stop hook capped at 3, a child's call blocked by the
+  parent's PreToolUse plus SubagentStart/Stop payloads and blocks, eval
+  ignoring every owner hook, and the model failing to write, trust or
+  enable a hook.
+
+**Mock eval, `ferrule eval run evals/starter --variant ab`** (the real
+binary, all 20 tasks), after part 1 and again at the end: engineered
+20/20, naive 11/20 (+45 pts), $0.53 vs $0.45, 88 vs 62 calls, 4 failed
+checks fixed. Both runs match on every task. The built-in check keeps the
+same wording and cap, so nothing moved.
+
+**Design defaults for Max to confirm:** the ten in `docs/m18-hooks.md`
+§10 — workspace hooks off by default plus per-file trust; fail open on
+timeout/crash; sequential, first block wins; `max_stop_blocks = 3`;
+globs not regexes; a SubagentStart block fails the child rather than
+`spawn_agent`; no SessionEnd for gateway sessions; no eval opt-in; a
+PostToolUse block is a note; hook errors go to the owner only.
+
+**M18 open edges and the macOS/Windows-unverified spots:** in the M18
+bullet under Current State and `docs/m18-hooks.md` §11.
+
+### 2026-09-25 — hotfix: the Telegram bot going deaf (Devi, Opus 5.5)
+
+Max's bot on his server stopped answering and there was no way to see why
+from the chat. Two causes in the Telegram adapter:
+
+- **No request deadline.** The `reqwest` client had no timeout, so a
+  half-open connection during the long poll parked `getUpdates` forever.
+  The process stayed up, so systemd's `Restart=always` never kicked in.
+- **Any failed poll ended the adapter.** A network blip, a 502 from a proxy,
+  a 409 or a 429 returned `Err` from `run()`. The gateway then ended with
+  the channel, the process exited, and systemd restarted it 5s later,
+  dropping whatever turn was in flight.
+
+Fix: a 10s connect deadline, a 30s deadline on send/edit, and 45s on the
+poll (the 30s long poll plus slack), with TCP keepalive. A failed poll is
+now logged and retried with backoff (1s doubling to 60s, reset by the next
+good poll; Telegram's `retry_after` wins when it's given). Only a rejected
+token (401/404) stops the adapter. Three new tests use a scripted mock
+server: two polls that never answer, then a message; four failed polls
+(HTML 502, not-ok 500/409/429), then a message; and a 401 that ends `run()`
+after one poll with no retry.
+
+Not covered here, and queued as a reliability milestone after M19: a stuck
+turn still silently blocks its chat's lane. The planned fixes are an
+out-of-lane 👀 on receipt, `/status` and `/stop` answered by the gateway
+itself, a turn watchdog that tells the owner, and an external dead-man alert.
+
 ### 2026-09-25 — M19 trust & cost (Devi, Opus 5.5)
 
 The design is `docs/m19-trust-cost.md`. The work is on branch `m19-trust-cost`, cut
@@ -2574,3 +2674,42 @@ identical report (exit 0), and `ferrule trust status` afterwards said 0 tokens t
 - Midnight in the configured timezone (`chrono-tz`) across platforms.
 - The binary tests (`crates/ferrule-cli/tests/trust.rs`, the gateway tests):
   environment isolation and the fake model and Bot API servers on each OS.
+
+### 2026-09-25 — M19 × M18 reconciliation: `main` merged into `m19-trust-cost` (Devi, Opus 5.5)
+
+This is a real merge of `origin/main` (M18 hooks, PR #7, and the Telegram hotfix, PR #8)
+into this branch. There was no rebase or squash.
+
+**Conflicts:**
+- `PLAN.md`: both sides kept, with main's M18 and hotfix entries before M19's.
+- `Cargo.lock`: ours, then regenerated by cargo. It came out the same as the auto-merge.
+- `doctor.rs`: the hooks line, then the trust line.
+- `main.rs`: `trust::equip` and the plan-mode note kept, plus M18's hooks and
+  `end_session`. The hooks are skipped while planning.
+- `agent.rs`: the tool dispatch rewritten by hand, and both sides' tests kept.
+  `guard.rs` lost the `guarded_call` helper, which nothing uses now.
+
+**The order at tool dispatch:**
+1. the owner's gate
+2. PreToolUse
+3. the tool
+4. PostToolUse
+
+Each step is raced against the kill switch. A refused or halted call fires no hook,
+and no hook can approve past the gate. Stop hooks and `verify_command` sending a run
+back still meet the caps at the next model call. A planning run, and any eval (even
+one with `owner_trust`), fires no hooks. All of this is settled in
+`docs/m19-trust-cost.md` §13.
+
+**New tests** (`crates/ferrule-cli/tests/trust.rs`, real binary, scripted model):
+- the gate before PreToolUse, in one session with a hook and a gated `rm -rf`
+- a Stop hook sending the run back still meets the run cap
+- a planning run fires no hooks, and the approved plan's run does (mutation-checked)
+- an eval with `owner_trust` fires no hooks
+
+**Checks:**
+- fmt clean; clippy `-D warnings` clean.
+- `cargo test --workspace`: 555 passed, 0 failed, 2 ignored. That includes the hotfix's
+  Telegram tests next to M19's Interceptor, and the flaky M13 test passed this time.
+- Mock eval: engineered 20/20, naive 11/20, $0.98. It matches the pre-merge run line
+  for line.

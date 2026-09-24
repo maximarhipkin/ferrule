@@ -125,11 +125,50 @@ pub async fn run(offline: bool) -> Result<bool> {
     mcp(&mut r, &cfg, confined);
     proxy(&mut r, &cfg);
     agents_check(&mut r, &cfg, confined);
+    hooks_check(&mut r, &cfg, &path);
     trust_check(&mut r, &cfg, telegram_on);
     service_check(&mut r, &path, telegram_on)?;
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
     Ok(r.finish())
+}
+
+/// M18: hooks run as the owner, outside the sandbox; say which will, and
+/// which of this directory's won't.
+fn hooks_check(r: &mut Report, cfg: &config::Config, path: &Path) {
+    let settings = match crate::hooks_cli::settings(cfg, path) {
+        Ok(s) => s,
+        Err(e) => return r.fail("hooks", format!("{e:#}")),
+    };
+    let n = settings.entries().len();
+    if n > 0 {
+        r.ok(
+            "hooks",
+            format!(
+                "{n} hook{} from your config · they run as you, outside the sandbox",
+                if n == 1 { "" } else { "s" }
+            ),
+        );
+    }
+    let Ok(data) = config::data_dir() else {
+        return;
+    };
+    let here = std::env::current_dir().unwrap_or_default();
+    let state = ferrule_hooks::load_workspace(
+        &here,
+        settings.project,
+        &ferrule_hooks::TrustStore::in_data_dir(&data),
+    );
+    match &state {
+        ferrule_hooks::WorkspaceState::Trusted(ws) => r.ok(
+            "hooks",
+            format!("{} trusted hook(s) in {}", ws.entries().len(), tilde(&here)),
+        ),
+        ferrule_hooks::WorkspaceState::Untrusted { .. } => {
+            r.warn("hooks", state.notice(&here).unwrap_or_default())
+        }
+        ferrule_hooks::WorkspaceState::Absent => {}
+    }
 }
 
 fn keys(r: &mut Report, path: &Path) {

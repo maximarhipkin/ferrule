@@ -74,6 +74,17 @@ pub enum AgentEvent {
         check: String,
         ok: bool,
     },
+    /// A lifecycle hook ran (not the built-in check, which has the verify
+    /// events). `error` is a non-blocking failure: the owner's to read.
+    HookFinished {
+        event: String,
+        source: String,
+        command: String,
+        blocked: bool,
+        exit_code: Option<i32>,
+        duration_ms: u64,
+        error: Option<String>,
+    },
     RunFinished {
         answer_chars: usize,
         iterations: usize,

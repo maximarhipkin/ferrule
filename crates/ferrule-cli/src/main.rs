@@ -4,6 +4,7 @@ mod config;
 mod config_follow;
 mod doctor;
 mod eval;
+mod hooks_cli;
 mod learn;
 mod ledger;
 mod mcp_add;
@@ -144,6 +145,12 @@ enum Cmd {
     Skills {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
+    },
+    /// Lifecycle hooks: list them and their recent runs, trust or untrust
+    /// a workspace's .ferrule/hooks.toml
+    Hooks {
+        #[command(subcommand)]
+        op: hooks_cli::HooksCmd,
     },
     /// MCP servers and skills the agent installed: list, approve or deny
     /// its requests, remove, resume what the scan suspended
@@ -463,6 +470,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Skills { workspace } => {
             skills_cmd(workspace);
         }
+        Cmd::Hooks { op } => hooks_cli::run(op)?,
         Cmd::Extensions { op } => self_extend::run(op).await?,
         Cmd::Mcp { op } => mcp_add::run(op).await?,
         Cmd::Sandbox {
@@ -627,7 +635,7 @@ fn build_agent_from(
     ledger: Option<ledger::LedgerTag>,
     child: Option<&ferrule_agents::ChildSpec>,
 ) -> Result<Agent> {
-    let (cfg, _) = config::Config::load()?;
+    let (cfg, cfg_path) = config::Config::load()?;
     let (name, pcfg, key) = cfg.resolve_provider(provider_name.as_deref())?;
     let provider = Arc::new(OpenAiCompatProvider::new(
         name,
@@ -780,6 +788,7 @@ fn build_agent_from(
 
     // M19: the owner's caps, kill switch and approval gates, per run tree.
     let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
+    let hooks_workspace = tool_ctx.workspace.clone();
     let mut agent = Agent::new(
         provider,
         registry,
@@ -809,6 +818,12 @@ fn build_agent_from(
             sandbox,
             timeout,
         )));
+    }
+    // M18: a sub-agent's hooks are its root's, added by the supervisor.
+    // A planning run fires none: hooks run as the owner, outside the
+    // read-only sandbox plan mode promises (docs/m19-trust-cost.md §13).
+    if child.is_none() && !planning {
+        agent.add_hooks(hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?);
     }
     Ok(agent)
 }
@@ -1040,6 +1055,20 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
                     println!("\x1b[33m[provider failed, retry {attempt}/{max_attempts} in {:.1}s: {error}]\x1b[0m", delay_ms as f64 / 1000.0)
                 }
                 AgentEvent::Stuck { note } => println!("\x1b[33m{note}\x1b[0m"),
+                // A hook's error is the owner's to see, not the model's.
+                AgentEvent::HookFinished {
+                    event,
+                    command,
+                    blocked,
+                    error,
+                    ..
+                } => match error {
+                    Some(e) => eprintln!("\x1b[33m[hook {event} `{command}`: {e}]\x1b[0m"),
+                    None if blocked => {
+                        println!("\x1b[33m[hook {event} `{command}` blocked]\x1b[0m")
+                    }
+                    None => {}
+                },
                 AgentEvent::VerifyStarted { check } => println!("\x1b[36m▶ check\x1b[0m {check}"),
                 AgentEvent::VerifyFinished { check, ok } => {
                     println!(
@@ -1139,6 +1168,9 @@ pub(crate) async fn run_root(
         }
         close_tree(sup, session_id).await;
     }
+    agent
+        .end_session("exit", &spawn_renderer(show_reasoning))
+        .await;
     Ok(answer
         .map(|text| RootRun {
             text,
@@ -1236,6 +1268,7 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     if let Some(sup) = &sup {
         close_tree(sup, &session_id).await;
     }
+    agent.end_session("exit", &spawn_renderer(false)).await;
     Ok(())
 }
 

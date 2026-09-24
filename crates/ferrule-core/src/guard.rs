@@ -39,14 +39,6 @@ pub trait Guard: Send + Sync {
     async fn halted(&self) -> String;
 }
 
-/// How a guarded tool call went.
-#[derive(Debug)]
-pub enum Guarded<T> {
-    Ran(T),
-    Refused(String),
-    Halted(String),
-}
-
 /// Runs `fut` unless the guard halts first; the halt wins a tie, and `fut`
 /// is dropped (a shell command's process group goes with it).
 pub async fn unless_halted<T>(
@@ -60,25 +52,5 @@ pub async fn unless_halted<T>(
         biased;
         why = guard.halted() => Err(why),
         out = fut => Ok(out),
-    }
-}
-
-/// One tool call under the guard: its verdict first (an approval wait can
-/// be halted too), then the call itself, raced against a halt.
-pub async fn guarded_call<T>(
-    guard: Option<&Arc<dyn Guard>>,
-    call: GuardedCall<'_>,
-    run: impl Future<Output = T>,
-) -> Guarded<T> {
-    let Some(g) = guard else {
-        return Guarded::Ran(run.await);
-    };
-    match unless_halted(guard, g.before_tool_call(call)).await {
-        Err(why) => Guarded::Halted(why),
-        Ok(Verdict::Refuse(why)) => Guarded::Refused(why),
-        Ok(Verdict::Allow) => match unless_halted(guard, run).await {
-            Ok(out) => Guarded::Ran(out),
-            Err(why) => Guarded::Halted(why),
-        },
     }
 }

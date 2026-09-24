@@ -393,24 +393,82 @@ field; cap stops make no ledger row (no call was made).
 - **The stop file can't be read** (not "missing", but an IO error): treated
   as engaged. A switch that fails open isn't a switch.
 
-## 13. The M18 PreToolUse relation
+## 13. The M18 hooks relation
 
-M18 adds lifecycle hooks, including PreToolUse, and is being built in
-parallel. M19 doesn't depend on its types. When both are in:
+M18 (lifecycle hooks) and M19 were built in parallel and reconciled when
+M19 took `main` in (2026-09-25). One tool call now goes:
 
-- **Order:** the M19 gate runs **first**, then PreToolUse hooks. The gate
-  is the owner's safety policy; a hook is extension code. A hook never
-  sees, and so can never auto-approve, a call the gate refused.
-- **Which wins:** a refusal from either wins. A hook can refuse a call the
-  gate allowed; a hook can't allow a call the gate refused, or skip the
-  owner's approval. If a hook rewrites the arguments, the rewritten call
-  must be classified again (the reconciliation should re-run the gate on
-  the final arguments; until then, the gate sees the model's arguments).
-- **Halt:** M19's `halted()` race wraps the whole thing (gate, hooks,
-  tool), so the kill switch stops a hook that hangs too.
+1. **the owner's gate** (`Guard::before_tool_call`: plan mode, the
+   approval gates, and the wait for a yes);
+2. **PreToolUse hooks**;
+3. **the tool**;
+4. **PostToolUse hooks**.
 
-The call site is one `guarded_call` in the tool loop, so reconciling means
-putting the hook dispatch inside it, after the verdict.
+Every step is raced against `halted()`, so the kill switch or a cap
+crossed by a sibling also stops a hook that hangs, the approval wait, and
+the tool itself. The call site is in the tool loop in `agent.rs`. The old
+`guarded_call` helper is gone, and the loop does the steps itself.
+
+The gate runs first because it is the owner's safety policy and a hook is
+extension code. Nothing in the code argued for the other order. The one
+cost: the owner can be asked about a call that a hook then blocks.
+
+- **A refused or halted call fires no hooks.**
+  - When the gate refuses a call, neither PreToolUse nor PostToolUse
+    fires. The tool's result is `refused by ferrule: …`, and the refusal
+    is in the trust audit log.
+  - A hook never sees a call the owner didn't allow, so a hook's side
+    effects (hooks run as the owner, outside the sandbox) can't happen on
+    it.
+  - This matches M18's own rule that a call a PreToolUse hook blocked
+    fires no PostToolUse: Post follows only a call that was dispatched.
+  - When the run is halted, every call not yet run gets
+    `not run: ferrule halted the run`, and no hook fires for them.
+- **No hook can get a command past the gate.**
+  - The gate has already answered before any hook runs.
+  - M18 has no argument rewrite (`updatedInput` isn't read), so the gate
+    sees exactly the arguments the tool will run with.
+  - A hook's `permissionDecision: "allow"` means only "proceed", and it
+    can't un-refuse a refused call.
+  - `additionalContext` is appended to the tool's result after the call.
+    It is text for the model, not an input to the gate.
+  - If M18 ever adds rewriting, the rewritten call must go through the
+    gate again.
+- **A refusal from either side wins.** A hook can still block a call
+  the gate allowed.
+- **Stop hooks and the built-in check (`verify_command`) can't get around
+  the caps or the kill switch.**
+  - A run a Stop hook sends back goes around the loop, and every model
+    call is checked by the guard first. So the run cap, the day cap and
+    the switch stop it like any other run.
+  - The Stop hooks and the check commands are raced against `halted()`
+    too.
+- **Sub-agents inherit both.**
+  - A child's guard is its root's `.child()`: the same tree and caps, and
+    the root's approval route (or its refusal when unattended).
+  - A child's hooks are its root's PreToolUse and PostToolUse hooks,
+    handed on by the supervisor.
+  - The order inside the child is the same: gate first.
+- **Plan mode fires no hooks.**
+  - A planning run (`ferrule run --plan`, `/plan`, and its sub-agents)
+    is built without the config's or the workspace's hooks, and without
+    `verify_command`.
+  - Hooks run as the owner outside the sandbox, which would break plan
+    mode's promise that nothing changes.
+  - The approved plan's run is a normal run and fires them all,
+    SessionStart included.
+- **Eval stays hermetic for both.**
+  - `ferrule eval` builds its agents itself and never reads `[hooks]` or
+    a workspace's hooks file, whether or not the suite sets
+    `owner_trust`.
+  - Caps and approvals reach an eval only with `owner_trust = true`.
+    There is no hooks opt-in (M18 §7).
+
+Tested in `crates/ferrule-cli/tests/trust.rs`:
+- `the_gate_answers_before_pre_tool_use_hooks_and_no_hook_can_approve_past_it`: one session has a gated `rm -rf` and a plain `echo`, plus a PreToolUse hook that logs and answers allow with a note. The rm is refused with no note, and the hook logged only the echo.
+- `a_stop_hook_sending_the_run_back_still_meets_the_run_cap`
+- `a_planning_run_fires_no_hooks_and_the_approved_plan_does`
+- `an_eval_that_opts_into_the_owners_trust_still_fires_no_hooks`
 
 ## 14. Safe defaults
 
