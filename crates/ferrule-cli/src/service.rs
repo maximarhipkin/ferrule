@@ -204,6 +204,116 @@ fn parse_unit(text: &str) -> Option<(PathBuf, PathBuf)> {
     ))
 }
 
+/// The binary an installed unit runs.
+pub fn installed_exe() -> Option<PathBuf> {
+    parse_exe(&std::fs::read_to_string(unit_path().ok()?).ok()?)
+}
+
+fn parse_exe(text: &str) -> Option<PathBuf> {
+    if text.contains("<plist") {
+        let after = text.split_once("<key>ProgramArguments</key>")?.1;
+        let value = after.split_once("<string>")?.1.split_once("</string>")?.0;
+        return Some(PathBuf::from(xml_unescape(value)));
+    }
+    let rest = text
+        .lines()
+        .find_map(|line| line.strip_prefix("ExecStart=\""))?;
+    // The closing quote is the first one not escaped by a backslash.
+    let mut escaped = false;
+    let end = rest.char_indices().find_map(|(i, c)| match c {
+        '\\' if !escaped => {
+            escaped = true;
+            None
+        }
+        '"' if !escaped => Some(i),
+        _ => {
+            escaped = false;
+            None
+        }
+    })?;
+    Some(PathBuf::from(systemd_unescape(
+        &rest[..end].replace("$$", "$"),
+    )))
+}
+
+/// Has the service's binary been replaced since the service started — an
+/// upgrade it hasn't picked up? `None` when that can't be told (not
+/// running, or no `ps`).
+pub fn binary_changed_since_start() -> Option<bool> {
+    let exe = installed_exe()?;
+    let pid = main_pid()?;
+    #[cfg(target_os = "linux")]
+    if let Ok(link) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+        if link.to_string_lossy().ends_with(" (deleted)") {
+            return Some(true);
+        }
+    }
+    let out = Command::new("ps")
+        .args(["-o", "etime=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let running_for = parse_etime(String::from_utf8_lossy(&out.stdout).trim())?;
+    let modified = std::fs::metadata(&exe).ok()?.modified().ok()?;
+    let age = modified.elapsed().unwrap_or_default().as_secs();
+    Some(changed_since_start(age, running_for))
+}
+
+/// A binary `binary_age` seconds old under a process `running_for`
+/// seconds: newer means it was replaced after the start. `ps` rounds to
+/// the second, hence the slack.
+pub fn changed_since_start(binary_age: u64, running_for: u64) -> bool {
+    binary_age + 2 < running_for
+}
+
+/// `ps -o etime`: `[[dd-]hh:]mm:ss`, in seconds.
+pub fn parse_etime(text: &str) -> Option<u64> {
+    let (days, clock) = match text.split_once('-') {
+        Some((d, rest)) => (d.parse::<u64>().ok()?, rest),
+        None => (0, text),
+    };
+    let parts: Vec<u64> = clock
+        .split(':')
+        .map(|p| p.parse().ok())
+        .collect::<Option<_>>()?;
+    let (h, m, s) = match parts[..] {
+        [m, s] => (0, m, s),
+        [h, m, s] => (h, m, s),
+        _ => return None,
+    };
+    Some(((days * 24 + h) * 60 + m) * 60 + s)
+}
+
+/// The running service's process id.
+fn main_pid() -> Option<u32> {
+    let pid = if cfg!(target_os = "macos") {
+        let out = launchctl(&["print", &launchd_target()]).ok()?;
+        out.lines()
+            .find_map(|l| l.trim().strip_prefix("pid = "))?
+            .trim()
+            .parse()
+            .ok()?
+    } else {
+        let out = Command::new("systemctl")
+            .args(scope_flag())
+            .args(["show", "--property=MainPID", "--value", SYSTEMD_UNIT])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()?
+    };
+    (pid != 0).then_some(pid)
+}
+
+/// The command that restarts the service, for messages.
+pub fn restart_hint() -> String {
+    if cfg!(target_os = "macos") {
+        format!("launchctl kickstart -k gui/$(id -u)/{LAUNCHD_LABEL}")
+    } else if scope() == Scope::System {
+        "sudo systemctl restart ferrule".into()
+    } else {
+        "systemctl --user restart ferrule".into()
+    }
+}
+
 /// Write the unit, then enable and start it (restarting it if it was
 /// already running, so a changed unit takes effect).
 pub fn install(spec: &Spec) -> Result<Vec<String>> {
@@ -878,5 +988,36 @@ mod tests {
             parse_unit(&plist),
             Some((spec.config.clone(), spec.workspace.clone()))
         );
+    }
+
+    #[test]
+    fn the_binary_a_unit_runs_reads_back_whatever_its_path() {
+        let mut odd = spec();
+        odd.exe = "/opt/a \"b\" $x 5%/ferrule".into();
+        for spec in [spec(), odd, system_spec()] {
+            assert_eq!(parse_exe(&systemd_unit(&spec)), Some(spec.exe.clone()));
+            assert_eq!(
+                parse_exe(&system_unit(&spec, Path::new(SYSTEM_DATA))),
+                Some(spec.exe.clone())
+            );
+            let plist = launchd_plist(&spec, Path::new("/tmp/log"));
+            assert_eq!(parse_exe(&plist), Some(spec.exe.clone()));
+        }
+        assert_eq!(parse_exe("[Service]\nExecStart=/no/quotes\n"), None);
+    }
+
+    #[test]
+    fn a_binary_newer_than_the_process_means_an_upgrade_not_picked_up() {
+        assert_eq!(parse_etime("05:07"), Some(307));
+        assert_eq!(parse_etime("1:02:03"), Some(3723));
+        assert_eq!(parse_etime("2-01:00:00"), Some(2 * 86400 + 3600));
+        assert_eq!(parse_etime(""), None);
+        assert_eq!(parse_etime("1:2:3:4"), None);
+        // Installed an hour ago, running for a day: replaced since.
+        assert!(changed_since_start(3600, 86400));
+        // Installed, then started: not.
+        assert!(!changed_since_start(86400, 3600));
+        // Installed and started in the same second or two: not.
+        assert!(!changed_since_start(100, 101));
     }
 }

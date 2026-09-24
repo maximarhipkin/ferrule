@@ -1,10 +1,11 @@
 //! `ferrule doctor`: one pass over everything setup configures — the
 //! config, the saved keys, each provider, Telegram, the sandbox, the
-//! background service and the binary itself — with a line per check and
-//! what to do about each problem. Exits non-zero if anything is broken.
+//! background service, the binary itself and, for information, the browser
+//! — with a line per check and what to do about each problem. Exits
+//! non-zero if anything is broken.
 
 use crate::setup::tilde;
-use crate::{config, probe, secrets, service};
+use crate::{browser, config, probe, secrets, service};
 use anyhow::Result;
 use ferrule_sandbox::{Mode, Sandbox};
 use std::fmt::Display;
@@ -110,6 +111,7 @@ pub async fn run(offline: bool) -> Result<bool> {
                 r.hint("run `ferrule setup`");
             }
             binary(&mut r);
+            browser_check(&mut r);
             return Ok(r.finish());
         }
     };
@@ -124,6 +126,7 @@ pub async fn run(offline: bool) -> Result<bool> {
     proxy(&mut r, &cfg);
     service_check(&mut r, &path, telegram_on)?;
     binary(&mut r);
+    browser_check(&mut r);
     Ok(r.finish())
 }
 
@@ -468,6 +471,13 @@ fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Resul
         service::Status::Installed { running: true, .. } => {
             let workspace = service::installed().map_or("unknown".into(), |(_, ws)| tilde(&ws));
             r.ok("service", format!("running · workspace {workspace}"));
+            if service::binary_changed_since_start() == Some(true) {
+                r.warn(
+                    "service",
+                    "binary upgraded since it started; restart the service to run the new one",
+                );
+                r.hint(service::restart_hint());
+            }
         }
         service::Status::Installed { running: false, .. } => {
             r.fail("service", "installed but not running");
@@ -558,5 +568,38 @@ fn binary(r: &mut Report) {
                 ),
             );
         }
+    }
+}
+
+/// Is there a Chrome or Chromium, and does it start headless? For
+/// information only: nothing needs it yet, and nothing is downloaded.
+fn browser_check(r: &mut Report) {
+    match browser::find() {
+        None => r.note(
+            "browser",
+            "no Chrome or Chromium found (set CHROME_PATH to point at one)",
+        ),
+        Some(exe) => {
+            let timeout = std::time::Duration::from_secs(20);
+            match browser::launch_test(&exe, service::is_root(), timeout) {
+                Ok(()) => r.ok("browser", format!("{} · starts headless", tilde(&exe))),
+                Err(why) => r.note(
+                    "browser",
+                    format!("{} didn't start headless: {why}", tilde(&exe)),
+                ),
+            }
+        }
+    }
+    // Ubuntu 24.04 and later: a browser's own sandbox needs an AppArmor
+    // profile that allows it user namespaces.
+    let restricted =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .is_ok_and(|v| v.trim() == "1");
+    if restricted {
+        r.note(
+            "browser",
+            "AppArmor restricts unprivileged user namespaces, so Chrome's sandbox needs a profile \
+             (the google-chrome .deb and the Chromium snap bring one)",
+        );
     }
 }
