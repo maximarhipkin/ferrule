@@ -998,6 +998,51 @@ async fn plan_mode_refuses_every_change_and_every_gated_command() {
 }
 
 #[tokio::test]
+async fn plan_mode_starts_sub_agents_only_without_a_worktree() {
+    use ferrule_core::{Guard as _, GuardedCall, Verdict};
+    let w = World::new(TrustConfig::off());
+    let guard = TrustGuard::root(w.hub.clone(), "s1", telegram()).planning(true);
+    let verdict = |args: Value| {
+        let guard = guard.clone();
+        async move {
+            guard
+                .before_tool_call(GuardedCall {
+                    tool: "spawn_agent",
+                    args: &args,
+                    changes_files: false,
+                })
+                .await
+        }
+    };
+    for args in [
+        json!({"task": "look"}),
+        json!({"task": "look", "worktree": true}),
+    ] {
+        assert!(
+            matches!(verdict(args).await, Verdict::Refuse(t) if t.contains("own git worktree")),
+            "the default worktree makes a branch"
+        );
+    }
+    assert!(matches!(
+        verdict(json!({"task": "look", "worktree": false})).await,
+        Verdict::Allow
+    ));
+    // Outside plan mode it's none of the guard's business.
+    let plain = TrustGuard::root(w.hub.clone(), "s2", telegram());
+    let args = json!({"task": "look"});
+    assert!(matches!(
+        plain
+            .before_tool_call(GuardedCall {
+                tool: "spawn_agent",
+                args: &args,
+                changes_files: false,
+            })
+            .await,
+        Verdict::Allow
+    ));
+}
+
+#[tokio::test]
 async fn slash_plan_and_slash_stop_are_read_before_the_session() {
     let w = World::new(caps());
     assert_eq!(

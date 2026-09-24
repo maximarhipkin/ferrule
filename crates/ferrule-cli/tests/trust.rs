@@ -54,6 +54,14 @@ fn reply(req: &Value) -> Value {
             call("shell", json!({"command": "rm -rf victim"}))
         };
     }
+    if task.contains("PLAN_IT") {
+        let planning = system.contains("[Plan mode]");
+        return match (planning, after_tool) {
+            (_, false) => call("write_file", json!({"path": "made.txt", "content": "x"})),
+            (true, true) => answer("1. write made.txt\n2. say EXECUTED"),
+            (false, true) => answer("EXECUTED"),
+        };
+    }
     if task.contains("LOOP") {
         return call("shell", json!({"command": "echo again"}));
     }
@@ -158,6 +166,17 @@ fn plain(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+fn tool_names(req: &Value) -> Vec<String> {
+    req["tools"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A home with the scripted provider and `trust` as its `[trust]` table.
@@ -408,6 +427,115 @@ fn a_trust_table_that_doesnt_validate_is_an_error() {
 
 /// A Bot API stand-in: `getUpdates` hands out what the test queued (or
 /// nothing after a short wait), `sendMessage` bodies are kept.
+#[test]
+fn a_plan_changes_nothing_until_it_is_approved() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    let out = ferrule(home, &["run", "--plan", "PLAN_IT"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let stdout = plain(&out.stdout);
+    assert!(stdout.contains("1. write made.txt"), "{stdout}");
+    let id = stdout
+        .split("`ferrule plan approve ")
+        .nth(1)
+        .and_then(|r| r.split('`').next())
+        .unwrap_or_else(|| panic!("no plan id: {stdout}"))
+        .to_string();
+    assert!(
+        !home.join("work/made.txt").exists(),
+        "planning wrote a file"
+    );
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let tools = tool_names(&seen[0]);
+        assert!(tools.contains(&"read_file".to_string()), "{tools:?}");
+        for gone in ["write_file", "shell", "write_todos", "log_diary"] {
+            assert!(!tools.contains(&gone.to_string()), "{gone} in {tools:?}");
+        }
+    }
+    let plan: Value =
+        serde_json::from_slice(&std::fs::read(home.join(format!("data/plans/{id}.json"))).unwrap())
+            .unwrap();
+    assert_eq!(plan["status"], "proposed");
+    assert_eq!(plan["text"], "1. write made.txt\n2. say EXECUTED");
+    let out = ferrule(home, &["plan", "list"]);
+    assert!(
+        plain(&out.stdout).contains(&format!("{id}  proposed")),
+        "{}",
+        describe(&out)
+    );
+
+    // Approved, it runs in the same session with the normal tools.
+    let out = ferrule(home, &["plan", "approve", &id]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(
+        plain(&out.stdout).contains("final: EXECUTED"),
+        "{}",
+        describe(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("work/made.txt")).unwrap(),
+        "x"
+    );
+    {
+        let seen = seen.lock().unwrap();
+        let first = &seen[2];
+        assert!(tool_names(first).contains(&"write_file".to_string()));
+        let said: Vec<String> = first["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(text)
+            .collect();
+        assert!(
+            said.iter()
+                .any(|m| m == "1. write made.txt\n2. say EXECUTED"),
+            "the exploration is replayed: {said:?}"
+        );
+        assert!(said.last().unwrap().contains("[Approved plan]"));
+    }
+    let plan: Value =
+        serde_json::from_slice(&std::fs::read(home.join(format!("data/plans/{id}.json"))).unwrap())
+            .unwrap();
+    assert_eq!(plan["status"], "executed");
+    assert!(plan["executed_by"].is_string());
+    let events: Vec<String> = jsonl(&home.join("data/trust/audit.jsonl"))
+        .iter()
+        .map(|e| e["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        events,
+        ["plan_proposed", "plan_approved", "plan_executed"],
+        "{events:?}"
+    );
+    let again = ferrule(home, &["plan", "approve", &id]);
+    assert!(!again.status.success());
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("already executed"),
+        "{}",
+        describe(&again)
+    );
+
+    // A rejected plan can't be approved later.
+    let out = ferrule(home, &["run", "--plan", "PLAN_IT"]);
+    let stdout = plain(&out.stdout);
+    let id = stdout
+        .split("`ferrule plan reject ")
+        .nth(1)
+        .and_then(|r| r.split('`').next())
+        .unwrap()
+        .to_string();
+    assert!(ferrule(home, &["plan", "reject", &id]).status.success());
+    let out = ferrule(home, &["plan", "approve", &id]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already rejected"));
+    assert!(!std::fs::read_to_string(home.join("work/made.txt"))
+        .unwrap()
+        .is_empty());
+}
+
 struct FakeTelegram {
     url: String,
     queue: Arc<Mutex<std::collections::VecDeque<Value>>>,
@@ -607,4 +735,61 @@ fn the_owner_approves_stops_and_resumes_from_telegram() {
     );
     assert_eq!(audit[1]["detail"]["answer"], "yes");
     assert_eq!(audit[1]["tree"], "telegram__42");
+}
+
+#[test]
+fn slash_plan_explores_asks_the_owner_and_runs_only_on_yes() {
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    let dir = home(
+        &url,
+        &format!(
+            "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"{}\"\ntelegram_allowed_chats = [-100, 42]\n",
+            tg.url
+        ),
+    );
+    let home = dir.path();
+    let _gw = gateway(home);
+
+    // A group asks; the plan goes to the owner chat, and nothing changes.
+    tg.say(-100, "/plan PLAN_IT");
+    let (n, _) = tg.wait_for(-100, "Planning (read-only", 0);
+    let (n, question) = tg.wait_for(42, "Reply `yes` to allow it", n);
+    assert!(question.contains("asked in chat -100"), "{question}");
+    assert!(question.contains("1. write made.txt"), "{question}");
+    assert!(!home.join("work/made.txt").exists());
+    tg.say(42, "yes");
+    let (n, _) = tg.wait_for(-100, "approved; running it", n);
+    let (n, _) = tg.wait_for(-100, "EXECUTED", n);
+    assert_eq!(
+        std::fs::read_to_string(home.join("work/made.txt")).unwrap(),
+        "x"
+    );
+
+    // Anything but yes rejects it, and the group is told.
+    std::fs::remove_file(home.join("work/made.txt")).unwrap();
+    tg.say(-100, "/plan PLAN_IT");
+    let (n, _) = tg.wait_for(42, "Reply `yes` to allow it", n);
+    tg.say(42, "no");
+    tg.wait_for(-100, "wasn't run", n);
+    assert!(!home.join("work/made.txt").exists());
+
+    let audit = jsonl(&home.join("data/trust/audit.jsonl"));
+    let events: Vec<&str> = audit.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    assert_eq!(
+        events,
+        [
+            "plan_proposed",
+            "approval_asked",
+            "approval_answered",
+            "plan_approved",
+            "plan_executed",
+            "plan_proposed",
+            "approval_asked",
+            "approval_answered",
+            "plan_rejected",
+        ],
+        "{audit:#?}"
+    );
+    assert!(audit[0]["tree"].as_str().unwrap().starts_with("plan__"));
 }

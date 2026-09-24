@@ -135,6 +135,14 @@ impl Router {
         Ok(tx)
     }
 
+    /// Drops `session_id`'s lane once its queue drains: the next message
+    /// starts a new agent that replays the transcript, with the tools the
+    /// factory gives it then (M19: a plan's exploration is read-only, its
+    /// execution isn't). False when there was no lane.
+    pub fn retire(&self, session_id: &str) -> bool {
+        self.lanes.lock().unwrap().remove(session_id).is_some()
+    }
+
     /// Whether `session_id` is a chat that [`Router::wake`] can run: it has
     /// a lane, and a person on the other end (a scheduled task has none).
     pub fn can_wake(&self, session_id: &str) -> bool {
@@ -528,6 +536,37 @@ mod tests {
         let mut texts = recorder.texts();
         texts.sort();
         assert_eq!(texts, vec!["echo: hi a", "echo: hi b"]);
+    }
+
+    #[tokio::test]
+    async fn a_retired_lane_is_rebuilt_from_its_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let built = Arc::new(AtomicUsize::new(0));
+        let factory: AgentFactory = {
+            let built = built.clone();
+            let counting = counting_factory();
+            Arc::new(move |sid, transcript| {
+                built.fetch_add(1, Ordering::SeqCst);
+                counting(sid, transcript)
+            })
+        };
+        let router = Router::new(dir.path(), factory, HashMap::new());
+        let first = router
+            .dispatch_and_wait(inbound("chat-1", "look"))
+            .await
+            .unwrap();
+        assert_eq!(first.text, "count: 1");
+        assert!(router.retire(&session::session_id("test", "chat-1")));
+        assert!(!router.retire(&session::session_id("test", "chat-1")));
+        let second = router
+            .dispatch_and_wait(inbound("chat-1", "do it"))
+            .await
+            .unwrap();
+        assert_eq!(
+            second.text, "count: 2",
+            "the new agent replayed the first turn"
+        );
+        assert_eq!(built.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

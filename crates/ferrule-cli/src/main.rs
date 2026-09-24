@@ -9,6 +9,7 @@ mod ledger;
 mod mcp_add;
 mod mcp_config;
 mod memory_tools;
+mod plan;
 mod probe;
 mod secrets;
 mod self_extend;
@@ -86,6 +87,10 @@ enum Cmd {
         /// Show model reasoning in the event stream
         #[arg(long)]
         show_reasoning: bool,
+        /// Plan mode: explore read-only and propose a plan; it runs only
+        /// once approved (docs/m19-trust-cost.md §8)
+        #[arg(long)]
+        plan: bool,
     },
     /// Interactive chat session (Ctrl-D to exit)
     Chat {
@@ -175,6 +180,12 @@ enum Cmd {
     Trust {
         #[command(subcommand)]
         op: trust::TrustCmd,
+    },
+    /// Plans proposed by `ferrule run --plan` and `/plan`: list, approve
+    /// (which runs it), reject
+    Plan {
+        #[command(subcommand)]
+        op: plan::PlanCmd,
     },
     /// Show the shell sandbox that applies here, and test that it holds.
     /// `ferrule sandbox -- CMD…` runs CMD the way the agent's shell tool would
@@ -406,8 +417,13 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             workspace,
             max_iterations,
             show_reasoning,
+            plan,
         } => {
-            run_once(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
+            if plan {
+                plan::run(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
+            } else {
+                run_once(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
+            }
         }
         Cmd::Chat {
             provider,
@@ -443,6 +459,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             status,
         } => trust::stop_cmd(reason, clear, status)?,
         Cmd::Trust { op } => trust::cmd(op)?,
+        Cmd::Plan { op } => plan::cmd(op).await?,
         Cmd::Skills { workspace } => {
             skills_cmd(workspace);
         }
@@ -485,7 +502,13 @@ async fn build_root(
     let (cfg, _) = config::Config::load()?;
     let sandbox = shared_sandbox(&cfg)?;
     let workspace = workspace.canonicalize().unwrap_or(workspace);
-    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await?;
+    // M19 plan mode starts no MCP server: one can do anything.
+    let servers = if trust::is_planning(session_id) {
+        Vec::new()
+    } else {
+        mcp_servers(&cfg)
+    };
+    let mcp_tools = connect_mcp_servers(&servers, sandbox, &workspace).await?;
     if task_shape == "chat" {
         mcp_tools.ask_at_terminal();
     }
@@ -625,9 +648,19 @@ fn build_agent_from(
     if let Some(spec) = child {
         sandbox = Arc::new(sandbox.for_child(&spec.extra_writable, spec.read_only));
     }
+    // M19 plan mode: read-only, no network, and the shell only when the OS
+    // sandbox really holds it to that.
+    let tree = trust::tree_of(child, transcript.as_ref());
+    let planning = trust::is_planning(&tree);
+    if planning {
+        sandbox = Arc::new(sandbox.for_planning());
+    }
     let (read_only, reading_mcp) = agents::narrows(child);
     let broker = shared_broker(&cfg)?;
     registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone())));
+    if planning && !sandbox.is_active() {
+        registry.remove("shell");
+    }
     registry.register(Arc::new(WebFetchTool::with_egress(
         sandbox.egress().cloned(),
     )));
@@ -645,7 +678,11 @@ fn build_agent_from(
     // M15: the root corrects and deletes memories, a writing child only
     // adds, a read-only child only recalls (docs/m15-memory.md §8).
     let memory_db = config::data_dir()?.join("memory.db");
-    let access = memory_tools::MemoryAccess::for_child(child);
+    let access = if planning {
+        memory_tools::MemoryAccess::Read
+    } else {
+        memory_tools::MemoryAccess::for_child(child)
+    };
     for tool in memory_tools::tools_for(memory_db.clone(), access) {
         registry.register(tool);
     }
@@ -662,7 +699,21 @@ fn build_agent_from(
             reading_only: reading_mcp,
         },
     };
-    mcp_tools.attach(&mut registry, cfg.skills.enabled, reach);
+    if !planning {
+        mcp_tools.attach(&mut registry, cfg.skills.enabled, reach);
+    }
+    if planning {
+        // `write_todos` and `log_diary` write under `.ferrule/` without
+        // saying they change files.
+        for name in ["write_file", "write_todos", "log_diary"] {
+            registry.remove(name);
+        }
+        for d in registry.definitions() {
+            if d.name != "shell" && registry.changes_files(&d.name) {
+                registry.remove(&d.name);
+            }
+        }
+    }
 
     let mut system = format!(
         "You are an autonomous agent running inside ferrule. Workspace: {}. \
@@ -709,7 +760,7 @@ fn build_agent_from(
     // loaded on demand through the activate_skill tool. Rescanned per agent,
     // so a skill installed while the gateway runs shows up in new sessions;
     // the tools follow the live set, so one installed mid-session works too.
-    if cfg.skills.enabled {
+    if cfg.skills.enabled && !planning {
         let (skills, tools) = mcp_tools.skill_tools();
         if let Some(catalog) = skills.get().catalog() {
             system.push_str(&format!("\n\n[Skills]\n{catalog}"));
@@ -723,8 +774,11 @@ fn build_agent_from(
         system.push_str(&format!("\n\n{block}"));
     }
 
+    if planning {
+        system.push_str(&format!("\n\n{}", ferrule_trust::plan::PLAN_MODE_NOTE));
+    }
+
     // M19: the owner's caps, kill switch and approval gates, per run tree.
-    let tree = trust::tree_of(child, transcript.as_ref());
     let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
     let mut agent = Agent::new(
         provider,
@@ -748,7 +802,7 @@ fn build_agent_from(
             pcfg.model.clone(),
         )
         .with_guard(guard);
-    if let Some(cmd) = &cfg.agent.verify_command {
+    if let (Some(cmd), false) = (&cfg.agent.verify_command, planning) {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(
             cmd.clone(),
@@ -1012,12 +1066,59 @@ async fn run_once(
     show_reasoning: bool,
 ) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
+    let answer = run_root(
+        prompt,
+        provider,
+        workspace,
+        max_iterations,
+        show_reasoning,
+        &session_id,
+        false,
+    )
+    .await?;
+    finish_run(answer)
+}
+
+/// What a root run ended with: its answer and why it stopped short, or
+/// the error `Agent::run` returned.
+pub(crate) struct RootRun {
+    pub text: String,
+    pub incomplete: Option<String>,
+    pub usage: ferrule_core::Usage,
+}
+
+/// Runs `prompt` as the root of `session_id` until it and the agents it
+/// started are done. With `resume`, the session's transcript is replayed
+/// first (an approved plan runs on what its exploration read).
+pub(crate) async fn run_root(
+    prompt: &str,
+    provider: Option<String>,
+    workspace: PathBuf,
+    max_iterations: usize,
+    show_reasoning: bool,
+    session_id: &str,
+    resume: bool,
+) -> Result<Result<RootRun, String>> {
+    let history = if resume {
+        let sessions_dir = config::data_dir()?.join("sessions");
+        Transcript::create(&sessions_dir, session_id)?
+            .read_messages()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let (mut agent, sup) =
-        build_root(provider, workspace, max_iterations, &session_id, "run").await?;
+        build_root(provider, workspace, max_iterations, session_id, "run").await?;
+    for m in history
+        .into_iter()
+        .filter(|m| m.role != ferrule_core::Role::System)
+    {
+        agent.messages.push(m);
+    }
     let (wake_tx, mut woken) = mpsc::unbounded_channel();
     if let Some(sup) = &sup {
         sup.set_waker(Arc::new(agents::ChannelWaker {
-            root: session_id.clone(),
+            root: session_id.to_string(),
             tx: wake_tx,
         }));
     }
@@ -1031,26 +1132,38 @@ async fn run_once(
                 answer = agent.run(&news, spawn_renderer(show_reasoning)).await;
                 continue;
             }
-            if !sup.busy(&session_id) && woken.is_empty() {
+            if !sup.busy(session_id) && woken.is_empty() {
                 break;
             }
             sup.changed(Duration::from_secs(1)).await;
         }
-        close_tree(sup, &session_id).await;
+        close_tree(sup, session_id).await;
     }
+    Ok(answer
+        .map(|text| RootRun {
+            text,
+            incomplete: agent.incomplete.clone(),
+            usage: agent.usage.clone(),
+        })
+        .map_err(|e| e.to_string()))
+}
+
+/// Prints a root run's answer, and exits 2 when it stopped short, 1 when
+/// it failed.
+pub(crate) fn finish_run(answer: Result<RootRun, String>) -> Result<()> {
     match answer {
-        Ok(text) => {
-            match &agent.incomplete {
-                Some(reason) => println!("\n\x1b[1;33mincomplete ({reason}):\x1b[0m {text}"),
-                None => println!("\n\x1b[1;32mfinal:\x1b[0m {text}"),
+        Ok(run) => {
+            match &run.incomplete {
+                Some(reason) => println!("\n\x1b[1;33mincomplete ({reason}):\x1b[0m {}", run.text),
+                None => println!("\n\x1b[1;32mfinal:\x1b[0m {}", run.text),
             }
-            let u = &agent.usage;
+            let u = &run.usage;
             println!(
                 "\x1b[90m[total usage: in {} (cached {}) / out {}]\x1b[0m",
                 u.input_tokens, u.cached_input_tokens, u.output_tokens
             );
             // Scripts can tell a status answer from a finished job.
-            if agent.incomplete.is_some() {
+            if run.incomplete.is_some() {
                 std::process::exit(2);
             }
         }
@@ -1250,7 +1363,9 @@ async fn run_gateway(
     // the scheduler waits while the kill switch is on.
     let hub = trust::hub(&cfg)?;
     hub.set_notifier(
-        telegram.map(|t| Arc::new(trust::ChannelNotifier(t)) as Arc<dyn ferrule_trust::Notifier>),
+        telegram
+            .clone()
+            .map(|t| Arc::new(trust::ChannelNotifier(t)) as Arc<dyn ferrule_trust::Notifier>),
     );
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = Arc::new(learn::register(&cfg, scheduler, &workspace, provider, true));
@@ -1263,8 +1378,16 @@ async fn run_gateway(
         })
     };
 
-    let mut gateway =
-        Gateway::new(router).with_interceptor(Arc::new(trust::OwnerDoor { hub, plan: None }));
+    let plan = plan::telegram(
+        router.clone(),
+        hub.clone(),
+        telegram,
+        workspace.canonicalize().unwrap_or(workspace),
+    );
+    let mut gateway = Gateway::new(router).with_interceptor(Arc::new(trust::OwnerDoor {
+        hub,
+        plan: Some(plan),
+    }));
     for channel in adapters {
         gateway.add_channel(channel);
     }

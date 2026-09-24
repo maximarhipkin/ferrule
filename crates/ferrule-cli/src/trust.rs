@@ -8,12 +8,13 @@ use anyhow::{anyhow, Result};
 use ferrule_core::{LedgerRecord, LedgerSink, Transcript};
 use ferrule_proxy::HostPattern;
 use ferrule_trust::{Hub, Prompter, Route, SystemClock, TrustGuard, TrustSink};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal as _, Write as _};
 use std::sync::{Arc, Mutex};
 
 static HUB: Mutex<Option<Arc<Hub>>> = Mutex::new(None);
 static ROUTES: Mutex<Option<HashMap<String, Route>>> = Mutex::new(None);
+static PLANNING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 /// The one hub of this process, built from the first config it's asked
 /// with. A `[trust]` that doesn't validate is an error, not "no caps".
@@ -68,6 +69,26 @@ pub fn seat(tree: &str, route: Route) {
         .unwrap()
         .get_or_insert_with(HashMap::new)
         .insert(tree.to_string(), route);
+}
+
+/// Plan mode for `tree`: every agent built for it from now on (the root
+/// and its sub-agents, which share the tree) explores read-only.
+pub fn set_planning(tree: &str, on: bool) {
+    let mut set = PLANNING.lock().unwrap();
+    let set = set.get_or_insert_with(HashSet::new);
+    if on {
+        set.insert(tree.to_string());
+    } else {
+        set.remove(tree);
+    }
+}
+
+pub fn is_planning(tree: &str) -> bool {
+    PLANNING
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|s| s.contains(tree))
 }
 
 /// Who can approve a gated command in `tree`: what was seated for it, else
@@ -157,7 +178,7 @@ pub fn equip(
     let price: ferrule_trust::Pricer =
         Arc::new(move |r: &LedgerRecord| pricing.get(&r.provider).map(|p| p.cost_usd(r)));
     let sink = Arc::new(TrustSink::new(inner, hub.clone(), tree, Some(price)));
-    let root = TrustGuard::root(hub, tree, route_for(tree));
+    let root = TrustGuard::root(hub, tree, route_for(tree)).planning(is_planning(tree));
     let guard = if child { root.child() } else { root };
     Ok((
         LedgerTag {

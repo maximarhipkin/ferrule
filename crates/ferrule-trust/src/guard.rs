@@ -103,6 +103,15 @@ impl Guard for TrustGuard {
                     call.tool
                 ));
             }
+            // A sub-agent is read-only in plan mode too, but its own
+            // worktree (the default) is a new branch and checkout.
+            if call.tool == "spawn_agent"
+                && call.args.get("worktree").and_then(|w| w.as_bool()) != Some(false)
+            {
+                return Verdict::Refuse(
+                    "this is plan mode: a sub-agent in its own git worktree creates a branch. Start it with `\"worktree\": false`; it explores read-only like you.".into(),
+                );
+            }
             if let Some(g) = gated() {
                 return Verdict::Refuse(format!(
                     "this is plan mode: `{}` is a {}. Put it in the plan instead; it will still need the owner's approval when the plan runs.",
