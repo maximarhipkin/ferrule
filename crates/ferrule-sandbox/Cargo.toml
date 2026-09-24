@@ -5,6 +5,7 @@ edition = "2021"
 description = "OS-level sandbox for agent shell commands: Landlock + seccomp on Linux, Seatbelt on macOS"
 
 [dependencies]
+dunce = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 libc = { workspace = true }

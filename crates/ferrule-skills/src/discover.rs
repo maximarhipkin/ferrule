@@ -143,7 +143,7 @@ pub fn discover(roots: &[SkillRoot], disabled: &[String]) -> SkillSet {
     for root in roots {
         // The same directory reached twice (e.g. workspace == $HOME) would
         // otherwise report every skill as shadowing itself.
-        let canon = root.dir.canonicalize().unwrap_or_else(|_| root.dir.clone());
+        let canon = dunce::canonicalize(&root.dir).unwrap_or_else(|_| root.dir.clone());
         if seen_roots.contains(&canon) {
             continue;
         }

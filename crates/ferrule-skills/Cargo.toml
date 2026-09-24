@@ -5,6 +5,7 @@ edition = "2021"
 description = "Agent Skills (SKILL.md) discovery, catalog and activation tools"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

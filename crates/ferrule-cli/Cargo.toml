@@ -9,6 +9,7 @@ name = "ferrule"
 path = "src/main.rs"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 ferrule-providers = { path = "../ferrule-providers" }
 ferrule-tools = { path = "../ferrule-tools" }

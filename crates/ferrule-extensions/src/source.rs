@@ -123,8 +123,8 @@ fn inside(checkout: &Path, rel: &str) -> Result<PathBuf> {
     if Path::new(rel).is_absolute() {
         return Err(outside());
     }
-    let root = checkout.canonicalize()?;
-    let p = checkout.join(rel).canonicalize().map_err(|_| outside())?;
+    let root = dunce::canonicalize(checkout)?;
+    let p = dunce::canonicalize(checkout.join(rel)).map_err(|_| outside())?;
     if !p.starts_with(&root) || !p.is_file() || p.components().any(|c| c.as_os_str() == ".git") {
         return Err(outside());
     }
@@ -185,7 +185,7 @@ mod tests {
         fs::write(co.join("server.py"), "").unwrap();
         fs::write(co.join("bin/run"), "").unwrap();
         fs::write(tmp.path().join("outside.py"), "").unwrap();
-        let root = co.canonicalize().unwrap();
+        let root = dunce::canonicalize(&co).unwrap();
 
         let (c, a) = git_launch(
             &co,

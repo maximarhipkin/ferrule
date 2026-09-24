@@ -202,7 +202,7 @@ mode = "off"
 
 fn setup(url: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().canonicalize().unwrap();
+    let home = dunce::canonicalize(dir.path()).unwrap();
     for d in ["work", "data", "home"] {
         std::fs::create_dir_all(home.join(d)).unwrap();
     }

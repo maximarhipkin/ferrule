@@ -1767,9 +1767,9 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
     let workspace = std::path::absolute(crate::expand_home(Path::new(answer.trim())))?;
     std::fs::create_dir_all(&workspace)
         .with_context(|| format!("creating {}", workspace.display()))?;
-    let workspace = workspace.canonicalize()?;
+    let workspace = dunce::canonicalize(workspace)?;
     let data = config::data_dir()?;
-    let data = data.canonicalize().unwrap_or(data);
+    let data = dunce::canonicalize(&data).unwrap_or(data);
     if data.starts_with(&workspace) {
         let linux = if cfg!(target_os = "linux") {
             ", and can't create files at its top level"
@@ -1788,7 +1788,7 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
             bail!("the service wasn't installed");
         }
     }
-    let exe = std::env::current_exe()?.canonicalize()?;
+    let exe = dunce::canonicalize(std::env::current_exe()?)?;
     let exe_text = exe.to_string_lossy();
     if exe_text.contains("/target/debug/") || exe_text.contains("/target/release/") {
         warn(format!(

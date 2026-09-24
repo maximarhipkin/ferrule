@@ -184,10 +184,7 @@ impl Tool for ActivateSkillTool {
 /// The activation result. The body is capped *inside* the wrapper so the
 /// closing tag always survives — compaction keys on the full block.
 pub fn render_activation(skill: &Skill, body: &str) -> String {
-    let dir = skill
-        .dir()
-        .canonicalize()
-        .unwrap_or_else(|_| skill.dir().to_path_buf());
+    let dir = dunce::canonicalize(skill.dir()).unwrap_or_else(|_| skill.dir().to_path_buf());
     let mut body_out: String = body.chars().take(SKILL_MAX_CHARS).collect();
     if body_out.len() < body.len() {
         body_out.push_str(&format!(
@@ -308,12 +305,9 @@ fn resolve_in_skill(skill_dir: &Path, rel: &str) -> Result<PathBuf, CoreError> {
             format!("`{rel}` must be a relative path inside the skill directory"),
         ));
     }
-    let base = skill_dir
-        .canonicalize()
+    let base = dunce::canonicalize(skill_dir)
         .map_err(|e| failed(READ_TOOL, format!("skill directory: {e}")))?;
-    let target = base
-        .join(rel_path)
-        .canonicalize()
+    let target = dunce::canonicalize(base.join(rel_path))
         .map_err(|e| failed(READ_TOOL, format!("{rel}: {e}")))?;
     if !target.starts_with(&base) {
         return Err(failed(

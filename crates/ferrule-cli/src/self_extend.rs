@@ -45,7 +45,7 @@ pub(crate) fn allow_trusted(path: &Path) -> bool {
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
+    match (dunce::canonicalize(a), dunce::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }
@@ -157,9 +157,7 @@ pub async fn start(
 ) -> Result<Extensions> {
     let (cfg, path) = config::Config::load()?;
     let layout = Layout::new(config::data_dir()?);
-    let workspace = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
+    let workspace = dunce::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     let skills = skills_handle(&cfg.skills, &workspace, &layout);
     let manager = ExtensionManager::new(ManagerConfig {
         allow: allow_list(&cfg.extensions, &path),
@@ -256,8 +254,7 @@ pub enum ExtCmd {
 /// A manager for one owner command: no configured servers, no sync loop.
 fn owner_manager(workspace: &Path) -> Result<Arc<ExtensionManager>> {
     let (cfg, path) = config::Config::load()?;
-    let workspace = workspace
-        .canonicalize()
+    let workspace = dunce::canonicalize(workspace)
         .map_err(|e| anyhow!("workspace {}: {e}", workspace.display()))?;
     Ok(ExtensionManager::new(ManagerConfig {
         layout: Layout::new(config::data_dir()?),

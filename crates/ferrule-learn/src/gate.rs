@@ -177,7 +177,7 @@ impl WorkspaceGate {
 /// no `target/` or `node_modules/`, nothing under `skip`, within
 /// [`MAX_FILES`] and [`MAX_BYTES`].
 pub fn copy_workspace(from: &Path, to: &Path, skip: &[PathBuf]) -> Result<(), String> {
-    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let canon = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let skip: Vec<PathBuf> = skip.iter().map(|p| canon(p)).collect();
     let (mut files, mut bytes) = (0usize, 0u64);
     let mut stack = vec![(canon(from), to.to_path_buf())];
