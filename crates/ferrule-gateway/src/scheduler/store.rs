@@ -266,6 +266,22 @@ impl TaskStore {
         Ok(n > 0)
     }
 
+    /// Moves a task to a new schedule and timezone (a built-in task whose
+    /// config changed). Returns `true` if the row existed.
+    pub fn update_schedule(
+        &self,
+        id: &str,
+        schedule: &str,
+        timezone: &str,
+        next_run_at: Option<i64>,
+    ) -> Result<bool, SchedulerError> {
+        let n = self.conn.lock().unwrap().execute(
+            "UPDATE tasks SET schedule = ?2, timezone = ?3, next_run_at = ?4 WHERE id = ?1",
+            params![id, schedule, timezone, next_run_at],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Records that a task was executed: advances (or clears) its
     /// `next_run_at` and stamps `last_run_at`. Called once per `execute()`
     /// regardless of whether the run succeeded, failed, or was skipped by
@@ -321,7 +337,7 @@ impl TaskStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, started_at, finished_at, status, detail FROM runs
-             WHERE task_id = ?1 ORDER BY started_at DESC LIMIT ?2",
+             WHERE task_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![task_id, limit as i64], row_to_run)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -493,5 +509,21 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].id, "r3");
         assert_eq!(runs[1].id, "r2");
+    }
+
+    #[test]
+    fn runs_started_in_the_same_second_come_back_newest_first() {
+        let store = TaskStore::in_memory().unwrap();
+        store
+            .add(sample("t1"), "id-1".into(), 0, Some(100))
+            .unwrap();
+        for run_id in ["zz-older", "aa-newer"] {
+            store.start_run("id-1", run_id, 100).unwrap();
+            store
+                .finish_run(run_id, RunStatus::Succeeded, None, 100)
+                .unwrap();
+        }
+        let runs = store.runs_for("id-1", 2).unwrap();
+        assert_eq!(runs[0].id, "aa-newer");
     }
 }

@@ -255,6 +255,17 @@ only in the dropped history.
 
 ### M16 — the learning loop
 
+**Status.** Built (`docs/m16-learning-loop.md`; PR open). `ferrule learn
+run` (or a built-in nightly task once `[learning] enabled = true`; off by
+default) reviews failed or retried runs. A reflector proposes one playbook
+delta each, and an addition is kept only when the task's check passes twice
+in a scratch copy with the lesson in the prompt. Near-duplicate memories are
+merged through M15's UPDATE. Every pass is a folder of readable files, with
+`ferrule learn show`/`diff`/`revert`. Caps per pass and per day come from the
+ledger (`call_kind = "learn"`). Sub-agents see the playbook but can't write
+it; eval doesn't see it unless a suite opts in. Checked on Linux; the
+macOS/Windows pass runs with the batch CI.
+
 **Goal.** The agent gets better at the owner's work between sessions — the
 sandbox-compatible form of self-improvement.
 

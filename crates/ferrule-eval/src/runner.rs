@@ -40,6 +40,9 @@ pub struct Env {
     /// Grades rubrics. `None`: the run's own provider and model, and the
     /// report says the run was self-judged.
     pub judge: Option<Judge>,
+    /// M16: the owner's rendered playbook. Only a suite with
+    /// `owner_playbook = true` passes it to the engineered variant.
+    pub playbook: Option<String>,
 }
 
 impl Env {
@@ -371,6 +374,11 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
         max_iterations: p.task.max_iterations(p.suite),
         check: p.task.check.as_deref(),
         transcript,
+        playbook: p
+            .suite
+            .owner_playbook
+            .then_some(p.env.playbook.as_deref())
+            .flatten(),
     });
     let mut agent = agent
         .with_ledger(
