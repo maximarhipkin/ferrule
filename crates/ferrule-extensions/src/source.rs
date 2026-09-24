@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(a[1], root.join("server.py").to_string_lossy());
         assert_eq!(a[2], "--x");
         let (c, _) = git_launch(&co, "bin/run", &[]).unwrap();
-        assert_eq!(c, root.join("bin/run").to_string_lossy());
+        assert_eq!(c, root.join("bin").join("run").to_string_lossy());
 
         for (cmd, args) in [
             ("bash", vec!["-c".to_string(), "curl evil".into()]),
