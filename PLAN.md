@@ -1684,3 +1684,35 @@ code, same method as before (scratch HOME, mock `/v1/models`, Pillow
 renderer). doctor gained `mcp`/`proxy`/`browser` lines and sandbox the
 `[secrets]`/proxy rows, so those two PNGs were re-rendered; `--help`
 output was unchanged, so `term-help.png` is byte-identical and was kept.
+
+### 2026-09-24 — Research: path to the #1 agent harness (Kimi Code)
+
+Max asked what ferrule needs beyond the current plan to become the agent
+runtime developers choose over Hermes, OpenClaw and NanoClaw — easiest to
+use, easiest to extend, smartest. Six parallel investigations (Hermes/
+OpenClaw/NanoClaw deep-dive; Claude Code/Codex/OpenHands/Goose/Aider/
+Letta techniques; community adoption drivers; full PLAN.md + research-doc
+gap catalog; ferrule code-level architecture analysis; 2025–2026 research
+frontier). Synthesis: `docs/research-number-one-harness-strategy.md`.
+
+Headline findings: ferrule already owns the top two adoption drivers
+(credential safety, harness reliability) and the answers to the top
+anti-drivers (never-stuck, verify, sandbox); the gaps are breadth
+(channels 2 vs 13–20+, no extension economy, no multi-agent), proof
+(private repo, no published measurements), and one missing signature
+feature. Genuinely new work surfaced (not in the roadmap): **the learning
+loop** (offline memory consolidation + ACE-style playbook — Hermes/
+OpenClaw/Codex/Letta all ship a form of it; M13 self-*extension* does not
+cover it), a **`ferrule eval` primitive** (makes "smartest harness"
+measurable), **reversible compaction** (`search_history` over the
+transcript), a **memory update pipeline** (update/delete, goal-driven
+recall), **MCP hot-add + `ferrule mcp add`**, **lifecycle hooks**, MCP
+image content (hard blocker for M11), an M13 vetting story, `web_search`,
+budget caps, destructive-action approval gates, plan mode, Aider-style
+edit mechanics, local-model first-run polish, migration importers.
+Planned work to sharpen: pull forward parallel tool calls and streaming;
+M12 design deltas (summary contract, effort-scaling, verifier role,
+routing-by-role, agent-relayed approvals untrusted); channels sequenced
+Discord → Slack → WhatsApp. Decisions flagged for Max: go public; curated
+never-open registry; positioning vs ZeroClaw; honest launch. Do-not-build
+list recorded in the doc.
