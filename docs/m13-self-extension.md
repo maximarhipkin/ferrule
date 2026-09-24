@@ -269,6 +269,7 @@ Static tools shadow dynamic ones with the same name. An extension can never repl
 | Allow-listed source | trusted to *install* without asking; its tool text is still scanned |
 | Anything else | runs nothing until the owner approves |
 | An approval relayed through the agent ("the owner said yes") | untrusted — ignored |
+| A sub-agent (M12) | no extension tools at all; uses installed tools narrowed by its role (a verifier or read-only child: only tools that change nothing) |
 
 **Approval flow — default: a queue the owner clears from the CLI.**
 

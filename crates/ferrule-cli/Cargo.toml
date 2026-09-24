@@ -18,6 +18,7 @@ ferrule-sandbox = { path = "../ferrule-sandbox" }
 ferrule-proxy = { path = "../ferrule-proxy" }
 ferrule-memory = { path = "../ferrule-memory" }
 ferrule-gateway = { path = "../ferrule-gateway" }
+ferrule-agents = { path = "../ferrule-agents" }
 ferrule-extensions = { path = "../ferrule-extensions" }
 tokio = { workspace = true }
 async-trait = { workspace = true }

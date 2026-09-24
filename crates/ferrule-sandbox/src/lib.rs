@@ -261,6 +261,22 @@ impl Sandbox {
         helper
     }
 
+    /// For a sub-agent: `extra` writable on top of what its commands get
+    /// (a worktree child's git dir, so it can commit), and read-only when
+    /// its role only reads. With the sandbox off there is nothing to
+    /// narrow; the caller takes its file-writing tools away instead.
+    pub fn for_child(&self, extra: &[PathBuf], read_only: bool) -> Self {
+        let mut child = self.clone();
+        if read_only {
+            if child.policy.mode == Mode::WorkspaceWrite {
+                child.policy.mode = Mode::ReadOnly;
+            }
+        } else {
+            child.policy.writable_roots.extend(extra.iter().cloned());
+        }
+        child
+    }
+
     /// For a helper that is a desktop app (the browser): on macOS the
     /// Seatbelt profile also allows Mach/XPC lookups, IOKit, shared memory
     /// and the like, without which Chrome aborts at startup. Writes and the
@@ -665,6 +681,28 @@ mod tests {
             vec![c(state.path())],
             "read-only keeps the workspace and configured roots closed, not the helper's own dir"
         );
+    }
+
+    #[test]
+    fn a_child_gets_its_git_dir_or_goes_read_only() {
+        let ws = tempfile::tempdir().unwrap();
+        let git = tempfile::tempdir().unwrap();
+        let c = |p: &Path| p.canonicalize().unwrap();
+        let base = Sandbox {
+            policy: policy(Mode::WorkspaceWrite),
+            ..Sandbox::off()
+        };
+        let worker = base.for_child(&[git.path().to_path_buf()], false);
+        assert_eq!(
+            worker.writable_roots(ws.path()),
+            vec![c(ws.path()), c(git.path())]
+        );
+        let reader = base.for_child(&[git.path().to_path_buf()], true);
+        assert_eq!(reader.policy.mode, Mode::ReadOnly);
+        assert!(reader.writable_roots(ws.path()).is_empty());
+        assert_eq!(base.writable_roots(ws.path()), vec![c(ws.path())]);
+        // Off stays off: there's no OS sandbox to make read-only.
+        assert_eq!(Sandbox::off().for_child(&[], true).policy.mode, Mode::Off);
     }
 
     #[test]

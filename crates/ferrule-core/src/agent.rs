@@ -1,11 +1,12 @@
 use crate::error::CoreError;
 use crate::event::AgentEvent;
+use crate::hooks::{Budget, Inbox, StopFlag};
 use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink};
 use crate::message::{Message, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Provider};
 use crate::stuck::{Step, Stuck};
-use crate::tool::{ToolContext, ToolRegistry};
+use crate::tool::{Tool, ToolContext, ToolRegistry};
 use crate::transcript::Transcript;
 use crate::verify::Verifier;
 use std::sync::Arc;
@@ -108,7 +109,12 @@ fn jitter(d: Duration) -> Duration {
 enum StopReason {
     MaxIterations(usize),
     Stuck(Stuck),
-    VerifyFailing { check: String, rounds: usize },
+    VerifyFailing {
+        check: String,
+        rounds: usize,
+    },
+    /// A [`Budget`] said nothing more may be spent.
+    Budget(String),
 }
 
 impl std::fmt::Display for StopReason {
@@ -128,6 +134,7 @@ impl std::fmt::Display for StopReason {
                 };
                 write!(f, "`{check}` still fails after {rounds} of fixes")
             }
+            StopReason::Budget(why) => f.write_str(why),
         }
     }
 }
@@ -152,6 +159,9 @@ pub struct Agent {
     transcript: Option<Transcript>,
     ledger: Option<LedgerContext>,
     verifier: Option<Arc<dyn Verifier>>,
+    budget: Option<Arc<dyn Budget>>,
+    inbox: Option<Arc<dyn Inbox>>,
+    stop: Option<StopFlag>,
     /// What the current run was asked to do: kept verbatim through
     /// compaction, since it's what says when the work is done.
     goal: Option<String>,
@@ -181,6 +191,9 @@ impl Agent {
             transcript,
             ledger: None,
             verifier: None,
+            budget: None,
+            inbox: None,
+            stop: None,
             goal: None,
             messages: Vec::new(),
             usage: Usage::default(),
@@ -219,6 +232,55 @@ impl Agent {
     pub fn with_verifier(mut self, verifier: Arc<dyn Verifier>) -> Self {
         self.verifier = Some(verifier);
         self
+    }
+
+    /// Charge every provider call to `budget` and stop, with a status
+    /// answer, once it's spent; see [`Budget`].
+    pub fn with_budget(mut self, budget: Arc<dyn Budget>) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// Deliver messages that arrive mid-run before the next model call; see
+    /// [`Inbox`].
+    pub fn with_inbox(mut self, inbox: Arc<dyn Inbox>) -> Self {
+        self.inbox = Some(inbox);
+        self
+    }
+
+    /// Stop at the next step once `flag` is set; see [`StopFlag`].
+    pub fn with_stop_flag(mut self, flag: StopFlag) -> Self {
+        self.stop = Some(flag);
+        self
+    }
+
+    /// Adds a tool after construction (tools bound to this agent's identity
+    /// are made once its id is known).
+    pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
+        self.tools.register(tool);
+    }
+
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.tools.contains(name)
+    }
+
+    /// Appends to the system prompt (adding one if there is none). Not
+    /// written to the transcript: it's rebuilt with the agent each time.
+    pub fn append_system_prompt(&mut self, text: &str) {
+        match self.messages.first_mut() {
+            Some(m) if m.role == crate::message::Role::System => {
+                let body = m.content.get_or_insert_with(String::new);
+                if !body.is_empty() {
+                    body.push_str("\n\n");
+                }
+                body.push_str(text);
+            }
+            _ => self.messages.insert(0, Message::system(text.to_string())),
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.as_ref().is_some_and(StopFlag::is_set)
     }
 
     async fn emit(&self, tx: &mpsc::Sender<AgentEvent>, ev: AgentEvent) {
@@ -271,6 +333,9 @@ impl Agent {
                 &result,
                 retry_in.is_some(),
             );
+            if let (Some(budget), Ok(resp)) = (&self.budget, &result) {
+                budget.charge(&resp.usage);
+            }
             let (Some(delay), Err(e)) = (retry_in, &result) else {
                 return result;
             };
@@ -367,6 +432,22 @@ impl Agent {
         goal: &str,
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<String, CoreError> {
+        let inbox = self.inbox.clone();
+        if let Some(inbox) = &inbox {
+            inbox.begin();
+        }
+        let result = self.run_inner(goal, tx).await;
+        if let Some(inbox) = &inbox {
+            inbox.end();
+        }
+        result
+    }
+
+    async fn run_inner(
+        &mut self,
+        goal: &str,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<String, CoreError> {
         let session_id = self.session_id();
         self.emit(
             &tx,
@@ -388,6 +469,13 @@ impl Agent {
         let mut failed_checks = 0;
 
         for iteration in 0..self.config.max_iterations {
+            if self.stopped() {
+                return Err(CoreError::Aborted("the agent was stopped".into()));
+            }
+            if let Some(why) = self.budget.as_ref().and_then(|b| b.exhausted()) {
+                return self.wrap_up(&tx, iteration, StopReason::Budget(why)).await;
+            }
+            self.deliver_inbox();
             self.maybe_compact(&tx, iteration).await?;
             let resp = self
                 .call_provider(&tx, self.request(), iteration, "turn")
@@ -458,7 +546,18 @@ impl Agent {
                 return Ok(answer);
             }
 
-            for call in &msg.tool_calls {
+            for (i, call) in msg.tool_calls.iter().enumerate() {
+                if self.stopped() {
+                    // Every call needs a result, or the history can't be
+                    // sent again when the agent is resumed.
+                    for skipped in &msg.tool_calls[i..] {
+                        self.push(Message::tool_result(
+                            &skipped.id,
+                            "not run: the agent was stopped",
+                        ));
+                    }
+                    return Err(CoreError::Aborted("the agent was stopped".into()));
+                }
                 self.emit(
                     &tx,
                     AgentEvent::ToolCallStarted {
@@ -577,6 +676,16 @@ impl Agent {
         )
         .await;
         Ok(answer)
+    }
+
+    /// Whatever reached the inbox since the last model call, as one user
+    /// message.
+    fn deliver_inbox(&mut self) {
+        let Some(inbox) = &self.inbox else { return };
+        let items = inbox.take();
+        if !items.is_empty() {
+            self.push(Message::user(items.join("\n\n")));
+        }
     }
 
     fn request(&self) -> CompletionRequest {
@@ -1810,5 +1919,229 @@ mod tests {
         agent.maybe_compact(&tx, 1).await.unwrap();
         let summary = agent.messages[0].content.clone().unwrap();
         assert!(!summary.contains(goal), "{summary}");
+    }
+
+    struct CapBudget {
+        spent: Mutex<u64>,
+        cap: u64,
+    }
+
+    impl Budget for CapBudget {
+        fn charge(&self, usage: &Usage) {
+            *self.spent.lock().unwrap() += usage.input_tokens + usage.output_tokens;
+        }
+        fn exhausted(&self) -> Option<String> {
+            let spent = *self.spent.lock().unwrap();
+            (spent >= self.cap).then(|| format!("the budget of {} tokens is spent", self.cap))
+        }
+    }
+
+    #[tokio::test]
+    async fn budget_stops_the_run_with_a_status() {
+        // Each call costs 15 tokens; the cap allows two turns.
+        let budget = Arc::new(CapBudget {
+            spent: Mutex::new(0),
+            cap: 30,
+        });
+        let mut agent = make_agent(vec![echo("a"), echo("b"), say("status: stopped on budget")])
+            .with_budget(budget.clone());
+        let (tx, _rx) = events();
+        let answer = agent.run("go", tx).await.unwrap();
+        assert_eq!(answer, "status: stopped on budget");
+        let why = agent.incomplete.clone().unwrap();
+        assert!(why.contains("budget of 30 tokens"), "{why}");
+        // Two turns plus the status call, and no third turn.
+        assert_eq!(*budget.spent.lock().unwrap(), 45);
+    }
+
+    #[derive(Default)]
+    struct TestInbox {
+        items: Mutex<Vec<String>>,
+        events: Mutex<Vec<&'static str>>,
+    }
+
+    impl Inbox for TestInbox {
+        fn begin(&self) {
+            self.events.lock().unwrap().push("begin");
+        }
+        fn take(&self) -> Vec<String> {
+            self.events.lock().unwrap().push("take");
+            std::mem::take(&mut *self.items.lock().unwrap())
+        }
+        fn end(&self) {
+            self.events.lock().unwrap().push("end");
+        }
+    }
+
+    /// Records every request it's sent, and answers from a script.
+    struct SeeingProvider {
+        responses: Mutex<Vec<Message>>,
+        seen: Mutex<Vec<Vec<Message>>>,
+        on_call: Box<dyn Fn(usize) + Send + Sync>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for SeeingProvider {
+        fn name(&self) -> &str {
+            "seeing"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let n = {
+                let mut seen = self.seen.lock().unwrap();
+                seen.push(req.messages);
+                seen.len()
+            };
+            (self.on_call)(n);
+            Ok(CompletionResponse {
+                message: self.responses.lock().unwrap().remove(0),
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    fn seeing_agent(
+        script: Vec<Message>,
+        on_call: impl Fn(usize) + Send + Sync + 'static,
+    ) -> (Agent, Arc<SeeingProvider>) {
+        let provider = Arc::new(SeeingProvider {
+            responses: Mutex::new(script),
+            seen: Mutex::new(Vec::new()),
+            on_call: Box::new(on_call),
+        });
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(EchoTool));
+        let agent = Agent::new(
+            provider.clone(),
+            reg,
+            HarnessProfile::generic(),
+            AgentConfig::default(),
+            ToolContext::default(),
+            None,
+        );
+        (agent, provider)
+    }
+
+    #[tokio::test]
+    async fn inbox_items_arrive_before_the_next_model_call() {
+        let inbox = Arc::new(TestInbox::default());
+        let pushed = inbox.clone();
+        // A notice lands while the first call is in flight.
+        let (agent, provider) = seeing_agent(vec![echo("a"), say("done")], move |n| {
+            if n == 1 {
+                pushed
+                    .items
+                    .lock()
+                    .unwrap()
+                    .extend(["notice one".to_string(), "notice two".to_string()]);
+            }
+        });
+        let mut agent = agent.with_inbox(inbox.clone());
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("go", tx).await.unwrap(), "done");
+
+        let seen = provider.seen.lock().unwrap();
+        let first_has = |i: usize| {
+            seen[i]
+                .iter()
+                .any(|m| m.content.as_deref() == Some("notice one\n\nnotice two"))
+        };
+        assert!(!first_has(0));
+        assert!(first_has(1), "both notices as one user message");
+        let events = inbox.events.lock().unwrap().clone();
+        assert_eq!(events.first(), Some(&"begin"));
+        assert_eq!(events.last(), Some(&"end"));
+        assert_eq!(events.iter().filter(|e| **e == "take").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn inbox_end_runs_even_when_the_run_fails() {
+        let inbox = Arc::new(TestInbox::default());
+        let stop = StopFlag::new();
+        stop.stop();
+        let mut agent = make_agent(vec![say("never")])
+            .with_inbox(inbox.clone())
+            .with_stop_flag(stop);
+        let (tx, _rx) = events();
+        assert!(matches!(
+            agent.run("go", tx).await,
+            Err(CoreError::Aborted(_))
+        ));
+        assert_eq!(*inbox.events.lock().unwrap(), vec!["begin", "end"]);
+    }
+
+    #[tokio::test]
+    async fn stop_flag_skips_remaining_tool_calls_and_answers_each() {
+        let stop = StopFlag::new();
+        let flag = stop.clone();
+        let two_calls = Message::assistant(
+            None,
+            vec![
+                crate::message::ToolCall {
+                    id: "1".into(),
+                    name: "echo".into(),
+                    arguments: serde_json::json!({"text": "x"}),
+                },
+                crate::message::ToolCall {
+                    id: "2".into(),
+                    name: "echo".into(),
+                    arguments: serde_json::json!({"text": "y"}),
+                },
+            ],
+            None,
+        );
+        // The parent stops it while the model is deciding.
+        let (agent, provider) = seeing_agent(vec![two_calls], move |_| flag.stop());
+        let mut agent = agent.with_stop_flag(stop.clone());
+        let (tx, _rx) = events();
+        let err = agent.run("go", tx).await.unwrap_err();
+        assert!(matches!(err, CoreError::Aborted(_)), "{err}");
+        assert_eq!(provider.seen.lock().unwrap().len(), 1);
+        let results: Vec<_> = agent
+            .messages
+            .iter()
+            .filter(|m| m.role == crate::message::Role::Tool)
+            .map(|m| m.content.clone().unwrap())
+            .collect();
+        assert_eq!(results.len(), 2, "every call has a result: {results:?}");
+        assert!(results.iter().all(|r| r.contains("stopped")));
+
+        // Reset, the agent can run again from the same history.
+        stop.reset();
+        provider.responses.lock().unwrap().push(say("resumed"));
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("continue", tx).await.unwrap(), "resumed");
+    }
+
+    #[tokio::test]
+    async fn register_tool_and_append_system_prompt() {
+        struct Other;
+        #[async_trait::async_trait]
+        impl Tool for Other {
+            fn definition(&self) -> ToolDefinition {
+                ToolDefinition {
+                    name: "other".into(),
+                    description: "".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }
+            }
+            async fn call(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &ToolContext,
+            ) -> Result<ToolOutput, CoreError> {
+                Ok(ToolOutput::ok("hi"))
+            }
+        }
+        let mut bare = make_agent(vec![]);
+        bare.append_system_prompt("only");
+        assert_eq!(bare.messages[0].content.as_deref(), Some("only"));
+
+        let mut agent = make_agent(vec![]).with_system_prompt("base");
+        agent.append_system_prompt("more");
+        assert_eq!(agent.messages.len(), 1);
+        assert_eq!(agent.messages[0].content.as_deref(), Some("base\n\nmore"));
+        assert!(!agent.has_tool("other"));
+        agent.register_tool(Arc::new(Other));
+        assert!(agent.has_tool("other"));
     }
 }

@@ -123,6 +123,7 @@ pub async fn run(offline: bool) -> Result<bool> {
     let confined = sandbox(&mut r, &cfg, &secrets_path);
     mcp(&mut r, &cfg, confined);
     proxy(&mut r, &cfg);
+    agents_check(&mut r, &cfg, confined);
     service_check(&mut r, &path, telegram_on)?;
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
@@ -410,6 +411,79 @@ fn mcp(r: &mut Report, cfg: &config::Config, confined: bool) {
                 if n == 1 { " runs" } else { "s run" }
             ),
         ),
+    }
+}
+
+/// Sub-agents: on or off, the tree's limits, the role providers, and any
+/// agents a crash left interrupted.
+fn agents_check(r: &mut Report, cfg: &config::Config, confined: bool) {
+    let a = &cfg.agents;
+    if !a.enabled {
+        r.note("agents", "off ([agents] enabled = false)");
+        return;
+    }
+    if let Err(e) = crate::agents::check_roles(cfg) {
+        r.fail("agents", format!("{e:#}"));
+        return;
+    }
+    let mut roles: Vec<String> = a
+        .roles
+        .iter()
+        .filter_map(|(role, rc)| rc.provider.as_ref().map(|p| format!("{role} → {p}")))
+        .collect();
+    roles.sort();
+    let roles = if roles.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", roles.join(", "))
+    };
+    r.ok(
+        "agents",
+        format!(
+            "on · depth {} · {} at once per parent, {} per tree · {} tokens per {}h{roles}",
+            a.max_depth, a.max_children, a.max_agents, a.max_tokens, a.budget_window_hours
+        ),
+    );
+    if !confined {
+        r.note(
+            "agents",
+            "a read-only verifier rests on its tool set and prompt: shell commands aren't confined",
+        );
+    }
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        r.warn(
+            "agents",
+            "git isn't on your PATH: children share their parent's workspace instead of a worktree",
+        );
+    }
+    // Running in no live process counts too: the next ferrule to start
+    // marks those interrupted.
+    let interrupted = crate::agents::store()
+        .and_then(|s| {
+            let rows = s.all()?;
+            Ok(rows
+                .iter()
+                .filter(|r| match r.status {
+                    ferrule_agents::Status::Interrupted => true,
+                    ferrule_agents::Status::Running => !s.running_elsewhere(&r.id).unwrap_or(true),
+                    _ => false,
+                })
+                .count())
+        })
+        .unwrap_or(0);
+    if interrupted > 0 {
+        r.note(
+            "agents",
+            format!(
+                "{interrupted} agent{} interrupted by a restart or a crash",
+                if interrupted == 1 { " was" } else { "s were" }
+            ),
+        );
+        r.hint("`ferrule agents list` shows them; `ferrule agents close <id>` cleans one up");
     }
 }
 

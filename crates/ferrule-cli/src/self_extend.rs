@@ -65,7 +65,30 @@ fn allow_list(ext: &ExtensionsConfig, path: &Path) -> AllowList {
     AllowList::new(&ext.allow)
 }
 
+/// Who an agent is, as far as extensions go (where M12 meets M13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// The top-level agent: every installed tool, plus the model's six
+    /// extension tools when `[extensions] enabled`.
+    Root,
+    /// A sub-agent: installed tools only — just the ones that change
+    /// nothing when `reading_only` (a verifier or read-only child) — and
+    /// never the extension tools, so only the root can install, remove or
+    /// keep anything.
+    Child { reading_only: bool },
+}
+
+/// A source narrowed to the tools that don't change anything.
+struct OnlyReading(Arc<dyn ToolSource>);
+
+impl ToolSource for OnlyReading {
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        crate::agents::only_reading(&self.0.tools())
+    }
+}
+
 /// Every MCP server of this process, and the extension tools when on.
+#[derive(Clone)]
 pub struct Extensions {
     manager: Arc<ExtensionManager>,
     enabled: bool,
@@ -77,12 +100,16 @@ impl Extensions {
         self.manager.tools()
     }
 
-    /// Put the servers into `registry` as a live source, plus the model's
-    /// extension tools when `[extensions] enabled` (the skill ones only
-    /// when skills are on too).
-    pub fn attach(&self, registry: &mut ToolRegistry, skills_on: bool) {
-        registry.attach(self.manager.clone());
-        if !self.enabled {
+    /// Put the servers into `registry` as a live source, plus — for the
+    /// root only — the model's extension tools when `[extensions] enabled`
+    /// (the skill ones only when skills are on too).
+    pub fn attach(&self, registry: &mut ToolRegistry, skills_on: bool, reach: Reach) {
+        if reach == (Reach::Child { reading_only: true }) {
+            registry.attach(Arc::new(OnlyReading(self.manager.clone())));
+        } else {
+            registry.attach(self.manager.clone());
+        }
+        if !self.enabled || reach != Reach::Root {
             return;
         }
         for tool in ferrule_extensions::tools(&self.manager) {
@@ -380,6 +407,87 @@ mod tests {
             let want = crate::mcp_dir_name(name);
             assert_eq!(ferrule_extensions::layout::mcp_dir_name(name), want);
         }
+    }
+
+    struct Fixed(&'static str, bool);
+
+    #[async_trait::async_trait]
+    impl Tool for Fixed {
+        fn definition(&self) -> ferrule_core::tool::ToolDefinition {
+            ferrule_core::tool::ToolDefinition {
+                name: self.0.into(),
+                description: String::new(),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        fn changes_files(&self) -> bool {
+            self.1
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &ferrule_core::ToolContext,
+        ) -> Result<ferrule_core::tool::ToolOutput, ferrule_core::CoreError> {
+            Ok(ferrule_core::tool::ToolOutput::ok(""))
+        }
+    }
+
+    fn names(reg: &ToolRegistry) -> Vec<String> {
+        let mut n: Vec<String> = reg.definitions().into_iter().map(|d| d.name).collect();
+        n.sort();
+        n
+    }
+
+    #[tokio::test]
+    async fn a_child_never_gets_the_extension_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new(ManagerConfig {
+            allow: AllowList::default(),
+            layout: Layout::new(tmp.path().join("data")),
+            sandbox: Arc::new(Sandbox::off()),
+            workspace: tmp.path().to_path_buf(),
+            skills: None,
+        });
+        let ext = Extensions {
+            manager,
+            enabled: true,
+        };
+        let six = [
+            "extensions_list",
+            "mcp_add",
+            "mcp_remove",
+            "skill_install",
+            "skill_keep",
+            "skill_remove",
+        ];
+
+        let mut root = ToolRegistry::new();
+        ext.attach(&mut root, true, Reach::Root);
+        assert_eq!(names(&root), six);
+
+        for reading_only in [false, true] {
+            let mut child = ToolRegistry::new();
+            ext.attach(&mut child, true, Reach::Child { reading_only });
+            let n = names(&child);
+            assert!(six.iter().all(|t| !n.iter().any(|x| x == t)), "{n:?}");
+            assert!(!child.contains("mcp_add") && !child.contains("skill_keep"));
+        }
+    }
+
+    #[test]
+    fn a_reading_child_sees_only_installed_tools_that_change_nothing() {
+        struct Two;
+        impl ToolSource for Two {
+            fn tools(&self) -> Vec<Arc<dyn Tool>> {
+                vec![
+                    Arc::new(Fixed("mcp__s__look", false)),
+                    Arc::new(Fixed("mcp__s__write", true)),
+                ]
+            }
+        }
+        let mut reg = ToolRegistry::new();
+        reg.attach(Arc::new(OnlyReading(Arc::new(Two))));
+        assert_eq!(names(&reg), ["mcp__s__look"]);
     }
 
     #[test]
