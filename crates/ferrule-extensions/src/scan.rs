@@ -352,6 +352,18 @@ pub fn scan_skill(name: &str, description: &str, body: &str) -> Vec<Finding> {
     s.findings
 }
 
+/// Scan another text file a skill bundles (`references/*.md` and the
+/// like): `read_skill_file` hands it to the model just the same.
+pub fn scan_skill_file(skill: &str, file: &str, text: &str) -> Vec<Finding> {
+    let mut s = Scanner {
+        target: Target::Skill,
+        item: skill,
+        findings: Vec::new(),
+    };
+    s.text(file, text, false);
+    s.findings
+}
+
 pub fn blocks(findings: &[Finding]) -> impl Iterator<Item = &Finding> {
     findings.iter().filter(|f| f.level == Level::Block)
 }

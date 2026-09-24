@@ -3,7 +3,19 @@
 //! an approval queue. See `docs/m13-self-extension.md`.
 
 pub mod allowlist;
+pub mod error;
+pub mod git;
+pub mod layout;
+pub mod lock;
+pub mod pending;
 pub mod scan;
+pub mod skill;
+pub mod source;
 
 pub use allowlist::{AllowEntry, AllowList, Kind, Source};
+pub use error::{ExtError, Result};
+pub use layout::Layout;
+pub use lock::{LockFile, LockStore, Origin, ServerEntry, SkillEntry, Status, Waiver};
+pub use pending::{Pending, PendingQueue, Request};
 pub use scan::{scan_skill, scan_tool, tool_digest, Finding, Level};
+pub use source::{McpRequest, SkillRequest};
