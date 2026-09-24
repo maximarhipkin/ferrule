@@ -474,6 +474,27 @@ fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Resul
             r.hint(format!("see why: {}", service::logs_hint()));
         }
     }
+    let installed = matches!(service::status(), service::Status::Installed { .. });
+    if installed && service::scope() == service::Scope::User && service::is_root() {
+        r.warn(
+            "service",
+            "it runs as root, and so does every command the agent runs",
+        );
+        if cfg!(target_os = "linux") {
+            r.hint(
+                "`sudo ferrule setup --system` runs it as a dedicated user; then remove this one",
+            );
+        }
+    }
+    if service::scope() == service::Scope::User
+        && !service::is_root()
+        && Path::new("/etc/systemd/system/ferrule.service").exists()
+    {
+        r.note(
+            "service",
+            "a system service is installed too; `sudo ferrule doctor` checks it",
+        );
+    }
     if let Some((pinned, workspace)) = service::installed() {
         let here = std::path::absolute(config_path)?;
         if pinned != here {

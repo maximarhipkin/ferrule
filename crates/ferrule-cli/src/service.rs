@@ -4,13 +4,88 @@
 //! config `ferrule setup` wrote and the PATH setup ran with, so the agent's
 //! commands find the same tools. No keys go in the unit: the gateway reads
 //! the secrets file itself.
+//!
+//! Set up as root on Linux, it's a system unit instead, run as a `ferrule`
+//! system user (no login, no sudo) that owns only its data dir and
+//! workspace, under systemd's own hardening — a wall under the sandbox,
+//! since otherwise every command the agent runs would start as root.
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 pub const SYSTEMD_UNIT: &str = "ferrule.service";
 pub const LAUNCHD_LABEL: &str = "ai.ferrule.gateway";
+
+/// The system service's account and where its files live: config root-owned
+/// and read-only to it, data and workspace its own, none under /home (which
+/// `ProtectHome=` hides from it).
+pub const SYSTEM_USER: &str = "ferrule";
+pub const SYSTEM_CONFIG: &str = "/etc/ferrule/config.toml";
+pub const SYSTEM_HOME: &str = "/var/lib/ferrule";
+pub const SYSTEM_DATA: &str = "/var/lib/ferrule/data";
+pub const SYSTEM_WORKSPACE: &str = "/var/lib/ferrule/workspace";
+const SYSTEM_UNIT_PATH: &str = "/etc/systemd/system/ferrule.service";
+
+/// Whose service this is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// A systemd user unit or launchd agent, run as whoever set it up.
+    User,
+    /// A systemd system unit run as [`SYSTEM_USER`]. Linux, as root.
+    System,
+}
+
+/// `ferrule setup --system` / `--user`, and the default: a system service
+/// when root on Linux, since a user unit there would run the agent as root.
+pub fn decide_scope(
+    linux: bool,
+    root: bool,
+    system: bool,
+    user: bool,
+) -> std::result::Result<Scope, String> {
+    match (system, user) {
+        (true, true) => Err("--system and --user exclude each other".into()),
+        (true, false) if !linux => {
+            Err("--system is for Linux; elsewhere the service runs as you".into())
+        }
+        (true, false) if !root => Err(
+            "--system creates a system user and a system unit, so it needs root: \
+             sudo ferrule setup --system"
+                .into(),
+        ),
+        (true, false) => Ok(Scope::System),
+        (false, true) => Ok(Scope::User),
+        (false, false) if linux && root => Ok(Scope::System),
+        (false, false) => Ok(Scope::User),
+    }
+}
+
+static SCOPE: OnceLock<Scope> = OnceLock::new();
+
+/// Fix the scope for this process; `ferrule setup`'s flags do, before
+/// anything asks.
+pub fn set_scope(scope: Scope) {
+    let _ = SCOPE.set(scope);
+}
+
+pub fn scope() -> Scope {
+    *SCOPE.get_or_init(|| {
+        decide_scope(cfg!(target_os = "linux"), is_root(), false, false).unwrap_or(Scope::User)
+    })
+}
+
+#[cfg(unix)]
+pub fn is_root() -> bool {
+    // SAFETY: geteuid can't fail and touches no memory.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+pub fn is_root() -> bool {
+    false
+}
 
 /// What to run, with every path absolute.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +109,9 @@ pub enum Status {
 
 /// Where the unit file goes.
 pub fn unit_path() -> Result<PathBuf> {
+    if scope() == Scope::System {
+        return Ok(PathBuf::from(SYSTEM_UNIT_PATH));
+    }
     let home = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?;
     Ok(if cfg!(target_os = "macos") {
         home.join("Library/LaunchAgents")
@@ -58,6 +136,7 @@ pub fn log_path() -> Option<PathBuf> {
 pub fn logs_hint() -> String {
     match log_path() {
         Some(path) => format!("tail -f {}", path.display()),
+        None if scope() == Scope::System => "journalctl -u ferrule -f".into(),
         None => "journalctl --user -u ferrule -f".into(),
     }
 }
@@ -88,7 +167,8 @@ pub fn status() -> Status {
         return Status::NotInstalled;
     }
     let running = Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", SYSTEMD_UNIT])
+        .args(scope_flag())
+        .args(["is-active", "--quiet", SYSTEMD_UNIT])
         .status()
         .is_ok_and(|s| s.success());
     Status::Installed { running, unit }
@@ -149,6 +229,9 @@ pub fn install(spec: &Spec) -> Result<Vec<String>> {
         bail!("background services are set up on Linux and macOS only");
     }
     systemd_available().map_err(|why| anyhow!(why))?;
+    if scope() == Scope::System {
+        return install_system(spec, &crate::config::data_dir()?);
+    }
     let paths = [&spec.exe, &spec.workspace, &spec.config];
     if paths
         .iter()
@@ -206,6 +289,228 @@ pub fn uninstall() -> Result<()> {
         let _ = systemctl(&["daemon-reload"]);
     }
     Ok(())
+}
+
+/// The system unit: create the account if needed, hand it its data dir and
+/// workspace, and let it read (only read) the config.
+fn install_system(spec: &Spec, data: &Path) -> Result<Vec<String>> {
+    let problems = system_problems(spec, data);
+    if !problems.is_empty() {
+        bail!("{}", problems.join("; "));
+    }
+    let created = ensure_system_user()?;
+    std::fs::create_dir_all(data)?;
+    own_system_files(Some(&spec.workspace))?;
+    std::fs::write(SYSTEM_UNIT_PATH, system_unit(spec, data))
+        .with_context(|| format!("writing {SYSTEM_UNIT_PATH}"))?;
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", SYSTEMD_UNIT])?;
+    systemctl(&["restart", SYSTEMD_UNIT])?;
+    let mut notes = Vec::new();
+    if created {
+        notes.push(format!(
+            "created the system user `{SYSTEM_USER}` (no login, no sudo); it owns {} and {}",
+            data.display(),
+            spec.workspace.display()
+        ));
+    }
+    Ok(notes)
+}
+
+/// What would stop the system unit from working: `ProtectHome=` hides
+/// /home, /root and /run/user from the service, and a workspace that is a
+/// system directory would be handed to the service's user.
+pub fn system_problems(spec: &Spec, data: &Path) -> Vec<String> {
+    let hidden = |p: &Path| {
+        ["/home", "/root", "/run/user"]
+            .iter()
+            .any(|h| p.starts_with(h))
+    };
+    let mut problems = Vec::new();
+    for (what, path) in [
+        ("the ferrule binary", spec.exe.as_path()),
+        ("the config", spec.config.as_path()),
+        ("the data dir", data),
+        ("the workspace", spec.workspace.as_path()),
+    ] {
+        if path.to_string_lossy().contains(['\n', '\r']) {
+            problems.push(format!("{what} has a line break in its path"));
+        } else if hidden(path) {
+            let fix = if what == "the ferrule binary" {
+                " (install it system-wide: FERRULE_INSTALL_DIR=/usr/local/bin, or copy it there)"
+            } else {
+                ""
+            };
+            problems.push(format!(
+                "{what} is in {}, which the system service can't see{fix}",
+                path.display()
+            ));
+        }
+    }
+    let system_dirs = [
+        "/", "/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/sbin", "/sys", "/usr", "/var",
+    ];
+    if system_dirs.iter().any(|d| spec.workspace == Path::new(d))
+        || ["/etc", "/usr", "/boot", "/proc", "/sys", "/dev"]
+            .iter()
+            .any(|d| spec.workspace.starts_with(d))
+    {
+        problems.push(format!(
+            "{} is a system directory; the service's user would own it",
+            spec.workspace.display()
+        ));
+    }
+    problems
+}
+
+/// Create [`SYSTEM_USER`] if it doesn't exist; `true` if it was created.
+/// An existing one must be a system account nobody can log in as, outside
+/// every admin group.
+fn ensure_system_user() -> Result<bool> {
+    let out = Command::new("getent")
+        .args(["passwd", SYSTEM_USER])
+        .output()
+        .context("running getent")?;
+    if out.status.success() {
+        let groups = Command::new("id")
+            .args(["-nG", SYSTEM_USER])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        check_existing_user(&String::from_utf8_lossy(&out.stdout), &groups)
+            .map_err(|why| anyhow!(why))?;
+        return Ok(false);
+    }
+    let shell = ["/usr/sbin/nologin", "/sbin/nologin"]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+        .unwrap_or("/bin/false");
+    run(Command::new("useradd").args([
+        "--system",
+        "--user-group",
+        "--home-dir",
+        SYSTEM_HOME,
+        "--no-create-home",
+        "--shell",
+        shell,
+        "--comment",
+        "ferrule agent",
+        SYSTEM_USER,
+    ]))?;
+    Ok(true)
+}
+
+/// The passwd line and group list of an existing [`SYSTEM_USER`]: fine
+/// only if it's no one's login and holds no admin rights.
+pub fn check_existing_user(passwd: &str, groups: &str) -> std::result::Result<(), String> {
+    let fields: Vec<&str> = passwd.trim().split(':').collect();
+    let (Some(uid), Some(shell)) = (fields.get(2), fields.get(6)) else {
+        return Err(format!(
+            "can't read the `{SYSTEM_USER}` account: {passwd:?}"
+        ));
+    };
+    if *uid == "0" {
+        return Err(format!("the existing `{SYSTEM_USER}` account is uid 0"));
+    }
+    if !(shell.ends_with("/nologin") || shell.ends_with("/false")) {
+        return Err(format!(
+            "an account `{SYSTEM_USER}` already exists and can log in ({shell}); \
+             it isn't safe to run the service as it"
+        ));
+    }
+    let admin = ["root", "sudo", "wheel", "admin", "adm", "docker", "lxd"];
+    if let Some(g) = groups.split_whitespace().find(|g| admin.contains(g)) {
+        return Err(format!(
+            "the existing `{SYSTEM_USER}` account is in the `{g}` group; remove it from there first"
+        ));
+    }
+    Ok(())
+}
+
+/// After root wrote them: the service's user owns its home, data dir and
+/// workspace; the config stays root's, readable by its group. A no-op while
+/// the account doesn't exist yet.
+pub fn own_system_files(workspace: Option<&Path>) -> Result<()> {
+    let exists = Command::new("getent")
+        .args(["passwd", SYSTEM_USER])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !exists {
+        return Ok(());
+    }
+    let owner = format!("{SYSTEM_USER}:{SYSTEM_USER}");
+    std::fs::create_dir_all(SYSTEM_HOME)?;
+    run(Command::new("chown").args([&owner, SYSTEM_HOME]))?;
+    run(Command::new("chmod").args(["750", SYSTEM_HOME]))?;
+    let data = crate::config::data_dir()?;
+    let mut mine = vec![data.as_path()];
+    mine.extend(workspace);
+    for dir in mine {
+        run(Command::new("chown").arg("-R").arg(&owner).arg(dir))?;
+    }
+    let config = Path::new(SYSTEM_CONFIG);
+    let group = format!("root:{SYSTEM_USER}");
+    if let Some(dir) = config.parent().filter(|d| d.exists()) {
+        run(Command::new("chown").arg(&group).arg(dir))?;
+        run(Command::new("chmod").arg("750").arg(dir))?;
+    }
+    if config.exists() {
+        run(Command::new("chown").arg(&group).arg(config))?;
+        run(Command::new("chmod").arg("640").arg(config))?;
+    }
+    Ok(())
+}
+
+fn run(cmd: &mut Command) -> Result<()> {
+    let what = format!("{cmd:?}");
+    let out = cmd.output().with_context(|| format!("running {what}"))?;
+    if !out.status.success() {
+        bail!(
+            "{what} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+pub fn system_unit(spec: &Spec, data: &Path) -> String {
+    let arg = |p: &Path| systemd_quote(&p.to_string_lossy(), true);
+    let env = |name: &str, value: &str| systemd_quote(&format!("{name}={value}"), false);
+    let path = |p: &Path| systemd_quote(&p.to_string_lossy(), false);
+    format!(
+        "# Written by `ferrule setup` as root — re-run it to change this service.\n\
+         [Unit]\n\
+         Description=ferrule gateway\n\
+         Wants=network-online.target\n\
+         After=network-online.target\n\
+         \n\
+         [Service]\n\
+         User={SYSTEM_USER}\n\
+         Group={SYSTEM_USER}\n\
+         ExecStart={} gateway --workspace {}\n\
+         WorkingDirectory={}\n\
+         Environment={}\n\
+         Environment={}\n\
+         Environment={}\n\
+         NoNewPrivileges=yes\n\
+         ProtectSystem=strict\n\
+         ProtectHome=yes\n\
+         PrivateTmp=yes\n\
+         ReadWritePaths={} {}\n\
+         Restart=always\n\
+         RestartSec=5\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
+        arg(&spec.exe),
+        arg(&spec.workspace),
+        spec.workspace.to_string_lossy().replace('%', "%%"),
+        env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
+        env("FERRULE_DATA_DIR", &data.to_string_lossy()),
+        env("PATH", &spec.path_env),
+        path(data),
+        path(&spec.workspace),
+    )
 }
 
 pub fn systemd_unit(spec: &Spec) -> String {
@@ -325,7 +630,8 @@ fn xml_unescape(text: &str) -> String {
 /// systemd and plain SSH sessions without a user bus often have none.
 fn systemd_available() -> std::result::Result<(), String> {
     let out = Command::new("systemctl")
-        .args(["--user", "show-environment"])
+        .args(scope_flag())
+        .arg("show-environment")
         .output()
         .map_err(|_| "systemctl isn't installed".to_string())?;
     if out.status.success() {
@@ -333,24 +639,39 @@ fn systemd_available() -> std::result::Result<(), String> {
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
         Err(format!(
-            "no systemd user session ({})",
-            err.lines()
-                .next()
-                .unwrap_or("systemctl --user failed")
-                .trim()
+            "no systemd {} ({})",
+            if scope() == Scope::System {
+                "running"
+            } else {
+                "user session"
+            },
+            err.lines().next().unwrap_or("systemctl failed").trim()
         ))
+    }
+}
+
+/// `--user`, except for the system unit.
+fn scope_flag() -> &'static [&'static str] {
+    match scope() {
+        Scope::User => &["--user"],
+        Scope::System => &[],
     }
 }
 
 fn systemctl(args: &[&str]) -> Result<()> {
     let out = Command::new("systemctl")
-        .arg("--user")
+        .args(scope_flag())
         .args(args)
         .output()?;
     if !out.status.success() {
         bail!(
-            "systemctl --user {} failed: {}",
-            args.join(" "),
+            "systemctl {} failed: {}",
+            scope_flag()
+                .iter()
+                .chain(args)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" "),
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -421,6 +742,121 @@ mod tests {
             "Environment=\"FERRULE_CONFIG=/home/a b/.config/ferrule/100%%\\\"x\\\".toml\""
         );
         assert_eq!(parse_unit(&unit), Some((spec().config, spec().workspace)));
+    }
+
+    #[test]
+    fn root_on_linux_gets_a_system_service_unless_it_asks_otherwise() {
+        use Scope::*;
+        // (linux, root, --system, --user)
+        assert_eq!(decide_scope(true, true, false, false), Ok(System));
+        assert_eq!(decide_scope(true, true, true, false), Ok(System));
+        assert_eq!(decide_scope(true, true, false, true), Ok(User));
+        assert_eq!(decide_scope(true, false, false, false), Ok(User));
+        assert_eq!(decide_scope(false, true, false, false), Ok(User));
+        assert_eq!(decide_scope(false, false, false, false), Ok(User));
+        assert!(decide_scope(true, false, true, false)
+            .unwrap_err()
+            .contains("sudo"));
+        assert!(decide_scope(false, true, true, false).is_err());
+        assert!(decide_scope(true, true, true, true).is_err());
+    }
+
+    fn system_spec() -> Spec {
+        Spec {
+            exe: "/usr/local/bin/ferrule".into(),
+            workspace: SYSTEM_WORKSPACE.into(),
+            config: SYSTEM_CONFIG.into(),
+            path_env: "/usr/local/bin:/usr/bin".into(),
+        }
+    }
+
+    #[test]
+    fn the_system_unit_runs_as_its_own_user_behind_systemd_hardening() {
+        let unit = system_unit(&system_spec(), Path::new(SYSTEM_DATA));
+        let lines: Vec<&str> = unit.lines().collect();
+        for line in [
+            "User=ferrule",
+            "Group=ferrule",
+            "NoNewPrivileges=yes",
+            "ProtectSystem=strict",
+            "ProtectHome=yes",
+            "PrivateTmp=yes",
+            "ReadWritePaths=\"/var/lib/ferrule/data\" \"/var/lib/ferrule/workspace\"",
+            "Environment=\"FERRULE_DATA_DIR=/var/lib/ferrule/data\"",
+            "Environment=\"FERRULE_CONFIG=/etc/ferrule/config.toml\"",
+            "ExecStart=\"/usr/local/bin/ferrule\" gateway --workspace \"/var/lib/ferrule/workspace\"",
+            "WantedBy=multi-user.target",
+            "Restart=always",
+        ] {
+            assert!(lines.contains(&line), "missing {line:?} in\n{unit}");
+        }
+        assert!(!unit.contains("default.target"));
+        // doctor and setup read the pinned paths back the same way.
+        assert_eq!(
+            parse_unit(&unit),
+            Some((SYSTEM_CONFIG.into(), SYSTEM_WORKSPACE.into()))
+        );
+    }
+
+    #[test]
+    fn the_system_unit_quotes_odd_paths() {
+        let mut spec = system_spec();
+        spec.workspace = "/srv/my ws 100%".into();
+        let unit = system_unit(&spec, Path::new("/var/lib/ferrule/da ta"));
+        assert!(unit.contains("ReadWritePaths=\"/var/lib/ferrule/da ta\" \"/srv/my ws 100%%\"\n"));
+        assert_eq!(parse_unit(&unit).unwrap().1, spec.workspace);
+    }
+
+    #[test]
+    fn a_system_service_refuses_what_it_could_not_see_or_should_not_own() {
+        let data = Path::new(SYSTEM_DATA);
+        assert_eq!(system_problems(&system_spec(), data), Vec::<String>::new());
+
+        let mut spec = system_spec();
+        spec.exe = "/root/.local/bin/ferrule".into();
+        let problems = system_problems(&spec, data);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("/usr/local/bin"), "{problems:?}");
+
+        for ws in [
+            "/home/max/project",
+            "/root/ws",
+            "/",
+            "/etc",
+            "/usr/local/src",
+            "/var",
+        ] {
+            let mut spec = system_spec();
+            spec.workspace = ws.into();
+            assert_eq!(system_problems(&spec, data).len(), 1, "{ws}");
+        }
+        for ws in ["/srv/agent", "/opt/work", "/var/lib/ferrule/workspace"] {
+            let mut spec = system_spec();
+            spec.workspace = ws.into();
+            assert!(system_problems(&spec, data).is_empty(), "{ws}");
+        }
+        let problems = system_problems(&system_spec(), Path::new("/home/x/.local/share/ferrule"));
+        assert!(problems[0].contains("data dir"), "{problems:?}");
+    }
+
+    #[test]
+    fn an_existing_account_is_used_only_if_nobody_can_log_in_as_it() {
+        let nologin = "ferrule:x:998:998:ferrule agent:/var/lib/ferrule:/usr/sbin/nologin\n";
+        assert_eq!(check_existing_user(nologin, "ferrule\n"), Ok(()));
+        assert_eq!(
+            check_existing_user("ferrule:x:999:999::/var/lib/ferrule:/bin/false", "ferrule"),
+            Ok(())
+        );
+        let bash = "ferrule:x:1001:1001::/home/ferrule:/bin/bash";
+        assert!(check_existing_user(bash, "ferrule")
+            .unwrap_err()
+            .contains("log in"));
+        assert!(check_existing_user(nologin, "ferrule sudo")
+            .unwrap_err()
+            .contains("`sudo`"));
+        assert!(check_existing_user(nologin, "ferrule docker").is_err());
+        assert!(check_existing_user("ferrule:x:0:0::/:/usr/sbin/nologin", "root").is_err());
+        assert!(check_existing_user("garbage", "").is_err());
     }
 
     #[test]

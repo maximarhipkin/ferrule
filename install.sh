@@ -10,7 +10,9 @@
 #
 # Optional environment:
 #   FERRULE_VERSION      a release tag such as v0.2.0 (default: the latest)
-#   FERRULE_INSTALL_DIR  where the binary goes (default: ~/.local/bin)
+#   FERRULE_INSTALL_DIR  where the binary goes (default: ~/.local/bin; as root
+#                        on Linux /usr/local/bin, where the system service,
+#                        which can't see /root, runs it from)
 #   FERRULE_NO_SETUP=1   install only, don't start the wizard
 #   GITHUB_TOKEN         optional: download through the API (a private fork)
 #
@@ -20,7 +22,11 @@ set -eu
 
 REPO=maximarhipkin/ferrule
 VERSION=${FERRULE_VERSION:-latest}
-DIR=${FERRULE_INSTALL_DIR:-$HOME/.local/bin}
+if [ "$(id -u)" = 0 ] && [ "$(uname -s)" = Linux ]; then
+    DIR=${FERRULE_INSTALL_DIR:-/usr/local/bin}
+else
+    DIR=${FERRULE_INSTALL_DIR:-$HOME/.local/bin}
+fi
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'ferrule install: %s\n' "$*" >&2; exit 1; }
@@ -145,6 +151,11 @@ if [ "$(uname -s)" = Darwin ]; then
     unit=$HOME/Library/LaunchAgents/ai.ferrule.gateway.plist
     if [ -f "$unit" ] && launchctl print "gui/$(id -u)/ai.ferrule.gateway" >/dev/null 2>&1; then
         launchctl kickstart -k "gui/$(id -u)/ai.ferrule.gateway" && say "Restarted the gateway service."
+    fi
+elif [ "$(id -u)" = 0 ] && [ -f /etc/systemd/system/ferrule.service ]; then
+    unit=/etc/systemd/system/ferrule.service
+    if systemctl is-active --quiet ferrule.service 2>/dev/null; then
+        systemctl restart ferrule.service && say "Restarted the gateway service."
     fi
 else
     unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ferrule.service

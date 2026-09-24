@@ -50,7 +50,16 @@ struct Cli {
 enum Cmd {
     /// Interactive setup: provider and key, Telegram, tool credentials,
     /// sandbox, background service. Re-run it any time to change one part
-    Setup,
+    Setup {
+        /// Linux: a system service run as a dedicated `ferrule` user, with
+        /// config in /etc/ferrule and data in /var/lib/ferrule. The default
+        /// as root
+        #[arg(long)]
+        system: bool,
+        /// A service run as you, even as root (it warns)
+        #[arg(long)]
+        user: bool,
+    },
     /// Check the config, keys, Telegram, sandbox and service, and say what to fix
     Doctor {
         /// Skip the checks that call provider and Telegram APIs
@@ -223,6 +232,29 @@ fn main() -> Result<()> {
     if let Some(path) = &cli.config {
         std::env::set_var("FERRULE_CONFIG", std::path::absolute(path)?);
     }
+    if let Cmd::Setup { system, user } = cli.cmd {
+        let linux = cfg!(target_os = "linux");
+        service::set_scope(
+            service::decide_scope(linux, service::is_root(), system, user)
+                .map_err(|e| anyhow!(e))?,
+        );
+    }
+    // Root on Linux sets up, and checks, the system service's files.
+    let system_files = match cli.cmd {
+        Cmd::Setup { .. } => true,
+        Cmd::Doctor { .. } | Cmd::Config { .. } => Path::new(service::SYSTEM_CONFIG).exists(),
+        _ => false,
+    };
+    if system_files && service::scope() == service::Scope::System {
+        for (name, value) in [
+            ("FERRULE_CONFIG", service::SYSTEM_CONFIG),
+            ("FERRULE_DATA_DIR", service::SYSTEM_DATA),
+        ] {
+            if std::env::var_os(name).is_none() {
+                std::env::set_var(name, value);
+            }
+        }
+    }
     secrets::load_into_env();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -232,7 +264,16 @@ fn main() -> Result<()> {
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Setup => setup::run().await?,
+        Cmd::Setup { .. } => {
+            let done = setup::run().await;
+            // Whatever root wrote there, the service's user must own.
+            if service::scope() == service::Scope::System {
+                if let Err(e) = service::own_system_files(None) {
+                    eprintln!("ferrule: {e:#}");
+                }
+            }
+            done?
+        }
         Cmd::Doctor { offline } => {
             if !doctor::run(offline).await? {
                 std::process::exit(1);

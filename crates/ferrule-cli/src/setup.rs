@@ -1535,6 +1535,13 @@ fn service_step(t: &mut Target, guided: bool) -> Result<()> {
         service::Status::NotInstalled => {
             info("The gateway is what answers on Telegram. As a background service it starts at");
             info("login and comes back if it stops.");
+            if service::scope() == service::Scope::System {
+                info(format!(
+                    "As root, it's a system service run as a user of its own, `{}`: no login, no sudo,",
+                    service::SYSTEM_USER
+                ));
+                info("and it can write only its data dir and workspace.");
+            }
             let question = if guided {
                 "Run it in the background now?"
             } else {
@@ -1595,7 +1602,32 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
     if !t.path.exists() {
         bail!("there's no config to run it with yet; set up a model provider first");
     }
-    let default = workspace.map_or_else(|| "~/ferrule-workspace".to_string(), tilde);
+    let system = service::scope() == service::Scope::System;
+    if !system && service::is_root() {
+        warn("You're root: this service would run as root, and so would every command the agent");
+        warn("runs — the sandbox limits writes, not what root may read or change through its");
+        warn(if cfg!(target_os = "linux") {
+            "privileges. `sudo ferrule setup --system` runs it as a dedicated user instead."
+        } else {
+            "privileges. Run setup as an ordinary user instead."
+        });
+        if !Confirm::new("Run the service as root anyway?")
+            .with_default(false)
+            .prompt()?
+        {
+            bail!("the service wasn't installed");
+        }
+    }
+    let default = workspace.map_or_else(
+        || {
+            if system {
+                service::SYSTEM_WORKSPACE.to_string()
+            } else {
+                "~/ferrule-workspace".to_string()
+            }
+        },
+        tilde,
+    );
     let answer = Text::new("Workspace: the folder the agent works in")
         .with_default(&default)
         .with_help_message("created if it doesn't exist")
@@ -1653,9 +1685,17 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
     };
     let notes = service::install(&spec)?;
     t.changed = false;
-    ok("the gateway runs in the background now, and starts at login");
+    ok(if system {
+        "the gateway runs in the background now, as `ferrule`, and starts at boot"
+    } else {
+        "the gateway runs in the background now, and starts at login"
+    });
     for note in notes {
-        warn(note);
+        if system {
+            info(note);
+        } else {
+            warn(note);
+        }
     }
     info(format!("Logs: {}", service::logs_hint()));
     Ok(())

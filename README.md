@@ -134,6 +134,11 @@ enter them:
 4. **Sandbox**: the recommended policy, or your own.
 5. **Background service**: the gateway as a systemd user service (Linux)
    or a launchd agent (macOS), started at login and restarted if it stops.
+   Run as root on Linux (`sudo ferrule setup`, or `--system`), it's a
+   system service instead, run as a `ferrule` user of its own (no login,
+   no sudo) under `ProtectSystem=strict`/`ProtectHome=yes`, with config in
+   `/etc/ferrule` and data and workspace in `/var/lib/ferrule`. The
+   installer, as root, puts the binary in `/usr/local/bin` for it.
 
 Run it again any time to change one part: it opens on a menu with what's
 set now. Keys go into a private file (0600, in a directory the agent's

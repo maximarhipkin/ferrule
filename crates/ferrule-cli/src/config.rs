@@ -332,7 +332,14 @@ impl Config {
     }
 }
 
+/// `$FERRULE_DATA_DIR` if set (the system service's), else `ferrule` in
+/// the platform's data dir.
 pub fn data_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("FERRULE_DATA_DIR").filter(|d| !d.is_empty()) {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir)?;
+        return Ok(dir);
+    }
     // Windows: the local AppData, so saved keys don't roam with a profile.
     let dir = if cfg!(windows) {
         dirs::data_local_dir()
