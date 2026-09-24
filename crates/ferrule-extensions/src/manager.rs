@@ -113,6 +113,23 @@ pub struct Listed {
     pub tools: Vec<String>,
 }
 
+/// What [`ExtensionManager::probe`] found.
+#[derive(Debug, Clone)]
+pub struct Probe {
+    /// The tools the server offers, after `enabled_tools`.
+    pub tools: Vec<McpToolInfo>,
+    pub findings: Vec<Finding>,
+    /// Tools with a block hit.
+    pub blocked: Vec<String>,
+    pub sandbox_degraded: Option<String>,
+}
+
+impl Probe {
+    pub fn blocked(&self) -> bool {
+        !self.blocked.is_empty()
+    }
+}
+
 struct Live {
     /// Tells a stale watcher (of a server since replaced) from the current one.
     id: u64,
@@ -208,6 +225,12 @@ pub struct ExtensionManager {
     next_id: AtomicU64,
     /// The lock as last synced, to refresh skills only when it changed.
     last_lock: Mutex<Option<LockFile>>,
+    /// The sandbox servers started from now on run in: `cfg.sandbox` until
+    /// [`Self::set_sandbox`] swaps it (M17: a secret bound mid-run).
+    sandbox: RwLock<Arc<Sandbox>>,
+    /// The configured servers as last applied by `start`/`set_configured`,
+    /// running or not.
+    configured: tokio::sync::Mutex<Vec<McpServerConfig>>,
 }
 
 impl ToolSource for ExtensionManager {
@@ -227,6 +250,8 @@ impl ExtensionManager {
             tracing::warn!("extensions.allow: {r}");
         }
         Arc::new(Self {
+            sandbox: RwLock::new(cfg.sandbox.clone()),
+            configured: tokio::sync::Mutex::new(Vec::new()),
             store: LockStore::new(cfg.layout.lock_path()),
             queue: PendingQueue::new(cfg.layout.pending_dir()),
             cfg,
@@ -262,6 +287,7 @@ impl ExtensionManager {
     /// Connect the owner's configured servers, then load every active
     /// lock entry. A server that fails is logged and skipped.
     pub async fn start(self: &Arc<Self>, configured: Vec<McpServerConfig>) {
+        *self.configured.lock().await = configured.clone();
         for cfg in configured {
             let name = cfg.name.clone();
             if let Err(e) = self.add_server(cfg).await {
@@ -331,6 +357,81 @@ impl ExtensionManager {
             );
         }
         Ok(self.register(&name, client, infos, surface.digests, vec![], false, None))
+    }
+
+    /// Bring the configured servers in line with `servers`, the config as
+    /// just re-read: start the new ones, stop the ones gone, restart the
+    /// ones whose entry changed. Diffed against the list last applied, not
+    /// against what runs, so a server that failed to start is retried only
+    /// once its entry changes. What changed, for the log.
+    pub async fn set_configured(self: &Arc<Self>, servers: Vec<McpServerConfig>) -> Vec<String> {
+        let mut applied = self.configured.lock().await;
+        let mut changes = Vec::new();
+        for old in applied.iter() {
+            let now = servers.iter().find(|s| s.name == old.name);
+            if now == Some(old) {
+                continue;
+            }
+            let _ops = self.ops.lock().await;
+            let configured = self
+                .live
+                .read()
+                .unwrap()
+                .get(&old.name)
+                .is_some_and(|l| !l.managed);
+            if configured {
+                self.unload(&old.name).await;
+            }
+            if now.is_none() {
+                changes.push(format!("stopped `{}`", old.name));
+            }
+        }
+        for cfg in &servers {
+            let before = applied.iter().find(|s| s.name == cfg.name);
+            if before == Some(cfg) {
+                continue;
+            }
+            let name = cfg.name.clone();
+            let verb = if before.is_some() {
+                "restarted"
+            } else {
+                "started"
+            };
+            match self.add_server(cfg.clone()).await {
+                Ok(tools) => changes.push(format!("{verb} `{name}` ({})", tools.join(", "))),
+                Err(e) => {
+                    tracing::warn!(server = %name, "mcp server `{name}` failed to start, continuing without it: {e}");
+                    changes.push(format!("`{name}` failed to start: {e}"));
+                }
+            }
+        }
+        *applied = servers;
+        changes
+    }
+
+    /// The sandbox new servers get from now on. Running ones keep theirs.
+    pub fn set_sandbox(&self, sandbox: Arc<Sandbox>) {
+        *self.sandbox.write().unwrap() = sandbox;
+    }
+
+    pub fn sandbox(&self) -> Arc<Sandbox> {
+        self.sandbox.read().unwrap().clone()
+    }
+
+    /// Start `cfg`'s server the way it would run, list its tools (less the
+    /// ones `enabled_tools` leaves out), scan them, and stop it again.
+    /// Nothing is registered or recorded: `ferrule mcp add`'s smoke test.
+    pub async fn probe(&self, cfg: McpServerConfig) -> Result<Probe> {
+        let (client, infos) = self.start_client(cfg).await?;
+        let surface = Surface::of(&infos, None, &[]);
+        let probe = Probe {
+            blocked: surface.blocked.iter().cloned().collect(),
+            findings: surface.findings,
+            sandbox_degraded: client.sandbox_degraded().map(str::to_string),
+            tools: infos,
+        };
+        client.shutdown().await;
+        Ok(probe)
     }
 
     // ---- installs -------------------------------------------------------
@@ -420,8 +521,7 @@ impl ExtensionManager {
         }
         // Run in the sandbox with the draft as its workspace: it can write
         // there and nowhere else it couldn't already.
-        let verifier =
-            ferrule_tools::CommandVerifier::new(check, self.cfg.sandbox.clone(), CHECK_TIMEOUT);
+        let verifier = ferrule_tools::CommandVerifier::new(check, self.sandbox(), CHECK_TIMEOUT);
         let ctx = ToolContext {
             workspace: draft.canonicalize()?,
             max_output_chars: 4_000,
@@ -1099,7 +1199,7 @@ impl ExtensionManager {
         let state_dir = self.cfg.layout.mcp_state(&name);
         fs::create_dir_all(&state_dir)?;
         let host = ServerHost {
-            sandbox: self.cfg.sandbox.clone(),
+            sandbox: self.sandbox(),
             workspace: self.cfg.workspace.clone(),
             state_dir,
         };
@@ -1107,7 +1207,7 @@ impl ExtensionManager {
         if let Some(reason) = client.sandbox_degraded() {
             tracing::warn!(server = %name, "mcp server `{name}` runs UNSANDBOXED: {reason}");
         }
-        match client.list_tools().await {
+        match list_enabled(&client).await {
             Ok(infos) => Ok((client, infos)),
             Err(e) => {
                 client.shutdown().await;
@@ -1250,7 +1350,7 @@ impl ExtensionManager {
         else {
             return false;
         };
-        let infos = match client.list_tools().await {
+        let infos = match list_enabled(&client).await {
             Ok(i) => i,
             Err(e) => {
                 tracing::warn!(server = %name, "re-listing `{name}` after list_changed failed: {e}");
@@ -1442,6 +1542,16 @@ fn parse_skill_source(spec: &str) -> Result<Source> {
         ));
     }
     Ok(src)
+}
+
+/// The server's tools, less those its `enabled_tools` leaves out: those are
+/// never scanned, offered or recorded.
+async fn list_enabled(
+    client: &McpClient,
+) -> std::result::Result<Vec<McpToolInfo>, ferrule_mcp::McpError> {
+    let mut infos = client.list_tools().await?;
+    infos.retain(|i| client.config().tool_enabled(&i.name));
+    Ok(infos)
 }
 
 fn server_config(name: &str, e: &ServerEntry) -> McpServerConfig {
