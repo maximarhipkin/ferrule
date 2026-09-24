@@ -7,7 +7,7 @@
 use ferrule_core::tool::{Tool, ToolContext};
 use ferrule_mcp::browser::{self, HIDDEN_ARGS};
 use ferrule_mcp::{connect_and_build_tools, BrowserConfig, McpServerConfig, ServerHost};
-use ferrule_sandbox::{Policy, Sandbox};
+use ferrule_sandbox::{Backend, Policy, Sandbox};
 use serde_json::json;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -84,10 +84,15 @@ async fn the_agent_drives_a_real_chrome_inside_the_sandbox() {
         return;
     };
     let workspace = tempfile::tempdir().unwrap();
-    let state = tempfile::tempdir().unwrap();
-    // As root or in a container Chrome can't keep its own sandbox; the
-    // server refuses to start there unless the config accepts that.
-    let blocker = browser::chrome_sandbox_blocker(is_root());
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("browser");
+    let sandbox = Sandbox::new(Policy::default()).expect("sandbox");
+    eprintln!("sandbox active: {}", sandbox.is_active());
+    // As root, in a container or under Seatbelt Chrome can't keep its own
+    // sandbox; the server refuses to start there unless the config accepts
+    // that.
+    let blocker =
+        browser::chrome_sandbox_blocker(is_root(), sandbox.backend() == Backend::Seatbelt);
     if let Some(why) = blocker {
         eprintln!("Chrome's own sandbox is off here: {why}");
     }
@@ -99,14 +104,12 @@ async fn the_agent_drives_a_real_chrome_inside_the_sandbox() {
     };
     let server: McpServerConfig = McpServerConfig {
         command: agent_browser.to_string_lossy().into_owned(),
-        ..cfg.server_config(&chrome, state.path(), None).unwrap()
+        ..cfg.server_config(&chrome, &state, None).unwrap()
     };
-    let sandbox = Sandbox::new(Policy::default()).expect("sandbox");
-    eprintln!("sandbox active: {}", sandbox.is_active());
     let host = ServerHost {
         sandbox: Arc::new(sandbox),
         workspace: workspace.path().to_path_buf(),
-        state_dir: state.path().to_path_buf(),
+        state_dir: state.clone(),
     };
     let tools = connect_and_build_tools(server, host)
         .await
@@ -150,7 +153,7 @@ async fn the_agent_drives_a_real_chrome_inside_the_sandbox() {
     // The profile went where the config put it, not in the owner's home.
     if cfg.allowed_domains.is_empty() {
         assert!(
-            state.path().join("profile").exists(),
+            state.join("profile").exists(),
             "no profile in the state dir"
         );
     }

@@ -591,8 +591,7 @@ fn browser_check(r: &mut Report, cfg: Option<&config::Config>) {
         );
         return;
     };
-    let is_root = service::is_root();
-    let blocker = ferrule_mcp::browser::chrome_sandbox_blocker(is_root);
+    let blocker = browser::sandbox_blocker(cfg);
     let no_sandbox = !b.chrome_sandbox || blocker.is_some();
     let started = match cfg {
         Some(cfg) => browser::launch_test(cfg, &chrome, no_sandbox),

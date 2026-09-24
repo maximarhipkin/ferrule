@@ -52,6 +52,11 @@ pub struct McpServerConfig {
     /// For arguments that would let the model loosen what the owner set.
     #[serde(default)]
     pub hide_args: Vec<String>,
+    /// macOS: open the Seatbelt profile to the system's Mach/XPC services
+    /// (see `Sandbox::with_desktop_services`). Set only for the built-in
+    /// browser; not reachable from a config file.
+    #[serde(skip)]
+    pub desktop_services: bool,
 }
 
 impl Default for McpServerConfig {
@@ -68,6 +73,7 @@ impl Default for McpServerConfig {
             writable_roots: Vec::new(),
             env_remove: Vec::new(),
             hide_args: Vec::new(),
+            desktop_services: false,
         }
     }
 }

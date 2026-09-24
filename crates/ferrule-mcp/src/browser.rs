@@ -103,8 +103,9 @@ impl BrowserConfig {
     /// The MCP server entry for this config, driving `chrome`, keeping its
     /// profile, caches and daemon socket under `state_dir` (the server's
     /// own, see `ServerHost::state_dir`). Writes an empty agent-browser
-    /// config file there so an `agent-browser.json` in the workspace, which
-    /// the model can write, is never read.
+    /// config file next to `state_dir` (see [`config_file`]) so an
+    /// `agent-browser.json` in the workspace, which the model can write, is
+    /// never read.
     pub fn server_config(
         &self,
         chrome: &Path,
@@ -112,7 +113,7 @@ impl BrowserConfig {
         proxy: Option<&BrowserProxy>,
     ) -> std::io::Result<McpServerConfig> {
         std::fs::create_dir_all(state_dir)?;
-        let own_config = state_dir.join("agent-browser.json");
+        let own_config = config_file(state_dir);
         std::fs::write(&own_config, "{}\n")?;
         let path = |p: &Path| p.to_string_lossy().into_owned();
         let mut env = HashMap::new();
@@ -176,9 +177,24 @@ impl BrowserConfig {
             env_remove: vec!["CI".into(), "AGENT_BROWSER_*".into()],
             hide_args: HIDDEN_ARGS.iter().map(|s| s.to_string()).collect(),
             writable_roots: sandbox_roots(!self.chrome_sandbox),
+            desktop_services: true,
             ..Default::default()
         })
     }
+}
+
+/// agent-browser's config file for the server whose state dir is
+/// `state_dir`: beside it, not in it. The state dir is writable from inside
+/// the sandbox — Chrome writes downloads there, and a page driven over CDP
+/// can make it write whatever it likes — and a config file can name
+/// `plugins` to run and Chrome flags to add, which the daemon would pick up
+/// the next time it starts.
+pub fn config_file(state_dir: &Path) -> PathBuf {
+    let name = state_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| SERVER_NAME.into());
+    state_dir.with_file_name(format!("{name}.agent-browser.json"))
 }
 
 /// What Chrome needs writable beyond a helper's usual dirs. On Linux its
@@ -197,19 +213,26 @@ fn sandbox_roots(no_sandbox: bool) -> Vec<PathBuf> {
 
 /// Why Chrome's own sandbox won't be used here even though it's asked for:
 /// agent-browser adds `--no-sandbox` by itself as root and in a container
-/// (it has no way to turn that off), so ferrule refuses to start it there
-/// unless `chrome_sandbox = false` says the owner accepts that.
-pub fn chrome_sandbox_blocker(is_root: bool) -> Option<&'static str> {
-    blocker(is_root, &|p| p.exists(), &|p| {
+/// (it has no way to turn that off), and macOS refuses to start a second
+/// sandbox inside Seatbelt, so under `seatbelt` (ferrule's sandbox is on,
+/// on a Mac) Chrome's own can't start either. Ferrule refuses to start the
+/// browser in these cases unless `chrome_sandbox = false` says the owner
+/// accepts that.
+pub fn chrome_sandbox_blocker(is_root: bool, seatbelt: bool) -> Option<&'static str> {
+    blocker(is_root, seatbelt, &|p| p.exists(), &|p| {
         std::fs::read_to_string(p).ok()
     })
 }
 
 fn blocker(
     is_root: bool,
+    seatbelt: bool,
     exists: &dyn Fn(&Path) -> bool,
     read: &dyn Fn(&Path) -> Option<String>,
 ) -> Option<&'static str> {
+    if seatbelt {
+        return Some("macOS doesn't let Chrome start its own sandbox inside ferrule's (Seatbelt)");
+    }
     if is_root {
         return Some("ferrule runs as root, where Chrome won't start with its own sandbox");
     }
@@ -475,6 +498,7 @@ fn run_headless(
         Some(c) => c
             .sandbox
             .for_helper(c.state_dir, &sandbox_roots(no_sandbox))
+            .with_desktop_services()
             .command(exe, &args, c.workspace)
             .map_err(|e| format!("couldn't sandbox it: {e}"))?,
         None => {
@@ -677,7 +701,10 @@ mod tests {
             env("AGENT_BROWSER_EXECUTABLE_PATH").as_deref(),
             Some("/opt/chrome")
         );
-        let own = state.join("agent-browser.json");
+        // Beside the state dir, which the browser can write, not in it.
+        let own = dir.path().join("browser.agent-browser.json");
+        assert_eq!(config_file(&state), own);
+        assert!(got.desktop_services);
         assert_eq!(
             env("AGENT_BROWSER_CONFIG"),
             Some(own.to_string_lossy().into())
@@ -771,19 +798,24 @@ mod tests {
     }
 
     #[test]
-    fn root_and_containers_block_chromes_own_sandbox() {
+    fn root_containers_and_seatbelt_block_chromes_own_sandbox() {
         let none = |_: &Path| false;
         let no_file = |_: &Path| None;
-        assert_eq!(blocker(false, &none, &no_file), None);
-        assert!(blocker(true, &none, &no_file).unwrap().contains("root"));
+        assert_eq!(blocker(false, false, &none, &no_file), None);
+        assert!(blocker(true, false, &none, &no_file)
+            .unwrap()
+            .contains("root"));
+        assert!(blocker(false, true, &none, &no_file)
+            .unwrap()
+            .contains("macOS"));
         let docker = |p: &Path| p == Path::new("/.dockerenv");
-        assert!(blocker(false, &docker, &no_file)
+        assert!(blocker(false, false, &docker, &no_file)
             .unwrap()
             .contains("container"));
         let k8s = |_: &Path| Some("0::/kubepods/besteffort/pod1\n".to_string());
-        assert!(blocker(false, &none, &k8s).is_some());
+        assert!(blocker(false, false, &none, &k8s).is_some());
         let host = |_: &Path| Some("0::/init.scope\n".to_string());
-        assert_eq!(blocker(false, &none, &host), None);
+        assert_eq!(blocker(false, false, &none, &host), None);
     }
 
     #[test]

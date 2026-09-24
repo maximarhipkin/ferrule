@@ -19,12 +19,30 @@ const BASE: &str = include_str!("seatbelt/base.sbpl");
 const NETWORK: &str = include_str!("seatbelt/network.sbpl");
 const PREFS: &str = include_str!("seatbelt/prefs.sbpl");
 
+/// What a desktop app (Chrome) needs on top of the base profile to start at
+/// all: every Mach and XPC service, IOKit, POSIX shared memory, sysctl reads
+/// and process info. Measured on GitHub's macos-14 image and its Chrome — anything less
+/// and Chrome aborts at startup. It's a real loosening: the process can talk
+/// to the window server, the pasteboard, the keychain daemon and the rest of
+/// the per-user services a normal app could. File writes and the hidden
+/// paths stay exactly as confined, and this is only ever set for the
+/// browser helper, never for the model's commands.
+const DESKTOP: &str = "; ferrule: desktop services, for the browser helper only
+(allow mach-lookup)
+(allow mach-register)
+(allow iokit-open)
+(allow iokit-get-properties)
+(allow ipc-posix-shm*)
+(allow sysctl-read)
+(allow process-info*)";
+
 /// The profile text plus the `-D` parameters it refers to. Roots go in as
 /// parameters rather than being spliced into the text, so a path containing
 /// `"` or `)` can't rewrite the policy. Roots must already be canonical —
 /// Seatbelt matches real paths (`/private/tmp`, not `/tmp`).
 pub fn profile(
     network: bool,
+    desktop: bool,
     writable: &[PathBuf],
     hidden: &[PathBuf],
 ) -> (String, Vec<(String, PathBuf)>) {
@@ -63,6 +81,10 @@ pub fn profile(
     // F_MAKECOMPRESSED (80) and F_TRANSFEREXTENTS (110) modify files through
     // read-only descriptors, bypassing file-write*.
     sections.push("(deny system-fcntl (fcntl-command 80 110))".to_string());
+    if desktop {
+        // After the XPC deny, so it wins. See `DESKTOP` for what this opens.
+        sections.push(DESKTOP.to_string());
+    }
     // Last, so they override both the blanket read grant and any writable
     // root the hidden path sits in.
     for (i, path) in hidden.iter().enumerate() {
@@ -79,6 +101,7 @@ pub fn profile(
 /// `sandbox-exec -p <profile> -DKEY=path… -- program args…`
 pub fn command<I, S>(
     network: bool,
+    desktop: bool,
     writable: &[PathBuf],
     hidden: &[PathBuf],
     program: impl AsRef<OsStr>,
@@ -88,7 +111,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let (policy, params) = profile(network, writable, hidden);
+    let (policy, params) = profile(network, desktop, writable, hidden);
     let mut cmd = Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(policy);
     for (key, path) in params {
@@ -147,7 +170,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("f");
         std::fs::write(&file, "").unwrap();
-        let (p, params) = profile(false, &[dir.path().to_path_buf(), file.clone()], &[]);
+        let (p, params) = profile(false, false, &[dir.path().to_path_buf(), file.clone()], &[]);
         assert!(p.starts_with("(version 1)"), "version must lead");
         assert!(p.contains("(deny default)"));
         assert!(p.contains("(subpath (param \"WRITABLE_ROOT_0\"))"));
@@ -160,10 +183,11 @@ mod tests {
             "paths go in as params, not text"
         );
         assert!(!p.contains("network-outbound"));
+        assert!(!p.contains("(allow mach-lookup)"), "no desktop services");
         assert_eq!(params.len(), 2);
         assert!(balanced(&p));
 
-        let (with_net, _) = profile(true, &[], &[]);
+        let (with_net, _) = profile(true, false, &[], &[]);
         assert!(with_net.contains("(allow network-outbound)"));
         assert!(
             with_net.contains("com.apple.trustd.agent"),
@@ -183,6 +207,7 @@ mod tests {
         std::fs::create_dir(&secret).unwrap();
         let (p, params) = profile(
             true,
+            true,
             &[dir.path().to_path_buf()],
             std::slice::from_ref(&secret),
         );
@@ -191,6 +216,11 @@ mod tests {
         assert!(at > p.find("(allow file-read*)").unwrap());
         assert!(at > p.find("(allow file-write*").unwrap());
         assert!(at > p.find("(allow network-outbound)").unwrap());
+        assert!(at > p.find("(allow mach-lookup)").unwrap());
+        // The desktop grant overrides the XPC deny, not the other way round.
+        assert!(
+            p.find("(allow mach-lookup)").unwrap() > p.find("xpc-service-name-prefix").unwrap()
+        );
         assert!(params.contains(&("HIDDEN_0".to_string(), secret)));
         assert!(balanced(&p));
     }
@@ -199,6 +229,7 @@ mod tests {
     fn command_uses_the_absolute_sandbox_exec() {
         let cmd = command(
             true,
+            false,
             &[PathBuf::from("/private/tmp")],
             &[],
             "sh",

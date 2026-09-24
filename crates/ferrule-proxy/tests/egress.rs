@@ -325,28 +325,28 @@ async fn the_browser_goes_through_the_proxy_and_trusts_its_ca() {
     };
     #[cfg(not(unix))]
     let is_root = false;
+    let sandbox = Sandbox::new(ferrule_sandbox::Policy::default())
+        .unwrap()
+        .with_env(s.broker.child_env());
+    let seatbelt = sandbox.backend() == ferrule_sandbox::Backend::Seatbelt;
     let cfg = ferrule_mcp::BrowserConfig {
         enabled: true,
-        chrome_sandbox: browser::chrome_sandbox_blocker(is_root).is_none(),
+        chrome_sandbox: browser::chrome_sandbox_blocker(is_root, seatbelt).is_none(),
         timeout_secs: Some(90),
         ..Default::default()
     };
-    let state = tempfile::tempdir().unwrap();
-    let mut server = cfg
-        .server_config(&chrome, state.path(), Some(&proxy))
-        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("browser");
+    let mut server = cfg.server_config(&chrome, &state, Some(&proxy)).unwrap();
     server.command = agent_browser.to_string_lossy().into_owned();
     // Chrome never proxies loopback unless told to; the origin is on it.
     server
         .env
         .insert("AGENT_BROWSER_PROXY_BYPASS".into(), "<-loopback>".into());
-    let sandbox = Sandbox::new(ferrule_sandbox::Policy::default())
-        .unwrap()
-        .with_env(s.broker.child_env());
     let host = ServerHost {
         sandbox: Arc::new(sandbox),
         workspace: tempfile::tempdir().unwrap().keep(),
-        state_dir: state.path().to_path_buf(),
+        state_dir: state,
     };
     let tools = connect_and_build_tools(server, host)
         .await

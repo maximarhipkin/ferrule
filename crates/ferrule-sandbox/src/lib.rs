@@ -142,6 +142,9 @@ pub struct Sandbox {
     /// Where ferrule's own HTTP clients send HTTPS (the credential proxy),
     /// when one runs.
     egress: Option<Egress>,
+    /// macOS only: let the helper reach the system's Mach/XPC services, which
+    /// a desktop app needs (see [`Sandbox::with_desktop_services`]).
+    desktop: bool,
 }
 
 /// The credential proxy as seen by an HTTP client inside ferrule
@@ -166,6 +169,7 @@ impl Sandbox {
             extra_env: Vec::new(),
             helper_roots: Vec::new(),
             egress: None,
+            desktop: false,
         }
     }
 
@@ -257,6 +261,15 @@ impl Sandbox {
         helper
     }
 
+    /// For a helper that is a desktop app (the browser): on macOS the
+    /// Seatbelt profile also allows Mach/XPC lookups, IOKit, shared memory
+    /// and the like, without which Chrome aborts at startup. Writes and the
+    /// hidden paths stay confined. No effect on the other backends.
+    pub fn with_desktop_services(mut self) -> Self {
+        self.desktop = true;
+        self
+    }
+
     /// The same secret scrubbing and credential env as `self`, with the OS
     /// confinement off: the escape hatch for a helper its config opted out
     /// of the sandbox. `reason` is what `degraded()` reports.
@@ -271,6 +284,7 @@ impl Sandbox {
             extra_env: self.extra_env.clone(),
             helper_roots: Vec::new(),
             egress: self.egress.clone(),
+            desktop: false,
         }
     }
 
@@ -304,9 +318,14 @@ impl Sandbox {
         let roots = self.writable_roots(workspace);
         let hidden = self.hidden_paths();
         let mut cmd = match self.backend {
-            Backend::Seatbelt => {
-                seatbelt::command(self.policy.network, &roots, &hidden, program, args)
-            }
+            Backend::Seatbelt => seatbelt::command(
+                self.policy.network,
+                self.desktop,
+                &roots,
+                &hidden,
+                program,
+                args,
+            ),
             _ => {
                 let mut c = Command::new(program);
                 c.args(args);

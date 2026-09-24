@@ -26,7 +26,7 @@ pub fn server(cfg: &config::Config) -> Result<Option<McpServerConfig>> {
     let chrome = chrome(b)
         .ok_or_else(|| anyhow!("no Chrome or Chromium found; set `chrome` in [browser]"))?;
     let command = mcp::find_agent_browser(&b.command).map_err(|e| anyhow!(e))?;
-    if let Some(why) = blocker(b) {
+    if let Some(why) = blocker(cfg) {
         bail!(
             "{why}. `chrome_sandbox = false` in [browser] accepts running it without \
              Chrome's own sandbox (see docs/browser.md)"
@@ -53,13 +53,22 @@ pub fn chrome(b: &BrowserConfig) -> Option<PathBuf> {
 }
 
 /// Why Chrome's own sandbox can't be kept here though the config asks for
-/// it (agent-browser would turn it off by itself).
-pub fn blocker(b: &BrowserConfig) -> Option<&'static str> {
-    if b.chrome_sandbox {
-        mcp::chrome_sandbox_blocker(service::is_root())
+/// it (agent-browser would turn it off by itself, or macOS won't start it
+/// inside ferrule's).
+pub fn blocker(cfg: &config::Config) -> Option<&'static str> {
+    if cfg.browser.chrome_sandbox {
+        sandbox_blocker(Some(cfg))
     } else {
         None
     }
+}
+
+/// Why Chrome's own sandbox can't start here, whatever `[browser]` says.
+/// `None` for the config means the defaults (ferrule's sandbox on).
+pub fn sandbox_blocker(cfg: Option<&config::Config>) -> Option<&'static str> {
+    let seatbelt = cfg!(target_os = "macos")
+        && cfg.is_none_or(|c| c.sandbox.mode != ferrule_sandbox::Mode::Off);
+    mcp::chrome_sandbox_blocker(service::is_root(), seatbelt)
 }
 
 /// Start `chrome` headless the way the browser server runs it: inside

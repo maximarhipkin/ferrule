@@ -51,8 +51,14 @@ LocalAppData on Windows.
   and agent-browser's socket. On Linux it may also write `/proc`, because
   Chrome's own sandbox maps its user id through `/proc/self/uid_map`; other
   processes' `/proc` files that matter need ptrace access, which Landlock
-  refuses across its boundary. Windows has no sandbox yet, so there the
-  browser runs unconfined, like every MCP server.
+  refuses across its boundary. On macOS the browser's Seatbelt profile is
+  looser than a command's in one respect: Chrome won't start without the
+  system's Mach and XPC services, IOKit and shared memory, so the browser
+  may talk to the window server, the pasteboard, the keychain daemon and
+  the other per-user services any app can. Its file writes and the hidden
+  paths are confined exactly as before, and the model's own commands never
+  get this. Windows has no sandbox yet, so there the browser runs
+  unconfined, like every MCP server.
 - **The credential proxy.** With `[secrets]`, Chrome sends HTTPS through
   ferrule's credential proxy, authenticates to it, and trusts the proxy's
   CA by its key hash (`--ignore-certificate-errors-spki-list`), nothing
@@ -64,7 +70,10 @@ LocalAppData on Windows.
   session or profile, add Chrome flags, trust another CA, change the domain
   list or show the window are taken out of the tool schemas, and
   agent-browser reads only ferrule's own empty config file, never an
-  `agent-browser.json` in the workspace. `CI` and `AGENT_BROWSER_*` from
+  `agent-browser.json` in the workspace. That file sits beside the state
+  dir (`mcp/browser.agent-browser.json`), not in it: Chrome can write the
+  state dir, and a config file can name plugins to run and Chrome flags to
+  add. `CI` and `AGENT_BROWSER_*` from
   ferrule's environment aren't passed on.
 - **Page text is marked as untrusted.** agent-browser fences it as page
   content, and the prompt tells the model to treat it as data, not
@@ -81,6 +90,14 @@ keeps it, and never passes `--no-sandbox` on its own. Two cases stop it:
 
 **Root, or a container.** agent-browser turns Chrome's sandbox off by
 itself there, so ferrule won't start the browser and `doctor` says why.
+
+**macOS, with ferrule's sandbox on.** macOS doesn't allow a process that is
+already under Seatbelt to start a sandbox of its own, and Chrome's sandbox
+is Seatbelt, so it can't start inside ferrule's. The choice is between
+ferrule's sandbox around the whole browser, with Chrome's off, and Chrome's
+sandbox with ferrule's off (`sandbox.mode = "off"`, for everything). The
+first is what `setup` offers: it asks you to accept `chrome_sandbox =
+false`, and until you do the browser stays off.
 
 **Ubuntu 23.10+ and other AppArmor systems that restrict unprivileged user
 namespaces.** Chrome's sandbox needs one. Google's Chrome package ships an
@@ -116,5 +133,11 @@ not have one. `doctor` recognises the failure and suggests, in this order:
 - `read` with a URL fetches it with agent-browser's own HTTP client rather
   than Chrome, so Chrome's proxy flags don't apply to it; it gets only the
   proxy environment every sandboxed process gets.
+- The profile (cookies, saved logins) is in the state dir, which the
+  agent's own commands can read. Anything the agent logs into in the
+  browser, its shell can read too.
+- With the `all` tool set the model can get Chrome's DevTools address and
+  drive Chrome directly. That gives it what Chrome can do, not more: the
+  same sandbox and the same proxy.
 - Tool schemas come from agent-browser. A newer version could add an
   argument ferrule doesn't know to hide; the tested version is 0.38.

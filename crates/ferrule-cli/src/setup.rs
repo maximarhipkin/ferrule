@@ -1560,7 +1560,7 @@ fn browser_step(t: &mut Target) -> Result<()> {
     let mut chrome_sandbox = b.chrome_sandbox;
     let mut on = want;
     if want {
-        if let Some(why) = ferrule_mcp::browser::chrome_sandbox_blocker(service::is_root()) {
+        if let Some(why) = browser::sandbox_blocker(Some(&cfg)) {
             warn(format!("{why}."));
             info("ferrule's sandbox still confines it, but a page that breaks out of Chrome's renderer would get everything the agent's commands can reach. docs/browser.md has the details.");
             chrome_sandbox = !Confirm::new("Run Chrome without its own sandbox?")

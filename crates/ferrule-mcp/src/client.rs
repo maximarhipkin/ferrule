@@ -101,8 +101,14 @@ impl McpClient {
             (None, false) => None,
         };
         let sandbox = if cfg.sandbox {
-            host.sandbox
-                .for_helper(&host.state_dir, &cfg.writable_roots)
+            let helper = host
+                .sandbox
+                .for_helper(&host.state_dir, &cfg.writable_roots);
+            if cfg.desktop_services {
+                helper.with_desktop_services()
+            } else {
+                helper
+            }
         } else {
             host.sandbox
                 .unconfined(format!("mcp.servers `{}` has sandbox = false", cfg.name))
