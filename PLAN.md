@@ -228,6 +228,10 @@ that convention yet — ask before introducing one).
     `docs/eval.md` is the user doc; `docs/m14-eval.md` is the design.
     **Not done:** the measured chart in the README. It needs a real
     model run, and the README was off-limits for this batch.
+    **Next: the real A/B.** Max's other agent runs it, following the
+    steps in `docs/eval.md` § "Handoff: running the real A/B": the free
+    mock check first, then a dry run, the smoke subset under a small
+    cap, and the full suite with `--repeat 3`.
   - **M15 memory pipeline + reversible compaction** (§4.3/§4.4): memory
     update/delete tools (Mem0-style ADD/UPDATE/DELETE), goal-driven
     session-start recall, `superseded_by`; a `search_history` tool over

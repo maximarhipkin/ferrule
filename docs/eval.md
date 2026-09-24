@@ -7,6 +7,44 @@ deliberately naive harness. It then reports the difference in pass rate,
 tokens and cost. The design and its reasoning are in
 [`m14-eval.md`](m14-eval.md).
 
+## Handoff: running the real A/B (for the agent that runs it)
+
+M14 shipped the machinery and proved it only against the mock model. The
+real numbers are still to be measured. Do it in this order and stop at the
+first step that goes wrong:
+
+1. **Build from a fresh `main`:** `git checkout main && git pull`, then
+   `cargo build -p ferrule-cli`. The binary is `target/debug/ferrule`.
+2. **Check the pipeline with the free mock** (step 1 below). Expect
+   engineered 4/4 and naive 2/4 on the smoke subset. If you get something
+   else, the build or the platform is off (see "On macOS"), not the
+   harness. Report it and don't spend any money.
+3. **Dry run on the real model:** add `--dry-run` to the step 2 command
+   (Ollama) or the step 3 command (hosted). Check the model name, the
+   context window and the cap before spending anything.
+4. **Smoke A/B with a small cap:** `--tag smoke --variant ab`, with
+   `--max-usd 2` for a hosted model or `--max-tokens 2000000` for Ollama.
+   Exit status 3 means the cap stopped the run. Raise the cap only if
+   the owner agrees.
+5. **Full suite:** drop `--tag smoke`. Use `--repeat 3` so the numbers
+   aren't one lucky run. The default cap is $5 / 20M tokens. Ask the
+   owner before going above $10.
+6. **Where the results land:**
+   - the report goes to stdout;
+   - the report, transcripts and `run.json` are saved under
+     `~/Library/Application Support/ferrule/eval/<run id>/` on macOS and
+     `~/.local/share/ferrule/eval/<run id>/` on Linux;
+   - `ferrule eval report starter` prints the latest saved run again;
+   - every call is in `ferrule ledger` with `task_shape = "eval"`.
+7. **Report back:**
+   - the full report text
+   - provider, model and context window
+   - the exit status
+   - anything that broke on macOS, since none of it has run there yet
+
+   Commit no API keys and no local `eval-*.toml` files. The config reads
+   keys from the environment (`api_key_env`).
+
 ## Run the A/B in 5 minutes
 
 You need `ferrule` (`cargo install --path crates/ferrule-cli`, or use
