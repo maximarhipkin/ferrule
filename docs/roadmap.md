@@ -259,7 +259,26 @@ the owner can read.
 **Done means.** After a failing scheduled task is fixed, the next similar
 run follows the recorded lesson — visible as a playbook diff.
 
-### M17 — MCP hot-add + `ferrule mcp add`
+### M17 — MCP hot-add + `ferrule mcp add` (done)
+
+**Status.** Built (design: `docs/m17-mcp-add.md`).
+- `ferrule mcp add <name> [-- cmd…] | --url …` starts the server as the
+  daemon will (same sandbox, a throwaway proxy with its secrets), runs
+  `initialize` + `tools/list`, and scans the tools with M13's scanner.
+  A failure, a scan block without `--waive`/`--skip-flagged`, or a key
+  in `--env`/a header writes nothing.
+- `--secret NAME[=hosts]` binds a key to hosts in `[secrets]`; the value
+  goes to the private secrets file, never the config. Written through
+  `toml_edit`, so comments and order survive. An offline doctor runs at
+  the end and now names each server.
+- A running gateway or chat polls its config every 2 s and starts, stops
+  or restarts servers and binds new secrets live: the next message has
+  the new tools. Only `--config`, `$FERRULE_CONFIG` or the global config
+  are followed.
+- `enabled_tools`, `max_output_chars` and `output_caps` per server; a
+  mid-session `list_changed` is re-scanned.
+- `ferrule mcp list`/`remove`, and an "MCP servers" step in `ferrule setup`
+  on the same code.
 
 **Goal.** Connecting a server is one guided command, not a hand-edited
 TOML file and a restart.

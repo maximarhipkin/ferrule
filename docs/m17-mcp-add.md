@@ -45,8 +45,11 @@ answer is then an error, and nothing gets written.
 2. **No plaintext keys.** Refuse an `--env` whose name looks secret (the
    sandbox's own secret markers: `TOKEN`, `KEY`, `SECRET`, …), and point the
    user to `--secret`. Also refuse a credential-bearing header (`Authorization`,
-   `*-api-key`, `*-token`, `cookie`) whose value has no `${…}`. Interactively
-   the command instead offers to move the value into a secret.
+   `*-api-key`, `*-token`, `cookie`) whose value has no `${…}`. A
+   secret-looking `${NAME}` in a header must be in `[secrets]` or a
+   `--secret`. The guided flow asks for a token as a secret from the start
+   (`Authorization: Bearer ${NAME}` for a URL server), so it never has a
+   literal to move.
 3. **Secrets.** For each `--secret NAME=hosts`, find the value in this
    order: the value already saved in the private secrets file, then the
    CLI's environment, then (interactive only) a hidden prompt. Nothing is
@@ -72,19 +75,21 @@ answer is then an error, and nothing gets written.
    puts the new table after the last server. The edited document is re-parsed as a
    `Config` before it is written, and the write is atomic (temp file plus
    rename, as `ferrule setup` does).
-8. **Doctor.** Re-run `ferrule doctor --offline`. Its MCP line now names the
-   configured servers. Then print the new server's tools and "running
-   gateways pick it up within a few seconds".
+8. **Doctor.** Print the new server's tools and "running gateways pick it
+   up within a few seconds" (for a `./ferrule.toml`, which isn't followed
+   live: "at their next start"). Then re-run `ferrule doctor --offline`,
+   whose MCP lines now name the configured servers and flag a header
+   `${NAME}` that isn't in `[secrets]`. A doctor failure is reported; the
+   server stays added. The setup wizard's step skips this run.
 
 ### One code path
 
 - **The probe.** Starting the server, listing its tools and scanning them
-  is `ExtensionManager::probe(cfg) -> Probe { infos, findings, blocked,
+  is `ExtensionManager::probe(cfg) -> Probe { tools, findings, blocked,
   sandbox_degraded }`. It uses the same `start_client` + `Surface::of` that
   `add_server` (configured servers) and `prepare_mcp` (the model's
   `mcp_add`, owner approvals) use. `mcp add` and the setup wizard's MCP step
-  both call `mcp_add::run` / `mcp_add::guided` in the CLI, which call
-  `probe`.
+  both call `mcp_add::add_to` in the CLI, which calls `probe`.
 - **Persistence split (M13 §9).** Owner-added servers go in the config file,
   under `[[mcp.servers]]`, origin `configured`. The model's `mcp_add` still
   writes the lock and goes through the allow-list or the owner's approval.
@@ -182,8 +187,9 @@ output_caps = { get_issue = 2000 }          # one tool's results
   its comments. Running processes stop the server within a few seconds
   (§2).
 - `[secrets]` entries and saved values are kept, since other things may use
-  them. The command lists which ones only this server referenced, with the
-  line that removes each one (`ferrule setup` → Tool credentials).
+  them. The command lists the ones only this server's headers referenced,
+  with where to remove each (`ferrule setup` → Tool credentials). A stdio
+  server gets every placeholder in its env, so none is attributed to it.
 - `--purge` also deletes the server's state dir.
 - An installed (lock) server goes to the M13 path unchanged.
 
@@ -206,8 +212,9 @@ rename fails, the values just saved are removed again.
 
 ## 6. Setup wizard
 
-`ferrule setup` gets an "MCP servers" part, as the last guided step and as a
-menu item. It lists the configured servers and offers "Add a server" (the
+`ferrule setup` gets an "MCP servers" part, as a guided step after Browser
+(before the background service, so an installed service starts with the
+server) and as a menu item. It lists the configured servers and offers "Add a server" (the
 same `mcp_add` guided flow, so the same probe, scan and writer) and "Remove"
 (the same remover).
 
