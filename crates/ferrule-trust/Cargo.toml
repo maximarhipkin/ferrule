@@ -1,0 +1,22 @@
+[package]
+name = "ferrule-trust"
+version = "0.1.0"
+edition = "2021"
+description = "M19 trust & cost: spending caps read from the ledger, the kill switch, approval gates, plan mode and the audit log"
+
+[dependencies]
+ferrule-core = { path = "../ferrule-core" }
+ferrule-proxy = { path = "../ferrule-proxy" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
+ring = "0.17"
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -126,6 +126,7 @@ pub async fn run(offline: bool) -> Result<bool> {
     proxy(&mut r, &cfg);
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
+    trust_check(&mut r, &cfg, telegram_on);
     service_check(&mut r, &path, telegram_on)?;
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
@@ -547,6 +548,82 @@ fn agents_check(r: &mut Report, cfg: &config::Config, confined: bool) {
 
 /// Whether ferrule's own HTTPS — `web_fetch`, MCP servers by URL — and
 /// commands' go through the credential proxy, or straight out.
+/// M19: the kill switch, the caps and today's spend, and who approves.
+fn trust_check(r: &mut Report, cfg: &config::Config, telegram_on: bool) {
+    let hub = match crate::trust::hub(cfg) {
+        Ok(h) => h,
+        Err(e) => {
+            r.fail("trust", format!("{e:#}"));
+            return;
+        }
+    };
+    if let Some(info) = hub.stopped() {
+        r.warn("trust", ferrule_trust::kill::stop_message(&info));
+    }
+    let c = hub.config();
+    let caps = [
+        ("run", c.max_tokens_per_run, c.max_usd_per_run),
+        ("day", c.max_tokens_per_day, c.max_usd_per_day),
+        ("task", c.max_tokens_per_task, c.max_usd_per_task),
+    ]
+    .iter()
+    .filter(|(_, t, u)| *t > 0 || *u > 0.0)
+    .map(|(per, t, u)| {
+        let mut parts = vec![];
+        if *t > 0 {
+            parts.push(format!("{} tokens", ferrule_trust::hub::thousands(*t)));
+        }
+        if *u > 0.0 {
+            parts.push(format!("${u:.2}"));
+        }
+        format!("{} per {per}", parts.join(" / "))
+    })
+    .collect::<Vec<_>>();
+    let today = match hub.today(None) {
+        Ok((t, _)) => format!(
+            "today {} tokens, ${:.2}",
+            ferrule_trust::hub::thousands(t.tokens),
+            t.usd
+        ),
+        Err(e) if c.needs_ledger() => {
+            r.fail(
+                "trust",
+                format!("{e}: every run stops before its first call"),
+            );
+            return;
+        }
+        Err(_) => "today unknown".into(),
+    };
+    r.ok(
+        "trust",
+        format!(
+            "{} · {today} · gates {}",
+            if caps.is_empty() {
+                "no caps".to_string()
+            } else {
+                caps.join(", ")
+            },
+            if c.gates { "on" } else { "off" }
+        ),
+    );
+    if c.gates {
+        match hub.owner() {
+            Some(chat) if telegram_on => r.ok(
+                "trust",
+                format!("approvals go to Telegram chat {chat} (and the terminal)"),
+            ),
+            Some(chat) => r.note(
+                "trust",
+                format!("owner chat {chat}, but Telegram is off: only the terminal approves"),
+            ),
+            None => r.note(
+                "trust",
+                "no owner chat: only the terminal approves, and gated commands in unattended runs are refused",
+            ),
+        }
+    }
+}
+
 fn proxy(r: &mut Report, cfg: &config::Config) {
     if cfg.secrets.is_empty() {
         r.note(

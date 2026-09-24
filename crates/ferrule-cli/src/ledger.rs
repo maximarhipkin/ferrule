@@ -360,6 +360,7 @@ mod tests {
             error_message: None,
             cost_usd: None,
             eval: None,
+            tree: None,
         }
     }
 

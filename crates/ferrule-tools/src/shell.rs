@@ -83,16 +83,16 @@ impl ShellTool {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let child = command.spawn().map_err(|e| Self::failed(e.to_string()))?;
-        let pid = child.id();
+        // Dropped before the command exits (a timeout, or the owner halting
+        // the run mid-call, M19): the whole group goes, not just `sh`.
+        let mut group = GroupKill(child.id());
 
         let out = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
-            Ok(out) => out.map_err(|e| Self::failed(e.to_string()))?,
-            Err(_) => {
-                if let Some(pid) = pid {
-                    ferrule_sandbox::kill_process_group(pid);
-                }
-                return Err(Self::failed(format!("timeout after {:?}", self.timeout)));
+            Ok(out) => {
+                group.0 = None;
+                out.map_err(|e| Self::failed(e.to_string()))?
             }
+            Err(_) => return Err(Self::failed(format!("timeout after {:?}", self.timeout))),
         };
 
         let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -102,6 +102,18 @@ impl ShellTool {
             text.push_str(&stderr);
         }
         Ok((out.status.code().unwrap_or(-1), text))
+    }
+}
+
+/// Kills a command's process group when dropped, unless the command
+/// already exited.
+struct GroupKill(Option<u32>);
+
+impl Drop for GroupKill {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            ferrule_sandbox::kill_process_group(pid);
+        }
     }
 }
 
@@ -273,6 +285,27 @@ mod tests {
         assert!(
             !dir.path().join("late").exists(),
             "background child survived the timeout"
+        );
+    }
+
+    /// The owner halting a run drops the tool call's future (M19): the
+    /// command's background children go with it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_call_kills_the_whole_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ToolContext {
+            workspace: dir.path().to_path_buf(),
+            max_output_chars: 1_000,
+        };
+        let t = ShellTool::default();
+        let call = t.call(json!({"command": "(sleep 1; touch late) & sleep 30"}), &c);
+        let cut = tokio::time::timeout(Duration::from_millis(300), call).await;
+        assert!(cut.is_err());
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(
+            !dir.path().join("late").exists(),
+            "a background child survived the dropped call"
         );
     }
 

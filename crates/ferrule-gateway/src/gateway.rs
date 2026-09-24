@@ -12,6 +12,15 @@ use tokio::sync::mpsc;
 pub struct Gateway {
     channels: Vec<Arc<dyn Channel>>,
     router: Arc<Router>,
+    interceptor: Option<Arc<dyn Interceptor>>,
+}
+
+/// Looks at every inbound message before the router does (M19: the owner's
+/// `/stop`, `/resume`, `/plan` and approval replies). `Some(reply)` takes
+/// the message: the reply goes back to its chat and no agent turn runs.
+#[async_trait::async_trait]
+pub trait Interceptor: Send + Sync {
+    async fn intercept(&self, msg: &InboundMessage) -> Option<String>;
 }
 
 impl Gateway {
@@ -23,7 +32,13 @@ impl Gateway {
         Self {
             channels: Vec::new(),
             router,
+            interceptor: None,
         }
+    }
+
+    pub fn with_interceptor(mut self, interceptor: Arc<dyn Interceptor>) -> Self {
+        self.interceptor = Some(interceptor);
+        self
     }
 
     pub fn add_channel(&mut self, channel: Arc<dyn Channel>) -> &mut Self {
@@ -54,6 +69,12 @@ impl Gateway {
         drop(tx);
 
         while let Some(msg) = rx.recv().await {
+            if let Some(i) = &self.interceptor {
+                if let Some(reply) = i.intercept(&msg).await {
+                    self.reply_directly(&msg, reply).await;
+                    continue;
+                }
+            }
             if let Err(e) = self.router.dispatch(msg).await {
                 tracing::error!(error = %e, "failed to dispatch inbound message");
             }
@@ -62,6 +83,23 @@ impl Gateway {
             let _ = h.await;
         }
         Ok(())
+    }
+
+    async fn reply_directly(&self, msg: &InboundMessage, text: String) {
+        let Some(channel) = self.channels.iter().find(|c| c.name() == msg.channel) else {
+            tracing::error!(channel = %msg.channel, "no channel to send an intercepted reply on");
+            return;
+        };
+        let out = crate::message::OutboundMessage {
+            channel: msg.channel.clone(),
+            chat_id: msg.chat_id.clone(),
+            text,
+            reply_to: Some(msg.message_id.clone()),
+            attachments: vec![],
+        };
+        if let Err(e) = channel.send(out).await {
+            tracing::error!(error = %e, "failed to send an intercepted reply");
+        }
     }
 }
 
@@ -185,5 +223,56 @@ mod tests {
         }
         assert_eq!(scripted.sent.lock().unwrap().len(), 1);
         assert_eq!(scripted.sent.lock().unwrap()[0].text, "echo: hello");
+    }
+
+    struct StopWord;
+    #[async_trait]
+    impl Interceptor for StopWord {
+        async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
+            (msg.text == "/stop").then(|| "stopped".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_intercepted_message_is_answered_without_an_agent_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripted = Arc::new(ScriptedChannel {
+            script: vec![msg("c1", "/stop"), msg("c1", "hello")],
+            sent: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("scripted".into(), scripted.clone());
+        let turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = turns.clone();
+        let factory: crate::router::AgentFactory = Arc::new(move |_sid, transcript| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Agent::new(
+                Arc::new(EchoProvider),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
+        });
+        let router = Arc::new(Router::new(dir.path(), factory, channels));
+        let mut gateway = Gateway::new(router).with_interceptor(Arc::new(StopWord));
+        gateway.add_channel(scripted.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while scripted.sent.lock().unwrap().len() < 2 {
+            assert!(tokio::time::Instant::now() < deadline, "replies never came");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let sent = scripted.sent.lock().unwrap();
+        assert_eq!(sent[0].text, "stopped");
+        assert_eq!(sent[0].chat_id, "c1");
+        assert_eq!(sent[1].text, "echo: hello");
+        assert!(sent.iter().all(|m| !m.text.contains("/stop")));
     }
 }

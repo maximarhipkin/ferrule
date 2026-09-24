@@ -284,6 +284,17 @@ impl Sandbox {
         child
     }
 
+    /// For an M19 plan-mode run, which may look but not touch: read-only
+    /// (unless there's no OS sandbox at all, which the caller checks with
+    /// `is_active`), no extra writable roots and no network.
+    pub fn for_planning(&self) -> Self {
+        let mut p = self.for_child(&[], true);
+        p.policy.writable_roots.clear();
+        p.helper_roots.clear();
+        p.policy.network = false;
+        p
+    }
+
     /// For a helper that is a desktop app (the browser): on macOS the
     /// Seatbelt profile also allows Mach/XPC lookups, IOKit, shared memory
     /// and the like, without which Chrome aborts at startup. Writes and the
@@ -688,6 +699,28 @@ mod tests {
             vec![c(state.path())],
             "read-only keeps the workspace and configured roots closed, not the helper's own dir"
         );
+    }
+
+    #[test]
+    fn planning_is_read_only_with_no_network() {
+        let ws = tempfile::tempdir().unwrap();
+        let extra = tempfile::tempdir().unwrap();
+        let base = Sandbox {
+            policy: Policy {
+                network: true,
+                writable_roots: vec![extra.path().to_path_buf()],
+                ..policy(Mode::WorkspaceWrite)
+            },
+            ..Sandbox::off()
+        };
+        let plan = base.for_planning();
+        assert_eq!(plan.policy.mode, Mode::ReadOnly);
+        assert!(!plan.policy.network);
+        assert!(plan.writable_roots(ws.path()).is_empty());
+        // The run it plans for keeps its own policy.
+        assert_eq!(base.policy.mode, Mode::WorkspaceWrite);
+        assert!(base.policy.network);
+        assert_eq!(Sandbox::off().for_planning().policy.mode, Mode::Off);
     }
 
     #[test]

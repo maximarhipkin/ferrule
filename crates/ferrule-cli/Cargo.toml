@@ -23,6 +23,7 @@ ferrule-extensions = { path = "../ferrule-extensions" }
 ferrule-eval = { path = "../ferrule-eval" }
 ferrule-hooks = { path = "../ferrule-hooks" }
 ferrule-learn = { path = "../ferrule-learn" }
+ferrule-trust = { path = "../ferrule-trust" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

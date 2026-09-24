@@ -105,7 +105,13 @@ pub struct Scheduler {
     /// Built-in jobs by task name, run instead of an agent turn for tasks
     /// stored under [`BUILTIN_CHANNEL`].
     builtins: HashMap<String, Arc<dyn BuiltinJob>>,
+    /// Asked every tick (M19's kill switch): `Some(why)` skips every due
+    /// task this tick. They stay due and run once the hold lifts.
+    hold: Option<Hold>,
 }
+
+/// See [`Scheduler::with_hold`].
+pub type Hold = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 impl Scheduler {
     /// Builds a scheduler and immediately recovers any run left `running`
@@ -134,12 +140,20 @@ impl Scheduler {
             gate_timeout,
             gate_workspace,
             builtins: HashMap::new(),
+            hold: None,
         })
     }
 
     /// Registers the job a built-in task named `name` runs.
     pub fn with_builtin(mut self, name: &str, job: Arc<dyn BuiltinJob>) -> Self {
         self.builtins.insert(name.to_string(), job);
+        self
+    }
+
+    /// Holds the tick loop while `hold` says so (`ferrule run-now` isn't
+    /// held: the guard of the run it starts stops it instead).
+    pub fn with_hold(mut self, hold: Hold) -> Self {
+        self.hold = Some(hold);
         self
     }
 
@@ -156,6 +170,10 @@ impl Scheduler {
     }
 
     async fn tick(&self) -> Result<(), SchedulerError> {
+        if let Some(why) = self.hold.as_ref().and_then(|h| h()) {
+            tracing::info!(%why, "scheduler held: due tasks wait");
+            return Ok(());
+        }
         let now = now_unix();
         for task in self.store.due_tasks(now)? {
             if let Err(e) = self.execute(&task).await {
@@ -635,6 +653,32 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("simulated provider outage"));
+    }
+
+    /// M19: while the hold is on (the kill switch), a tick runs nothing and
+    /// the task stays due; once it lifts, the next tick runs it.
+    #[tokio::test]
+    async fn a_held_tick_runs_nothing_and_the_task_stays_due() {
+        let (scheduler, calls, _recorder, _d1, _d2) =
+            test_scheduler(Reply::Ok("done".into()), Duration::from_secs(5));
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let h = held.clone();
+        let scheduler = scheduler.with_hold(Arc::new(move || {
+            h.load(Ordering::SeqCst).then(|| "stopped".to_string())
+        }));
+        let task = add_task(&scheduler, None);
+
+        scheduler.tick().await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(scheduler.store().runs_for(&task.id, 1).unwrap().is_empty());
+
+        held.store(false, Ordering::SeqCst);
+        scheduler.tick().await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            scheduler.store().runs_for(&task.id, 1).unwrap()[0].status,
+            RunStatus::Succeeded
+        );
     }
 
     /// A run left `running` by a previous process that crashed/was killed

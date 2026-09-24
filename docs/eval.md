@@ -355,6 +355,7 @@ context_window = 32000       # optional: manage the model as if it had this wind
 max_iterations = 40
 timeout_secs = 900
 owner_playbook = false       # true: the engineered variant gets your M16 playbook
+owner_trust = false          # true: both variants run under your M19 caps, gates and kill switch
 
 [[task]]
 id = "fix-median"
@@ -378,6 +379,16 @@ Eval is hermetic: no run sees your memories or your learned playbook
 `owner_playbook = true` is the one opt-in: the engineered variant's system
 prompt then gets the same `[Playbook]` block your agents get, and the
 naive variant still doesn't. Use it to measure what the playbook is worth.
+
+Your M19 trust settings (caps, gates and the kill switch, see
+[`m19-trust-cost.md`](m19-trust-cost.md)) don't reach eval either: with
+the switch on and every cap at one token, the starter suite scores the
+same. `owner_trust = true` opts a suite in. Both variants then run
+unattended under your caps and gates, their spend counts toward your day
+(its ledger rows carry the tree `eval:<run id>`), and a gated command is
+refused and audited. A task your caps or the switch stop is reported as
+stopped with no verdict, and `ferrule eval` exits 3, as it does for its
+own budget. The judge's calls are not charged to you.
 
 ### Grading with a rubric
 

@@ -9,8 +9,8 @@ use crate::suite::{Suite, Task};
 use crate::variant::{self, MemoryTools, Variant};
 use anyhow::{Context as _, Result};
 use ferrule_core::{
-    AgentEvent, CoreError, EvalTag, HarnessProfile, LedgerRecord, LedgerSink, Provider, StopFlag,
-    Transcript,
+    AgentEvent, CoreError, EvalTag, Guard, HarnessProfile, LedgerRecord, LedgerSink, Provider,
+    StopFlag, Transcript,
 };
 use ferrule_sandbox::Sandbox;
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,16 @@ pub struct Env {
     /// M16: the owner's rendered playbook. Only a suite with
     /// `owner_playbook = true` passes it to the engineered variant.
     pub playbook: Option<String>,
+    /// M19: the owner's trust, for a suite with `owner_trust = true`. Given
+    /// the tree (`eval:<run id>`) and a task run's sink, it returns the
+    /// sink to write through and the guard to run under. `None`, or a
+    /// suite that doesn't opt in: no guard, and rows without a tree, which
+    /// the owner's meter skips.
+    pub owner_trust: Option<OwnerTrust>,
 }
+
+pub type OwnerTrust =
+    Arc<dyn Fn(&str, Arc<dyn LedgerSink>) -> (Arc<dyn LedgerSink>, Arc<dyn Guard>) + Send + Sync>;
 
 impl Env {
     fn judge(&self) -> (Judge, bool) {
@@ -380,14 +389,22 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
             .then_some(p.env.playbook.as_deref())
             .flatten(),
     });
+    let mut sink = p.sink.clone() as Arc<dyn LedgerSink>;
+    let mut owner_stop = None;
+    if let (true, Some(owner)) = (p.suite.owner_trust, &p.env.owner_trust) {
+        let (s, g) = owner(&format!("eval:{}", p.run_id), sink);
+        sink = s;
+        owner_stop = Some(Arc::new(OwnerStop {
+            inner: g,
+            why: std::sync::Mutex::new(None),
+        }));
+    }
     let mut agent = agent
-        .with_ledger(
-            p.sink.clone() as Arc<dyn LedgerSink>,
-            "eval",
-            None,
-            p.env.model.clone(),
-        )
+        .with_ledger(sink, "eval", None, p.env.model.clone())
         .with_stop_flag(stop.clone());
+    if let Some(g) = &owner_stop {
+        agent = agent.with_guard(g.clone() as Arc<dyn Guard>);
+    }
     p.sink.begin(tag.clone(), stop);
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
@@ -434,6 +451,13 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
             // A provider that's down says nothing about the harness.
             end(&mut result);
             result.stopped_early = Some(format!("agent error: {e}"));
+            return finish(p, tag, result, started);
+        }
+        Ok(Ok(_)) if owner_stop.as_ref().is_some_and(|g| g.why().is_some()) => {
+            // The owner's cap or kill switch, not the task: no verdict.
+            end(&mut result);
+            result.outcome = Outcome::Stopped;
+            result.stopped_early = owner_stop.and_then(|g| g.why());
             return finish(p, tag, result, started);
         }
         Ok(Ok(answer)) => {
@@ -488,6 +512,51 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
     finish(p, tag, result, started)
 }
 
+/// The owner's guard over an eval task, remembering why it stopped the
+/// run, if it did.
+struct OwnerStop {
+    inner: Arc<dyn Guard>,
+    why: std::sync::Mutex<Option<String>>,
+}
+
+impl OwnerStop {
+    fn why(&self) -> Option<String> {
+        self.why.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn note(&self, why: &str) {
+        self.why
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(|| why.to_string());
+    }
+}
+
+#[async_trait::async_trait]
+impl Guard for OwnerStop {
+    fn begin(&self) {
+        self.inner.begin()
+    }
+
+    fn before_model_call(&self) -> Option<String> {
+        let why = self.inner.before_model_call();
+        if let Some(w) = &why {
+            self.note(w);
+        }
+        why
+    }
+
+    async fn before_tool_call(&self, call: ferrule_core::GuardedCall<'_>) -> ferrule_core::Verdict {
+        self.inner.before_tool_call(call).await
+    }
+
+    async fn halted(&self) -> String {
+        let why = self.inner.halted().await;
+        self.note(&why);
+        why
+    }
+}
+
 fn finish(p: RunOne<'_>, mut tag: EvalTag, mut result: TaskResult, started: Instant) -> TaskResult {
     result.wall_ms = started.elapsed().as_millis() as u64;
     tag.result = serde_json::to_value(&result).ok();
@@ -510,6 +579,7 @@ fn finish(p: RunOne<'_>, mut tag: EvalTag, mut result: TaskResult, started: Inst
         error_message: result.stopped_early.clone(),
         cost_usd: None,
         eval: Some(tag),
+        tree: None,
     });
     result
 }

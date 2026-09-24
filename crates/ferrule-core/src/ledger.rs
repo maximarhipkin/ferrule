@@ -64,6 +64,11 @@ pub struct LedgerRecord {
     /// the call belongs to. `None` everywhere else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval: Option<EvalTag>,
+    /// The run tree the call belongs to: the root session's id, shared by
+    /// its sub-agents. Stamped by M19's trust sink so day and task spend
+    /// can be read back from the ledger. `None` on older rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<String>,
 }
 
 /// Where an eval row belongs. The per-call rows carry it with `result`

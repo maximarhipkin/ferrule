@@ -166,6 +166,9 @@ pub struct Config {
     /// M16's learning pass and the playbook in prompts.
     #[serde(default)]
     pub learning: crate::learn::LearningConfig,
+    /// M19: spending caps, the kill switch and the approval gates.
+    #[serde(default)]
+    pub trust: ferrule_trust::TrustConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -382,6 +385,21 @@ profile = "openai"
 # budget_window_hours = 24   # the agent you talk to isn't counted
 # [agents.roles.verifier]   # a role on another provider, from [providers]
 # provider = "local"
+#
+# [trust]                    # M19 (docs/m19-trust-cost.md). Caps are 0 = off;
+# max_tokens_per_run = 5000000  # a run is one prompt and its sub-agents.
+# max_usd_per_run = 5.0      # Dollars need prices in [providers.*].
+# max_tokens_per_day = 50000000 # Day and task caps are read from the ledger,
+# max_usd_per_day = 20.0     # so they count every ferrule process.
+# max_tokens_per_task = 0    # One scheduled task's day, sub-agents included.
+# max_usd_per_task = 0.0
+# warn_at = 0.8              # Telegram warning, once per cap and window.
+# timezone = "UTC"           # Where a day starts (an IANA zone).
+# owner_chat = 123456789     # Approvals and warnings; unset: the first private
+#                            # chat in [gateway] telegram_allowed_chats.
+# approval_timeout_secs = 600 # No answer refuses the command.
+# plan_timeout_secs = 3600
+# gates = true               # Ask before rm -rf, force pushes, DELETE to a bound host.
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).
@@ -493,6 +511,13 @@ mod tests {
         assert!(cfg.browser.chrome.is_some() && cfg.browser.allowed_domains.is_empty());
         assert!(cfg.agents.enabled);
         assert_eq!(cfg.agents.limits(), ferrule_agents::Limits::default());
+        assert_eq!(
+            cfg.trust,
+            ferrule_trust::TrustConfig {
+                owner_chat: Some(123456789),
+                ..Default::default()
+            }
+        );
         assert_eq!(
             cfg.agents.roles["verifier"].provider.as_deref(),
             Some("local")

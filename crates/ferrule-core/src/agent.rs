@@ -1,5 +1,6 @@
 use crate::error::CoreError;
 use crate::event::AgentEvent;
+use crate::guard::{unless_halted, Guard, GuardedCall, Verdict as GuardVerdict};
 use crate::history::{result_ref, SEARCH_HISTORY};
 use crate::hooks::{Budget, Inbox, SessionRecall, StopFlag};
 use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink};
@@ -203,6 +204,7 @@ pub struct Agent {
     budget: Option<Arc<dyn Budget>>,
     inbox: Option<Arc<dyn Inbox>>,
     stop: Option<StopFlag>,
+    guard: Option<Arc<dyn Guard>>,
     session_recall: Option<Arc<dyn SessionRecall>>,
     /// Session-start recall ran (it runs once per agent).
     recalled: bool,
@@ -239,6 +241,7 @@ impl Agent {
             budget: None,
             inbox: None,
             stop: None,
+            guard: None,
             session_recall: None,
             recalled: false,
             goal: None,
@@ -318,6 +321,14 @@ impl Agent {
 
     /// Ask `recall` for long-term memory about the goal at the start of the
     /// first run; see [`SessionRecall`].
+    /// The owner's guard (M19): caps, the kill switch, approval gates and
+    /// plan mode. Its own slot, so a supervisor's `with_budget` can't
+    /// replace it.
+    pub fn with_guard(mut self, guard: Arc<dyn Guard>) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
     pub fn with_session_recall(mut self, recall: Arc<dyn SessionRecall>) -> Self {
         self.session_recall = Some(recall);
         self
@@ -578,6 +589,7 @@ impl Agent {
             error_message,
             cost_usd: None,
             eval: None,
+            tree: None,
         };
         ledger.sink.record(record);
     }
@@ -596,6 +608,9 @@ impl Agent {
         let inbox = self.inbox.clone();
         if let Some(inbox) = &inbox {
             inbox.begin();
+        }
+        if let Some(guard) = &self.guard {
+            guard.begin();
         }
         let result = self.run_inner(goal, tx).await;
         if let Some(inbox) = &inbox {
@@ -690,14 +705,20 @@ impl Agent {
             if self.stopped() {
                 return Err(CoreError::Aborted("the agent was stopped".into()));
             }
+            if let Some(why) = self.guard.as_ref().and_then(|g| g.before_model_call()) {
+                return Ok(self.halt(&tx, iteration, why).await);
+            }
             if let Some(why) = self.budget.as_ref().and_then(|b| b.exhausted()) {
                 return self.wrap_up(&tx, iteration, StopReason::Budget(why)).await;
             }
             self.deliver_inbox();
             self.maybe_compact(&tx, iteration).await?;
-            let resp = self
-                .call_provider(&tx, self.request(), iteration, "turn")
-                .await?;
+            let guard = self.guard.clone();
+            let call = self.call_provider(&tx, self.request(), iteration, "turn");
+            let resp = match unless_halted(guard.as_ref(), call).await {
+                Ok(resp) => resp?,
+                Err(why) => return Ok(self.halt(&tx, iteration, why).await),
+            };
             self.add_usage(&tx, &resp.usage).await;
 
             let msg = resp.message;
@@ -719,7 +740,12 @@ impl Agent {
 
             if finished {
                 if needs_check {
-                    if let Some((check, output)) = self.run_checks(&tx).await {
+                    // The kill switch reaches a hanging check too (M19 §13).
+                    let checked = match unless_halted(guard.as_ref(), self.run_checks(&tx)).await {
+                        Ok(checked) => checked,
+                        Err(why) => return Ok(self.halt(&tx, iteration + 1, why).await),
+                    };
+                    if let Some((check, output)) = checked {
                         failed_checks += 1;
                         if failed_checks > self.config.max_verify_rounds {
                             let reason = StopReason::VerifyFailing {
@@ -741,7 +767,14 @@ impl Agent {
                 input.stop_hook_active = Some(sent_back);
                 input.files_changed = Some(unverified);
                 input.last_assistant_message = msg.content.clone();
-                if let Some((hook, reason)) = self.fire(&tx, HookEvent::Stop, input).await.block {
+                let stop = self.fire(&tx, HookEvent::Stop, input);
+                let stop = match unless_halted(guard.as_ref(), stop).await {
+                    Ok(stop) => stop,
+                    Err(why) => return Ok(self.halt(&tx, iteration + 1, why).await),
+                };
+                // Sent back, the run's next model call is asked about
+                // first, like any other: a Stop hook can't outrun the caps.
+                if let Some((hook, reason)) = stop.block {
                     stop_blocks += 1;
                     let rounds = self.hooks.limits.max_stop_blocks;
                     if stop_blocks > rounds {
@@ -788,24 +821,74 @@ impl Agent {
                 )
                 .await;
 
+                // The owner's gate first, then the PreToolUse hooks, then
+                // the tool, then PostToolUse, each raced against a halt
+                // (docs/m19-trust-cost.md §13). A hook never sees a call
+                // the gate refused, and has nothing to approve with.
                 let mut input = self.hook_input();
                 input.tool_name = Some(call.name.clone());
                 input.tool_input = Some(call.arguments.clone());
                 input.tool_use_id = Some(call.id.clone());
-                let pre = self.fire(&tx, HookEvent::PreToolUse, input.clone()).await;
-                let (raw, ok) = if let Some((_, reason)) = &pre.block {
-                    (
-                        format!("error: not run: a PreToolUse hook blocked it: {reason}"),
-                        false,
+                let seen = GuardedCall {
+                    tool: &call.name,
+                    args: &call.arguments,
+                    changes_files: self.tools.changes_files(&call.name),
+                };
+                let g = guard.as_ref();
+                let dispatched = 'dispatch: {
+                    let verdict = match g {
+                        Some(gd) => match unless_halted(g, gd.before_tool_call(seen)).await {
+                            Ok(v) => v,
+                            Err(why) => break 'dispatch Err(why),
+                        },
+                        None => GuardVerdict::Allow,
+                    };
+                    if let GuardVerdict::Refuse(why) = verdict {
+                        let raw = format!("refused by ferrule: {why}");
+                        break 'dispatch Ok((raw, false, Fired::default(), false));
+                    }
+                    let pre = match unless_halted(
+                        g,
+                        self.fire(&tx, HookEvent::PreToolUse, input.clone()),
                     )
-                } else {
-                    let result = self
+                    .await
+                    {
+                        Ok(pre) => pre,
+                        Err(why) => break 'dispatch Err(why),
+                    };
+                    if let Some((_, reason)) = &pre.block {
+                        let raw = format!("error: not run: a PreToolUse hook blocked it: {reason}");
+                        break 'dispatch Ok((raw, false, pre, false));
+                    }
+                    let run = self
                         .tools
-                        .call(&call.name, call.arguments.clone(), &self.tool_ctx)
+                        .call(&call.name, call.arguments.clone(), &self.tool_ctx);
+                    match unless_halted(g, run).await {
+                        Ok(Ok(out)) => Ok((out.content, true, pre, true)),
+                        Ok(Err(e)) => Ok((format!("error: {e}"), false, pre, true)),
+                        Err(why) => Err(why),
+                    }
+                };
+                let (raw, ok, pre, reached) = match dispatched {
+                    Ok(d) => d,
+                    Err(why) => {
+                        self.emit(
+                            &tx,
+                            AgentEvent::ToolCallFinished {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                ok: false,
+                                output_chars: 0,
+                            },
+                        )
                         .await;
-                    match result {
-                        Ok(out) => (out.content, true),
-                        Err(e) => (format!("error: {e}"), false),
+                        for skipped in &msg.tool_calls[i..] {
+                            self.push(Message::tool_result(
+                                &skipped.id,
+                                "not run: ferrule halted the run",
+                            ));
+                        }
+                        return Ok(self.halt(&tx, iteration + 1, why).await);
                     }
                 };
                 if !ok {
@@ -819,9 +902,34 @@ impl Agent {
                 if let Some(note) = &pre.context {
                     content.push_str(&format!("\n\n[hook: PreToolUse] {note}"));
                 }
-                if pre.block.is_none() {
+                // PostToolUse follows only a call that was dispatched: not
+                // one the gate refused or a hook blocked.
+                if reached {
                     input.tool_response = Some(serde_json::json!({"ok": ok, "content": raw}));
-                    let post = self.fire(&tx, HookEvent::PostToolUse, input).await;
+                    let post = self.fire(&tx, HookEvent::PostToolUse, input);
+                    let post = match unless_halted(g, post).await {
+                        Ok(post) => post,
+                        Err(why) => {
+                            self.emit(
+                                &tx,
+                                AgentEvent::ToolCallFinished {
+                                    id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    ok,
+                                    output_chars: content.len(),
+                                },
+                            )
+                            .await;
+                            self.push(Message::tool_result(&call.id, content));
+                            for skipped in &msg.tool_calls[i + 1..] {
+                                self.push(Message::tool_result(
+                                    &skipped.id,
+                                    "not run: ferrule halted the run",
+                                ));
+                            }
+                            return Ok(self.halt(&tx, iteration + 1, why).await);
+                        }
+                    };
                     for note in post.context.iter().chain(post.block.iter().map(|b| &b.1)) {
                         content.push_str(&format!("\n\n[hook: PostToolUse] {note}"));
                     }
@@ -872,6 +980,9 @@ impl Agent {
         iterations: usize,
         reason: StopReason,
     ) -> Result<String, CoreError> {
+        if let Some(halt) = self.guard.as_ref().and_then(|g| g.before_model_call()) {
+            return Ok(self.halt(tx, iterations, halt).await);
+        }
         let why = reason.to_string();
         warn!(%why, "stopping the run before it finished");
         self.incomplete = Some(why.clone());
@@ -920,6 +1031,31 @@ impl Agent {
         )
         .await;
         Ok(answer)
+    }
+
+    /// Ends a run the guard stopped, with the guard's own message as the
+    /// answer and no model call: a run stopped for spending too much must
+    /// not spend more to say so.
+    async fn halt(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iterations: usize,
+        why: String,
+    ) -> String {
+        warn!(%why, "the owner's guard stopped the run");
+        self.incomplete = Some(why.clone());
+        self.push(Message::assistant(Some(why.clone()), vec![], None));
+        self.emit(tx, AgentEvent::AssistantText { text: why.clone() })
+            .await;
+        self.emit(
+            tx,
+            AgentEvent::RunIncomplete {
+                reason: why.clone(),
+                iterations,
+            },
+        )
+        .await;
+        why
     }
 
     /// Whatever reached the inbox since the last model call, as one user
@@ -2712,6 +2848,229 @@ mod tests {
         assert!(!agent.has_tool("other"));
         agent.register_tool(Arc::new(Other));
         assert!(agent.has_tool("other"));
+    }
+
+    /// A guard for the loop's M19 seam: stops before the n-th model call,
+    /// refuses one tool by name, and halts when told to.
+    struct TestGuard {
+        stop_at_call: Option<usize>,
+        calls: Mutex<usize>,
+        refuse: Option<&'static str>,
+        halt: tokio::sync::watch::Sender<Option<String>>,
+        begun: Mutex<usize>,
+        seen: Mutex<Vec<(String, bool)>>,
+    }
+
+    impl TestGuard {
+        fn new() -> Self {
+            Self {
+                stop_at_call: None,
+                calls: Mutex::new(0),
+                refuse: None,
+                halt: tokio::sync::watch::channel(None).0,
+                begun: Mutex::new(0),
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Guard for TestGuard {
+        fn begin(&self) {
+            *self.begun.lock().unwrap() += 1;
+        }
+        fn before_model_call(&self) -> Option<String> {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            (Some(*calls) == self.stop_at_call).then(|| "Stopped: the cap is spent.".to_string())
+        }
+        async fn before_tool_call(&self, call: GuardedCall<'_>) -> crate::guard::Verdict {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((call.tool.to_string(), call.changes_files));
+            match self.refuse {
+                Some(name) if name == call.tool => {
+                    crate::guard::Verdict::Refuse("the owner said no".into())
+                }
+                _ => crate::guard::Verdict::Allow,
+            }
+        }
+        async fn halted(&self) -> String {
+            let mut rx = self.halt.subscribe();
+            let why = rx.wait_for(Option::is_some).await.unwrap();
+            why.clone().unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_guard_stop_ends_the_run_without_a_model_call() {
+        let guard = Arc::new(TestGuard {
+            stop_at_call: Some(2),
+            ..TestGuard::new()
+        });
+        let mut agent = make_agent(vec![echo("a"), say("never sent"), say("no status either")])
+            .with_guard(guard.clone());
+        let (tx, mut rx) = events();
+        let answer = agent.run("go", tx).await.unwrap();
+        assert_eq!(answer, "Stopped: the cap is spent.");
+        assert_eq!(agent.incomplete.as_deref(), Some(answer.as_str()));
+        assert_eq!(*guard.begun.lock().unwrap(), 1);
+        // One model call only, and the history ends with the stop message.
+        assert_eq!(agent.usage.input_tokens, 10);
+        let last = agent.messages.last().unwrap();
+        assert_eq!(last.role, crate::message::Role::Assistant);
+        assert_eq!(last.content.as_deref(), Some(answer.as_str()));
+        let events = drain(&mut rx);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RunIncomplete { iterations: 1, .. })));
+    }
+
+    #[tokio::test]
+    async fn a_refused_tool_call_is_the_tools_result_and_the_run_goes_on() {
+        let guard = Arc::new(TestGuard {
+            refuse: Some("echo"),
+            ..TestGuard::new()
+        });
+        let mut agent =
+            make_agent(vec![echo("rm -rf x"), say("done another way")]).with_guard(guard.clone());
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("go", tx).await.unwrap(), "done another way");
+        assert_eq!(agent.incomplete, None);
+        let result = agent
+            .messages
+            .iter()
+            .find(|m| m.role == crate::message::Role::Tool)
+            .unwrap();
+        assert_eq!(
+            result.content.as_deref(),
+            Some("refused by ferrule: the owner said no")
+        );
+        assert_eq!(
+            *guard.seen.lock().unwrap(),
+            vec![("echo".to_string(), true)]
+        );
+    }
+
+    struct SlowTool;
+
+    #[async_trait::async_trait]
+    impl Tool for SlowTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "slow".into(),
+                description: "".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn call(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput, CoreError> {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            Ok(ToolOutput::ok("finished"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_halt_stops_a_tool_mid_call_and_answers_every_call() {
+        let guard = Arc::new(TestGuard::new());
+        let slow = crate::message::ToolCall {
+            id: "s".into(),
+            name: "slow".into(),
+            arguments: serde_json::json!({}),
+        };
+        let then_echo = crate::message::ToolCall {
+            id: "e".into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({"text": "x"}),
+        };
+        let mut agent = make_agent(vec![
+            Message::assistant(None, vec![slow, then_echo], None),
+            say("never sent"),
+        ])
+        .with_guard(guard.clone());
+        agent.register_tool(Arc::new(SlowTool));
+        let halt = guard.halt.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            halt.send_replace(Some("Stopped: ferrule stop.".into()));
+        });
+        let (tx, _rx) = events();
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), agent.run("go", tx))
+            .await
+            .expect("the halt didn't stop the tool")
+            .unwrap();
+        assert_eq!(answer, "Stopped: ferrule stop.");
+        let results: Vec<_> = agent
+            .messages
+            .iter()
+            .filter(|m| m.role == crate::message::Role::Tool)
+            .map(|m| m.content.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(results.iter().all(|r| r.starts_with("not run")));
+        // A halted run doesn't ask the next tool call's verdict.
+        assert_eq!(guard.seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_halt_ends_a_model_call_in_flight() {
+        struct Hang;
+        #[async_trait::async_trait]
+        impl Provider for Hang {
+            fn name(&self) -> &str {
+                "hang"
+            }
+            async fn complete(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, CoreError> {
+                std::future::pending().await
+            }
+        }
+        let guard = Arc::new(TestGuard::new());
+        let mut agent = Agent::new(
+            Arc::new(Hang),
+            ToolRegistry::new(),
+            HarnessProfile::generic(),
+            AgentConfig::default(),
+            ToolContext::default(),
+            None,
+        )
+        .with_guard(guard.clone());
+        let halt = guard.halt.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            halt.send_replace(Some("Stopped.".into()));
+        });
+        let (tx, _rx) = events();
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), agent.run("go", tx))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer, "Stopped.");
+        assert_eq!(agent.incomplete.as_deref(), Some("Stopped."));
+    }
+
+    #[tokio::test]
+    async fn the_step_limit_status_call_is_skipped_when_the_guard_says_stop() {
+        let guard = Arc::new(TestGuard {
+            stop_at_call: Some(2),
+            ..TestGuard::new()
+        });
+        let config = AgentConfig {
+            max_iterations: 1,
+            ..Default::default()
+        };
+        let mut agent =
+            agent_with(vec![echo("a"), say("status never sent")], config).with_guard(guard);
+        let (tx, _rx) = events();
+        let answer = agent.run("go", tx).await.unwrap();
+        assert_eq!(answer, "Stopped: the cap is spent.");
+        assert_eq!(agent.usage.input_tokens, 10);
     }
 
     // ---- M18: lifecycle hooks in the loop ----

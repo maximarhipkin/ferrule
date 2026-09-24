@@ -1,0 +1,1132 @@
+//! M19 through the real `ferrule` binary, against a scripted
+//! OpenAI-compatible server: a gated command in a run with nobody to ask is
+//! refused and audited, a sub-agent inherits that and charges its parent's
+//! tree, the run and day caps stop a run before the model is called again,
+//! `ferrule stop` halts everything until `--clear`, and a `[trust]` that
+//! doesn't validate is an error rather than no caps.
+
+use serde_json::{json, Value};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::Path;
+use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
+
+fn text(m: &Value) -> String {
+    m["content"].as_str().unwrap_or_default().to_string()
+}
+
+/// What the scripted model says. The task's marker picks the script.
+fn reply(req: &Value) -> Value {
+    let messages = req["messages"].as_array().unwrap();
+    let system = messages.first().map(text).unwrap_or_default();
+    let task = messages
+        .iter()
+        .find(|m| m["role"] == "user")
+        .map(text)
+        .unwrap_or_default();
+    let last = messages.last().unwrap();
+    let after_tool = last["role"] == "tool";
+    if system.contains("## You are agent") {
+        return if after_tool {
+            answer(&format!("CHILD_SAW {}", text(last)))
+        } else {
+            call("shell", json!({"command": "rm -rf victim"}))
+        };
+    }
+    if task.contains("SPAWN") {
+        if last["role"] == "user" && text(last).contains("agent_notice") {
+            return answer("ROOT_DONE");
+        }
+        return if after_tool {
+            answer("ROOT_WAITING")
+        } else {
+            call(
+                "spawn_agent",
+                json!({"task": "clean up", "worktree": false}),
+            )
+        };
+    }
+    if task.contains("DELETE_IT") {
+        return if after_tool {
+            answer(&format!("SAW {}", text(last)))
+        } else {
+            call("shell", json!({"command": "rm -rf victim"}))
+        };
+    }
+    if task.contains("PLAN_IT") {
+        let planning = system.contains("[Plan mode]");
+        return match (planning, after_tool) {
+            (_, false) => call("write_file", json!({"path": "made.txt", "content": "x"})),
+            (true, true) => answer("1. write made.txt\n2. say EXECUTED"),
+            (false, true) => answer("EXECUTED"),
+        };
+    }
+    if task.contains("HOOKED") {
+        let results: Vec<String> = messages
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(text)
+            .collect();
+        return match results.len() {
+            0 => call("shell", json!({"command": "rm -rf victim"})),
+            1 => call("shell", json!({"command": "echo hi"})),
+            _ => answer(&format!("SAW {}", results.join(" || "))),
+        };
+    }
+    if task.contains("LOOP") {
+        return call("shell", json!({"command": "echo again"}));
+    }
+    answer("PLAIN")
+}
+
+fn call(name: &str, args: Value) -> Value {
+    json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": format!("call_{}", uuid_ish()),
+                    "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()},
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+    })
+}
+
+fn uuid_ish() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+fn answer(text: &str) -> Value {
+    json!({
+        "choices": [{
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+    })
+}
+
+fn model_server() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "http://127.0.0.1:{}/v1",
+        listener.local_addr().unwrap().port()
+    );
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let log = log.clone();
+            std::thread::spawn(move || serve(stream, &log));
+        }
+    });
+    (url, seen)
+}
+
+fn serve(mut stream: TcpStream, log: &Mutex<Vec<Value>>) {
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            return;
+        }
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    let req: Value = serde_json::from_slice(&body).unwrap();
+    let out = reply(&req).to_string();
+    log.lock().unwrap().push(req);
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
+        out.len()
+    );
+}
+
+fn plain(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn tool_names(req: &Value) -> Vec<String> {
+    req["tools"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A home with the scripted provider and `trust` as its `[trust]` table.
+fn home(url: &str, trust: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for d in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    std::fs::create_dir_all(home.join("work/victim")).unwrap();
+    std::fs::write(home.join("work/victim/keep.txt"), "keep").unwrap();
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[trust]
+{trust}
+"#
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+fn ferrule(home: &Path, args: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ferrule"));
+    cmd.args(args)
+        .current_dir(home.join("work"))
+        .env("FERRULE_CONFIG", home.join("ferrule.toml"))
+        .env("FERRULE_DATA_DIR", home.join("data"))
+        .env("FERRULE_TEST_KEY", "sk-test");
+    for var in [
+        "HOME",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "APPDATA",
+        "LOCALAPPDATA",
+    ] {
+        cmd.env(var, home.join("home"));
+    }
+    for var in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        cmd.env_remove(var);
+    }
+    // stdin is not a terminal: nobody can approve.
+    cmd.output().unwrap()
+}
+
+fn jsonl(path: &Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn describe(out: &Output) -> String {
+    format!(
+        "status {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status.code(),
+        plain(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+#[test]
+fn a_gated_command_with_nobody_to_ask_is_refused_and_audited() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    let out = ferrule(home, &["run", "DELETE_IT please"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let stdout = plain(&out.stdout);
+    assert!(stdout.contains("final: SAW refused by ferrule"), "{stdout}");
+    assert!(stdout.contains("needs the owner's approval"), "{stdout}");
+    assert!(stdout.contains("no terminal to ask"), "{stdout}");
+    assert!(home.join("work/victim/keep.txt").exists());
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // The rows carry the run's tree; the refusal is in the audit log.
+    let rows = jsonl(&home.join("data/ledger.jsonl"));
+    assert_eq!(rows.len(), 2);
+    let tree = rows[0]["tree"].as_str().unwrap().to_string();
+    assert_eq!(rows[0]["session_id"], tree.as_str());
+    let audit = jsonl(&home.join("data/trust/audit.jsonl"));
+    let refused: Vec<&Value> = audit
+        .iter()
+        .filter(|e| e["event"] == "approval_answered")
+        .collect();
+    assert_eq!(refused.len(), 1, "{audit:?}");
+    assert_eq!(refused[0]["tree"], tree.as_str());
+    assert_eq!(refused[0]["detail"]["answer"], "unattended");
+    assert!(refused[0]["detail"]["subject"]
+        .as_str()
+        .unwrap()
+        .contains("rm -rf victim"));
+
+    let out = ferrule(home, &["trust", "audit"]);
+    assert!(plain(&out.stdout).contains("approval_answered"));
+
+    // With the gates off, the same command runs.
+    let (url, _) = model_server();
+    let dir = self::home(&url, "gates = false");
+    let out = ferrule(dir.path(), &["run", "DELETE_IT please"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(!dir.path().join("work/victim").exists());
+}
+
+#[test]
+fn a_sub_agent_inherits_the_refusal_and_charges_its_parents_tree() {
+    let (url, _) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    let out = ferrule(home, &["run", "SPAWN a cleaner"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(home.join("work/victim/keep.txt").exists());
+
+    let rows = jsonl(&home.join("data/ledger.jsonl"));
+    let child: Vec<&Value> = rows.iter().filter(|r| r["task_shape"] == "agent").collect();
+    assert!(!child.is_empty(), "{rows:?}");
+    let root = rows.iter().find(|r| r["task_shape"] == "run").unwrap();
+    let tree = root["tree"].as_str().unwrap();
+    assert_eq!(root["session_id"], tree);
+    for r in &child {
+        assert_eq!(r["tree"], tree, "a child's row is charged to its root");
+        assert_ne!(r["session_id"], tree);
+    }
+    let audit = jsonl(&home.join("data/trust/audit.jsonl"));
+    let refused = audit
+        .iter()
+        .find(|e| e["event"] == "approval_answered")
+        .expect("the child's rm -rf was refused");
+    assert_eq!(refused["tree"], tree);
+    assert_eq!(refused["detail"]["answer"], "unattended");
+}
+
+#[test]
+fn the_run_cap_stops_a_run_before_the_next_model_call() {
+    let (url, seen) = model_server();
+    // 110 tokens a call: the third call would start at 220.
+    let dir = home(&url, "max_tokens_per_run = 200");
+    let home = dir.path();
+    let out = ferrule(home, &["run", "LOOP forever"]);
+    assert_eq!(out.status.code(), Some(2), "{}", describe(&out));
+    let stdout = plain(&out.stdout);
+    assert!(
+        stdout.contains("this run reached its token cap (max_tokens_per_run = 200)"),
+        "{stdout}"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let audit = jsonl(&home.join("data/trust/audit.jsonl"));
+    assert!(audit
+        .iter()
+        .any(|e| e["event"] == "cap_stop" && e["detail"]["cap"] == "max_tokens_per_run"));
+    // 110 is under warn_at (160) and 220 is over the cap: a stop, no warning.
+    assert!(!audit.iter().any(|e| e["event"] == "cap_warning"));
+}
+
+#[test]
+fn the_day_cap_counts_what_other_processes_spent_today() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "max_tokens_per_day = 1000");
+    let home = dir.path();
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = json!({
+        "timestamp": now, "session_id": "elsewhere", "task_shape": "run",
+        "provider": "mock", "model": "scripted", "iteration": 0, "call_kind": "turn",
+        "input_tokens": 1000, "cached_input_tokens": 0, "output_tokens": 0,
+        "tool_calls": 0, "latency_ms": 1, "outcome": "ok",
+    });
+    std::fs::write(home.join("data/ledger.jsonl"), format!("{row}\n")).unwrap();
+    let out = ferrule(home, &["run", "anything"]);
+    assert_eq!(out.status.code(), Some(2), "{}", describe(&out));
+    assert!(plain(&out.stdout).contains("today's spend reached its token cap"));
+    assert!(seen.lock().unwrap().is_empty(), "no model call was made");
+
+    let out = ferrule(home, &["trust", "status"]);
+    let status = plain(&out.stdout);
+    assert!(status.contains("today:    1,000 tokens"), "{status}");
+    assert!(status.contains("per day:  1,000 tokens"), "{status}");
+}
+
+#[test]
+fn ferrule_stop_halts_every_run_until_cleared() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    let out = ferrule(home, &["stop", "--reason", "too much spend"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(home.join("data/trust/stop").exists());
+    let out = ferrule(home, &["stop", "--status"]);
+    assert!(plain(&out.stdout).contains("too much spend"));
+
+    let out = ferrule(home, &["run", "anything"]);
+    assert_eq!(out.status.code(), Some(2), "{}", describe(&out));
+    assert!(plain(&out.stdout).contains("Ferrule is stopped (by ferrule stop"));
+    assert!(seen.lock().unwrap().is_empty());
+    let out = ferrule(home, &["trust", "status"]);
+    assert!(plain(&out.stdout).contains("kill switch: ON"));
+
+    let out = ferrule(home, &["stop", "--clear"]);
+    assert!(plain(&out.stdout).contains("cleared"));
+    let out = ferrule(home, &["run", "anything"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(plain(&out.stdout).contains("final: PLAIN"));
+    let out = ferrule(home, &["stop", "--clear"]);
+    assert!(plain(&out.stdout).contains("wasn't stopped"));
+
+    let events: Vec<String> = jsonl(&home.join("data/trust/audit.jsonl"))
+        .iter()
+        .map(|e| e["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(events, ["stop_engaged", "stop_cleared"]);
+}
+
+#[test]
+fn a_trust_table_that_doesnt_validate_is_an_error() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "timezone = \"Mars/Olympus\"");
+    let out = ferrule(dir.path(), &["run", "anything"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("isn't an IANA zone"),
+        "{}",
+        describe(&out)
+    );
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+/// A Bot API stand-in: `getUpdates` hands out what the test queued (or
+/// nothing after a short wait), `sendMessage` bodies are kept.
+#[test]
+fn a_plan_changes_nothing_until_it_is_approved() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    let out = ferrule(home, &["run", "--plan", "PLAN_IT"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let stdout = plain(&out.stdout);
+    assert!(stdout.contains("1. write made.txt"), "{stdout}");
+    let id = stdout
+        .split("`ferrule plan approve ")
+        .nth(1)
+        .and_then(|r| r.split('`').next())
+        .unwrap_or_else(|| panic!("no plan id: {stdout}"))
+        .to_string();
+    assert!(
+        !home.join("work/made.txt").exists(),
+        "planning wrote a file"
+    );
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let tools = tool_names(&seen[0]);
+        assert!(tools.contains(&"read_file".to_string()), "{tools:?}");
+        for gone in ["write_file", "shell", "write_todos", "log_diary"] {
+            assert!(!tools.contains(&gone.to_string()), "{gone} in {tools:?}");
+        }
+    }
+    let plan: Value =
+        serde_json::from_slice(&std::fs::read(home.join(format!("data/plans/{id}.json"))).unwrap())
+            .unwrap();
+    assert_eq!(plan["status"], "proposed");
+    assert_eq!(plan["text"], "1. write made.txt\n2. say EXECUTED");
+    let out = ferrule(home, &["plan", "list"]);
+    assert!(
+        plain(&out.stdout).contains(&format!("{id}  proposed")),
+        "{}",
+        describe(&out)
+    );
+
+    // Approved, it runs in the same session with the normal tools.
+    let out = ferrule(home, &["plan", "approve", &id]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(
+        plain(&out.stdout).contains("final: EXECUTED"),
+        "{}",
+        describe(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("work/made.txt")).unwrap(),
+        "x"
+    );
+    {
+        let seen = seen.lock().unwrap();
+        let first = &seen[2];
+        assert!(tool_names(first).contains(&"write_file".to_string()));
+        let said: Vec<String> = first["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(text)
+            .collect();
+        assert!(
+            said.iter()
+                .any(|m| m == "1. write made.txt\n2. say EXECUTED"),
+            "the exploration is replayed: {said:?}"
+        );
+        assert!(said.last().unwrap().contains("[Approved plan]"));
+    }
+    let plan: Value =
+        serde_json::from_slice(&std::fs::read(home.join(format!("data/plans/{id}.json"))).unwrap())
+            .unwrap();
+    assert_eq!(plan["status"], "executed");
+    assert!(plan["executed_by"].is_string());
+    let events: Vec<String> = jsonl(&home.join("data/trust/audit.jsonl"))
+        .iter()
+        .map(|e| e["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        events,
+        ["plan_proposed", "plan_approved", "plan_executed"],
+        "{events:?}"
+    );
+    let again = ferrule(home, &["plan", "approve", &id]);
+    assert!(!again.status.success());
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("already executed"),
+        "{}",
+        describe(&again)
+    );
+
+    // A rejected plan can't be approved later.
+    let out = ferrule(home, &["run", "--plan", "PLAN_IT"]);
+    let stdout = plain(&out.stdout);
+    let id = stdout
+        .split("`ferrule plan reject ")
+        .nth(1)
+        .and_then(|r| r.split('`').next())
+        .unwrap()
+        .to_string();
+    assert!(ferrule(home, &["plan", "reject", &id]).status.success());
+    let out = ferrule(home, &["plan", "approve", &id]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already rejected"));
+    assert!(!std::fs::read_to_string(home.join("work/made.txt"))
+        .unwrap()
+        .is_empty());
+}
+
+struct FakeTelegram {
+    url: String,
+    queue: Arc<Mutex<std::collections::VecDeque<Value>>>,
+    sent: Arc<Mutex<Vec<Value>>>,
+    next: Mutex<i64>,
+}
+
+impl FakeTelegram {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let queue: Arc<Mutex<std::collections::VecDeque<Value>>> = Arc::default();
+        let sent: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let (q, s) = (queue.clone(), sent.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (q, s) = (q.clone(), s.clone());
+                std::thread::spawn(move || telegram_serve(stream, &q, &s));
+            }
+        });
+        Self {
+            url,
+            queue,
+            sent,
+            next: Mutex::new(1),
+        }
+    }
+
+    fn say(&self, chat: i64, text: &str) {
+        let mut next = self.next.lock().unwrap();
+        *next += 1;
+        self.queue.lock().unwrap().push_back(json!({
+            "update_id": *next,
+            "message": {"message_id": *next, "chat": {"id": chat}, "from": {"username": "max"},
+                        "text": text, "date": 1700000000},
+        }));
+    }
+
+    /// Waits for a message to `chat` containing `needle`, after the first
+    /// `from` messages.
+    fn wait_for(&self, chat: i64, needle: &str, from: usize) -> (usize, String) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            {
+                let sent = self.sent.lock().unwrap();
+                for (i, m) in sent.iter().enumerate().skip(from) {
+                    let text = m["text"].as_str().unwrap_or_default();
+                    if m["chat_id"] == chat.to_string().as_str() && text.contains(needle) {
+                        return (i + 1, text.to_string());
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no message to {chat} with {needle:?}; sent: {sent:#?}"
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+fn telegram_serve(
+    mut stream: TcpStream,
+    queue: &Mutex<std::collections::VecDeque<Value>>,
+    sent: &Mutex<Vec<Value>>,
+) {
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut request = String::new();
+    if reader.read_line(&mut request).unwrap_or(0) == 0 {
+        return;
+    }
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            return;
+        }
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    let out = if request.contains("getUpdates") {
+        let mut updates: Vec<Value> = queue.lock().unwrap().drain(..).collect();
+        if updates.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            updates = queue.lock().unwrap().drain(..).collect();
+        }
+        json!({"ok": true, "result": updates})
+    } else {
+        let mut sent = sent.lock().unwrap();
+        sent.push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+        json!({"ok": true, "result": {"message_id": 1000 + sent.len()}})
+    }
+    .to_string();
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
+        out.len()
+    );
+}
+
+/// Kills the gateway when the test ends, passed or not.
+struct Running(std::process::Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn gateway(home: &Path) -> Running {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ferrule"));
+    cmd.args(["gateway"])
+        .current_dir(home.join("work"))
+        .env("FERRULE_CONFIG", home.join("ferrule.toml"))
+        .env("FERRULE_DATA_DIR", home.join("data"))
+        .env("FERRULE_TEST_KEY", "sk-test")
+        .env("FERRULE_TEST_TG", "TESTTOKEN")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for var in ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME"] {
+        cmd.env(var, home.join("home"));
+    }
+    for var in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        cmd.env_remove(var);
+    }
+    Running(cmd.spawn().unwrap())
+}
+
+#[test]
+fn the_owner_approves_stops_and_resumes_from_telegram() {
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    let dir = home(
+        &url,
+        &format!(
+            "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"{}\"\ntelegram_allowed_chats = [-100, 42]\n",
+            tg.url
+        ),
+    );
+    let home = dir.path();
+    let _gw = gateway(home);
+
+    // A gated command in the owner's chat is asked about there; yes runs it.
+    tg.say(42, "DELETE_IT now");
+    let (n, question) = tg.wait_for(42, "Reply `yes` to allow it", 0);
+    assert!(question.contains("rm -rf victim"), "{question}");
+    assert!(home.join("work/victim/keep.txt").exists());
+    tg.say(42, "yes");
+    let (n, _) = tg.wait_for(42, "SAW", n);
+    assert!(!home.join("work/victim").exists());
+
+    // Only the owner chat resumes; any allowed chat can stop.
+    tg.say(-100, "/stop too much");
+    let (n, _) = tg.wait_for(-100, "Stopped:", n);
+    assert!(home.join("data/trust/stop").exists());
+    tg.say(42, "hello");
+    let (n, _) = tg.wait_for(42, "Ferrule is stopped (by telegram chat -100", n);
+    tg.say(-100, "/resume");
+    let (n, _) = tg.wait_for(-100, "Only the owner chat", n);
+    tg.say(42, "/resume");
+    let (n, _) = tg.wait_for(42, "Resumed", n);
+    // (chat 42's session would replay DELETE_IT: the script keys off its
+    // first message.)
+    tg.say(-100, "hello again");
+    tg.wait_for(-100, "PLAIN", n);
+    assert!(!home.join("data/trust/stop").exists());
+
+    let audit = jsonl(&home.join("data/trust/audit.jsonl"));
+    let events: Vec<&str> = audit.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    assert_eq!(
+        events,
+        [
+            "approval_asked",
+            "approval_answered",
+            "stop_engaged",
+            "stop_cleared"
+        ],
+        "{audit:#?}"
+    );
+    assert_eq!(audit[1]["detail"]["answer"], "yes");
+    assert_eq!(audit[1]["tree"], "telegram__42");
+}
+
+#[test]
+fn slash_plan_explores_asks_the_owner_and_runs_only_on_yes() {
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    let dir = home(
+        &url,
+        &format!(
+            "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"{}\"\ntelegram_allowed_chats = [-100, 42]\n",
+            tg.url
+        ),
+    );
+    let home = dir.path();
+    let _gw = gateway(home);
+
+    // A group asks; the plan goes to the owner chat, and nothing changes.
+    tg.say(-100, "/plan PLAN_IT");
+    let (n, _) = tg.wait_for(-100, "Planning (read-only", 0);
+    let (n, question) = tg.wait_for(42, "Reply `yes` to allow it", n);
+    assert!(question.contains("asked in chat -100"), "{question}");
+    assert!(question.contains("1. write made.txt"), "{question}");
+    assert!(!home.join("work/made.txt").exists());
+    tg.say(42, "yes");
+    let (n, _) = tg.wait_for(-100, "approved; running it", n);
+    let (n, _) = tg.wait_for(-100, "EXECUTED", n);
+    assert_eq!(
+        std::fs::read_to_string(home.join("work/made.txt")).unwrap(),
+        "x"
+    );
+
+    // Anything but yes rejects it, and the group is told.
+    std::fs::remove_file(home.join("work/made.txt")).unwrap();
+    tg.say(-100, "/plan PLAN_IT");
+    let (n, _) = tg.wait_for(42, "Reply `yes` to allow it", n);
+    tg.say(42, "no");
+    tg.wait_for(-100, "wasn't run", n);
+    assert!(!home.join("work/made.txt").exists());
+
+    let audit = jsonl(&home.join("data/trust/audit.jsonl"));
+    let events: Vec<&str> = audit.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    assert_eq!(
+        events,
+        [
+            "plan_proposed",
+            "approval_asked",
+            "approval_answered",
+            "plan_approved",
+            "plan_executed",
+            "plan_proposed",
+            "approval_asked",
+            "approval_answered",
+            "plan_rejected",
+        ],
+        "{audit:#?}"
+    );
+    assert!(audit[0]["tree"].as_str().unwrap().starts_with("plan__"));
+}
+
+/// A one-task suite whose task runs `rm -rf victim`, with `opt` in its
+/// `[suite]` table.
+fn eval_suite(home: &Path, opt: &str) -> String {
+    let suite = home.join("suite");
+    std::fs::create_dir_all(&suite).unwrap();
+    std::fs::write(
+        suite.join("suite.toml"),
+        format!(
+            "[suite]\nname = \"trust\"\n{opt}\n\n[[task]]\nid = \"wipe\"\nprompt = \"DELETE_IT in the eval\"\n[task.grade]\ncommand = \"true\"\n"
+        ),
+    )
+    .unwrap();
+    suite.to_str().unwrap().to_string()
+}
+
+/// The ledger's model calls, without eval's result rows.
+fn calls(home: &Path) -> Vec<Value> {
+    jsonl(&home.join("data/ledger.jsonl"))
+        .into_iter()
+        .filter(|r| r["call_kind"] != "eval_result")
+        .collect()
+}
+
+fn tool_results(seen: &Mutex<Vec<Value>>) -> Vec<String> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["messages"].as_array()?.last().cloned())
+        .filter(|m| m["role"] == "tool")
+        .map(|m| text(&m))
+        .collect()
+}
+
+#[test]
+fn eval_ignores_the_owners_caps_gates_and_switch_unless_the_suite_opts_in() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "max_tokens_per_run = 50\nmax_tokens_per_day = 50");
+    let home = dir.path();
+    assert!(ferrule(home, &["stop", "--reason", "no spending"])
+        .status
+        .success());
+
+    let suite = eval_suite(home, "");
+    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    // Both variants ran past the caps, with the switch on, and the rm ran.
+    assert_eq!(seen.lock().unwrap().len(), 4, "{}", describe(&out));
+    let results = tool_results(&seen);
+    assert_eq!(results.len(), 2);
+    assert!(
+        results.iter().all(|r| !r.contains("refused by ferrule")),
+        "{results:?}"
+    );
+    let events: Vec<Value> = jsonl(&home.join("data/trust/audit.jsonl"));
+    assert_eq!(events.len(), 1, "only the stop: {events:?}");
+    // The rows are in the ledger, and the owner's day doesn't count them.
+    let rows = calls(home);
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|r| r["tree"].is_null()));
+    let status = plain(&ferrule(home, &["trust", "status"]).stdout);
+    assert!(status.contains("today:    0 tokens"), "{status}");
+
+    // Opted in, the same suite is stopped before any model call.
+    seen.lock().unwrap().clear();
+    let suite = eval_suite(home, "owner_trust = true");
+    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    assert_eq!(out.status.code(), Some(3), "{}", describe(&out));
+    assert!(seen.lock().unwrap().is_empty(), "{}", describe(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("stopped (0 calls, 0 tokens) — Ferrule is stopped"),
+        "{}",
+        describe(&out)
+    );
+}
+
+#[test]
+fn an_eval_suite_that_opts_in_is_gated_unattended_and_counted() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    let suite = eval_suite(home, "owner_trust = true");
+    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let results = tool_results(&seen);
+    assert_eq!(results.len(), 2, "{}", describe(&out));
+    for r in &results {
+        assert!(r.contains("refused by ferrule"), "{r}");
+        assert!(r.contains("eval run, which runs unattended"), "{r}");
+    }
+    let rows = calls(home);
+    assert_eq!(rows.len(), 4);
+    let tree = rows[0]["tree"].as_str().unwrap().to_string();
+    assert!(tree.starts_with("eval:"), "{tree}");
+    assert!(rows.iter().all(|r| r["tree"] == tree.as_str()));
+    let refused = jsonl(&home.join("data/trust/audit.jsonl"))
+        .into_iter()
+        .filter(|e| e["tree"] == tree.as_str() && e["detail"]["answer"] == "unattended")
+        .count();
+    assert_eq!(refused, 2);
+    let status = plain(&ferrule(home, &["trust", "status"]).stdout);
+    assert!(status.contains("today:    440 tokens"), "{status}");
+}
+
+#[test]
+fn no_learning_pass_runs_while_stopped_or_over_the_day_cap() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    assert!(ferrule(home, &["stop"]).status.success());
+    let out = ferrule(home, &["learn", "run"]);
+    assert!(!out.status.success(), "{}", describe(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("no learning pass: Ferrule is stopped"),
+        "{err}"
+    );
+
+    let dir = self::home(&url, "max_tokens_per_day = 1000");
+    let home = dir.path();
+    let row = json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(), "session_id": "elsewhere",
+        "task_shape": "run", "provider": "mock", "model": "scripted", "iteration": 0,
+        "call_kind": "turn", "input_tokens": 1000, "cached_input_tokens": 0,
+        "output_tokens": 0, "tool_calls": 0, "latency_ms": 1, "outcome": "ok",
+    });
+    std::fs::write(home.join("data/ledger.jsonl"), format!("{row}\n")).unwrap();
+    let out = ferrule(home, &["learn", "run"]);
+    assert!(!out.status.success(), "{}", describe(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("no learning pass: Stopped: today's spend reached its token cap"),
+        "{err}"
+    );
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn doctor_reports_the_switch_the_caps_and_who_approves() {
+    let (url, _) = model_server();
+    let dir = home(&url, "max_tokens_per_day = 5000\nmax_usd_per_run = 2");
+    let home = dir.path();
+    let out = plain(&ferrule(home, &["doctor", "--offline"]).stdout);
+    assert!(
+        // Beside the defaults: 5,000,000 tokens a run and $20 a day.
+        out.contains(
+            "5,000,000 tokens / $2.00 per run, 5,000 tokens / $20.00 per day · today 0 tokens, $0.00 · gates on"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("no owner chat: only the terminal approves"),
+        "{out}"
+    );
+    assert!(!out.contains("Ferrule is stopped"), "{out}");
+    assert!(ferrule(home, &["stop", "--reason", "checking"])
+        .status
+        .success());
+    let out = plain(&ferrule(home, &["doctor", "--offline"]).stdout);
+    assert!(out.contains("Ferrule is stopped (by ferrule stop"), "{out}");
+}
+
+// ---- M19 next to M18's hooks (docs/m19-trust-cost.md §13) ----
+
+/// A PreToolUse hook for every tool that logs each payload and answers
+/// Claude Code's "allow" with a note for the model.
+#[cfg(unix)]
+fn allowing_hook(home: &Path, event: &str) -> String {
+    let log = home.join(format!("{event}.log"));
+    format!(
+        r#"
+[[hooks.{event}]]
+command = '''cat >> "{log}"; echo >> "{log}"; printf '%s' '{{"hookSpecificOutput":{{"hookEventName":"{event}","permissionDecision":"allow","additionalContext":"HOOK_NOTE"}}}}''''
+"#,
+        log = log.display()
+    )
+}
+
+/// Appends an [`allowing_hook`] for each event to the home's config.
+#[cfg(unix)]
+fn with_hooks(home: &Path, events: &[&str]) {
+    let cfg = home.join("ferrule.toml");
+    let mut text = std::fs::read_to_string(&cfg).unwrap();
+    for event in events {
+        text.push_str(&allowing_hook(home, event));
+    }
+    std::fs::write(&cfg, text).unwrap();
+}
+
+#[cfg(unix)]
+fn hook_log(home: &Path, event: &str) -> Vec<String> {
+    std::fs::read_to_string(home.join(format!("{event}.log")))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// One session, one gated command and one plain one, with a PreToolUse
+/// hook that allows everything: the gate answers first, so the hook never
+/// sees the refused call, and its "allow" and note can't carry it past.
+#[cfg(unix)]
+#[test]
+fn the_gate_answers_before_pre_tool_use_hooks_and_no_hook_can_approve_past_it() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    with_hooks(dir.path(), &["PreToolUse"]);
+    let home = dir.path();
+
+    let out = ferrule(home, &["run", "HOOKED please"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(home.join("work/victim/keep.txt").exists(), "the rm ran");
+    let results = tool_results(&seen);
+    assert_eq!(results.len(), 2, "{results:?}");
+    // The refusal is the gate's, with no hook note: the hook never ran.
+    assert!(
+        results[0].starts_with("refused by ferrule:"),
+        "{}",
+        results[0]
+    );
+    assert!(results[0].contains("no terminal to ask"), "{}", results[0]);
+    assert!(!results[0].contains("HOOK_NOTE"), "{}", results[0]);
+    // The call the gate allowed went on to the hook, then the tool.
+    assert!(results[1].starts_with("hi"), "{}", results[1]);
+    assert!(
+        results[1].contains("[hook: PreToolUse] HOOK_NOTE"),
+        "{}",
+        results[1]
+    );
+    let log = hook_log(home, "PreToolUse");
+    assert_eq!(log.len(), 1, "{log:?}");
+    let payload: Value = serde_json::from_str(&log[0]).unwrap();
+    assert_eq!(payload["tool_input"]["command"], "echo hi");
+    let hook_runs: Vec<Value> = jsonl(&home.join("data/hooks/runs.jsonl"))
+        .into_iter()
+        .filter(|r| r["event"] == "PreToolUse")
+        .collect();
+    assert_eq!(hook_runs.len(), 1, "{hook_runs:?}");
+    let refused = jsonl(&home.join("data/trust/audit.jsonl"))
+        .into_iter()
+        .filter(|e| e["event"] == "approval_answered" && e["detail"]["answer"] == "unattended")
+        .count();
+    assert_eq!(refused, 1);
+}
+
+/// A Stop hook that always sends the run back can't get around the run
+/// cap: each send-back's model call is asked about first.
+#[cfg(unix)]
+#[test]
+fn a_stop_hook_sending_the_run_back_still_meets_the_run_cap() {
+    let (url, seen) = model_server();
+    // 110 tokens a call: the third call would start at 220. Without the
+    // cap, the hook's default of 3 send-backs would allow 4 calls.
+    let dir = home(
+        &url,
+        "max_tokens_per_run = 200\n\n[[hooks.Stop]]\ncommand = \"echo 'not done' >&2; exit 2\"\n",
+    );
+    let home = dir.path();
+    let out = ferrule(home, &["run", "say something"]);
+    assert_eq!(out.status.code(), Some(2), "{}", describe(&out));
+    let stdout = plain(&out.stdout);
+    assert!(
+        stdout.contains("this run reached its token cap (max_tokens_per_run = 200)"),
+        "{stdout}"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let stops = jsonl(&home.join("data/hooks/runs.jsonl"))
+        .into_iter()
+        .filter(|r| r["event"] == "Stop")
+        .count();
+    assert_eq!(stops, 2);
+}
+
+/// Hooks run as the owner, outside the sandbox, so a planning run fires
+/// none; the approved plan's run does.
+#[cfg(unix)]
+#[test]
+fn a_planning_run_fires_no_hooks_and_the_approved_plan_does() {
+    let (url, _seen) = model_server();
+    let dir = home(&url, "");
+    with_hooks(dir.path(), &["PreToolUse", "SessionStart"]);
+    let home = dir.path();
+
+    let out = ferrule(home, &["run", "--plan", "PLAN_IT"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let stdout = plain(&out.stdout);
+    let id = stdout
+        .split("`ferrule plan approve ")
+        .nth(1)
+        .and_then(|r| r.split('`').next())
+        .unwrap_or_else(|| panic!("no plan id: {stdout}"))
+        .to_string();
+    assert!(hook_log(home, "PreToolUse").is_empty());
+    assert!(hook_log(home, "SessionStart").is_empty());
+    assert!(!home.join("data/hooks/runs.jsonl").exists());
+
+    let out = ferrule(home, &["plan", "approve", &id]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(home.join("work/made.txt").exists());
+    assert_eq!(hook_log(home, "PreToolUse").len(), 1);
+    assert_eq!(hook_log(home, "SessionStart").len(), 1);
+}
+
+/// Opted into the owner's trust, an eval still fires none of the owner's
+/// hooks.
+#[cfg(unix)]
+#[test]
+fn an_eval_that_opts_into_the_owners_trust_still_fires_no_hooks() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    with_hooks(dir.path(), &["PreToolUse", "Stop"]);
+    let home = dir.path();
+    let suite = eval_suite(home, "owner_trust = true");
+    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let results = tool_results(&seen);
+    assert_eq!(results.len(), 2, "{}", describe(&out));
+    assert!(results.iter().all(|r| r.contains("refused by ferrule")));
+    assert!(results.iter().all(|r| !r.contains("HOOK_NOTE")));
+    assert!(hook_log(home, "PreToolUse").is_empty());
+    assert!(hook_log(home, "Stop").is_empty());
+    assert!(!home.join("data/hooks/runs.jsonl").exists());
+}

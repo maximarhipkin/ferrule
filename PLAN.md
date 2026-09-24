@@ -314,10 +314,21 @@ that convention yet — ask before introducing one).
     payload and output, the trust and audit files' permissions, and the
     `canonicalize`d workspace key; the integration tests are
     `#[cfg(unix)]`.
-  - **M19 trust & cost** (§4.11–4.13): hard budget caps (per
-    run/day/task) with a kill switch, approval gates for destructive
-    actions (Telegram approve/deny), plan mode on the read-only sandbox
-    primitive.
+  - **M19 trust & cost** (§4.11–4.13): **built** (2026-09-25, parts 1–6
+    on branch `m19-trust-cost`, PR to main open, not merged; CI deferred
+    to the roadmap batch; see the M19 session-log entry). Design:
+    `docs/m19-trust-cost.md`. A `Guard` seam in the agent loop
+    (`ferrule-core`), the owner's state in a new `ferrule-trust` crate,
+    and thin wiring in the CLI (`trust.rs`, `plan.rs`) and the gateway.
+    Token and dollar caps per run, per day and per scheduled task, read
+    from the ledger; a warning at 80% to the owner's chat; a kill switch
+    (`ferrule stop`, `/stop`, `/resume`) that halts calls in flight and
+    holds the scheduler; approval gates on `rm -r`, force pushes and
+    DELETEs to a bound host (Telegram or the terminal; unattended runs
+    refuse); plan mode (`ferrule run --plan`, `ferrule plan`, `/plan`).
+    Sub-agents share their root's guard. Eval is hermetic unless a suite
+    sets `owner_trust = true`. **Open edges and the macOS/Windows-unverified
+    list:** see the M19 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): parallel read-only tool calls, provider streaming
@@ -2582,3 +2593,123 @@ Not covered here, and queued as a reliability milestone after M19: a stuck
 turn still silently blocks its chat's lane. The planned fixes are an
 out-of-lane 👀 on receipt, `/status` and `/stop` answered by the gateway
 itself, a turn watchdog that tells the owner, and an external dead-man alert.
+
+### 2026-09-25 — M19 trust & cost (Devi, Opus 5.5)
+
+The design is `docs/m19-trust-cost.md`. The work is on branch `m19-trust-cost`, cut
+from `main` at `c6a3244`, with a PR to `main` (not merged). M18 (lifecycle hooks) is
+being built at the same time on `m18-hooks`; this branch doesn't build on it, and the
+gate sits in its own crate (`ferrule-trust`) behind a thin `Guard` seat in the agent
+loop, so the two meet only at small call sites.
+
+Every part was checked locally on Linux: fmt, clippy `-D warnings`, and
+`cargo test --workspace`. **CI was deferred at Max's request**; a full 3-OS pass runs
+after the roadmap batch. No real model was called: everything ran against mocks and
+fake servers.
+
+**Commits:**
+- `dd81c12` design: caps per run, day and scheduled task read from the ledger, the
+  80% warning, the kill switch, the classifier and its blind spots, the Telegram
+  approval round-trip, plan mode, sub-agents, eval isolation, the audit trail,
+  failure modes, the M18 PreToolUse relation and the defaults.
+- `03f3c94` part 1: the `Guard` seam in `ferrule-core` (`Agent::with_guard`, checked
+  before every model call and tool call, raced against `halted()`); the shell tool
+  kills its command's whole process group when the call is dropped.
+- `52d1bcc` part 2: the `ferrule-trust` crate — Hub, Meter (the ledger in the
+  configured timezone), kill switch file, classifier, approvals, TrustGuard,
+  PlanStore, TrustSink and `<data>/trust/audit.jsonl`.
+- `a3e0bad` part 3: `[trust]` in the config and the binary's glue (`trust.rs`): every
+  agent in a run tree, who approves seated per tree, `ferrule stop` and
+  `ferrule trust status|audit`.
+- `9f72878` part 4: the gateway — an Interceptor seat, `Scheduler::with_hold`,
+  warnings and approvals to the owner chat, `/stop`, `/resume`, yes/no.
+- `c6e18b1` part 5: plan mode — `ferrule run --plan`, `ferrule plan
+  list|approve|reject`, `/plan` in Telegram, the read-only no-network planning sandbox,
+  `Router::retire`.
+- `5fc7302` part 6: eval stays hermetic unless `[suite] owner_trust = true`; the
+  learning pass won't start while stopped or over a day cap; `ferrule doctor` shows
+  the trust line.
+- docs: this entry, `docs/eval.md` (`owner_trust`), the roadmap status.
+
+**Eval (mock, `ferrule eval run evals/starter --variant ab`, all 20 tasks):**
+engineered 20/20, naive 11/20, +45 pts; 150 calls, 951.5k input + 6.2k output
+tokens, $0.98 at the mock's prices — the same numbers as before M19. The same run
+with `ferrule stop` engaged and every `[trust]` cap at 1 token / $0.0001 gave the
+identical report (exit 0), and `ferrule trust status` afterwards said 0 tokens today.
+
+**Defaults for Max to confirm** (design §14):
+- caps: 5,000,000 tokens and $5 per run, 50,000,000 tokens and $20 per day,
+  per-task caps off, warning at 80%, the day in UTC unless `timezone` is set;
+- gates on (rm -r, find -delete, rsync --delete, git clean -f, force pushes, DELETE
+  to a bound or unknown host);
+- unattended runs (scheduler, eval opt-in, `ferrule run` without a terminal) refuse
+  gated commands rather than wait;
+- approval timeout 10 minutes, a plan's 1 hour; only `yes` approves;
+- the owner chat is `[trust] owner_chat` or the first *private* allowed chat, never a
+  group; `/stop` works from any allowed chat, `/resume` only from the owner chat;
+- the kill switch survives restarts and an unreadable stop file counts as stopped;
+- eval is off by default (`owner_trust = false`);
+- the learning pass is checked only when it starts.
+
+**Open edges:**
+- A learning pass and its gate agent aren't guarded mid-pass: the check is at start.
+- The LLM judge's calls in an opted-in eval aren't charged to the owner.
+- A plan longer than Telegram's 4,096 characters may fail to send to the owner chat;
+  the plan is saved and `ferrule plan approve` still works.
+- The classifier can't see through `python -c`, scripts, `make`, `$CMD` or
+  `base64 | sh`; its tests say so.
+- The order of M19's gate and M18's PreToolUse hooks is left to the reconciliation
+  (design §13 proposes the gate first).
+- The M13 flaky test (`a_list_changed_that_introduces_a_poisoned_tool_is_caught`)
+  failed once in part 4 and passed on re-run.
+
+**Unverified on macOS/Windows until the batch CI pass:**
+- Killing the shell command's process group on a halt (unix `killpg`; Windows has no
+  process groups in the same sense).
+- The stop file's atomic write (rename over an existing file on Windows).
+- TTY detection for terminal approvals and plan prompts.
+- The planning sandbox: read-only and network-off rely on Landlock/seccomp, which are
+  Linux-only; elsewhere the shell is dropped from a planning run because the OS
+  sandbox isn't active.
+- Midnight in the configured timezone (`chrono-tz`) across platforms.
+- The binary tests (`crates/ferrule-cli/tests/trust.rs`, the gateway tests):
+  environment isolation and the fake model and Bot API servers on each OS.
+
+### 2026-09-25 — M19 × M18 reconciliation: `main` merged into `m19-trust-cost` (Devi, Opus 5.5)
+
+This is a real merge of `origin/main` (M18 hooks, PR #7, and the Telegram hotfix, PR #8)
+into this branch. There was no rebase or squash.
+
+**Conflicts:**
+- `PLAN.md`: both sides kept, with main's M18 and hotfix entries before M19's.
+- `Cargo.lock`: ours, then regenerated by cargo. It came out the same as the auto-merge.
+- `doctor.rs`: the hooks line, then the trust line.
+- `main.rs`: `trust::equip` and the plan-mode note kept, plus M18's hooks and
+  `end_session`. The hooks are skipped while planning.
+- `agent.rs`: the tool dispatch rewritten by hand, and both sides' tests kept.
+  `guard.rs` lost the `guarded_call` helper, which nothing uses now.
+
+**The order at tool dispatch:**
+1. the owner's gate
+2. PreToolUse
+3. the tool
+4. PostToolUse
+
+Each step is raced against the kill switch. A refused or halted call fires no hook,
+and no hook can approve past the gate. Stop hooks and `verify_command` sending a run
+back still meet the caps at the next model call. A planning run, and any eval (even
+one with `owner_trust`), fires no hooks. All of this is settled in
+`docs/m19-trust-cost.md` §13.
+
+**New tests** (`crates/ferrule-cli/tests/trust.rs`, real binary, scripted model):
+- the gate before PreToolUse, in one session with a hook and a gated `rm -rf`
+- a Stop hook sending the run back still meets the run cap
+- a planning run fires no hooks, and the approved plan's run does (mutation-checked)
+- an eval with `owner_trust` fires no hooks
+
+**Checks:**
+- fmt clean; clippy `-D warnings` clean.
+- `cargo test --workspace`: 555 passed, 0 failed, 2 ignored. That includes the hotfix's
+  Telegram tests next to M19's Interceptor, and the flaky M13 test passed this time.
+- Mock eval: engineered 20/20, naive 11/20, $0.98. It matches the pre-merge run line
+  for line.

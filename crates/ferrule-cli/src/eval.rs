@@ -15,7 +15,7 @@ use ferrule_sandbox::Sandbox;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Exit status when the budget stopped the suite.
+/// Exit status when the budget (or the owner's trust) stopped the suite.
 const EXIT_BUDGET: i32 = 3;
 
 #[derive(Subcommand)]
@@ -197,6 +197,13 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                     .owner_playbook
                     .then(|| crate::learn::prompt_section(&cfg.learning))
                     .flatten(),
+                // M19 §10: the owner's hub is only built for a suite that
+                // opts in, so a default run doesn't read its state at all.
+                owner_trust: if suite.owner_trust {
+                    owner_trust(&cfg)?
+                } else {
+                    None
+                },
             };
             let opts = Options {
                 variants,
@@ -262,12 +269,36 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
     }
 }
 
+/// Both variants of a suite with `owner_trust = true` run under the
+/// owner's guard, unattended, and charge the owner's day under the tree
+/// `eval:<run id>`.
+fn owner_trust(cfg: &config::Config) -> Result<Option<ferrule_eval::OwnerTrust>> {
+    crate::trust::hub(cfg)?;
+    let cfg = cfg.clone();
+    Ok(Some(Arc::new(move |tree: &str, sink| {
+        crate::trust::seat(
+            tree,
+            ferrule_trust::Route::Unattended("this is an eval run, which runs unattended".into()),
+        );
+        let tag = ledger::LedgerTag {
+            sink,
+            task_shape: "eval".into(),
+            origin: None,
+        };
+        let (tag, guard) = crate::trust::equip(&cfg, tree, false, Some(tag))
+            .expect("the hub was built before the suite started");
+        (tag.sink, guard as Arc<dyn ferrule_core::Guard>)
+    })))
+}
+
 /// 3 when the budget stopped the suite; 1 when a grader couldn't decide,
 /// or a regression suite has a failure in the variant it gates (ferrule's
 /// own: the naive baseline is expected to fail); else 0.
 fn exit_code(suite: &Suite, run: &ferrule_eval::SuiteRun) -> i32 {
     use ferrule_eval::Outcome;
-    if run.budget_stop.is_some() {
+    // Only the budget, or (for `owner_trust`) the owner's caps and kill
+    // switch, stop a task.
+    if run.budget_stop.is_some() || run.results.iter().any(|r| r.outcome == Outcome::Stopped) {
         return EXIT_BUDGET;
     }
     let error = run.results.iter().any(|r| r.outcome == Outcome::Error);

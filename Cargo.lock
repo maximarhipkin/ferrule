@@ -565,6 +565,7 @@ dependencies = [
  "ferrule-sandbox",
  "ferrule-skills",
  "ferrule-tools",
+ "ferrule-trust",
  "inquire",
  "libc",
  "reqwest",
@@ -802,6 +803,25 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "ferrule-trust"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "ferrule-core",
+ "ferrule-proxy",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
