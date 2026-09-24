@@ -14,6 +14,7 @@ mod secrets;
 mod self_extend;
 mod service;
 mod setup;
+mod trust;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
@@ -156,6 +157,24 @@ enum Cmd {
     Eval {
         #[command(subcommand)]
         op: eval::EvalCmd,
+    },
+    /// The kill switch: every run halts at its next step and nothing new
+    /// starts, in every ferrule process, until `--clear`
+    Stop {
+        /// Said to anyone whose run it stops
+        #[arg(long)]
+        reason: Option<String>,
+        /// Turn it off again
+        #[arg(long, conflicts_with_all = ["reason", "status"])]
+        clear: bool,
+        /// Only say whether it's on
+        #[arg(long, conflicts_with = "reason")]
+        status: bool,
+    },
+    /// Spending caps, approvals and the kill switch (docs/m19-trust-cost.md)
+    Trust {
+        #[command(subcommand)]
+        op: trust::TrustCmd,
     },
     /// Show the shell sandbox that applies here, and test that it holds.
     /// `ferrule sandbox -- CMD…` runs CMD the way the agent's shell tool would
@@ -418,6 +437,12 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             }
         },
         Cmd::Eval { op } => eval::cmd(op).await?,
+        Cmd::Stop {
+            reason,
+            clear,
+            status,
+        } => trust::stop_cmd(reason, clear, status)?,
+        Cmd::Trust { op } => trust::cmd(op)?,
         Cmd::Skills { workspace } => {
             skills_cmd(workspace);
         }
@@ -466,6 +491,7 @@ async fn build_root(
     }
     let sink = ledger::build_sink(&cfg);
     let ledger = ledger::LedgerTag::new(&sink, task_shape, None);
+    trust::seat(session_id, trust::terminal_route());
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
     let agent = build_agent_from(
@@ -697,6 +723,9 @@ fn build_agent_from(
         system.push_str(&format!("\n\n{block}"));
     }
 
+    // M19: the owner's caps, kill switch and approval gates, per run tree.
+    let tree = trust::tree_of(child, transcript.as_ref());
+    let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
     let mut agent = Agent::new(
         provider,
         registry,
@@ -711,9 +740,14 @@ fn build_agent_from(
     .with_system_prompt(system)
     // The memory block is picked on the first run, from the session's goal.
     .with_session_recall(Arc::new(memory_tools::GoalRecall { db: memory_db }));
-    if let Some(tag) = ledger {
-        agent = agent.with_ledger(tag.sink, tag.task_shape, tag.origin, pcfg.model.clone());
-    }
+    agent = agent
+        .with_ledger(
+            ledger.sink,
+            ledger.task_shape,
+            ledger.origin,
+            pcfg.model.clone(),
+        )
+        .with_guard(guard);
     if let Some(cmd) = &cfg.agent.verify_command {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(

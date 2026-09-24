@@ -564,6 +564,7 @@ dependencies = [
  "ferrule-sandbox",
  "ferrule-skills",
  "ferrule-tools",
+ "ferrule-trust",
  "inquire",
  "libc",
  "reqwest",
