@@ -405,3 +405,206 @@ fn a_trust_table_that_doesnt_validate_is_an_error() {
     );
     assert!(seen.lock().unwrap().is_empty());
 }
+
+/// A Bot API stand-in: `getUpdates` hands out what the test queued (or
+/// nothing after a short wait), `sendMessage` bodies are kept.
+struct FakeTelegram {
+    url: String,
+    queue: Arc<Mutex<std::collections::VecDeque<Value>>>,
+    sent: Arc<Mutex<Vec<Value>>>,
+    next: Mutex<i64>,
+}
+
+impl FakeTelegram {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let queue: Arc<Mutex<std::collections::VecDeque<Value>>> = Arc::default();
+        let sent: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let (q, s) = (queue.clone(), sent.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (q, s) = (q.clone(), s.clone());
+                std::thread::spawn(move || telegram_serve(stream, &q, &s));
+            }
+        });
+        Self {
+            url,
+            queue,
+            sent,
+            next: Mutex::new(1),
+        }
+    }
+
+    fn say(&self, chat: i64, text: &str) {
+        let mut next = self.next.lock().unwrap();
+        *next += 1;
+        self.queue.lock().unwrap().push_back(json!({
+            "update_id": *next,
+            "message": {"message_id": *next, "chat": {"id": chat}, "from": {"username": "max"},
+                        "text": text, "date": 1700000000},
+        }));
+    }
+
+    /// Waits for a message to `chat` containing `needle`, after the first
+    /// `from` messages.
+    fn wait_for(&self, chat: i64, needle: &str, from: usize) -> (usize, String) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            {
+                let sent = self.sent.lock().unwrap();
+                for (i, m) in sent.iter().enumerate().skip(from) {
+                    let text = m["text"].as_str().unwrap_or_default();
+                    if m["chat_id"] == chat.to_string().as_str() && text.contains(needle) {
+                        return (i + 1, text.to_string());
+                    }
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no message to {chat} with {needle:?}; sent: {sent:#?}"
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+fn telegram_serve(
+    mut stream: TcpStream,
+    queue: &Mutex<std::collections::VecDeque<Value>>,
+    sent: &Mutex<Vec<Value>>,
+) {
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut request = String::new();
+    if reader.read_line(&mut request).unwrap_or(0) == 0 {
+        return;
+    }
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            return;
+        }
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap();
+            }
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    let out = if request.contains("getUpdates") {
+        let mut updates: Vec<Value> = queue.lock().unwrap().drain(..).collect();
+        if updates.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            updates = queue.lock().unwrap().drain(..).collect();
+        }
+        json!({"ok": true, "result": updates})
+    } else {
+        let mut sent = sent.lock().unwrap();
+        sent.push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+        json!({"ok": true, "result": {"message_id": 1000 + sent.len()}})
+    }
+    .to_string();
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
+        out.len()
+    );
+}
+
+/// Kills the gateway when the test ends, passed or not.
+struct Running(std::process::Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn gateway(home: &Path) -> Running {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ferrule"));
+    cmd.args(["gateway"])
+        .current_dir(home.join("work"))
+        .env("FERRULE_CONFIG", home.join("ferrule.toml"))
+        .env("FERRULE_DATA_DIR", home.join("data"))
+        .env("FERRULE_TEST_KEY", "sk-test")
+        .env("FERRULE_TEST_TG", "TESTTOKEN")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for var in ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME"] {
+        cmd.env(var, home.join("home"));
+    }
+    for var in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        cmd.env_remove(var);
+    }
+    Running(cmd.spawn().unwrap())
+}
+
+#[test]
+fn the_owner_approves_stops_and_resumes_from_telegram() {
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    let dir = home(
+        &url,
+        &format!(
+            "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"{}\"\ntelegram_allowed_chats = [-100, 42]\n",
+            tg.url
+        ),
+    );
+    let home = dir.path();
+    let _gw = gateway(home);
+
+    // A gated command in the owner's chat is asked about there; yes runs it.
+    tg.say(42, "DELETE_IT now");
+    let (n, question) = tg.wait_for(42, "Reply `yes` to allow it", 0);
+    assert!(question.contains("rm -rf victim"), "{question}");
+    assert!(home.join("work/victim/keep.txt").exists());
+    tg.say(42, "yes");
+    let (n, _) = tg.wait_for(42, "SAW", n);
+    assert!(!home.join("work/victim").exists());
+
+    // Only the owner chat resumes; any allowed chat can stop.
+    tg.say(-100, "/stop too much");
+    let (n, _) = tg.wait_for(-100, "Stopped:", n);
+    assert!(home.join("data/trust/stop").exists());
+    tg.say(42, "hello");
+    let (n, _) = tg.wait_for(42, "Ferrule is stopped (by telegram chat -100", n);
+    tg.say(-100, "/resume");
+    let (n, _) = tg.wait_for(-100, "Only the owner chat", n);
+    tg.say(42, "/resume");
+    let (n, _) = tg.wait_for(42, "Resumed", n);
+    // (chat 42's session would replay DELETE_IT: the script keys off its
+    // first message.)
+    tg.say(-100, "hello again");
+    tg.wait_for(-100, "PLAIN", n);
+    assert!(!home.join("data/trust/stop").exists());
+
+    let audit = jsonl(&home.join("data/trust/audit.jsonl"));
+    let events: Vec<&str> = audit.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    assert_eq!(
+        events,
+        [
+            "approval_asked",
+            "approval_answered",
+            "stop_engaged",
+            "stop_cleared"
+        ],
+        "{audit:#?}"
+    );
+    assert_eq!(audit[1]["detail"]["answer"], "yes");
+    assert_eq!(audit[1]["tree"], "telegram__42");
+}

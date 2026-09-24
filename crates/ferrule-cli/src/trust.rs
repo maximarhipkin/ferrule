@@ -175,6 +175,61 @@ impl LedgerSink for NoLedger {
     fn record(&self, _: LedgerRecord) {}
 }
 
+/// Sends the owner's warnings and questions through the gateway's Telegram
+/// channel.
+pub struct ChannelNotifier(pub Arc<dyn ferrule_gateway::Channel>);
+
+#[async_trait::async_trait]
+impl ferrule_trust::Notifier for ChannelNotifier {
+    async fn send(&self, chat: i64, text: &str) -> Result<(), String> {
+        self.0
+            .send(ferrule_gateway::OutboundMessage {
+                channel: self.0.name().to_string(),
+                chat_id: chat.to_string(),
+                text: text.to_string(),
+                reply_to: None,
+                attachments: vec![],
+            })
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// The owner's commands in Telegram, before any chat turn: `/stop`,
+/// `/resume`, `/plan` and the answers to open approvals. Other channels
+/// pass straight through.
+pub struct OwnerDoor {
+    pub hub: Arc<Hub>,
+    /// Runs `/plan <task>` for a chat; its reply is the acknowledgement.
+    pub plan: Option<Arc<dyn Fn(i64, String) -> String + Send + Sync>>,
+}
+
+#[async_trait::async_trait]
+impl ferrule_gateway::Interceptor for OwnerDoor {
+    async fn intercept(&self, msg: &ferrule_gateway::InboundMessage) -> Option<String> {
+        if msg.channel != "telegram" {
+            return None;
+        }
+        let chat = msg.chat_id.parse::<i64>().ok()?;
+        match self.hub.intercept(chat, &msg.text) {
+            ferrule_trust::Intercept::Pass => None,
+            ferrule_trust::Intercept::Reply(r) => Some(r),
+            ferrule_trust::Intercept::Plan(task) => Some(match &self.plan {
+                Some(plan) => plan(chat, task),
+                None => "Plan mode isn't available in this gateway.".into(),
+            }),
+        }
+    }
+}
+
+/// Holds the scheduler's tick while the kill switch is on.
+pub fn scheduler_hold(hub: Arc<Hub>) -> ferrule_gateway::Hold {
+    Arc::new(move || {
+        hub.stopped()
+            .map(|info| ferrule_trust::kill::stop_message(&info))
+    })
+}
+
 #[derive(clap::Subcommand)]
 pub enum TrustCmd {
     /// The caps, today's spend against them, the kill switch and who approves

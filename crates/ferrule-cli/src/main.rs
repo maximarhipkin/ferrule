@@ -1221,6 +1221,7 @@ async fn run_gateway(
         );
     }
     let adapters: Vec<Arc<dyn Channel>> = named_channels.values().cloned().collect();
+    let telegram = named_channels.get("telegram").cloned();
 
     // Arc'd so the same router serves both the gateway's channel adapters
     // and the scheduler's task-triggered turns — one router, two front
@@ -1245,6 +1246,13 @@ async fn run_gateway(
         Duration::from_secs(cfg.scheduler.gate_timeout_secs),
         cfg.scheduler.gate_workspace.clone(),
     )?;
+    // M19: the owner's warnings and questions go out through Telegram, and
+    // the scheduler waits while the kill switch is on.
+    let hub = trust::hub(&cfg)?;
+    hub.set_notifier(
+        telegram.map(|t| Arc::new(trust::ChannelNotifier(t)) as Arc<dyn ferrule_trust::Notifier>),
+    );
+    let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = Arc::new(learn::register(&cfg, scheduler, &workspace, provider, true));
     let scheduler_handle = {
         let scheduler = scheduler.clone();
@@ -1255,7 +1263,8 @@ async fn run_gateway(
         })
     };
 
-    let mut gateway = Gateway::new(router);
+    let mut gateway =
+        Gateway::new(router).with_interceptor(Arc::new(trust::OwnerDoor { hub, plan: None }));
     for channel in adapters {
         gateway.add_channel(channel);
     }
