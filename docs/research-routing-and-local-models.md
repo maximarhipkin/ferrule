@@ -2,6 +2,11 @@
 
 **Research report — September 24, 2026**
 
+> **Decision, 24.09.2026 (Max, msg 3070):** Phase 2 (learned router) and Phase 3
+> (local LoRA fine-tunes) are **dropped** from the roadmap as over-engineering.
+> Phase 0 (the ledger) has shipped; Phase 1 (rule-based routing) stays under "Next".
+> The Phase 2–3 sections below are kept as research only.
+
 ## TL;DR
 
 - **Question A (route across providers) has a mature answer; question B (train a local model at runtime) mostly doesn't — yet.** Learned routing between 2-3 providers is production-proven with public cost numbers. "Create a model while running" is real only in the narrow, well-scoped sense of a tiny classifier or a LoRA adapter trained periodically offline, not literally online.
@@ -126,9 +131,13 @@ Implements `Provider` exactly like any other backend (`name()`, `complete()`), s
 
 ### Phase 2 — learned router, once the ledger has data
 
+*Dropped 24.09.2026 by Max (msg 3070). Kept as research only.*
+
 Once Phase 0 has weeks of real (task_shape, provider, outcome) rows, train a small classifier (§3.3 — kNN/logistic regression over embeddings, not an LLM) on that data, following RouteLLM's proven shape but on Ferrule's own agentic-turn distribution rather than borrowed chat-preference data (closing the off-distribution gap flagged in §2.4). This is the option-2 "tiny online non-LLM model," retrainable in minutes as more data accumulates, and it plugs into `RouterProvider`'s `EscalationPolicy` as an additional signal ahead of the rule-based fallback.
 
 ### Phase 3 — narrow LoRA fine-tunes for specific sub-tasks
+
+*Dropped 24.09.2026 by Max (msg 3070). Kept as research only.*
 
 Only once Phase 2's classifier data shows a specific, high-volume, narrow sub-task (tool-name selection is the likely first candidate, given how mechanical it is) where a fine-tuned small open model would plausibly beat both the cheap-tier provider's raw accuracy and the classifier's coverage. Train via `mlx_lm.lora` on Max's Mac (§3.2), evaluate against the Phase-0 ledger's real outcomes (§3.6), and serve through an OpenAI-compatible local server (§3.8) — no in-process Rust ML bindings needed at this stage.
 

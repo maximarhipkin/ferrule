@@ -39,12 +39,10 @@
   <rect x="640" y="84" width="288" height="302" rx="12" fill="#17191c" stroke="#2a2e33"/>
   <text x="660" y="114" class="h s">Planned</text>
   <g>
-    <circle cx="666" cy="146" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="151" class="d">Learned router (Phase 2)</text>
-    <circle cx="666" cy="180" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="185" class="d">Local LoRA fine-tunes (Phase 3)</text>
-    <circle cx="666" cy="214" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="219" class="d">Vector recall, local embeddings</text>
-    <circle cx="666" cy="248" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="253" class="d">Streaming responses (SSE)</text>
-    <circle cx="666" cy="282" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="287" class="d">WASM tool plugins</text>
-    <circle cx="666" cy="316" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="321" class="d">Tree-sitter code search</text>
-    <circle cx="666" cy="350" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="355" class="d">More channels (Discord, Slack…)</text>
+    <circle cx="666" cy="146" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="151" class="d">Vector recall, local embeddings</text>
+    <circle cx="666" cy="180" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="185" class="d">Streaming responses (SSE)</text>
+    <circle cx="666" cy="214" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="219" class="d">WASM tool plugins</text>
+    <circle cx="666" cy="248" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="253" class="d">Tree-sitter code search</text>
+    <circle cx="666" cy="282" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="287" class="d">More channels (Discord, Slack…)</text>
   </g>
 </svg>

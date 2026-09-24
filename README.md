@@ -316,7 +316,6 @@ state, open gaps and a dated entry for every session.
 
 **Planned**
 
-- [ ] Learned router (Phase 2) and on-the-fly local LoRA (Phase 3)
 - [ ] Vector recall (local embeddings) merged with BM25
 - [ ] Streaming SSE responses
 - [ ] WASM tool plugins

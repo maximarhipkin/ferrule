@@ -107,8 +107,9 @@ that convention yet — ask before introducing one).
   local) reachable via `ferrule gateway`, a task scheduler (M3) and a
   stdio MCP client (M4), Agent Skills (M5), but still no plugin
   (code-extension) system, no multi-agent orchestration, no multi-provider
-  routing (Phase 1+ of `docs/research-routing-and-local-models.md`, blocked
-  on Max's decisions there). These are the largest deltas. (The
+  routing (Phase 1 of `docs/research-routing-and-local-models.md`, blocked
+  on Max's decisions there; Phases 2–3, the learned router and local LoRA,
+  were dropped by Max on 2026-09-24, msg 3070). These are the largest deltas. (The
   cost/observability ledger gap closed 2026-09-24, Phase 0; the skills
   half of "skills/plugin system" closed the same day, M5; OS sandboxing
   for the shell tool closed the same day too, M6. Reads, MCP servers and
@@ -1198,3 +1199,11 @@ carry no Claude trailer**, and the author is
 **What's next:** the Telegram allow-list, then whatever Max picks from the
 decision-blocked list: Phase 1 routing, multi-agent orchestration, or
 code-extension plugins.
+
+### 2026-09-24 — Roadmap: Phases 2–3 dropped (Devi, Opus 5.5)
+
+Max (msg 3070) dropped the learned router (Phase 2) and on-the-fly local
+LoRA fine-tunes (Phase 3): too much for what they buy. Rule-based routing
+(Phase 1) stays under "Next". Removed from the README's Planned list and
+from `docs/assets/roadmap.svg`; the routing research doc keeps both
+sections, marked as dropped, for reference.
