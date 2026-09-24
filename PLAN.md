@@ -244,10 +244,27 @@ that convention yet — ask before introducing one).
     steps in `docs/eval.md` § "Handoff: running the real A/B": the free
     mock check first, then a dry run, the smoke subset under a small
     cap, and the full suite with `--repeat 3`.
-  - **M15 memory pipeline + reversible compaction** (§4.3/§4.4): memory
-    update/delete tools (Mem0-style ADD/UPDATE/DELETE), goal-driven
-    session-start recall, `superseded_by`; a `search_history` tool over
-    the session transcript so compaction stops being one-way.
+  - **M15 memory pipeline + reversible compaction** (§4.3/§4.4): **built**
+    (2026-09-24, parts 1–3 on branch `m15-memory`, PR to main open, not
+    merged; CI deferred to the roadmap batch; see the M15 session-log
+    entry). Design: `docs/m15-memory.md`. `remember` answers NOOP for a
+    known fact and lists similar live ones; `update_memory` supersedes
+    (`superseded_by`, recall maps old wording to the live fact); `forget`
+    hard-deletes a chain with no trace left in FTS or the file; the
+    session-start memory block is picked from the session's goal. Old
+    large tool results are shortened to a preview plus a ref when
+    compaction triggers, and `search_history` reads the session's own
+    transcript by query or by ref. Root: full memory access; writing
+    child: add only; read-only child: recall only. Schema is at
+    `user_version` 1, migrated in place from pre-M15 stores. **Open
+    edges:** no per-turn re-recall on long sessions (it would break the
+    prompt cache); the NOOP/similar heuristics are word-set Jaccard, not
+    embeddings; `search_history` is a linear scan of the transcript;
+    shortening happens only at the compaction trigger; the eval engineered
+    variant gets `search_history` but no session recall (its store is fresh
+    per run, so there's nothing to recall); the mock model never calls
+    `search_history`, so the eval measures shortening only. **Unverified on
+    macOS/Windows until the batch CI pass:** see the M15 session-log entry.
   - **M16 learning loop** (§4.1): scheduled offline consolidation
     (dedupe, promote, curate) plus an ACE-style playbook in the system
     prompt, additions gated on verify success.
@@ -2116,3 +2133,97 @@ The Ollama small-window run and its README chart are still to do.
 - The rubric evidence's relative paths (separators) and the `.git` skip.
 - The saved-run directory under `~/Library/Application Support` and `%APPDATA%`.
 - The CLI tests' environment isolation.
+
+### 2026-09-24 — M15 memory update pipeline + reversible compaction (Devi, Opus 5.5)
+
+The design is `docs/m15-memory.md`. The work is on branch `m15-memory`, cut from
+`main` at `2f1045f`, with a PR to `main` (not merged). M17 was being built at the same
+time on `m17-mcp-add`; this branch doesn't build on it.
+
+Every part was checked locally on Linux: fmt, clippy `-D warnings`, and
+`cargo test --workspace` (387 tests). **CI was deferred at Max's request**; a full
+3-OS pass runs after the roadmap batch. No real model was called: everything ran
+against mocks.
+
+**Commits:**
+- `fb5cd0f` design: the insert decision, `superseded_by`, what `forget` deletes,
+  goal-driven recall, the transcript behind `search_history`, the ref format, the
+  migration, the sub-agent policy, failure modes and tests.
+- `a93fa3b` part 1, `ferrule-memory`:
+  - `insert` decides NOOP (normalized text equal, or word-set Jaccard ≥ 0.9 with a
+    live fact), ADD, or UPDATE (with `replaces`), and reports similar live facts
+    (Jaccard ≥ 0.3)
+  - `superseded_by` chains; recall searches every row and returns each hit's live
+    head, so the old wording finds the correction
+  - `forget` deletes a live fact with its whole chain (or one old version, re-linking
+    the chain), then merges the FTS index and truncates the WAL, with
+    `secure_delete` on
+  - `assemble_for_goal`: goal matches first, then the newest live facts, as
+    `- #id fact` lines
+  - `PRAGMA user_version` 0 → 1, in one `BEGIN IMMEDIATE`, idempotent; a newer
+    schema is refused. Tested against a store written by pre-M15 ferrule (a committed
+    fixture) and a half-migrated one
+- `c02acf5` part 2, `ferrule-core`:
+  - when compaction triggers, old tool results over 4,000 chars (outside the verbatim
+    tail, no skill block) are replaced in memory by a 600-char preview and a
+    content-addressed ref; the summary is skipped when that was enough, and a summary
+    lists the refs it folds
+  - `search_history` over the session's own JSONL transcript, by query or by ref
+    (paged), streamed, with over-long lines skipped
+  - the `SessionRecall` hook fills the system prompt once, on the first run, from
+    the session's first user message plus the request
+  - `ToolResultsShortened` event; `Truncate` (the naive baseline) untouched
+- `736f5f9` part 3, the CLI:
+  - `update_memory`, `forget` and `remember {replaces}` for the root; `remember`
+    without `replaces` for writing children (refused even if sent); `recall` only for
+    read-only children
+  - `search_history` on every agent with a transcript, and in eval's engineered
+    variant
+  - the static newest-facts block replaced by the goal-driven hook
+  - `ferrule memory forget <id>`
+  - binary tests: a fact stored in one `ferrule run`, corrected via `update_memory`
+    in a second (by the id its prompt showed), and the third session's prompt holds
+    only the correction; a read-only verifier child has `recall` and
+    `search_history` and no memory writes
+
+**Measured on the mock** (the real binary, all 20 tasks, `--variant ab`):
+- engineered 20/20, naive 11/20 (+45 pts), the same verdicts as before M15
+- engineered input tokens 610.5k → 513.5k, model calls 95 → 88, summaries 20 → 13;
+  shortening fired on the five context tasks, and on `config-migration` it replaced
+  all three summaries. Naive is unchanged to the token
+- the mock never calls `search_history` (it replays scripted solutions), so this
+  measures the shortening, not the fetch-back
+
+**Design defaults for Max to confirm:**
+- NOOP and "similar" are heuristics (Jaccard 0.9 / 0.3 over content words); UPDATE
+  and DELETE are always the model's call, never automatic.
+- `forget` is a hard delete of the whole chain, and root-only.
+- Writing children can add memories, not correct or delete them.
+- The memory block keeps the 2,000-char budget: up to 10 goal matches, then up to 5
+  newest facts.
+- Shortening: over 4,000 chars, 600-char preview, only at the compaction trigger, only
+  with a transcript; up to 20 refs listed in a summary.
+- `search_history` reads only the agent's own session.
+
+**M15 open edges:**
+- No per-turn re-recall on long sessions (it would change the prompt mid-session).
+- Word-set heuristics, not embeddings; M16's consolidation is the backstop.
+- `search_history` is a linear scan; slow on huge transcripts, but bounded.
+- The eval engineered variant has no session recall (its store is fresh per run).
+- A flaky M13 test seen once under load:
+  `ferrule-extensions::self_extension::a_list_changed_that_introduces_a_poisoned_tool_is_caught`
+  (an `eventually` timing check); passed 3/3 alone and in the full rerun.
+
+**Unverified on macOS/Windows until the batch CI pass:**
+- Transcript paths and reading them back (`<data>/sessions/<id>.jsonl`), CRLF in
+  JSONL lines, and reading a file another process is appending to (Windows sharing
+  modes).
+- SQLite `secure_delete`, `wal_checkpoint(TRUNCATE)` and the "no trace in the file"
+  test on APFS and NTFS.
+- `busy_timeout` and `BEGIN IMMEDIATE` across processes (file locking differs).
+- The pre-M15 fixture migration on macOS/Windows (the fixture is a binary file; check
+  it isn't altered by git's line-ending settings).
+- The CLI binary tests (`tests/memory.rs`): environment isolation, the data dir
+  under `~/Library/Application Support` and `%APPDATA%`, and a verifier child with the
+  sandbox off.
+- `spawn_blocking` store access in the gateway on Windows.
