@@ -16,7 +16,10 @@
 //! tokens) are dropped from the child's environment, so a prompt-injected
 //! `env | curl …` has nothing to send.
 //!
-//! Not covered: reads, MCP servers, and anything that needs a kernel bug.
+//! MCP servers go through the same path, with their own state dir writable
+//! ([`Sandbox::for_helper`]).
+//!
+//! Not covered: reads, and anything that needs a kernel bug.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -132,6 +135,22 @@ pub struct Sandbox {
     /// Set on every command after scrubbing (the credential proxy's
     /// placeholders and proxy settings).
     extra_env: Vec<(String, String)>,
+    /// Writable on top of what the policy grants, even in read-only mode:
+    /// a helper's own state dir (see [`Sandbox::for_helper`]). Not
+    /// canonical yet; `writable_roots` resolves them.
+    helper_roots: Vec<PathBuf>,
+    /// Where ferrule's own HTTP clients send HTTPS (the credential proxy),
+    /// when one runs.
+    egress: Option<Egress>,
+}
+
+/// The credential proxy as seen by an HTTP client inside ferrule
+/// (`web_fetch`, MCP over HTTP): its URL, credentials included, and the CA
+/// it signs its certificates with. Plain HTTP never goes through it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Egress {
+    pub proxy_url: String,
+    pub ca_cert_pem: String,
 }
 
 impl Sandbox {
@@ -145,6 +164,8 @@ impl Sandbox {
             backend: Backend::None,
             degraded: Some("disabled (sandbox.mode = \"off\")".into()),
             extra_env: Vec::new(),
+            helper_roots: Vec::new(),
+            egress: None,
         }
     }
 
@@ -163,7 +184,7 @@ impl Sandbox {
                 policy: policy.clone(),
                 backend,
                 degraded: None,
-                extra_env: Vec::new(),
+                ..Self::off()
             };
             sandbox.probe()?;
             Ok(sandbox)
@@ -179,7 +200,7 @@ impl Sandbox {
                     policy,
                     backend: Backend::None,
                     degraded: Some(reason),
-                    extra_env: Vec::new(),
+                    ..Self::off()
                 })
             }
         }
@@ -209,21 +230,36 @@ impl Sandbox {
         self
     }
 
-    /// Extra writable roots on top of the configured ones, scoped to
-    /// whichever `Sandbox` clone this is called on — for a caller (an MCP
-    /// server's own cache dir, say) that needs a writable path the
-    /// process-wide policy doesn't grant everyone else. Does not affect the
-    /// original `Sandbox` this was cloned from.
-    pub fn with_extra_writable_roots(mut self, roots: Vec<PathBuf>) -> Self {
-        self.policy.writable_roots.extend(roots);
+    /// The credential proxy for ferrule's own HTTP clients. Set together
+    /// with `with_env(broker.child_env())`, so commands and in-process
+    /// clients take the same way out.
+    pub fn with_egress(mut self, egress: Option<Egress>) -> Self {
+        self.egress = egress;
         self
     }
 
-    /// The same secret-scrubbing and credential env as `self`, but with
-    /// OS write-confinement turned off — the escape hatch for a caller that
-    /// explicitly opted a specific command out of sandboxing (e.g. an MCP
-    /// server with `sandbox = false`, or no backend exists on this OS).
-    /// `reason` is surfaced by `degraded()` for logs and `doctor`.
+    pub fn egress(&self) -> Option<&Egress> {
+        self.egress.as_ref()
+    }
+
+    /// For a long-lived helper process that ferrule starts from its own
+    /// config (an MCP server), rather than a command the model wrote: the
+    /// same scrubbing and credential env, `state_dir` and `extra` writable
+    /// on top of what commands get (even in read-only mode, which is about
+    /// the model's commands), and the network always on, since reaching a
+    /// service is what most helpers are for. Relative `extra` paths are
+    /// relative to the workspace, like `writable_roots`.
+    pub fn for_helper(&self, state_dir: &Path, extra: &[PathBuf]) -> Self {
+        let mut helper = self.clone();
+        helper.policy.network = true;
+        helper.helper_roots.push(state_dir.to_path_buf());
+        helper.helper_roots.extend(extra.iter().cloned());
+        helper
+    }
+
+    /// The same secret scrubbing and credential env as `self`, with the OS
+    /// confinement off: the escape hatch for a helper its config opted out
+    /// of the sandbox. `reason` is what `degraded()` reports.
     pub fn unconfined(&self, reason: impl Into<String>) -> Self {
         Self {
             policy: Policy {
@@ -233,7 +269,24 @@ impl Sandbox {
             backend: Backend::None,
             degraded: Some(reason.into()),
             extra_env: self.extra_env.clone(),
+            helper_roots: Vec::new(),
+            egress: self.egress.clone(),
         }
+    }
+
+    /// What `name` holds in a sandboxed command's environment: a
+    /// credential placeholder, the parent's value, or nothing when it's
+    /// scrubbed. For expanding `${NAME}` in config that ferrule sends on a
+    /// helper's behalf (MCP HTTP headers), so it gets exactly what a
+    /// spawned helper would.
+    pub fn child_env_var(&self, name: &str) -> Option<String> {
+        if let Some((_, v)) = self.extra_env.iter().rev().find(|(k, _)| k == name) {
+            return Some(v.clone());
+        }
+        if self.policy.scrub_secret_env && self.is_secret_var(name) {
+            return None;
+        }
+        std::env::var(name).ok()
     }
 
     /// A `Command` for `program args…` that runs in `workspace` under the
@@ -275,12 +328,19 @@ impl Sandbox {
     /// Canonical directories (or files) the sandboxed command may write,
     /// missing ones skipped. Empty in read-only mode.
     pub fn writable_roots(&self, workspace: &Path) -> Vec<PathBuf> {
-        if self.policy.mode == Mode::ReadOnly {
+        let read_only = self.policy.mode == Mode::ReadOnly;
+        if read_only && self.helper_roots.is_empty() {
             return Vec::new();
         }
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let mut wanted = vec![workspace.to_path_buf()];
-        for root in &self.policy.writable_roots {
+        let mut wanted = Vec::new();
+        let configured: &[PathBuf] = if read_only {
+            &[]
+        } else {
+            wanted.push(workspace.to_path_buf());
+            &self.policy.writable_roots
+        };
+        for root in configured.iter().chain(&self.helper_roots) {
             let expanded = match (root.strip_prefix("~"), &home) {
                 (Ok(rest), Some(home)) => home.join(rest),
                 _ if root.is_relative() => workspace.join(root),
@@ -288,7 +348,7 @@ impl Sandbox {
             };
             wanted.push(expanded);
         }
-        if self.policy.tmp {
+        if self.policy.tmp && !read_only {
             wanted.push(PathBuf::from("/tmp"));
             wanted.extend(std::env::var_os("TMPDIR").map(PathBuf::from));
             if cfg!(target_os = "linux") {
@@ -483,6 +543,7 @@ mod tests {
             backend: Backend::None,
             degraded: None,
             extra_env: Vec::new(),
+            ..Sandbox::off()
         };
         for secret in [
             "OPENAI_API_KEY",
@@ -509,6 +570,7 @@ mod tests {
             backend: Backend::None,
             degraded: None,
             extra_env: Vec::new(),
+            ..Sandbox::off()
         }
         .with_env(vec![("HOME".into(), "placeholder".into())]);
         let ws = tempfile::tempdir().unwrap();
@@ -532,6 +594,7 @@ mod tests {
             backend: Backend::None,
             degraded: None,
             extra_env: Vec::new(),
+            ..Sandbox::off()
         };
         let ws_c = ws.path().canonicalize().unwrap();
         assert_eq!(
@@ -547,22 +610,57 @@ mod tests {
     }
 
     #[test]
-    fn extra_writable_roots_add_without_mutating_the_original() {
+    fn a_helper_gets_its_state_dir_even_read_only_and_always_the_network() {
         let ws = tempfile::tempdir().unwrap();
-        std::fs::create_dir(ws.path().join("cache")).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::fs::create_dir(ws.path().join("extra")).unwrap();
         let base = Sandbox {
-            policy: policy(Mode::WorkspaceWrite),
-            backend: Backend::None,
-            degraded: None,
-            extra_env: Vec::new(),
+            policy: Policy {
+                network: false,
+                ..policy(Mode::WorkspaceWrite)
+            },
+            ..Sandbox::off()
         };
-        let extended = base
-            .clone()
-            .with_extra_writable_roots(vec![ws.path().join("cache")]);
-        assert!(base.policy.writable_roots.is_empty(), "original untouched");
+        let helper = base.for_helper(state.path(), &["extra".into()]);
+        let c = |p: &Path| p.canonicalize().unwrap();
         assert_eq!(
-            extended.policy.writable_roots,
-            vec![ws.path().join("cache")]
+            helper.writable_roots(ws.path()),
+            vec![c(ws.path()), c(state.path()), c(&ws.path().join("extra"))]
+        );
+        assert!(helper.policy.network && !base.policy.network);
+        assert_eq!(
+            base.writable_roots(ws.path()),
+            vec![c(ws.path())],
+            "original untouched"
+        );
+
+        let ro = Sandbox {
+            policy: Policy {
+                writable_roots: vec!["extra".into()],
+                ..policy(Mode::ReadOnly)
+            },
+            ..Sandbox::off()
+        };
+        assert_eq!(
+            ro.for_helper(state.path(), &[]).writable_roots(ws.path()),
+            vec![c(state.path())],
+            "read-only keeps the workspace and configured roots closed, not the helper's own dir"
+        );
+    }
+
+    #[test]
+    fn child_env_var_sees_placeholders_and_not_secrets() {
+        std::env::set_var("FERRULE_SB_TEST_TOKEN", "real");
+        std::env::set_var("FERRULE_SB_TEST_PLAIN", "plain");
+        let sb = Sandbox::off().with_env(vec![("GH_TOKEN".into(), "ghp_placeholder".into())]);
+        assert_eq!(
+            sb.child_env_var("GH_TOKEN").as_deref(),
+            Some("ghp_placeholder")
+        );
+        assert_eq!(sb.child_env_var("FERRULE_SB_TEST_TOKEN"), None);
+        assert_eq!(
+            sb.child_env_var("FERRULE_SB_TEST_PLAIN").as_deref(),
+            Some("plain")
         );
     }
 
@@ -576,6 +674,7 @@ mod tests {
             backend: Backend::Seatbelt,
             degraded: None,
             extra_env: vec![("HTTPS_PROXY".into(), "http://127.0.0.1:1".into())],
+            ..Sandbox::off()
         };
         let un = sb.unconfined("mcp.servers.foo: sandbox = false");
         assert_eq!(un.backend(), Backend::None);
@@ -604,6 +703,7 @@ mod tests {
                 backend: Backend::Seatbelt,
                 degraded: None,
                 extra_env: Vec::new(),
+                ..Sandbox::off()
             }
             .model_note()
             .unwrap()

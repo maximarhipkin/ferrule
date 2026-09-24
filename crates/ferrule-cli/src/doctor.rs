@@ -119,7 +119,8 @@ pub async fn run(offline: bool) -> Result<bool> {
     let http = probe::client();
     providers(&mut r, &cfg, &http, offline).await;
     let telegram_on = telegram(&mut r, &cfg, &http, offline).await;
-    sandbox(&mut r, &cfg, &secrets_path);
+    let confined = sandbox(&mut r, &cfg, &secrets_path);
+    mcp(&mut r, &cfg, confined);
     service_check(&mut r, &path, telegram_on)?;
     binary(&mut r);
     Ok(r.finish())
@@ -304,13 +305,14 @@ async fn telegram(
     true
 }
 
-fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) {
+/// Whether commands run confined.
+fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> bool {
     let sandbox = match Sandbox::new(crate::sandbox_policy(cfg)) {
         Ok(sandbox) => sandbox,
         Err(e) => {
             r.fail("sandbox", e);
             r.hint("`ferrule setup` → Sandbox, or `ferrule sandbox` for details");
-            return;
+            return false;
         }
     };
     if !sandbox.is_active() {
@@ -320,7 +322,7 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) {
             (_, None) => "no sandbox on this system".to_string(),
         };
         r.warn("sandbox", format!("shell commands run unsandboxed: {why}"));
-        return;
+        return false;
     }
     let mode = match cfg.sandbox.mode {
         Mode::Off => "off",
@@ -363,6 +365,47 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) {
             Ok(_) => r.ok("sandbox", "the saved keys are out of the agent's reach"),
             Err(e) => r.warn("sandbox", format!("couldn't run a sandboxed check: {e}")),
         }
+    }
+    true
+}
+
+/// MCP servers that run outside the sandbox. Only the config is read: the
+/// servers themselves aren't started.
+fn mcp(r: &mut Report, cfg: &config::Config, confined: bool) {
+    let servers = &cfg.mcp.servers;
+    if servers.is_empty() {
+        return;
+    }
+    let open: Vec<&str> = servers
+        .iter()
+        .filter(|s| !s.sandbox)
+        .map(|s| s.name.as_str())
+        .collect();
+    for name in &open {
+        r.warn(
+            "mcp",
+            format!(
+                "`{name}` has sandbox = false: it can write anywhere you can and read the saved keys"
+            ),
+        );
+    }
+    if !open.is_empty() {
+        r.hint("remove `sandbox = false`, and give it `writable_roots` instead if it needs them");
+    }
+    let rest = servers.len() - open.len();
+    match (rest, confined) {
+        (0, _) => {}
+        (n, true) => r.ok(
+            "mcp",
+            format!("{n} server{} sandboxed", if n == 1 { "" } else { "s" }),
+        ),
+        (n, false) => r.warn(
+            "mcp",
+            format!(
+                "{n} server{} unsandboxed, like shell commands",
+                if n == 1 { " runs" } else { "s run" }
+            ),
+        ),
     }
 }
 

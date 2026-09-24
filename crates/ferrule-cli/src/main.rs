@@ -343,7 +343,7 @@ async fn build_agent(
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
     let sandbox = shared_sandbox(&cfg)?;
-    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox).await;
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox, &workspace).await;
     let ledger = ledger::LedgerTag::new(&ledger::build_sink(&cfg), task_shape, None);
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
@@ -363,13 +363,12 @@ async fn build_agent(
 /// once and share the result, so N sessions don't mean N copies of each
 /// server process.
 ///
-/// Each server gets its own writable state/cache dir under the data dir
-/// (`mcp/<sanitized name>`) and is spawned through `sandbox` — the same
-/// `Sandbox::command` path the shell tool uses — so its writes are confined
-/// there and secret-looking env vars never reach it unscrubbed.
+/// Servers run in the workspace, through the same sandbox as shell commands
+/// plus a state dir of their own under the data dir — see `ServerHost`.
 async fn connect_mcp_servers(
     servers: &[McpServerConfig],
     sandbox: Arc<Sandbox>,
+    workspace: &Path,
 ) -> Vec<Arc<dyn Tool>> {
     let mut tools = Vec::new();
     for server in servers {
@@ -383,8 +382,12 @@ async fn connect_mcp_servers(
                 continue;
             }
         };
-        match ferrule_mcp::connect_and_build_tools(server.clone(), sandbox.clone(), state_dir).await
-        {
+        let host = ferrule_mcp::ServerHost {
+            sandbox: sandbox.clone(),
+            workspace: workspace.to_path_buf(),
+            state_dir,
+        };
+        match ferrule_mcp::connect_and_build_tools(server.clone(), host).await {
             Ok(t) => tools.extend(t),
             Err(e) => tracing::warn!(
                 "mcp server `{}` failed to start ({e}); continuing without it",
@@ -395,9 +398,19 @@ async fn connect_mcp_servers(
     tools
 }
 
-/// `<data dir>/mcp/<name>`, created if missing — one server's writable
-/// cache/state dir and the one writable root its sandboxed command gets.
+/// `<data dir>/mcp/<name>`, created if missing: one server's home, caches
+/// and temp dir.
 fn mcp_state_dir(server_name: &str) -> Result<PathBuf> {
+    let dir = config::data_dir()?
+        .join("mcp")
+        .join(mcp_dir_name(server_name));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// A server name as a directory name. A name that had to be changed gets a
+/// hash of the original, so `a.b` and `a_b` don't share a home.
+fn mcp_dir_name(server_name: &str) -> String {
     let safe: String = server_name
         .chars()
         .map(|c| {
@@ -408,9 +421,14 @@ fn mcp_state_dir(server_name: &str) -> Result<PathBuf> {
             }
         })
         .collect();
-    let dir = config::data_dir()?.join("mcp").join(safe);
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    if safe == server_name && !safe.is_empty() {
+        return safe;
+    }
+    // FNV-1a: stable across Rust versions, unlike `DefaultHasher`.
+    let hash = server_name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{safe}-{:08x}", hash as u32)
 }
 
 /// Shared assembly logic for every entry point that needs a ready-to-run
@@ -858,7 +876,7 @@ async fn run_gateway(
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let sandbox = shared_sandbox(&cfg)?;
-    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox).await;
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox, &workspace).await;
     let ledger_sink = ledger::build_sink(&cfg);
     let factory_provider = provider;
     let factory_workspace = workspace.clone();
@@ -1073,7 +1091,7 @@ async fn tasks_run_now(
         .ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
     let sandbox = shared_sandbox(&cfg)?;
-    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox).await;
+    let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox, &workspace).await;
     let ledger_sink = ledger::build_sink(&cfg);
     let factory_provider = provider;
     let factory_workspace = workspace.clone();
@@ -1548,4 +1566,20 @@ fn ledger_cmd(since: Option<String>) -> Result<()> {
         eprintln!("skipped {malformed} malformed line(s)");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_dir_names_are_safe_and_distinct() {
+        assert_eq!(mcp_dir_name("github"), "github");
+        assert_eq!(mcp_dir_name("my-fs_2"), "my-fs_2");
+        let dotted = mcp_dir_name("a.b");
+        assert!(dotted.starts_with("a_b-"), "{dotted}");
+        assert_ne!(dotted, mcp_dir_name("a_b"));
+        assert_ne!(mcp_dir_name("../x"), "../x");
+        assert!(!mcp_dir_name("").is_empty());
+    }
 }

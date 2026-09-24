@@ -3,7 +3,7 @@ use crate::error::McpError;
 use ferrule_sandbox::Sandbox;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -38,18 +38,27 @@ struct Connection {
     _stderr: tokio::task::JoinHandle<()>,
 }
 
+/// Where the host runs a server: its shared sandbox (already carrying the
+/// credential proxy's env), the agent's workspace, which is the server's
+/// working directory, and the server's own state dir (`<data dir>/mcp/<name>`
+/// in the CLI), which must exist.
+#[derive(Clone)]
+pub struct ServerHost {
+    pub sandbox: Arc<Sandbox>,
+    pub workspace: PathBuf,
+    pub state_dir: PathBuf,
+}
+
 /// A client for one stdio MCP server. Owns lazy respawn: a dead connection
 /// is only reconnected on the next call, and only once — if that attempt
 /// also fails, the call reports an error rather than looping.
 pub struct McpClient {
     cfg: McpServerConfig,
-    /// Already resolved for this one server: `sandbox = false` (or no OS
-    /// backend) means this is an unconfined `Sandbox` that still scrubs
-    /// secret-looking env and carries the credential proxy's env — see
-    /// `Sandbox::unconfined`.
-    sandbox: Arc<Sandbox>,
-    /// This server's own writable state/cache dir — also its `cwd`, and the
-    /// implicit writable root `Sandbox::command` grants every command.
+    /// This server's own sandbox: the host's, plus its state dir and
+    /// `writable_roots`, or unconfined for `sandbox = false`. Either way
+    /// secret-looking env is scrubbed and the credential proxy's env set.
+    sandbox: Sandbox,
+    workspace: PathBuf,
     state_dir: PathBuf,
     conn: AsyncMutex<Option<Connection>>,
     next_id: AtomicU64,
@@ -69,15 +78,19 @@ fn extract_result(resp: Value) -> Result<Value, McpError> {
 }
 
 impl McpClient {
-    /// `sandbox` is this server's own effective sandbox — already decided
-    /// by the caller (confined, or `Sandbox::unconfined` for `sandbox =
-    /// false` / no OS backend). `state_dir` is this server's writable
-    /// cache/state directory, created by the caller.
-    pub fn new(cfg: McpServerConfig, sandbox: Arc<Sandbox>, state_dir: PathBuf) -> Self {
+    pub fn new(cfg: McpServerConfig, host: ServerHost) -> Self {
+        let sandbox = if cfg.sandbox {
+            host.sandbox
+                .for_helper(&host.state_dir, &cfg.writable_roots)
+        } else {
+            host.sandbox
+                .unconfined(format!("mcp.servers `{}` has sandbox = false", cfg.name))
+        };
         Self {
             cfg,
             sandbox,
-            state_dir,
+            workspace: host.workspace,
+            state_dir: host.state_dir,
             conn: AsyncMutex::new(None),
             next_id: AtomicU64::new(1),
         }
@@ -87,8 +100,8 @@ impl McpClient {
         &self.cfg.name
     }
 
-    /// Why this server's sandbox is inactive, if it is — `sandbox = false`
-    /// in its config, or no OS backend on this platform. For `doctor`.
+    /// Why this server runs without the OS sandbox, if it does:
+    /// `sandbox = false` in its config, or none available here.
     pub fn sandbox_degraded(&self) -> Option<&str> {
         self.sandbox.degraded()
     }
@@ -173,28 +186,35 @@ impl McpClient {
         }
     }
 
-    /// Route through the same `Sandbox::command` path as the shell tool:
-    /// writes confined to `state_dir` (and any configured extra writable
-    /// roots), secret-looking env scrubbed, `HTTPS_PROXY`/CA env from the
-    /// credential proxy already in `extra_env` if a broker is running.
-    /// Network is left open by policy — only writes and secrets are
-    /// confined here. Split out from `spawn_and_handshake` so a test can
-    /// build and spawn a command without a real MCP handshake.
+    /// The server's command, spawned the way the shell tool spawns one:
+    /// through `Sandbox::command`, so secret-looking env is scrubbed and
+    /// the credential proxy's env set, and when the sandbox is active,
+    /// writes confined to the workspace, temp dirs and the server's state
+    /// dir. The network stays open. A confined server also gets its home,
+    /// caches and temp dir inside the state dir, since `npx` and `uvx`
+    /// can't start without writing somewhere; its `env` config comes last
+    /// and can override any of it.
     fn build_command(&self) -> Result<tokio::process::Command, McpError> {
+        let program = resolve_program(&self.cfg.command);
         let std_cmd = self
             .sandbox
-            .command(&self.cfg.command, &self.cfg.args, &self.state_dir)
+            .command(program, &self.cfg.args, &self.workspace)
             .map_err(McpError::Spawn)?;
         let mut cmd = tokio::process::Command::from(std_cmd);
-        cmd
-            // `npx`/`uvx` and most stdio servers need a writable cache; give
-            // each server its own, inside the one writable root it has.
-            .env("HOME", &self.state_dir)
-            .env("XDG_CACHE_HOME", self.state_dir.join("cache"))
-            .env("npm_config_cache", self.state_dir.join("npm-cache"))
-            .env("UV_CACHE_DIR", self.state_dir.join("uv-cache"))
-            // The server's own configured env last, so it always wins.
-            .envs(&self.cfg.env);
+        if self.sandbox.is_active() {
+            let tmp = self.state_dir.join("tmp");
+            std::fs::create_dir_all(&tmp).map_err(McpError::Spawn)?;
+            let state = &self.state_dir;
+            cmd.env("HOME", state)
+                .env("XDG_CACHE_HOME", state.join(".cache"))
+                .env("XDG_CONFIG_HOME", state.join(".config"))
+                .env("XDG_DATA_HOME", state.join(".local/share"))
+                .env("XDG_STATE_HOME", state.join(".local/state"))
+                .env("npm_config_cache", state.join(".npm"))
+                .env("UV_CACHE_DIR", state.join(".cache/uv"))
+                .env("TMPDIR", tmp);
+        }
+        cmd.envs(&self.cfg.env);
         Ok(cmd)
     }
 
@@ -422,87 +442,52 @@ impl CallToolResult {
     }
 }
 
+/// Windows only runs `npx` if told it's `npx.cmd`: look a bare name up in
+/// `PATH` with each `PATHEXT` extension, as `cmd.exe` would. Elsewhere, and
+/// for anything with a directory or an extension, the name is used as is.
+fn resolve_program(command: &str) -> PathBuf {
+    if cfg!(windows) {
+        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        if let Some(found) =
+            std::env::var_os("PATH").and_then(|path| find_in_path(command, &path, &exts))
+        {
+            return found;
+        }
+    }
+    PathBuf::from(command)
+}
+
+fn find_in_path(command: &str, path: &std::ffi::OsStr, exts: &str) -> Option<PathBuf> {
+    let name = Path::new(command);
+    if name.extension().is_some() || name.components().count() != 1 {
+        return None;
+    }
+    std::env::split_paths(path).find_map(|dir| {
+        exts.split(';')
+            .filter(|e| !e.is_empty())
+            .map(|ext| dir.join(format!("{command}{}", ext.to_ascii_lowercase())))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
 #[cfg(test)]
-mod sandbox_tests {
+mod tests {
     use super::*;
-    use ferrule_sandbox::{Policy, Sandbox};
-    use std::collections::HashMap;
 
-    fn cfg(name: &str) -> McpServerConfig {
-        McpServerConfig {
-            name: name.into(),
-            command: "/bin/sh".into(),
-            args: vec![],
-            env: HashMap::new(),
-            timeout_secs: None,
-            sandbox: true,
-            writable_roots: vec![],
-        }
-    }
-
-    /// Same pattern as `ferrule_tools::shell`'s sandbox test: build a real
-    /// sandbox, skip (rather than fail) where this OS has no backend.
-    #[tokio::test]
-    async fn a_sandboxed_mcp_server_cannot_write_outside_its_state_dir() {
-        let sb = Sandbox::new(Policy {
-            tmp: false,
-            ..Default::default()
-        })
-        .unwrap();
-        if !sb.is_active() {
-            eprintln!("skipping: {}", sb.degraded().unwrap_or("no sandbox"));
-            return;
-        }
-        let state = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let target = outside.path().join("x");
-        let client = McpClient::new(
-            cfg("probe"),
-            Arc::new(sb),
-            state.path().canonicalize().unwrap(),
-        );
-        let mut cmd = client.build_command().unwrap();
-        // The outside write is expected to be refused; `|| echo refused`
-        // keeps that failure from deciding the shell's own exit status, so
-        // the assertions below (on the files, not the exit code) are what
-        // actually proves confinement.
-        let status = cmd
-            .arg("-c")
-            .arg(format!(
-                "echo in > ok; echo out > {} || echo refused",
-                target.display()
-            ))
-            .stdin(Stdio::null())
-            .status()
-            .await
-            .unwrap();
-        assert!(
-            status.success(),
-            "the shell itself should exit 0 regardless of the refused write"
-        );
-        assert!(
-            state.path().join("ok").exists(),
-            "write inside the state dir must succeed"
-        );
-        assert!(
-            !target.exists(),
-            "write outside the state dir must be refused"
-        );
-    }
-
-    #[tokio::test]
-    async fn sandbox_false_is_unconfined_but_still_documented_as_degraded() {
-        let sb = Sandbox::new(Policy {
-            tmp: false,
-            ..Default::default()
-        })
-        .unwrap();
-        let un = sb.unconfined("mcp.servers.probe: sandbox = false");
-        let state = tempfile::tempdir().unwrap();
-        let client = McpClient::new(cfg("probe"), Arc::new(un), state.path().to_path_buf());
+    #[test]
+    fn a_bare_name_is_found_with_a_pathext_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("npx.cmd"), "").unwrap();
+        let path = std::env::join_paths([dir.path()]).unwrap();
         assert_eq!(
-            client.sandbox_degraded(),
-            Some("mcp.servers.probe: sandbox = false")
+            find_in_path("npx", &path, ".EXE;.CMD"),
+            Some(dir.path().join("npx.cmd"))
         );
+        assert_eq!(
+            find_in_path("npx.cmd", &path, ".EXE;.CMD"),
+            None,
+            "has an extension"
+        );
+        assert_eq!(find_in_path("uvx", &path, ".EXE;.CMD"), None, "not there");
     }
 }

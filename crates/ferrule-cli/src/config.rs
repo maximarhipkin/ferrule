@@ -233,6 +233,10 @@ profile = "openai"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # env = {}
 # timeout_secs = 60          # per-call timeout, optional (default 60)
+# writable_roots = []        # extra writable dirs for this server only; it
+#                            # always gets the workspace, tmp and its own state
+#                            # dir (HOME, caches) under the data dir, plus network
+# sandbox = true             # false: no OS sandbox for it (doctor warns)
 
 # [skills]                  # Agent Skills (SKILL.md folders, Claude-compatible).
 # enabled = true             # Searched: <workspace>/.ferrule|.agents|.claude/skills,

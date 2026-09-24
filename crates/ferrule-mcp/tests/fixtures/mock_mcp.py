@@ -5,7 +5,8 @@ Speaks newline-delimited JSON-RPC 2.0. tools/list paginates two-at-a-time
 via a numeric cursor. tools/call supports: echo, add, boom (isError),
 slow (never responds, for timeout/concurrency tests), crash (exits without
 responding), ping_first (sends a server->client ping reusing the call's own
-id before answering, to catch id-space confusion).
+id before answering, to catch id-space confusion), write (creates a file,
+reporting a refusal as text rather than failing), env (reads a variable).
 """
 import sys, json, os
 
@@ -16,6 +17,8 @@ TOOLS = [
     {"name": "slow", "description": "Never responds", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "crash", "description": "Exits without responding", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "ping_first", "description": "Pings the client before answering", "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "write", "description": "Write a file", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
+    {"name": "env", "description": "Read an environment variable", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
 ]
 
 
@@ -57,6 +60,17 @@ def main():
                 pong = json.loads(sys.stdin.readline())
                 ok = pong.get("id") == mid and pong.get("result") == {} and "method" not in pong
                 send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": "pong-ok" if ok else "pong-bad"}], "isError": False}})
+            elif name == "write":
+                try:
+                    with open(args["path"], "w") as f:
+                        f.write("mcp")
+                    text = "wrote"
+                except OSError as e:
+                    text = "refused: %s" % e
+                send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": text}], "isError": False}})
+            elif name == "env":
+                value = os.environ.get(args.get("name", ""), "<unset>")
+                send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": value}], "isError": False}})
             elif name == "crash":
                 os._exit(1)
             else:
