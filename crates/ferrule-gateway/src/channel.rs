@@ -29,7 +29,10 @@ pub trait Channel: Send + Sync {
     /// Must only return when the channel's own source is exhausted (stdin
     /// EOF) or a fatal transport error occurs — never as a matter of course,
     /// since returning here ends this channel's contribution to the gateway.
-    async fn run(&self, tx: mpsc::Sender<crate::message::InboundMessage>) -> Result<(), GatewayError>;
+    async fn run(
+        &self,
+        tx: mpsc::Sender<crate::message::InboundMessage>,
+    ) -> Result<(), GatewayError>;
 
     /// Deliver a reply. Called from the destination session's lane, so it
     /// may be invoked concurrently for different chats but never twice at
@@ -39,12 +42,22 @@ pub trait Channel: Send + Sync {
     /// Optional: react to an inbound message (e.g. an emoji ack). Default
     /// is "not supported" rather than a silent no-op, so callers can tell
     /// the difference between "acked" and "can't ack here".
-    async fn react(&self, _chat_id: &str, _message_id: &str, _emoji: &str) -> Result<(), GatewayError> {
+    async fn react(
+        &self,
+        _chat_id: &str,
+        _message_id: &str,
+        _emoji: &str,
+    ) -> Result<(), GatewayError> {
         Err(GatewayError::Unsupported("reactions"))
     }
 
     /// Optional: edit a previously sent message in place.
-    async fn edit(&self, _chat_id: &str, _message_id: &str, _text: &str) -> Result<(), GatewayError> {
+    async fn edit(
+        &self,
+        _chat_id: &str,
+        _message_id: &str,
+        _text: &str,
+    ) -> Result<(), GatewayError> {
         Err(GatewayError::Unsupported("message edits"))
     }
 }

@@ -33,10 +33,16 @@ fn resolve(workspace: &Path, hidden: &[PathBuf], path: &str) -> Result<PathBuf, 
     };
     let hidden_real = |h: &PathBuf| real(&lexical(h)).unwrap_or_else(|| lexical(h));
     let fold = cfg!(any(target_os = "macos", windows));
-    if hidden.iter().map(hidden_real).any(|h| within(&resolved, &h, fold)) {
+    if hidden
+        .iter()
+        .map(hidden_real)
+        .any(|h| within(&resolved, &h, fold))
+    {
         return Err(CoreError::ToolFailed {
             tool: "fs".into(),
-            message: format!("`{path}` is ferrule's private data (saved keys); the file tools don't touch it"),
+            message: format!(
+                "`{path}` is ferrule's private data (saved keys); the file tools don't touch it"
+            ),
         });
     }
     Ok(resolved)
@@ -50,7 +56,11 @@ fn within(path: &Path, dir: &Path, fold: bool) -> bool {
     if !fold {
         return path.starts_with(dir);
     }
-    let folded = |p: &Path| p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect::<Vec<_>>();
+    let folded = |p: &Path| {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect::<Vec<_>>()
+    };
     folded(path).starts_with(&folded(dir))
 }
 
@@ -106,7 +116,8 @@ impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file inside the workspace. Returns file contents.".into(),
+            description: "Read a UTF-8 text file inside the workspace. Returns file contents."
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": { "path": { "type": "string", "description": "Path relative to workspace (or absolute within it)" } },
@@ -115,10 +126,17 @@ impl Tool for ReadFileTool {
         }
     }
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
-        let path = resolve(&ctx.workspace, &self.hidden, args["path"].as_str().unwrap_or(""))?;
+        let path = resolve(
+            &ctx.workspace,
+            &self.hidden,
+            args["path"].as_str().unwrap_or(""),
+        )?;
         let text = tokio::fs::read_to_string(&path)
             .await
-            .map_err(|e| CoreError::ToolFailed { tool: "read_file".into(), message: format!("{}: {e}", path.display()) })?;
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "read_file".into(),
+                message: format!("{}: {e}", path.display()),
+            })?;
         Ok(ToolOutput::capped(text, ctx.max_output_chars))
     }
 }
@@ -140,7 +158,8 @@ impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".into(),
-            description: "Write text content to a file inside the workspace, creating parent dirs.".into(),
+            description: "Write text content to a file inside the workspace, creating parent dirs."
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -152,15 +171,26 @@ impl Tool for WriteFileTool {
         }
     }
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
-        let path = resolve(&ctx.workspace, &self.hidden, args["path"].as_str().unwrap_or(""))?;
+        let path = resolve(
+            &ctx.workspace,
+            &self.hidden,
+            args["path"].as_str().unwrap_or(""),
+        )?;
         let content = args["content"].as_str().unwrap_or("");
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
         }
         tokio::fs::write(&path, content)
             .await
-            .map_err(|e| CoreError::ToolFailed { tool: "write_file".into(), message: format!("{}: {e}", path.display()) })?;
-        Ok(ToolOutput::ok(format!("wrote {} bytes to {}", content.len(), path.display())))
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "write_file".into(),
+                message: format!("{}: {e}", path.display()),
+            })?;
+        Ok(ToolOutput::ok(format!(
+            "wrote {} bytes to {}",
+            content.len(),
+            path.display()
+        )))
     }
 }
 
@@ -194,14 +224,25 @@ impl Tool for ListDirTool {
         }
     }
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
-        let path = resolve(&ctx.workspace, &self.hidden, args["path"].as_str().unwrap_or("."))?;
+        let path = resolve(
+            &ctx.workspace,
+            &self.hidden,
+            args["path"].as_str().unwrap_or("."),
+        )?;
         let mut entries = tokio::fs::read_dir(&path)
             .await
-            .map_err(|e| CoreError::ToolFailed { tool: "list_dir".into(), message: format!("{}: {e}", path.display()) })?;
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "list_dir".into(),
+                message: format!("{}: {e}", path.display()),
+            })?;
         let mut lines = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let kind = if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) { "dir" } else { "file" };
+            let kind = if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                "dir"
+            } else {
+                "file"
+            };
             lines.push(format!("{kind}\t{name}"));
         }
         lines.sort();
@@ -214,7 +255,10 @@ mod tests {
     use super::*;
 
     fn ctx(dir: &Path) -> ToolContext {
-        ToolContext { workspace: dir.to_path_buf(), max_output_chars: 1_000 }
+        ToolContext {
+            workspace: dir.to_path_buf(),
+            max_output_chars: 1_000,
+        }
     }
 
     #[tokio::test]
@@ -225,7 +269,10 @@ mod tests {
             .call(json!({"path": "sub/a.txt", "content": "hello"}), &c)
             .await
             .unwrap();
-        let out = ReadFileTool::default().call(json!({"path": "sub/a.txt"}), &c).await.unwrap();
+        let out = ReadFileTool::default()
+            .call(json!({"path": "sub/a.txt"}), &c)
+            .await
+            .unwrap();
         assert_eq!(out.content, "hello");
     }
 
@@ -233,9 +280,14 @@ mod tests {
     async fn path_escape_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let c = ctx(dir.path());
-        let err = ReadFileTool::default().call(json!({"path": "../../etc/passwd"}), &c).await.unwrap_err();
+        let err = ReadFileTool::default()
+            .call(json!({"path": "../../etc/passwd"}), &c)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("escapes workspace"), "{err}");
-        let err2 = WriteFileTool::default().call(json!({"path": "/tmp/evil.txt", "content": "x"}), &c).await;
+        let err2 = WriteFileTool::default()
+            .call(json!({"path": "/tmp/evil.txt", "content": "x"}), &c)
+            .await;
         assert!(err2.is_err());
     }
 
@@ -247,18 +299,31 @@ mod tests {
         std::fs::write(outside.path().join("secret"), "s3cret").unwrap();
         let c = ctx(dir.path());
         std::os::unix::fs::symlink(outside.path(), dir.path().join("out")).unwrap();
-        std::os::unix::fs::symlink(outside.path().join("new"), dir.path().join("dangling")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("new"), dir.path().join("dangling"))
+            .unwrap();
 
-        let err = ReadFileTool::default().call(json!({"path": "out/secret"}), &c).await.unwrap_err();
+        let err = ReadFileTool::default()
+            .call(json!({"path": "out/secret"}), &c)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("escapes workspace"), "{err}");
-        let err = WriteFileTool::default().call(json!({"path": "out/planted", "content": "x"}), &c).await.unwrap_err();
+        let err = WriteFileTool::default()
+            .call(json!({"path": "out/planted", "content": "x"}), &c)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("escapes workspace"), "{err}");
-        let err = WriteFileTool::default().call(json!({"path": "dangling", "content": "x"}), &c).await.unwrap_err();
+        let err = WriteFileTool::default()
+            .call(json!({"path": "dangling", "content": "x"}), &c)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("escapes workspace"), "{err}");
         assert!(!outside.path().join("planted").exists() && !outside.path().join("new").exists());
 
         // `..` is applied before any lookup, so it can't be walked out of a link.
-        WriteFileTool::default().call(json!({"path": "out/../ok.txt", "content": "x"}), &c).await.unwrap();
+        WriteFileTool::default()
+            .call(json!({"path": "out/../ok.txt", "content": "x"}), &c)
+            .await
+            .unwrap();
         assert!(dir.path().join("ok.txt").exists());
     }
 
@@ -269,9 +334,18 @@ mod tests {
         std::fs::create_dir(dir.path().join("real")).unwrap();
         std::os::unix::fs::symlink("real", dir.path().join("alias")).unwrap();
         let c = ctx(dir.path());
-        WriteFileTool::default().call(json!({"path": "alias/new/f.txt", "content": "hi"}), &c).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("real/new/f.txt")).unwrap(), "hi");
-        let out = ReadFileTool::default().call(json!({"path": "alias/new/f.txt"}), &c).await.unwrap();
+        WriteFileTool::default()
+            .call(json!({"path": "alias/new/f.txt", "content": "hi"}), &c)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("real/new/f.txt")).unwrap(),
+            "hi"
+        );
+        let out = ReadFileTool::default()
+            .call(json!({"path": "alias/new/f.txt"}), &c)
+            .await
+            .unwrap();
         assert_eq!(out.content, "hi");
     }
 
@@ -280,7 +354,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("b.txt"), "x").unwrap();
         std::fs::create_dir(dir.path().join("adir")).unwrap();
-        let out = ListDirTool::default().call(json!({"path": "."}), &ctx(dir.path())).await.unwrap();
+        let out = ListDirTool::default()
+            .call(json!({"path": "."}), &ctx(dir.path()))
+            .await
+            .unwrap();
         assert!(out.content.contains("file\tb.txt"));
         assert!(out.content.contains("dir\tadir"));
     }
@@ -291,7 +368,11 @@ mod tests {
         let spelled = Path::new("/home/a/.local/share/ferrule/proxy/KEYS/ca.key");
         assert!(within(spelled, keys, true));
         assert!(!within(spelled, keys, false));
-        assert!(!within(Path::new("/home/a/.local/share/ferrule/proxy/keys2"), keys, true));
+        assert!(!within(
+            Path::new("/home/a/.local/share/ferrule/proxy/keys2"),
+            keys,
+            true
+        ));
     }
 
     #[tokio::test]
@@ -304,23 +385,66 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&private, dir.path().join("alias")).unwrap();
         let hidden = vec![private.clone(), dir.path().join("data/proxy/keys")];
-        let (read, write, list) =
-            (ReadFileTool::hiding(hidden.clone()), WriteFileTool::hiding(hidden.clone()), ListDirTool::hiding(hidden));
+        let (read, write, list) = (
+            ReadFileTool::hiding(hidden.clone()),
+            WriteFileTool::hiding(hidden.clone()),
+            ListDirTool::hiding(hidden),
+        );
         let c = ctx(dir.path());
-        let alias = if cfg!(unix) { "alias/secrets.env" } else { "data/private/./secrets.env" };
-        for path in ["data/private/secrets.env", alias, "data/x/../private/secrets.env"] {
+        let alias = if cfg!(unix) {
+            "alias/secrets.env"
+        } else {
+            "data/private/./secrets.env"
+        };
+        for path in [
+            "data/private/secrets.env",
+            alias,
+            "data/x/../private/secrets.env",
+        ] {
             let err = read.call(json!({"path": path}), &c).await.unwrap_err();
             assert!(err.to_string().contains("private data"), "{path}: {err}");
         }
-        assert!(list.call(json!({"path": "data/private"}), &c).await.is_err());
-        assert!(write.call(json!({"path": "data/private/secrets.env", "content": "EVIL=1"}), &c).await.is_err());
+        assert!(list
+            .call(json!({"path": "data/private"}), &c)
+            .await
+            .is_err());
+        assert!(write
+            .call(
+                json!({"path": "data/private/secrets.env", "content": "EVIL=1"}),
+                &c
+            )
+            .await
+            .is_err());
         // Not there yet, and still refused: a planted key would be trusted later.
-        assert!(write.call(json!({"path": "data/proxy/keys/ca.key", "content": "x"}), &c).await.is_err());
-        assert_eq!(std::fs::read_to_string(private.join("secrets.env")).unwrap(), "KEY=sk-secret\n");
+        assert!(write
+            .call(
+                json!({"path": "data/proxy/keys/ca.key", "content": "x"}),
+                &c
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(private.join("secrets.env")).unwrap(),
+            "KEY=sk-secret\n"
+        );
         assert!(!dir.path().join("data/proxy/keys").exists());
         // Everything beside them works as before.
-        write.call(json!({"path": "data/notes.txt", "content": "hi"}), &c).await.unwrap();
-        assert_eq!(read.call(json!({"path": "data/notes.txt"}), &c).await.unwrap().content, "hi");
-        assert!(list.call(json!({"path": "data"}), &c).await.unwrap().content.contains("dir\tprivate"));
+        write
+            .call(json!({"path": "data/notes.txt", "content": "hi"}), &c)
+            .await
+            .unwrap();
+        assert_eq!(
+            read.call(json!({"path": "data/notes.txt"}), &c)
+                .await
+                .unwrap()
+                .content,
+            "hi"
+        );
+        assert!(list
+            .call(json!({"path": "data"}), &c)
+            .await
+            .unwrap()
+            .content
+            .contains("dir\tprivate"));
     }
 }

@@ -181,7 +181,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let secret = dir.path().join("private");
         std::fs::create_dir(&secret).unwrap();
-        let (p, params) = profile(true, &[dir.path().to_path_buf()], std::slice::from_ref(&secret));
+        let (p, params) = profile(
+            true,
+            &[dir.path().to_path_buf()],
+            std::slice::from_ref(&secret),
+        );
         let deny = "(deny file-read* file-write* (subpath (param \"HIDDEN_0\")))";
         let at = p.find(deny).expect("deny rule present");
         assert!(at > p.find("(allow file-read*)").unwrap());

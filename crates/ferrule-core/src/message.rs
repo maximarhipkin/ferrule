@@ -35,23 +35,55 @@ pub struct Message {
 
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: Role::System, content: Some(content.into()), tool_calls: vec![], tool_call_id: None, reasoning: None }
+        Self {
+            role: Role::System,
+            content: Some(content.into()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            reasoning: None,
+        }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: Some(content.into()), tool_calls: vec![], tool_call_id: None, reasoning: None }
+        Self {
+            role: Role::User,
+            content: Some(content.into()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            reasoning: None,
+        }
     }
-    pub fn assistant(content: Option<String>, tool_calls: Vec<ToolCall>, reasoning: Option<String>) -> Self {
-        Self { role: Role::Assistant, content, tool_calls, tool_call_id: None, reasoning }
+    pub fn assistant(
+        content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+        reasoning: Option<String>,
+    ) -> Self {
+        Self {
+            role: Role::Assistant,
+            content,
+            tool_calls,
+            tool_call_id: None,
+            reasoning,
+        }
     }
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { role: Role::Tool, content: Some(content.into()), tool_calls: vec![], tool_call_id: Some(tool_call_id.into()), reasoning: None }
+        Self {
+            role: Role::Tool,
+            content: Some(content.into()),
+            tool_calls: vec![],
+            tool_call_id: Some(tool_call_id.into()),
+            reasoning: None,
+        }
     }
 
     /// Rough token estimate (~4 chars/token) for compaction triggering.
     pub fn est_tokens(&self) -> usize {
         let content = self.content.as_deref().unwrap_or("").len();
         let reasoning = self.reasoning.as_deref().unwrap_or("").len();
-        let calls: usize = self.tool_calls.iter().map(|c| c.arguments.to_string().len() + c.name.len()).sum();
+        let calls: usize = self
+            .tool_calls
+            .iter()
+            .map(|c| c.arguments.to_string().len() + c.name.len())
+            .sum();
         (content + reasoning + calls) / 4 + 4
     }
 }

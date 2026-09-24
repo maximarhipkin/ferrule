@@ -7,20 +7,21 @@ mod secrets;
 mod service;
 mod setup;
 
-use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
+use anyhow::{anyhow, bail, Result};
+use clap::{Parser, Subcommand};
 use ferrule_core::tool::Tool;
+use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
 use ferrule_gateway::{
-    Channel, Gateway, LocalChannel, NewTask, RunOutcome, Router, Scheduler, TaskKind, TaskStore, TelegramChannel,
+    Channel, Gateway, LocalChannel, NewTask, Router, RunOutcome, Scheduler, TaskKind, TaskStore,
+    TelegramChannel,
 };
+use ferrule_mcp::McpServerConfig;
 use ferrule_memory::MemoryStore;
 use ferrule_providers::OpenAiCompatProvider;
 use ferrule_proxy::{Broker, BrokerConfig, Upstream};
 use ferrule_sandbox::{Mode, Sandbox};
 use ferrule_tools::standard_registry;
 use ferrule_tools::{CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WriteFileTool};
-use ferrule_mcp::McpServerConfig;
-use anyhow::{anyhow, bail, Result};
-use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -29,7 +30,11 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(Parser)]
-#[command(name = "ferrule", version, about = "A portable, memory-efficient agent runtime in Rust")]
+#[command(
+    name = "ferrule",
+    version,
+    about = "A portable, memory-efficient agent runtime in Rust"
+)]
 struct Cli {
     /// Config file to use instead of ./ferrule.toml or the global one
     /// (also `$FERRULE_CONFIG`)
@@ -177,9 +182,18 @@ enum TasksCmd {
 
 #[derive(Subcommand)]
 enum MemoryCmd {
-    Add { text: String, #[arg(long)] tags: Option<String> },
-    Search { query: String },
-    Recent { #[arg(long, default_value_t = 10)] n: usize },
+    Add {
+        text: String,
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    Search {
+        query: String,
+    },
+    Recent {
+        #[arg(long, default_value_t = 10)]
+        n: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -208,7 +222,10 @@ fn main() -> Result<()> {
         std::env::set_var("FERRULE_CONFIG", std::path::absolute(path)?);
     }
     secrets::load_into_env();
-    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(dispatch(cli.cmd))
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(dispatch(cli.cmd))
 }
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
@@ -219,10 +236,18 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Cmd::Config { op: ConfigCmd::Path } => config_path_cmd()?,
-        Cmd::Config { op: ConfigCmd::Edit } => config_edit_cmd()?,
-        Cmd::Config { op: ConfigCmd::Example } => print!("{}", config::EXAMPLE_CONFIG),
-        Cmd::Config { op: ConfigCmd::Init } => {
+        Cmd::Config {
+            op: ConfigCmd::Path,
+        } => config_path_cmd()?,
+        Cmd::Config {
+            op: ConfigCmd::Edit,
+        } => config_edit_cmd()?,
+        Cmd::Config {
+            op: ConfigCmd::Example,
+        } => print!("{}", config::EXAMPLE_CONFIG),
+        Cmd::Config {
+            op: ConfigCmd::Init,
+        } => {
             if PathBuf::from("ferrule.toml").exists() {
                 println!("ferrule.toml already exists");
             } else {
@@ -234,7 +259,10 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             let store = MemoryStore::open(config::data_dir()?.join("memory.db"))?;
             match op {
                 MemoryCmd::Add { text, tags } => {
-                    let tag_refs: Vec<&str> = tags.as_deref().map(|t| t.split(',').collect()).unwrap_or_default();
+                    let tag_refs: Vec<&str> = tags
+                        .as_deref()
+                        .map(|t| t.split(',').collect())
+                        .unwrap_or_default();
                     let id = store.remember(&text, &tag_refs)?;
                     println!("remembered (#{id})");
                 }
@@ -250,13 +278,26 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 }
             }
         }
-        Cmd::Run { prompt, provider, workspace, max_iterations, show_reasoning } => {
+        Cmd::Run {
+            prompt,
+            provider,
+            workspace,
+            max_iterations,
+            show_reasoning,
+        } => {
             run_once(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
         }
-        Cmd::Chat { provider, workspace } => {
+        Cmd::Chat {
+            provider,
+            workspace,
+        } => {
             chat(provider, workspace).await?;
         }
-        Cmd::Gateway { provider, workspace, max_iterations } => {
+        Cmd::Gateway {
+            provider,
+            workspace,
+            max_iterations,
+        } => {
             run_gateway(provider, workspace, max_iterations).await?;
         }
         Cmd::Tasks { op } => {
@@ -268,13 +309,25 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Skills { workspace } => {
             skills_cmd(workspace);
         }
-        Cmd::Sandbox { probe_net: true, .. } => probe_net(),
-        Cmd::Sandbox { workspace, probe_net: false, exec } if !exec.is_empty() => {
+        Cmd::Sandbox {
+            probe_net: true, ..
+        } => probe_net(),
+        Cmd::Sandbox {
+            workspace,
+            probe_net: false,
+            exec,
+        } if !exec.is_empty() => {
             let (cfg, _) = config::Config::load()?;
-            let status = shared_sandbox(&cfg)?.command(&exec[0], &exec[1..], &workspace.canonicalize()?)?.status()?;
+            let status = shared_sandbox(&cfg)?
+                .command(&exec[0], &exec[1..], &workspace.canonicalize()?)?
+                .status()?;
             std::process::exit(status.code().unwrap_or(1));
         }
-        Cmd::Sandbox { workspace, probe_net: false, .. } => {
+        Cmd::Sandbox {
+            workspace,
+            probe_net: false,
+            ..
+        } => {
             sandbox_cmd(workspace)?;
         }
     }
@@ -294,7 +347,14 @@ async fn build_agent(
     let ledger = ledger::LedgerTag::new(&ledger::build_sink(&cfg), task_shape, None);
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
-    build_agent_from(provider_name, workspace, max_iterations, transcript, &mcp_tools, ledger)
+    build_agent_from(
+        provider_name,
+        workspace,
+        max_iterations,
+        transcript,
+        &mcp_tools,
+        ledger,
+    )
 }
 
 /// Spawn every configured MCP server once and return its tools. A server
@@ -307,19 +367,29 @@ async fn build_agent(
 /// (`mcp/<sanitized name>`) and is spawned through `sandbox` — the same
 /// `Sandbox::command` path the shell tool uses — so its writes are confined
 /// there and secret-looking env vars never reach it unscrubbed.
-async fn connect_mcp_servers(servers: &[McpServerConfig], sandbox: Arc<Sandbox>) -> Vec<Arc<dyn Tool>> {
+async fn connect_mcp_servers(
+    servers: &[McpServerConfig],
+    sandbox: Arc<Sandbox>,
+) -> Vec<Arc<dyn Tool>> {
     let mut tools = Vec::new();
     for server in servers {
         let state_dir = match mcp_state_dir(&server.name) {
             Ok(dir) => dir,
             Err(e) => {
-                tracing::warn!("mcp server `{}`: couldn't create its state dir ({e}); continuing without it", server.name);
+                tracing::warn!(
+                    "mcp server `{}`: couldn't create its state dir ({e}); continuing without it",
+                    server.name
+                );
                 continue;
             }
         };
-        match ferrule_mcp::connect_and_build_tools(server.clone(), sandbox.clone(), state_dir).await {
+        match ferrule_mcp::connect_and_build_tools(server.clone(), sandbox.clone(), state_dir).await
+        {
             Ok(t) => tools.extend(t),
-            Err(e) => tracing::warn!("mcp server `{}` failed to start ({e}); continuing without it", server.name),
+            Err(e) => tracing::warn!(
+                "mcp server `{}` failed to start ({e}); continuing without it",
+                server.name
+            ),
         }
     }
     tools
@@ -330,7 +400,13 @@ async fn connect_mcp_servers(servers: &[McpServerConfig], sandbox: Arc<Sandbox>)
 fn mcp_state_dir(server_name: &str) -> Result<PathBuf> {
     let safe: String = server_name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let dir = config::data_dir()?.join("mcp").join(safe);
     std::fs::create_dir_all(&dir)?;
@@ -353,11 +429,19 @@ fn build_agent_from(
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
     let (name, pcfg, key) = cfg.resolve_provider(provider_name.as_deref())?;
-    let provider = Arc::new(OpenAiCompatProvider::new(name, &pcfg.base_url, key, &pcfg.model));
+    let provider = Arc::new(OpenAiCompatProvider::new(
+        name,
+        &pcfg.base_url,
+        key,
+        &pcfg.model,
+    ));
     let profile = HarnessProfile::by_name(&pcfg.profile);
 
     let workspace = workspace.canonicalize().unwrap_or(workspace);
-    let tool_ctx = ToolContext { workspace, max_output_chars: 30_000 };
+    let tool_ctx = ToolContext {
+        workspace,
+        max_output_chars: 30_000,
+    };
 
     let mut registry = standard_registry();
     let sandbox = shared_sandbox(&cfg)?;
@@ -390,12 +474,17 @@ fn build_agent_from(
     );
 
     if let Some(broker) = broker {
-        system.push_str(&format!("\n\n[Credentials]\n{}", broker.model_note().trim_end()));
+        system.push_str(&format!(
+            "\n\n[Credentials]\n{}",
+            broker.model_note().trim_end()
+        ));
     }
 
     // Context baseline: living documentation written for agents (AGENTS.md et al).
     if let Some((name, content)) = ferrule_core::load_context_baseline(&tool_ctx.workspace) {
-        system.push_str(&format!("\n\n[Workspace context baseline: {name}]\n{content}"));
+        system.push_str(&format!(
+            "\n\n[Workspace context baseline: {name}]\n{content}"
+        ));
     }
 
     // Validation: ferrule runs the check itself when a run that changed
@@ -433,7 +522,10 @@ fn build_agent_from(
         provider,
         registry,
         profile,
-        AgentConfig { max_iterations, ..Default::default() },
+        AgentConfig {
+            max_iterations,
+            ..Default::default()
+        },
         tool_ctx,
         transcript,
     )
@@ -443,7 +535,11 @@ fn build_agent_from(
     }
     if let Some(cmd) = &cfg.agent.verify_command {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
-        agent = agent.with_verifier(Arc::new(CommandVerifier::new(cmd.clone(), sandbox, timeout)));
+        agent = agent.with_verifier(Arc::new(CommandVerifier::new(
+            cmd.clone(),
+            sandbox,
+            timeout,
+        )));
     }
     Ok(agent)
 }
@@ -453,8 +549,12 @@ fn build_agent_from(
 /// holding them on disk.
 fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     let mut policy = cfg.sandbox.clone();
-    policy.secret_vars.extend(cfg.providers.values().map(|p| p.api_key_env.clone()));
-    policy.secret_vars.extend(cfg.gateway.telegram_token_env.clone());
+    policy
+        .secret_vars
+        .extend(cfg.providers.values().map(|p| p.api_key_env.clone()));
+    policy
+        .secret_vars
+        .extend(cfg.gateway.telegram_token_env.clone());
     // Commands get these back as placeholders, from the credential proxy.
     policy.secret_vars.extend(cfg.secrets.keys().cloned());
     policy.hidden.extend(hidden_paths());
@@ -504,7 +604,8 @@ fn warn_data_in_workspace(sandbox: &Sandbox, workspace: &Path) {
 /// workspace root. Seatbelt denies by rule and has no such limit.
 fn data_in_workspace(sandbox: &Sandbox, workspace: &Path) -> Option<PathBuf> {
     let data = config::data_dir().ok()?.canonicalize().ok()?;
-    (cfg!(target_os = "linux") && sandbox.is_active() && data.starts_with(workspace)).then_some(data)
+    (cfg!(target_os = "linux") && sandbox.is_active() && data.starts_with(workspace))
+        .then_some(data)
 }
 
 /// Built (and probed) once per process — the gateway builds an agent per
@@ -538,7 +639,11 @@ fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
         None
     } else {
         let cfg = BrokerConfig {
-            secrets: cfg.secrets.iter().map(|(name, spec)| (name.clone(), spec.into())).collect(),
+            secrets: cfg
+                .secrets
+                .iter()
+                .map(|(name, spec)| (name.clone(), spec.into()))
+                .collect(),
             state_dir: config::data_dir()?.join("proxy"),
             upstream: Upstream::from_env()?,
             ca_bundle: None,
@@ -550,7 +655,11 @@ fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
 }
 
 /// What makes `[secrets]` weaker than it looks in this setup.
-fn secrets_warnings(cfg: &config::Config, sandbox: &Sandbox, broker: Option<&Broker>) -> Vec<String> {
+fn secrets_warnings(
+    cfg: &config::Config,
+    sandbox: &Sandbox,
+    broker: Option<&Broker>,
+) -> Vec<String> {
     if cfg.secrets.is_empty() {
         return Vec::new();
     }
@@ -585,30 +694,64 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
             match ev {
                 AgentEvent::AssistantText { text } => println!("\n\x1b[1massistant:\x1b[0m {text}"),
                 AgentEvent::Reasoning { text } if show_reasoning => {
-                    println!("\x1b[90m[reasoning: {}…]\x1b[0m", text.chars().take(200).collect::<String>())
+                    println!(
+                        "\x1b[90m[reasoning: {}…]\x1b[0m",
+                        text.chars().take(200).collect::<String>()
+                    )
                 }
-                AgentEvent::ToolCallStarted { name, arguments, .. } => {
+                AgentEvent::ToolCallStarted {
+                    name, arguments, ..
+                } => {
                     let args = arguments.to_string();
-                    println!("\x1b[36m▶ {name}\x1b[0m {}", args.chars().take(160).collect::<String>())
+                    println!(
+                        "\x1b[36m▶ {name}\x1b[0m {}",
+                        args.chars().take(160).collect::<String>()
+                    )
                 }
-                AgentEvent::ToolCallFinished { name, ok, output_chars, .. } => {
-                    println!("\x1b[90m  {} {name} ({output_chars} chars)\x1b[0m", if ok { "✓" } else { "✗" })
+                AgentEvent::ToolCallFinished {
+                    name,
+                    ok,
+                    output_chars,
+                    ..
+                } => {
+                    println!(
+                        "\x1b[90m  {} {name} ({output_chars} chars)\x1b[0m",
+                        if ok { "✓" } else { "✗" }
+                    )
                 }
-                AgentEvent::Compacted { folded_messages, est_tokens_before, est_tokens_after } => {
+                AgentEvent::Compacted {
+                    folded_messages,
+                    est_tokens_before,
+                    est_tokens_after,
+                } => {
                     println!("\x1b[33m[compacted {folded_messages} messages: ~{est_tokens_before} → ~{est_tokens_after} tokens]\x1b[0m")
                 }
-                AgentEvent::Usage { input_tokens, output_tokens, cached_input_tokens } => {
+                AgentEvent::Usage {
+                    input_tokens,
+                    output_tokens,
+                    cached_input_tokens,
+                } => {
                     println!("\x1b[90m  [usage: in {input_tokens} (cached {cached_input_tokens}) / out {output_tokens}]\x1b[0m")
                 }
-                AgentEvent::ProviderRetry { attempt, max_attempts, delay_ms, error } => {
+                AgentEvent::ProviderRetry {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    error,
+                } => {
                     println!("\x1b[33m[provider failed, retry {attempt}/{max_attempts} in {:.1}s: {error}]\x1b[0m", delay_ms as f64 / 1000.0)
                 }
                 AgentEvent::Stuck { note } => println!("\x1b[33m{note}\x1b[0m"),
                 AgentEvent::VerifyStarted { check } => println!("\x1b[36m▶ check\x1b[0m {check}"),
                 AgentEvent::VerifyFinished { check, ok } => {
-                    println!("\x1b[90m  {} check `{check}`\x1b[0m", if ok { "✓" } else { "✗" })
+                    println!(
+                        "\x1b[90m  {} check `{check}`\x1b[0m",
+                        if ok { "✓" } else { "✗" }
+                    )
                 }
-                AgentEvent::RunIncomplete { reason, .. } => println!("\x1b[33m[stopped: {reason}]\x1b[0m"),
+                AgentEvent::RunIncomplete { reason, .. } => {
+                    println!("\x1b[33m[stopped: {reason}]\x1b[0m")
+                }
                 AgentEvent::Error { message } => eprintln!("\x1b[31merror: {message}\x1b[0m"),
                 _ => {}
             }
@@ -617,7 +760,13 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
     tx
 }
 
-async fn run_once(prompt: &str, provider: Option<String>, workspace: PathBuf, max_iterations: usize, show_reasoning: bool) -> Result<()> {
+async fn run_once(
+    prompt: &str,
+    provider: Option<String>,
+    workspace: PathBuf,
+    max_iterations: usize,
+    show_reasoning: bool,
+) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut agent = build_agent(provider, workspace, max_iterations, &session_id, "run").await?;
     let tx = spawn_renderer(show_reasoning);
@@ -629,7 +778,10 @@ async fn run_once(prompt: &str, provider: Option<String>, workspace: PathBuf, ma
                 None => println!("\n\x1b[1;32mfinal:\x1b[0m {text}"),
             }
             let u = &agent.usage;
-            println!("\x1b[90m[total usage: in {} (cached {}) / out {}]\x1b[0m", u.input_tokens, u.cached_input_tokens, u.output_tokens);
+            println!(
+                "\x1b[90m[total usage: in {} (cached {}) / out {}]\x1b[0m",
+                u.input_tokens, u.cached_input_tokens, u.output_tokens
+            );
             // Scripts can tell a status answer from a finished job.
             if agent.incomplete.is_some() {
                 std::process::exit(2);
@@ -697,7 +849,11 @@ fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channe
     Ok(named_channels)
 }
 
-async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iterations: usize) -> Result<()> {
+async fn run_gateway(
+    provider: Option<String>,
+    workspace: PathBuf,
+    max_iterations: usize,
+) -> Result<()> {
     let (cfg, _) = config::Config::load()?;
     let sessions_dir = config::data_dir()?.join("sessions");
 
@@ -709,8 +865,15 @@ async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iteration
     let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
         let (shape, origin) = ledger::classify_session(session_id);
         let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
-        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript), &mcp_tools, tag)
-            .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
+        build_agent_from(
+            factory_provider.clone(),
+            factory_workspace.clone(),
+            max_iterations,
+            Some(transcript),
+            &mcp_tools,
+            tag,
+        )
+        .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
     });
 
     let named_channels = build_channels(&cfg)?;
@@ -728,7 +891,11 @@ async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iteration
     // Arc'd so the same router serves both the gateway's channel adapters
     // and the scheduler's task-triggered turns — one router, two front
     // doors (see `ferrule_gateway::Gateway::new`'s doc comment).
-    let router = Arc::new(Router::new(sessions_dir, agent_factory, named_channels.clone()));
+    let router = Arc::new(Router::new(
+        sessions_dir,
+        agent_factory,
+        named_channels.clone(),
+    ));
 
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     let scheduler = Arc::new(Scheduler::new(
@@ -772,18 +939,44 @@ fn parse_task_kind(s: &str) -> Result<TaskKind> {
 }
 
 fn fmt_ts(ts: i64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0).map(|dt| dt.to_rfc3339()).unwrap_or_else(|| ts.to_string())
+    chrono::DateTime::<chrono::Utc>::from_timestamp(ts, 0)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| ts.to_string())
 }
 
 async fn tasks_cmd(op: TasksCmd) -> Result<()> {
     match op {
-        TasksCmd::Add { name, kind, schedule, timezone, channel, chat_id, prompt, gate } => {
+        TasksCmd::Add {
+            name,
+            kind,
+            schedule,
+            timezone,
+            channel,
+            chat_id,
+            prompt,
+            gate,
+        } => {
             let kind = parse_task_kind(&kind)?;
             let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
             let now = chrono::Utc::now();
-            let next_run_at = ferrule_gateway::initial_next_run_at(kind, &schedule, &timezone, now)?;
+            let next_run_at =
+                ferrule_gateway::initial_next_run_at(kind, &schedule, &timezone, now)?;
             let id = uuid::Uuid::new_v4().to_string();
-            let task = store.add(NewTask { name, kind, schedule, timezone, channel, chat_id, prompt, gate }, id, now.timestamp(), next_run_at)?;
+            let task = store.add(
+                NewTask {
+                    name,
+                    kind,
+                    schedule,
+                    timezone,
+                    channel,
+                    chat_id,
+                    prompt,
+                    gate,
+                },
+                id,
+                now.timestamp(),
+                next_run_at,
+            )?;
             println!("added task {} ({})", task.id, task.name);
             match task.next_run_at {
                 Some(t) => println!("next run: {}", fmt_ts(t)),
@@ -801,7 +994,11 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
                     "{}  {:<24}  {:<5}  {:<24}  {:<7}  next={}",
                     t.id,
                     t.name,
-                    if t.kind == TaskKind::Cron { "cron" } else { "once" },
+                    if t.kind == TaskKind::Cron {
+                        "cron"
+                    } else {
+                        "once"
+                    },
                     t.schedule,
                     if t.enabled { "enabled" } else { "paused" },
                     t.next_run_at.map(fmt_ts).unwrap_or_else(|| "-".into()),
@@ -850,18 +1047,30 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
                 );
             }
         }
-        TasksCmd::RunNow { id, provider, workspace, max_iterations } => {
+        TasksCmd::RunNow {
+            id,
+            provider,
+            workspace,
+            max_iterations,
+        } => {
             tasks_run_now(&id, provider, workspace, max_iterations).await?;
         }
     }
     Ok(())
 }
 
-async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, max_iterations: usize) -> Result<()> {
+async fn tasks_run_now(
+    id: &str,
+    provider: Option<String>,
+    workspace: PathBuf,
+    max_iterations: usize,
+) -> Result<()> {
     let (cfg, _) = config::Config::load()?;
     let sessions_dir = config::data_dir()?.join("sessions");
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
-    let task = store.get(id)?.ok_or_else(|| anyhow!("task `{id}` not found"))?;
+    let task = store
+        .get(id)?
+        .ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
     let sandbox = shared_sandbox(&cfg)?;
     let mcp_tools = connect_mcp_servers(&cfg.mcp.servers, sandbox).await;
@@ -871,12 +1080,23 @@ async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, m
     let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
         let (shape, origin) = ledger::classify_session(session_id);
         let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
-        build_agent_from(factory_provider.clone(), factory_workspace.clone(), max_iterations, Some(transcript), &mcp_tools, tag)
-            .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
+        build_agent_from(
+            factory_provider.clone(),
+            factory_workspace.clone(),
+            max_iterations,
+            Some(transcript),
+            &mcp_tools,
+            tag,
+        )
+        .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
     });
 
     let named_channels = build_channels(&cfg)?;
-    let router = Arc::new(Router::new(sessions_dir, agent_factory, named_channels.clone()));
+    let router = Arc::new(Router::new(
+        sessions_dir,
+        agent_factory,
+        named_channels.clone(),
+    ));
     // Sharing the same db file (via TaskStore::open above) as any running
     // `ferrule gateway` daemon means the no-overlap guard and interrupted-run
     // recovery apply here exactly as they do to a scheduled tick — this is
@@ -892,9 +1112,16 @@ async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, m
 
     match scheduler.execute(&task).await {
         Ok(RunOutcome::Succeeded { answer }) => println!("succeeded:\n{answer}"),
-        Ok(RunOutcome::Incomplete { answer, reason }) => println!("incomplete ({reason}):\n{answer}"),
-        Ok(RunOutcome::Skipped { reason }) => println!("skipped: {}", reason.unwrap_or_else(|| "(no reason given)".into())),
-        Ok(RunOutcome::AlreadyRunning) => println!("a run for this task is already in progress; try again shortly"),
+        Ok(RunOutcome::Incomplete { answer, reason }) => {
+            println!("incomplete ({reason}):\n{answer}")
+        }
+        Ok(RunOutcome::Skipped { reason }) => println!(
+            "skipped: {}",
+            reason.unwrap_or_else(|| "(no reason given)".into())
+        ),
+        Ok(RunOutcome::AlreadyRunning) => {
+            println!("a run for this task is already in progress; try again shortly")
+        }
         Err(e) => {
             eprintln!("run failed: {e}");
             std::process::exit(1);
@@ -939,11 +1166,21 @@ fn skills_cmd(workspace: PathBuf) {
         "{} skill(s), {} offered to the model{}",
         set.skills.len(),
         set.invocable().count(),
-        if cfg.project { "" } else { " (project skills off)" }
+        if cfg.project {
+            ""
+        } else {
+            " (project skills off)"
+        }
     );
     for s in &set.skills {
         let offered = if s.model_invocable { "model" } else { "hidden" };
-        println!("  {:<32} {:<8} {:<7} {}", s.name, s.scope.as_str(), offered, s.location.display());
+        println!(
+            "  {:<32} {:<8} {:<7} {}",
+            s.name,
+            s.scope.as_str(),
+            offered,
+            s.location.display()
+        );
     }
     if set.skills.iter().any(|s| !s.model_invocable) {
         println!("  (hidden = `disable-model-invocation: true`; not in the catalog, no tool can load it)");
@@ -971,14 +1208,23 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
             None
         }
     };
-    let policy = cfg.as_ref().map(sandbox_policy).unwrap_or_else(|| ferrule_sandbox::Policy { hidden: hidden_paths(), ..Default::default() });
+    let policy = cfg
+        .as_ref()
+        .map(sandbox_policy)
+        .unwrap_or_else(|| ferrule_sandbox::Policy {
+            hidden: hidden_paths(),
+            ..Default::default()
+        });
     let workspace = workspace.canonicalize()?;
     let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
     let broker = match &cfg {
         Some(cfg) => shared_broker(cfg)?,
         None => None,
     };
-    let warnings = cfg.as_ref().map(|cfg| secrets_warnings(cfg, &sandbox, broker)).unwrap_or_default();
+    let warnings = cfg
+        .as_ref()
+        .map(|cfg| secrets_warnings(cfg, &sandbox, broker))
+        .unwrap_or_default();
     if let Some(broker) = broker {
         sandbox = sandbox.with_env(broker.child_env());
     }
@@ -995,22 +1241,51 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         Mode::ReadOnly => "read-only",
         Mode::WorkspaceWrite => "workspace-write",
     };
-    println!("mode      {mode}{}", if policy.require { " (required)" } else { "" });
+    println!(
+        "mode      {mode}{}",
+        if policy.require { " (required)" } else { "" }
+    );
     if sandbox.is_active() {
-        println!("network   {}", if policy.network { "allowed" } else { "blocked" });
-        println!("writable  {}", if roots.is_empty() { "nothing (except /dev/null)".into() } else { roots[0].display().to_string() });
+        println!(
+            "network   {}",
+            if policy.network { "allowed" } else { "blocked" }
+        );
+        println!(
+            "writable  {}",
+            if roots.is_empty() {
+                "nothing (except /dev/null)".into()
+            } else {
+                roots[0].display().to_string()
+            }
+        );
         for root in roots.iter().skip(1) {
             println!("          {}", root.display());
         }
     }
-    println!("env       {} secret var(s) withheld{}", withheld.len(), if withheld.is_empty() { String::new() } else { format!(": {}", withheld.join(", ")) });
+    println!(
+        "env       {} secret var(s) withheld{}",
+        withheld.len(),
+        if withheld.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", withheld.join(", "))
+        }
+    );
     if let Some(broker) = broker {
         for (i, s) in broker.secrets().iter().enumerate() {
             let hosts: Vec<String> = s.hosts.iter().map(ToString::to_string).collect();
             let url = if s.in_url { " (URL too)" } else { "" };
-            println!("{}{} → {}{url}", if i == 0 { "secrets   " } else { "          " }, s.name, hosts.join(", "));
+            println!(
+                "{}{} → {}{url}",
+                if i == 0 { "secrets   " } else { "          " },
+                s.name,
+                hosts.join(", ")
+            );
         }
-        println!("          placeholders swapped by the proxy on {}", broker.addr());
+        println!(
+            "          placeholders swapped by the proxy on {}",
+            broker.addr()
+        );
     }
     for w in &warnings {
         println!("warning   {w}");
@@ -1023,30 +1298,58 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     };
     let sh = |script: &str, arg: &Path| -> Result<std::process::Output> {
         Ok(sandbox
-            .command("/bin/sh", ["-c".as_ref(), script.as_ref(), "sh".as_ref(), arg.as_os_str()], &workspace)?
+            .command(
+                "/bin/sh",
+                [
+                    "-c".as_ref(),
+                    script.as_ref(),
+                    "sh".as_ref(),
+                    arg.as_os_str(),
+                ],
+                &workspace,
+            )?
             .stdin(std::process::Stdio::null())
             .output()?)
     };
     println!("\nchecks");
 
     let env = if cfg!(windows) {
-        sandbox.command("cmd", ["/d", "/c", "set"], &workspace)?.stdin(std::process::Stdio::null()).output()?
+        sandbox
+            .command("cmd", ["/d", "/c", "set"], &workspace)?
+            .stdin(std::process::Stdio::null())
+            .output()?
     } else {
         sh("env", Path::new(""))?
     };
     let env = String::from_utf8_lossy(&env.stdout);
-    let brokered: Vec<&str> = broker.map(|b| b.secrets().iter().map(|s| s.name.as_str()).collect()).unwrap_or_default();
-    report("secret env vars are not visible to commands", withheld.iter().filter(|name| !brokered.contains(&name.as_str())).all(|name| !env.lines().any(|l| l.starts_with(&format!("{name}=")))));
+    let brokered: Vec<&str> = broker
+        .map(|b| b.secrets().iter().map(|s| s.name.as_str()).collect())
+        .unwrap_or_default();
+    report(
+        "secret env vars are not visible to commands",
+        withheld
+            .iter()
+            .filter(|name| !brokered.contains(&name.as_str()))
+            .all(|name| !env.lines().any(|l| l.starts_with(&format!("{name}=")))),
+    );
     if let Some(broker) = broker {
         let placeholders_only = broker.secrets().iter().all(|s| {
-            env.lines().any(|l| l == format!("{}={}", s.name, s.placeholder))
+            env.lines()
+                .any(|l| l == format!("{}={}", s.name, s.placeholder))
                 && std::env::var(&s.name).map_or(true, |real| !env.contains(&real))
         });
-        report("[secrets] reach commands as placeholders only", placeholders_only);
+        report(
+            "[secrets] reach commands as placeholders only",
+            placeholders_only,
+        );
     }
     if !sandbox.is_active() {
         println!("  (no sandbox: nothing else to check)");
-        return if failures == 0 { Ok(()) } else { bail!("{failures} check(s) failed") };
+        return if failures == 0 {
+            Ok(())
+        } else {
+            bail!("{failures} check(s) failed")
+        };
     }
 
     let probe_name = format!(".ferrule-sandbox-probe-{}", std::process::id());
@@ -1057,29 +1360,45 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         Mode::ReadOnly => report("workspace write is refused (read-only)", !wrote),
         _ => report("workspace write works", wrote),
     }
-    if let Some(data) = data_in_workspace(&sandbox, &workspace).filter(|_| !wrote && policy.mode != Mode::ReadOnly) {
+    if let Some(data) =
+        data_in_workspace(&sandbox, &workspace).filter(|_| !wrote && policy.mode != Mode::ReadOnly)
+    {
         println!("        the workspace holds ferrule's data ({}), so commands can't create files or folders at its top level;", setup::tilde(&data));
         println!("        inside existing folders they can. A folder of its own, like ~/ferrule-workspace, avoids this.");
     }
 
     // Aim outside every root, at a place this process itself can write — so
     // a refusal is the sandbox, not plain file permissions.
-    let candidates = [std::env::var_os("HOME").map(PathBuf::from), Some(PathBuf::from("/var/tmp")), workspace.parent().map(Path::to_path_buf)];
-    let target = candidates.into_iter().flatten().filter_map(|dir| dir.canonicalize().ok()).find(|dir| {
-        let probe = dir.join(&probe_name);
-        let writable = !roots.iter().any(|r| dir.starts_with(r)) && std::fs::write(&probe, "").is_ok();
-        let _ = std::fs::remove_file(&probe);
-        writable
-    });
+    let candidates = [
+        std::env::var_os("HOME").map(PathBuf::from),
+        Some(PathBuf::from("/var/tmp")),
+        workspace.parent().map(Path::to_path_buf),
+    ];
+    let target = candidates
+        .into_iter()
+        .flatten()
+        .filter_map(|dir| dir.canonicalize().ok())
+        .find(|dir| {
+            let probe = dir.join(&probe_name);
+            let writable =
+                !roots.iter().any(|r| dir.starts_with(r)) && std::fs::write(&probe, "").is_ok();
+            let _ = std::fs::remove_file(&probe);
+            writable
+        });
     match target {
         Some(dir) => {
             let probe = dir.join(&probe_name);
             let out = sh("echo probe > \"$1\"", &probe)?;
             let escaped = out.status.success() || probe.exists();
             let _ = std::fs::remove_file(&probe);
-            report(&format!("write outside the roots is refused ({})", dir.display()), !escaped);
+            report(
+                &format!("write outside the roots is refused ({})", dir.display()),
+                !escaped,
+            );
         }
-        None => println!("  skip  write outside the roots (no writable dir outside them to aim at)"),
+        None => {
+            println!("  skip  write outside the roots (no writable dir outside them to aim at)")
+        }
     }
 
     // Scrubbing the env is moot if a command can read it out of ferrule
@@ -1087,21 +1406,33 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     if cfg!(target_os = "linux") {
         let environ = PathBuf::from(format!("/proc/{}/environ", std::process::id()));
         let read = sh("cat \"$1\" > /dev/null", &environ)?.status.success();
-        report("ferrule's own environment is unreadable (/proc/<pid>/environ)", !read);
+        report(
+            "ferrule's own environment is unreadable (/proc/<pid>/environ)",
+            !read,
+        );
     }
     let saved = secrets::path()?;
     if saved.exists() {
         let read = sh("cat \"$1\" > /dev/null", &saved)?.status.success();
-        report(&format!("the saved keys are unreadable ({})", saved.display()), !read);
+        report(
+            &format!("the saved keys are unreadable ({})", saved.display()),
+            !read,
+        );
     }
 
     let me = std::env::current_exe()?;
-    let net = sandbox.command(&me, ["sandbox", "--probe-net"], &workspace)?.stdin(std::process::Stdio::null()).output()?;
+    let net = sandbox
+        .command(&me, ["sandbox", "--probe-net"], &workspace)?
+        .stdin(std::process::Stdio::null())
+        .output()?;
     let opened = net.status.success();
     if policy.network {
         report("network sockets open", opened);
     } else {
-        report("network sockets are refused", !opened && String::from_utf8_lossy(&net.stdout).contains("refused"));
+        report(
+            "network sockets are refused",
+            !opened && String::from_utf8_lossy(&net.stdout).contains("refused"),
+        );
     }
     if failures == 0 {
         Ok(())
@@ -1130,10 +1461,17 @@ fn probe_net() {
 fn config_path_cmd() -> Result<()> {
     match config::config_path()? {
         Some(path) => println!("config    {}", path.display()),
-        None => println!("config    none yet (`ferrule setup` writes {})", config::global_config_path()?.display()),
+        None => println!(
+            "config    none yet (`ferrule setup` writes {})",
+            config::global_config_path()?.display()
+        ),
     }
     let keys = secrets::path()?;
-    println!("keys      {}{}", keys.display(), if keys.exists() { "" } else { " (none saved)" });
+    println!(
+        "keys      {}{}",
+        keys.display(),
+        if keys.exists() { "" } else { " (none saved)" }
+    );
     println!("data      {}", config::data_dir()?.display());
     if let service::Status::Installed { unit, .. } = service::status() {
         println!("service   {}", unit.display());
@@ -1148,12 +1486,18 @@ fn config_edit_cmd() -> Result<()> {
         bail!("there's no config yet; `ferrule setup` writes one");
     };
     let on_path = |name: &str| {
-        std::env::var_os("PATH").is_some_and(|dirs| std::env::split_paths(&dirs).any(|dir| dir.join(name).is_file()))
+        std::env::var_os("PATH")
+            .is_some_and(|dirs| std::env::split_paths(&dirs).any(|dir| dir.join(name).is_file()))
     };
     let editor = ["VISUAL", "EDITOR"]
         .iter()
         .find_map(|var| std::env::var(var).ok().filter(|e| !e.trim().is_empty()))
-        .or_else(|| ["nano", "vi"].into_iter().find(|e| on_path(e)).map(str::to_string))
+        .or_else(|| {
+            ["nano", "vi"]
+                .into_iter()
+                .find(|e| on_path(e))
+                .map(str::to_string)
+        })
         .or_else(|| cfg!(windows).then(|| "notepad".to_string()))
         .ok_or_else(|| anyhow!("no editor found; set $EDITOR"))?;
     // $EDITOR may carry arguments, like "code --wait".
@@ -1172,18 +1516,31 @@ fn config_edit_cmd() -> Result<()> {
         bail!("{} doesn't parse any more:\n{e}", path.display());
     }
     println!("✓ {} parses", path.display());
-    if matches!(service::status(), service::Status::Installed { running: true, .. }) {
+    if matches!(
+        service::status(),
+        service::Status::Installed { running: true, .. }
+    ) {
         println!("  the background service still runs the old settings: `ferrule setup` → Background service → Restart it");
     }
     Ok(())
 }
 
 fn ledger_cmd(since: Option<String>) -> Result<()> {
-    let since = since.map(|s| ledger::parse_since(&s, chrono::Utc::now())).transpose()?;
+    let since = since
+        .map(|s| ledger::parse_since(&s, chrono::Utc::now()))
+        .transpose()?;
     let path = ledger::ledger_path()?;
     let (records, malformed) = ledger::read_records(&path, since)?;
     if records.is_empty() {
-        println!("no ledger rows{} in {}", if since.is_some() { " in that window" } else { "" }, path.display());
+        println!(
+            "no ledger rows{} in {}",
+            if since.is_some() {
+                " in that window"
+            } else {
+                ""
+            },
+            path.display()
+        );
     } else {
         println!("{}", ledger::render_table(&ledger::aggregate(&records)));
     }

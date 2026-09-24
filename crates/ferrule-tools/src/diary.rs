@@ -45,10 +45,15 @@ impl Tool for WriteTodosTool {
         let path = dir.join("TODO.md");
         tokio::fs::write(&path, todos)
             .await
-            .map_err(|e| CoreError::ToolFailed { tool: "write_todos".into(), message: e.to_string() })?;
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "write_todos".into(),
+                message: e.to_string(),
+            })?;
         let open = todos.matches("- [ ]").count();
         let done = todos.matches("- [x]").count() + todos.matches("- [X]").count();
-        Ok(ToolOutput::ok(format!("todo list saved ({done} done, {open} open)")))
+        Ok(ToolOutput::ok(format!(
+            "todo list saved ({done} done, {open} open)"
+        )))
     }
 }
 
@@ -81,7 +86,10 @@ impl Tool for DiaryTool {
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
         let entry = args["entry"].as_str().unwrap_or("").trim();
         if entry.is_empty() {
-            return Err(CoreError::ToolFailed { tool: "log_diary".into(), message: "empty entry".into() });
+            return Err(CoreError::ToolFailed {
+                tool: "log_diary".into(),
+                message: "empty entry".into(),
+            });
         }
         let dir = state_dir(ctx);
         tokio::fs::create_dir_all(&dir).await.ok();
@@ -97,15 +105,22 @@ impl Tool for DiaryTool {
             .append(true)
             .open(&path)
             .await
-            .map_err(|e| CoreError::ToolFailed { tool: "log_diary".into(), message: e.to_string() })?;
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "log_diary".into(),
+                message: e.to_string(),
+            })?;
         f.write_all(line.as_bytes())
             .await
-            .map_err(|e| CoreError::ToolFailed { tool: "log_diary".into(), message: e.to_string() })?;
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "log_diary".into(),
+                message: e.to_string(),
+            })?;
         // tokio's File hands the write to a blocking task; without flush the
         // entry may not have landed when we return (or when the next append opens).
-        f.flush()
-            .await
-            .map_err(|e| CoreError::ToolFailed { tool: "log_diary".into(), message: e.to_string() })?;
+        f.flush().await.map_err(|e| CoreError::ToolFailed {
+            tool: "log_diary".into(),
+            message: e.to_string(),
+        })?;
         Ok(ToolOutput::ok("logged"))
     }
 }
@@ -117,9 +132,15 @@ mod tests {
     #[tokio::test]
     async fn todos_overwrite_and_count() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ToolContext { workspace: dir.path().to_path_buf(), max_output_chars: 1_000 };
+        let ctx = ToolContext {
+            workspace: dir.path().to_path_buf(),
+            max_output_chars: 1_000,
+        };
         let out = WriteTodosTool
-            .call(json!({"todos": "- [x] setup\n- [ ] build\n- [ ] ship"}), &ctx)
+            .call(
+                json!({"todos": "- [x] setup\n- [ ] build\n- [ ] ship"}),
+                &ctx,
+            )
             .await
             .unwrap();
         assert!(out.content.contains("1 done, 2 open"));
@@ -130,9 +151,18 @@ mod tests {
     #[tokio::test]
     async fn diary_appends() {
         let dir = tempfile::tempdir().unwrap();
-        let ctx = ToolContext { workspace: dir.path().to_path_buf(), max_output_chars: 1_000 };
-        DiaryTool.call(json!({"entry": "started refactor"}), &ctx).await.unwrap();
-        DiaryTool.call(json!({"entry": "tests green"}), &ctx).await.unwrap();
+        let ctx = ToolContext {
+            workspace: dir.path().to_path_buf(),
+            max_output_chars: 1_000,
+        };
+        DiaryTool
+            .call(json!({"entry": "started refactor"}), &ctx)
+            .await
+            .unwrap();
+        DiaryTool
+            .call(json!({"entry": "tests green"}), &ctx)
+            .await
+            .unwrap();
         let text = std::fs::read_to_string(dir.path().join(".ferrule/diary.md")).unwrap();
         assert!(text.contains("started refactor"));
         assert!(text.contains("tests green"));

@@ -54,7 +54,11 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn new(sessions_dir: impl Into<PathBuf>, agent_factory: AgentFactory, channels: HashMap<String, Arc<dyn Channel>>) -> Self {
+    pub fn new(
+        sessions_dir: impl Into<PathBuf>,
+        agent_factory: AgentFactory,
+        channels: HashMap<String, Arc<dyn Channel>>,
+    ) -> Self {
         Self {
             sessions_dir: sessions_dir.into(),
             agent_factory,
@@ -71,7 +75,9 @@ impl Router {
     pub async fn dispatch(&self, msg: InboundMessage) -> Result<(), GatewayError> {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
         let tx = self.lane_for(&sid, &msg.channel).await?;
-        tx.send(LaneJob { msg, reply: None }).await.map_err(|_| GatewayError::SessionClosed(sid))
+        tx.send(LaneJob { msg, reply: None })
+            .await
+            .map_err(|_| GatewayError::SessionClosed(sid))
     }
 
     /// Enqueue an inbound message and await the agent turn's own result:
@@ -85,7 +91,12 @@ impl Router {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
         let (reply_tx, reply_rx) = oneshot::channel();
         let tx = self.lane_for(&sid, &msg.channel).await?;
-        tx.send(LaneJob { msg, reply: Some(reply_tx) }).await.map_err(|_| GatewayError::SessionClosed(sid.clone()))?;
+        tx.send(LaneJob {
+            msg,
+            reply: Some(reply_tx),
+        })
+        .await
+        .map_err(|_| GatewayError::SessionClosed(sid.clone()))?;
         match reply_rx.await {
             Ok(Ok(answer)) => Ok(answer),
             Ok(Err(err_text)) => Err(GatewayError::Channel(err_text)),
@@ -93,7 +104,11 @@ impl Router {
         }
     }
 
-    async fn lane_for(&self, session_id: &str, channel_name: &str) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
+    async fn lane_for(
+        &self,
+        session_id: &str,
+        channel_name: &str,
+    ) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
         let mut lanes = self.lanes.lock().await;
         if let Some(tx) = lanes.get(session_id) {
             if !tx.is_closed() {
@@ -105,7 +120,11 @@ impl Router {
         Ok(tx)
     }
 
-    fn spawn_lane(&self, session_id: &str, channel_name: &str) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
+    fn spawn_lane(
+        &self,
+        session_id: &str,
+        channel_name: &str,
+    ) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
         let transcript = Transcript::create(&self.sessions_dir, session_id)?;
         let history = transcript.read_messages().unwrap_or_default();
         let mut agent = (self.agent_factory)(session_id, transcript)?;
@@ -129,9 +148,17 @@ impl Router {
 /// error that's only logged and never surfaced is worse than a visible one).
 /// The job's own oneshot (if any) always gets the *true* `Result`, separate
 /// from the best-effort chat text.
-async fn run_lane(mut agent: Agent, mut rx: mpsc::Receiver<LaneJob>, channel: Option<Arc<dyn Channel>>, session_id: String) {
+async fn run_lane(
+    mut agent: Agent,
+    mut rx: mpsc::Receiver<LaneJob>,
+    channel: Option<Arc<dyn Channel>>,
+    session_id: String,
+) {
     while let Some(job) = rx.recv().await {
-        let LaneJob { msg: inbound, reply } = job;
+        let LaneJob {
+            msg: inbound,
+            reply,
+        } = job;
         // The agent loop wants a live event sender; the gateway doesn't
         // stream token-by-token to channels (yet), so the receiver is
         // dropped right away. It has to be: `Agent::emit` waits while a live
@@ -160,7 +187,12 @@ async fn run_lane(mut agent: Agent, mut rx: mpsc::Receiver<LaneJob>, channel: Op
             }
         }
         if let Some(reply_tx) = reply {
-            let outcome = run_result.map(|text| Reply { text, incomplete: agent.incomplete.clone() }).map_err(|e| e.to_string());
+            let outcome = run_result
+                .map(|text| Reply {
+                    text,
+                    incomplete: agent.incomplete.clone(),
+                })
+                .map_err(|e| e.to_string());
             let _ = reply_tx.send(outcome); // receiver may have given up (e.g. caller timed out)
         }
     }
@@ -182,7 +214,9 @@ mod tests {
     use async_trait::async_trait;
     use ferrule_core::provider::{CompletionRequest, CompletionResponse};
     use ferrule_core::tool::ToolContext;
-    use ferrule_core::{AgentConfig, CoreError, HarnessProfile, Message, Provider, ToolRegistry, Usage};
+    use ferrule_core::{
+        AgentConfig, CoreError, HarnessProfile, Message, Provider, ToolRegistry, Usage,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::time::{sleep, Duration, Instant};
 
@@ -194,8 +228,17 @@ mod tests {
             "echo"
         }
         async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
-            let last_user = req.messages.iter().rev().find(|m| m.role == Role::User).and_then(|m| m.content.clone()).unwrap_or_default();
-            Ok(CompletionResponse { message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None), usage: Usage::default() })
+            let last_user = req
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::User)
+                .and_then(|m| m.content.clone())
+                .unwrap_or_default();
+            Ok(CompletionResponse {
+                message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None),
+                usage: Usage::default(),
+            })
         }
     }
 
@@ -210,7 +253,10 @@ mod tests {
         }
         async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
             let n = req.messages.iter().filter(|m| m.role == Role::User).count();
-            Ok(CompletionResponse { message: Message::assistant(Some(format!("count: {n}")), vec![], None), usage: Usage::default() })
+            Ok(CompletionResponse {
+                message: Message::assistant(Some(format!("count: {n}")), vec![], None),
+                usage: Usage::default(),
+            })
         }
     }
 
@@ -241,12 +287,19 @@ mod tests {
         async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             let message = if n < self.turns {
-                let call = ferrule_core::ToolCall { id: format!("c{n}"), name: "missing".into(), arguments: serde_json::json!({ "n": n }) };
+                let call = ferrule_core::ToolCall {
+                    id: format!("c{n}"),
+                    name: "missing".into(),
+                    arguments: serde_json::json!({ "n": n }),
+                };
                 Message::assistant(None, vec![call], None)
             } else {
                 Message::assistant(Some("finally".into()), vec![], None)
             };
-            Ok(CompletionResponse { message, usage: Usage::default() })
+            Ok(CompletionResponse {
+                message,
+                usage: Usage::default(),
+            })
         }
     }
 
@@ -255,10 +308,17 @@ mod tests {
     }
     impl RecordingChannel {
         fn new() -> Arc<Self> {
-            Arc::new(Self { sent: std::sync::Mutex::new(Vec::new()) })
+            Arc::new(Self {
+                sent: std::sync::Mutex::new(Vec::new()),
+            })
         }
         fn texts(&self) -> Vec<String> {
-            self.sent.lock().unwrap().iter().map(|m| m.text.clone()).collect()
+            self.sent
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|m| m.text.clone())
+                .collect()
         }
     }
     #[async_trait]
@@ -291,22 +351,43 @@ mod tests {
 
     fn echo_factory() -> AgentFactory {
         Arc::new(|_sid, transcript| {
-            Ok(Agent::new(Arc::new(EchoProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
-                .with_system_prompt("test"))
+            Ok(Agent::new(
+                Arc::new(EchoProvider),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
         })
     }
 
     fn counting_factory() -> AgentFactory {
         Arc::new(|_sid, transcript| {
-            Ok(Agent::new(Arc::new(CountingProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
-                .with_system_prompt("test"))
+            Ok(Agent::new(
+                Arc::new(CountingProvider),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
         })
     }
 
     fn failing_factory() -> AgentFactory {
         Arc::new(|_sid, transcript| {
-            Ok(Agent::new(Arc::new(FailingProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
-                .with_system_prompt("test"))
+            Ok(Agent::new(
+                Arc::new(FailingProvider),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
         })
     }
 
@@ -335,7 +416,10 @@ mod tests {
         router.dispatch(inbound("chat-1", "three")).await.unwrap();
 
         wait_until(|| recorder.texts().len() == 3).await;
-        assert_eq!(recorder.texts(), vec!["echo: one", "echo: two", "echo: three"]);
+        assert_eq!(
+            recorder.texts(),
+            vec!["echo: one", "echo: two", "echo: three"]
+        );
     }
 
     #[tokio::test]
@@ -385,8 +469,17 @@ mod tests {
     async fn dispatch_and_wait_returns_the_true_answer() {
         let dir = tempfile::tempdir().unwrap();
         let router = Router::new(dir.path(), echo_factory(), HashMap::new());
-        let answer = router.dispatch_and_wait(inbound("chat-1", "ping")).await.unwrap();
-        assert_eq!(answer, Reply { text: "echo: ping".into(), incomplete: None });
+        let answer = router
+            .dispatch_and_wait(inbound("chat-1", "ping"))
+            .await
+            .unwrap();
+        assert_eq!(
+            answer,
+            Reply {
+                text: "echo: ping".into(),
+                incomplete: None
+            }
+        );
     }
 
     /// The exact bug class this method exists to prevent: a provider error
@@ -398,19 +491,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let router = Router::new(dir.path(), failing_factory(), HashMap::new());
         let result = router.dispatch_and_wait(inbound("chat-1", "ping")).await;
-        assert!(result.is_err(), "provider error must not be reported as success");
-        assert!(result.unwrap_err().to_string().contains("simulated provider outage"));
+        assert!(
+            result.is_err(),
+            "provider error must not be reported as success"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("simulated provider outage"));
     }
 
     #[tokio::test]
     async fn a_long_run_does_not_stall_the_lane() {
         let dir = tempfile::tempdir().unwrap();
         let factory: AgentFactory = Arc::new(|_sid, transcript| {
-            let provider = Arc::new(LongRunProvider { turns: 40, calls: AtomicUsize::new(0) });
-            Ok(Agent::new(provider, ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript)))
+            let provider = Arc::new(LongRunProvider {
+                turns: 40,
+                calls: AtomicUsize::new(0),
+            });
+            Ok(Agent::new(
+                provider,
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            ))
         });
         let router = Router::new(dir.path(), factory, HashMap::new());
-        let reply = tokio::time::timeout(Duration::from_secs(10), router.dispatch_and_wait(inbound("chat-1", "go"))).await;
+        let reply = tokio::time::timeout(
+            Duration::from_secs(10),
+            router.dispatch_and_wait(inbound("chat-1", "go")),
+        )
+        .await;
         assert_eq!(reply.expect("the lane stalled").unwrap().text, "finally");
     }
 
@@ -423,7 +536,11 @@ mod tests {
         let router = Router::new(dir.path(), failing_factory(), channels);
         router.dispatch(inbound("chat-1", "ping")).await.unwrap();
         wait_until(|| recorder.texts().len() == 1).await;
-        assert!(recorder.texts()[0].starts_with("Something went wrong and I couldn't reply"), "{:?}", recorder.texts());
+        assert!(
+            recorder.texts()[0].starts_with("Something went wrong and I couldn't reply"),
+            "{:?}",
+            recorder.texts()
+        );
     }
 
     #[tokio::test]
@@ -444,6 +561,9 @@ mod tests {
         let answer = router.dispatch_and_wait(msg).await.unwrap();
 
         assert_eq!(answer.text, "echo: ping");
-        assert!(recorder.texts().is_empty(), "unregistered pseudo-channel must not receive a delivery");
+        assert!(
+            recorder.texts().is_empty(),
+            "unregistered pseudo-channel must not receive a delivery"
+        );
     }
 }

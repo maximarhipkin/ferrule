@@ -22,17 +22,26 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn ok(content: impl Into<String>) -> Self {
-        Self { content: content.into(), truncated: false }
+        Self {
+            content: content.into(),
+            truncated: false,
+        }
     }
     /// Enforce a hard size cap — verbose tool output is the #1 source of
     /// context bloat. Long output goes to a spill file later; for now we cut.
     pub fn capped(content: String, max_chars: usize) -> Self {
         if content.len() <= max_chars {
-            return Self { content, truncated: false };
+            return Self {
+                content,
+                truncated: false,
+            };
         }
         let mut cut = content.chars().take(max_chars).collect::<String>();
         cut.push_str(&format!("\n…[truncated, {} chars total]", content.len()));
-        Self { content: cut, truncated: true }
+        Self {
+            content: cut,
+            truncated: true,
+        }
     }
 }
 
@@ -48,14 +57,21 @@ pub struct ToolContext {
 
 impl Default for ToolContext {
     fn default() -> Self {
-        Self { workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")), max_output_chars: 30_000 }
+        Self {
+            workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            max_output_chars: 30_000,
+        }
     }
 }
 
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
-    async fn call(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError>;
+    async fn call(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, CoreError>;
     /// Whether a successful call may have changed what the verify command
     /// checks. Tools that only read, and the agent's own notes under
     /// `.ferrule/`, say no; anything unknown is assumed to.
@@ -84,8 +100,16 @@ impl ToolRegistry {
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
-    pub async fn call(&self, name: &str, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
-        let tool = self.tools.get(name).ok_or_else(|| CoreError::ToolNotFound(name.to_string()))?;
+    pub async fn call(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, CoreError> {
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| CoreError::ToolNotFound(name.to_string()))?;
         tool.call(args, ctx).await
     }
     pub fn contains(&self, name: &str) -> bool {

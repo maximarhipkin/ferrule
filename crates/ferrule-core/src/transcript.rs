@@ -24,7 +24,10 @@ impl Transcript {
         fs::create_dir_all(dir)?;
         let path = dir.join(format!("{session_id}.jsonl"));
         let t = Self { path };
-        t.write(&Record::Meta { key: "session_id", value: session_id })?;
+        t.write(&Record::Meta {
+            key: "session_id",
+            value: session_id,
+        })?;
         Ok(t)
     }
 
@@ -41,7 +44,10 @@ impl Transcript {
     }
 
     fn write<T: Serialize>(&self, record: &T) -> Result<(), CoreError> {
-        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         let mut line = serde_json::to_string(record)?;
         line.push('\n');
         f.write_all(line.as_bytes())?;

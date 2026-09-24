@@ -8,7 +8,10 @@ pub enum CoreError {
     /// a dropped connection, HTTP 408, 429 or 5xx. The agent retries these
     /// with backoff; any other provider error is final.
     #[error("provider temporarily unavailable: {message}")]
-    Transient { message: String, retry_after: Option<std::time::Duration> },
+    Transient {
+        message: String,
+        retry_after: Option<std::time::Duration>,
+    },
     #[error("provider returned malformed response: {0}")]
     MalformedResponse(String),
     #[error("tool `{0}` not found")]

@@ -23,8 +23,18 @@ impl Default for ShellTool {
         Self {
             timeout: Duration::from_secs(120),
             deny_patterns: vec![
-                "rm -rf /", "rm -rf ~", "rm -rf *", "mkfs", ":(){", "dd if=",
-                "sudo ", "doas ", "shutdown", "reboot", "> /dev/sd", "chmod -R 777 /",
+                "rm -rf /",
+                "rm -rf ~",
+                "rm -rf *",
+                "mkfs",
+                ":(){",
+                "dd if=",
+                "sudo ",
+                "doas ",
+                "shutdown",
+                "reboot",
+                "> /dev/sd",
+                "chmod -R 777 /",
             ],
             sandbox: Arc::new(Sandbox::off()),
         }
@@ -33,16 +43,24 @@ impl Default for ShellTool {
 
 impl ShellTool {
     pub fn sandboxed(sandbox: Arc<Sandbox>) -> Self {
-        Self { sandbox, ..Self::default() }
+        Self {
+            sandbox,
+            ..Self::default()
+        }
     }
 
     fn failed(message: impl Into<String>) -> CoreError {
-        CoreError::ToolFailed { tool: "shell".into(), message: message.into() }
+        CoreError::ToolFailed {
+            tool: "shell".into(),
+            message: message.into(),
+        }
     }
 
     fn is_denied(&self, cmd: &str) -> bool {
         let lower = cmd.to_lowercase();
-        self.deny_patterns.iter().any(|p| lower.contains(&p.to_lowercase()))
+        self.deny_patterns
+            .iter()
+            .any(|p| lower.contains(&p.to_lowercase()))
     }
 
     /// Runs `cmd` in the sandbox, in `workspace`, and returns its exit code
@@ -119,7 +137,9 @@ impl Tool for ShellTool {
             return Err(Self::failed("empty command"));
         }
         if self.is_denied(&cmd) {
-            return Err(Self::failed(format!("command blocked by deny list: `{cmd}`")));
+            return Err(Self::failed(format!(
+                "command blocked by deny list: `{cmd}`"
+            )));
         }
 
         let (code, mut text) = self.run(&cmd, &ctx.workspace).await?;
@@ -139,7 +159,13 @@ pub struct CommandVerifier {
 
 impl CommandVerifier {
     pub fn new(command: impl Into<String>, sandbox: Arc<Sandbox>, timeout: Duration) -> Self {
-        Self { command: command.into(), shell: ShellTool { timeout, ..ShellTool::sandboxed(sandbox) } }
+        Self {
+            command: command.into(),
+            shell: ShellTool {
+                timeout,
+                ..ShellTool::sandboxed(sandbox)
+            },
+        }
     }
 }
 
@@ -150,12 +176,19 @@ impl Verifier for CommandVerifier {
     }
 
     async fn verify(&self, ctx: &ToolContext) -> Result<(), String> {
-        let (code, output) = self.shell.run(&self.command, &ctx.workspace).await.map_err(|e| e.to_string())?;
+        let (code, output) = self
+            .shell
+            .run(&self.command, &ctx.workspace)
+            .await
+            .map_err(|e| e.to_string())?;
         if code == 0 {
             return Ok(());
         }
         // Errors are usually at the end, after the progress lines.
-        Err(format!("{}\n[exit code: {code}]", tail(&output, ctx.max_output_chars)))
+        Err(format!(
+            "{}\n[exit code: {code}]",
+            tail(&output, ctx.max_output_chars)
+        ))
     }
 }
 
@@ -175,12 +208,20 @@ mod tests {
     use std::path::PathBuf;
 
     fn ctx() -> ToolContext {
-        ToolContext { workspace: std::env::temp_dir().canonicalize().unwrap_or(PathBuf::from("/tmp")), max_output_chars: 10_000 }
+        ToolContext {
+            workspace: std::env::temp_dir()
+                .canonicalize()
+                .unwrap_or(PathBuf::from("/tmp")),
+            max_output_chars: 10_000,
+        }
     }
 
     #[tokio::test]
     async fn runs_command_and_reports_exit_code() {
-        let out = ShellTool::default().call(json!({"command": "echo hello"}), &ctx()).await.unwrap();
+        let out = ShellTool::default()
+            .call(json!({"command": "echo hello"}), &ctx())
+            .await
+            .unwrap();
         assert!(out.content.contains("hello"));
         assert!(out.content.contains("[exit code: 0]"));
     }
@@ -190,7 +231,10 @@ mod tests {
         let t = ShellTool::default();
         assert!(t.is_denied("sudo rm -rf /"));
         assert!(t.is_denied("RM -RF /home"));
-        let err = t.call(json!({"command": "sudo apt update"}), &ctx()).await.unwrap_err();
+        let err = t
+            .call(json!({"command": "sudo apt update"}), &ctx())
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("blocked"));
     }
 
@@ -198,7 +242,10 @@ mod tests {
     async fn stdin_is_closed_and_secrets_are_scrubbed() {
         std::env::set_var("FERRULE_SHELL_TEST_TOKEN", "leak-me");
         let out = ShellTool::default()
-            .call(json!({"command": "cat; echo \"[${FERRULE_SHELL_TEST_TOKEN:-scrubbed}]\""}), &ctx())
+            .call(
+                json!({"command": "cat; echo \"[${FERRULE_SHELL_TEST_TOKEN:-scrubbed}]\""}),
+                &ctx(),
+            )
             .await
             .unwrap();
         assert!(out.content.contains("[scrubbed]"), "{}", out.content);
@@ -208,8 +255,14 @@ mod tests {
     #[tokio::test]
     async fn timeout_kills_the_whole_process_group() {
         let dir = tempfile::tempdir().unwrap();
-        let c = ToolContext { workspace: dir.path().to_path_buf(), max_output_chars: 1_000 };
-        let t = ShellTool { timeout: Duration::from_millis(500), ..ShellTool::default() };
+        let c = ToolContext {
+            workspace: dir.path().to_path_buf(),
+            max_output_chars: 1_000,
+        };
+        let t = ShellTool {
+            timeout: Duration::from_millis(500),
+            ..ShellTool::default()
+        };
         // A grandchild that would write a marker after the timeout fires.
         let err = t
             .call(json!({"command": "(sleep 2; touch late) & sleep 5"}), &c)
@@ -217,7 +270,10 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("timeout"));
         tokio::time::sleep(Duration::from_millis(2_500)).await;
-        assert!(!dir.path().join("late").exists(), "background child survived the timeout");
+        assert!(
+            !dir.path().join("late").exists(),
+            "background child survived the timeout"
+        );
     }
 
     #[cfg(unix)]
@@ -228,24 +284,42 @@ mod tests {
         assert_eq!(pass.describe(), "true");
         assert_eq!(pass.verify(&ctx()).await, Ok(()));
 
-        let fail = CommandVerifier::new("seq 1 5000; echo broken >&2; exit 3", sandbox, Duration::from_secs(10));
-        let ctx = ToolContext { max_output_chars: 200, ..ctx() };
+        let fail = CommandVerifier::new(
+            "seq 1 5000; echo broken >&2; exit 3",
+            sandbox,
+            Duration::from_secs(10),
+        );
+        let ctx = ToolContext {
+            max_output_chars: 200,
+            ..ctx()
+        };
         let report = fail.verify(&ctx).await.unwrap_err();
         assert!(report.starts_with("[... "), "{report}");
-        assert!(report.ends_with("[stderr]\nbroken\n\n[exit code: 3]"), "{report}");
+        assert!(
+            report.ends_with("[stderr]\nbroken\n\n[exit code: 3]"),
+            "{report}"
+        );
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn a_check_that_hangs_is_a_failure() {
-        let hang = CommandVerifier::new("sleep 30", Arc::new(Sandbox::off()), Duration::from_millis(200));
+        let hang = CommandVerifier::new(
+            "sleep 30",
+            Arc::new(Sandbox::off()),
+            Duration::from_millis(200),
+        );
         let report = hang.verify(&ctx()).await.unwrap_err();
         assert!(report.contains("timeout"), "{report}");
     }
 
     #[tokio::test]
     async fn sandboxed_shell_cannot_write_outside_the_workspace() {
-        let sb = Sandbox::new(ferrule_sandbox::Policy { tmp: false, ..Default::default() }).unwrap();
+        let sb = Sandbox::new(ferrule_sandbox::Policy {
+            tmp: false,
+            ..Default::default()
+        })
+        .unwrap();
         if !sb.is_active() {
             eprintln!("skipping: {}", sb.degraded().unwrap_or("no sandbox"));
             return;
@@ -254,14 +328,24 @@ mod tests {
         assert!(t.definition().description.contains("sandbox"));
         let ws = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
-        let c = ToolContext { workspace: ws.path().canonicalize().unwrap(), max_output_chars: 1_000 };
+        let c = ToolContext {
+            workspace: ws.path().canonicalize().unwrap(),
+            max_output_chars: 1_000,
+        };
         let target = outside.path().join("x");
         let out = t
-            .call(json!({"command": format!("echo in > ok && echo out > {}", target.display())}), &c)
+            .call(
+                json!({"command": format!("echo in > ok && echo out > {}", target.display())}),
+                &c,
+            )
             .await
             .unwrap();
         assert!(ws.path().join("ok").exists());
         assert!(!target.exists());
-        assert!(out.content.contains(ferrule_sandbox::DENIED), "{}", out.content);
+        assert!(
+            out.content.contains(ferrule_sandbox::DENIED),
+            "{}",
+            out.content
+        );
     }
 }

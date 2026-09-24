@@ -7,7 +7,13 @@ pub fn session_id(channel: &str, chat_id: &str) -> String {
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -17,7 +23,10 @@ mod tests {
 
     #[test]
     fn same_pair_is_deterministic() {
-        assert_eq!(session_id("telegram", "12345"), session_id("telegram", "12345"));
+        assert_eq!(
+            session_id("telegram", "12345"),
+            session_id("telegram", "12345")
+        );
     }
 
     #[test]

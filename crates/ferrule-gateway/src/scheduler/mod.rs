@@ -177,8 +177,12 @@ impl Scheduler {
                 RunOutcome::Succeeded { answer }
             }
             Ok(InnerOutcome::Incomplete { answer, reason }) => {
-                self.store
-                    .finish_run(&run_id, RunStatus::Incomplete, Some(&reason), finished_at)?;
+                self.store.finish_run(
+                    &run_id,
+                    RunStatus::Incomplete,
+                    Some(&reason),
+                    finished_at,
+                )?;
                 RunOutcome::Incomplete { answer, reason }
             }
             Ok(InnerOutcome::Skipped(reason)) => {
@@ -432,14 +436,25 @@ mod tests {
                 }),
                 Reply::Err(e) => Err(CoreError::Provider(e.clone())),
                 Reply::Loop(status) => {
-                    let stopping = req.messages.last().and_then(|m| m.content.as_deref()).is_some_and(|c| c.starts_with("[ferrule] Stopping here"));
+                    let stopping = req
+                        .messages
+                        .last()
+                        .and_then(|m| m.content.as_deref())
+                        .is_some_and(|c| c.starts_with("[ferrule] Stopping here"));
                     let message = if stopping {
                         Message::assistant(Some(status.clone()), vec![], None)
                     } else {
-                        let call = ferrule_core::ToolCall { id: "c".into(), name: "missing".into(), arguments: serde_json::json!({}) };
+                        let call = ferrule_core::ToolCall {
+                            id: "c".into(),
+                            name: "missing".into(),
+                            arguments: serde_json::json!({}),
+                        };
                         Message::assistant(None, vec![call], None)
                     };
-                    Ok(CompletionResponse { message, usage: Usage::default() })
+                    Ok(CompletionResponse {
+                        message,
+                        usage: Usage::default(),
+                    })
                 }
             }
         }
@@ -499,7 +514,10 @@ mod tests {
             });
             // A looping agent gets one step, so the run hits the limit.
             let config = match reply {
-                Reply::Loop(_) => AgentConfig { max_iterations: 1, ..AgentConfig::default() },
+                Reply::Loop(_) => AgentConfig {
+                    max_iterations: 1,
+                    ..AgentConfig::default()
+                },
                 _ => AgentConfig::default(),
             };
             Ok(Agent::new(

@@ -62,7 +62,12 @@ pub struct RetryPolicy {
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self { max_attempts: 4, base_delay: Duration::from_secs(2), max_delay: Duration::from_secs(30), budget: Duration::from_secs(120) }
+        Self {
+            max_attempts: 4,
+            base_delay: Duration::from_secs(2),
+            max_delay: Duration::from_secs(30),
+            budget: Duration::from_secs(120),
+        }
     }
 }
 
@@ -78,7 +83,11 @@ impl RetryPolicy {
         }
         let delay = match retry_after {
             Some(d) => *d,
-            None => jitter(self.base_delay.saturating_mul(1 << (attempt - 1).min(16)).min(self.max_delay)),
+            None => jitter(
+                self.base_delay
+                    .saturating_mul(1 << (attempt - 1).min(16))
+                    .min(self.max_delay),
+            ),
         };
         (elapsed + delay <= self.budget).then_some(delay)
     }
@@ -105,10 +114,18 @@ enum StopReason {
 impl std::fmt::Display for StopReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StopReason::MaxIterations(n) => write!(f, "it reached the limit of {n} step{}", if *n == 1 { "" } else { "s" }),
+            StopReason::MaxIterations(n) => write!(
+                f,
+                "it reached the limit of {n} step{}",
+                if *n == 1 { "" } else { "s" }
+            ),
             StopReason::Stuck(stuck) => f.write_str(&stuck.reason()),
             StopReason::VerifyFailing { check, rounds } => {
-                let rounds = if *rounds == 1 { "one round".to_string() } else { format!("{rounds} rounds") };
+                let rounds = if *rounds == 1 {
+                    "one round".to_string()
+                } else {
+                    format!("{rounds} rounds")
+                };
                 write!(f, "`{check}` still fails after {rounds} of fixes")
             }
         }
@@ -181,8 +198,19 @@ impl Agent {
     /// `origin` identify *why* this session exists (`"run"`, `"chat"`,
     /// `"gateway"` + channel, `"scheduler"` + task id); `model` is supplied
     /// by the caller because `Provider` exposes only `name()`, not a model.
-    pub fn with_ledger(mut self, sink: Arc<dyn LedgerSink>, task_shape: impl Into<String>, origin: Option<String>, model: impl Into<String>) -> Self {
-        self.ledger = Some(LedgerContext { sink, task_shape: task_shape.into(), origin, model: model.into() });
+    pub fn with_ledger(
+        mut self,
+        sink: Arc<dyn LedgerSink>,
+        task_shape: impl Into<String>,
+        origin: Option<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        self.ledger = Some(LedgerContext {
+            sink,
+            task_shape: task_shape.into(),
+            origin,
+            model: model.into(),
+        });
         self
     }
 
@@ -204,7 +232,11 @@ impl Agent {
     fn session_id(&self) -> String {
         self.transcript
             .as_ref()
-            .and_then(|t| t.path().file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .and_then(|t| {
+                t.path()
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+            })
             .unwrap_or_else(|| "ephemeral".into())
     }
 
@@ -232,11 +264,21 @@ impl Agent {
                 Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
                 Ok(_) => None,
             };
-            self.record_completion(iteration, call_kind, latency_ms, &result, retry_in.is_some());
+            self.record_completion(
+                iteration,
+                call_kind,
+                latency_ms,
+                &result,
+                retry_in.is_some(),
+            );
             let (Some(delay), Err(e)) = (retry_in, &result) else {
                 return result;
             };
-            warn!(attempt, delay_ms = delay.as_millis() as u64, "provider call failed, retrying: {e}");
+            warn!(
+                attempt,
+                delay_ms = delay.as_millis() as u64,
+                "provider call failed, retrying: {e}"
+            );
             self.emit(
                 tx,
                 AgentEvent::ProviderRetry {
@@ -261,7 +303,15 @@ impl Agent {
         retried: bool,
     ) {
         let Some(ledger) = &self.ledger else { return };
-        let (input_tokens, cached_input_tokens, output_tokens, tool_calls, outcome, error_kind, error_message) = match result {
+        let (
+            input_tokens,
+            cached_input_tokens,
+            output_tokens,
+            tool_calls,
+            outcome,
+            error_kind,
+            error_message,
+        ) = match result {
             Ok(resp) => (
                 resp.usage.input_tokens,
                 resp.usage.cached_input_tokens,
@@ -273,7 +323,15 @@ impl Agent {
             ),
             Err(e) => {
                 let outcome = if retried { "retried" } else { "error" };
-                (0, 0, 0, 0, outcome.to_string(), Some(error_kind_of(e)), Some(truncate_error(&e.to_string())))
+                (
+                    0,
+                    0,
+                    0,
+                    0,
+                    outcome.to_string(),
+                    Some(error_kind_of(e)),
+                    Some(truncate_error(&e.to_string())),
+                )
             }
         };
         let record = LedgerRecord {
@@ -304,9 +362,20 @@ impl Agent {
     /// it was already warned about, or with a check that keeps failing, it
     /// stops with a status of where things stand ([`Agent::incomplete`]
     /// says why) instead of an error.
-    pub async fn run(&mut self, goal: &str, tx: mpsc::Sender<AgentEvent>) -> Result<String, CoreError> {
+    pub async fn run(
+        &mut self,
+        goal: &str,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<String, CoreError> {
         let session_id = self.session_id();
-        self.emit(&tx, AgentEvent::RunStarted { session_id, goal: goal.into() }).await;
+        self.emit(
+            &tx,
+            AgentEvent::RunStarted {
+                session_id,
+                goal: goal.into(),
+            },
+        )
+        .await;
         self.goal = Some(goal.to_string());
         self.incomplete = None;
         self.push(Message::user(goal));
@@ -320,18 +389,22 @@ impl Agent {
 
         for iteration in 0..self.config.max_iterations {
             self.maybe_compact(&tx, iteration).await?;
-            let resp = self.call_provider(&tx, self.request(), iteration, "turn").await?;
+            let resp = self
+                .call_provider(&tx, self.request(), iteration, "turn")
+                .await?;
             self.add_usage(&tx, &resp.usage).await;
 
             let msg = resp.message;
             if let Some(text) = &msg.content {
                 if !text.is_empty() {
-                    self.emit(&tx, AgentEvent::AssistantText { text: text.clone() }).await;
+                    self.emit(&tx, AgentEvent::AssistantText { text: text.clone() })
+                        .await;
                 }
             }
             if let Some(r) = &msg.reasoning {
                 if !r.is_empty() {
-                    self.emit(&tx, AgentEvent::Reasoning { text: r.clone() }).await;
+                    self.emit(&tx, AgentEvent::Reasoning { text: r.clone() })
+                        .await;
                 }
             }
 
@@ -341,13 +414,29 @@ impl Agent {
             if finished {
                 if let Some(verifier) = self.verifier.clone().filter(|_| unverified) {
                     let check = verifier.describe();
-                    self.emit(&tx, AgentEvent::VerifyStarted { check: check.clone() }).await;
+                    self.emit(
+                        &tx,
+                        AgentEvent::VerifyStarted {
+                            check: check.clone(),
+                        },
+                    )
+                    .await;
                     let result = verifier.verify(&self.tool_ctx).await;
-                    self.emit(&tx, AgentEvent::VerifyFinished { check: check.clone(), ok: result.is_ok() }).await;
+                    self.emit(
+                        &tx,
+                        AgentEvent::VerifyFinished {
+                            check: check.clone(),
+                            ok: result.is_ok(),
+                        },
+                    )
+                    .await;
                     if let Err(output) = result {
                         failed_checks += 1;
                         if failed_checks > self.config.max_verify_rounds {
-                            let reason = StopReason::VerifyFailing { check, rounds: self.config.max_verify_rounds };
+                            let reason = StopReason::VerifyFailing {
+                                check,
+                                rounds: self.config.max_verify_rounds,
+                            };
                             return self.wrap_up(&tx, iteration + 1, reason).await;
                         }
                         self.push(Message::user(format!(
@@ -358,19 +447,32 @@ impl Agent {
                     }
                 }
                 let answer = msg.content.unwrap_or_default();
-                self.emit(&tx, AgentEvent::RunFinished { answer_chars: answer.len(), iterations: iteration + 1 }).await;
+                self.emit(
+                    &tx,
+                    AgentEvent::RunFinished {
+                        answer_chars: answer.len(),
+                        iterations: iteration + 1,
+                    },
+                )
+                .await;
                 return Ok(answer);
             }
 
             for call in &msg.tool_calls {
-                self.emit(&tx, AgentEvent::ToolCallStarted {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                })
+                self.emit(
+                    &tx,
+                    AgentEvent::ToolCallStarted {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: call.arguments.clone(),
+                    },
+                )
                 .await;
 
-                let result = self.tools.call(&call.name, call.arguments.clone(), &self.tool_ctx).await;
+                let result = self
+                    .tools
+                    .call(&call.name, call.arguments.clone(), &self.tool_ctx)
+                    .await;
                 let (content, ok) = match result {
                     Ok(out) => (out.content, true),
                     Err(e) => (format!("error: {e}"), false),
@@ -381,12 +483,15 @@ impl Agent {
                 if ok && self.tools.changes_files(&call.name) {
                     unverified = true;
                 }
-                self.emit(&tx, AgentEvent::ToolCallFinished {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    ok,
-                    output_chars: content.len(),
-                })
+                self.emit(
+                    &tx,
+                    AgentEvent::ToolCallFinished {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        ok,
+                        output_chars: content.len(),
+                    },
+                )
                 .await;
 
                 steps.push(Step::new(&call.name, &call.arguments, &content, ok));
@@ -395,7 +500,9 @@ impl Agent {
 
             if let Some(stuck) = Stuck::detect(&steps) {
                 if nudged {
-                    return self.wrap_up(&tx, iteration + 1, StopReason::Stuck(stuck)).await;
+                    return self
+                        .wrap_up(&tx, iteration + 1, StopReason::Stuck(stuck))
+                        .await;
                 }
                 // One warning first: told what it's repeating, a model
                 // usually changes course.
@@ -403,18 +510,25 @@ impl Agent {
                 steps.clear();
                 let note = stuck.nudge();
                 warn!(?stuck, "the run is going in circles");
-                self.emit(&tx, AgentEvent::Stuck { note: note.clone() }).await;
+                self.emit(&tx, AgentEvent::Stuck { note: note.clone() })
+                    .await;
                 self.push(Message::user(note));
             }
         }
         let limit = self.config.max_iterations;
-        self.wrap_up(&tx, limit, StopReason::MaxIterations(limit)).await
+        self.wrap_up(&tx, limit, StopReason::MaxIterations(limit))
+            .await
     }
 
     /// Ends a run that can't finish with one more call, for a status the
     /// person can act on: what got done, what's blocking, what's next. An
     /// error would throw all of that away.
-    async fn wrap_up(&mut self, tx: &mpsc::Sender<AgentEvent>, iterations: usize, reason: StopReason) -> Result<String, CoreError> {
+    async fn wrap_up(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iterations: usize,
+        reason: StopReason,
+    ) -> Result<String, CoreError> {
         let why = reason.to_string();
         warn!(%why, "stopping the run before it finished");
         self.incomplete = Some(why.clone());
@@ -428,7 +542,10 @@ impl Agent {
         }
         // The tools stay declared: some APIs refuse a history that holds
         // tool calls when the request has no tools.
-        let resp = match self.call_provider(tx, self.request(), iterations, "status").await {
+        let resp = match self
+            .call_provider(tx, self.request(), iterations, "status")
+            .await
+        {
             Ok(resp) => resp,
             Err(e) => {
                 warn!("the status answer failed: {e}");
@@ -443,9 +560,22 @@ impl Agent {
             _ => format!("Stopped before finishing: {why}."),
         };
         msg.content = Some(answer.clone());
-        self.emit(tx, AgentEvent::AssistantText { text: answer.clone() }).await;
+        self.emit(
+            tx,
+            AgentEvent::AssistantText {
+                text: answer.clone(),
+            },
+        )
+        .await;
         self.push(msg);
-        self.emit(tx, AgentEvent::RunIncomplete { reason: why, iterations }).await;
+        self.emit(
+            tx,
+            AgentEvent::RunIncomplete {
+                reason: why,
+                iterations,
+            },
+        )
+        .await;
         Ok(answer)
     }
 
@@ -505,11 +635,22 @@ impl Agent {
 
     /// Compaction: deterministic dedupe first (free), then structured LLM
     /// summary of everything before the trailing verbatim window.
-    async fn maybe_compact(&mut self, tx: &mpsc::Sender<AgentEvent>, iteration: usize) -> Result<(), CoreError> {
+    async fn maybe_compact(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iteration: usize,
+    ) -> Result<(), CoreError> {
         let before = self.est_context_tokens();
         let trigger = self.profile.compaction_trigger_tokens();
         if before <= trigger {
-            self.emit(tx, AgentEvent::ContextReady { est_tokens: before, threshold_tokens: trigger }).await;
+            self.emit(
+                tx,
+                AgentEvent::ContextReady {
+                    est_tokens: before,
+                    threshold_tokens: trigger,
+                },
+            )
+            .await;
             return Ok(());
         }
         info!(before, trigger, "compacting context");
@@ -539,33 +680,52 @@ impl Agent {
             .map(|m| {
                 let role = format!("{:?}", m.role).to_lowercase();
                 let body = m.content.clone().unwrap_or_default();
-                let body = if may_hold_skill(m) { elide_skill_blocks(&body) } else { body };
+                let body = if may_hold_skill(m) {
+                    elide_skill_blocks(&body)
+                } else {
+                    body
+                };
                 format!("{role}: {body}")
             })
             .collect::<Vec<_>>()
             .join("\n\n");
 
         let summary_req = CompletionRequest {
-            messages: vec![Message::user(format!("{COMPACTION_TEMPLATE}{transcript_text}"))],
+            messages: vec![Message::user(format!(
+                "{COMPACTION_TEMPLATE}{transcript_text}"
+            ))],
             tools: vec![],
             max_output_tokens: Some(4096),
             temperature: Some(0.0),
         };
-        let summary = self.call_provider(tx, summary_req, iteration, "compaction").await?.message.content.unwrap_or_default();
+        let summary = self
+            .call_provider(tx, summary_req, iteration, "compaction")
+            .await?
+            .message
+            .content
+            .unwrap_or_default();
 
         let mut rebuilt = Vec::with_capacity(keep + 2);
-        if let Some(sys) = self.messages.first().filter(|m| m.role == crate::message::Role::System) {
+        if let Some(sys) = self
+            .messages
+            .first()
+            .filter(|m| m.role == crate::message::Role::System)
+        {
             rebuilt.push(sys.clone());
         }
         let mut summary_msg = format!("[Compaction summary of earlier session]\n{summary}");
         if !carried.is_empty() {
-            summary_msg.push_str("\n\n[Skill instructions activated earlier in this session — still in force]\n");
+            summary_msg.push_str(
+                "\n\n[Skill instructions activated earlier in this session — still in force]\n",
+            );
             summary_msg.push_str(&carried.join("\n\n"));
         }
         // The request itself, word for word: it's what says when the work
         // is done, and a summary tends to blur exactly that.
         let goal_in_tail = |goal: &str| {
-            self.messages[split..].iter().any(|m| m.role == crate::message::Role::User && m.content.as_deref() == Some(goal))
+            self.messages[split..]
+                .iter()
+                .any(|m| m.role == crate::message::Role::User && m.content.as_deref() == Some(goal))
         };
         if let Some(goal) = self.goal.as_deref().filter(|g| !goal_in_tail(g)) {
             summary_msg.push_str("\n\n[The request being worked on, verbatim]\n");
@@ -578,9 +738,19 @@ impl Agent {
         let folded = self.messages.len() - rebuilt.len();
         self.messages = rebuilt;
         let after = self.est_context_tokens();
-        self.emit(tx, AgentEvent::Compacted { folded_messages: folded, est_tokens_before: before, est_tokens_after: after }).await;
+        self.emit(
+            tx,
+            AgentEvent::Compacted {
+                folded_messages: folded,
+                est_tokens_before: before,
+                est_tokens_after: after,
+            },
+        )
+        .await;
         if let Some(t) = &self.transcript {
-            let _ = t.log_event(&format!("compacted: {folded} messages, {before} -> {after} est tokens"));
+            let _ = t.log_event(&format!(
+                "compacted: {folded} messages, {before} -> {after} est tokens"
+            ));
         }
         Ok(())
     }
@@ -613,7 +783,10 @@ impl Agent {
 /// Skill blocks arrive as tool results and, after a compaction, inside the
 /// summary (a user message). Anything else quoting the tag is left alone.
 fn may_hold_skill(m: &Message) -> bool {
-    matches!(m.role, crate::message::Role::Tool | crate::message::Role::User)
+    matches!(
+        m.role,
+        crate::message::Role::Tool | crate::message::Role::User
+    )
 }
 
 /// Byte ranges and names of the `<skill_content>` blocks in `text`. A block
@@ -641,7 +814,11 @@ fn skill_spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
 /// order, the latest copy of each name winning.
 fn skill_blocks(messages: &[Message]) -> Vec<(String, String)> {
     let mut blocks: Vec<(String, String)> = Vec::new();
-    for text in messages.iter().filter(|m| may_hold_skill(m)).filter_map(|m| m.content.as_deref()) {
+    for text in messages
+        .iter()
+        .filter(|m| may_hold_skill(m))
+        .filter_map(|m| m.content.as_deref())
+    {
         for (range, name) in skill_spans(text) {
             let block = text[range].to_string();
             match blocks.iter_mut().find(|(n, _)| n == name) {
@@ -658,7 +835,9 @@ fn elide_skill_blocks(text: &str) -> String {
     let mut pos = 0;
     for (range, name) in skill_spans(text) {
         out.push_str(&text[pos..range.start]);
-        out.push_str(&format!("[skill `{name}` instructions — carried forward verbatim, not part of this summary]"));
+        out.push_str(&format!(
+            "[skill `{name}` instructions — carried forward verbatim, not part of this summary]"
+        ));
         pos = range.end;
     }
     out.push_str(&text[pos..]);
@@ -711,7 +890,14 @@ mod tests {
         }
         async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
             let msg = self.responses.lock().unwrap().remove(0);
-            Ok(CompletionResponse { message: msg, usage: Usage { input_tokens: 10, output_tokens: 5, cached_input_tokens: 0 } })
+            Ok(CompletionResponse {
+                message: msg,
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cached_input_tokens: 0,
+                },
+            })
         }
     }
 
@@ -726,8 +912,14 @@ mod tests {
                 parameters: serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
             }
         }
-        async fn call(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
-            Ok(ToolOutput::ok(args["text"].as_str().unwrap_or("").to_string()))
+        async fn call(
+            &self,
+            args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput, CoreError> {
+            Ok(ToolOutput::ok(
+                args["text"].as_str().unwrap_or("").to_string(),
+            ))
         }
     }
 
@@ -739,7 +931,9 @@ mod tests {
         let mut reg = ToolRegistry::new();
         reg.register(Arc::new(EchoTool));
         Agent::new(
-            Arc::new(ScriptProvider { responses: Mutex::new(script) }),
+            Arc::new(ScriptProvider {
+                responses: Mutex::new(script),
+            }),
             reg,
             HarnessProfile::generic(),
             config,
@@ -749,7 +943,11 @@ mod tests {
     }
 
     fn echo(text: &str) -> Message {
-        let call = crate::message::ToolCall { id: "1".into(), name: "echo".into(), arguments: serde_json::json!({ "text": text }) };
+        let call = crate::message::ToolCall {
+            id: "1".into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({ "text": text }),
+        };
         Message::assistant(None, vec![call], None)
     }
 
@@ -772,7 +970,11 @@ mod tests {
         let script = vec![
             Message::assistant(
                 None,
-                vec![crate::message::ToolCall { id: "1".into(), name: "echo".into(), arguments: serde_json::json!({"text": "hi"}) }],
+                vec![crate::message::ToolCall {
+                    id: "1".into(),
+                    name: "echo".into(),
+                    arguments: serde_json::json!({"text": "hi"}),
+                }],
                 None,
             ),
             Message::assistant(Some("done: hi".into()), vec![], None),
@@ -786,7 +988,8 @@ mod tests {
 
         let mut saw_tool = false;
         while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AgentEvent::ToolCallFinished { ref name, ok: true, .. } if name == "echo") {
+            if matches!(ev, AgentEvent::ToolCallFinished { ref name, ok: true, .. } if name == "echo")
+            {
                 saw_tool = true;
             }
         }
@@ -796,7 +999,15 @@ mod tests {
     #[tokio::test]
     async fn unknown_tool_error_is_fed_back_not_crash() {
         let script = vec![
-            Message::assistant(None, vec![crate::message::ToolCall { id: "1".into(), name: "nope".into(), arguments: serde_json::json!({}) }], None),
+            Message::assistant(
+                None,
+                vec![crate::message::ToolCall {
+                    id: "1".into(),
+                    name: "nope".into(),
+                    arguments: serde_json::json!({}),
+                }],
+                None,
+            ),
             Message::assistant(Some("recovered".into()), vec![], None),
         ];
         let mut agent = make_agent(script);
@@ -809,14 +1020,22 @@ mod tests {
 
     #[tokio::test]
     async fn reasoning_stripped_only_when_profile_says_so() {
-        let script = vec![Message::assistant(Some("ok".into()), vec![], Some("thinking...".into()))];
+        let script = vec![Message::assistant(
+            Some("ok".into()),
+            vec![],
+            Some("thinking...".into()),
+        )];
         let mut agent = make_agent(script);
         agent.profile = HarnessProfile::generic(); // retain_reasoning = false
         let (tx, _rx) = mpsc::channel(64);
         agent.run("t", tx).await.unwrap();
         assert!(agent.rendered_messages()[1].reasoning.is_none());
 
-        let mut agent2 = make_agent(vec![Message::assistant(Some("ok".into()), vec![], Some("thinking...".into()))]);
+        let mut agent2 = make_agent(vec![Message::assistant(
+            Some("ok".into()),
+            vec![],
+            Some("thinking...".into()),
+        )]);
         agent2.profile = HarnessProfile::kimi(); // retain_reasoning = true
         let (tx2, _rx2) = mpsc::channel(64);
         agent2.run("t", tx2).await.unwrap();
@@ -847,7 +1066,9 @@ mod tests {
 
     #[tokio::test]
     async fn failing_provider_call_still_writes_an_error_row() {
-        let sink = Arc::new(RecordingSink { records: Mutex::new(Vec::new()) });
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
         let mut reg = ToolRegistry::new();
         reg.register(Arc::new(EchoTool));
         let mut agent = Agent::new(
@@ -900,18 +1121,37 @@ mod tests {
             (
                 Message::assistant(
                     None,
-                    vec![crate::message::ToolCall { id: "1".into(), name: "echo".into(), arguments: serde_json::json!({"text": "hi"}) }],
+                    vec![crate::message::ToolCall {
+                        id: "1".into(),
+                        name: "echo".into(),
+                        arguments: serde_json::json!({"text": "hi"}),
+                    }],
                     None,
                 ),
-                Usage { input_tokens: 100, output_tokens: 10, cached_input_tokens: 20 },
+                Usage {
+                    input_tokens: 100,
+                    output_tokens: 10,
+                    cached_input_tokens: 20,
+                },
             ),
-            (Message::assistant(Some("done".into()), vec![], None), Usage { input_tokens: 150, output_tokens: 8, cached_input_tokens: 30 }),
+            (
+                Message::assistant(Some("done".into()), vec![], None),
+                Usage {
+                    input_tokens: 150,
+                    output_tokens: 8,
+                    cached_input_tokens: 30,
+                },
+            ),
         ];
-        let sink = Arc::new(RecordingSink { records: Mutex::new(Vec::new()) });
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
         let mut reg = ToolRegistry::new();
         reg.register(Arc::new(EchoTool));
         let mut agent = Agent::new(
-            Arc::new(ScriptProviderWithUsage { responses: Mutex::new(script) }),
+            Arc::new(ScriptProviderWithUsage {
+                responses: Mutex::new(script),
+            }),
             reg,
             HarnessProfile::generic(),
             AgentConfig::default(),
@@ -925,7 +1165,11 @@ mod tests {
         assert_eq!(answer, "done");
 
         let records = sink.records.lock().unwrap();
-        assert_eq!(records.len(), 2, "one ledger row per provider call, including tool-call iterations");
+        assert_eq!(
+            records.len(),
+            2,
+            "one ledger row per provider call, including tool-call iterations"
+        );
 
         assert_eq!(records[0].iteration, 0);
         assert_eq!(records[0].input_tokens, 100);
@@ -956,43 +1200,83 @@ mod tests {
             "capture"
         }
         async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
-            let prompt = req.messages.iter().filter_map(|m| m.content.clone()).collect::<Vec<_>>().join("\n");
+            let prompt = req
+                .messages
+                .iter()
+                .filter_map(|m| m.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
             self.prompts.lock().unwrap().push(prompt);
-            Ok(CompletionResponse { message: Message::assistant(Some("SUMMARY".into()), vec![], None), usage: Usage::default() })
+            Ok(CompletionResponse {
+                message: Message::assistant(Some("SUMMARY".into()), vec![], None),
+                usage: Usage::default(),
+            })
         }
     }
 
     #[tokio::test]
     async fn compaction_carries_skill_instructions_forward_verbatim() {
-        let provider = Arc::new(CapturingProvider { prompts: Mutex::new(Vec::new()) });
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
         let mut profile = HarnessProfile::generic();
         profile.context_window = 1_000;
         profile.output_reserve = 0;
         profile.compaction_threshold = 0.1; // compact above ~100 tokens
-        let config = AgentConfig { compaction_keep_last: 2, ..Default::default() };
-        let mut agent = Agent::new(provider.clone(), ToolRegistry::new(), profile, config, ToolContext::default(), None)
-            .with_system_prompt("sys");
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_system_prompt("sys");
 
-        let block = format!("{SKILL_CONTENT_OPEN}pdf\">\nALWAYS-RUN-EXTRACT-FIRST\n{SKILL_CONTENT_CLOSE}");
-        let call = crate::message::ToolCall { id: "1".into(), name: "activate_skill".into(), arguments: serde_json::json!({"name": "pdf"}) };
+        let block =
+            format!("{SKILL_CONTENT_OPEN}pdf\">\nALWAYS-RUN-EXTRACT-FIRST\n{SKILL_CONTENT_CLOSE}");
+        let call = crate::message::ToolCall {
+            id: "1".into(),
+            name: "activate_skill".into(),
+            arguments: serde_json::json!({"name": "pdf"}),
+        };
         agent.messages.push(Message::user("convert the pdf"));
-        agent.messages.push(Message::assistant(None, vec![call], None));
-        agent.messages.push(Message::tool_result("1", block.clone()));
+        agent
+            .messages
+            .push(Message::assistant(None, vec![call], None));
+        agent
+            .messages
+            .push(Message::tool_result("1", block.clone()));
         let filler = |i: usize| Message::user(format!("{}{i}", "filler ".repeat(50)));
         agent.messages.extend((0..4).map(filler));
 
         let summary_text = |agent: &Agent| {
-            agent.messages.iter().filter_map(|m| m.content.clone()).find(|c| c.starts_with("[Compaction summary")).unwrap()
+            agent
+                .messages
+                .iter()
+                .filter_map(|m| m.content.clone())
+                .find(|c| c.starts_with("[Compaction summary"))
+                .unwrap()
         };
         let (tx, _rx) = mpsc::channel(64);
         agent.maybe_compact(&tx, 0).await.unwrap();
         let first = summary_text(&agent);
-        assert!(first.contains(&block), "skill block must survive compaction verbatim:\n{first}");
+        assert!(
+            first.contains(&block),
+            "skill block must survive compaction verbatim:\n{first}"
+        );
         assert!(first.ends_with("Continue from here."));
         {
             let prompts = provider.prompts.lock().unwrap();
             assert_eq!(prompts.len(), 1);
-            assert!(!prompts[0].contains("ALWAYS-RUN-EXTRACT-FIRST"), "the summarizer must not see (and paraphrase) the skill body");
+            assert!(
+                !prompts[0].contains("ALWAYS-RUN-EXTRACT-FIRST"),
+                "the summarizer must not see (and paraphrase) the skill body"
+            );
             assert!(prompts[0].contains("[skill `pdf` instructions"));
         }
 
@@ -1007,18 +1291,36 @@ mod tests {
 
     #[tokio::test]
     async fn skill_block_still_in_the_verbatim_tail_is_not_duplicated() {
-        let provider = Arc::new(CapturingProvider { prompts: Mutex::new(Vec::new()) });
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
         let mut profile = HarnessProfile::generic();
         profile.context_window = 1_000;
         profile.output_reserve = 0;
         profile.compaction_threshold = 0.1;
-        let config = AgentConfig { compaction_keep_last: 2, ..Default::default() };
-        let mut agent = Agent::new(provider, ToolRegistry::new(), profile, config, ToolContext::default(), None);
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider,
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        );
 
         let block = format!("{SKILL_CONTENT_OPEN}pdf\">\nbody\n{SKILL_CONTENT_CLOSE}");
-        agent.messages.extend((0..4).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50)))));
-        agent.messages.push(Message::tool_result("1", block.clone()));
-        agent.messages.push(Message::tool_result("2", format!("{block} again")));
+        agent
+            .messages
+            .extend((0..4).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50)))));
+        agent
+            .messages
+            .push(Message::tool_result("1", block.clone()));
+        agent
+            .messages
+            .push(Message::tool_result("2", format!("{block} again")));
 
         let (tx, _rx) = mpsc::channel(64);
         agent.maybe_compact(&tx, 0).await.unwrap();
@@ -1028,7 +1330,12 @@ mod tests {
     }
 
     fn fast_retry(max_attempts: u32) -> RetryPolicy {
-        RetryPolicy { max_attempts, base_delay: Duration::from_millis(1), max_delay: Duration::from_millis(2), budget: Duration::from_secs(5) }
+        RetryPolicy {
+            max_attempts,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+            budget: Duration::from_secs(5),
+        }
     }
 
     /// Fails transiently `failures` times, then answers.
@@ -1045,32 +1352,65 @@ mod tests {
             let mut left = self.failures.lock().unwrap();
             if *left > 0 {
                 *left -= 1;
-                return Err(CoreError::Transient { message: "HTTP 503".into(), retry_after: None });
+                return Err(CoreError::Transient {
+                    message: "HTTP 503".into(),
+                    retry_after: None,
+                });
             }
-            Ok(CompletionResponse { message: say("ok"), usage: Usage::default() })
+            Ok(CompletionResponse {
+                message: say("ok"),
+                usage: Usage::default(),
+            })
         }
     }
 
     fn flaky_agent(failures: u32, max_attempts: u32, sink: Arc<RecordingSink>) -> Agent {
-        let config = AgentConfig { retry: fast_retry(max_attempts), ..Default::default() };
-        Agent::new(Arc::new(FlakyProvider { failures: Mutex::new(failures) }), ToolRegistry::new(), HarnessProfile::generic(), config, ToolContext::default(), None)
-            .with_ledger(sink, "run", None, "m")
+        let config = AgentConfig {
+            retry: fast_retry(max_attempts),
+            ..Default::default()
+        };
+        Agent::new(
+            Arc::new(FlakyProvider {
+                failures: Mutex::new(failures),
+            }),
+            ToolRegistry::new(),
+            HarnessProfile::generic(),
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_ledger(sink, "run", None, "m")
     }
 
     #[tokio::test]
     async fn a_transient_failure_is_retried_with_a_row_per_attempt() {
-        let sink = Arc::new(RecordingSink { records: Mutex::new(Vec::new()) });
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
         let mut agent = flaky_agent(2, 4, sink.clone());
         let (tx, mut rx) = events();
         assert_eq!(agent.run("hi", tx).await.unwrap(), "ok");
 
-        let outcomes: Vec<String> = sink.records.lock().unwrap().iter().map(|r| r.outcome.clone()).collect();
+        let outcomes: Vec<String> = sink
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.outcome.clone())
+            .collect();
         assert_eq!(outcomes, ["retried", "retried", "ok"]);
-        assert_eq!(sink.records.lock().unwrap()[0].error_kind.as_deref(), Some("transient"));
+        assert_eq!(
+            sink.records.lock().unwrap()[0].error_kind.as_deref(),
+            Some("transient")
+        );
         let retries: Vec<u32> = drain(&mut rx)
             .into_iter()
             .filter_map(|e| match e {
-                AgentEvent::ProviderRetry { attempt, max_attempts: 4, .. } => Some(attempt),
+                AgentEvent::ProviderRetry {
+                    attempt,
+                    max_attempts: 4,
+                    ..
+                } => Some(attempt),
                 _ => None,
             })
             .collect();
@@ -1079,45 +1419,94 @@ mod tests {
 
     #[tokio::test]
     async fn retries_stop_at_max_attempts() {
-        let sink = Arc::new(RecordingSink { records: Mutex::new(Vec::new()) });
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
         let mut agent = flaky_agent(10, 3, sink.clone());
         let (tx, _rx) = events();
         let err = agent.run("hi", tx).await.unwrap_err();
         assert!(err.is_transient(), "{err}");
-        let outcomes: Vec<String> = sink.records.lock().unwrap().iter().map(|r| r.outcome.clone()).collect();
+        let outcomes: Vec<String> = sink
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.outcome.clone())
+            .collect();
         assert_eq!(outcomes, ["retried", "retried", "error"]);
     }
 
     #[test]
     fn retry_delay_backs_off_within_bounds() {
         let policy = RetryPolicy::default();
-        let transient = CoreError::Transient { message: "x".into(), retry_after: None };
+        let transient = CoreError::Transient {
+            message: "x".into(),
+            retry_after: None,
+        };
         for attempt in 1..=3 {
             let full = Duration::from_secs(2 << (attempt - 1));
             let d = policy.delay(&transient, attempt, Duration::ZERO).unwrap();
             assert!(d >= full / 2 && d <= full, "attempt {attempt}: {d:?}");
         }
-        assert_eq!(policy.delay(&transient, 4, Duration::ZERO), None, "4 attempts in all");
-        assert_eq!(policy.delay(&transient, 1, Duration::from_secs(119)), None, "past the budget");
-        assert_eq!(policy.delay(&CoreError::Provider("401".into()), 1, Duration::ZERO), None);
+        assert_eq!(
+            policy.delay(&transient, 4, Duration::ZERO),
+            None,
+            "4 attempts in all"
+        );
+        assert_eq!(
+            policy.delay(&transient, 1, Duration::from_secs(119)),
+            None,
+            "past the budget"
+        );
+        assert_eq!(
+            policy.delay(&CoreError::Provider("401".into()), 1, Duration::ZERO),
+            None
+        );
 
         // The server's own wait wins over the backoff cap, not over the budget.
-        let told = CoreError::Transient { message: "429".into(), retry_after: Some(Duration::from_secs(45)) };
-        assert_eq!(policy.delay(&told, 1, Duration::ZERO), Some(Duration::from_secs(45)));
+        let told = CoreError::Transient {
+            message: "429".into(),
+            retry_after: Some(Duration::from_secs(45)),
+        };
+        assert_eq!(
+            policy.delay(&told, 1, Duration::ZERO),
+            Some(Duration::from_secs(45))
+        );
         assert_eq!(policy.delay(&told, 1, Duration::from_secs(80)), None);
     }
 
     #[tokio::test]
     async fn the_step_limit_ends_with_a_status_not_an_error() {
-        let config = AgentConfig { max_iterations: 2, ..Default::default() };
-        let mut agent = agent_with(vec![echo("a"), echo("b"), say("Stopped: got a and b, c is next.")], config);
+        let config = AgentConfig {
+            max_iterations: 2,
+            ..Default::default()
+        };
+        let mut agent = agent_with(
+            vec![
+                echo("a"),
+                echo("b"),
+                say("Stopped: got a and b, c is next."),
+            ],
+            config,
+        );
         let (tx, mut rx) = events();
         let answer = agent.run("do a, b and c", tx).await.unwrap();
         assert_eq!(answer, "Stopped: got a and b, c is next.");
-        assert_eq!(agent.incomplete.as_deref(), Some("it reached the limit of 2 steps"));
-        let asked = agent.messages[agent.messages.len() - 2].content.clone().unwrap();
-        assert!(asked.starts_with("[ferrule] Stopping here: it reached the limit of 2 steps."), "{asked}");
-        assert!(drain(&mut rx).iter().any(|e| matches!(e, AgentEvent::RunIncomplete { iterations: 2, .. })));
+        assert_eq!(
+            agent.incomplete.as_deref(),
+            Some("it reached the limit of 2 steps")
+        );
+        let asked = agent.messages[agent.messages.len() - 2]
+            .content
+            .clone()
+            .unwrap();
+        assert!(
+            asked.starts_with("[ferrule] Stopping here: it reached the limit of 2 steps."),
+            "{asked}"
+        );
+        assert!(drain(&mut rx)
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RunIncomplete { iterations: 2, .. })));
 
         // The next run starts clean.
         agent.messages.clear();
@@ -1129,12 +1518,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_status_answer_that_calls_tools_anyway_falls_back() {
-        let config = AgentConfig { max_iterations: 1, ..Default::default() };
+        let config = AgentConfig {
+            max_iterations: 1,
+            ..Default::default()
+        };
         let mut agent = agent_with(vec![echo("a"), echo("b")], config);
         let (tx, _rx) = events();
         let answer = agent.run("go", tx).await.unwrap();
-        assert_eq!(answer, "Stopped before finishing: it reached the limit of 1 step.");
-        assert!(agent.messages.last().unwrap().tool_calls.is_empty(), "no dangling tool call in the history");
+        assert_eq!(
+            answer,
+            "Stopped before finishing: it reached the limit of 1 step."
+        );
+        assert!(
+            agent.messages.last().unwrap().tool_calls.is_empty(),
+            "no dangling tool call in the history"
+        );
     }
 
     #[tokio::test]
@@ -1145,12 +1543,32 @@ mod tests {
         let (tx, mut rx) = events();
         let answer = agent.run("loop", tx).await.unwrap();
         assert_eq!(answer, "I'm stuck on the same result.");
-        assert_eq!(agent.incomplete.as_deref(), Some("it kept repeating the same `echo` call after being warned"));
+        assert_eq!(
+            agent.incomplete.as_deref(),
+            Some("it kept repeating the same `echo` call after being warned")
+        );
 
         let events = drain(&mut rx);
-        assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::Stuck { .. })).count(), 1);
-        assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::ToolCallFinished { .. })).count(), 8);
-        let warned = agent.messages.iter().filter_map(|m| m.content.as_deref()).filter(|c| c.contains("Doing it again won't change")).count();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::Stuck { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::ToolCallFinished { .. }))
+                .count(),
+            8
+        );
+        let warned = agent
+            .messages
+            .iter()
+            .filter_map(|m| m.content.as_deref())
+            .filter(|c| c.contains("Doing it again won't change"))
+            .count();
         assert_eq!(warned, 1);
     }
 
@@ -1182,21 +1600,40 @@ mod tests {
     }
 
     fn check(results: Vec<Result<(), String>>) -> Arc<ScriptedCheck> {
-        Arc::new(ScriptedCheck { results: Mutex::new(results), runs: Mutex::new(0) })
+        Arc::new(ScriptedCheck {
+            results: Mutex::new(results),
+            runs: Mutex::new(0),
+        })
     }
 
     #[tokio::test]
     async fn a_failing_check_sends_the_run_back_to_work() {
         let verifier = check(vec![Err("test foo ... FAILED".into()), Ok(())]);
-        let script = vec![echo("edit"), say("done"), echo("fix"), say("done, tests pass")];
+        let script = vec![
+            echo("edit"),
+            say("done"),
+            echo("fix"),
+            say("done, tests pass"),
+        ];
         let mut agent = make_agent(script).with_verifier(verifier.clone());
         let (tx, mut rx) = events();
-        assert_eq!(agent.run("fix the bug", tx).await.unwrap(), "done, tests pass");
+        assert_eq!(
+            agent.run("fix the bug", tx).await.unwrap(),
+            "done, tests pass"
+        );
         assert_eq!(*verifier.runs.lock().unwrap(), 2);
         assert_eq!(agent.incomplete, None);
 
-        let told = agent.messages.iter().filter_map(|m| m.content.as_deref()).find(|c| c.starts_with("[ferrule] `cargo test` fails")).unwrap();
-        assert!(told.ends_with("test foo ... FAILED"), "the check's output reaches the model: {told}");
+        let told = agent
+            .messages
+            .iter()
+            .filter_map(|m| m.content.as_deref())
+            .find(|c| c.starts_with("[ferrule] `cargo test` fails"))
+            .unwrap();
+        assert!(
+            told.ends_with("test foo ... FAILED"),
+            "the check's output reaches the model: {told}"
+        );
         let results: Vec<bool> = drain(&mut rx)
             .into_iter()
             .filter_map(|e| match e {
@@ -1219,34 +1656,62 @@ mod tests {
     #[tokio::test]
     async fn a_check_that_keeps_failing_ends_with_a_status() {
         let verifier = check(vec![Err("1 failed".into()), Err("still 1 failed".into())]);
-        let config = AgentConfig { max_verify_rounds: 1, ..Default::default() };
-        let script = vec![echo("edit"), say("done"), say("done now"), say("One test still fails; I couldn't find why.")];
+        let config = AgentConfig {
+            max_verify_rounds: 1,
+            ..Default::default()
+        };
+        let script = vec![
+            echo("edit"),
+            say("done"),
+            say("done now"),
+            say("One test still fails; I couldn't find why."),
+        ];
         let mut agent = agent_with(script, config).with_verifier(verifier.clone());
         let (tx, _rx) = events();
         let answer = agent.run("fix it", tx).await.unwrap();
         assert_eq!(answer, "One test still fails; I couldn't find why.");
-        assert_eq!(agent.incomplete.as_deref(), Some("`cargo test` still fails after one round of fixes"));
+        assert_eq!(
+            agent.incomplete.as_deref(),
+            Some("`cargo test` still fails after one round of fixes")
+        );
         assert_eq!(*verifier.runs.lock().unwrap(), 2);
     }
 
     #[tokio::test]
     async fn compaction_keeps_the_request_verbatim() {
-        let provider = Arc::new(CapturingProvider { prompts: Mutex::new(Vec::new()) });
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
         let mut profile = HarnessProfile::generic();
         profile.context_window = 1_000;
         profile.output_reserve = 0;
         profile.compaction_threshold = 0.1;
-        let config = AgentConfig { compaction_keep_last: 2, ..Default::default() };
-        let mut agent = Agent::new(provider, ToolRegistry::new(), profile, config, ToolContext::default(), None);
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider,
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        );
 
         let goal = "Rename every `Foo` to `Bar`, but not in tests/.";
         agent.goal = Some(goal.into());
         agent.messages.push(Message::user(goal));
-        agent.messages.extend((0..4).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50)))));
+        agent
+            .messages
+            .extend((0..4).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50)))));
         let (tx, _rx) = events();
         agent.maybe_compact(&tx, 0).await.unwrap();
         let summary = agent.messages[0].content.clone().unwrap();
-        assert!(summary.contains(&format!("[The request being worked on, verbatim]\n{goal}")), "{summary}");
+        assert!(
+            summary.contains(&format!("[The request being worked on, verbatim]\n{goal}")),
+            "{summary}"
+        );
         assert!(summary.ends_with("Continue from here."));
 
         // Still in the verbatim tail: not repeated.

@@ -41,7 +41,10 @@ pub struct AgentSettings {
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { verify_command: None, verify_timeout_secs: default_verify_timeout_secs() }
+        Self {
+            verify_command: None,
+            verify_timeout_secs: default_verify_timeout_secs(),
+        }
     }
 }
 
@@ -86,7 +89,11 @@ pub struct SchedulerConfig {
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        Self { tick_interval_secs: 30, gate_timeout_secs: 60, gate_workspace: PathBuf::from(".") }
+        Self {
+            tick_interval_secs: 30,
+            gate_timeout_secs: 60,
+            gate_workspace: PathBuf::from("."),
+        }
     }
 }
 
@@ -115,7 +122,12 @@ pub struct SkillsConfig {
 
 impl Default for SkillsConfig {
     fn default() -> Self {
-        Self { enabled: true, project: true, paths: Vec::new(), disabled: Vec::new() }
+        Self {
+            enabled: true,
+            project: true,
+            paths: Vec::new(),
+            disabled: Vec::new(),
+        }
     }
 }
 
@@ -163,7 +175,10 @@ impl From<&SecretSpec> for ferrule_proxy::SecretRule {
     fn from(spec: &SecretSpec) -> Self {
         match spec {
             SecretSpec::Hosts(hosts) => hosts.clone().into(),
-            SecretSpec::Table(t) => Self { hosts: t.hosts.clone(), in_url: t.in_url },
+            SecretSpec::Table(t) => Self {
+                hosts: t.hosts.clone(),
+                in_url: t.in_url,
+            },
         }
     }
 }
@@ -278,12 +293,16 @@ impl Config {
         let Some(path) = config_path()? else {
             bail!("no config found. Run `ferrule setup` first.")
         };
-        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
         let cfg = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         Ok((cfg, path))
     }
 
-    pub fn resolve_provider(&self, name: Option<&str>) -> Result<(String, &ProviderConfig, String)> {
+    pub fn resolve_provider(
+        &self,
+        name: Option<&str>,
+    ) -> Result<(String, &ProviderConfig, String)> {
         let name = name
             .map(|s| s.to_string())
             .or_else(|| self.default_provider.clone())
@@ -304,9 +323,13 @@ impl Config {
 
 pub fn data_dir() -> Result<PathBuf> {
     // Windows: the local AppData, so saved keys don't roam with a profile.
-    let dir = if cfg!(windows) { dirs::data_local_dir() } else { dirs::data_dir() }
-        .ok_or_else(|| anyhow!("no data dir"))?
-        .join("ferrule");
+    let dir = if cfg!(windows) {
+        dirs::data_local_dir()
+    } else {
+        dirs::data_dir()
+    }
+    .ok_or_else(|| anyhow!("no data dir"))?
+    .join("ferrule");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -320,12 +343,23 @@ mod tests {
         let cfg: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
         assert_eq!(cfg.sandbox.mode, ferrule_sandbox::Mode::WorkspaceWrite);
         let block = &EXAMPLE_CONFIG[EXAMPLE_CONFIG.find("# [sandbox]").unwrap()..];
-        let uncommented: String = block.lines().map(|l| format!("{}\n", l.strip_prefix("# ").unwrap_or(l))).collect();
+        let uncommented: String = block
+            .lines()
+            .map(|l| format!("{}\n", l.strip_prefix("# ").unwrap_or(l)))
+            .collect();
         let cfg: Config = toml::from_str(&uncommented).unwrap();
-        assert!(cfg.sandbox.network && cfg.sandbox.tmp && cfg.sandbox.scrub_secret_env && !cfg.sandbox.require);
+        assert!(
+            cfg.sandbox.network
+                && cfg.sandbox.tmp
+                && cfg.sandbox.scrub_secret_env
+                && !cfg.sandbox.require
+        );
         assert!(cfg.sandbox.writable_roots.is_empty() && cfg.sandbox.env_passthrough.is_empty());
         let rule = |name: &str| ferrule_proxy::SecretRule::from(&cfg.secrets[name]);
-        assert_eq!(rule("GITHUB_TOKEN").hosts, ["api.github.com", "*.githubusercontent.com"]);
+        assert_eq!(
+            rule("GITHUB_TOKEN").hosts,
+            ["api.github.com", "*.githubusercontent.com"]
+        );
         assert!(!rule("GITHUB_TOKEN").in_url);
         assert_eq!(rule("TELEGRAM_BOT_TOKEN").hosts, ["api.telegram.org"]);
         assert!(rule("TELEGRAM_BOT_TOKEN").in_url);
@@ -335,13 +369,17 @@ mod tests {
     fn telegram_allowed_chats_default_to_empty() {
         let cfg: Config = toml::from_str("[gateway]\ntelegram_token_env = \"T\"").unwrap();
         assert!(cfg.gateway.telegram_allowed_chats.is_empty());
-        let cfg: Config = toml::from_str("[gateway]\ntelegram_allowed_chats = [42, -1001234]").unwrap();
+        let cfg: Config =
+            toml::from_str("[gateway]\ntelegram_allowed_chats = [42, -1001234]").unwrap();
         assert_eq!(cfg.gateway.telegram_allowed_chats, [42, -1001234]);
     }
 
     #[test]
     fn a_misspelt_secret_table_is_an_error() {
-        assert!(toml::from_str::<Config>("[secrets]\nT = { hosts = [\"x.com\"], in_uri = true }").is_err());
+        assert!(
+            toml::from_str::<Config>("[secrets]\nT = { hosts = [\"x.com\"], in_uri = true }")
+                .is_err()
+        );
         let cfg: Config = toml::from_str("[secrets]\nT = { hosts = [\"x.com\"] }").unwrap();
         assert!(!ferrule_proxy::SecretRule::from(&cfg.secrets["T"]).in_url);
     }

@@ -28,19 +28,30 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     pub fn new(chat_id: impl Into<String>, reader: R, writer: W) -> Self {
-        Self { chat_id: chat_id.into(), reader: AsyncMutex::new(reader), writer: AsyncMutex::new(writer) }
+        Self {
+            chat_id: chat_id.into(),
+            reader: AsyncMutex::new(reader),
+            writer: AsyncMutex::new(writer),
+        }
     }
 }
 
 impl LocalChannel<tokio::io::BufReader<tokio::io::Stdin>, tokio::io::Stdout> {
     /// The real terminal adapter: one line of stdin in, one line of stdout out.
     pub fn stdio(chat_id: impl Into<String>) -> Self {
-        Self::new(chat_id, tokio::io::BufReader::new(tokio::io::stdin()), tokio::io::stdout())
+        Self::new(
+            chat_id,
+            tokio::io::BufReader::new(tokio::io::stdin()),
+            tokio::io::stdout(),
+        )
     }
 }
 
 fn now_ts() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[async_trait::async_trait]
@@ -108,9 +119,16 @@ mod tests {
         client_write.write_all(b"hello\nworld\n").await.unwrap();
         drop(client_write); // EOF once dropped
 
-        let channel = LocalChannel::new("cli-session", BufReader::new(server_read), tokio::io::sink());
+        let channel = LocalChannel::new(
+            "cli-session",
+            BufReader::new(server_read),
+            tokio::io::sink(),
+        );
         let (tx, mut rx) = mpsc::channel(8);
-        timeout(Duration::from_secs(2), channel.run(tx)).await.unwrap().unwrap();
+        timeout(Duration::from_secs(2), channel.run(tx))
+            .await
+            .unwrap()
+            .unwrap();
 
         let m1 = rx.try_recv().unwrap();
         assert_eq!(m1.channel, "local");
@@ -129,7 +147,10 @@ mod tests {
 
         let channel = LocalChannel::new("s", BufReader::new(server_read), tokio::io::sink());
         let (tx, mut rx) = mpsc::channel(8);
-        timeout(Duration::from_secs(2), channel.run(tx)).await.unwrap().unwrap();
+        timeout(Duration::from_secs(2), channel.run(tx))
+            .await
+            .unwrap()
+            .unwrap();
 
         let m = rx.try_recv().unwrap();
         assert_eq!(m.text, "only one");
@@ -141,12 +162,21 @@ mod tests {
         let (server_write, mut client_read) = tokio::io::duplex(1024);
         let channel = LocalChannel::new("s", BufReader::new(tokio::io::empty()), server_write);
         channel
-            .send(OutboundMessage { channel: "local".into(), chat_id: "s".into(), text: "hi there".into(), reply_to: None, attachments: vec![] })
+            .send(OutboundMessage {
+                channel: "local".into(),
+                chat_id: "s".into(),
+                text: "hi there".into(),
+                reply_to: None,
+                attachments: vec![],
+            })
             .await
             .unwrap();
 
         let mut buf = [0u8; 64];
-        let n = timeout(Duration::from_secs(2), client_read.read(&mut buf)).await.unwrap().unwrap();
+        let n = timeout(Duration::from_secs(2), client_read.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(&buf[..n], b"hi there\n");
     }
 }

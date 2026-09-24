@@ -76,7 +76,13 @@ impl TelegramChannel {
             let text = format!(
                 "This bot is private. Your chat id is {chat} — add it to telegram_allowed_chats in the ferrule config, or run `ferrule setup`."
             );
-            let reply = OutboundMessage { channel: "telegram".into(), chat_id: msg.chat_id.clone(), text, reply_to: None, attachments: vec![] };
+            let reply = OutboundMessage {
+                channel: "telegram".into(),
+                chat_id: msg.chat_id.clone(),
+                text,
+                reply_to: None,
+                attachments: vec![],
+            };
             if let Err(e) = self.send(reply).await {
                 tracing::warn!(error = %e, "telegram: couldn't tell a chat its id");
             }
@@ -100,7 +106,16 @@ impl TelegramChannel {
             .unwrap_or("unknown")
             .to_string();
         let ts = message.get("date").and_then(|d| d.as_i64()).unwrap_or(0);
-        Some(InboundMessage { channel: "telegram".into(), chat_id, sender, message_id, text, attachments: vec![], reply_to: None, ts })
+        Some(InboundMessage {
+            channel: "telegram".into(),
+            chat_id,
+            sender,
+            message_id,
+            text,
+            attachments: vec![],
+            reply_to: None,
+            ts,
+        })
     }
 }
 
@@ -111,7 +126,10 @@ impl Channel for TelegramChannel {
     }
 
     fn capabilities(&self) -> ChannelCapabilities {
-        ChannelCapabilities { edits: true, ..Default::default() }
+        ChannelCapabilities {
+            edits: true,
+            ..Default::default()
+        }
     }
 
     /// Blocks forever, long-polling `getUpdates`. Returns only on a fatal
@@ -121,13 +139,29 @@ impl Channel for TelegramChannel {
     async fn run(&self, tx: mpsc::Sender<InboundMessage>) -> Result<(), GatewayError> {
         loop {
             let offset = self.offset.load(Ordering::SeqCst);
-            let url = format!("{}?timeout=30&offset={}", self.api_url("getUpdates"), offset);
-            let resp = self.client.get(&url).send().await.map_err(|e| GatewayError::Channel(format!("getUpdates request failed: {e}")))?;
-            let body: Value = resp.json().await.map_err(|e| GatewayError::Channel(format!("getUpdates: bad json: {e}")))?;
+            let url = format!(
+                "{}?timeout=30&offset={}",
+                self.api_url("getUpdates"),
+                offset
+            );
+            let resp =
+                self.client.get(&url).send().await.map_err(|e| {
+                    GatewayError::Channel(format!("getUpdates request failed: {e}"))
+                })?;
+            let body: Value = resp
+                .json()
+                .await
+                .map_err(|e| GatewayError::Channel(format!("getUpdates: bad json: {e}")))?;
             if !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                return Err(GatewayError::Channel(format!("getUpdates returned not-ok: {body}")));
+                return Err(GatewayError::Channel(format!(
+                    "getUpdates returned not-ok: {body}"
+                )));
             }
-            let updates = body.get("result").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+            let updates = body
+                .get("result")
+                .and_then(|r| r.as_array())
+                .cloned()
+                .unwrap_or_default();
             for update in &updates {
                 if let Some(update_id) = update.get("update_id").and_then(|v| v.as_i64()) {
                     self.offset.store(update_id + 1, Ordering::SeqCst);
@@ -161,7 +195,9 @@ impl Channel for TelegramChannel {
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(json!({}));
         if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            return Err(GatewayError::Channel(format!("sendMessage failed (status {status}): {body}")));
+            return Err(GatewayError::Channel(format!(
+                "sendMessage failed (status {status}): {body}"
+            )));
         }
         Ok(())
     }
@@ -178,7 +214,9 @@ impl Channel for TelegramChannel {
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(json!({}));
         if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            return Err(GatewayError::Channel(format!("editMessageText failed (status {status}): {body}")));
+            return Err(GatewayError::Channel(format!(
+                "editMessageText failed (status {status}): {body}"
+            )));
         }
         Ok(())
     }
@@ -246,12 +284,17 @@ mod tests {
     #[tokio::test]
     async fn long_poll_forwards_message_then_send_and_edit_post_to_the_api() {
         let (base_url, sent) = mock_telegram_server();
-        let channel = Arc::new(TelegramChannel::with_base_url("TESTTOKEN", base_url).with_allowed_chats(vec![9999]));
+        let channel = Arc::new(
+            TelegramChannel::with_base_url("TESTTOKEN", base_url).with_allowed_chats(vec![9999]),
+        );
         let (tx, mut rx) = mpsc::channel(8);
         let run_channel = channel.clone();
         let handle = tokio::spawn(async move { run_channel.run(tx).await });
 
-        let inbound = timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap();
+        let inbound = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(inbound.channel, "telegram");
         assert_eq!(inbound.chat_id, "9999");
         assert_eq!(inbound.message_id, "55");
@@ -260,7 +303,13 @@ mod tests {
         assert_eq!(inbound.ts, 1700000000);
 
         channel
-            .send(OutboundMessage { channel: "telegram".into(), chat_id: "9999".into(), text: "reply".into(), reply_to: Some("55".into()), attachments: vec![] })
+            .send(OutboundMessage {
+                channel: "telegram".into(),
+                chat_id: "9999".into(),
+                text: "reply".into(),
+                reply_to: Some("55".into()),
+                attachments: vec![],
+            })
             .await
             .unwrap();
         channel.edit("9999", "55", "edited text").await.unwrap();
@@ -281,11 +330,16 @@ mod tests {
     /// and returns what reached the agent and what the bot sent.
     async fn poll_once(allowed: Vec<i64>) -> (Option<InboundMessage>, Vec<Value>) {
         let (base_url, sent) = mock_telegram_server();
-        let channel = Arc::new(TelegramChannel::with_base_url("TESTTOKEN", base_url).with_allowed_chats(allowed));
+        let channel = Arc::new(
+            TelegramChannel::with_base_url("TESTTOKEN", base_url).with_allowed_chats(allowed),
+        );
         let (tx, mut rx) = mpsc::channel(8);
         let run_channel = channel.clone();
         let handle = tokio::spawn(async move { run_channel.run(tx).await });
-        let inbound = timeout(Duration::from_millis(700), rx.recv()).await.ok().flatten();
+        let inbound = timeout(Duration::from_millis(700), rx.recv())
+            .await
+            .ok()
+            .flatten();
         handle.abort();
         let sent = sent.lock().unwrap().clone();
         (inbound, sent)
@@ -297,19 +351,34 @@ mod tests {
         assert!(inbound.is_none());
         assert_eq!(sent.len(), 1, "told exactly once: {sent:?}");
         assert_eq!(sent[0]["chat_id"], "9999");
-        assert!(sent[0]["text"].as_str().unwrap().contains("Your chat id is 9999"));
+        assert!(sent[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Your chat id is 9999"));
     }
 
     #[tokio::test]
     async fn each_refused_chat_is_told_only_once() {
         let (base_url, sent) = mock_telegram_server();
         let channel = TelegramChannel::with_base_url("TESTTOKEN", base_url);
-        let msg = |chat: &str| InboundMessage { channel: "telegram".into(), chat_id: chat.into(), sender: "x".into(), message_id: "1".into(), text: "hi".into(), attachments: vec![], reply_to: None, ts: 0 };
+        let msg = |chat: &str| InboundMessage {
+            channel: "telegram".into(),
+            chat_id: chat.into(),
+            sender: "x".into(),
+            message_id: "1".into(),
+            text: "hi".into(),
+            attachments: vec![],
+            reply_to: None,
+            ts: 0,
+        };
         for chat in ["5", "5", "6", "5"] {
             assert!(!channel.admits(&msg(chat)).await);
         }
         let sent = sent.lock().unwrap();
-        let chats: Vec<&str> = sent.iter().map(|b| b["chat_id"].as_str().unwrap()).collect();
+        let chats: Vec<&str> = sent
+            .iter()
+            .map(|b| b["chat_id"].as_str().unwrap())
+            .collect();
         assert_eq!(chats, ["5", "6"]);
     }
 

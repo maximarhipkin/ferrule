@@ -60,7 +60,7 @@ pub async fn run_gate(
             return Err(SchedulerError::Gate(format!(
                 "gate script timed out after {}s (killed)",
                 timeout.as_secs()
-            )))
+            )));
         }
     };
 
@@ -204,11 +204,18 @@ mod tests {
     #[tokio::test]
     async fn timeout_also_kills_what_the_script_started() {
         let dir = tempfile::tempdir().unwrap();
-        let err = run_gate("(sleep 1; touch late) & sleep 5", dir.path(), Duration::from_millis(300))
-            .await
-            .unwrap_err();
+        let err = run_gate(
+            "(sleep 1; touch late) & sleep 5",
+            dir.path(),
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, SchedulerError::Gate(_)));
         tokio::time::sleep(Duration::from_millis(1_500)).await;
-        assert!(!dir.path().join("late").exists(), "a background child outlived the gate timeout");
+        assert!(
+            !dir.path().join("late").exists(),
+            "a background child outlived the gate timeout"
+        );
     }
 }

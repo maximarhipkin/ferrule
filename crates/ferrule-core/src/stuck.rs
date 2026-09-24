@@ -18,7 +18,12 @@ pub struct Step {
 
 impl Step {
     pub fn new(tool: &str, arguments: &serde_json::Value, output: &str, ok: bool) -> Self {
-        Self { tool: tool.to_string(), action: hash(&(tool, arguments.to_string())), observation: hash(output), ok }
+        Self {
+            tool: tool.to_string(),
+            action: hash(&(tool, arguments.to_string())),
+            observation: hash(output),
+            ok,
+        }
     }
 
     fn same(&self, other: &Step) -> bool {
@@ -53,16 +58,34 @@ impl Stuck {
     pub fn detect(steps: &[Step]) -> Option<Stuck> {
         let last = steps.last()?;
         if steps.len() >= REPEAT && steps[steps.len() - REPEAT..].iter().all(|s| s.same(last)) {
-            return Some(Stuck::Repeating { tool: last.tool.clone(), times: REPEAT });
+            return Some(Stuck::Repeating {
+                tool: last.tool.clone(),
+                times: REPEAT,
+            });
         }
-        if steps.len() >= FAIL && steps[steps.len() - FAIL..].iter().all(|s| !s.ok && s.action == last.action) {
-            return Some(Stuck::Failing { tool: last.tool.clone(), times: FAIL });
+        if steps.len() >= FAIL
+            && steps[steps.len() - FAIL..]
+                .iter()
+                .all(|s| !s.ok && s.action == last.action)
+        {
+            return Some(Stuck::Failing {
+                tool: last.tool.clone(),
+                times: FAIL,
+            });
         }
         if steps.len() >= ALTERNATE {
             let tail = &steps[steps.len() - ALTERNATE..];
             let (a, b) = (&tail[0], &tail[1]);
-            if !a.same(b) && tail.iter().enumerate().all(|(i, s)| s.same(if i % 2 == 0 { a } else { b })) {
-                return Some(Stuck::Alternating { first: a.tool.clone(), second: b.tool.clone() });
+            if !a.same(b)
+                && tail
+                    .iter()
+                    .enumerate()
+                    .all(|(i, s)| s.same(if i % 2 == 0 { a } else { b }))
+            {
+                return Some(Stuck::Alternating {
+                    first: a.tool.clone(),
+                    second: b.tool.clone(),
+                });
             }
         }
         None
@@ -75,7 +98,9 @@ impl Stuck {
             Stuck::Repeating { tool, times } => {
                 format!("The last {times} calls to `{tool}` used the same arguments and got the same result.")
             }
-            Stuck::Failing { tool, times } => format!("The last {times} calls to `{tool}`, with the same arguments, all failed."),
+            Stuck::Failing { tool, times } => {
+                format!("The last {times} calls to `{tool}`, with the same arguments, all failed.")
+            }
             Stuck::Alternating { first, second } => {
                 format!("You keep alternating between `{first}` and `{second}` and getting the same results.")
             }
@@ -89,8 +114,12 @@ impl Stuck {
     /// Why the run was stopped, for the status answer and the logs.
     pub fn reason(&self) -> String {
         match self {
-            Stuck::Repeating { tool, .. } => format!("it kept repeating the same `{tool}` call after being warned"),
-            Stuck::Failing { tool, .. } => format!("the same `{tool}` call kept failing after being warned"),
+            Stuck::Repeating { tool, .. } => {
+                format!("it kept repeating the same `{tool}` call after being warned")
+            }
+            Stuck::Failing { tool, .. } => {
+                format!("the same `{tool}` call kept failing after being warned")
+            }
             Stuck::Alternating { first, second } => {
                 format!("it kept alternating between `{first}` and `{second}` after being warned")
             }
@@ -113,7 +142,9 @@ mod tests {
 
     #[test]
     fn progress_is_not_stuck() {
-        let steps: Vec<Step> = (0..10).map(|i| step("shell", i, &format!("out {i}"))).collect();
+        let steps: Vec<Step> = (0..10)
+            .map(|i| step("shell", i, &format!("out {i}")))
+            .collect();
         assert_eq!(Stuck::detect(&steps), None);
         assert_eq!(Stuck::detect(&[]), None);
     }
@@ -123,22 +154,44 @@ mod tests {
         let mut steps = vec![step("shell", 1, "same"); 3];
         assert_eq!(Stuck::detect(&steps), None);
         steps.push(step("shell", 1, "same"));
-        assert_eq!(Stuck::detect(&steps), Some(Stuck::Repeating { tool: "shell".into(), times: 4 }));
+        assert_eq!(
+            Stuck::detect(&steps),
+            Some(Stuck::Repeating {
+                tool: "shell".into(),
+                times: 4
+            })
+        );
     }
 
     #[test]
     fn a_changing_result_is_progress() {
         // Polling that sees something new each time is fine.
-        let steps: Vec<Step> = (0..6).map(|i| step("shell", 1, &format!("{i} of 10 done"))).collect();
+        let steps: Vec<Step> = (0..6)
+            .map(|i| step("shell", 1, &format!("{i} of 10 done")))
+            .collect();
         assert_eq!(Stuck::detect(&steps), None);
     }
 
     #[test]
     fn three_failures_of_the_same_call() {
-        let steps = vec![failed("read_file", 1, "no such file"), failed("read_file", 1, "no such file (2)"), failed("read_file", 1, "x")];
-        assert_eq!(Stuck::detect(&steps), Some(Stuck::Failing { tool: "read_file".into(), times: 3 }));
+        let steps = vec![
+            failed("read_file", 1, "no such file"),
+            failed("read_file", 1, "no such file (2)"),
+            failed("read_file", 1, "x"),
+        ];
+        assert_eq!(
+            Stuck::detect(&steps),
+            Some(Stuck::Failing {
+                tool: "read_file".into(),
+                times: 3
+            })
+        );
         // Different arguments each time: exploring, not stuck.
-        let steps = vec![failed("read_file", 1, "e"), failed("read_file", 2, "e"), failed("read_file", 3, "e")];
+        let steps = vec![
+            failed("read_file", 1, "e"),
+            failed("read_file", 2, "e"),
+            failed("read_file", 3, "e"),
+        ];
         assert_eq!(Stuck::detect(&steps), None);
     }
 
@@ -149,7 +202,13 @@ mod tests {
             steps.push(step("read_file", 1, "a"));
             steps.push(step("write_file", 2, "b"));
         }
-        assert_eq!(Stuck::detect(&steps), Some(Stuck::Alternating { first: "read_file".into(), second: "write_file".into() }));
+        assert_eq!(
+            Stuck::detect(&steps),
+            Some(Stuck::Alternating {
+                first: "read_file".into(),
+                second: "write_file".into()
+            })
+        );
         steps.pop();
         assert_eq!(Stuck::detect(&steps), None);
     }

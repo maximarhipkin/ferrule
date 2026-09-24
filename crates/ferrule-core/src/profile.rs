@@ -29,7 +29,8 @@ pub struct HarnessProfile {
 impl HarnessProfile {
     /// Token budget at which the loop must compact.
     pub fn compaction_trigger_tokens(&self) -> usize {
-        ((self.context_window.saturating_sub(self.output_reserve)) as f32 * self.compaction_threshold) as usize
+        ((self.context_window.saturating_sub(self.output_reserve)) as f32
+            * self.compaction_threshold) as usize
     }
 
     /// Kimi K2.x: 256K window, interleaved thinking is the trained behavior,

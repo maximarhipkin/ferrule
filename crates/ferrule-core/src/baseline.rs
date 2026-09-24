@@ -48,7 +48,11 @@ mod tests {
     #[test]
     fn baseline_is_capped() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "x".repeat(BASELINE_MAX_CHARS * 2)).unwrap();
+        std::fs::write(
+            dir.path().join("CLAUDE.md"),
+            "x".repeat(BASELINE_MAX_CHARS * 2),
+        )
+        .unwrap();
         let (_, content) = load_context_baseline(dir.path()).unwrap();
         assert_eq!(content.chars().count(), BASELINE_MAX_CHARS);
     }

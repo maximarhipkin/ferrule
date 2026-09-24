@@ -12,7 +12,9 @@ pub struct WebFetchTool {
 
 impl Default for WebFetchTool {
     fn default() -> Self {
-        Self { timeout: Duration::from_secs(30) }
+        Self {
+            timeout: Duration::from_secs(30),
+        }
     }
 }
 
@@ -32,7 +34,12 @@ pub fn html_to_text(html: &str) -> String {
                     }
                     tag.push(tc);
                 }
-                let name = tag.trim_start_matches('/').split_whitespace().next().unwrap_or("").to_lowercase();
+                let name = tag
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
                 if name == "script" || name == "style" || name == "noscript" {
                     if tag.starts_with('/') {
                         skip_depth = (skip_depth - 1).max(0);
@@ -40,7 +47,12 @@ pub fn html_to_text(html: &str) -> String {
                         skip_depth += 1;
                     }
                 }
-                if skip_depth == 0 && matches!(name.as_str(), "p" | "div" | "br" | "li" | "h1" | "h2" | "h3" | "tr" | "section") {
+                if skip_depth == 0
+                    && matches!(
+                        name.as_str(),
+                        "p" | "div" | "br" | "li" | "h1" | "h2" | "h3" | "tr" | "section"
+                    )
+                {
                     out.push('\n');
                 }
             }
@@ -75,19 +87,34 @@ impl Tool for WebFetchTool {
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
         let url = args["url"].as_str().unwrap_or("");
         if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err(CoreError::ToolFailed { tool: "web_fetch".into(), message: "only http(s) URLs allowed".into() });
+            return Err(CoreError::ToolFailed {
+                tool: "web_fetch".into(),
+                message: "only http(s) URLs allowed".into(),
+            });
         }
-        let client = reqwest::Client::builder().timeout(self.timeout).build().map_err(|e| CoreError::Provider(e.to_string()))?;
+        let client = reqwest::Client::builder()
+            .timeout(self.timeout)
+            .build()
+            .map_err(|e| CoreError::Provider(e.to_string()))?;
         let text = client
             .get(url)
             .header("User-Agent", "ferrule/0.1")
             .send()
             .await
-            .map_err(|e| CoreError::ToolFailed { tool: "web_fetch".into(), message: e.to_string() })?
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "web_fetch".into(),
+                message: e.to_string(),
+            })?
             .text()
             .await
-            .map_err(|e| CoreError::ToolFailed { tool: "web_fetch".into(), message: e.to_string() })?;
-        Ok(ToolOutput::capped(html_to_text(&text), ctx.max_output_chars))
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "web_fetch".into(),
+                message: e.to_string(),
+            })?;
+        Ok(ToolOutput::capped(
+            html_to_text(&text),
+            ctx.max_output_chars,
+        ))
     }
 }
 

@@ -91,7 +91,13 @@ impl MemoryStore {
              ORDER BY rank LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![fts_escape(query), limit as i64], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, f64>(4)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, f64>(4)?,
+            ))
         })?;
 
         let mut out = Vec::new();
@@ -101,9 +107,19 @@ impl MemoryStore {
             let decay = 0.5f64.powf(age_secs / half_life_secs);
             // bm25 returns negative values; more negative = better match.
             let score = (-rank) * decay;
-            out.push(Memory { id, content, tags: split_tags(&tags), created_at, score });
+            out.push(Memory {
+                id,
+                content,
+                tags: split_tags(&tags),
+                created_at,
+                score,
+            });
         }
-        out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(out)
     }
 
@@ -126,7 +142,11 @@ impl MemoryStore {
 
     /// Assemble recall within a character budget — pinned/recent first, then
     /// query matches — so memory never floods the context window.
-    pub fn assemble_context(&self, query: Option<&str>, char_budget: usize) -> Result<String, MemoryError> {
+    pub fn assemble_context(
+        &self,
+        query: Option<&str>,
+        char_budget: usize,
+    ) -> Result<String, MemoryError> {
         let mut seen = std::collections::HashSet::new();
         let mut used = 0usize;
         let mut parts = Vec::new();
@@ -150,13 +170,17 @@ impl MemoryStore {
     }
 
     pub fn forget(&self, id: i64) -> Result<(), MemoryError> {
-        self.conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM memories WHERE id = ?1", params![id])?;
         Ok(())
     }
 }
 
 fn split_tags(tags: &str) -> Vec<String> {
-    tags.split(',').filter(|t| !t.is_empty()).map(|t| t.to_string()).collect()
+    tags.split(',')
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect()
 }
 
 /// FTS5 query strings are a mini-language; quote terms to keep user/model
@@ -177,8 +201,12 @@ mod tests {
     #[test]
     fn remember_and_recall_by_keyword() {
         let store = MemoryStore::in_memory().unwrap();
-        store.remember("User prefers Rust and hates garbage collectors", &["pref"]).unwrap();
-        store.remember("Deploy target is a Raspberry Pi Zero", &["infra"]).unwrap();
+        store
+            .remember("User prefers Rust and hates garbage collectors", &["pref"])
+            .unwrap();
+        store
+            .remember("Deploy target is a Raspberry Pi Zero", &["infra"])
+            .unwrap();
 
         let hits = store.recall("Rust", 10).unwrap();
         assert_eq!(hits.len(), 1);
@@ -198,7 +226,9 @@ mod tests {
     fn assemble_context_respects_budget() {
         let store = MemoryStore::in_memory().unwrap();
         for i in 0..10 {
-            store.remember(&format!("fact number {i} {}", "x".repeat(100)), &[]).unwrap();
+            store
+                .remember(&format!("fact number {i} {}", "x".repeat(100)), &[])
+                .unwrap();
         }
         let ctx = store.assemble_context(None, 300).unwrap();
         assert!(ctx.len() < 320);

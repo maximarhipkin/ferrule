@@ -20,7 +20,10 @@ impl Gateway {
     /// task-triggered turns onto the identical session lanes channel
     /// adapters use — one router, two front doors.
     pub fn new(router: Arc<Router>) -> Self {
-        Self { channels: Vec::new(), router }
+        Self {
+            channels: Vec::new(),
+            router,
+        }
     }
 
     pub fn add_channel(&mut self, channel: Arc<dyn Channel>) -> &mut Self {
@@ -69,7 +72,9 @@ mod tests {
     use async_trait::async_trait;
     use ferrule_core::provider::{CompletionRequest, CompletionResponse};
     use ferrule_core::tool::ToolContext;
-    use ferrule_core::{Agent, AgentConfig, CoreError, HarnessProfile, Message, Provider, ToolRegistry, Usage};
+    use ferrule_core::{
+        Agent, AgentConfig, CoreError, HarnessProfile, Message, Provider, ToolRegistry, Usage,
+    };
     use std::collections::HashMap;
 
     struct EchoProvider;
@@ -79,8 +84,17 @@ mod tests {
             "echo"
         }
         async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
-            let last_user = req.messages.iter().rev().find(|m| m.role == ferrule_core::Role::User).and_then(|m| m.content.clone()).unwrap_or_default();
-            Ok(CompletionResponse { message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None), usage: Usage::default() })
+            let last_user = req
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == ferrule_core::Role::User)
+                .and_then(|m| m.content.clone())
+                .unwrap_or_default();
+            Ok(CompletionResponse {
+                message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None),
+                usage: Usage::default(),
+            })
         }
     }
 
@@ -98,7 +112,9 @@ mod tests {
         }
         async fn run(&self, tx: mpsc::Sender<InboundMessage>) -> Result<(), GatewayError> {
             for m in self.script.clone() {
-                tx.send(m).await.map_err(|_| GatewayError::Channel("closed".into()))?;
+                tx.send(m)
+                    .await
+                    .map_err(|_| GatewayError::Channel("closed".into()))?;
             }
             Ok(())
         }
@@ -109,19 +125,38 @@ mod tests {
     }
 
     fn msg(chat_id: &str, text: &str) -> InboundMessage {
-        InboundMessage { channel: "scripted".into(), chat_id: chat_id.into(), sender: "u".into(), message_id: "1".into(), text: text.into(), attachments: vec![], reply_to: None, ts: 0 }
+        InboundMessage {
+            channel: "scripted".into(),
+            chat_id: chat_id.into(),
+            sender: "u".into(),
+            message_id: "1".into(),
+            text: text.into(),
+            attachments: vec![],
+            reply_to: None,
+            ts: 0,
+        }
     }
 
     #[tokio::test]
     async fn run_terminates_once_all_channels_are_exhausted_and_replies_are_delivered() {
         let dir = tempfile::tempdir().unwrap();
-        let scripted = Arc::new(ScriptedChannel { script: vec![msg("c1", "hello")], sent: std::sync::Mutex::new(Vec::new()) });
+        let scripted = Arc::new(ScriptedChannel {
+            script: vec![msg("c1", "hello")],
+            sent: std::sync::Mutex::new(Vec::new()),
+        });
         let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
         channels.insert("scripted".into(), scripted.clone());
 
         let factory: crate::router::AgentFactory = Arc::new(|_sid, transcript| {
-            Ok(Agent::new(Arc::new(EchoProvider), ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript))
-                .with_system_prompt("test"))
+            Ok(Agent::new(
+                Arc::new(EchoProvider),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
         });
         let router = Arc::new(Router::new(dir.path(), factory, channels));
         let mut gateway = Gateway::new(router);
@@ -135,11 +170,17 @@ mod tests {
         // task has finished the agent turn and delivered the reply yet —
         // so the assertion below polls with a bounded timeout rather than
         // checking immediately.
-        tokio::time::timeout(std::time::Duration::from_secs(2), gateway.run()).await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         while scripted.sent.lock().unwrap().is_empty() {
-            assert!(tokio::time::Instant::now() < deadline, "reply was never delivered");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reply was never delivered"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         assert_eq!(scripted.sent.lock().unwrap().len(), 1);
