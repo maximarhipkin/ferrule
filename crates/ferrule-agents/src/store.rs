@@ -5,6 +5,7 @@
 
 use crate::error::AgentsError;
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -73,6 +74,11 @@ pub struct AgentRow {
 
 pub struct AgentStore {
     pub(crate) conn: Mutex<Connection>,
+    /// Lock files, one per process with a supervisor: `agents.owners/`
+    /// next to the db. None in memory.
+    owners_dir: Option<PathBuf>,
+    /// This process's id and its held lock, once `claim_process` ran.
+    owner: Mutex<Option<(String, File)>>,
 }
 
 const AGENT_COLUMNS: &str =
@@ -81,14 +87,19 @@ const AGENT_COLUMNS: &str =
 
 impl AgentStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AgentsError> {
-        Self::init(Connection::open(path)?)
+        let path = path.as_ref();
+        let owners = path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("agents.owners");
+        Self::init(Connection::open(path)?, Some(owners))
     }
 
     pub fn in_memory() -> Result<Self, AgentsError> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(conn: Connection) -> Result<Self, AgentsError> {
+    fn init(conn: Connection, owners_dir: Option<PathBuf>) -> Result<Self, AgentsError> {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -109,7 +120,8 @@ impl AgentStore {
                  result TEXT,
                  tokens INTEGER NOT NULL DEFAULT 0,
                  created_at INTEGER NOT NULL,
-                 updated_at INTEGER NOT NULL
+                 updated_at INTEGER NOT NULL,
+                 owner TEXT
              );
              CREATE INDEX IF NOT EXISTS idx_agents_tree ON agents(tree, status);
              CREATE INDEX IF NOT EXISTS idx_agents_parent ON agents(parent, status);
@@ -151,13 +163,76 @@ impl AgentStore {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            owners_dir,
+            owner: Mutex::new(None),
         })
+    }
+
+    /// Makes this process the owner of the agents it runs from now on: a
+    /// lock file it holds until it exits, so another process (a `ferrule
+    /// run` next to the gateway) can tell its running agents are alive.
+    pub fn claim_process(&self) -> Result<(), AgentsError> {
+        let mut owner = self.owner.lock().unwrap();
+        if owner.is_some() {
+            return Ok(());
+        }
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let Some(dir) = &self.owners_dir else {
+            *owner = Some((id, tempfile_lock()?));
+            return Ok(());
+        };
+        std::fs::create_dir_all(dir)?;
+        let file = File::create(dir.join(format!("{id}.lock")))?;
+        file.try_lock().map_err(|e| match e {
+            TryLockError::Error(e) => AgentsError::Io(e),
+            TryLockError::WouldBlock => AgentsError::Invalid("owner lock is taken".into()),
+        })?;
+        *owner = Some((id, file));
+        Ok(())
+    }
+
+    fn owner_id(&self) -> Option<String> {
+        self.owner
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(id, _)| id.clone())
+    }
+
+    /// Whether `owner` is another process that is still alive.
+    fn alive_elsewhere(&self, owner: &str) -> bool {
+        if self.owner_id().as_deref() == Some(owner) {
+            return false;
+        }
+        let Some(dir) = &self.owners_dir else {
+            return false;
+        };
+        let Ok(file) = File::open(dir.join(format!("{owner}.lock"))) else {
+            return false;
+        };
+        matches!(file.try_lock(), Err(TryLockError::WouldBlock))
+    }
+
+    /// Whether `id` is running in another ferrule process, which alone can
+    /// stop it.
+    pub fn running_elsewhere(&self, id: &str) -> Result<bool, AgentsError> {
+        let owner: Option<Option<String>> = self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT owner FROM agents WHERE id = ?1 AND status = 'running'",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(owner.flatten().is_some_and(|o| self.alive_elsewhere(&o)))
     }
 
     pub fn insert(&self, a: &AgentRow) -> Result<(), AgentsError> {
         self.conn.lock().unwrap().execute(
             &format!(
-                "INSERT INTO agents ({AGENT_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
+                "INSERT INTO agents ({AGENT_COLUMNS}, owner) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"
             ),
             params![
                 a.id,
@@ -177,6 +252,7 @@ impl AgentStore {
                 a.tokens as i64,
                 a.created_at,
                 a.updated_at,
+                self.owner_id(),
             ],
         )?;
         Ok(())
@@ -236,8 +312,8 @@ impl AgentStore {
 
     pub fn set_status(&self, id: &str, status: Status, now: i64) -> Result<(), AgentsError> {
         self.conn.lock().unwrap().execute(
-            "UPDATE agents SET status = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, status.as_str(), now],
+            "UPDATE agents SET status = ?2, updated_at = ?3, owner = ?4 WHERE id = ?1",
+            params![id, status.as_str(), now, self.owner_id()],
         )?;
         Ok(())
     }
@@ -289,20 +365,48 @@ impl AgentStore {
         Ok(())
     }
 
-    /// After a restart nothing is running: whatever was is `interrupted`.
-    /// Returns their ids.
+    /// After a restart nothing of ours is running: whatever was running in
+    /// a process that is gone is `interrupted`. Agents another live process
+    /// runs are left alone. Returns the ids marked.
     pub fn mark_interrupted(&self, now: i64) -> Result<Vec<String>, AgentsError> {
-        let conn = self.conn.lock().unwrap();
-        let ids: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT id FROM agents WHERE status = 'running'")?;
-            let rows = stmt.query_map([], |r| r.get(0))?;
+        let running: Vec<(String, Option<String>)> = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT id, owner FROM agents WHERE status = 'running'")?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<Result<_, _>>()?
         };
-        conn.execute(
-            "UPDATE agents SET status = 'interrupted', updated_at = ?1 WHERE status = 'running'",
-            params![now],
-        )?;
-        Ok(ids)
+        let mine = self.owner_id();
+        let gone: Vec<String> = running
+            .into_iter()
+            .filter(|(_, owner)| match owner {
+                Some(o) => mine.as_deref() != Some(o.as_str()) && !self.alive_elsewhere(o),
+                None => true,
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let conn = self.conn.lock().unwrap();
+        for id in &gone {
+            conn.execute(
+                "UPDATE agents SET status = 'interrupted', updated_at = ?2 WHERE id = ?1 AND status = 'running'",
+                params![id, now],
+            )?;
+        }
+        drop(conn);
+        // Lock files left by processes that are gone.
+        if let Some(dir) = &self.owners_dir {
+            let files = std::fs::read_dir(dir).into_iter().flatten().flatten();
+            let stale = files.filter_map(|f| {
+                let name = f.file_name().to_string_lossy().into_owned();
+                let owner = name.strip_suffix(".lock")?.to_string();
+                (self.owner_id().as_deref() != Some(owner.as_str())
+                    && !self.alive_elsewhere(&owner))
+                .then_some(f.path())
+            });
+            for path in stale.collect::<Vec<_>>() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        Ok(gone)
     }
 
     /// One provider call's tokens, charged to the agent and its tree.
@@ -333,6 +437,17 @@ impl AgentStore {
             |r| r.get::<_, i64>(0),
         )? as u64)
     }
+}
+
+/// An in-memory store's stand-in for a lock file: an anonymous temp file.
+fn tempfile_lock() -> Result<File, AgentsError> {
+    let path = std::env::temp_dir().join(format!(
+        "ferrule-agents-{}.lock",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let file = File::create(&path)?;
+    let _ = std::fs::remove_file(&path);
+    Ok(file)
 }
 
 fn row_to_agent(r: &Row) -> rusqlite::Result<AgentRow> {
@@ -421,6 +536,45 @@ mod tests {
         assert_eq!(s.mark_interrupted(5).unwrap(), vec!["a".to_string()]);
         assert_eq!(s.get("a").unwrap().unwrap().status, Status::Interrupted);
         assert_eq!(s.get("b").unwrap().unwrap().status, Status::Idle);
+    }
+
+    #[test]
+    fn a_live_process_keeps_its_running_agents() {
+        let path = tempfile::tempdir().unwrap();
+        let db = path.path().join("agents.db");
+        let owners = || {
+            std::fs::read_dir(path.path().join("agents.owners"))
+                .unwrap()
+                .count()
+        };
+        // The gateway: claims, runs "a".
+        let gateway = AgentStore::open(&db).unwrap();
+        gateway.claim_process().unwrap();
+        gateway
+            .insert(&row("a", Some("t"), Status::Running))
+            .unwrap();
+        // A process that died with "b" running.
+        {
+            let dead = AgentStore::open(&db).unwrap();
+            dead.claim_process().unwrap();
+            dead.insert(&row("b", Some("t"), Status::Running)).unwrap();
+        }
+        assert_eq!(owners(), 2);
+        // A `ferrule run` starting next to the gateway.
+        let run = AgentStore::open(&db).unwrap();
+        run.claim_process().unwrap();
+        assert_eq!(run.mark_interrupted(5).unwrap(), vec!["b".to_string()]);
+        assert_eq!(run.get("a").unwrap().unwrap().status, Status::Running);
+        assert!(run.running_elsewhere("a").unwrap());
+        assert!(!run.running_elsewhere("b").unwrap());
+        assert!(!gateway.running_elsewhere("a").unwrap());
+        // The dead process's lock file is swept; the two live ones stay.
+        assert_eq!(owners(), 2);
+        // Once the gateway is gone its agent counts as interrupted too.
+        drop(gateway);
+        assert!(!run.running_elsewhere("a").unwrap());
+        assert_eq!(run.mark_interrupted(6).unwrap(), vec!["a".to_string()]);
+        assert_eq!(owners(), 1);
     }
 
     #[test]

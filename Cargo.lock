@@ -551,6 +551,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "ferrule-agents",
  "ferrule-core",
  "ferrule-gateway",
  "ferrule-mcp",

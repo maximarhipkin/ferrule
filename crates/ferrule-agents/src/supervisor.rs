@@ -13,6 +13,7 @@ use ferrule_core::message::Role as MsgRole;
 use ferrule_core::{Agent, Budget, CoreError, Inbox, StopFlag, Transcript, Usage};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -244,6 +245,8 @@ pub struct Supervisor {
     /// Where children's worktrees go; none, and every child shares its
     /// parent's workspace.
     worktrees: RwLock<Option<PathBuf>>,
+    /// Runs that have stopped and whose notice is still being delivered.
+    finishing: AtomicUsize,
     me: Weak<Supervisor>,
 }
 
@@ -255,14 +258,17 @@ pub(crate) fn now() -> i64 {
 }
 
 impl Supervisor {
-    /// Anything the store says is running was interrupted by a restart:
-    /// it's marked so, and nothing resumes on its own.
+    /// This process claims the agents it will run. Anything the store says
+    /// is running in a process that's gone was interrupted by a restart:
+    /// it's marked so, and nothing resumes on its own. Agents another live
+    /// ferrule process runs are left to it.
     pub fn new(
         store: AgentStore,
         sessions_dir: impl Into<PathBuf>,
         limits: Limits,
         factory: ChildFactory,
     ) -> Result<Arc<Self>, AgentsError> {
+        store.claim_process()?;
         let interrupted = store.mark_interrupted(now())?;
         if !interrupted.is_empty() {
             info!(count = interrupted.len(), "agents interrupted by a restart");
@@ -277,6 +283,7 @@ impl Supervisor {
             tick: watch::channel(0).0,
             waker: RwLock::new(None),
             worktrees: RwLock::new(None),
+            finishing: AtomicUsize::new(0),
             me: me.clone(),
         }))
     }
@@ -608,6 +615,14 @@ impl Supervisor {
     }
 
     fn finished(&self, id: &str, result: Result<String, CoreError>) {
+        self.finishing.fetch_add(1, Ordering::SeqCst);
+        self.report(id, result);
+        self.finishing.fetch_sub(1, Ordering::SeqCst);
+        self.bump();
+    }
+
+    /// Records a run's end and tells the parent.
+    fn report(&self, id: &str, result: Result<String, CoreError>) {
         if let Some(l) = self.live.lock().unwrap().get_mut(id) {
             l.handle = None;
         }
@@ -630,11 +645,9 @@ impl Supervisor {
         // A closed agent's parent asked for it to stop; no notice, and
         // close tidies its worktree.
         if !recorded {
-            self.bump();
             return;
         }
         let Ok(row) = self.get(id) else {
-            self.bump();
             return;
         };
         // A verifier's snapshot is thrown away as soon as it's done.
@@ -643,7 +656,6 @@ impl Supervisor {
         {
             worktree::discard(&pw, wt);
         }
-        self.bump();
         let Some(parent) = row.parent.clone() else {
             return;
         };
@@ -739,7 +751,11 @@ impl Supervisor {
                 .iter()
                 .map(|id| self.get(id))
                 .collect::<Result<_, _>>()?;
-            if rows.iter().any(|r| r.status != Status::Running) {
+            // A child that just stopped has its notice delivered first, so
+            // the notice is dropped below rather than arriving after this.
+            if rows.iter().any(|r| r.status != Status::Running)
+                && self.finishing.load(Ordering::SeqCst) == 0
+            {
                 break rows;
             }
             if caller_stop.is_set() {
@@ -935,12 +951,16 @@ impl Supervisor {
             .join("\n"))
     }
 
-    /// Whether any agent in `tree` is running.
+    /// Whether any agent in `tree` is running, or one (anywhere) has just
+    /// stopped and its notice isn't delivered yet. Once this is false,
+    /// every wake-up for the tree's root has been sent.
     pub fn busy(&self, tree: &str) -> bool {
-        self.store
-            .tree(tree)
-            .map(|rows| rows.iter().any(|r| r.status == Status::Running))
-            .unwrap_or(false)
+        self.finishing.load(Ordering::SeqCst) > 0
+            || self
+                .store
+                .tree(tree)
+                .map(|rows| rows.iter().any(|r| r.status == Status::Running))
+                .unwrap_or(false)
     }
 
     /// Items waiting in `id`'s inbox.

@@ -155,6 +155,59 @@ pub struct Config {
     /// A real browser for the agent, off unless turned on.
     #[serde(default)]
     pub browser: ferrule_mcp::BrowserConfig,
+    /// Sub-agents: whether an agent may start them, and their limits.
+    #[serde(default)]
+    pub agents: AgentsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentsConfig {
+    /// false: no agent tools, nobody starts sub-agents.
+    pub enabled: bool,
+    pub max_depth: u32,
+    pub max_children: usize,
+    pub max_agents: usize,
+    /// Tokens all of one tree's sub-agents may use per window.
+    pub max_tokens: u64,
+    pub budget_window_hours: u32,
+    /// Per role (`worker`, `planner`, `verifier`): a provider other than
+    /// the one the root runs on.
+    pub roles: HashMap<String, RoleConfig>,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        let l = ferrule_agents::Limits::default();
+        Self {
+            enabled: true,
+            max_depth: l.max_depth,
+            max_children: l.max_children,
+            max_agents: l.max_agents,
+            max_tokens: l.max_tokens,
+            budget_window_hours: (l.budget_window_secs / 3600) as u32,
+            roles: HashMap::new(),
+        }
+    }
+}
+
+impl AgentsConfig {
+    pub fn limits(&self) -> ferrule_agents::Limits {
+        ferrule_agents::Limits {
+            max_depth: self.max_depth,
+            max_children: self.max_children,
+            max_agents: self.max_agents,
+            max_tokens: self.max_tokens,
+            budget_window_secs: i64::from(self.budget_window_hours.max(1)) * 3600,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleConfig {
+    /// A name from `[providers]`.
+    pub provider: Option<String>,
 }
 
 /// A `[secrets]` entry: the allowed hosts, or a table that also opts the
@@ -289,6 +342,17 @@ profile = "openai"
 # allowed_domains = []       # e.g. ["example.com", "*.example.org"]; empty = any
 # chrome_sandbox = true      # false: Chrome without its own sandbox, for root
 #                            # and containers. See docs/browser.md first.
+
+# [agents]                  # Sub-agents: an agent can start others in the
+# enabled = true             # background, wait for their reports, resume and
+#                            # close them. See docs/agents.md; they cost tokens.
+# max_depth = 2              # levels below the agent you talk to
+# max_children = 4           # running at once, per parent
+# max_agents = 12            # open (not closed) per tree
+# max_tokens = 2000000       # all of a tree's sub-agents together, per window;
+# budget_window_hours = 24   # the agent you talk to isn't counted
+# [agents.roles.verifier]   # a role on another provider, from [providers]
+# provider = "local"
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).
@@ -398,6 +462,12 @@ mod tests {
         assert!(rule("TELEGRAM_BOT_TOKEN").in_url);
         assert!(!cfg.browser.enabled && cfg.browser.chrome_sandbox);
         assert!(cfg.browser.chrome.is_some() && cfg.browser.allowed_domains.is_empty());
+        assert!(cfg.agents.enabled);
+        assert_eq!(cfg.agents.limits(), ferrule_agents::Limits::default());
+        assert_eq!(
+            cfg.agents.roles["verifier"].provider.as_deref(),
+            Some("local")
+        );
     }
 
     #[test]

@@ -228,7 +228,12 @@ async fn a_restart_marks_running_agents_interrupted_and_resume_continues_them() 
     .await;
 
     // "Restart": a second supervisor on the same database. The first one's
-    // child is still stuck in its model call, like a process that died.
+    // child is still stuck in its model call; its lock file going is what
+    // a process dying looks like (the OS drops the lock).
+    let owners = path.join("agents.owners");
+    for f in std::fs::read_dir(&owners).unwrap() {
+        std::fs::remove_file(f.unwrap().path()).unwrap();
+    }
     let store = AgentStore::open(path.join("agents.db")).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let factory: ChildFactory = {
