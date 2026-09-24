@@ -44,7 +44,8 @@ pub(crate) struct Shared {
     /// Decoded `Proxy-Authorization` credentials a request must carry.
     pub expected_auth: Vec<u8>,
     pub ca: Ca,
-    pub secrets: Vec<Secret>,
+    /// Grows through `Broker::bind`; a tunnel takes its swaps when it opens.
+    pub secrets: std::sync::RwLock<Vec<Secret>>,
     pub upstream: Option<Upstream>,
     pub tls_client: Arc<ClientConfig>,
 }
@@ -54,6 +55,8 @@ impl Shared {
     fn swaps_for(&self, host: &str) -> Option<Arc<Swaps>> {
         let pairs: Vec<_> = self
             .secrets
+            .read()
+            .unwrap()
             .iter()
             .filter(|s| s.hosts.iter().any(|h| h.matches(host)))
             .map(|s| (s.placeholder.clone(), s.real.clone(), s.in_url))

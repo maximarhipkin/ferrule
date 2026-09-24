@@ -282,9 +282,14 @@ that convention yet — ask before introducing one).
     stays hermetic unless a suite sets `owner_playbook = true`. **Open
     edges and the macOS/Windows-unverified list:** see the M16
     session-log entry.
-  - **M17 MCP hot-add + `ferrule mcp add`** (§4.5): guided add with a
-    live `tools/list` smoke test, config write via `toml_edit`,
-    registration without a restart, a setup-wizard MCP step.
+  - **M17 MCP hot-add + `ferrule mcp add`** (§4.5): **parts 1–4 done**
+    (2026-09-24, branch `m17-mcp-add`; see the M17 session-log entry).
+    Guided add with a live `initialize` + `tools/list` smoke test and
+    M13's scan, secrets bound to hosts in the same step, config written
+    via `toml_edit`, registration into a running gateway without a
+    restart (a 2 s config follower), `enabled_tools` and output caps, a
+    setup-wizard MCP step, `ferrule mcp list`/`remove`.
+    `docs/m17-mcp-add.md` is the design.
   - **M18 lifecycle hooks** (§4.6): SessionStart / PreToolUse /
     PostToolUse / Stop / PreCompact events; command handlers where exit 2
     blocks and feeds stderr back to the model; `additionalContext`
@@ -2241,6 +2246,122 @@ against mocks.
   under `~/Library/Application Support` and `%APPDATA%`, and a verifier child with the
   sandbox off.
 - `spawn_blocking` store access in the gateway on Windows.
+
+### 2026-09-24 — M17 MCP hot-add + `ferrule mcp add` (Devi, Opus 5.5)
+
+Branch `m17-mcp-add`, cut from main at 2f1045f. Design first
+(`docs/m17-mcp-add.md`), then four parts:
+
+- **Part 1:** `enabled_tools`, `max_output_chars` and `output_caps` on
+  `[[mcp.servers]]`.
+  - Tools left out are filtered before the scan, so they are never scanned,
+    offered or called.
+  - Caps only ever tighten the session's own cap.
+  - The manager gains `probe` (start, list, scan, stop; registers nothing),
+    `set_configured` (start, restart and stop configured servers from a
+    re-read config) and a swappable sandbox for servers started later.
+  - A mid-session `list_changed` on a configured server is re-scanned. A new
+    poisoned tool is not activated, and neither is a tool outside
+    `enabled_tools`.
+- **Part 2:** `config_follow`. A running gateway, `chat`, `run` or `eval`
+  polls its config every 2 s (mtime + length).
+  - On a change it re-parses the file. A broken file keeps what runs.
+  - New `[secrets]` are bound into the live proxy through `Broker::bind`. If
+    no proxy ran, a late one starts, leaked for the process's lifetime.
+  - Servers started from then on get the proxy's env.
+  - `[[mcp.servers]]` goes to `set_configured`.
+  - Only a trusted file is followed: `--config`, `$FERRULE_CONFIG` or the
+    global config. A `./ferrule.toml` logs once that it needs a restart.
+- **Part 3:** `mcp_config`. `[[mcp.servers]]` entries are added and removed
+  through `toml_edit`.
+  - A new entry goes after the last server.
+  - `--replace` edits in place and keeps the entry's comments.
+  - An inline `mcp = { servers = […] }` is edited inline.
+  - The rest of the file is kept byte-for-byte.
+  - Setup's `Target` is shared, with `save_then`: the config is checked and
+    staged, then the secrets are saved, then the rename happens.
+  - `ferrule extensions remove` on a configured name now drops its entry.
+- **Part 4:** `ferrule mcp add`.
+  - The same `probe` runs, in the sandbox the daemon would use, with a
+    throwaway proxy holding the config's secrets and the new ones.
+  - M13's scan runs; a block is refused unless `--waive`/`--skip-flagged`
+    (or `waive`/`skip` typed at the terminal).
+  - It refuses a secret-looking `--env`, a literal credential header, and a
+    header `${NAME}` that isn't a secret.
+  - `--secret NAME[=hosts]` takes its value from the secrets file, then the
+    environment, then a hidden prompt. For a URL server the hosts default to
+    the URL's host.
+  - Only after a successful probe: the config is written through
+    `toml_edit`, the values are saved (undone if the rename fails), and an
+    offline doctor runs.
+  - Doctor names each server and flags a header secret outside `[secrets]`.
+  - `ferrule mcp list`/`remove`. An "MCP servers" step in `ferrule setup`,
+    guided after Browser and as a menu item, runs the same `add_to`.
+
+**Tests:**
+- Real binary, `tests/mcp_add.rs`:
+  - A `ferrule gateway` on the local channel answers message 1.
+  - `ferrule mcp add demo --secret DEMO_TOKEN=api.example.com -- python3
+    server.py` runs from a second process.
+  - Message 2 is offered `mcp__demo__echo`, calls it, and the server sees a
+    placeholder, never the key. No restart.
+  - The config keeps the owner's comment, and the key is only in
+    `secrets.env`.
+  - A server that exits, a `GITHUB_TOKEN` in `--env`, and an
+    `--enabled-tool` matching nothing each write nothing (no config change,
+    no secrets file, no state dir).
+- Unit tests:
+  - `mcp_config`: comments, order, inline lists, secrets only one server
+    used.
+  - `config_follow`: trusted vs untrusted, a broken file, `enabled_tools`
+    changes, removal.
+  - The manager: hot-add, `list_changed` with a poisoned tool, filters and
+    caps.
+
+**Mock eval, `ferrule eval run evals/starter --variant ab`** (the real binary,
+all 20 tasks), after part 2 and again at the end: engineered 20/20, naive
+11/20 (+45 pts), $0.63 vs $0.45. The two runs match on every task, and the
+totals match M14's own run. M17 doesn't touch the agent loop's decisions,
+only which MCP tools exist.
+
+**Design defaults for Max to confirm:**
+- A 2 s poll, not a file watch.
+- Only trusted configs are followed live.
+- A late proxy leaks per process.
+- Removing a secret takes a restart.
+- The shell and the model's notes see new secrets only after a restart.
+- Block hits in a configured server only warn at load; `mcp add` refuses
+  first.
+- `enabled_tools` filters before the scan.
+- Caps are min-only.
+- The doctor re-run is offline.
+- A server that failed to start is retried only when its entry changes.
+- The follower also runs in `chat`/`run`/`eval`.
+- A new entry goes after the last server, not at the end of the file.
+- `mcp remove` keeps `[secrets]`.
+- The probe's state dir is removed only if the probe created it.
+
+**M17 open edges:**
+- A stdio server gets every secret's placeholder in its env, so removal
+  can't name the secrets it used. Only header references are attributed.
+- The interactive flow splits a command line on spaces. Quoting needs the
+  `--` form.
+- An installed service that runs a `./ferrule.toml` isn't followed live
+  (by design); the add prints that a restart is needed.
+
+**Unverified on macOS/Windows until the batch CI pass:**
+- The follower's mtime granularity (HFS+/FAT round to 1–2 s; the length
+  check covers most same-second edits).
+- The atomic rename over a config another process has open (Windows sharing
+  modes).
+- The `canonicalize` comparison that decides whether a config is trusted
+  (`/private/var` on macOS, `\\?\` on Windows).
+- `python3` in the tests and fixtures (`py` on Windows).
+- The secrets file's 0600 permissions on Windows.
+- The probe under Seatbelt, and with no sandbox on Windows.
+- The throwaway and late proxies' CA bundle, as the server's runtime
+  (Node, Python) reads it on macOS and Windows.
+- Killing the probe's process tree on Windows.
 
 ### 2026-09-25 — M16 the learning loop (Devi, Opus 5.5)
 

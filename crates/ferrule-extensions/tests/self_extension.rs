@@ -723,3 +723,206 @@ async fn an_inline_answer_installs_or_drops_the_request() {
     assert_eq!(names(m.as_ref()), ["mcp__demo__echo"]);
     m.shutdown_all().await;
 }
+
+// ---- M17: configured servers applied live ----------------------------------
+
+/// A configured server: the fixture copied into its own dir with `tools`.
+fn configured(e: &Env, name: &str, tools: &[Value]) -> ferrule_mcp::McpServerConfig {
+    let dir = e.root.join(format!("cfg-{name}"));
+    fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("server.py");
+    fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ext_mcp.py"),
+        &script,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("tools.json"),
+        serde_json::to_string(tools).unwrap(),
+    )
+    .unwrap();
+    ferrule_mcp::McpServerConfig {
+        name: name.into(),
+        command: "python3".into(),
+        args: vec![script.to_string_lossy().into_owned()],
+        sandbox: false,
+        ..Default::default()
+    }
+}
+
+/// `set_configured` is the config follower's reconciler: a new entry
+/// starts, a changed one restarts with its new settings, a removed one
+/// stops, and an unchanged one is left alone.
+#[tokio::test]
+async fn set_configured_starts_restarts_and_stops_servers() {
+    let e = env();
+    let (m, _) = e.manager(&[]);
+    let one = configured(&e, "one", &[tool_json("echo", "Echo text back.")]);
+    m.start(vec![one.clone()]).await;
+    assert_eq!(names(m.as_ref()), ["mcp__one__echo"]);
+
+    let two = configured(
+        &e,
+        "two",
+        &[
+            tool_json("echo", "Echo text back."),
+            tool_json("other", "Another tool."),
+        ],
+    );
+    let changes = m.set_configured(vec![one.clone(), two.clone()]).await;
+    assert_eq!(
+        changes,
+        ["started `two` (mcp__two__echo, mcp__two__other)"],
+        "{changes:?}"
+    );
+    assert_eq!(
+        names(m.as_ref()),
+        ["mcp__one__echo", "mcp__two__echo", "mcp__two__other"]
+    );
+    let c = ctx(&e.workspace);
+    let out = find(m.as_ref(), "mcp__two__echo")
+        .call(json!({"text": "hi"}), &c)
+        .await
+        .unwrap();
+    assert!(out.content.contains("echo: hi"), "{}", out.content);
+
+    let narrowed = ferrule_mcp::McpServerConfig {
+        enabled_tools: vec!["other".into()],
+        ..two.clone()
+    };
+    let changes = m.set_configured(vec![one.clone(), narrowed.clone()]).await;
+    assert_eq!(
+        changes,
+        ["restarted `two` (mcp__two__other)"],
+        "{changes:?}"
+    );
+    assert_eq!(names(m.as_ref()), ["mcp__one__echo", "mcp__two__other"]);
+
+    assert!(m
+        .set_configured(vec![one.clone(), narrowed])
+        .await
+        .is_empty());
+    let changes = m.set_configured(vec![]).await;
+    assert_eq!(changes, ["stopped `one`", "stopped `two`"], "{changes:?}");
+    assert!(names(m.as_ref()).is_empty());
+
+    let broken = ferrule_mcp::McpServerConfig {
+        name: "broken".into(),
+        command: "ferrule-no-such-binary".into(),
+        ..Default::default()
+    };
+    let changes = m.set_configured(vec![broken.clone()]).await;
+    assert!(
+        changes[0].contains("`broken` failed to start"),
+        "{changes:?}"
+    );
+    assert!(
+        m.set_configured(vec![broken]).await.is_empty(),
+        "a failed entry is retried only once it changes"
+    );
+    m.shutdown_all().await;
+}
+
+/// A server hot-added through `set_configured` changes its tool list
+/// mid-session: a clean new tool is offered, a poisoned one is not (the
+/// rest of the server stays), and one outside `enabled_tools` is not.
+#[tokio::test]
+async fn a_hot_added_servers_list_changed_is_rescanned_and_filtered() {
+    let e = env();
+    let (m, _) = e.manager(&[]);
+    m.start(vec![]).await;
+    let cfg = ferrule_mcp::McpServerConfig {
+        enabled_tools: vec!["echo".into(), "grow".into(), "s*".into()],
+        ..configured(
+            &e,
+            "hot",
+            &[
+                tool_json("echo", "Echo text back."),
+                tool_json("grow", "Add a tool."),
+                tool_json("secret_admin", "Administer things."),
+                tool_json("hidden", "Not enabled."),
+            ],
+        )
+    };
+    m.set_configured(vec![cfg]).await;
+    assert_eq!(
+        names(m.as_ref()),
+        ["mcp__hot__echo", "mcp__hot__grow", "mcp__hot__secret_admin"]
+    );
+    let c = ctx(&e.workspace);
+    let grow = |args: Value| {
+        let m = m.clone();
+        let c = c.clone();
+        async move {
+            find(m.as_ref(), "mcp__hot__grow")
+                .call(args, &c)
+                .await
+                .unwrap();
+        }
+    };
+
+    grow(json!({"name": "shout", "description": "Upper-case text."})).await;
+    eventually("the clean tool appears", || {
+        names(m.as_ref()).contains(&"mcp__hot__shout".to_string())
+    })
+    .await;
+
+    grow(json!({"name": "sneak", "description": POISON})).await;
+    grow(json!({"name": "extra", "description": "Not enabled either."})).await;
+    grow(json!({"name": "spell", "description": "Spell a word."})).await;
+    eventually("the last clean tool appears", || {
+        names(m.as_ref()).contains(&"mcp__hot__spell".to_string())
+    })
+    .await;
+    assert_eq!(
+        names(m.as_ref()),
+        [
+            "mcp__hot__echo",
+            "mcp__hot__grow",
+            "mcp__hot__secret_admin",
+            "mcp__hot__shout",
+            "mcp__hot__spell"
+        ],
+        "the poisoned `sneak` and the not-enabled `extra` stay out"
+    );
+    m.shutdown_all().await;
+}
+
+/// `probe` is `ferrule mcp add`'s smoke test: it lists and scans, after
+/// `enabled_tools`, and registers nothing.
+#[tokio::test]
+async fn probe_scans_the_enabled_tools_and_registers_nothing() {
+    let e = env();
+    let (m, _) = e.manager(&[]);
+    m.start(vec![]).await;
+    let cfg = configured(
+        &e,
+        "p",
+        &[
+            tool_json("echo", POISON),
+            tool_json("clean", "A clean tool."),
+        ],
+    );
+    let probe = m.probe(cfg.clone()).await.unwrap();
+    assert!(probe.blocked(), "{probe:?}");
+    assert_eq!(probe.blocked, ["echo"]);
+    assert_eq!(probe.tools.len(), 2);
+    assert!(names(m.as_ref()).is_empty());
+    assert!(m.lock().unwrap().servers.is_empty());
+
+    let only_clean = ferrule_mcp::McpServerConfig {
+        enabled_tools: vec!["clean".into()],
+        ..cfg
+    };
+    let probe = m.probe(only_clean).await.unwrap();
+    assert!(!probe.blocked() && probe.findings.is_empty(), "{probe:?}");
+    assert_eq!(probe.tools[0].name, "clean");
+
+    let broken = ferrule_mcp::McpServerConfig {
+        name: "broken".into(),
+        command: "ferrule-no-such-binary".into(),
+        ..Default::default()
+    };
+    assert!(m.probe(broken).await.is_err());
+    assert!(names(m.as_ref()).is_empty());
+}

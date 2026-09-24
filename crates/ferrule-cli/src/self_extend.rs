@@ -34,7 +34,7 @@ pub struct ExtensionsConfig {
 }
 
 /// Whether the file the config came from may carry the allow-list.
-fn allow_trusted(path: &Path) -> bool {
+pub(crate) fn allow_trusted(path: &Path) -> bool {
     if std::env::var_os("FERRULE_CONFIG").is_some_and(|p| !p.is_empty()) {
         return true;
     }
@@ -149,7 +149,7 @@ impl Extensions {
 
 /// Build the process's manager: connect the configured servers (scanned,
 /// and re-scanned on `list_changed`), load the lock's active entries, and
-/// follow the lock from then on.
+/// follow the lock and the config file from then on.
 pub async fn start(
     servers: Vec<McpServerConfig>,
     sandbox: Arc<Sandbox>,
@@ -170,6 +170,7 @@ pub async fn start(
     });
     manager.start(servers).await;
     manager.spawn_sync();
+    crate::config_follow::spawn(&manager, &cfg, &path, allow_trusted(&path));
     Ok(Extensions {
         manager,
         enabled: cfg.extensions.enabled,
@@ -235,8 +236,8 @@ pub enum ExtCmd {
     },
     /// Drop a pending request (nothing of it was fetched)
     Deny { id: String },
-    /// Remove an installed server or skill; running agents drop it within
-    /// seconds
+    /// Remove a configured or installed server, or a skill; running agents
+    /// drop it within seconds
     Remove {
         name: String,
         /// Delete the server's state dir too
@@ -274,42 +275,49 @@ fn need_terminal(what: &str) -> Result<()> {
     Ok(())
 }
 
+/// The configured and installed servers (and skills, unless
+/// `servers_only`), with pending requests.
+pub fn list(servers_only: bool) -> Result<()> {
+    let m = owner_manager(Path::new("."))?;
+    let (cfg, _) = config::Config::load()?;
+    for s in &cfg.mcp.servers {
+        let what = s.url.as_deref().unwrap_or(&s.command);
+        println!("server {} [configured] {what}", s.name);
+    }
+    let listed = m.list()?;
+    for l in listed
+        .iter()
+        .filter(|l| !servers_only || l.kind == "server")
+    {
+        let mut line = format!("{} {} [{}] {}", l.kind, l.name, l.origin, l.source);
+        if let Some(pin) = &l.pin {
+            line.push_str(&format!(" @ {}", &pin[..pin.len().min(12)]));
+        }
+        line.push_str(&format!(" — {}", l.status));
+        if let Some(r) = &l.reason {
+            line.push_str(&format!(" ({r})"));
+        }
+        if !l.tools.is_empty() {
+            line.push_str(&format!("; tools: {}", l.tools.join(", ")));
+        }
+        println!("{line}");
+    }
+    if cfg.mcp.servers.is_empty() && listed.is_empty() {
+        println!("no MCP servers configured, nothing installed");
+    }
+    let pending = m.queue().list()?.len();
+    if pending > 0 {
+        println!("{pending} request(s) pending — `ferrule extensions pending`");
+    }
+    if !cfg.extensions.enabled {
+        println!("([extensions] enabled = false: agents can't install anything themselves)");
+    }
+    Ok(())
+}
+
 pub async fn run(op: ExtCmd) -> Result<()> {
     match op {
-        ExtCmd::List => {
-            let m = owner_manager(Path::new("."))?;
-            let (cfg, _) = config::Config::load()?;
-            for s in &cfg.mcp.servers {
-                println!("server {} [configured] {}", s.name, s.command);
-            }
-            let listed = m.list()?;
-            for l in &listed {
-                let mut line = format!("{} {} [{}] {}", l.kind, l.name, l.origin, l.source);
-                if let Some(pin) = &l.pin {
-                    line.push_str(&format!(" @ {}", &pin[..pin.len().min(12)]));
-                }
-                line.push_str(&format!(" — {}", l.status));
-                if let Some(r) = &l.reason {
-                    line.push_str(&format!(" ({r})"));
-                }
-                if !l.tools.is_empty() {
-                    line.push_str(&format!("; tools: {}", l.tools.join(", ")));
-                }
-                println!("{line}");
-            }
-            if cfg.mcp.servers.is_empty() && listed.is_empty() {
-                println!("no MCP servers configured, nothing installed");
-            }
-            let pending = m.queue().list()?.len();
-            if pending > 0 {
-                println!("{pending} request(s) pending — `ferrule extensions pending`");
-            }
-            if !cfg.extensions.enabled {
-                println!(
-                    "([extensions] enabled = false: agents can't install anything themselves)"
-                );
-            }
-        }
+        ExtCmd::List => list(false)?,
         ExtCmd::Pending => {
             let m = owner_manager(Path::new("."))?;
             let all = m.queue().list()?;
@@ -346,6 +354,20 @@ pub async fn run(op: ExtCmd) -> Result<()> {
             }
         }
         ExtCmd::Remove { name, purge } => {
+            if let Some(removed) = crate::mcp_config::remove_configured(
+                crate::mcp_config::config_file()?,
+                &name,
+                purge,
+            )? {
+                println!(
+                    "removed `{name}` from {}; running agents stop it within a few seconds",
+                    crate::setup::tilde(&removed.path)
+                );
+                for secret in removed.secrets_kept {
+                    println!("  [secrets] {secret} is kept (nothing else here names it; `ferrule setup` → Tool credentials removes it)");
+                }
+                return Ok(());
+            }
             let m = owner_manager(Path::new("."))?;
             if m.lock()?.servers.contains_key(&name) {
                 m.remove_server(&name, true, purge).await?;

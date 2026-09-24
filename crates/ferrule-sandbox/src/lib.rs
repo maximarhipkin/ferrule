@@ -127,6 +127,13 @@ impl fmt::Display for Backend {
 
 const SECRET_MARKERS: &[&str] = &["KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL"];
 
+/// Whether a variable's name marks it as a credential, the way every
+/// sandbox scrubs it by default (before a policy's own lists).
+pub fn looks_secret(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    SECRET_MARKERS.iter().any(|m| upper.contains(m))
+}
+
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     policy: Policy,

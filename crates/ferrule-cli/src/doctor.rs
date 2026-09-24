@@ -6,6 +6,7 @@
 use crate::setup::tilde;
 use crate::{browser, config, probe, secrets, service};
 use anyhow::Result;
+use ferrule_mcp::McpServerConfig;
 use ferrule_sandbox::{Mode, Sandbox};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -376,40 +377,58 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> bool {
 /// MCP servers that run outside the sandbox. Only the config is read: the
 /// servers themselves aren't started.
 fn mcp(r: &mut Report, cfg: &config::Config, confined: bool) {
-    // Servers reached by URL aren't processes of ours: nothing to confine.
-    let servers: Vec<_> = cfg.mcp.servers.iter().filter(|s| s.url.is_none()).collect();
-    if servers.is_empty() {
+    let all = &cfg.mcp.servers;
+    if all.is_empty() {
         return;
     }
-    let open: Vec<&str> = servers
-        .iter()
-        .filter(|s| !s.sandbox)
-        .map(|s| s.name.as_str())
-        .collect();
-    for name in &open {
+    // A header's `${NAME}` with no `[secrets]` entry goes out as the real
+    // value, unproxied, or as nothing.
+    for s in all {
+        for name in crate::mcp_config::secret_refs(s) {
+            if ferrule_sandbox::looks_secret(&name) && !cfg.secrets.contains_key(&name) {
+                r.warn(
+                    "mcp",
+                    format!("`{}` sends ${{{name}}}, which isn't in [secrets]", s.name),
+                );
+                r.hint(format!(
+                    "bind it to the server's host: `ferrule mcp add {} --replace --secret {name} …`, or [secrets] in the config",
+                    s.name
+                ));
+            }
+        }
+    }
+    let names = |v: &[&McpServerConfig]| {
+        v.iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    // Servers reached by URL aren't processes of ours: nothing to confine.
+    let remote: Vec<_> = all.iter().filter(|s| s.url.is_some()).collect();
+    if !remote.is_empty() {
+        r.ok("mcp", format!("by URL: {}", names(&remote)));
+    }
+    let servers: Vec<_> = all.iter().filter(|s| s.url.is_none()).collect();
+    let open: Vec<_> = servers.iter().copied().filter(|s| !s.sandbox).collect();
+    for s in &open {
         r.warn(
             "mcp",
             format!(
-                "`{name}` has sandbox = false: it can write anywhere you can and read the saved keys"
+                "`{}` has sandbox = false: it can write anywhere you can and read the saved keys",
+                s.name
             ),
         );
     }
     if !open.is_empty() {
         r.hint("remove `sandbox = false`, and give it `writable_roots` instead if it needs them");
     }
-    let rest = servers.len() - open.len();
-    match (rest, confined) {
-        (0, _) => {}
-        (n, true) => r.ok(
+    let rest: Vec<_> = servers.iter().copied().filter(|s| s.sandbox).collect();
+    match (rest.is_empty(), confined) {
+        (true, _) => {}
+        (false, true) => r.ok("mcp", format!("sandboxed: {}", names(&rest))),
+        (false, false) => r.warn(
             "mcp",
-            format!("{n} server{} sandboxed", if n == 1 { "" } else { "s" }),
-        ),
-        (n, false) => r.warn(
-            "mcp",
-            format!(
-                "{n} server{} unsandboxed, like shell commands",
-                if n == 1 { " runs" } else { "s run" }
-            ),
+            format!("unsandboxed, like shell commands: {}", names(&rest)),
         ),
     }
 }
