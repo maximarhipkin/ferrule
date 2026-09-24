@@ -2,7 +2,9 @@
 
 Where Ferrule is and where it's going. This is the plan as it stands; the
 day-by-day record lives in `PLAN.md` (Current State and Session Log), and the
-reasoning behind each milestone lives in the `docs/research-*.md` reports.
+reasoning behind each milestone lives in the `docs/research-*.md` reports —
+most recently `docs/research-number-one-harness-strategy.md`, the
+six-investigation synthesis that produced M14–M19.
 
 ## Done
 
@@ -19,10 +21,14 @@ reasoning behind each milestone lives in the `docs/research-*.md` reports.
 | **M8** | One-line install, `ferrule setup` wizard, `ferrule doctor`, a systemd/launchd service, Windows builds; `v0.1.0` released. |
 | **M9** | Never stuck: retries with backoff, a loop detector, a status answer at every limit, `verify_command` run by Ferrule itself. |
 | **M10** | MCP servers under the sandbox, `web_fetch` and MCP-over-HTTP through the credential proxy, a hardened system service as root, Chrome detection in `doctor`. |
+| **M11 p1** | The browser: agent-browser's MCP server on an installed Chrome, in the sandbox, behind the proxy (`docs/browser.md`). |
 
-## Next, in order (approved 2026-09-24)
+## Next, in order
 
-### M11 — a browser
+M11–M13 were approved 2026-09-24 (msg 3090). M14–M19 come from
+`docs/research-number-one-harness-strategy.md`, adopted the same day.
+
+### M11 — a browser (part 1 done)
 
 **Goal.** The agent can use a real browser for pages that need JavaScript,
 logins or clicking, with the same confinement as everything else, and the
@@ -79,6 +85,14 @@ access than a single agent has today.
 - Limits per agent: spawn depth, concurrent children, and a token/cost budget
   enforced from the ledger.
 
+**Design deltas from the strategy research** (§5): a summary contract on
+child results (~1–2k tokens distilled), effort-scaling rules in the spawn
+tool description (simple = 1 agent, comparison = 2–4, complex = 10+),
+a verifier-subagent role, routing-by-role (planner on the strong model,
+workers and the verifier on the cheap one), `resume_agent`/`wait_agent`/
+`close_agent` as first-class tools, a task list with dependency edges that
+children self-claim, and agent-relayed approvals treated as untrusted input.
+
 **Security model.** Children run under the same sandbox and credential proxy
 as the parent, never with more. Anything that came from another agent, the
 board, or the web carries its origin, and the prompt says so. A child can't
@@ -127,6 +141,99 @@ flagged by the scan in a test.
 an exact package and version). Whether updates to an allowed package are also
 automatic.
 
+### M14 — `ferrule eval`
+
+**Goal.** "Smartest harness" becomes a measurement, not a slogan: every
+prompt, profile and threshold change is regression-tested.
+
+**Scope.** Task suites (a prompt, a workspace fixture, a grader — a
+`verify_command` and/or an LLM rubric) run through the real agent; results
+appended to `ledger.jsonl` with `task_shape="eval"`. Capability and
+regression suites kept separate; about twenty real tasks are enough to see
+large effects (Anthropic's eval guidance).
+
+**Done means.** One command runs a suite against the current build and
+reports, from the ledger, what changed versus the last run.
+
+### M15 — memory update pipeline + reversible compaction
+
+**Goal.** Memory stops only growing, and compaction stops being one-way.
+
+**Scope.** Update and delete tools over the memory store (an
+ADD/UPDATE/DELETE decision on insert, Mem0-style), `forget` exposed to the
+agent, recall at session start driven by the session's goal, a
+`superseded_by` column so updates invalidate rather than contradict. A
+read-only `search_history` tool over the session transcript, and truncation
+of old large tool results (keeping a reference), so anything a summary
+loses stays retrievable.
+
+**Done means.** The agent corrects a stored fact and later recall prefers
+the correction; a compacted session answers a question whose answer was
+only in the dropped history.
+
+### M16 — the learning loop
+
+**Goal.** The agent gets better at the owner's work between sessions — the
+sandbox-compatible form of self-improvement.
+
+**Scope.** A scheduled offline pass (the M3 scheduler makes this
+config-free) that reviews recent sessions, deduplicates and consolidates
+memories, and curates a playbook: delta bullets appended to the system
+prompt, proposed by a reflector pass after failed or retried runs, with
+additions gated on `verify_command` success (ACE, arXiv:2510.04618) and
+never full rewrites. Cost-capped from the ledger; every change is a file
+the owner can read.
+
+**Done means.** After a failing scheduled task is fixed, the next similar
+run follows the recorded lesson — visible as a playbook diff.
+
+### M17 — MCP hot-add + `ferrule mcp add`
+
+**Goal.** Connecting a server is one guided command, not a hand-edited
+TOML file and a restart.
+
+**Scope.** `ferrule mcp add <name>` with a live `tools/list` smoke test,
+config written with `toml_edit` (comments survive), secrets bound to
+hosts in the same step, `doctor` re-run at the end. New servers register
+into future sessions without restarting the daemon;
+`notifications/tools/list_changed` is honoured. A setup-wizard MCP step,
+per-server `enabled_tools` filters and per-tool output caps.
+
+**Done means.** A server added via the command is usable by the next
+Telegram message, with no daemon restart; a tool-list change mid-session
+is picked up and re-scanned (M13's hook).
+
+### M18 — lifecycle hooks
+
+**Goal.** Ferrule's built-ins (`verify_command`, gate scripts) become
+instances of a general mechanism users can automate on — the extension
+point Claude Code and Codex converged on.
+
+**Scope.** Events: SessionStart/End, UserPromptSubmit, PreToolUse,
+PostToolUse, Stop, PreCompact/PostCompact, SubagentStart/Stop. Command
+handlers at first; an exit code of 2 blocks and feeds stderr back to the
+model; `additionalContext` injects a note at that point in the turn.
+Hooks from a workspace are gated by a trust switch, like project skills.
+
+**Done means.** `verify_command` runs as a Stop hook; a user's PreToolUse
+hook blocks a command in a test and the model sees why.
+
+### M19 — trust & cost
+
+**Goal.** Unattended runs are capped and safe to leave alone.
+
+**Scope.** Hard budget caps — tokens and dollars per run, per day and per
+task — with a kill switch and an 80%-spent warning delivered to the
+owner's channel. Approval gates for destructive or irreversible actions
+(workspace `rm -rf`, force-push, deletions through a bound-host
+credential) as a Telegram approve/deny round-trip. Plan mode: read-only
+exploration, the owner approves the plan, then execution — built on the
+existing `read-only` sandbox mode.
+
+**Done means.** A run stops at its cap and says so; a destructive command
+waits for a Telegram approval and proceeds only on "yes"; a plan-mode run
+changes nothing before approval.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
@@ -149,3 +256,10 @@ automatic.
   - the Chrome launch check isn't run on macOS or Windows in CI.
 - **Anytime:** parallel read-only tool calls, streaming replies, and a stable
   prompt prefix for caching.
+- **The strategy backlog** (`docs/research-number-one-harness-strategy.md`
+  §4): a `web_search` tool, keyword-triggered skills, Aider-style edit
+  mechanics (SEARCH/REPLACE edits, a repo map, per-edit lint, atomic
+  commits), local-model first-run polish, migration importers from
+  OpenClaw/Hermes, channels in the order Discord → Slack → WhatsApp, a
+  read-only dashboard, an SSH execution backend, an egress domain policy in
+  the proxy, and OTel export from the ledger.

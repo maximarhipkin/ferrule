@@ -531,21 +531,35 @@ and a dated entry for every session.
 - [x] M10: MCP servers and `web_fetch` under the sandbox and the proxy,
       Streamable HTTP MCP, a hardened system service on Linux
 
-**Next** (designed, waiting on a decision)
+**Next**
 
 - [ ] M11: a browser for the agent, driving an installed Chrome over MCP
-      ([research](docs/research-autonomy-and-self-extension.md))
+      ([research](docs/research-autonomy-and-self-extension.md); needs MCP
+      image content for screenshots)
 - [ ] M12: multi-agent orchestration — planner, implementer and verifier
       subagents with isolated contexts that return summaries only
-- [ ] M13: self-extension — the agent installs approved skills and MCP
-      servers for itself
-- [ ] Multi-provider routing, Phase 1: rule-based routing between providers
-      by task shape, fed by the ledger
-      ([research](docs/research-routing-and-local-models.md))
-- [ ] Codex Responses-API and Claude drivers
-- [ ] Sandbox the open edge that remains: file reads
-- [ ] A sandbox for native Windows (AppContainer or a restricted token)
-- [ ] Code-extension plugins
+- [ ] M13: self-extension — the agent installs vetted skills and MCP
+      servers for itself (poisoning scan, version pinning, allow-list)
+- [ ] M14: `ferrule eval` — harness task suites with verify/rubric
+      graders, results into the ledger
+- [ ] M15: memory update pipeline (edit, forget, goal-driven recall) and
+      reversible compaction (`search_history` over the transcript)
+- [ ] M16: the learning loop — offline consolidation and a curated
+      playbook in the system prompt
+- [ ] M17: MCP hot-add and `ferrule mcp add` — guided, no restart, a
+      wizard step
+- [ ] M18: lifecycle hooks (SessionStart, PreToolUse, PostToolUse, Stop,
+      PreCompact)
+- [ ] M19: budget caps with a kill switch, destructive-action approvals,
+      plan mode
+
+M11–M13 were approved in order; M14–M19 come from the six-investigation
+strategy synthesis:
+[`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md).
+Designed, waiting on a decision: multi-provider routing Phase 1
+([research](docs/research-routing-and-local-models.md)), Codex
+Responses-API and Claude drivers, sandboxing file reads, a native Windows
+sandbox (AppContainer or a restricted token), code-extension plugins.
 
 **Planned**
 
@@ -553,11 +567,17 @@ and a dated entry for every session.
 - [ ] Streaming SSE responses
 - [ ] WASM tool plugins
 - [ ] Tree-sitter semantic code search
-- [ ] More channels
+- [ ] More channels (Discord, Slack, WhatsApp — in that order)
+- [ ] The strategy backlog: parallel tool calls, `web_search`,
+      keyword-triggered skills, Aider-style edit mechanics, local-model
+      polish, migration importers, a dashboard, an SSH backend, egress
+      domain policy, OTel export
+      ([strategy](docs/research-number-one-harness-strategy.md))
 
-To replace a full agent platform such as OpenClaw or NanoClaw, Ferrule
-still needs the biggest three: multi-agent orchestration, provider
-routing, and a plugin system. They're tracked in [`PLAN.md`](PLAN.md).
+The full gap analysis vs OpenClaw, Hermes and NanoClaw — and the backlog
+it produced — is in
+[`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md);
+day-to-day state is tracked in [`PLAN.md`](PLAN.md).
 
 ## Docs
 

@@ -172,11 +172,17 @@ that convention yet — ask before introducing one).
   drift is judged from `ps` elapsed time and file mtime (±2 s), plus
   `/proc/<pid>/exe` on Linux. Part 3 of the brief was dropped by Max
   (msg 3088).
-- **Next milestones** (order approved 2026-09-24, msg 3090; the reader-facing
-  version with scope, security model and done criteria is `docs/roadmap.md`):
-  - **M11 browser**: agent-browser's MCP server driving an installed
-    Chrome, detected, never downloaded (Max, msg 3074). `browser.rs`
-    already has the detection and a headless launch check.
+- **Next milestones** (M11–M13 order approved 2026-09-24, msg 3090; M14–M19
+  adopted 2026-09-24 from `docs/research-number-one-harness-strategy.md` —
+  the six-investigation synthesis; the reader-facing version with scope,
+  security model and done criteria is `docs/roadmap.md`):
+  - **M11 browser**: **part 1 shipped** (2026-09-24): agent-browser's MCP
+    server driving an installed Chrome, in the sandbox, behind the
+    credential proxy — `crates/ferrule-mcp/src/browser.rs`,
+    `docs/browser.md`. **Remaining:** the MCP client must surface image
+    content — screenshots are dropped today (PLAN.md M4 scope limit);
+    agent-browser's CA handling on macOS and Windows; a real-headless-
+    Chrome e2e in CI.
   - **M12 multi-agent**: an in-process `spawn_agent` tool (background by
     default, notifies the parent when done, resumable); named long-lived
     agents from one config line or a Telegram command; a shared board
@@ -185,11 +191,48 @@ that convention yet — ask before introducing one).
     agent-to-agent messages; an automatic git worktree and branch when a
     child works on a repo; limits on depth, concurrency and budget per
     agent; children run under the same sandbox and credential proxy.
+    **Design deltas from the strategy research (§5):** a summary contract
+    on child results (~1–2k tokens), effort-scaling rules in the spawn
+    tool description, a verifier-subagent role, routing-by-role (planner
+    strong / workers cheap), `resume_agent`/`wait_agent`/`close_agent` as
+    first-class tools, a task list with dependency edges and
+    self-claiming, and agent-relayed approvals treated as untrusted input.
   - **M13 self-extension** (was M12): skills and MCP servers hot-loaded,
     self-installed from an **allow-list of approved sources** without
-    asking (msg 3074).
+    asking (msg 3074) — **with the vetting story (§4.8):** a
+    tool-description poisoning scan before activation (MCPTox: 36.5%
+    average attack success), version pinning, and a
+    `tools/list_changed` re-scan.
+  - **M14 `ferrule eval`** (§4.2): task suites (prompt, workspace fixture,
+    verify_command/LLM-rubric grader) run through the real agent, results
+    into the ledger with `task_shape="eval"` — makes every harness change
+    regression-testable.
+  - **M15 memory pipeline + reversible compaction** (§4.3/§4.4): memory
+    update/delete tools (Mem0-style ADD/UPDATE/DELETE), goal-driven
+    session-start recall, `superseded_by`; a `search_history` tool over
+    the session transcript so compaction stops being one-way.
+  - **M16 learning loop** (§4.1): scheduled offline consolidation
+    (dedupe, promote, curate) plus an ACE-style playbook in the system
+    prompt, additions gated on verify success.
+  - **M17 MCP hot-add + `ferrule mcp add`** (§4.5): guided add with a
+    live `tools/list` smoke test, config write via `toml_edit`,
+    registration without a restart, a setup-wizard MCP step.
+  - **M18 lifecycle hooks** (§4.6): SessionStart / PreToolUse /
+    PostToolUse / Stop / PreCompact events; command handlers where exit 2
+    blocks and feeds stderr back to the model; `additionalContext`
+    injection.
+  - **M19 trust & cost** (§4.11–4.13): hard budget caps (per
+    run/day/task) with a kill switch, approval gates for destructive
+    actions (Telegram approve/deny), plan mode on the read-only sandbox
+    primitive.
   - Also standing: a native **Windows sandbox** is being researched
-    (`docs/research-windows-sandbox.md`).
+    (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
+    strategy doc (§4): parallel read-only tool calls, provider streaming
+    + Telegram progressive edits, `web_search`, keyword-triggered skills,
+    `edit_file` SEARCH/REPLACE, a repo map, local-model first-run polish,
+    migration importers, channels Discord → Slack → WhatsApp, the stuck
+    detector's two missing signatures, gateway lane idle eviction, ledger
+    rotation.
 
 ## Session Log
 
@@ -1716,3 +1759,23 @@ routing-by-role, agent-relayed approvals untrusted); channels sequenced
 Discord → Slack → WhatsApp. Decisions flagged for Max: go public; curated
 never-open registry; positioning vs ZeroClaw; honest launch. Do-not-build
 list recorded in the doc.
+
+### 2026-09-24 — M14–M19 adopted into the plan (Kimi Code)
+
+Max adopted the strategy synthesis into the roadmap. PLAN.md "Current
+State → Next milestones" now carries the full track: M11 browser (with
+the MCP-image-content prerequisite called out), M12 multi-agent (with
+the strategy's design deltas: summary contract, effort-scaling, verifier
+role, routing-by-role, resume/wait/close tools, task dependencies,
+agent-relayed approvals untrusted), M13 self-extension (with the vetting
+story: poisoning scan, version pinning, `tools/list_changed` re-scan),
+then the new milestones — M14 `ferrule eval`, M15 memory update pipeline
++ reversible compaction (`search_history`), M16 the learning loop
+(offline consolidation + ACE-style playbook), M17 MCP hot-add +
+`ferrule mcp add`, M18 lifecycle hooks, M19 trust & cost (budget caps,
+destructive-action approvals, plan mode). The README roadmap and
+`docs/assets/roadmap.svg` were updated to match (routing, Codex/Claude
+drivers, file-read sandboxing, Windows sandbox and code plugins move to
+"designed, waiting on a decision" / Planned; the strategy backlog is
+referenced from Planned). Committed and pushed so the next session works
+from this plan.

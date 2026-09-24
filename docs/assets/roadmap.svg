@@ -30,25 +30,31 @@
 
   <rect x="336" y="84" width="288" height="404" rx="12" fill="#17191c" stroke="#96a0aa"/>
   <text x="356" y="114" class="h">Next</text>
-  <text x="400" y="114" class="s" style="font-size:12px">waiting on a decision</text>
+  <text x="400" y="114" class="s" style="font-size:12px">M11–13 approved · M14–19 proposed</text>
   <g>
     <circle cx="362" cy="146" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="151">M11: browser (installed Chrome)</text>
     <circle cx="362" cy="180" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="185">M12: multi-agent orchestration</text>
-    <circle cx="362" cy="214" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="219">M13: self-extension</text>
-    <circle cx="362" cy="248" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="253">Multi-provider routing (Phase 1)</text>
-    <circle cx="362" cy="282" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="287">Codex Responses + Claude drivers</text>
-    <circle cx="362" cy="316" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="321">Sandbox file reads</text>
-    <circle cx="362" cy="350" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="355">Sandbox for native Windows</text>
-    <circle cx="362" cy="384" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="389">Code-extension plugins</text>
+    <circle cx="362" cy="214" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="219">M13: self-extension (vetted)</text>
+    <circle cx="362" cy="248" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="253">M14: ferrule eval</text>
+    <circle cx="362" cy="282" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="287">M15: memory update + history</text>
+    <circle cx="362" cy="316" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="321">M16: learning loop (playbook)</text>
+    <circle cx="362" cy="350" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="355">M17: MCP hot-add + mcp add</text>
+    <circle cx="362" cy="384" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="389">M18: lifecycle hooks</text>
+    <circle cx="362" cy="418" r="5.5" fill="none" stroke="#e09668" stroke-width="2"/><text x="378" y="423">M19: budget caps + approvals</text>
   </g>
 
   <rect x="640" y="84" width="288" height="404" rx="12" fill="#17191c" stroke="#2a2e33"/>
   <text x="660" y="114" class="h s">Planned</text>
   <g>
-    <circle cx="666" cy="146" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="151" class="d">Vector recall, local embeddings</text>
-    <circle cx="666" cy="180" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="185" class="d">Streaming responses (SSE)</text>
-    <circle cx="666" cy="214" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="219" class="d">WASM tool plugins</text>
-    <circle cx="666" cy="248" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="253" class="d">Tree-sitter code search</text>
-    <circle cx="666" cy="282" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="287" class="d">More channels (Discord, Slack…)</text>
+    <circle cx="666" cy="146" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="151" class="d">Multi-provider routing (Phase 1)</text>
+    <circle cx="666" cy="180" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="185" class="d">Codex Responses + Claude drivers</text>
+    <circle cx="666" cy="214" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="219" class="d">Sandbox file reads</text>
+    <circle cx="666" cy="248" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="253" class="d">Sandbox for native Windows</text>
+    <circle cx="666" cy="282" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="287" class="d">Code-extension plugins</text>
+    <circle cx="666" cy="316" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="321" class="d">Vector recall, local embeddings</text>
+    <circle cx="666" cy="350" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="355" class="d">Streaming responses (SSE)</text>
+    <circle cx="666" cy="384" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="389" class="d">WASM tool plugins</text>
+    <circle cx="666" cy="418" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="423" class="d">Tree-sitter code search</text>
+    <circle cx="666" cy="452" r="5.5" fill="none" stroke="#6b737b" stroke-width="2" stroke-dasharray="3 2"/><text x="682" y="457" class="d">More channels (Discord, Slack…)</text>
   </g>
 </svg>
