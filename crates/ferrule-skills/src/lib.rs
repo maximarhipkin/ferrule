@@ -18,7 +18,7 @@ pub mod tool;
 pub use discover::{
     default_roots, discover, Diagnostic, Scope, Severity, Skill, SkillRoot, SkillSet,
 };
-pub use tool::{tools, ACTIVATE_TOOL, READ_TOOL};
+pub use tool::{tools, LiveSkillTools, SkillsHandle, ACTIVATE_TOOL, READ_TOOL};
 
 impl SkillSet {
     /// The system-prompt section listing model-invocable skills, or `None`

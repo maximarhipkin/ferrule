@@ -5,14 +5,14 @@
 //! files — the general fs tools stay confined to the workspace, and skills
 //! typically live outside it.
 
-use crate::discover::{Skill, SkillSet};
+use crate::discover::{discover, Skill, SkillRoot, SkillSet};
 use ferrule_core::agent::{SKILL_CONTENT_CLOSE, SKILL_CONTENT_OPEN};
 use ferrule_core::error::CoreError;
-use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
+use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput, ToolSource};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub const ACTIVATE_TOOL: &str = "activate_skill";
 pub const READ_TOOL: &str = "read_skill_file";
@@ -28,16 +28,86 @@ const RESOURCE_MAX_DEPTH: usize = 3;
 /// Both tools for `skills`, or none when no skill is model-invocable — an
 /// empty tool with an empty enum would only confuse the model.
 pub fn tools(skills: Arc<SkillSet>) -> Vec<Arc<dyn Tool>> {
-    if skills.invocable().next().is_none() {
-        return Vec::new();
+    LiveSkillTools::new(SkillsHandle::fixed(skills)).tools()
+}
+
+/// A skill set that can change while agents run (M13: a skill installed or
+/// removed mid-session). Clones share the set; `refresh` re-runs discovery
+/// over the roots it was made with.
+#[derive(Clone)]
+pub struct SkillsHandle {
+    current: Arc<RwLock<Arc<SkillSet>>>,
+    roots: Arc<[SkillRoot]>,
+    disabled: Arc<[String]>,
+}
+
+impl SkillsHandle {
+    /// Discover now, and again on every `refresh`.
+    pub fn discovering(roots: Vec<SkillRoot>, disabled: Vec<String>) -> Self {
+        let set = discover(&roots, &disabled);
+        Self {
+            current: Arc::new(RwLock::new(Arc::new(set))),
+            roots: roots.into(),
+            disabled: disabled.into(),
+        }
     }
-    vec![
-        Arc::new(ActivateSkillTool {
-            skills: skills.clone(),
-            active: Mutex::new(HashSet::new()),
-        }),
-        Arc::new(ReadSkillFileTool { skills }),
-    ]
+
+    /// A set that `refresh` leaves as it is.
+    pub fn fixed(set: Arc<SkillSet>) -> Self {
+        Self {
+            current: Arc::new(RwLock::new(set)),
+            roots: Arc::new([]),
+            disabled: Arc::new([]),
+        }
+    }
+
+    pub fn get(&self) -> Arc<SkillSet> {
+        self.current.read().unwrap().clone()
+    }
+
+    /// Rediscover: what changed on disk is what the tools offer from the
+    /// next request on.
+    pub fn refresh(&self) {
+        if self.roots.is_empty() {
+            return;
+        }
+        let set = discover(&self.roots, &self.disabled);
+        *self.current.write().unwrap() = Arc::new(set);
+    }
+}
+
+/// `activate_skill` and `read_skill_file` over a live set, as a dynamic tool
+/// source: offered only while some skill is model-invocable, and their name
+/// enum follows the set. One per agent — the activation tool remembers what
+/// this session already loaded.
+pub struct LiveSkillTools {
+    activate: Arc<ActivateSkillTool>,
+    read: Arc<ReadSkillFileTool>,
+    skills: SkillsHandle,
+}
+
+impl LiveSkillTools {
+    pub fn new(skills: SkillsHandle) -> Self {
+        Self {
+            activate: Arc::new(ActivateSkillTool {
+                skills: skills.clone(),
+                active: Mutex::new(HashSet::new()),
+            }),
+            read: Arc::new(ReadSkillFileTool {
+                skills: skills.clone(),
+            }),
+            skills,
+        }
+    }
+}
+
+impl ToolSource for LiveSkillTools {
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        if self.skills.get().invocable().next().is_none() {
+            return Vec::new();
+        }
+        vec![self.activate.clone(), self.read.clone()]
+    }
 }
 
 fn names_schema(skills: &SkillSet) -> Value {
@@ -52,16 +122,18 @@ fn failed(tool: &str, message: impl Into<String>) -> CoreError {
     }
 }
 
-fn lookup<'a>(skills: &'a SkillSet, tool: &str, args: &Value) -> Result<&'a Skill, CoreError> {
+fn lookup(skills: &SkillsHandle, tool: &str, args: &Value) -> Result<Skill, CoreError> {
     let name = args["name"].as_str().unwrap_or("");
     skills
+        .get()
         .get(name)
         .filter(|s| s.model_invocable)
+        .cloned()
         .ok_or_else(|| failed(tool, format!("no skill named `{name}` is available")))
 }
 
 pub struct ActivateSkillTool {
-    skills: Arc<SkillSet>,
+    skills: SkillsHandle,
     /// Names already loaded by this agent. One tool instance per agent, so
     /// this is per session.
     active: Mutex<HashSet<String>>,
@@ -81,7 +153,7 @@ impl Tool for ActivateSkillTool {
                 .into(),
             parameters: json!({
                 "type": "object",
-                "properties": { "name": names_schema(&self.skills) },
+                "properties": { "name": names_schema(&self.skills.get()) },
                 "required": ["name"]
             }),
         }
@@ -103,7 +175,7 @@ impl Tool for ActivateSkillTool {
         let body = crate::frontmatter::parse(&text)
             .map(|fm| fm.body)
             .map_err(|e| failed(ACTIVATE_TOOL, e))?;
-        let content = render_activation(skill, &body);
+        let content = render_activation(&skill, &body);
         self.active.lock().unwrap().insert(skill.name.clone());
         Ok(ToolOutput::ok(content))
     }
@@ -181,7 +253,7 @@ fn collect(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
 }
 
 pub struct ReadSkillFileTool {
-    skills: Arc<SkillSet>,
+    skills: SkillsHandle,
 }
 
 #[async_trait::async_trait]
@@ -200,7 +272,7 @@ impl Tool for ReadSkillFileTool {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "name": names_schema(&self.skills),
+                    "name": names_schema(&self.skills.get()),
                     "path": { "type": "string", "description": "Path relative to the skill directory, e.g. references/REFERENCE.md" }
                 },
                 "required": ["name", "path"]
@@ -291,6 +363,51 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext::default()
+    }
+
+    #[tokio::test]
+    async fn a_skill_added_on_disk_is_offered_and_activatable_after_a_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = SkillsHandle::discovering(
+            vec![SkillRoot {
+                dir: dir.path().to_path_buf(),
+                scope: Scope::User,
+            }],
+            vec![],
+        );
+        let live = LiveSkillTools::new(handle.clone());
+        assert!(live.tools().is_empty(), "no skills, no tools");
+
+        let skill = dir.path().join("late");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: late\ndescription: Installed mid-session\n---\nDo the late thing.\n",
+        )
+        .unwrap();
+        assert!(live.tools().is_empty(), "nothing changes before a refresh");
+        handle.refresh();
+        let tools = live.tools();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(
+            tools[0].definition().parameters["properties"]["name"]["enum"],
+            json!(["late"])
+        );
+        let out = tools[0]
+            .call(json!({"name": "late"}), &ctx())
+            .await
+            .unwrap()
+            .content;
+        assert!(out.contains("Do the late thing."), "{out}");
+
+        std::fs::remove_dir_all(&skill).unwrap();
+        handle.refresh();
+        assert!(live.tools().is_empty());
+        assert!(live
+            .activate
+            .call(json!({"name": "late"}), &ctx())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
