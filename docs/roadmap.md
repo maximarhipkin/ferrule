@@ -144,7 +144,8 @@ automatic.
 ### M14 — `ferrule eval`
 
 **Goal.** "Smartest harness" becomes a measurement, not a slogan: every
-prompt, profile and threshold change is regression-tested.
+prompt, profile and threshold change is regression-tested — and the
+harness effect itself is demonstrated with ferrule's own numbers.
 
 **Scope.** Task suites (a prompt, a workspace fixture, a grader — a
 `verify_command` and/or an LLM rubric) run through the real agent; results
@@ -152,8 +153,29 @@ appended to `ledger.jsonl` with `task_shape="eval"`. Capability and
 regression suites kept separate; about twenty real tasks are enough to see
 large effects (Anthropic's eval guidance).
 
+**The A/B demonstration** (replicates the ARC-AGI-3 experiment with our
+own agent): each suite runs twice against the *same* model —
+
+- **naive variant**: `HarnessProfile { retain_reasoning: false,
+  compaction_threshold: 1.0 }` plus a rolling-truncation path in the loop
+  (drop oldest non-system messages when over budget — the "default
+  harness" behavior ferrule replaced), no `verify_command`, no memory
+  tools, no retries or stuck detector, empty `system_directive`. All of
+  these are existing knobs except the truncation path, which is a small
+  `agent.rs` addition.
+- **engineered variant**: the normal per-model profile with everything on.
+
+The report compares pass rate, output tokens and cost per variant, from
+the ledger. The cheap way to make the effect large and reproducible:
+run a **small local model at a small context window** (Ollama, 8–32k) —
+context pressure arrives at task sizes where truncation destroys the run
+but compaction plus goal-pinning survives, at zero API cost. The measured
+chart goes into the README next to the ARC-AGI-3 one.
+
 **Done means.** One command runs a suite against the current build and
-reports, from the ledger, what changed versus the last run.
+reports, from the ledger, what changed versus the last run; and the A/B
+suite shows the naive variant losing on the tasks where harness features
+matter, with mock-LLM tests proving the machinery in CI.
 
 ### M15 — memory update pipeline + reversible compaction
 
