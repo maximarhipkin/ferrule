@@ -343,7 +343,7 @@ Each its own commit with tests, CI green on all three OSes:
 3. **Board, direct messages, fence, task list.** Integration test: a child
    posts, the parent reads the fenced entry; a DM reaches the recipient's
    inbox; two workers claim dependent tasks in order and never the same
-   one; a child can't claim its parent's task.
+   one; a parent can't claim a task its child added.
 4. **Worktrees and the verifier snapshot.** Integration test on a real git
    repo: two children in separate worktrees; a clean one is removed with
    its branch, one with work keeps its branch; the snapshot is thrown away.

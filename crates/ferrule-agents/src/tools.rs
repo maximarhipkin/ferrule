@@ -18,6 +18,12 @@ enum Kind {
     Resume,
     Close,
     List,
+    Post,
+    Read,
+    TaskAdd,
+    TaskList,
+    TaskClaim,
+    TaskDone,
 }
 
 impl Kind {
@@ -28,6 +34,12 @@ impl Kind {
             Kind::Resume => "resume_agent",
             Kind::Close => "close_agent",
             Kind::List => "list_agents",
+            Kind::Post => "board_post",
+            Kind::Read => "board_read",
+            Kind::TaskAdd => "task_add",
+            Kind::TaskList => "task_list",
+            Kind::TaskClaim => "task_claim",
+            Kind::TaskDone => "task_done",
         }
     }
 }
@@ -38,28 +50,38 @@ pub struct AgentTool {
     kind: Kind,
 }
 
-/// The tools `row`'s agent gets. An agent at the deepest level can't start
-/// agents, so it gets none.
+/// The tools `row`'s agent gets: the board and the task list always; the
+/// tools that start and manage agents only below the deepest level, so a
+/// model never sees a tool it can't use.
 pub fn for_agent(sup: Arc<Supervisor>, row: &AgentRow, limits: &Limits) -> Vec<Arc<dyn Tool>> {
-    if row.depth >= limits.max_depth {
-        return Vec::new();
+    let mut kinds = Vec::new();
+    if row.depth < limits.max_depth {
+        kinds.extend([
+            Kind::Spawn,
+            Kind::Wait,
+            Kind::Resume,
+            Kind::Close,
+            Kind::List,
+        ]);
     }
-    [
-        Kind::Spawn,
-        Kind::Wait,
-        Kind::Resume,
-        Kind::Close,
-        Kind::List,
-    ]
-    .into_iter()
-    .map(|kind| {
-        Arc::new(AgentTool {
-            sup: sup.clone(),
-            caller: row.id.clone(),
-            kind,
-        }) as Arc<dyn Tool>
-    })
-    .collect()
+    kinds.extend([
+        Kind::Post,
+        Kind::Read,
+        Kind::TaskAdd,
+        Kind::TaskList,
+        Kind::TaskClaim,
+        Kind::TaskDone,
+    ]);
+    kinds
+        .into_iter()
+        .map(|kind| {
+            Arc::new(AgentTool {
+                sup: sup.clone(),
+                caller: row.id.clone(),
+                kind,
+            }) as Arc<dyn Tool>
+        })
+        .collect()
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -67,6 +89,16 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
+}
+
+/// An integer, also when the model sends it as a string.
+fn as_int(v: &Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+fn int_arg(args: &Value, key: &str) -> Option<i64> {
+    args.get(key).and_then(as_int)
 }
 
 fn ids_arg(args: &Value) -> Vec<String> {
@@ -169,6 +201,48 @@ impl AgentTool {
                     .map_err(|e| self.map_err(e))
             }
             Kind::List => self.sup.list(&self.caller).map_err(|e| self.map_err(e)),
+            Kind::Post => {
+                let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+                self.sup
+                    .post(
+                        &self.caller,
+                        body,
+                        str_arg(args, "topic"),
+                        str_arg(args, "to"),
+                    )
+                    .map_err(|e| self.map_err(e))
+            }
+            Kind::Read => self
+                .sup
+                .read(&self.caller, int_arg(args, "since"), str_arg(args, "topic"))
+                .map_err(|e| self.map_err(e)),
+            Kind::TaskAdd => {
+                let title = need("title")?;
+                let after: Vec<i64> = match args.get("after") {
+                    Some(Value::Array(a)) => a.iter().filter_map(as_int).collect(),
+                    Some(v) => as_int(v).into_iter().collect(),
+                    None => Vec::new(),
+                };
+                self.sup
+                    .task_add(&self.caller, title, str_arg(args, "detail"), &after)
+                    .map_err(|e| self.map_err(e))
+            }
+            Kind::TaskList => self
+                .sup
+                .task_list(&self.caller)
+                .map_err(|e| self.map_err(e)),
+            Kind::TaskClaim => self
+                .sup
+                .task_claim(&self.caller, int_arg(args, "id"))
+                .map_err(|e| self.map_err(e)),
+            Kind::TaskDone => {
+                let id = int_arg(args, "id").ok_or_else(|| self.fail("`id` is required"))?;
+                let result = args.get("result").and_then(Value::as_str).unwrap_or("");
+                let failed = args.get("failed").and_then(Value::as_bool).unwrap_or(false);
+                self.sup
+                    .task_done(&self.caller, id, result, failed)
+                    .map_err(|e| self.map_err(e))
+            }
         }
     }
 }
@@ -222,6 +296,63 @@ impl Tool for AgentTool {
             Kind::List => (
                 prompts::LIST_DESCRIPTION,
                 json!({"type": "object", "properties": {}}),
+            ),
+            Kind::Post => (
+                prompts::POST_DESCRIPTION,
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "body": {"type": "string"},
+                        "topic": {"type": "string", "description": "A short tag readers can filter on."},
+                        "to": {"type": "string", "description": "An agent id: makes it a direct message."}
+                    },
+                    "required": ["body"]
+                }),
+            ),
+            Kind::Read => (
+                prompts::READ_DESCRIPTION,
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "since": {"type": "integer"},
+                        "topic": {"type": "string"}
+                    }
+                }),
+            ),
+            Kind::TaskAdd => (
+                prompts::TASK_ADD_DESCRIPTION,
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "detail": {"type": "string"},
+                        "after": {"type": "array", "items": {"type": "integer"}}
+                    },
+                    "required": ["title"]
+                }),
+            ),
+            Kind::TaskList => (
+                prompts::TASK_LIST_DESCRIPTION,
+                json!({"type": "object", "properties": {}}),
+            ),
+            Kind::TaskClaim => (
+                prompts::TASK_CLAIM_DESCRIPTION,
+                json!({
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}}
+                }),
+            ),
+            Kind::TaskDone => (
+                prompts::TASK_DONE_DESCRIPTION,
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "result": {"type": "string"},
+                        "failed": {"type": "boolean"}
+                    },
+                    "required": ["id", "result"]
+                }),
             ),
         };
         ToolDefinition {

@@ -70,7 +70,7 @@ pub struct AgentRow {
 }
 
 pub struct AgentStore {
-    conn: Mutex<Connection>,
+    pub(crate) conn: Mutex<Connection>,
 }
 
 const AGENT_COLUMNS: &str =
@@ -116,7 +116,35 @@ impl AgentStore {
                  tokens INTEGER NOT NULL,
                  at INTEGER NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS idx_spend_tree ON spend(tree, at);",
+             CREATE INDEX IF NOT EXISTS idx_spend_tree ON spend(tree, at);
+             CREATE TABLE IF NOT EXISTS board (
+                 id INTEGER PRIMARY KEY,
+                 tree TEXT NOT NULL,
+                 author TEXT NOT NULL,
+                 recipient TEXT,
+                 topic TEXT,
+                 body TEXT NOT NULL,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_board_tree ON board(tree, id);
+             CREATE TABLE IF NOT EXISTS work (
+                 id INTEGER PRIMARY KEY,
+                 tree TEXT NOT NULL,
+                 author TEXT NOT NULL,
+                 title TEXT NOT NULL,
+                 detail TEXT,
+                 status TEXT NOT NULL,
+                 claimed_by TEXT,
+                 result TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_work_tree ON work(tree, status);
+             CREATE TABLE IF NOT EXISTS work_deps (
+                 task INTEGER NOT NULL,
+                 after INTEGER NOT NULL,
+                 PRIMARY KEY (task, after)
+             );",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),

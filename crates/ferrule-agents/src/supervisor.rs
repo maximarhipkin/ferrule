@@ -129,13 +129,13 @@ pub struct SpawnRequest {
     pub role: Role,
 }
 
-struct InboxItem {
-    text: String,
+pub(crate) struct InboxItem {
+    pub(crate) text: String,
     /// A notice about this child; dropped once `wait_agent` returned the
     /// child's result, so nothing is said twice.
-    about: Option<String>,
+    pub(crate) about: Option<String>,
     /// Wakes the agent when it's an idle root.
-    wakes: bool,
+    pub(crate) wakes: bool,
 }
 
 #[derive(Default)]
@@ -178,7 +178,7 @@ impl Inbox for AgentInbox {
 
 impl AgentInbox {
     /// Adds an item; true when the agent is idle and the item wakes.
-    fn push(&self, item: InboxItem) -> bool {
+    pub(crate) fn push(&self, item: InboxItem) -> bool {
         let mut st = self.state.lock().unwrap();
         let wake = item.wakes && !st.running;
         st.items.push(item);
@@ -281,7 +281,7 @@ impl Supervisor {
         self.me.upgrade().expect("supervisor alive")
     }
 
-    fn inbox(&self, id: &str) -> Arc<AgentInbox> {
+    pub(crate) fn inbox(&self, id: &str) -> Arc<AgentInbox> {
         self.live_entry(id, |l| l.inbox.clone())
     }
 
@@ -373,7 +373,7 @@ impl Supervisor {
         })
     }
 
-    fn get(&self, id: &str) -> Result<AgentRow, AgentsError> {
+    pub(crate) fn get(&self, id: &str) -> Result<AgentRow, AgentsError> {
         self.store
             .get(id)?
             .ok_or_else(|| AgentsError::Invalid(format!("there is no agent {id}")))
@@ -549,6 +549,11 @@ impl Supervisor {
                 false
             }
         };
+        if status == Status::Failed {
+            if let Err(e) = self.store.release_claims(id, now()) {
+                warn!(agent = id, "releasing a failed agent's tasks failed: {e}");
+            }
+        }
         self.bump();
         // A closed agent's parent asked for it to stop; no notice.
         if !recorded {
@@ -749,6 +754,7 @@ impl Supervisor {
                 continue;
             }
             self.store.set_status(&agent, Status::Closed, now())?;
+            self.store.release_claims(&agent, now())?;
             let handle = self.live_entry(&agent, |l| {
                 l.stop.stop();
                 l.handle.take()
