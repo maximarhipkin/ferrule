@@ -20,7 +20,7 @@ that convention yet — ask before introducing one).
   fixed small toolset (fs read/write/list, a sandboxed shell, web fetch,
   todo/diary, remember/recall) from `ferrule-tools`, and a single-file SQLite memory store
   (`ferrule-memory`, FTS5 BM25 + time-decay recall), plus any tools exposed
-  by stdio MCP servers (`ferrule-mcp`, M4). No
+  by MCP servers (`ferrule-mcp`, M4; by URL too since M10). No
   multi-agent orchestration yet — see gap list below.
   **A daemon now exists and is reachable** (`ferrule-gateway`, see Session
   Log 2026-09-23/24, M1+M2): a `Channel` adapter trait, normalized
@@ -98,7 +98,7 @@ that convention yet — ask before introducing one).
   and the suite is green with `NO_PROXY` unset. A *binary* talking to a
   local endpoint still needs `NO_PROXY` in this sandbox.
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 180/180 green after M8** (plus 2 `#[ignore]`d: the proxy's
+  --workspace` 180/180 green after M8; 232 passed, 2 ignored after M10** (plus 2 `#[ignore]`d: the proxy's
   live end-to-end test, run with `-- --ignored`, and a sandbox helper),
   `tests_e2e/setup_wizard.py` and `tests_e2e/hidden_keys.py` pass, and
   `cargo check --target x86_64-pc-windows-gnu --workspace --all-targets`
@@ -132,11 +132,12 @@ that convention yet — ask before introducing one).
   were dropped by Max on 2026-09-24, msg 3070). These are the largest deltas. (The
   cost/observability ledger gap closed 2026-09-24, Phase 0; the skills
   half of "skills/plugin system" closed the same day, M5; OS sandboxing
-  for the shell tool closed the same day too, M6. Reads and MCP servers
-  are its open edges; the macOS backend passed on a real Mac in CI. The
-  credential-injection gateway closed the same day, M7; its open edges
-  are HTTP/2 and websockets on bound hosts, body injection, MCP servers
-  and `web_fetch` bypassing it, and a real-Mac run. The Telegram sender
+  for the shell tool closed the same day too, M6; M10 put MCP servers
+  under it. Reads are its open edge; the macOS backend passed on a real
+  Mac in CI. The credential-injection gateway closed the same day, M7;
+  M10 routed `web_fetch` and MCP servers by URL through it. Its open
+  edges are HTTP/2 and websockets on bound hosts, body injection, plain
+  HTTP (never proxied) and a real-Mac run. The Telegram sender
   allow-list closed with M8. Native Windows has no sandbox backend;
   AppContainer or a restricted token is the research item.)
 - **M9 never stuck is done** (2026-09-24, Session Log): transient provider
@@ -144,14 +145,50 @@ that convention yet — ask before introducing one).
   run stops, every stop (step limit, loop, a check that keeps failing)
   ends with a status answer instead of an error, `verify_command` is run
   by ferrule itself, and compaction keeps the request verbatim.
-- **Next milestones** (`docs/research-autonomy-and-self-extension.md`,
-  msg 3066): M10 MCP servers and `web_fetch` under the
-  sandbox and the credential proxy, M11 a browser via agent-browser's MCP
-  server, M12 self-extension (skills and MCP servers hot-loaded). Max's
-  answers (msg 3074): this order; self-install from an **allow-list of
-  approved sources** without asking; the browser **detects** an installed
-  Chrome, no download; a native **Windows sandbox is researched now**
-  (`docs/research-windows-sandbox.md`).
+- **M10 is done** (2026-09-24, Session Log): MCP stdio servers run under
+  the shell's `Sandbox` — the workspace as cwd and writable, a state dir
+  of their own (HOME/XDG/npm/uv caches and TMPDIR moved there when
+  confined), network always on, `sandbox = false` as a flagged opt-out.
+  `web_fetch` and MCP servers by URL (new Streamable HTTP transport, `url`
+  + `headers` with `${VAR}`) send HTTPS through the credential proxy when
+  it runs. As root on Linux, `ferrule setup` installs a **system** unit
+  run as a `ferrule` system user (no login, no sudo) under
+  `NoNewPrivileges`/`ProtectSystem=strict`/`ProtectHome`/`PrivateTmp`,
+  config in `/etc/ferrule`, data and workspace in `/var/lib/ferrule`;
+  `--system`/`--user` choose explicitly, and a user unit as root needs a
+  confirmation. `ferrule doctor` also reports the proxy, finds an
+  installed Chrome/Chromium and tries a headless launch (never
+  downloads), notes Ubuntu's AppArmor userns restriction and warns when
+  the service still runs a binary that was upgraded since it started.
+  **Open edges:** the system-service path has no e2e run (it needs root
+  and systemd; unit text and decisions are unit-tested only); plain HTTP
+  from `web_fetch` goes direct, not through the proxy (it only does
+  CONNECT); an unconfined MCP server (`sandbox = false`, or any server on
+  Windows) can still read the saved keys and `/proc/<ppid>/environ`;
+  Streamable HTTP has no server-initiated GET stream or resumption; the
+  Chrome launch check isn't exercised on Windows or macOS in CI.
+  **Known limits:** `--system` is Linux-only; a system service can't use
+  paths under `/home`, `/root` or `/run/user` (`ProtectHome`); binary
+  drift is judged from `ps` elapsed time and file mtime (±2 s), plus
+  `/proc/<pid>/exe` on Linux. Part 3 of the brief was dropped by Max
+  (msg 3088).
+- **Next milestones** (order approved 2026-09-24, msg 3090):
+  - **M11 browser**: agent-browser's MCP server driving an installed
+    Chrome, detected, never downloaded (Max, msg 3074). `browser.rs`
+    already has the detection and a headless launch check.
+  - **M12 multi-agent**: an in-process `spawn_agent` tool (background by
+    default, notifies the parent when done, resumable); named long-lived
+    agents from one config line or a Telegram command; a shared board
+    whose entries are tagged with the source agent and an untrusted-origin
+    flag and treated as data, never instructions, plus direct
+    agent-to-agent messages; an automatic git worktree and branch when a
+    child works on a repo; limits on depth, concurrency and budget per
+    agent; children run under the same sandbox and credential proxy.
+  - **M13 self-extension** (was M12): skills and MCP servers hot-loaded,
+    self-installed from an **allow-list of approved sources** without
+    asking (msg 3074).
+  - Also standing: a native **Windows sandbox** is being researched
+    (`docs/research-windows-sandbox.md`).
 
 ## Session Log
 
@@ -1464,3 +1501,124 @@ one-time elevated setup.
 
 Tests: `cargo test --workspace` green (core 30, gateway 48, tools 17,
 providers 5, the rest unchanged).
+
+### 2026-09-24 — M10 MCP and web_fetch under the sandbox and the proxy, a system service, doctor (Devi, Opus 5.5)
+
+**Step 0, review of the previous attempt (`2539d1a`, "sandbox MCP stdio
+servers"). Verdict: keep the core, rework it.** The brief assumed it was
+unpushed; it was already on `main`, so the rework landed on top rather
+than replacing it. What it got right: MCP servers go through the same
+`Sandbox::command` as the shell, env scrubbing, canonicalised roots, the
+state dir under the data dir, and the proxy env inherited. What was
+wrong:
+1. The server's cwd was its state dir, and relative `writable_roots`
+   resolved against it instead of the workspace.
+2. In read-only mode the state dir itself wasn't writable, so npx/uvx
+   servers couldn't start.
+3. `network = false` was inherited by servers. The owner wants the
+   network open, and most servers need it.
+4. HOME was redirected even when unconfined; XDG dirs and TMPDIR weren't.
+5. `npx` didn't resolve to `npx.cmd` on Windows.
+6. `sandbox_degraded` wasn't wired to `ferrule doctor`.
+7. The tests asserted a chained exit status (`… && echo ok`), used
+   `/bin/sh` rather than an MCP server, and leaned on `Sandbox::off`.
+8. State-dir names could collide (sanitised server names).
+Caveat that stays: an unconfined server can read `/proc/<ppid>/environ`
+and the secrets file.
+
+**Part 1 (`a80f6da`).** Fixes 1–8: the workspace is the server's cwd and
+writable; the state dir stays writable in read-only mode; servers always
+get the network; HOME/XDG/npm/uv/TMPDIR move into the state dir only when
+confined; `writable_roots` resolve against the workspace; `npx` →
+`npx.cmd` on Windows; state-dir names carry a hash; doctor warns about
+every `sandbox = false` server. `ferrule-mcp/tests/sandbox.rs` drives a
+real MCP server under the real sandbox and asserts which files exist,
+not an exit code.
+
+**Part 2 (`c0643b0`, test follow-up `26cfb95`).** `web_fetch` and a new
+Streamable HTTP transport for MCP (`url` + `headers`, `${VAR}` from
+ferrule's env, a missing variable stops that server; session id kept,
+404 → re-initialise once; JSON or SSE answers) build their client with
+`ferrule_tools::egress::client_builder`: HTTPS through the credential
+proxy, trusting its CA, when the proxy runs. Without it they connect
+directly (or via the system proxy), and doctor's new `proxy` line says
+which. **Decision: plain HTTP is not proxied.** The proxy speaks CONNECT
+only, and injecting into cleartext would put keys on the wire anyway, so
+`HTTP_PROXY` is left alone. `ferrule-proxy/tests/egress.rs` checks
+end to end that the real token reaches the origin only via the proxy
+and that a direct `web_fetch` fails TLS against it. The follow-up keeps
+the direct-path test's loopback origin off an ambient `HTTP_PROXY`
+(it failed in this sandbox without `NO_PROXY`; CI has none).
+
+**Part 3: dropped by Max (msg 3088), not implemented.**
+
+**Part 4 (`98d998f`), system service.** `ferrule setup` as root on Linux
+defaults to a system unit; `--system` / `--user` choose explicitly
+(`decide_scope`, unit-tested: both flags, non-Linux and non-root are
+errors). It creates (`useradd --system`, nologin) or reuses a `ferrule`
+account; reuse is refused for uid 0, a login shell, or membership in
+root/sudo/wheel/admin/adm/docker/lxd. Config is `/etc/ferrule/config.toml`
+(root:ferrule 0640), data `/var/lib/ferrule/data`, workspace
+`/var/lib/ferrule/workspace`, both owned by it. The unit has `User=`,
+`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=yes`,
+`PrivateTmp=yes`, `ReadWritePaths=` data and workspace only. Paths
+under /home, /root or /run/user and system dirs as a workspace are
+refused before anything is written. A user unit as root needs a loud
+confirmation; doctor warns about one and points to `--system`.
+`install.sh` as root installs to /usr/local/bin and restarts an active
+system unit on upgrade. `data_dir()` honours `FERRULE_DATA_DIR`. **Not
+e2e-tested:** it needs root plus systemd, and the wizard is interactive;
+CI's runner could do it with sudo, left as an open edge.
+
+**Part 5 (`085c3e7`), doctor.** (a) `browser.rs`: `$CHROME_PATH`, then
+the PATH names (google-chrome-stable, google-chrome, chromium,
+chromium-browser), the .deb/snap/distro paths, the macOS app bundles in
+/Applications and ~/Applications, and Program Files / LOCALAPPDATA on
+Windows. The one found gets a headless `--dump-dom about:blank` run in
+a throwaway profile, 20 s timeout, `--no-sandbox` only as root.
+Informational only, never downloads. Here it finds `/usr/bin/chromium`,
+which fails with "No usable sandbox!", and (b) the next line explains
+it: `kernel.apparmor_restrict_unprivileged_userns = 1`. (c) The service
+warns "binary upgraded since it started" when the unit's `ExecStart`
+binary is newer than the running process (`ps -o etime`, ±2 s) or
+`/proc/<pid>/exe` is deleted, with the right restart command. (d) was
+already covered by parts 1 and 2 (the `mcp` and `proxy` lines).
+
+**Research doc fact-check (`34b5390`)** of
+`docs/research-deployment-and-isolation.md` against `b5ddfa1`:
+1. The seccomp citation `lib.rs:340-346` → arch check `lib.rs:373-374`,
+   filter `linux.rs:263-271, 310, 315-395`.
+2. The network default `lib.rs:105` → field `:65-66`, default `:94`.
+3. Scrubbing `lib.rs:128, 254-278` → `SECRET_MARKERS` `:125`,
+   `scrubbed_vars`/`is_secret_var` `:299-318`, removal `:237-239`.
+4. `router.rs` holds no workspace: lanes are `spawn_lane`
+   (`router.rs:108-120`), and the workspace comes from the agent factory
+   (`main.rs:675-686`).
+5. The sandbox module doc doesn't "explicitly" rule out containers.
+6. The "running service is restarted" quote is `README.md:108-109`, not
+   install.sh.
+7. Not only `shell` is sandboxed: the command verifier and `ferrule
+   sandbox -- cmd` are too; scheduler gate scripts aren't.
+8. Hidden paths: names in a hidden dir stay listable on Linux, later
+   entries and bind mounts aren't covered, missing paths are skipped;
+   Seatbelt denies both, untested on a real Mac.
+9. ReadOnly also allows `/dev/ptmx`/`/dev/ttys*` on macOS and drops
+   `write_file`.
+10. The proxy's `in_url` substitution was missing.
+11. Scrubbing is case-insensitive, plus `secret_vars` and the
+    `env_passthrough` exemptions.
+12. install.sh runs setup only on a fresh install with a terminal.
+13. Ubuntu 24.04's GA kernel is 6.8 (was "unverified"). Its claim about
+    the default userns restriction was left as is.
+A header note records what M10 has changed since.
+
+Also `b5fd138`, `cargo fmt` of the whole workspace, which had never been
+formatted, so the M10 diffs stay readable. fmt, clippy `-D warnings` and
+`cargo test --workspace` are clean: 232 passed, 2 ignored.
+`tests_e2e/hidden_keys.py` passes locally; `setup_wizard.py` needs
+pexpect, so CI runs it.
+
+**Left:** a system-service e2e run on CI, plain-HTTP proxying (would
+need a forward HTTP mode), the Streamable HTTP GET stream, Chrome checks
+on macOS and Windows runners, and the unconfined-server caveat above.
+Next: M11 browser, M12 multi-agent, M13 self-extension (msg 3090).
