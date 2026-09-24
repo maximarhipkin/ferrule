@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.1.0-c4764a" alt="release v0.1.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-180-8a929a" alt="180 workspace tests">
+  <img src="https://img.shields.io/badge/tests-232-8a929a" alt="232 workspace tests">
 </p>
 
 <p align="center">
@@ -76,17 +76,18 @@ provider is a local model, so no cloud key was involved:
 
 <table align="center">
   <tr>
-    <td><img src="docs/assets/term-doctor.png" alt="ferrule doctor: config, keys, provider, sandbox, binary — all checks green, 'All good.'" width="440"></td>
-    <td><img src="docs/assets/term-sandbox.png" alt="ferrule sandbox: seatbelt backend, workspace-write mode, secret env var withheld, every check ok" width="560"></td>
+    <td><img src="docs/assets/term-doctor.png" alt="ferrule doctor: config, keys, provider, sandbox, mcp, proxy, binary — all checks green, 'All good.'" width="440"></td>
+    <td><img src="docs/assets/term-sandbox.png" alt="ferrule sandbox: seatbelt backend, workspace-write mode, secret env vars withheld, GITHUB_TOKEN bound to its hosts through the proxy, every check ok" width="560"></td>
   </tr>
 </table>
 
 `ferrule doctor` checks the config, the saved keys' file permissions, the
-provider key **live**, Telegram, the sandbox and the background service —
-and each red line comes with the exact fix. `ferrule sandbox` doesn't just
-print the policy, it runs the promises: write inside the workspace works,
-write outside is refused, the saved keys are unreadable, secret env vars
-are withheld.
+provider key **live**, Telegram, the sandbox, the credential-proxy path,
+MCP servers, an installed Chrome and the background service — and each red
+line comes with the exact fix. `ferrule sandbox` doesn't just print the
+policy, it runs the promises: write inside the workspace works, write
+outside is refused, the saved keys are unreadable, secret env vars are
+withheld.
 
 ## Why ferrule wins
 
@@ -139,11 +140,11 @@ between the model and your real tokens — all on by default:
   <img src="docs/assets/security-layers.svg" alt="Four layers: OS sandbox, placeholder tokens, TLS-intercepting loopback proxy, bound hosts only" width="860">
 </p>
 
-1. **An OS sandbox around every shell command** — Landlock + seccomp on
-   Linux, Seatbelt on macOS. Writes are confined to the workspace,
-   secret-looking env vars (`*KEY*`, `*TOKEN*`, `*SECRET*`…) are stripped,
-   and the network can be hard-off via seccomp. (Native Windows has no
-   sandbox yet — [use WSL2](#windows).)
+1. **An OS sandbox around every shell command and stdio MCP server** —
+   Landlock + seccomp on Linux, Seatbelt on macOS. Writes are confined to
+   the workspace, secret-looking env vars (`*KEY*`, `*TOKEN*`, `*SECRET*`…)
+   are stripped, and the network can be hard-off via seccomp. (Native
+   Windows has no sandbox yet — [use WSL2](#windows).)
 2. **Placeholders, not tokens.** Commands see `$GITHUB_TOKEN` as a
    same-shaped placeholder. Saved keys live in `secrets.env` (0600, in a
    0700 directory) that the agent's file tools and sandboxed shell can't
@@ -176,12 +177,12 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
 | **Providers** | One OpenAI-compatible driver: Kimi, OpenAI, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. |
 | **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. |
-| **MCP** | stdio MCP servers. Their tools register as `mcp__<server>__<tool>`. |
+| **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. |
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. |
 | **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall. |
 | **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
-| **OS sandbox** | Every shell command runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, and secret env vars are stripped. Native Windows has no sandbox yet ([below](#windows)). |
+| **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, and secret env vars are stripped. Native Windows has no sandbox yet ([below](#windows)). |
 | **Credential gateway** | Commands get a placeholder token. A local proxy swaps in the real one only for the hosts you allow. |
 | **Ledger** | Every model call is logged: tokens, cache hits, latency, errors, cost. |
 | **Context baseline** | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `ferrule.md` in the workspace goes into the system prompt. |
@@ -377,29 +378,43 @@ ferrule tasks runs <ID>               # truthful status for every run
 `--gate "script"` runs before the agent wakes. If it prints
 `{"wakeAgent": false}`, the run is skipped at zero token cost.
 
-**MCP servers and skills:**
+**MCP servers** come in two shapes. A stdio server is spawned per its
+`command`, and runs inside the same OS sandbox as the shell: it can write
+the workspace, temp dirs and a state dir of its own, it always has the
+network, and its environment is scrubbed of secrets. `sandbox = false`
+opts out, and `ferrule doctor` flags it. A remote server speaks Streamable
+HTTP over `url`, and its HTTPS goes through the credential proxy — a
+`${VAR}` in a header arrives as the placeholder and is swapped only for
+the hosts that secret is bound to:
 
 ```toml
-[[mcp.servers]]
+[[mcp.servers]]                       # stdio, sandboxed
 name = "fs"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[[mcp.servers]]                       # Streamable HTTP, through the proxy
+name = "remote"
+url = "https://mcp.example.com/mcp"
+headers = { Authorization = "Bearer ${REMOTE_MCP_TOKEN}" }
 ```
 
-Skills are found in `.ferrule/skills`, `.agents/skills` or `.claude/skills`
-in the workspace, and in `~/.agents/skills` or `~/.claude/skills`.
-`ferrule skills` lists what a workspace would load.
+**Skills** are found in `.ferrule/skills`, `.agents/skills` or
+`.claude/skills` in the workspace, and in `~/.agents/skills` or
+`~/.claude/skills`. `ferrule skills` lists what a workspace would load.
 
 **Cost:** add `price_*_per_mtok` to a provider, then run
 `ferrule ledger --since 7d`.
 
 ## Sandbox
 
-Every command the agent runs through the `shell` tool is sandboxed:
+Every command the agent runs through the `shell` tool is sandboxed, and so
+is every stdio MCP server:
 
 - **Writes:** only the workspace, temp dirs and any `writable_roots` you
-  add.
-- **Network:** on by default, off with `network = false` (seccomp).
+  add. An MCP server also gets a state dir of its own.
+- **Network:** on by default, off with `network = false` (seccomp). MCP
+  servers always have it — most need it.
 - **Env:** variables that look like secrets (`*KEY*`, `*TOKEN*`,
   `*SECRET*`…) and every provider's `api_key_env` are stripped.
 
@@ -447,7 +462,10 @@ How it works:
 
 Limits:
 
-- Only the shell tool goes through the proxy.
+- The `shell` tool, `web_fetch` and remote (Streamable HTTP) MCP servers
+  go through the proxy, and HTTPS only: the proxy speaks CONNECT, so plain
+  HTTP is left alone — injecting into cleartext would put the key on the
+  wire anyway.
 - HTTP/2 and websockets aren't supported on bound hosts.
 - Anything the bound host itself can do with the token, the agent can
   too, so scope tokens tightly.
@@ -462,12 +480,12 @@ are in [`docs/research-credential-gateway.md`](docs/research-credential-gateway.
 crates/
   ferrule-core       agent loop, provider trait, harness profiles, compaction, transcripts
   ferrule-providers  OpenAI-compatible driver
-  ferrule-tools      fs / shell / web_fetch / diary / memory tools
+  ferrule-tools      fs / shell / web_fetch / diary / memory tools, proxied egress
   ferrule-memory     SQLite + FTS5 memory with time decay
   ferrule-gateway    daemon: channels (Telegram, local), session router, scheduler
-  ferrule-mcp        stdio MCP client
+  ferrule-mcp        MCP client: sandboxed stdio servers, Streamable HTTP servers
   ferrule-skills     Agent Skills discovery and loading
-  ferrule-sandbox    OS sandbox for shell commands (Landlock + seccomp / Seatbelt)
+  ferrule-sandbox    OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt)
   ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing
   ferrule-cli        the `ferrule` binary
 ```
@@ -475,7 +493,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 180 tests
+cargo test --workspace                     # 232 tests on Linux, 229 on macOS (the Linux-only ones are cfg'd out)
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -486,10 +504,10 @@ CI runs the tests on Linux, macOS and Windows. A `v*` tag builds the
 release archives for every platform and publishes them with the install
 scripts.
 
-Please don't run `cargo fmt` over the whole tree. Format only the files
-you touch (`rustfmt --edition 2021 path/to/file.rs`), so diffs stay
-reviewable. [`PLAN.md`](PLAN.md) is the shared working log: current
-state, open gaps and a dated entry for every session.
+The tree has been formatted with `cargo fmt` since M10; keep it that way
+and keep `cargo clippy --workspace --all-targets` clean.
+[`PLAN.md`](PLAN.md) is the shared working log: current state, open gaps
+and a dated entry for every session.
 
 ## Roadmap
 
@@ -508,17 +526,24 @@ state, open gaps and a dated entry for every session.
 - [x] M7: credential gateway
 - [x] M8: one-line install and a setup wizard, Windows support, Telegram
       allow-list
+- [x] M9: never stuck — retries with backoff, a stuck detector, a truthful
+      status at every stop, `verify_command` enforced
+- [x] M10: MCP servers and `web_fetch` under the sandbox and the proxy,
+      Streamable HTTP MCP, a hardened system service on Linux
 
 **Next** (designed, waiting on a decision)
 
+- [ ] M11: a browser for the agent, driving an installed Chrome over MCP
+      ([research](docs/research-autonomy-and-self-extension.md))
+- [ ] M12: multi-agent orchestration — planner, implementer and verifier
+      subagents with isolated contexts that return summaries only
+- [ ] M13: self-extension — the agent installs approved skills and MCP
+      servers for itself
 - [ ] Multi-provider routing, Phase 1: rule-based routing between providers
       by task shape, fed by the ledger
       ([research](docs/research-routing-and-local-models.md))
-- [ ] Multi-agent orchestration: planner, implementer and verifier
-      subagents with isolated contexts that return summaries only
 - [ ] Codex Responses-API and Claude drivers
-- [ ] Sandbox the open edges: file reads, and MCP servers (they get the
-      real environment today)
+- [ ] Sandbox the open edge that remains: file reads
 - [ ] A sandbox for native Windows (AppContainer or a restricted token)
 - [ ] Code-extension plugins
 
@@ -542,4 +567,10 @@ routing, and a plugin system. They're tracked in [`PLAN.md`](PLAN.md).
   multi-provider routing and local fine-tuning, phases and open decisions
 - [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md):
   the credential gateway's design, threat model and limits
+- [`docs/research-autonomy-and-self-extension.md`](docs/research-autonomy-and-self-extension.md):
+  never stuck, the browser, self-extension and speed
+- [`docs/research-deployment-and-isolation.md`](docs/research-deployment-and-isolation.md):
+  deployment shapes and isolation, from a process to a container
+- [`docs/research-windows-sandbox.md`](docs/research-windows-sandbox.md):
+  a native Windows sandbox, tiered by what needs admin
 - [`PLAN.md`](PLAN.md): current state and session log

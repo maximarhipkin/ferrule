@@ -1662,3 +1662,25 @@ Verified: all referenced images exist, all relative links resolve, every
 quoted `ferrule` command matches the built binary's `--help`, all SVGs
 parse as XML, and the README re-read end to end against the honesty
 constraints. Nothing committed; `target/` stays untracked.
+
+### 2026-09-24 — README refreshed for M9/M10 (Kimi Code)
+
+Rebased the README sales rewrite onto M10 (`843cd47`) and brought the
+README in line with what actually shipped. Text changes: test badge and
+Development counts 180 → 232 (229 on macOS — the Linux-only tests are
+cfg'd out; verified with `cargo test --workspace` on this Mac: 229 passed,
+0 failed); the MCP row and Sandbox section now cover sandboxed stdio
+servers and Streamable HTTP servers through the credential proxy; the
+credential-gateway "only the shell tool" limit is corrected (`web_fetch`
+and remote MCP go through it too, HTTPS only); the "please don't cargo
+fmt" note is replaced (the tree was fmt'd in `b5fd138`); the roadmap gains
+M9 and M10 under Shipped, and Next gains M11 browser / M12 multi-agent /
+M13 self-extension while the "sandbox MCP servers" open edge is removed
+(file reads remain); the Docs list covers all six research docs.
+`docs/assets/roadmap.svg` redrawn to match (M9/M10 shipped, new Next
+list, taller canvas); `architecture.svg` MCP and sandbox captions updated.
+The `term-*.png` captures were re-captured from a release build of the M10
+code, same method as before (scratch HOME, mock `/v1/models`, Pillow
+renderer). doctor gained `mcp`/`proxy`/`browser` lines and sandbox the
+`[secrets]`/proxy rows, so those two PNGs were re-rendered; `--help`
+output was unchanged, so `term-help.png` is byte-identical and was kept.

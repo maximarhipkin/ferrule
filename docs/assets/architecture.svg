@@ -41,7 +41,7 @@
   <rect x="32" y="392" width="212" height="64" rx="10" class="b"/>
   <text x="48" y="418" class="h">Built-in tools</text><text x="48" y="438" class="s">fs · shell · web_fetch · todos</text>
   <rect x="260" y="392" width="212" height="64" rx="10" class="b"/>
-  <text x="276" y="418" class="h">MCP tools</text><text x="276" y="438" class="s">stdio servers → mcp__server__tool</text>
+  <text x="276" y="418" class="h">MCP tools</text><text x="276" y="438" class="s">stdio + HTTP servers → mcp__server__tool</text>
   <rect x="488" y="392" width="212" height="64" rx="10" class="b"/>
   <text x="504" y="418" class="h">Skills</text><text x="504" y="438" class="s">SKILL.md, loaded on demand</text>
   <rect x="716" y="392" width="212" height="64" rx="10" class="b"/>
@@ -52,7 +52,7 @@
   <path d="M664 360V376H822V390" class="ar" marker-end="url(#a)"/>
 
   <rect x="32" y="488" width="408" height="64" rx="10" class="b"/>
-  <text x="48" y="514" class="h">OS sandbox for every shell command</text><text x="48" y="534" class="s">Landlock + seccomp on Linux · Seatbelt on macOS</text>
+  <text x="48" y="514" class="h">OS sandbox for shell commands and MCP servers</text><text x="48" y="534" class="s">Landlock + seccomp on Linux · Seatbelt on macOS</text>
   <rect x="456" y="488" width="472" height="64" rx="10" class="bc"/>
   <text x="472" y="514" class="h c">Credential gateway</text><text x="472" y="534" class="s">$SECRET holds a placeholder; the real value goes only to the listed hosts</text>
   <path d="M138 456V486" class="ar" marker-end="url(#a)"/>
