@@ -269,7 +269,7 @@ impl McpClient {
             &self.next_id,
             "initialize",
             init_params,
-            self.cfg.timeout(),
+            self.cfg.startup_timeout(),
         )
         .await;
         match resp {
@@ -292,7 +292,7 @@ impl McpClient {
                 None => json!({}),
             };
             let result = self
-                .request("tools/list", params, self.cfg.timeout())
+                .request("tools/list", params, self.cfg.startup_timeout())
                 .await?;
             let tools = result
                 .get("tools")
