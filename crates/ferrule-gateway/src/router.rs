@@ -1,12 +1,14 @@
 use crate::channel::Channel;
 use crate::error::GatewayError;
 use crate::message::{InboundMessage, OutboundMessage};
+use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
 use ferrule_core::{Agent, CoreError, Role, Transcript};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use std::sync::Mutex;
+use tokio::sync::{mpsc, oneshot};
 
 /// Builds a ready-to-run `Agent` for a session: system prompt, provider,
 /// tools and harness profile already applied. Receives the freshly created
@@ -49,8 +51,14 @@ pub struct Router {
     sessions_dir: PathBuf,
     agent_factory: AgentFactory,
     channels: HashMap<String, Arc<dyn Channel>>,
-    lanes: Mutex<HashMap<String, mpsc::Sender<LaneJob>>>,
+    lanes: Mutex<HashMap<String, Lane>>,
     lane_queue_capacity: usize,
+}
+
+struct Lane {
+    tx: mpsc::Sender<LaneJob>,
+    channel: String,
+    chat_id: String,
 }
 
 impl Router {
@@ -74,7 +82,7 @@ impl Router {
     /// message was *queued*, not that the agent turn succeeded.
     pub async fn dispatch(&self, msg: InboundMessage) -> Result<(), GatewayError> {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
-        let tx = self.lane_for(&sid, &msg.channel).await?;
+        let tx = self.lane_for(&sid, &msg)?;
         tx.send(LaneJob { msg, reply: None })
             .await
             .map_err(|_| GatewayError::SessionClosed(sid))
@@ -90,7 +98,7 @@ impl Router {
     pub async fn dispatch_and_wait(&self, msg: InboundMessage) -> Result<Reply, GatewayError> {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
         let (reply_tx, reply_rx) = oneshot::channel();
-        let tx = self.lane_for(&sid, &msg.channel).await?;
+        let tx = self.lane_for(&sid, &msg)?;
         tx.send(LaneJob {
             msg,
             reply: Some(reply_tx),
@@ -104,20 +112,66 @@ impl Router {
         }
     }
 
-    async fn lane_for(
+    fn lane_for(
         &self,
         session_id: &str,
-        channel_name: &str,
+        msg: &InboundMessage,
     ) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
-        let mut lanes = self.lanes.lock().await;
-        if let Some(tx) = lanes.get(session_id) {
-            if !tx.is_closed() {
-                return Ok(tx.clone());
+        let mut lanes = self.lanes.lock().unwrap();
+        if let Some(lane) = lanes.get(session_id) {
+            if !lane.tx.is_closed() {
+                return Ok(lane.tx.clone());
             }
         }
-        let tx = self.spawn_lane(session_id, channel_name)?;
-        lanes.insert(session_id.to_string(), tx.clone());
+        let tx = self.spawn_lane(session_id, &msg.channel)?;
+        lanes.insert(
+            session_id.to_string(),
+            Lane {
+                tx: tx.clone(),
+                channel: msg.channel.clone(),
+                chat_id: msg.chat_id.clone(),
+            },
+        );
         Ok(tx)
+    }
+
+    /// Whether `session_id` is a chat that [`Router::wake`] can run: it has
+    /// a lane, and a person on the other end (a scheduled task has none).
+    pub fn can_wake(&self, session_id: &str) -> bool {
+        self.lanes
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|l| !l.tx.is_closed() && l.channel != SCHEDULER_PSEUDO_CHANNEL)
+    }
+
+    /// Runs `session_id`'s agent on `text` as if it came from its chat,
+    /// and sends the answer there (not as a reply to anything). For news
+    /// the agent should act on while nobody is talking to it: its
+    /// sub-agents finishing. False when there's no such chat or its queue
+    /// is full.
+    pub fn wake(&self, session_id: &str, text: String) -> bool {
+        let lanes = self.lanes.lock().unwrap();
+        let Some(lane) = lanes.get(session_id) else {
+            return false;
+        };
+        if lane.channel == SCHEDULER_PSEUDO_CHANNEL {
+            return false;
+        }
+        let msg = InboundMessage {
+            channel: lane.channel.clone(),
+            chat_id: lane.chat_id.clone(),
+            sender: "ferrule".into(),
+            message_id: String::new(),
+            text,
+            attachments: vec![],
+            reply_to: None,
+            ts: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        };
+        lane.tx.try_send(LaneJob { msg, reply: None }).is_ok()
     }
 
     fn spawn_lane(
@@ -179,7 +233,8 @@ async fn run_lane(
                 channel: inbound.channel.clone(),
                 chat_id: inbound.chat_id.clone(),
                 text: reply_text,
-                reply_to: Some(inbound.message_id.clone()),
+                // A wake-up has no message to reply to.
+                reply_to: (!inbound.message_id.is_empty()).then(|| inbound.message_id.clone()),
                 attachments: vec![],
             };
             if let Err(e) = ch.send(out).await {
@@ -401,6 +456,42 @@ mod tests {
             assert!(Instant::now() < deadline, "condition never became true");
             sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_chat_can_be_woken_and_the_answer_goes_to_it_unthreaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let router = Router::new(dir.path(), echo_factory(), channels);
+        let sid = session::session_id("test", "chat-1");
+
+        // Nothing to wake before the chat has spoken.
+        assert!(!router.can_wake(&sid));
+        assert!(!router.wake(&sid, "news".into()));
+
+        router.dispatch(inbound("chat-1", "hi")).await.unwrap();
+        assert!(router.can_wake(&sid));
+        assert!(router.wake(&sid, "news".into()));
+        wait_until(|| recorder.texts().len() == 2).await;
+        let sent = recorder.sent.lock().unwrap();
+        assert_eq!(sent[1].text, "echo: news");
+        assert_eq!(sent[1].chat_id, "chat-1");
+        assert!(sent[0].reply_to.is_some());
+        assert_eq!(sent[1].reply_to, None);
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_task_is_never_woken() {
+        let dir = tempfile::tempdir().unwrap();
+        let router = Router::new(dir.path(), echo_factory(), HashMap::new());
+        let mut msg = inbound("task-1", "run");
+        msg.channel = SCHEDULER_PSEUDO_CHANNEL.into();
+        router.dispatch_and_wait(msg).await.unwrap();
+        let sid = session::session_id(SCHEDULER_PSEUDO_CHANNEL, "task-1");
+        assert!(!router.can_wake(&sid));
+        assert!(!router.wake(&sid, "news".into()));
     }
 
     #[tokio::test]

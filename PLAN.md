@@ -20,8 +20,9 @@ that convention yet — ask before introducing one).
   fixed small toolset (fs read/write/list, a sandboxed shell, web fetch,
   todo/diary, remember/recall) from `ferrule-tools`, and a single-file SQLite memory store
   (`ferrule-memory`, FTS5 BM25 + time-decay recall), plus any tools exposed
-  by MCP servers (`ferrule-mcp`, M4; by URL too since M10). No
-  multi-agent orchestration yet — see gap list below.
+  by MCP servers (`ferrule-mcp`, M4; by URL too since M10). Since M12
+  (`ferrule-agents`) an agent can start background sub-agents with their
+  own worktrees, a board and a task list — see `docs/agents.md`.
   **A daemon now exists and is reachable** (`ferrule-gateway`, see Session
   Log 2026-09-23/24, M1+M2): a `Channel` adapter trait, normalized
   in/outbound message model, a `Router`/`Gateway` giving one FIFO session
@@ -126,7 +127,7 @@ that convention yet — ask before introducing one).
   version: channels/messaging now has two working adapters (Telegram,
   local) reachable via `ferrule gateway`, a task scheduler (M3) and a
   stdio MCP client (M4), Agent Skills (M5), but still no plugin
-  (code-extension) system, no multi-agent orchestration, no multi-provider
+  (code-extension) system, no multi-provider
   routing (Phase 1 of `docs/research-routing-and-local-models.md`, blocked
   on Max's decisions there; Phases 2–3, the learned router and local LoRA,
   were dropped by Max on 2026-09-24, msg 3070). These are the largest deltas. (The
@@ -192,7 +193,10 @@ that convention yet — ask before introducing one).
     on Linux `/proc` stays writable to Chrome; the shell can read the
     browser profile; `read` with a URL bypasses Chrome's proxy flags;
     the `all` tool set exposes raw CDP.
-  - **M12 multi-agent**: an in-process `spawn_agent` tool (background by
+  - **M12 multi-agent**: **parts 1–5 shipped** (2026-09-24, branch
+    `m12-multi-agent`, PR #1; see the M12 session-log entry); part 6
+    (named long-lived agents) deferred on an open question. Original
+    scope: an in-process `spawn_agent` tool (background by
     default, notifies the parent when done, resumable); named long-lived
     agents from one config line or a Telegram command; a shared board
     whose entries are tagged with the source agent and an untrusted-origin
@@ -1827,3 +1831,74 @@ hung 50 min before being cancelled); the probe switched to a Python
 timeout plus `taskkill /T`. Decisions for Max: keep the Windows warm-up or
 file upstream and wait; image support across providers; the macOS
 Chrome-sandbox-off tradeoff.
+
+### 2026-09-24 — M12 multi-agent (Devi, Opus 5.5)
+
+New crate `crates/ferrule-agents`; the user-facing doc is
+`docs/agents.md`, the design is `docs/m12-multi-agent.md`. Branch
+`m12-multi-agent`, PR #1. Every part was checked locally on Linux (fmt,
+clippy `-D warnings`, `cargo test --workspace --locked`); **CI was
+deferred at Max's request (24.09 17:39)** — a full 3-OS pass runs after
+the roadmap batch.
+
+- `538136e` design — the strategy deltas adopted: summary contract on
+  reports, effort-scaling in the spawn description, verifier role,
+  routing by role, `resume_agent`/`wait_agent`/`close_agent`, a task list
+  with dependencies, agent-relayed approvals untrusted.
+- `29c3a68` part 1: core hooks — a shared budget, an inbox drained before
+  each model call, a cooperative stop flag.
+- `0944a4a` part 2: the supervisor — spawn, wait, resume, close, list;
+  depth/children/agents/token limits over a trailing window; reports
+  fenced as untrusted; notices that wake an idle root.
+- `8026940` part 3: the board (posts and direct messages, fenced) and the
+  task list (dependencies, claims that flow down the tree and return when
+  an agent closes or fails).
+- `be44795` part 4: a child on its parent's repo gets a worktree and a
+  `ferrule/<id>` branch; close commits leftovers and keeps the branch only
+  if it holds work; a verifier checks a throwaway snapshot (HEAD + diff +
+  untracked files).
+- `1e17df8` part 5: the CLI — `[agents]` config and role providers,
+  children built like any agent and only narrowed, `ferrule run` waits for
+  its tree and is re-run on reports, gateway chats woken through the
+  router, owner lock files so several processes on one data dir leave
+  each other's agents alone, `ferrule agents list|close`, a doctor check,
+  an e2e test driving the real binary against a scripted model.
+
+Measured tool cost: depth 0 → 11 tools, ~5.1k chars with the prompt
+addendum (~1.3k tokens); at max depth → 6 tools, ~2.6k chars (~0.7k
+tokens); a child's "you are agent…" addendum ~450 chars.
+
+**Deferred — part 6, named long-lived agents.** Open question for Max:
+how a chat addresses a named agent (a `/agent <name>` prefix per
+message, a sticky switch per chat, or one Telegram bot/chat per agent),
+and whether a named agent's memory is a separate store or a scope in the
+shared one.
+
+**M12 open edges:**
+- `enabled = true` is the default, with a 2M-token/24h tree budget —
+  Max to confirm both.
+- Under the gateway, a scheduled task's children outlive the task's run;
+  their reports reach the task's next run. `tasks run-now` closes them.
+- Every session now gets a root row in `agents.db`, even if it never
+  spawns.
+- A verifier snapshot copies untracked files but applies the tracked diff
+  through git, so a repo `clean` filter can still run in the snapshot.
+- Without an OS sandbox (mode off, or Windows today) a read-only
+  verifier's "read-only" rests on its tool set and prompt only.
+- MCP servers are shared per process and run in the root's workspace.
+
+**Unverified on macOS/Windows until the batch CI pass:**
+- Owner locks: `File::try_lock` semantics (flock vs `LockFileEx`), and
+  the startup sweep deleting another process's lock file (Windows refuses
+  to delete a file that is open).
+- `Sandbox::for_child`: the read-only child and the extra writable git
+  directory under Seatbelt; with no sandbox on Windows.
+- Worktree git calls: path handling, `core.hooksPath` with Windows paths,
+  `git apply` of CRLF patches into the verifier snapshot, removing a
+  worktree while Windows holds files in it open.
+- Snapshot copying of untracked files and its symlink checks.
+- `canonicalize` yielding `\\?\` paths on Windows, which the workspace
+  comparisons and the git-common-dir `starts_with` check rely on.
+- The e2e test's environment isolation (`APPDATA`/`LOCALAPPDATA`/
+  `USERPROFILE` on Windows, `dirs` resolution on macOS).
+- `ferrule doctor`'s git check.

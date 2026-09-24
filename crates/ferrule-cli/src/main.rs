@@ -1,3 +1,4 @@
+mod agents;
 mod browser;
 mod config;
 mod doctor;
@@ -118,6 +119,11 @@ enum Cmd {
         #[arg(long)]
         since: Option<String>,
     },
+    /// The sub-agents agents have started: list them, close them
+    Agents {
+        #[command(subcommand)]
+        op: AgentsCmd,
+    },
     /// List the Agent Skills (SKILL.md) an agent in this workspace would load
     Skills {
         #[arg(long, default_value = ".")]
@@ -135,6 +141,19 @@ enum Cmd {
         #[arg(last = true)]
         exec: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentsCmd {
+    /// Every tree of agents, children under their parents
+    List {
+        /// Closed agents too
+        #[arg(long)]
+        all: bool,
+    },
+    /// Close an agent and everything it started: stop them, commit a
+    /// worker's leftover work to its branch, remove the worktrees
+    Close { id: String },
 }
 
 #[derive(Subcommand)]
@@ -350,6 +369,13 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Ledger { since } => {
             ledger_cmd(since)?;
         }
+        Cmd::Agents { op } => match op {
+            AgentsCmd::List { all } => agents::list(all)?,
+            AgentsCmd::Close { id } => {
+                let (cfg, _) = config::Config::load()?;
+                agents::close(&cfg.agents, &id).await?;
+            }
+        },
         Cmd::Skills { workspace } => {
             skills_cmd(workspace);
         }
@@ -378,27 +404,54 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
     Ok(())
 }
 
-async fn build_agent(
+/// The agent `run` and `chat` talk to: the root of a tree of sub-agents
+/// when `[agents]` allows them, with the supervisor that runs those.
+async fn build_root(
     provider_name: Option<String>,
     workspace: PathBuf,
     max_iterations: usize,
     session_id: &str,
     task_shape: &str,
-) -> Result<Agent> {
+) -> Result<(Agent, Option<Arc<ferrule_agents::Supervisor>>)> {
     let (cfg, _) = config::Config::load()?;
     let sandbox = shared_sandbox(&cfg)?;
+    let workspace = workspace.canonicalize().unwrap_or(workspace);
     let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await;
-    let ledger = ledger::LedgerTag::new(&ledger::build_sink(&cfg), task_shape, None);
+    let sink = ledger::build_sink(&cfg);
+    let ledger = ledger::LedgerTag::new(&sink, task_shape, None);
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
-    build_agent_from(
-        provider_name,
-        workspace,
+    let agent = build_agent_from(
+        provider_name.clone(),
+        workspace.clone(),
         max_iterations,
         transcript,
         &mcp_tools,
         ledger,
-    )
+        None,
+    )?;
+    let build = child_builder(max_iterations, mcp_tools);
+    let Some(sup) = agents::supervisor(&cfg, provider_name, sink, build)? else {
+        return Ok((agent, None));
+    };
+    let agent = sup.attach_root(agent, session_id, &workspace)?;
+    Ok((agent, Some(sup)))
+}
+
+/// How the supervisor builds a child: like any agent, on its spec's
+/// workspace and session, narrowed to its role.
+fn child_builder(max_iterations: usize, mcp_tools: Vec<Arc<dyn Tool>>) -> agents::Build {
+    Arc::new(move |provider, spec, tag| {
+        build_agent_from(
+            provider,
+            spec.workspace.clone(),
+            max_iterations,
+            Some(spec.transcript.clone()),
+            &mcp_tools,
+            tag,
+            Some(spec),
+        )
+    })
 }
 
 /// `[[mcp.servers]]`, plus the browser's when `[browser]` is on and can
@@ -500,6 +553,7 @@ fn build_agent_from(
     transcript: Option<Transcript>,
     mcp_tools: &[Arc<dyn Tool>],
     ledger: Option<ledger::LedgerTag>,
+    child: Option<&ferrule_agents::ChildSpec>,
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
     let (name, pcfg, key) = cfg.resolve_provider(provider_name.as_deref())?;
@@ -518,7 +572,11 @@ fn build_agent_from(
     };
 
     let mut registry = standard_registry();
-    let sandbox = shared_sandbox(&cfg)?;
+    let mut sandbox = shared_sandbox(&cfg)?;
+    if let Some(spec) = child {
+        sandbox = Arc::new(sandbox.for_child(&spec.extra_writable, spec.read_only));
+    }
+    let (read_only, reading_mcp) = agents::narrows(child);
     let broker = shared_broker(&cfg)?;
     registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone())));
     registry.register(Arc::new(WebFetchTool::with_egress(
@@ -532,13 +590,20 @@ fn build_agent_from(
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(ListDirTool::hiding(hidden)));
     warn_data_in_workspace(&sandbox, &tool_ctx.workspace);
-    if sandbox.policy().mode == Mode::ReadOnly {
+    if sandbox.policy().mode == Mode::ReadOnly || read_only {
         registry.remove("write_file");
     }
     for tool in memory_tools::tools(config::data_dir()?.join("memory.db")) {
-        registry.register(tool);
+        if !(read_only && tool.definition().name == "remember") {
+            registry.register(tool);
+        }
     }
-    for tool in mcp_tools {
+    let mcp_tools = if reading_mcp {
+        agents::only_reading(mcp_tools)
+    } else {
+        mcp_tools.to_vec()
+    };
+    for tool in &mcp_tools {
         registry.register(tool.clone());
     }
 
@@ -878,9 +943,32 @@ async fn run_once(
     show_reasoning: bool,
 ) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let mut agent = build_agent(provider, workspace, max_iterations, &session_id, "run").await?;
-    let tx = spawn_renderer(show_reasoning);
-    let answer = agent.run(prompt, tx).await;
+    let (mut agent, sup) =
+        build_root(provider, workspace, max_iterations, &session_id, "run").await?;
+    let (wake_tx, mut woken) = mpsc::unbounded_channel();
+    if let Some(sup) = &sup {
+        sup.set_waker(Arc::new(agents::ChannelWaker {
+            root: session_id.clone(),
+            tx: wake_tx,
+        }));
+    }
+    let mut answer = agent.run(prompt, spawn_renderer(show_reasoning)).await;
+    // Agents it started and didn't wait for: their reports run it again,
+    // until none is left running.
+    if let Some(sup) = &sup {
+        while answer.is_ok() {
+            if let Ok(news) = woken.try_recv() {
+                println!("\x1b[90m[the agents it started reported back]\x1b[0m");
+                answer = agent.run(&news, spawn_renderer(show_reasoning)).await;
+                continue;
+            }
+            if !sup.busy(&session_id) && woken.is_empty() {
+                break;
+            }
+            sup.changed(Duration::from_secs(1)).await;
+        }
+        close_tree(sup, &session_id).await;
+    }
     match answer {
         Ok(text) => {
             match &agent.incomplete {
@@ -905,12 +993,45 @@ async fn run_once(
     Ok(())
 }
 
+/// Closes what a root started, when its run or chat ends, and says what
+/// was kept and what it cost.
+async fn close_tree(sup: &ferrule_agents::Supervisor, root: &str) {
+    let spent: u64 = sup
+        .store()
+        .tree(root)
+        .map(|rows| rows.iter().map(|r| r.tokens).sum())
+        .unwrap_or(0);
+    match sup.close_tree(root).await {
+        Ok(closed) => {
+            let started = closed.ids.len().saturating_sub(1);
+            if started > 0 || spent > 0 {
+                println!("\x1b[90m[sub-agents: {started} closed, {spent} tokens]\x1b[0m");
+            }
+            for note in closed.notes {
+                println!("\x1b[90m[{note}]\x1b[0m");
+            }
+        }
+        Err(e) => eprintln!("\x1b[31mclosing the agents it started failed: {e}\x1b[0m"),
+    }
+}
+
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let mut agent = build_agent(provider, workspace, 60, &session_id, "chat").await?;
+    let (mut agent, sup) = build_root(provider, workspace, 60, &session_id, "chat").await?;
     println!("ferrule chat — Ctrl-D to exit. Session {session_id}");
     let stdin = std::io::stdin();
     loop {
+        // Reports from agents it started reach it with your next message.
+        if let Some(n) = sup
+            .as_ref()
+            .map(|s| s.pending(&session_id))
+            .filter(|n| *n > 0)
+        {
+            println!(
+                "\n\x1b[90m[{n} update{} from its agents; it sees them with your next message]\x1b[0m",
+                if n == 1 { "" } else { "s" }
+            );
+        }
         print!("\n\x1b[1;34myou>\x1b[0m ");
         std::io::stdout().flush()?;
         let mut line = String::new();
@@ -929,6 +1050,9 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
             },
             Err(e) => eprintln!("\x1b[31mrun failed: {e}\x1b[0m"),
         }
+    }
+    if let Some(sup) = &sup {
+        close_tree(sup, &session_id).await;
     }
     Ok(())
 }
@@ -959,6 +1083,53 @@ fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channe
     Ok(named_channels)
 }
 
+/// The agent factory the router runs chats and scheduled tasks with: each
+/// session's agent is the root of its own tree of sub-agents when
+/// `[agents]` allows them.
+async fn gateway_factory(
+    cfg: &config::Config,
+    provider: Option<String>,
+    workspace: PathBuf,
+    max_iterations: usize,
+) -> Result<(
+    ferrule_gateway::AgentFactory,
+    Option<Arc<ferrule_agents::Supervisor>>,
+)> {
+    let sandbox = shared_sandbox(cfg)?;
+    let workspace = workspace.canonicalize().unwrap_or(workspace);
+    let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await;
+    let ledger_sink = ledger::build_sink(cfg);
+    let sup = agents::supervisor(
+        cfg,
+        provider.clone(),
+        ledger_sink.clone(),
+        child_builder(max_iterations, mcp_tools.clone()),
+    )?;
+    let factory_sup = sup.clone();
+    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
+        let (shape, origin) = ledger::classify_session(session_id);
+        let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
+        let fail = |e: String| ferrule_gateway::GatewayError::Channel(e);
+        let agent = build_agent_from(
+            provider.clone(),
+            workspace.clone(),
+            max_iterations,
+            Some(transcript),
+            &mcp_tools,
+            tag,
+            None,
+        )
+        .map_err(|e| fail(e.to_string()))?;
+        match &factory_sup {
+            Some(sup) => sup
+                .attach_root(agent, session_id, &workspace)
+                .map_err(|e| fail(e.to_string())),
+            None => Ok(agent),
+        }
+    });
+    Ok((agent_factory, sup))
+}
+
 async fn run_gateway(
     provider: Option<String>,
     workspace: PathBuf,
@@ -967,24 +1138,8 @@ async fn run_gateway(
     let (cfg, _) = config::Config::load()?;
     let sessions_dir = config::data_dir()?.join("sessions");
 
-    let sandbox = shared_sandbox(&cfg)?;
-    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await;
-    let ledger_sink = ledger::build_sink(&cfg);
-    let factory_provider = provider;
-    let factory_workspace = workspace.clone();
-    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
-        let (shape, origin) = ledger::classify_session(session_id);
-        let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
-        build_agent_from(
-            factory_provider.clone(),
-            factory_workspace.clone(),
-            max_iterations,
-            Some(transcript),
-            &mcp_tools,
-            tag,
-        )
-        .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
-    });
+    let (agent_factory, sup) =
+        gateway_factory(&cfg, provider, workspace.clone(), max_iterations).await?;
 
     let named_channels = build_channels(&cfg)?;
     if named_channels.is_empty() {
@@ -1006,6 +1161,11 @@ async fn run_gateway(
         agent_factory,
         named_channels.clone(),
     ));
+    // A chat whose agents report while it's idle is run again, and its
+    // answer goes to the chat.
+    if let Some(sup) = &sup {
+        sup.set_waker(Arc::new(agents::RouterWaker(Arc::downgrade(&router))));
+    }
 
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     let scheduler = Arc::new(Scheduler::new(
@@ -1182,24 +1342,8 @@ async fn tasks_run_now(
         .get(id)?
         .ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
-    let sandbox = shared_sandbox(&cfg)?;
-    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await;
-    let ledger_sink = ledger::build_sink(&cfg);
-    let factory_provider = provider;
-    let factory_workspace = workspace.clone();
-    let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
-        let (shape, origin) = ledger::classify_session(session_id);
-        let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
-        build_agent_from(
-            factory_provider.clone(),
-            factory_workspace.clone(),
-            max_iterations,
-            Some(transcript),
-            &mcp_tools,
-            tag,
-        )
-        .map_err(|e| ferrule_gateway::GatewayError::Channel(e.to_string()))
-    });
+    let (agent_factory, sup) =
+        gateway_factory(&cfg, provider, workspace.clone(), max_iterations).await?;
 
     let named_channels = build_channels(&cfg)?;
     let router = Arc::new(Router::new(
@@ -1220,7 +1364,16 @@ async fn tasks_run_now(
         cfg.scheduler.gate_workspace.clone(),
     )?;
 
-    match scheduler.execute(&task).await {
+    let outcome = scheduler.execute(&task).await;
+    // Nothing is left behind to run in a process that's about to exit.
+    if let Some(sup) = &sup {
+        let root = ferrule_gateway::session::session_id(
+            ferrule_gateway::SCHEDULER_PSEUDO_CHANNEL,
+            &task.id,
+        );
+        close_tree(sup, &root).await;
+    }
+    match outcome {
         Ok(RunOutcome::Succeeded { answer }) => println!("succeeded:\n{answer}"),
         Ok(RunOutcome::Incomplete { answer, reason }) => {
             println!("incomplete ({reason}):\n{answer}")

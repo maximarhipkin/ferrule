@@ -1,0 +1,19 @@
+[package]
+name = "ferrule-agents"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-agent: spawn, wait, resume and close child agents; a shared board and task list; worktrees; limits"
+
+[dependencies]
+ferrule-core = { path = "../ferrule-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rusqlite = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

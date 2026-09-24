@@ -22,6 +22,7 @@ six-investigation synthesis that produced M14–M19.
 | **M9** | Never stuck: retries with backoff, a loop detector, a status answer at every limit, `verify_command` run by Ferrule itself. |
 | **M10** | MCP servers under the sandbox, `web_fetch` and MCP-over-HTTP through the credential proxy, a hardened system service as root, Chrome detection in `doctor`. |
 | **M11** | The browser: agent-browser's MCP server on an installed Chrome, in the sandbox, behind the proxy, driven for real in CI on Linux, macOS and Windows (`docs/browser.md`). |
+| **M12 p1–5** | Sub-agents: `spawn_agent`/`wait`/`resume`/`close`, a board and a task list, a worktree per child, a verifier on a snapshot, roles on their own providers, tree limits and budget (`docs/agents.md`). |
 
 ## Next, in order
 
@@ -82,7 +83,14 @@ handling needed nothing extra on macOS or Windows.
   into). `read` with a URL skips Chrome's proxy flags.
 - The `all` tool set exposes raw CDP.
 
-### M12 — multi-agent
+### M12 — multi-agent (parts 1–5 done)
+
+**Status.** Parts 1–5 are built (`docs/agents.md`): everything below
+except named long-lived agents, which wait on a decision about how a chat
+addresses one. The board and task list are SQLite in the data dir. After a
+restart, running agents are marked interrupted and a parent can
+`resume_agent` them. Checked on Linux; the macOS/Windows pass runs with
+the batch CI.
 
 **Goal.** One agent can hand work to others and keep going, and the owner can
 keep named agents running side by side, without any of them getting more
