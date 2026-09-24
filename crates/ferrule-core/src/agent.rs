@@ -3,6 +3,7 @@ use crate::event::AgentEvent;
 use crate::history::{result_ref, SEARCH_HISTORY};
 use crate::hooks::{Budget, Inbox, SessionRecall, StopFlag};
 use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink};
+use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
 use crate::message::{Message, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Provider};
@@ -141,6 +142,11 @@ enum StopReason {
     },
     /// A [`Budget`] said nothing more may be spent.
     Budget(String),
+    /// Stop hooks kept sending the run back past `max_stop_blocks`.
+    StopHook {
+        hook: String,
+        rounds: usize,
+    },
 }
 
 impl std::fmt::Display for StopReason {
@@ -161,6 +167,11 @@ impl std::fmt::Display for StopReason {
                 write!(f, "`{check}` still fails after {rounds} of fixes")
             }
             StopReason::Budget(why) => f.write_str(why),
+            StopReason::StopHook { hook, rounds } => write!(
+                f,
+                "the Stop hook `{hook}` still blocks after {rounds} tr{}",
+                if *rounds == 1 { "y" } else { "ies" }
+            ),
         }
     }
 }
@@ -184,7 +195,11 @@ pub struct Agent {
     tool_ctx: ToolContext,
     transcript: Option<Transcript>,
     ledger: Option<LedgerContext>,
-    verifier: Option<Arc<dyn Verifier>>,
+    /// Lifecycle hooks, the built-in check among them (see
+    /// [`crate::lifecycle`]).
+    hooks: HookSet,
+    /// SessionStart fired (it fires once per agent).
+    started: bool,
     budget: Option<Arc<dyn Budget>>,
     inbox: Option<Arc<dyn Inbox>>,
     stop: Option<StopFlag>,
@@ -219,7 +234,8 @@ impl Agent {
             tool_ctx,
             transcript,
             ledger: None,
-            verifier: None,
+            hooks: HookSet::default(),
+            started: false,
             budget: None,
             inbox: None,
             stop: None,
@@ -259,10 +275,25 @@ impl Agent {
     }
 
     /// Check the work before a run that changed files may finish; see
-    /// [`Verifier`].
+    /// [`Verifier`]. It's the built-in Stop hook, ahead of every other.
     pub fn with_verifier(mut self, verifier: Arc<dyn Verifier>) -> Self {
-        self.verifier = Some(verifier);
+        self.hooks.add_check(verifier);
         self
+    }
+
+    /// Fire `hooks` at their lifecycle events; see [`crate::lifecycle`].
+    pub fn with_hooks(mut self, hooks: HookSet) -> Self {
+        self.add_hooks(hooks);
+        self
+    }
+
+    /// [`Agent::with_hooks`] after construction.
+    pub fn add_hooks(&mut self, hooks: HookSet) {
+        self.hooks.merge(hooks);
+    }
+
+    pub fn hooks(&self) -> &HookSet {
+        &self.hooks
     }
 
     /// Charge every provider call to `budget` and stop, with a status
@@ -338,6 +369,97 @@ impl Agent {
                     .map(|s| s.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "ephemeral".into())
+    }
+
+    /// A hook payload's common part for this agent.
+    fn hook_input(&self) -> HookInput {
+        self.hooks.input(
+            &self.session_id(),
+            self.transcript.as_ref().map(|t| t.path().to_path_buf()),
+            self.tool_ctx.workspace.clone(),
+        )
+    }
+
+    /// Fires `event`'s hooks (not the built-in check) and shows the owner
+    /// each run.
+    async fn fire(
+        &self,
+        tx: &mpsc::Sender<AgentEvent>,
+        event: HookEvent,
+        input: HookInput,
+    ) -> Fired {
+        if !self.hooks.has(event) {
+            return Fired::default();
+        }
+        let fired = self.hooks.fire(event, input, &self.tool_ctx).await;
+        for r in &fired.reports {
+            if let Some(error) = &r.error {
+                warn!(event = %r.event, command = %r.command, "hook failed: {error}");
+            }
+            self.emit(
+                tx,
+                AgentEvent::HookFinished {
+                    event: r.event.name().to_string(),
+                    source: r.source.name().to_string(),
+                    command: r.command.clone(),
+                    blocked: r.blocked,
+                    exit_code: r.exit_code,
+                    duration_ms: r.duration.as_millis() as u64,
+                    error: r.error.clone(),
+                },
+            )
+            .await;
+        }
+        fired
+    }
+
+    /// Runs the built-in checks in order: the first that fails, with its
+    /// output. They keep the verify events of before hooks.
+    async fn run_checks(&self, tx: &mpsc::Sender<AgentEvent>) -> Option<(String, String)> {
+        let checks: Vec<Hook> = self
+            .hooks
+            .hooks()
+            .iter()
+            .filter(|h| h.check)
+            .cloned()
+            .collect();
+        let mut input = self.hook_input();
+        input.files_changed = Some(true);
+        for (i, hook) in checks.iter().enumerate() {
+            let check = hook.command();
+            self.emit(
+                tx,
+                AgentEvent::VerifyStarted {
+                    check: check.clone(),
+                },
+            )
+            .await;
+            let (verdict, _) = self.hooks.run_hook(hook, &input, &self.tool_ctx).await;
+            let failed = match verdict {
+                Verdict::Block { reason } => Some(reason),
+                _ => None,
+            };
+            self.emit(
+                tx,
+                AgentEvent::VerifyFinished {
+                    check: check.clone(),
+                    ok: failed.is_none(),
+                },
+            )
+            .await;
+            if let Some(output) = failed {
+                self.hooks.skip(&checks[i + 1..], &input);
+                return Some((check, output));
+            }
+        }
+        None
+    }
+
+    /// Fires SessionEnd: `ferrule run` finished or `ferrule chat` exited.
+    pub async fn end_session(&self, reason: &str, tx: &mpsc::Sender<AgentEvent>) {
+        let mut input = self.hook_input();
+        input.reason = Some(reason.to_string());
+        self.fire(tx, HookEvent::SessionEnd, input).await;
     }
 
     /// Time a `provider.complete()` call and, if a ledger sink is attached,
@@ -497,16 +619,72 @@ impl Agent {
         )
         .await;
         self.recall_for(goal).await;
+        let session_note = if self.started {
+            None
+        } else {
+            self.started = true;
+            let resumed = self
+                .messages
+                .iter()
+                .any(|m| m.role == crate::message::Role::User);
+            let mut input = self.hook_input();
+            input.source = Some(if resumed { "resume" } else { "startup" }.into());
+            self.fire(&tx, HookEvent::SessionStart, input).await.context
+        };
+        let mut input = self.hook_input();
+        input.prompt = Some(goal.to_string());
+        let submitted = self.fire(&tx, HookEvent::UserPromptSubmit, input).await;
+        if let Some((_, reason)) = submitted.block {
+            // The request never enters the history.
+            if let Some(note) = session_note {
+                self.push(Message::user(format!("[hook: SessionStart]\n{note}")));
+            }
+            let why = format!("a UserPromptSubmit hook blocked the request: {reason}");
+            warn!(%why, "not running the request");
+            self.incomplete = Some(why.clone());
+            let answer = format!("Blocked by a hook: {reason}");
+            self.emit(
+                &tx,
+                AgentEvent::AssistantText {
+                    text: answer.clone(),
+                },
+            )
+            .await;
+            self.emit(
+                &tx,
+                AgentEvent::RunIncomplete {
+                    reason: why,
+                    iterations: 0,
+                },
+            )
+            .await;
+            return Ok(answer);
+        }
         self.goal = Some(goal.to_string());
         self.incomplete = None;
         self.push(Message::user(goal));
+        for (event, note) in [
+            (HookEvent::SessionStart, session_note),
+            (HookEvent::UserPromptSubmit, submitted.context),
+        ] {
+            if let Some(note) = note {
+                self.push(Message::user(format!("[hook: {event}]\n{note}")));
+            }
+        }
 
         let mut steps: Vec<Step> = Vec::new();
         let mut nudged = false;
         // A tool that changes files succeeded, so the check has to pass
         // before the run may finish.
         let mut unverified = false;
+        // Files changed since the check last passed (a Stop hook can send
+        // the model back after a pass; the check reruns only on new edits).
+        let mut needs_check = false;
         let mut failed_checks = 0;
+        // Times Stop hooks sent this run back, and whether the last finish
+        // was sent back by any (the payload's `stop_hook_active`).
+        let mut stop_blocks = 0;
+        let mut sent_back = false;
 
         for iteration in 0..self.config.max_iterations {
             if self.stopped() {
@@ -540,25 +718,8 @@ impl Agent {
             self.push(msg.clone());
 
             if finished {
-                if let Some(verifier) = self.verifier.clone().filter(|_| unverified) {
-                    let check = verifier.describe();
-                    self.emit(
-                        &tx,
-                        AgentEvent::VerifyStarted {
-                            check: check.clone(),
-                        },
-                    )
-                    .await;
-                    let result = verifier.verify(&self.tool_ctx).await;
-                    self.emit(
-                        &tx,
-                        AgentEvent::VerifyFinished {
-                            check: check.clone(),
-                            ok: result.is_ok(),
-                        },
-                    )
-                    .await;
-                    if let Err(output) = result {
+                if needs_check {
+                    if let Some((check, output)) = self.run_checks(&tx).await {
                         failed_checks += 1;
                         if failed_checks > self.config.max_verify_rounds {
                             let reason = StopReason::VerifyFailing {
@@ -567,12 +728,31 @@ impl Agent {
                             };
                             return self.wrap_up(&tx, iteration + 1, reason).await;
                         }
+                        sent_back = true;
                         self.push(Message::user(format!(
                             "[ferrule] `{check}` fails, so this isn't done yet. Fix what it reports, then finish again; \
                              it runs again when you do.\n\n{output}"
                         )));
                         continue;
                     }
+                    needs_check = false;
+                }
+                let mut input = self.hook_input();
+                input.stop_hook_active = Some(sent_back);
+                input.files_changed = Some(unverified);
+                input.last_assistant_message = msg.content.clone();
+                if let Some((hook, reason)) = self.fire(&tx, HookEvent::Stop, input).await.block {
+                    stop_blocks += 1;
+                    let rounds = self.hooks.limits.max_stop_blocks;
+                    if stop_blocks > rounds {
+                        let reason = StopReason::StopHook { hook, rounds };
+                        return self.wrap_up(&tx, iteration + 1, reason).await;
+                    }
+                    sent_back = true;
+                    self.push(Message::user(format!(
+                        "[hook: Stop] This isn't done yet:\n\n{reason}"
+                    )));
+                    continue;
                 }
                 let answer = msg.content.unwrap_or_default();
                 self.emit(
@@ -608,19 +788,43 @@ impl Agent {
                 )
                 .await;
 
-                let result = self
-                    .tools
-                    .call(&call.name, call.arguments.clone(), &self.tool_ctx)
-                    .await;
-                let (content, ok) = match result {
-                    Ok(out) => (out.content, true),
-                    Err(e) => (format!("error: {e}"), false),
+                let mut input = self.hook_input();
+                input.tool_name = Some(call.name.clone());
+                input.tool_input = Some(call.arguments.clone());
+                input.tool_use_id = Some(call.id.clone());
+                let pre = self.fire(&tx, HookEvent::PreToolUse, input.clone()).await;
+                let (raw, ok) = if let Some((_, reason)) = &pre.block {
+                    (
+                        format!("error: not run: a PreToolUse hook blocked it: {reason}"),
+                        false,
+                    )
+                } else {
+                    let result = self
+                        .tools
+                        .call(&call.name, call.arguments.clone(), &self.tool_ctx)
+                        .await;
+                    match result {
+                        Ok(out) => (out.content, true),
+                        Err(e) => (format!("error: {e}"), false),
+                    }
                 };
                 if !ok {
                     warn!(tool = %call.name, "tool call failed");
                 }
                 if ok && self.tools.changes_files(&call.name) {
                     unverified = true;
+                    needs_check = true;
+                }
+                let mut content = raw.clone();
+                if let Some(note) = &pre.context {
+                    content.push_str(&format!("\n\n[hook: PreToolUse] {note}"));
+                }
+                if pre.block.is_none() {
+                    input.tool_response = Some(serde_json::json!({"ok": ok, "content": raw}));
+                    let post = self.fire(&tx, HookEvent::PostToolUse, input).await;
+                    for note in post.context.iter().chain(post.block.iter().map(|b| &b.1)) {
+                        content.push_str(&format!("\n\n[hook: PostToolUse] {note}"));
+                    }
                 }
                 self.emit(
                     &tx,
@@ -633,7 +837,7 @@ impl Agent {
                 )
                 .await;
 
-                steps.push(Step::new(&call.name, &call.arguments, &content, ok));
+                steps.push(Step::new(&call.name, &call.arguments, &raw, ok));
                 self.push(Message::tool_result(&call.id, content));
             }
 
@@ -875,6 +1079,10 @@ impl Agent {
             .collect::<Vec<_>>()
             .join("\n\n");
 
+        let mut input = self.hook_input();
+        input.trigger = Some("auto".into());
+        self.fire(tx, HookEvent::PreCompact, input.clone()).await;
+
         let summary_req = CompletionRequest {
             messages: vec![Message::user(format!(
                 "{COMPACTION_TEMPLATE}{transcript_text}"
@@ -943,6 +1151,9 @@ impl Agent {
             let _ = t.log_event(&format!(
                 "compacted: {folded} messages, {before} -> {after} est tokens"
             ));
+        }
+        if let Some(note) = self.fire(tx, HookEvent::PostCompact, input).await.context {
+            self.push(Message::user(format!("[hook: PostCompact]\n{note}")));
         }
         Ok(())
     }
@@ -2501,5 +2712,373 @@ mod tests {
         assert!(!agent.has_tool("other"));
         agent.register_tool(Arc::new(Other));
         assert!(agent.has_tool("other"));
+    }
+
+    // ---- M18: lifecycle hooks in the loop ----
+
+    type HookFn = dyn Fn(&HookInput) -> crate::lifecycle::HookRun + Send + Sync;
+
+    /// A hook whose command is a closure; keeps every payload it got.
+    struct FnHook {
+        name: &'static str,
+        f: Box<HookFn>,
+        seen: Mutex<Vec<HookInput>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::lifecycle::HookHandler for FnHook {
+        fn command(&self) -> String {
+            self.name.into()
+        }
+        async fn run(&self, input: &HookInput, _ctx: &ToolContext) -> crate::lifecycle::HookRun {
+            self.seen.lock().unwrap().push(input.clone());
+            (self.f)(input)
+        }
+    }
+
+    fn fn_hook(
+        name: &'static str,
+        f: impl Fn(&HookInput) -> crate::lifecycle::HookRun + Send + Sync + 'static,
+    ) -> Arc<FnHook> {
+        Arc::new(FnHook {
+            name,
+            f: Box::new(f),
+            seen: Mutex::default(),
+        })
+    }
+
+    fn exit(code: i32, stdout: &str, stderr: &str) -> crate::lifecycle::HookRun {
+        crate::lifecycle::HookRun {
+            exit_code: Some(code),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            ..Default::default()
+        }
+    }
+
+    fn hook_set(hooks: Vec<(HookEvent, Option<&str>, Arc<FnHook>)>) -> HookSet {
+        let mut set = HookSet::new();
+        for (event, matcher, handler) in hooks {
+            set.add(Hook::new(
+                event,
+                crate::lifecycle::Matcher::parse(matcher),
+                crate::lifecycle::HookSource::User,
+                handler,
+            ));
+        }
+        set
+    }
+
+    /// Counts its calls: proof a blocked call never ran.
+    #[derive(Default)]
+    struct CountTool(Mutex<usize>);
+
+    #[async_trait::async_trait]
+    impl Tool for CountTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "echo".into(),
+                description: "counts".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn call(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput, CoreError> {
+            *self.0.lock().unwrap() += 1;
+            Ok(ToolOutput::ok("ran"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pre_tool_use_block_refuses_the_call_and_tells_the_model_why() {
+        let guard = fn_hook("guard", |_| exit(2, "", "no echo in this repo\n"));
+        let (agent, provider) = seeing_agent(vec![echo("x"), say("ok, I won't")], |_| {});
+        let counter = Arc::new(CountTool::default());
+        let mut agent = agent.with_hooks(hook_set(vec![(
+            HookEvent::PreToolUse,
+            Some("echo"),
+            guard.clone(),
+        )]));
+        agent.register_tool(counter.clone());
+        let (tx, mut rx) = events();
+        assert_eq!(agent.run("go", tx).await.unwrap(), "ok, I won't");
+        assert_eq!(*counter.0.lock().unwrap(), 0, "the tool never ran");
+        let seen = provider.seen.lock().unwrap();
+        let result = seen[1].last().unwrap().content.clone().unwrap();
+        assert_eq!(
+            result,
+            "error: not run: a PreToolUse hook blocked it: no echo in this repo"
+        );
+        let input = &guard.seen.lock().unwrap()[0];
+        assert_eq!(input.hook_event_name, "PreToolUse");
+        assert_eq!(input.tool_name.as_deref(), Some("echo"));
+        assert_eq!(input.tool_input, Some(serde_json::json!({"text": "x"})));
+        let ev = drain(&mut rx);
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            AgentEvent::HookFinished { event, blocked: true, .. } if event == "PreToolUse"
+        )));
+        assert!(ev
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallFinished { ok: false, .. })));
+    }
+
+    #[tokio::test]
+    async fn notes_are_appended_after_the_prompt_and_to_tool_results_only() {
+        let start = fn_hook("start", |_| exit(0, "branch: main", ""));
+        let prompt = fn_hook("prompt", |_| exit(0, "the user is on call", ""));
+        let post = fn_hook("post", |i| {
+            let ok = i.tool_response.as_ref().unwrap()["ok"] == true;
+            exit(
+                0,
+                &format!(
+                    r#"{{"hookSpecificOutput":{{"additionalContext":"lint clean, ok={ok}"}}}}"#
+                ),
+                "",
+            )
+        });
+        let (agent, provider) = seeing_agent(vec![echo("hi"), say("done"), say("again")], |_| {});
+        let mut agent = agent.with_system_prompt("SYSTEM").with_hooks(hook_set(vec![
+            (HookEvent::SessionStart, None, start.clone()),
+            (HookEvent::UserPromptSubmit, None, prompt.clone()),
+            (HookEvent::PostToolUse, Some("ech*"), post.clone()),
+        ]));
+        let (tx, _rx) = events();
+        agent.run("first", tx.clone()).await.unwrap();
+        agent.run("second", tx).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let texts = |i: usize| -> Vec<String> {
+            seen[i]
+                .iter()
+                .map(|m| m.content.clone().unwrap_or_default())
+                .collect()
+        };
+        assert_eq!(
+            texts(0),
+            [
+                "SYSTEM",
+                "first",
+                "[hook: SessionStart]\nbranch: main",
+                "[hook: UserPromptSubmit]\nthe user is on call"
+            ]
+        );
+        assert_eq!(
+            texts(1).last().unwrap(),
+            "hi\n\n[hook: PostToolUse] lint clean, ok=true"
+        );
+        // Each request extends the one before: the cached prefix holds.
+        for i in 1..seen.len() {
+            assert_eq!(seen[i][..seen[i - 1].len()].len(), seen[i - 1].len());
+            for (a, b) in seen[i - 1].iter().zip(&seen[i]) {
+                assert_eq!(a.content, b.content);
+            }
+        }
+        // SessionStart once per agent; the prompt hook once per request.
+        assert_eq!(start.seen.lock().unwrap().len(), 1);
+        assert_eq!(
+            start.seen.lock().unwrap()[0].source.as_deref(),
+            Some("startup")
+        );
+        let prompts: Vec<Option<String>> = prompt
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|i| i.prompt.clone())
+            .collect();
+        assert_eq!(prompts, [Some("first".into()), Some("second".into())]);
+    }
+
+    #[tokio::test]
+    async fn a_blocked_prompt_never_reaches_the_model() {
+        let gate = fn_hook("gate", |i| {
+            if i.prompt.as_deref().unwrap_or_default().contains("secret") {
+                exit(
+                    0,
+                    r#"{"decision":"block","reason":"that looks like a key"}"#,
+                    "",
+                )
+            } else {
+                exit(0, "", "")
+            }
+        });
+        // An empty script: any model call would panic.
+        let mut agent = make_agent(vec![]).with_hooks(hook_set(vec![(
+            HookEvent::UserPromptSubmit,
+            None,
+            gate,
+        )]));
+        let (tx, _rx) = events();
+        let answer = agent.run("here is my secret sk-123", tx).await.unwrap();
+        assert_eq!(answer, "Blocked by a hook: that looks like a key");
+        assert!(agent.incomplete.is_some());
+        assert!(agent.messages.iter().all(|m| !m
+            .content
+            .as_deref()
+            .unwrap_or_default()
+            .contains("sk-123")));
+    }
+
+    #[tokio::test]
+    async fn a_stop_hook_that_always_blocks_is_capped() {
+        let nag = fn_hook("nag", |_| exit(2, "", "write the changelog first"));
+        let script = vec![
+            say("done"),
+            say("done 2"),
+            say("done 3"),
+            say("done 4"),
+            say("Stopped: the Stop hook keeps blocking."),
+        ];
+        let mut agent =
+            make_agent(script).with_hooks(hook_set(vec![(HookEvent::Stop, None, nag.clone())]));
+        let (tx, _rx) = events();
+        let answer = agent.run("do it", tx).await.unwrap();
+        assert_eq!(answer, "Stopped: the Stop hook keeps blocking.");
+        assert_eq!(
+            agent.incomplete.as_deref(),
+            Some("the Stop hook `nag` still blocks after 3 tries")
+        );
+        let active: Vec<Option<bool>> = nag
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|i| i.stop_hook_active)
+            .collect();
+        assert_eq!(active, [Some(false), Some(true), Some(true), Some(true)]);
+        assert_eq!(
+            nag.seen.lock().unwrap()[0]
+                .last_assistant_message
+                .as_deref(),
+            Some("done")
+        );
+        let told = agent
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content.as_deref()
+                    == Some("[hook: Stop] This isn't done yet:\n\nwrite the changelog first")
+            })
+            .count();
+        assert_eq!(told, 3);
+    }
+
+    #[tokio::test]
+    async fn the_check_runs_before_stop_hooks_and_has_its_own_cap() {
+        let verifier = check(vec![Err("1 failed".into()), Ok(())]);
+        let once = Arc::new(Mutex::new(false));
+        let flag = once.clone();
+        let stop = fn_hook("stop", move |_| {
+            let mut blocked = flag.lock().unwrap();
+            if *blocked {
+                exit(0, "", "")
+            } else {
+                *blocked = true;
+                exit(2, "", "update the docs")
+            }
+        });
+        let script = vec![echo("edit"), say("done"), say("fixed"), say("docs too")];
+        let config = AgentConfig {
+            max_verify_rounds: 1,
+            ..Default::default()
+        };
+        let mut agent = agent_with(script, config)
+            .with_hooks(hook_set(vec![(HookEvent::Stop, None, stop.clone())]))
+            .with_verifier(verifier.clone());
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("fix", tx).await.unwrap(), "docs too");
+        assert_eq!(agent.incomplete, None);
+        assert_eq!(*verifier.runs.lock().unwrap(), 2);
+        // The user hook only ran once the check passed.
+        let seen = stop.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].stop_hook_active, Some(true));
+        assert_eq!(seen[0].files_changed, Some(true));
+        assert!(agent.hooks().hooks()[0].check, "the check goes first");
+    }
+
+    #[tokio::test]
+    async fn a_failing_hook_is_the_owners_problem_not_the_models() {
+        let broken = fn_hook("broken", |_| exit(1, "", "python: not found"));
+        let (agent, provider) = seeing_agent(vec![echo("x"), say("done")], |_| {});
+        let mut agent = agent.with_hooks(hook_set(vec![
+            (HookEvent::PreToolUse, None, broken.clone()),
+            (HookEvent::PostToolUse, None, broken.clone()),
+            (HookEvent::Stop, None, broken.clone()),
+        ]));
+        let (tx, mut rx) = events();
+        assert_eq!(agent.run("go", tx).await.unwrap(), "done");
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen[1].last().unwrap().content.as_deref(), Some("x"));
+        let errors: Vec<String> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                AgentEvent::HookFinished { error, .. } => error,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 3);
+        assert_eq!(errors[0], "exit code 1: python: not found");
+    }
+
+    #[tokio::test]
+    async fn compaction_fires_its_hooks_and_the_note_comes_after() {
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 1_000;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 0.1;
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            ..Default::default()
+        };
+        let pre = fn_hook("pre", |_| exit(0, "", ""));
+        let post = fn_hook("post", |_| {
+            exit(0, r#"{"additionalContext":"re-read NOTES.md"}"#, "")
+        });
+        let mut agent = Agent::new(
+            provider,
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_hooks(hook_set(vec![
+            (HookEvent::PreCompact, Some("auto"), pre.clone()),
+            (HookEvent::PostCompact, None, post.clone()),
+        ]));
+        agent
+            .messages
+            .extend((0..5).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50)))));
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        assert_eq!(pre.seen.lock().unwrap().len(), 1);
+        assert_eq!(pre.seen.lock().unwrap()[0].trigger.as_deref(), Some("auto"));
+        assert_eq!(
+            agent.messages.last().unwrap().content.as_deref(),
+            Some("[hook: PostCompact]\nre-read NOTES.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_end_fires_with_its_reason() {
+        let end = fn_hook("end", |_| exit(0, "", ""));
+        let agent = make_agent(vec![]).with_hooks(hook_set(vec![(
+            HookEvent::SessionEnd,
+            None,
+            end.clone(),
+        )]));
+        let (tx, _rx) = events();
+        agent.end_session("exit", &tx).await;
+        let seen = end.seen.lock().unwrap();
+        assert_eq!(seen[0].reason.as_deref(), Some("exit"));
+        assert_eq!(seen[0].session_id, "ephemeral");
     }
 }
