@@ -220,7 +220,7 @@ than it looks (symlinks, `cd`, relative paths).
 **What it can't catch, by design:** anything a program does that the
 command line doesn't show. A script file (`./clean.sh`, `make clean`,
 `npm run reset`), an interpreter (`python -c 'shutil.rmtree(…)'`,
-`node -e`), a variable as the command (`$CMD`), `eval`, a decoded
+`node -e`), a variable as the command (`$CMD`), `eval "$x"` (a literal `eval '…'` is read), a decoded
 payload piped into `sh`, an alias, a git hook, an MCP tool (they don't
 go through the shell), `write_file` blanking a file. The classifier is a
 speed bump for the honest mistake, not a boundary: the OS sandbox (M6)

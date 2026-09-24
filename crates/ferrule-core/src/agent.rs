@@ -467,6 +467,7 @@ impl Agent {
             error_message,
             cost_usd: None,
             eval: None,
+            tree: None,
         };
         ledger.sink.record(record);
     }

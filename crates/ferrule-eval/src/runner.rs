@@ -510,6 +510,7 @@ fn finish(p: RunOne<'_>, mut tag: EvalTag, mut result: TaskResult, started: Inst
         error_message: result.stopped_early.clone(),
         cost_usd: None,
         eval: Some(tag),
+        tree: None,
     });
     result
 }

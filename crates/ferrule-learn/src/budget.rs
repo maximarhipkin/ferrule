@@ -198,6 +198,7 @@ pub fn row(
         error_message: error.map(str::to_string),
         cost_usd: None,
         eval: None,
+        tree: None,
     }
 }
 
