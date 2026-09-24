@@ -52,6 +52,8 @@ struct SuiteHeader {
     context_window: Option<usize>,
     #[serde(default)]
     check: Option<String>,
+    #[serde(default)]
+    owner_playbook: bool,
 }
 
 fn default_max_iterations() -> usize {
@@ -74,6 +76,9 @@ pub struct Suite {
     pub max_iterations: usize,
     pub timeout_secs: u64,
     pub context_window: Option<usize>,
+    /// M16: the engineered variant gets the owner's playbook. Off by
+    /// default, so a run doesn't depend on one machine's lessons.
+    pub owner_playbook: bool,
     pub tasks: Vec<Task>,
 }
 
@@ -197,6 +202,7 @@ impl Suite {
             max_iterations: h.max_iterations,
             timeout_secs: h.timeout_secs,
             context_window: h.context_window,
+            owner_playbook: h.owner_playbook,
             tasks,
         })
     }

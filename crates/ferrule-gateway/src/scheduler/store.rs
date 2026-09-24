@@ -337,7 +337,7 @@ impl TaskStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, task_id, started_at, finished_at, status, detail FROM runs
-             WHERE task_id = ?1 ORDER BY started_at DESC LIMIT ?2",
+             WHERE task_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![task_id, limit as i64], row_to_run)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -509,5 +509,21 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].id, "r3");
         assert_eq!(runs[1].id, "r2");
+    }
+
+    #[test]
+    fn runs_started_in_the_same_second_come_back_newest_first() {
+        let store = TaskStore::in_memory().unwrap();
+        store
+            .add(sample("t1"), "id-1".into(), 0, Some(100))
+            .unwrap();
+        for run_id in ["zz-older", "aa-newer"] {
+            store.start_run("id-1", run_id, 100).unwrap();
+            store
+                .finish_run(run_id, RunStatus::Succeeded, None, 100)
+                .unwrap();
+        }
+        let runs = store.runs_for("id-1", 2).unwrap();
+        assert_eq!(runs[0].id, "aa-newer");
     }
 }

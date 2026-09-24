@@ -130,6 +130,7 @@ fn env(provider: Scripted, rows: Arc<Rows>) -> Env {
         pricing: None,
         transcripts: None,
         judge: None,
+        playbook: None,
     }
 }
 
@@ -593,4 +594,61 @@ fn the_dry_run_counts_one_judge_call_per_rubric_run() {
     // 3 tasks × 2 variants × 2 repeats.
     assert_eq!(judged, plain + 12, "{text}");
     assert!(text.contains("graders: rubric;"), "{text}");
+}
+
+/// Writes whether the owner's lesson reached its system prompt.
+fn playbook_script(t: &Turn<'_>) -> Message {
+    match t.step {
+        0 => {
+            let sys = t.req.messages[0].content.as_deref().unwrap_or("");
+            let seen = if sys.contains("LESSON-7Q") {
+                "seen"
+            } else {
+                "unseen"
+            };
+            call("write_file", json!({"path": "out.txt", "content": seen}))
+        }
+        _ => done(),
+    }
+}
+
+const PLAYBOOK_SUITE: &str = r#"
+[suite]
+name = "pb"
+{OPT}
+
+[[task]]
+id = "look"
+prompt = "Do the task."
+[task.grade]
+command = 'test "$(cat out.txt)" = seen'
+"#;
+
+/// M16 §9: the owner's playbook reaches only the engineered variant, and
+/// only in a suite that opts in.
+#[tokio::test]
+async fn the_owner_playbook_reaches_eval_only_when_the_suite_opts_in() {
+    for (opt, engineered) in [
+        ("", Outcome::Fail),
+        ("owner_playbook = true", Outcome::Pass),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let s = suite(dir.path(), &PLAYBOOK_SUITE.replace("{OPT}", opt));
+        let mut env = env(
+            Scripted::new(usage(100, 10), playbook_script),
+            Arc::new(Rows::default()),
+        );
+        env.playbook = Some("[Playbook]\n- [pb-1] LESSON-7Q: check twice.".into());
+        let run = run_suite(
+            &s,
+            &env,
+            &opts(work.path(), vec![Variant::Engineered, Variant::Naive]),
+        )
+        .await
+        .unwrap();
+        let get = |v: Variant| run.results.iter().find(|r| r.variant == v).unwrap().outcome;
+        assert_eq!(get(Variant::Engineered), engineered, "opt-in `{opt}`");
+        assert_eq!(get(Variant::Naive), Outcome::Fail, "naive never sees it");
+    }
 }
