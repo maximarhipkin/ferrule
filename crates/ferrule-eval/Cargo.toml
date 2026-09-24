@@ -1,0 +1,23 @@
+[package]
+name = "ferrule-eval"
+version = "0.1.0"
+edition = "2021"
+description = "ferrule eval: task suites, fixtures, graders, the naive/engineered A/B and its reports"
+
+[dependencies]
+ferrule-core = { path = "../ferrule-core" }
+ferrule-tools = { path = "../ferrule-tools" }
+ferrule-sandbox = { path = "../ferrule-sandbox" }
+ferrule-skills = { path = "../ferrule-skills" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
