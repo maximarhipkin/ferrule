@@ -169,6 +169,26 @@ pub struct Config {
     /// M19: spending caps, the kill switch and the approval gates.
     #[serde(default)]
     pub trust: ferrule_trust::TrustConfig,
+    /// M19b: the gateway's watchdogs, restart notice and heartbeat.
+    #[serde(default)]
+    pub health: HealthConfig,
+}
+
+/// `[health]` (docs/m19b-reliability.md).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HealthConfig {
+    /// A polling channel (Telegram) with no successful poll for this long
+    /// is stale: `/status` says so.
+    pub poll_stale_secs: u64,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            poll_stale_secs: 300,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -400,6 +420,10 @@ profile = "openai"
 # approval_timeout_secs = 600 # No answer refuses the command.
 # plan_timeout_secs = 3600
 # gates = true               # Ask before rm -rf, force pushes, DELETE to a bound host.
+#
+# [health]                   # M19b (docs/m19b-reliability.md): the gateway is
+#                            # never silently deaf. /status answers from any chat.
+# poll_stale_secs = 300      # Telegram with no ok poll this long counts as stale.
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).

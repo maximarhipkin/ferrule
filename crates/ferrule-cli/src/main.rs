@@ -4,6 +4,7 @@ mod config;
 mod config_follow;
 mod doctor;
 mod eval;
+mod health;
 mod hooks_cli;
 mod learn;
 mod ledger;
@@ -120,6 +121,9 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         max_iterations: usize,
     },
+    /// What the running gateway is doing: turns, spend, schedule, channels
+    /// and recent errors (the same report `/status` answers in a chat)
+    Status,
     /// Scheduled task management (cron / one-shot agent turns)
     Tasks {
         #[command(subcommand)]
@@ -312,9 +316,19 @@ enum ConfigCmd {
 /// Sync on purpose: `--config` and the secrets file go into the environment
 /// before the runtime starts any thread, since `set_var` isn't thread-safe.
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
+    // Printed as RUST_LOG says; warnings and errors are also kept for
+    // the gateway's `/status` (M19b).
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+        )
+        .with(
+            health::RingLayer(ferrule_gateway::RecentLog::global())
+                .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+        )
         .init();
 
     let cli = Cli::parse();
@@ -444,6 +458,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             max_iterations,
         } => {
             run_gateway(provider, workspace, max_iterations).await?;
+        }
+        Cmd::Status => {
+            if !health::status_cmd()? {
+                std::process::exit(1);
+            }
         }
         Cmd::Tasks { op } => {
             tasks_cmd(op).await?;
@@ -1395,6 +1414,13 @@ async fn run_gateway(
     // M19: the owner's warnings and questions go out through Telegram, and
     // the scheduler waits while the kill switch is on.
     let hub = trust::hub(&cfg)?;
+    let health = Arc::new(health::build(
+        &cfg,
+        hub.clone(),
+        TaskStore::open(config::data_dir()?.join("tasks.db"))
+            .ok()
+            .map(Arc::new),
+    )?);
     hub.set_notifier(
         telegram
             .clone()
@@ -1417,10 +1443,13 @@ async fn run_gateway(
         telegram,
         workspace.canonicalize().unwrap_or(workspace),
     );
-    let mut gateway = Gateway::new(router).with_interceptor(Arc::new(trust::OwnerDoor {
-        hub,
-        plan: Some(plan),
-    }));
+    let mut gateway = Gateway::new(router)
+        .with_health(health.clone())
+        .with_redactor(Arc::new(health::redactor(&cfg)))
+        .with_interceptor(Arc::new(trust::OwnerDoor {
+            hub,
+            plan: Some(plan),
+        }));
     for channel in adapters {
         gateway.add_channel(channel);
     }
@@ -1431,6 +1460,7 @@ async fn run_gateway(
     // comment); once the gateway is done there is nothing left to serve, so
     // it's stopped explicitly rather than left dangling.
     scheduler_handle.abort();
+    health.shutdown();
     result?;
     Ok(())
 }

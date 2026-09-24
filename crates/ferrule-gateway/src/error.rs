@@ -16,6 +16,8 @@ pub enum GatewayError {
     LaneClosed(String),
     #[error("{0} not supported by this channel")]
     Unsupported(&'static str),
+    #[error("session `{0}` has too many messages waiting")]
+    QueueFull(String),
     #[error("channel error: {0}")]
     Channel(String),
 }

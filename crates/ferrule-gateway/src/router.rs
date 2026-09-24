@@ -225,6 +225,23 @@ impl Router {
         sent.map_err(|_| GatewayError::SessionClosed(sid))
     }
 
+    /// Like [`Router::dispatch`], but never waits: a lane whose queue is
+    /// full refuses the message (`QueueFull`), so the gateway's dispatcher
+    /// stays free for `/status` and `/stop` while a turn hangs.
+    pub fn offer(&self, msg: InboundMessage) -> Result<(), GatewayError> {
+        let sid = session::session_id(&msg.channel, &msg.chat_id);
+        let (tx, state) = self.lane_for(&sid, &msg)?;
+        state.lock().unwrap().queued += 1;
+        let sent = tx.try_send(LaneJob { msg, reply: None });
+        if sent.is_err() {
+            state.lock().unwrap().queued -= 1;
+        }
+        sent.map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => GatewayError::QueueFull(sid),
+            mpsc::error::TrySendError::Closed(_) => GatewayError::SessionClosed(sid),
+        })
+    }
+
     /// Enqueue an inbound message and await the agent turn's own result:
     /// `Ok(reply)` when the run answered (a run that stopped early answers
     /// with a status, marked in `Reply::incomplete`), `Err` (carrying the
@@ -323,9 +340,10 @@ impl Router {
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0),
         };
+        lane.state.lock().unwrap().queued += 1;
         let sent = lane.tx.try_send(LaneJob { msg, reply: None }).is_ok();
-        if sent {
-            lane.state.lock().unwrap().queued += 1;
+        if !sent {
+            lane.state.lock().unwrap().queued -= 1;
         }
         sent
     }
@@ -389,7 +407,11 @@ async fn run_lane(
         // never waits: `Agent::emit` blocks while a live receiver's buffer
         // is full, and a stalled drain once stalled the lane for good.
         let (etx, erx) = mpsc::channel(256);
-        let drain = tokio::spawn(drain_events(erx, watch.state.clone()));
+        let drain = tokio::spawn(drain_events(
+            erx,
+            watch.state.clone(),
+            watch.changed.clone(),
+        ));
         if let Some(d) = &watch.deadline {
             d.arm();
         }
@@ -470,7 +492,11 @@ impl LaneWatch {
     }
 }
 
-async fn drain_events(mut rx: mpsc::Receiver<AgentEvent>, state: Arc<Mutex<LaneState>>) {
+async fn drain_events(
+    mut rx: mpsc::Receiver<AgentEvent>,
+    state: Arc<Mutex<LaneState>>,
+    changed: Arc<Notify>,
+) {
     while let Some(ev) = rx.recv().await {
         let activity = match &ev {
             AgentEvent::RunStarted { .. }
@@ -487,12 +513,22 @@ async fn drain_events(mut rx: mpsc::Receiver<AgentEvent>, state: Arc<Mutex<LaneS
             } => Some(format!("a model call (retry {attempt} of {max_attempts})")),
             _ => None,
         };
-        let mut st = state.lock().unwrap();
-        if let Some(a) = activity {
-            st.activity = a;
+        let moved = {
+            let mut st = state.lock().unwrap();
+            st.last_progress = Some(Instant::now());
+            st.stall_reported = false;
+            match activity {
+                Some(a) if a != st.activity => {
+                    st.activity = a;
+                    true
+                }
+                _ => false,
+            }
+        };
+        // The status file shows what the lane is doing now, not 5 s ago.
+        if moved {
+            changed.notify_waiters();
         }
-        st.last_progress = Some(Instant::now());
-        st.stall_reported = false;
     }
 }
 

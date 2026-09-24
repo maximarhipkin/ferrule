@@ -1,6 +1,6 @@
 use crate::channel::Channel;
 use crate::error::GatewayError;
-use crate::health::{human, Redactor};
+use crate::health::{human, is_command, Health, Redactor};
 use crate::message::{InboundMessage, OutboundMessage};
 use crate::router::Router;
 use std::sync::Arc;
@@ -26,6 +26,7 @@ pub struct Gateway {
     interceptors: Vec<Arc<dyn Interceptor>>,
     busy_notice_after: Duration,
     redactor: Arc<Redactor>,
+    health: Option<Arc<Health>>,
 }
 
 /// Looks at every inbound message before the router does (M19: the owner's
@@ -48,7 +49,15 @@ impl Gateway {
             interceptors: Vec::new(),
             busy_notice_after: BUSY_NOTICE_AFTER,
             redactor: Arc::new(Redactor::default()),
+            health: None,
         }
+    }
+
+    /// M19b: `/status` answered here, from any chat, without the model or
+    /// the lane; and the status file kept current while `run` runs.
+    pub fn with_health(mut self, health: Arc<Health>) -> Self {
+        self.health = Some(health);
+        self
     }
 
     /// Adds an interceptor; they're asked in the order added, and the
@@ -98,18 +107,52 @@ impl Gateway {
         // has dropped its clone — i.e. once all channels are done.
         drop(tx);
 
+        let background = self.spawn_health();
         while let Some(msg) = rx.recv().await {
+            if let Some(h) = &self.health {
+                h.dispatching(true);
+            }
             self.handle(msg).await;
+            if let Some(h) = &self.health {
+                h.dispatching(false);
+            }
         }
         for h in handles {
             let _ = h.await;
         }
+        for task in background {
+            task.abort();
+        }
         Ok(())
     }
 
-    /// One inbound message: an interceptor's, or the receipt, the busy
-    /// notice if its chat is mid-turn, and its lane.
+    /// The tasks behind `with_health`: the status file, rewritten every
+    /// few seconds and whenever a turn starts or ends.
+    fn spawn_health(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        let Some(health) = self.health.clone() else {
+            return Vec::new();
+        };
+        let (router, channels) = (self.router.clone(), self.channels.clone());
+        let changed = router.changed();
+        let every = health.settings().status_every;
+        vec![tokio::spawn(async move {
+            loop {
+                health.write_status(&health.report(&router.snapshot(), &channels));
+                let _ = tokio::time::timeout(every, changed.notified()).await;
+            }
+        })]
+    }
+
+    /// One inbound message: `/status`, an interceptor's, or the receipt,
+    /// the busy notice if its chat is mid-turn, and its lane.
     async fn handle(&self, msg: InboundMessage) {
+        if let Some(health) = &self.health {
+            if is_command(&msg.text, "/status") {
+                let report = health.report(&self.router.snapshot(), &self.channels);
+                self.reply_directly(&msg, report).await;
+                return;
+            }
+        }
         for i in &self.interceptors {
             if let Some(reply) = i.intercept(&msg).await {
                 self.reply_directly(&msg, reply).await;
@@ -138,8 +181,18 @@ impl Gateway {
                 });
             }
         }
-        if let Err(e) = self.router.dispatch(msg).await {
-            tracing::error!(error = %e, "failed to dispatch inbound message");
+        let reply = msg.clone();
+        match self.router.offer(msg) {
+            Ok(()) => {}
+            Err(GatewayError::QueueFull(_)) => {
+                tracing::warn!(chat = %reply.chat_id, "a chat's queue is full; a message was refused");
+                self.reply_directly(
+                    &reply,
+                    "Too many messages are waiting in this chat, so this one was dropped. /stop ends the turn in front; /status shows what it's doing.".into(),
+                )
+                .await;
+            }
+            Err(e) => tracing::error!(error = %e, "failed to dispatch inbound message"),
         }
     }
 
@@ -433,17 +486,16 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn every_message_is_seen_at_once_and_a_queued_one_is_told_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
-        let release = Arc::new(tokio::sync::Semaphore::new(0));
-        let mut script = vec![];
-        for (id, text) in [("1", "first"), ("2", "second"), ("3", "third")] {
-            let mut m = msg("c1", text);
-            m.message_id = id.into();
-            script.push(m);
-        }
+    type Log = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A reacting channel with `script`, and a router whose turns run on
+    /// a `HeldProvider`.
+    fn held_gateway(
+        dir: &std::path::Path,
+        script: Vec<InboundMessage>,
+        log: &Log,
+        release: &Arc<tokio::sync::Semaphore>,
+    ) -> (Arc<ReactingChannel>, Arc<Router>) {
         let channel = Arc::new(ReactingChannel {
             script,
             log: log.clone(),
@@ -467,7 +519,105 @@ mod tests {
                 .with_system_prompt("test"))
             })
         };
-        let router = Arc::new(Router::new(dir.path(), factory, channels));
+        (channel, Arc::new(Router::new(dir, factory, channels)))
+    }
+
+    async fn wait_for_log(log: &Log, n: usize) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while log.lock().unwrap().len() < n {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{:?}",
+                log.lock().unwrap()
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    fn numbered(texts: &[&str]) -> Vec<InboundMessage> {
+        texts
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let mut m = msg("c1", text);
+                m.message_id = (i + 1).to_string();
+                m
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn status_is_answered_while_the_chats_turn_hangs() {
+        let dir = tempfile::tempdir().unwrap();
+        let log: Log = Arc::default();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let script = numbered(&["first", "/status", "/status@ferrule_bot"]);
+        let (channel, router) = held_gateway(dir.path(), script, &log, &release);
+        let status_dir = dir.path().join("gateway");
+        let health = Arc::new(
+            Health::new(
+                "9.9.9",
+                crate::health::HealthSettings {
+                    dir: Some(status_dir.clone()),
+                    ..Default::default()
+                },
+            )
+            .with_recent(Arc::new(crate::health::RecentLog::new(5)))
+            .with_redactor(Arc::new(Redactor::new(["sk-abcdef123".to_string()])))
+            .with_section(
+                "spend",
+                Arc::new(|| vec!["today: 12 tokens, sk-abcdef123".into()]),
+            ),
+        );
+        let mut gateway = Gateway::new(router).with_health(health.clone());
+        gateway.add_channel(channel);
+        tokio::time::timeout(Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+        wait_for_log(&log, 4).await;
+        let log_now = log.lock().unwrap().clone();
+        // No receipt for /status: its answer is the receipt.
+        assert_eq!(log_now[..2], ["react 👀 to 1", "turn: first"]);
+        for (i, id) in ["2", "3"].iter().enumerate() {
+            let report = &log_now[2 + i];
+            assert!(
+                report.starts_with(&format!("send to {id}: ferrule 9.9.9 — up ")),
+                "{report}"
+            );
+            assert!(
+                report.contains("scripted chat c1: a model call for 0 s, last progress 0 s ago"),
+                "{report}"
+            );
+            assert!(
+                report.contains("spend:\n  today: 12 tokens, [redacted]"),
+                "{report}"
+            );
+            assert!(report.contains("scripted: doesn't poll"), "{report}");
+            assert!(
+                report.contains("recent warnings and errors:\n  none"),
+                "{report}"
+            );
+        }
+        // The status file was written; a clean shutdown removes it.
+        let file = status_dir.join(crate::health::STATUS_FILE);
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .starts_with("ferrule 9.9.9"));
+        health.shutdown();
+        assert!(!file.exists());
+        release.add_permits(1);
+        wait_for_log(&log, 5).await;
+        assert_eq!(log.lock().unwrap()[4], "send to 1: echo: first");
+    }
+
+    #[tokio::test]
+    async fn every_message_is_seen_at_once_and_a_queued_one_is_told_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let script = numbered(&["first", "second", "third"]);
+        let (channel, router) = held_gateway(dir.path(), script, &log, &release);
         let mut gateway = Gateway::new(router).with_busy_notice_after(Duration::ZERO);
         gateway.add_channel(channel);
         tokio::time::timeout(Duration::from_secs(2), gateway.run())
@@ -475,21 +625,7 @@ mod tests {
             .unwrap()
             .unwrap();
         // All three are acknowledged and queued while "first" is held.
-        let wait = |n: usize| {
-            let log = log.clone();
-            async move {
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-                while log.lock().unwrap().len() < n {
-                    assert!(
-                        tokio::time::Instant::now() < deadline,
-                        "{:?}",
-                        log.lock().unwrap()
-                    );
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            }
-        };
-        wait(5).await;
+        wait_for_log(&log, 5).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             *log.lock().unwrap(),
@@ -502,7 +638,7 @@ mod tests {
             ]
         );
         release.add_permits(1);
-        wait(8).await;
+        wait_for_log(&log, 8).await;
         let log = log.lock().unwrap();
         assert_eq!(
             log[5..8],
