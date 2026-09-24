@@ -67,10 +67,10 @@ package, publisher, or registry.
 Single packages and exact versions stay available for tighter lists. **[Max]** to confirm, or
 to narrow the default to package-only.
 
-**Where the list may come from.** Only from the owner's config: `FERRULE_CONFIG`, or the global
-`~/.config/ferrule/config.toml`. A `ferrule.toml` in the current directory is ignored for
-`allow`, with a warning, when that directory is inside the workspace, because the agent can
-write the workspace. Otherwise the agent could allow-list itself.
+**Where the list may come from.** Only from the owner's config: `$FERRULE_CONFIG` (which
+`--config` sets), or the global `~/.config/ferrule/config.toml`. A `ferrule.toml` in the current
+directory is always ignored for `allow`, with a warning, because the agent can usually write it.
+Otherwise the agent could allow-list itself.
 
 ## 3. Pinning and updates
 
@@ -114,7 +114,8 @@ no model call and no network.
 **What it reads.**
 - MCP: each tool's name, its description, and **every string anywhere inside `inputSchema`**
   (property descriptions, titles, enum values, defaults). Poison hides there too.
-- Skills: the frontmatter name and description, and the whole `SKILL.md` body.
+- Skills: the frontmatter name and description, the whole `SKILL.md` body, and every text file
+  the skill directory bundles (references, scripts). Poison can sit one `read_skill_file` away.
 
 **Normalisation first.** Lowercase; zero-width, bidi-control and Unicode tag characters
 (U+E0000 block) removed; whitespace runs collapsed. So `I g​n o r e` spread across tricks
@@ -127,17 +128,20 @@ still matches, and the removed characters are themselves a finding.
 | `override` | block | "ignore/disregard/forget (all) previous/prior/above instructions", "you are now", "new instructions", "system prompt" |
 | `hidden-tag` | block | `<important>`, `<system>`, `</system>`, `[inst]`, `<\|im_start\|>`, `<instructions>` |
 | `conceal` | block | "do not tell/mention/inform the user", "without telling the user", "the user must not know", "silently" |
-| `secret-access` | block | `~/.ssh`, `id_rsa`, `id_ed25519`, `.env`, `secrets.env`, `private key`, `api key`/`api_key`, `mcp.json`, `/etc/passwd`, `credentials` |
+| `secret-access` | block | paths: `~/.ssh`, `id_rsa`, `id_ed25519`, `.env` (as a token), `secrets.env`, `mcp.json`, `/etc/passwd`, `/etc/shadow`, `.aws/credentials`, `.netrc`, `keychain` |
+| `secret-word` | warn | words: `api key`/`api_key`/`apikey`, `access token`, `credentials`, `password`, `secret key` — legitimate tools say these all the time |
 | `cross-tool` | block (MCP only) | "before using any/this/other tool", "instead of", naming a built-in tool (`shell`, `write_file`, `read_file`, `edit_file`, `web_fetch`, `mcp__`), "when (the) … tool is called" |
 | `exfil` | block | "send (it/them/the contents) to", "include … in the (sidenote\|parameter\|argument)", "append … to the url", "upload" + a URL |
 | `invisible-chars` | block | any zero-width / bidi / tag character in the raw text |
-| `padding` | block | ≥ 40 consecutive whitespace characters in the raw text (pushes text off-screen) |
+| `padding` | block (warn for skills) | ≥ 40 consecutive whitespace characters in the raw text (pushes text off-screen) |
+| `bad-name` | block (MCP only) | a tool name outside `[A-Za-z0-9_.-]`, or over 64 characters |
 | `encoded-blob` | warn | a base64-looking run ≥ 120 chars |
 | `too-long` | warn | a description over 4 000 chars |
 
 Skills use the same rules except `cross-tool`, since a skill telling the model which tools to
-use is its normal job. "Silently" and "credentials" are also relaxed to warn for skills, because
-documentation says them legitimately.
+use is its normal job. "Silently"/"secretly" and `padding` are also relaxed to warn for skills,
+because documentation says them legitimately. Schema property *keys* are scanned too, with `_`
+read as a space.
 
 **Where it runs.**
 1. At install, after the server started and answered `tools/list`, **before any tool is
@@ -152,12 +156,14 @@ documentation says them legitimately.
 - **Install, block hit:** the install is refused as a whole — not "load the clean tools". The
   server process is killed, the checkout or staging dir is deleted, and nothing is written to
   the lock. The model gets `refused: scan flagged tool X (rule: override, conceal)`. **The
-  flagged text is never echoed back** to the model, because the hit is the poison.
+  flagged text is never echoed back** to the model, because the hit is the poison. The request
+  is kept in the pending queue with its findings, so the owner can review it (and waive a false
+  positive) with `ferrule extensions approve <id>`.
 - **`list_changed` or restart introduces a block hit** on an installed or approved server: the
   whole server is **suspended**. Every one of its tools is unregistered at once, the process is
   shut down, and the lock entry is marked `suspended` with the reason. The model sees the
   tools disappear, and gets one line through `extensions_list`. Resuming takes
-  `ferrule extensions approve --resume <name>` (re-scan, owner confirms).
+  `ferrule extensions resume <name>` (re-scan, owner confirms at a terminal).
 - **Owner-configured server:** at start a hit is a loud warning and the tool loads anyway. The
   owner wrote that config by hand, and silently dropping their tool would be a worse failure.
   A block hit on `list_changed` *does* drop the changed tools, because that change was not
@@ -165,12 +171,13 @@ documentation says them legitimately.
 - **Warn hits** never block. They are logged, shown in `extensions list` and in the approval
   prompt.
 
-**False positives.** A description that legitimately says "API key" or "instead of" will
-trip the list. The owner waives it with
-`ferrule extensions waive <name> <tool> <rule>`. A waiver is bound to that tool's surface
-digest, so any later change to the description re-arms the rule. Waivers live in the lock, in
-the data dir, and the model has no tool that writes them. The approval prompt shows the hits
-with their text (to the owner, not the model), so a false positive can be waived on the spot.
+**False positives.** A description that legitimately says "instead of" will trip the list.
+There is no separate `waive` command: `ferrule extensions approve <id>` and
+`ferrule extensions resume <name>` show the hits with their text (to the owner, not the model),
+and when any hit is a block the owner must type the word `waive` — not just `y` — to accept
+them. Each accepted block hit becomes a waiver bound to that tool's surface digest, so any later
+change to the description re-arms the rule. Waivers live in the lock, in the data dir, and the
+model has no tool that writes them.
 
 The scan is a filter, not a proof. It raises the cost of the known MCPTox/Invariant patterns
 to zero-effort-detectable. A paraphrased attack can get through. The other layers — the
@@ -213,8 +220,9 @@ into `<data>/extensions/skills/<name>/` → lock → `SkillsHandle::refresh()`.
 **Additive `list_changed` on an installed server.** New tools that pass the scan are loaded and
 their digests are added to the lock. This keeps servers that register tools lazily working. A
 *changed* description of an already-approved tool is never auto-accepted, even if it scans
-clean: a clean change still suspends that tool alone until the owner re-approves. A rug pull
-that the scan misses is still caught by the digest.
+clean: any changed digest suspends the **whole installed server** until the owner resumes it.
+A rug pull that the scan misses is still caught by the digest. (An owner-*configured* server has
+no lock entry to suspend; it only drops the changed or flagged tools.)
 
 ## 6. How a new tool reaches the model mid-session
 
@@ -278,7 +286,9 @@ Static tools shadow dynamic ones with the same name. An extension can never repl
    in the agent's *current* session.
 
 `ferrule chat` in a terminal additionally uses a **TTY approver**: the question appears inline
-("Agent wants to install git:https://… — allow? [y/N]"), for the owner sitting there. The
+("Agent wants to install git:https://… (reason) — allow? [y/N]"), for the owner sitting there.
+An inline yes installs only when the scan is clean; a block hit sends the request back to the
+queue with its findings, for `ferrule extensions approve` and the `waive` word. The
 approver is a trait (`Approver`), so the gateway channels (Telegram/WhatsApp) can plug in an
 owner-only button later. That is not built, and it is an open edge.
 
@@ -304,8 +314,10 @@ owner-only button later. That is not built, and it is an open edge.
   credential proxy. A malicious server gets what a configured one gets, not more.
 
 **Git-sourced commands.** A `git:` server's `command` must be a file inside the checkout, or an
-interpreter from a fixed list (`node`, `python3`, `python`, `uv`, `uvx`, `npx`, `deno`, `bun`)
-whose first non-flag argument is a file inside the checkout. Otherwise `mcp_add` could run
+interpreter from a fixed list (`node`, `python3`, `python`, `deno`, `bun`) whose first argument
+after a short list of harmless flags (no `-c`, `-e`, `--eval`, `--require`, `-m`,
+`--allow-run`) is a file inside the checkout. `uvx`/`npx` are not on the list: they fetch and run
+code from a registry, which would bypass the pin. Otherwise `mcp_add` could run
 `bash -c …` as a "server". That would be an arbitrary-command channel around the shell tool's
 own policy.
 

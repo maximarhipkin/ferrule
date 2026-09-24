@@ -131,6 +131,10 @@ picks up after a restart.
 
 ### M13 — self-extension
 
+**Status.** Built 2026-09-24 on branch `m13-self-extension` (PR open, not yet
+merged; the macOS/Windows parts are unverified until the batch CI pass). Design:
+`docs/m13-self-extension.md`.
+
 **Goal.** The agent can add skills and MCP servers while it runs, without a
 restart, and without the owner approving every install from a trusted place.
 
@@ -154,9 +158,15 @@ person.
 session; a non-listed one waits for approval; a poisoned description is
 flagged by the scan in a test.
 
-**Open questions.** What an allow-list entry names (a registry, a GitHub org,
-an exact package and version). Whether updates to an allowed package are also
-automatic.
+**Open questions — answered as defaults, for Max to confirm.**
+- *What an allow-list entry names:* a **publisher** — an npm scope, a git org,
+  a URL prefix — or, tighter, one package or one exact version. Every install
+  still carries an exact pin (npm/PyPI version, git commit). Registry-wide
+  entries (`npm:*`, `git:https://github.com/*`) are refused.
+- *Whether updates are automatic:* **no.** An update is a reinstall with a new
+  pin, through the same allow-list, approval and scan.
+- *On by default:* **no** — `[extensions] enabled = false`; the owner turns it
+  on. Configured servers are scanned and re-scanned either way.
 
 ### M14 — `ferrule eval`
 

@@ -206,12 +206,22 @@ that convention yet — ask before introducing one).
     strong / workers cheap), `resume_agent`/`wait_agent`/`close_agent` as
     first-class tools, a task list with dependency edges and
     self-claiming, and agent-relayed approvals treated as untrusted input.
-  - **M13 self-extension** (was M12): skills and MCP servers hot-loaded,
+  - **M13 self-extension** (was M12): **built** (2026-09-24, parts 1–7 on
+    branch `m13-self-extension`, PR open, not merged; CI deferred to the
+    roadmap batch): skills and MCP servers hot-loaded mid-session,
     self-installed from an **allow-list of approved sources** without
-    asking (msg 3074) — **with the vetting story (§4.8):** a
-    tool-description poisoning scan before activation (MCPTox: 36.5%
-    average attack success), version pinning, and a
-    `tools/list_changed` re-scan.
+    asking (msg 3074), anything else queued for the owner
+    (`ferrule extensions pending|approve|deny`) — **with the vetting
+    story (§4.8):** a tool-description poisoning scan before activation
+    (MCPTox: 36.5% average attack success), exact version / commit pins
+    plus surface digests, and a `tools/list_changed` re-scan. New crate
+    `crates/ferrule-extensions`; design `docs/m13-self-extension.md`.
+    Off by default (`[extensions] enabled = false`). **Open edges:** see
+    the 2026-09-24 M13 Session Log entry — the macOS/Windows-sensitive
+    spots there are **unverified on macOS/Windows until the batch CI
+    pass**; no channel (Telegram) approver; the gateway's skill roots are
+    fixed at startup; the approval gate is only as strong as the sandbox
+    (off, or Windows); the scan is heuristic; updates are manual only.
   - **M14 `ferrule eval`** (§4.2): task suites (prompt, workspace fixture,
     verify_command/LLM-rubric grader) run through the real agent, results
     into the ledger with `task_shape="eval"` — makes every harness change
@@ -1827,3 +1837,77 @@ hung 50 min before being cancelled); the probe switched to a Python
 timeout plus `taskkill /T`. Decisions for Max: keep the Windows warm-up or
 file upstream and wait; image support across providers; the macOS
 Chrome-sandbox-off tradeoff.
+
+### 2026-09-24 — M13 self-extension (Devi, Opus 5.5)
+
+Built on `m13-self-extension` (cut from main at 9c46174), in parallel
+with M12 in another worktree; the two are reconciled later. Design first
+(146f19c, `docs/m13-self-extension.md`), then seven parts:
+- **Part 1 (8fde9b8)** — `ToolSource` and a dynamic layer in
+  `ToolRegistry`: attached sources are re-queried on every provider
+  request, static tools shadow dynamic ones, so a tool added mid-run is
+  offered on the very next request.
+- **Part 2 (f8214d9)** — MCP client: `notifications/tools/list_changed`
+  is surfaced, `shutdown()` kills and waits, tools are built from a
+  fresh `tools/list`.
+- **Part 3 (e2ac392)** — live skills: `SkillsHandle` rediscovers on
+  refresh and `LiveSkillTools` serves `activate_skill`/`read_skill_file`
+  over the current set.
+- **Part 4 (e549313)** — `ferrule-extensions`: the publisher-level
+  allow-list (exact pins; registry-wide entries refused at load) and the
+  deterministic description scan (block/warn rules, invisible-character
+  normalisation, owner-only excerpts, key-order-independent digests).
+- **Part 5 (6b71796)** — `extensions.lock.json` (atomic write under a
+  `create_new` `.lk` file), git sources pinned to one commit and verified
+  (HEAD and a clean tree) at every load, git server commands confined to
+  their checkout, the private pending queue, skill directories inspected
+  and copied without following symlinks, bundled text scanned.
+- **Part 6 (8b446d3)** — `ExtensionManager` and the model's six tools
+  (`mcp_add`, `mcp_remove`, `skill_install`, `skill_remove`,
+  `skill_keep`, `extensions_list`); the six required hermetic end-to-end
+  tests plus three more in `crates/ferrule-extensions/tests/self_extension.rs`.
+- **Part 7 (212a0ca)** — CLI wiring: one manager per process runs every
+  configured MCP server too (scanned, `list_changed` re-scanned) and
+  follows the lock every 2 s; `[extensions] enabled` gates only the six
+  tools; `ferrule chat` asks inline at a terminal; `ferrule extensions
+  list|pending|approve|deny|remove|resume` (approve/resume need a TTY; a
+  block hit needs the typed word `waive`).
+The hook M17 expects is in place: `ExtensionManager::add_server` plus the
+`list_changed` re-scan. Nothing of M17's own scope was built.
+
+**Decisions for Max** (each has a default, so nothing waited):
+- the allow-list is **publisher-level** (npm scope, git org, URL prefix),
+  with exact pins required and registry-wide entries refused — narrow
+  it to package-only if preferred;
+- **updates are manual** — a reinstall with a new pin through the same
+  allow-list, approval and scan; nothing polls registries;
+- **`enabled = false` by default** — the six tool definitions cost tokens
+  every turn and self-extension should be the owner's choice.
+
+**Open edges — macOS/Windows**, each **unverified on macOS/Windows until
+the batch CI pass** (everything above was tested on Linux only):
+- spawning `git` and its paths, including `GIT_CONFIG_GLOBAL=NUL` on
+  Windows;
+- atomic rename/persist of the lock and queue files over an existing
+  file;
+- the `create_new` `.lk` lock file and its stale takeover;
+- the TTY check (`is_terminal`) for `approve`/`resume` and the inline
+  chat approver on Windows consoles;
+- resolving `npx`/`uvx` (and `node`/`python3`) via `PATHEXT` on Windows;
+- `canonicalize` returning `\\?\` prefixes in the checkout-confinement
+  check (`inside()`) and `skill_dir_in`;
+- symlink handling when inspecting and copying skill directories
+  (Windows symlinks and junctions);
+- 0700 permissions on `<data>/private/` (no-op on Windows);
+- killing an MCP server process tree on shutdown/suspend;
+- the hermetic tests' `python3` MCP fixture on Windows;
+- `test -f` in the `skill_keep` test's check command;
+- `replace_dir` renaming over an existing directory on Windows.
+
+**Other open edges:** no channel (Telegram/WhatsApp) approver — the
+`Approver` trait is there, only the TTY one is built; the gateway's
+skill discovery roots are fixed at startup; with `sandbox = off` and on
+Windows the agent's shell can write `<data>` and forge a lock entry, so
+the approval gate is only as strong as the sandbox; the scan is
+heuristic and a paraphrased attack can pass; updates are manual only;
+no signature/provenance checks.
