@@ -18,6 +18,9 @@ pub struct McpRemoteTool {
     read_only: bool,
     timeout: Duration,
     hidden: Arc<[String]>,
+    /// This tool's own cap, if its server sets one (see
+    /// `McpServerConfig::output_cap`).
+    cap: Option<usize>,
 }
 
 #[async_trait::async_trait]
@@ -56,7 +59,12 @@ impl Tool for McpRemoteTool {
                     },
                 })
             }
-            Ok(result) => Ok(ToolOutput::capped(result.text(), ctx.max_output_chars)),
+            Ok(result) => {
+                let cap = self
+                    .cap
+                    .map_or(ctx.max_output_chars, |c| c.min(ctx.max_output_chars));
+                Ok(ToolOutput::capped(result.text(), cap))
+            }
             Err(e) => Err(CoreError::ToolFailed {
                 tool: self.full_name.clone(),
                 message: e.to_string(),
@@ -92,15 +100,20 @@ pub async fn connect_and_build_tools(
 
 /// Wrap tools already listed from `client` as `mcp__<server>__<tool>`
 /// `Tool`s. For a caller that inspects the list before exposing it — M13's
-/// scan — and so connects and lists on its own.
+/// scan — and so connects and lists on its own. Tools outside the server's
+/// `enabled_tools` are left out here too, whatever the caller passed.
 pub fn build_tools(client: &Arc<McpClient>, infos: Vec<McpToolInfo>) -> Vec<Arc<dyn Tool>> {
+    let cfg = client.config();
     let server_name = client.name().to_string();
-    let timeout = client.config().timeout();
-    let hidden: Arc<[String]> = client.config().hide_args.clone().into();
+    let timeout = cfg.timeout();
+    let hidden: Arc<[String]> = cfg.hide_args.clone().into();
     infos
         .into_iter()
+        .filter(|info| cfg.tool_enabled(&info.name))
         .map(|info| {
+            let cap = cfg.output_cap(&info.name, usize::MAX);
             Arc::new(McpRemoteTool {
+                cap: (cap != usize::MAX).then_some(cap),
                 client: client.clone(),
                 full_name: format!("mcp__{server_name}__{}", info.name),
                 remote_name: info.name,

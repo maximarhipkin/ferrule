@@ -295,6 +295,11 @@ profile = "openai"
 #                            # always gets the workspace, tmp and its own state
 #                            # dir (HOME, caches) under the data dir, plus network
 # sandbox = true             # false: no OS sandbox for it (doctor warns)
+# enabled_tools = []         # offer only these tools ("prefix*" ok); empty: all
+# max_output_chars = 20000   # cap on one tool result; output_caps = { tool = N }
+#                            # caps one tool. `ferrule mcp add` writes entries
+#                            # like these after starting and scanning the server;
+#                            # running gateways pick up changes here, no restart
 #
 # [[mcp.servers]]           # or a remote one, over Streamable HTTP: `url`
 # name = "remote"            # instead of `command`. With [secrets] it goes

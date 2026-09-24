@@ -315,3 +315,44 @@ async fn a_shut_down_server_is_not_respawned() {
         Err(ferrule_mcp::McpError::NotConnected)
     ));
 }
+
+#[tokio::test]
+async fn enabled_tools_hide_the_rest_and_output_caps_truncate() {
+    let cfg = McpServerConfig {
+        enabled_tools: vec!["echo".into(), "ad*".into()],
+        max_output_chars: Some(100),
+        output_caps: [("echo".to_string(), 5)].into(),
+        ..fixture_cfg("test", None)
+    };
+    let tools = connect_and_build_tools(cfg, host()).await.expect("connect");
+    let mut names: Vec<String> = tools.iter().map(|t| t.definition().name).collect();
+    names.sort();
+    assert_eq!(names, ["mcp__test__add", "mcp__test__echo"]);
+
+    let echo = tools
+        .iter()
+        .find(|t| t.definition().name == "mcp__test__echo")
+        .unwrap();
+    let ctx = ToolContext::default();
+    let out = echo
+        .call(json!({"text": "0123456789"}), &ctx)
+        .await
+        .expect("call ok");
+    assert!(out.truncated);
+    assert!(
+        out.content.starts_with("01234\n…[truncated"),
+        "{}",
+        out.content
+    );
+
+    // The session's cap still wins when it is the smaller one.
+    let tight = ToolContext {
+        max_output_chars: 3,
+        ..ToolContext::default()
+    };
+    let out = echo
+        .call(json!({"text": "0123456789"}), &tight)
+        .await
+        .unwrap();
+    assert!(out.content.starts_with("012\n"), "{}", out.content);
+}
