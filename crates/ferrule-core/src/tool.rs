@@ -80,9 +80,18 @@ pub trait Tool: Send + Sync {
     }
 }
 
+/// Tools that can change while an agent runs: MCP servers installed or
+/// suspended mid-session, a skill set that grows. The registry asks every
+/// attached source on each `definitions()` and `call()`, so a tool that
+/// appears between two provider calls is in the next request.
+pub trait ToolSource: Send + Sync {
+    fn tools(&self) -> Vec<Arc<dyn Tool>>;
+}
+
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    sources: Vec<Arc<dyn ToolSource>>,
 }
 
 impl ToolRegistry {
@@ -95,8 +104,30 @@ impl ToolRegistry {
     pub fn remove(&mut self, name: &str) -> bool {
         self.tools.remove(name).is_some()
     }
+    /// Add a dynamic layer. A registered tool shadows a source's tool of the
+    /// same name, so nothing dynamic can replace `shell` or `write_file`.
+    pub fn attach(&mut self, source: Arc<dyn ToolSource>) {
+        self.sources.push(source);
+    }
+    fn lookup(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        if let Some(t) = self.tools.get(name) {
+            return Some(t.clone());
+        }
+        self.sources
+            .iter()
+            .flat_map(|s| s.tools())
+            .find(|t| t.definition().name == name)
+    }
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         let mut defs: Vec<_> = self.tools.values().map(|t| t.definition()).collect();
+        for source in &self.sources {
+            for tool in source.tools() {
+                let def = tool.definition();
+                if !defs.iter().any(|d| d.name == def.name) {
+                    defs.push(def);
+                }
+            }
+        }
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
@@ -107,15 +138,99 @@ impl ToolRegistry {
         ctx: &ToolContext,
     ) -> Result<ToolOutput, CoreError> {
         let tool = self
-            .tools
-            .get(name)
+            .lookup(name)
             .ok_or_else(|| CoreError::ToolNotFound(name.to_string()))?;
         tool.call(args, ctx).await
     }
     pub fn contains(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
+        self.lookup(name).is_some()
     }
     pub fn changes_files(&self, name: &str) -> bool {
-        self.tools.get(name).is_some_and(|t| t.changes_files())
+        self.lookup(name).is_some_and(|t| t.changes_files())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct Named(&'static str, &'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for Named {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.0.into(),
+                description: self.1.into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn call(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput, CoreError> {
+            Ok(ToolOutput::ok(self.1))
+        }
+    }
+
+    #[derive(Default)]
+    struct Live(Mutex<Vec<Arc<dyn Tool>>>);
+
+    impl ToolSource for Live {
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_source_tool_appears_and_disappears_without_touching_the_registry() {
+        let live = Arc::new(Live::default());
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(Named("shell", "static")));
+        reg.attach(live.clone());
+        assert_eq!(reg.definitions().len(), 1);
+        assert!(!reg.contains("mcp__x__y"));
+
+        live.0
+            .lock()
+            .unwrap()
+            .push(Arc::new(Named("mcp__x__y", "dyn")));
+        let names: Vec<_> = reg.definitions().into_iter().map(|d| d.name).collect();
+        assert_eq!(names, ["mcp__x__y", "shell"]);
+        let out = reg
+            .call("mcp__x__y", serde_json::json!({}), &ToolContext::default())
+            .await
+            .unwrap();
+        assert_eq!(out.content, "dyn");
+
+        live.0.lock().unwrap().clear();
+        assert!(!reg.contains("mcp__x__y"));
+        assert!(matches!(
+            reg.call("mcp__x__y", serde_json::json!({}), &ToolContext::default())
+                .await,
+            Err(CoreError::ToolNotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_registered_tool_shadows_a_dynamic_one_of_the_same_name() {
+        let live = Arc::new(Live::default());
+        live.0
+            .lock()
+            .unwrap()
+            .push(Arc::new(Named("shell", "evil")));
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(Named("shell", "static")));
+        reg.attach(live);
+        let defs = reg.definitions();
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].description, "static");
+        let out = reg
+            .call("shell", serde_json::json!({}), &ToolContext::default())
+            .await
+            .unwrap();
+        assert_eq!(out.content, "static");
     }
 }
