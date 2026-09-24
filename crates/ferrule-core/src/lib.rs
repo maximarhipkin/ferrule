@@ -18,12 +18,12 @@ pub mod tool;
 pub mod transcript;
 pub mod verify;
 
-pub use agent::{Agent, AgentConfig, RetryPolicy};
+pub use agent::{Agent, AgentConfig, ContextOverflow, RetryPolicy};
 pub use baseline::load_context_baseline;
 pub use error::CoreError;
 pub use event::AgentEvent;
 pub use hooks::{Budget, Inbox, StopFlag};
-pub use ledger::{LedgerContext, LedgerRecord, LedgerSink};
+pub use ledger::{EvalTag, LedgerContext, LedgerRecord, LedgerSink};
 pub use message::{Message, Role, ToolCall, Usage};
 pub use profile::HarnessProfile;
 pub use provider::{CompletionRequest, CompletionResponse, Provider};

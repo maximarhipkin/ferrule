@@ -1,0 +1,276 @@
+# ferrule's starter eval suite — see docs/eval.md.
+#
+# 20 tasks. Tags:
+#   smoke    4 quick tasks, one of each kind: the 5-minute A/B
+#   context  the answer depends on instructions given at the start, after
+#            enough reading to overflow the suite's 32k window
+#   verify   the prompt leaves out requirements a check enforces: passing
+#            takes running the check and fixing what it reports
+#   code     editing and writing code
+#   data     transforming files
+#
+# Graders live in graders/ and checks in checks/, outside the task's
+# workspace. solutions/ holds a reference answer per task, which the
+# oracle test runs to prove every task is solvable and every grader
+# rejects an untouched workspace.
+
+[suite]
+name = "starter"
+kind = "capability"
+description = "Everyday coding and data tasks, some under context pressure, some needing a check to get right"
+context_window = 32000
+max_iterations = 40
+timeout_secs = 900
+
+# ── smoke ─────────────────────────────────────────────────────────────
+
+[[task]]
+id = "fix-median"
+tags = ["smoke", "code"]
+fixture = "fixtures/fix-median"
+check = "python3 -m unittest -q"
+prompt = """median() in stats.py returns the wrong value for lists with an even \
+number of elements. Fix it, and add a test for the even case to test_stats.py."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/fix-median.py"'
+
+[[task]]
+id = "sales-summary"
+tags = ["smoke", "data"]
+fixture = "fixtures/sales-summary"
+prompt = """From sales.csv, write summary.json. For each region, total the revenue \
+(units × unit_price) of the rows whose status is not "refunded", rounded to 2 \
+decimals. The file must be exactly this shape:
+{"regions": {"<region>": <revenue>, ...}, "top_region": "<region with the most revenue>"}"""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/sales-summary.py"'
+
+[[task]]
+id = "slugify"
+tags = ["smoke", "verify", "code"]
+check = 'python3 "{suite_dir}/checks/slugify.py"'
+prompt = """Create slug.py with a function slugify(title: str) -> str that turns an \
+article title into a URL slug: lowercase words joined by hyphens."""
+[task.grade]
+command = 'python3 "{suite_dir}/checks/slugify.py"'
+
+[[task]]
+id = "release-notes"
+tags = ["smoke", "context"]
+fixture = "fixtures/release-notes"
+setup = "python3 gen.py && rm gen.py"
+max_iterations = 25
+prompt = """Write RELEASE_NOTES.md for our 4.2.0 release from the commit logs in logs/.
+
+Rules:
+1. The first line is exactly: # Acme 4.2.0 — Codename Heron
+2. Two sections, `## Features` from `feat` commits and `## Fixes` from `fix` \
+commits, and only commits whose scope is `api` or `cli`.
+3. Each entry is a bullet: `- <commit message without the type(scope): prefix> (#<PR number>)`.
+4. Leave out every commit by the author bot-renovate.
+5. Sort the bullets in each section alphabetically.
+
+The logs are a review record: read each of the five files in full with \
+read_file before writing (no grep), since the entries are spread across all of them."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/release-notes.py"'
+
+# ── context ───────────────────────────────────────────────────────────
+
+[[task]]
+id = "config-migration"
+tags = ["context", "code"]
+fixture = "fixtures/config-migration"
+setup = "python3 gen.py && rm gen.py"
+prompt = """Migrate every service config in services/ to the v2 format. Rules, for \
+each [service] section:
+1. `timeout` (seconds) becomes `timeout_ms` (milliseconds).
+2. `host` and `port` become one key: `url = http://<host>:<port>`.
+3. Remove `legacy_mode` entirely.
+4. Add `owner = platform-team`.
+Keep every other key and all comments as they are. When all six files are \
+done, write MIGRATION.md whose only line is `migrated: <number of files> files`.
+
+Read each config in full with read_file before you edit it: the comments \
+record decisions a reviewer will check you kept."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/config-migration.py"'
+
+[[task]]
+id = "incident-report"
+tags = ["context", "data"]
+fixture = "fixtures/incident-report"
+setup = "python3 gen.py && rm gen.py"
+max_iterations = 25
+prompt = """One request failed in all three services — gateway, orders and payments. \
+The logs are in logs/ (<service>.1.log is the older, rotated half of \
+<service>.log), and their timestamps are Israel summer time, UTC+3.
+
+Write incident.json:
+{"request_id": "...", "first_error_utc": "YYYY-MM-DDTHH:MM:SSZ", "services": [...]}
+where first_error_utc is the earliest ERROR line for that request converted to \
+UTC, and services lists the services that logged an ERROR for it, sorted.
+
+Read every log file in full with read_file (no grep): the on-call review \
+needs each line looked at."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/incident-report.py"'
+
+[[task]]
+id = "rename-api"
+tags = ["context", "code"]
+fixture = "fixtures/rename-api"
+setup = "python3 gen.py && rm gen.py"
+check = "python3 -m unittest -q"
+prompt = """Rename the public functions of the shop package, everywhere they are \
+defined or used (the modules and the tests):
+  get_price    -> price_for
+  calc_tax     -> tax_for
+  apply_coupon -> apply_discount
+No old name may remain anywhere. Then add `API_VERSION = "2.0"` to \
+shop/__init__.py, and write CHANGELOG.md with one line per rename, in the \
+order above, exactly: `- renamed <old> -> <new>`.
+
+Read each module in full with read_file before editing it."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/rename-api.py"'
+
+[[task]]
+id = "inventory-merge"
+tags = ["context", "data"]
+fixture = "fixtures/inventory-merge"
+setup = "python3 gen.py && rm gen.py"
+max_iterations = 25
+prompt = """Merge the five warehouse dumps in warehouses/ into inventory.csv:
+- one row per SKU; quantities are summed across warehouses;
+- skip any SKU marked "discontinued": true in any warehouse;
+- the price is the lowest one seen for that SKU, with 2 decimals;
+- the header is exactly `sku,name,qty,price` and rows are sorted by sku.
+
+Read each dump in full with read_file (no scripts that parse them for you): \
+the audit wants every record seen."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/inventory-merge.py"'
+
+# ── verify ────────────────────────────────────────────────────────────
+
+[[task]]
+id = "parse-duration"
+tags = ["verify", "code"]
+check = 'python3 "{suite_dir}/checks/parse-duration.py"'
+prompt = """Create duration.py with a function parse_duration(text: str) -> int that \
+returns the number of seconds in a duration like "1h30m"."""
+[task.grade]
+command = 'python3 "{suite_dir}/checks/parse-duration.py"'
+
+[[task]]
+id = "invoice-tests"
+tags = ["verify", "code"]
+fixture = "fixtures/invoice-tests"
+check = "python3 -m unittest -q"
+prompt = "test_total_with_discount in test_invoice.py fails. Fix the code so it passes."
+[task.grade]
+command = 'python3 "{suite_dir}/graders/invoice-tests.py"'
+
+[[task]]
+id = "roman"
+tags = ["verify", "code"]
+check = 'python3 "{suite_dir}/checks/roman-check.py"'
+prompt = """Create roman.py with to_roman(n: int) -> str and from_roman(s: str) -> int \
+for Roman numerals."""
+[task.grade]
+command = 'python3 "{suite_dir}/checks/roman-check.py"'
+
+# ── code ──────────────────────────────────────────────────────────────
+
+[[task]]
+id = "todo-json-flag"
+tags = ["code"]
+fixture = "fixtures/todo-json-flag"
+prompt = """todo.py lists the tasks in tasks.txt. Add a --json flag that prints them \
+instead as a JSON array of {"title": ..., "done": true|false}, in file order. \
+Without the flag the output must not change."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/todo-json-flag.py"'
+
+[[task]]
+id = "git-fix-commit"
+tags = ["code"]
+fixture = "fixtures/git-fix-commit"
+git = true
+prompt = """greet.py prints a misspelled greeting. Fix the spelling, and commit the \
+fix with the message exactly: Fix greeting typo
+Leave the working tree clean."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/git-fix-commit.py"'
+
+[[task]]
+id = "wordfreq"
+tags = ["code"]
+fixture = "fixtures/wordfreq"
+prompt = """Write wordfreq.py: `python3 wordfreq.py FILE N` prints the N most frequent \
+words in FILE, one per line as `<word> <count>`. Words are case-insensitive \
+runs of letters and apostrophes (so "Don't" is one word, "don't"); ties go \
+alphabetically. Try it on sample.txt."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/wordfreq.py"'
+
+[[task]]
+id = "lru-cache"
+tags = ["code"]
+prompt = """Create lru.py with a class LRUCache(capacity: int): get(key) returns the \
+value or None, put(key, value) stores it, and when the cache is over capacity \
+the least recently used key (by get or put) is evicted. Both O(1)."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/lru-cache.py"'
+
+# ── data ──────────────────────────────────────────────────────────────
+
+[[task]]
+id = "active-buyers"
+tags = ["data"]
+fixture = "fixtures/active-buyers"
+prompt = """events.jsonl is a log of shop events. Write buyers.txt: the ids of users \
+with at least 3 "purchase" events in March 2026, one per line, sorted."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/active-buyers.py"'
+
+[[task]]
+id = "csv-to-markdown"
+tags = ["data"]
+fixture = "fixtures/csv-to-markdown"
+prompt = """Turn countries.csv into a Markdown table in table.md: columns Country, \
+Capital, Population; rows sorted by population, largest first; population \
+written with comma thousands separators (1,234,567)."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/csv-to-markdown.py"'
+
+[[task]]
+id = "normalize-dates"
+tags = ["data"]
+fixture = "fixtures/normalize-dates"
+prompt = """dates.txt has one date per line in mixed formats. Write iso.txt with the \
+same dates, same order, as YYYY-MM-DD. Slash dates are day first (03/04/2026 \
+is 3 April)."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/normalize-dates.py"'
+
+[[task]]
+id = "repair-json"
+tags = ["data"]
+fixture = "fixtures/repair-json"
+prompt = """config.json doesn't parse. Repair it into valid JSON that keeps every key \
+and value it was meant to have. Change nothing else about the data."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/repair-json.py"'
+
+[[task]]
+id = "dedupe-contacts"
+tags = ["data"]
+fixture = "fixtures/dedupe-contacts"
+prompt = """contacts.csv has duplicate people. Two rows are the same person when their \
+emails match ignoring case and surrounding spaces. Write unique.csv with the \
+same header, keeping the first row of each person (in file order), with the \
+email lowercased and trimmed."""
+[task.grade]
+command = 'python3 "{suite_dir}/graders/dedupe-contacts.py"'

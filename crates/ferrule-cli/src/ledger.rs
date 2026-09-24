@@ -241,7 +241,8 @@ pub fn percentile(sorted: &[u64], pct: f64) -> u64 {
 
 pub fn aggregate(records: &[LedgerRecord]) -> Vec<SummaryRow> {
     let mut groups: BTreeMap<(String, String, String), Vec<&LedgerRecord>> = BTreeMap::new();
-    for r in records {
+    // `ferrule eval`'s one-per-task verdict rows aren't provider calls.
+    for r in records.iter().filter(|r| r.call_kind != "eval_result") {
         groups
             .entry((r.task_shape.clone(), r.provider.clone(), r.model.clone()))
             .or_default()
@@ -358,6 +359,7 @@ mod tests {
             error_kind: None,
             error_message: None,
             cost_usd: None,
+            eval: None,
         }
     }
 

@@ -13,6 +13,7 @@ members = [
     "crates/ferrule-cli",
     "crates/ferrule-agents",
     "crates/ferrule-extensions",
+    "crates/ferrule-eval",
 ]
 
 [workspace.dependencies]

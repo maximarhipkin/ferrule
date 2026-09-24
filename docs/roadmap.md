@@ -177,7 +177,21 @@ flagged by the scan in a test.
 - *On by default:* **no** — `[extensions] enabled = false`; the owner turns it
   on. Configured servers are scanned and re-scanned either way.
 
-### M14 — `ferrule eval`
+### M14 — `ferrule eval` (parts 1–5 done)
+
+**Status.** Built (`docs/eval.md`). What it does:
+- `ferrule eval run` runs a suite through the real agent loop, on any provider.
+- The naive/engineered A/B uses the same model for both variants.
+- Tasks are graded by commands and/or an LLM rubric.
+- Rubric criteria are checked against quotes from the evidence.
+- Calls go on the ledger tagged eval, under a budget cap.
+- The dry run prints a worst-case price before anything is sent to the model.
+- Every report ends with the diff against the last run. `ferrule eval report`
+  re-prints a saved run.
+
+It ships with a 20-task starter suite and a mock model for trying it with no key. Not
+done yet: the measured run on a real small local model and its chart. It has been
+checked on Linux; the macOS/Windows pass runs with the batch CI.
 
 **Goal.** "Smartest harness" becomes a measurement, not a slogan: every
 prompt, profile and threshold change is regression-tested — and the

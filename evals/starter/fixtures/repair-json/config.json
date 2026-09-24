@@ -1,0 +1,11 @@
+{
+  // service settings
+  "name": "orders",
+  "port": 8080,
+  "debug": False,
+  'hosts': ["a.internal", "b.internal",],
+  "limits": {"rps": 250, "burst": 500,},
+  "motd": "it's \"fine\"",
+  "ratio": .5,
+  "owner": null
+}
