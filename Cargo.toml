@@ -11,6 +11,7 @@ members = [
     "crates/ferrule-proxy",
     "crates/ferrule-memory",
     "crates/ferrule-cli",
+    "crates/ferrule-agents",
 ]
 
 [workspace.dependencies]
