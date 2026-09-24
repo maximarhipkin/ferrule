@@ -46,3 +46,13 @@ impl StopFlag {
         self.0.store(false, Ordering::SeqCst);
     }
 }
+
+/// Long-term memory for the start of a session. On an agent's first run,
+/// before the goal is added, the loop asks for a block about the session's
+/// goal and appends it to the system prompt, once, so the prompt stays
+/// byte-stable afterwards. `None` (or an empty block) adds nothing; a store
+/// that can't be read should answer `None`, not fail the run.
+#[async_trait::async_trait]
+pub trait SessionRecall: Send + Sync {
+    async fn recall(&self, goal: &str) -> Option<String>;
+}

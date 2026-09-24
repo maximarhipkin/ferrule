@@ -1,6 +1,7 @@
 use crate::error::CoreError;
 use crate::event::AgentEvent;
-use crate::hooks::{Budget, Inbox, StopFlag};
+use crate::history::{result_ref, SEARCH_HISTORY};
+use crate::hooks::{Budget, Inbox, SessionRecall, StopFlag};
 use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink};
 use crate::message::{Message, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
@@ -35,6 +36,11 @@ pub struct AgentConfig {
     pub overflow: ContextOverflow,
     /// Watch for a run going in circles, nudge once, then stop it.
     pub detect_stuck: bool,
+    /// At the compaction trigger, tool results older than the verbatim
+    /// tail and longer than this (chars) are shortened to a preview and a
+    /// `search_history` reference before anything is summarized. Only
+    /// when the agent has a transcript and the `search_history` tool.
+    pub shorten_tool_results_over: usize,
 }
 
 /// What the loop does when the context outgrows the profile's trigger.
@@ -61,6 +67,7 @@ impl Default for AgentConfig {
             max_verify_rounds: 3,
             overflow: ContextOverflow::Compact,
             detect_stuck: true,
+            shorten_tool_results_over: 4_000,
         }
     }
 }
@@ -181,6 +188,9 @@ pub struct Agent {
     budget: Option<Arc<dyn Budget>>,
     inbox: Option<Arc<dyn Inbox>>,
     stop: Option<StopFlag>,
+    session_recall: Option<Arc<dyn SessionRecall>>,
+    /// Session-start recall ran (it runs once per agent).
+    recalled: bool,
     /// What the current run was asked to do: kept verbatim through
     /// compaction, since it's what says when the work is done.
     goal: Option<String>,
@@ -213,6 +223,8 @@ impl Agent {
             budget: None,
             inbox: None,
             stop: None,
+            session_recall: None,
+            recalled: false,
             goal: None,
             messages: Vec::new(),
             usage: Usage::default(),
@@ -270,6 +282,13 @@ impl Agent {
     /// Stop at the next step once `flag` is set; see [`StopFlag`].
     pub fn with_stop_flag(mut self, flag: StopFlag) -> Self {
         self.stop = Some(flag);
+        self
+    }
+
+    /// Ask `recall` for long-term memory about the goal at the start of the
+    /// first run; see [`SessionRecall`].
+    pub fn with_session_recall(mut self, recall: Arc<dyn SessionRecall>) -> Self {
+        self.session_recall = Some(recall);
         self
     }
 
@@ -477,6 +496,7 @@ impl Agent {
             },
         )
         .await;
+        self.recall_for(goal).await;
         self.goal = Some(goal.to_string());
         self.incomplete = None;
         self.push(Message::user(goal));
@@ -732,6 +752,31 @@ impl Agent {
         .await;
     }
 
+    /// Session-start recall, once per agent: the goal is the session's
+    /// first user message (a resumed session's history already has one)
+    /// plus this run's request.
+    async fn recall_for(&mut self, goal: &str) {
+        if self.recalled {
+            return;
+        }
+        self.recalled = true;
+        let Some(recall) = self.session_recall.clone() else {
+            return;
+        };
+        let first = self
+            .messages
+            .iter()
+            .find(|m| m.role == crate::message::Role::User)
+            .and_then(|m| m.content.clone());
+        let query = match first {
+            Some(first) if first != goal => format!("{first}\n{goal}"),
+            _ => goal.to_string(),
+        };
+        if let Some(block) = recall.recall(&query).await.filter(|b| !b.trim().is_empty()) {
+            self.append_system_prompt(&block);
+        }
+    }
+
     /// Adds to the history and the transcript.
     fn push(&mut self, msg: Message) {
         self.log(&msg);
@@ -789,6 +834,12 @@ impl Agent {
         info!(before, trigger, "compacting context");
 
         self.dedupe_tool_results();
+        // Shortening frees room without a provider call and without losing
+        // anything (the full text stays fetchable); when it's enough, the
+        // history stays verbatim and no summary is made.
+        if self.shorten_old_tool_results(tx).await > 0 && self.est_context_tokens() <= trigger {
+            return Ok(());
+        }
 
         let keep = self.config.compaction_keep_last;
         if self.messages.len() <= keep + 1 {
@@ -796,6 +847,7 @@ impl Agent {
         }
         let split = self.messages.len() - keep;
         let head = &self.messages[..split];
+        let folded_refs = shortened_refs(head);
 
         // Skills activated in the folded part stay in force: their blocks
         // ride along verbatim (unless the verbatim tail already holds them)
@@ -860,6 +912,13 @@ impl Agent {
                 .iter()
                 .any(|m| m.role == crate::message::Role::User && m.content.as_deref() == Some(goal))
         };
+        if !folded_refs.is_empty() {
+            summary_msg.push_str(
+                "\n\n[Older tool results that were shortened, now folded into this summary — \
+                 search_history {\"ref\": …} returns any of them in full]\n",
+            );
+            summary_msg.push_str(&folded_refs.join(" "));
+        }
         if let Some(goal) = self.goal.as_deref().filter(|g| !goal_in_tail(g)) {
             summary_msg.push_str("\n\n[The request being worked on, verbatim]\n");
             summary_msg.push_str(goal);
@@ -933,6 +992,79 @@ impl Agent {
         }
     }
 
+    /// Shorten tool results outside the verbatim tail that are longer than
+    /// `shorten_tool_results_over` to a preview and a `search_history`
+    /// reference. Only when the full text can be fetched back (a
+    /// transcript and the tool); skill blocks are never shortened.
+    /// Returns how many were shortened.
+    async fn shorten_old_tool_results(&mut self, tx: &mpsc::Sender<AgentEvent>) -> usize {
+        if self.transcript.is_none() || !self.tools.contains(SEARCH_HISTORY) {
+            return 0;
+        }
+        let keep = self.config.compaction_keep_last;
+        let limit = self.config.shorten_tool_results_over;
+        let before = self.est_context_tokens();
+        let end = self.messages.len().saturating_sub(keep);
+        let mut shortened = 0;
+        for i in 0..end {
+            let m = &self.messages[i];
+            if m.role != crate::message::Role::Tool {
+                continue;
+            }
+            let Some(text) = m.content.as_deref() else {
+                continue;
+            };
+            if text.len() <= limit
+                || text.chars().count() <= limit
+                || text.contains(SKILL_CONTENT_OPEN)
+                || text.starts_with(SHORTENED_PREFIX)
+            {
+                continue;
+            }
+            let tool = m
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| {
+                    self.messages[..i]
+                        .iter()
+                        .rev()
+                        .flat_map(|a| a.tool_calls.iter())
+                        .find(|c| c.id == id)
+                })
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "tool".into());
+            let preview: String = text.chars().take(SHORTENED_PREVIEW_CHARS).collect();
+            let replacement = format!(
+                "{SHORTENED_PREFIX}{tool}, {} chars) was shortened to save context. It began:\n\
+                 {preview}\n…\nThe full text is still in this session's history: \
+                 search_history {{\"ref\": \"{}\"}}]",
+                text.chars().count(),
+                result_ref(text)
+            );
+            self.messages[i].content = Some(replacement);
+            shortened += 1;
+        }
+        if shortened > 0 {
+            let after = self.est_context_tokens();
+            info!(before, after, shortened, "shortened old tool results");
+            self.emit(
+                tx,
+                AgentEvent::ToolResultsShortened {
+                    shortened,
+                    est_tokens_before: before,
+                    est_tokens_after: after,
+                },
+            )
+            .await;
+            if let Some(t) = &self.transcript {
+                let _ = t.log_event(&format!(
+                    "shortened: {shortened} old tool results, {before} -> {after} est tokens"
+                ));
+            }
+        }
+        shortened
+    }
+
     /// Drop duplicate tool results, keeping only the most recent copy —
     /// deterministic 15-30% context savings with zero information loss.
     fn dedupe_tool_results(&mut self) {
@@ -956,6 +1088,42 @@ impl Agent {
             }
         }
     }
+}
+
+/// How a shortened tool result starts: `[ferrule: an older tool result (`
+/// + tool name, size, preview and the `search_history` reference.
+const SHORTENED_PREFIX: &str = "[ferrule: an older tool result (";
+const SHORTENED_PREVIEW_CHARS: usize = 600;
+
+/// The `search_history` references of shortened results in `messages`
+/// (and those an earlier summary listed), the newest 20, oldest first.
+fn shortened_refs(messages: &[Message]) -> Vec<String> {
+    const MARK: &str = "search_history {\"ref\": \"";
+    let mut refs: Vec<String> = Vec::new();
+    for text in messages
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.role,
+                crate::message::Role::Tool | crate::message::Role::User
+            )
+        })
+        .filter_map(|m| m.content.as_deref())
+    {
+        let mut pos = 0;
+        while let Some(i) = text[pos..].find(MARK) {
+            let start = pos + i + MARK.len();
+            let r: String = text[start..].chars().take(17).collect();
+            if r.len() == 17 && r.starts_with('r') && r[1..].chars().all(|c| c.is_ascii_hexdigit())
+            {
+                refs.retain(|x| x != &r);
+                refs.push(r);
+            }
+            pos = start;
+        }
+    }
+    let skip = refs.len().saturating_sub(20);
+    refs.split_off(skip)
 }
 
 /// Skill blocks arrive as tool results and, after a compaction, inside the
