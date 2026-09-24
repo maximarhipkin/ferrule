@@ -7,6 +7,9 @@ slow (never responds, for timeout/concurrency tests), crash (exits without
 responding), ping_first (sends a server->client ping reusing the call's own
 id before answering, to catch id-space confusion), write (creates a file,
 reporting a refusal as text rather than failing), env (reads a variable).
+
+`mock_mcp.py --warm <file>` is a warm-up run instead: it appends the value
+of FERRULE_TEST_WARM to <file> and exits.
 """
 import sys, json, os
 
@@ -80,4 +83,8 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--warm":
+        with open(sys.argv[2], "a") as f:
+            f.write(os.environ.get("FERRULE_TEST_WARM", "<unset>") + "\n")
+        sys.exit(0)
     main()

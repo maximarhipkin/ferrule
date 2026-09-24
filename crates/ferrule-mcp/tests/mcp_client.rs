@@ -249,3 +249,28 @@ async fn env_remove_takes_a_variable_out_but_env_still_sets_one() {
         .unwrap();
     assert_eq!(back.content, "set");
 }
+
+#[tokio::test]
+async fn the_warm_up_runs_with_the_servers_env_before_every_call() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_mcp.py");
+    let log = tempfile::tempdir().unwrap().keep().join("warm.log");
+    let mut cfg = fixture_cfg("test", Some(5));
+    cfg.warm_up = vec![
+        script.into(),
+        "--warm".into(),
+        log.to_string_lossy().into_owned(),
+    ];
+    cfg.env.insert("FERRULE_TEST_WARM".into(), "yes".into());
+    let tools = connect_and_build_tools(cfg, host()).await.expect("connect");
+    assert!(!log.exists(), "listing tools needs no warm-up");
+    let echo = tools
+        .iter()
+        .find(|t| t.definition().name == "mcp__test__echo")
+        .expect("echo tool");
+    let ctx = ToolContext::default();
+    for _ in 0..2 {
+        echo.call(json!({"text": "hi"}), &ctx).await.unwrap();
+    }
+    let runs = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(runs.lines().collect::<Vec<_>>(), ["yes", "yes"]);
+}

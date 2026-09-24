@@ -230,11 +230,11 @@ impl McpClient {
     /// caches and temp dir inside the state dir, since `npx` and `uvx`
     /// can't start without writing somewhere. Its `env_remove` config is
     /// applied next and its `env` last, overriding any of it.
-    fn build_command(&self) -> Result<tokio::process::Command, McpError> {
+    fn build_command(&self, args: &[String]) -> Result<tokio::process::Command, McpError> {
         let program = resolve_program(&self.cfg.command);
         let std_cmd = self
             .sandbox
-            .command(program, &self.cfg.args, &self.workspace)
+            .command(program, args, &self.workspace)
             .map_err(McpError::Spawn)?;
         let mut cmd = tokio::process::Command::from(std_cmd);
         if self.sandbox.is_active() {
@@ -249,6 +249,11 @@ impl McpClient {
                 .env("npm_config_cache", state.join(".npm"))
                 .env("UV_CACHE_DIR", state.join(".cache/uv"))
                 .env("TMPDIR", tmp);
+            // macOS apps find their home (and `~/Library/Application
+            // Support`) through CoreFoundation, which ignores `HOME` and
+            // honours this instead.
+            #[cfg(target_os = "macos")]
+            cmd.env("CFFIXED_USER_HOME", state);
         }
         for name in &self.cfg.env_remove {
             match name.strip_suffix('*') {
@@ -268,8 +273,33 @@ impl McpClient {
         Ok(cmd)
     }
 
+    /// Runs the `warm_up` command, if the config has one, and waits for it
+    /// with no stdio attached. A failure is only logged: the tool call
+    /// that follows reports what is wrong.
+    async fn warm_up(&self) {
+        if self.cfg.warm_up.is_empty() || self.http.is_some() {
+            return;
+        }
+        let run = async {
+            let mut cmd = self.build_command(&self.cfg.warm_up)?;
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            cmd.status().await.map_err(McpError::Spawn)
+        };
+        match tokio::time::timeout(self.cfg.startup_timeout(), run).await {
+            Ok(Ok(status)) if status.success() => {}
+            Ok(Ok(status)) => {
+                tracing::warn!(server = %self.cfg.name, "warm-up exited with {status}")
+            }
+            Ok(Err(e)) => tracing::warn!(server = %self.cfg.name, "warm-up failed: {e}"),
+            Err(_) => tracing::warn!(server = %self.cfg.name, "warm-up timed out"),
+        }
+    }
+
     async fn spawn_and_handshake(&self) -> Result<Connection, McpError> {
-        let mut cmd = self.build_command()?;
+        let mut cmd = self.build_command(&self.cfg.args)?;
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -436,6 +466,7 @@ impl McpClient {
         arguments: Value,
         timeout: Duration,
     ) -> Result<CallToolResult, McpError> {
+        self.warm_up().await;
         let params = json!({ "name": name, "arguments": arguments });
         let result = self.request("tools/call", params, timeout).await?;
         Ok(serde_json::from_value(result)?)
@@ -479,14 +510,26 @@ pub struct ContentPart {
     pub kind: String,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default, rename = "mimeType")]
+    pub mime_type: Option<String>,
 }
 
 impl CallToolResult {
-    /// Concatenate every `text` content part — the model only ever sees text.
+    /// Every `text` content part, joined. The model only sees text from a
+    /// tool so far, so any other part (an image, audio, a resource) becomes
+    /// a line saying it was left out, rather than vanishing.
     pub fn text(&self) -> String {
         self.content
             .iter()
-            .filter_map(|c| c.text.as_deref())
+            .map(|c| match &c.text {
+                Some(text) if c.kind == "text" || c.kind.is_empty() => text.clone(),
+                _ => {
+                    let what = c.mime_type.as_deref().unwrap_or(&c.kind);
+                    format!(
+                        "[{what} content left out: tools can only return text to the model so far]"
+                    )
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -523,6 +566,23 @@ fn find_in_path(command: &str, path: &std::ffi::OsStr, exts: &str) -> Option<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_the_model_cant_see_is_named_not_dropped() {
+        let result: CallToolResult = serde_json::from_value(json!({
+            "content": [
+                { "type": "text", "text": "Screenshot taken" },
+                { "type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png" },
+                { "type": "audio", "data": "" }
+            ]
+        }))
+        .unwrap();
+        let text = result.text();
+        assert!(text.starts_with("Screenshot taken\n"), "{text}");
+        assert!(text.contains("[image/png content left out"), "{text}");
+        assert!(text.contains("[audio content left out"), "{text}");
+        assert!(!text.contains("iVBOR"), "no base64 in the context");
+    }
 
     #[test]
     fn a_bare_name_is_found_with_a_pathext_extension() {

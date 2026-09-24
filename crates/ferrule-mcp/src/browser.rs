@@ -178,10 +178,23 @@ impl BrowserConfig {
             hide_args: HIDDEN_ARGS.iter().map(|s| s.to_string()).collect(),
             writable_roots: sandbox_roots(!self.chrome_sandbox),
             desktop_services: true,
+            warm_up: if cfg!(windows) {
+                WINDOWS_WARM_UP.iter().map(|s| s.to_string()).collect()
+            } else {
+                Vec::new()
+            },
             ..Default::default()
         })
     }
 }
+
+/// On Windows agent-browser 0.38.1's MCP server hangs on the first command
+/// that has to start its daemon: it runs each command as a CLI child and
+/// reads that child's output to the end, and the daemon the child starts
+/// inherits the pipe, so the end never comes. A CLI run with no stdio
+/// starts the daemon first (or again, after it idles out); `get url` does
+/// that and nothing else of note.
+pub const WINDOWS_WARM_UP: &[&str] = &["get", "url"];
 
 /// agent-browser's config file for the server whose state dir is
 /// `state_dir`: beside it, not in it. The state dir is writable from inside
@@ -705,6 +718,7 @@ mod tests {
         let own = dir.path().join("browser.agent-browser.json");
         assert_eq!(config_file(&state), own);
         assert!(got.desktop_services);
+        assert_eq!(got.warm_up.is_empty(), !cfg!(windows));
         assert_eq!(
             env("AGENT_BROWSER_CONFIG"),
             Some(own.to_string_lossy().into())
