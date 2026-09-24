@@ -276,10 +276,30 @@ that convention yet — ask before introducing one).
     restart (a 2 s config follower), `enabled_tools` and output caps, a
     setup-wizard MCP step, `ferrule mcp list`/`remove`.
     `docs/m17-mcp-add.md` is the design.
-  - **M18 lifecycle hooks** (§4.6): SessionStart / PreToolUse /
-    PostToolUse / Stop / PreCompact events; command handlers where exit 2
-    blocks and feeds stderr back to the model; `additionalContext`
-    injection.
+  - **M18 lifecycle hooks** (§4.6): **parts 1–4 done** (2026-09-25,
+    branch `m18-hooks`; see the M18 session-log entry). Ten events with
+    Claude Code's payload and exit-code contract (0 proceeds, 2 blocks
+    with stderr as the reason, anything else is logged and shown to the
+    owner only), command hooks with a per-hook timeout and a process-tree
+    kill, `additionalContext` appended after the cached prefix (capped),
+    `verify_command` as the built-in Stop check with its old behaviour,
+    user hooks from the trusted config only, workspace hooks behind
+    `[hooks] project` plus `ferrule hooks trust` pinned to the file's
+    SHA-256, children inheriting PreToolUse/PostToolUse with
+    SubagentStart/Stop in the parent, a JSONL audit log and `ferrule
+    hooks list`. Hooks run as the owner, outside the sandbox.
+    `docs/m18-hooks.md` is the design. **Open edges:** a `--config` inside
+    a writable workspace is trusted; `[sandbox] mode = "off"` lets the
+    shell write the trust record; a workspace hook's relative command
+    runs from the root's workspace even for a child in a worktree;
+    gateway sessions never fire SessionEnd. **Unverified on
+    macOS/Windows until the batch CI pass:** the shell choice (`sh -c`,
+    Git Bash, or PowerShell; `sh -c` vs `cmd /C`/PowerShell), exit codes
+    (2 from PowerShell), killing a timed-out process tree (`killpg` on
+    macOS, `taskkill /T /F` on Windows), stdin/stdout piping of the
+    payload and output, the trust and audit files' permissions, and the
+    `canonicalize`d workspace key; the integration tests are
+    `#[cfg(unix)]`.
   - **M19 trust & cost** (§4.11–4.13): hard budget caps (per
     run/day/task) with a kill switch, approval gates for destructive
     actions (Telegram approve/deny), plan mode on the read-only sandbox
@@ -2348,3 +2368,56 @@ only which MCP tools exist.
 - The throwaway and late proxies' CA bundle, as the server's runtime
   (Node, Python) reads it on macOS and Windows.
 - Killing the probe's process tree on Windows.
+
+### 2026-09-25 — M18 lifecycle hooks (Devi, Opus 5.5)
+
+Branch `m18-hooks`, cut from main at a1f06ce. Design first
+(`docs/m18-hooks.md`), then four parts:
+
+- **Part 1:** `ferrule-core::lifecycle`: ten events, Claude Code's payload
+  and its exit-code/JSON-output contract, name-or-glob matchers, an
+  ordered `HookSet` (built-in, then user, then workspace; the first block
+  wins) with caps and an audit trait.
+  - `verify_command` is the built-in Stop check, with the same message,
+    `max_verify_rounds`, events and `needs_check` rule as before.
+  - PreToolUse/PostToolUse around every tool call; notes appended to the
+    tool result or as a user message after the prompt, never in the
+    system prompt; Stop capped at `max_stop_blocks`; Pre/PostCompact,
+    SessionEnd, and a `HookFinished` event.
+- **Part 2:** `ferrule-hooks`: command hooks (payload on stdin, per-hook
+  timeout, the process group or tree killed on timeout, 64 KiB output
+  caps), `[hooks]` and `.ferrule/hooks.toml` with unknown keys as
+  errors, the trust record pinned to the file's SHA-256 under
+  `private/`, the JSONL audit log and the `hooks list` rendering.
+- **Part 3:** the CLI and the supervisor. `[hooks]` counts only from a
+  trusted config; every top-level agent gets the user's and trusted
+  workspace hooks; the untrusted notice once per process; children get
+  the root's PreToolUse/PostToolUse via `attach_root`, and
+  SubagentStart/Stop fire in the parent around each child run; SessionEnd
+  for `run`/`chat`; `ferrule hooks list|trust|untrust` (trust only at a
+  terminal, and only what was shown); a doctor check.
+- **Part 4:** `tests/hooks.rs`, ten real-binary tests against a scripted
+  model, one per "done means" item: the built-in check, a PreToolUse exit
+  2 (reason in the next request, tool never ran, audited),
+  `additionalContext` after the cached prefix, untrusted → trusted →
+  edited workspace hooks, a hung hook killed with its child at 1 s, an
+  always-blocking Stop hook capped at 3, a child's call blocked by the
+  parent's PreToolUse plus SubagentStart/Stop payloads and blocks, eval
+  ignoring every owner hook, and the model failing to write, trust or
+  enable a hook.
+
+**Mock eval, `ferrule eval run evals/starter --variant ab`** (the real
+binary, all 20 tasks), after part 1 and again at the end: engineered
+20/20, naive 11/20 (+45 pts), $0.53 vs $0.45, 88 vs 62 calls, 4 failed
+checks fixed. Both runs match on every task. The built-in check keeps the
+same wording and cap, so nothing moved.
+
+**Design defaults for Max to confirm:** the ten in `docs/m18-hooks.md`
+§10 — workspace hooks off by default plus per-file trust; fail open on
+timeout/crash; sequential, first block wins; `max_stop_blocks = 3`;
+globs not regexes; a SubagentStart block fails the child rather than
+`spawn_agent`; no SessionEnd for gateway sessions; no eval opt-in; a
+PostToolUse block is a note; hook errors go to the owner only.
+
+**M18 open edges and the macOS/Windows-unverified spots:** in the M18
+bullet under Current State and `docs/m18-hooks.md` §11.

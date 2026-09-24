@@ -304,7 +304,34 @@ per-server `enabled_tools` filters and per-tool output caps.
 Telegram message, with no daemon restart; a tool-list change mid-session
 is picked up and re-scanned (M13's hook).
 
-### M18 — lifecycle hooks
+### M18 — lifecycle hooks (done)
+
+**Status.** Built (design: `docs/m18-hooks.md`).
+- Ten events — SessionStart/End, UserPromptSubmit, PreToolUse,
+  PostToolUse, Stop, PreCompact/PostCompact, SubagentStart/Stop — with
+  Claude Code's JSON payload on stdin and its exit-code contract: 0
+  proceeds (stdout may be JSON), 2 blocks with stderr as the reason the
+  model sees, anything else is logged and shown to the owner, never the
+  model. Matchers are names or globs.
+- Command hooks have a per-hook timeout; on timeout the whole process
+  tree is killed and the turn goes on. `additionalContext` is appended
+  after the cached prefix, never in the system prompt, capped at 10,000
+  characters.
+- `verify_command` is the built-in Stop check, with the same message,
+  cap and events as before; a Stop hook that always blocks is capped
+  (`max_stop_blocks`, default 3) and the run ends incomplete. Gate
+  scripts stay gates (they decide whether a session starts at all).
+- User hooks come from the trusted config only (`--config`,
+  `$FERRULE_CONFIG`, the global config). Workspace hooks
+  (`.ferrule/hooks.toml`) need `[hooks] project = true` and `ferrule
+  hooks trust`, at a terminal, pinned to the file's SHA-256; any edit
+  untrusts them, and the owner is told what won't run.
+- **Hooks run with the owner's privileges, outside the sandbox.** The
+  model can't add, edit or enable one: no tool touches hook config, the
+  trust record is under `private/`, and `trust` needs a terminal.
+- Sub-agents inherit PreToolUse/PostToolUse; SubagentStart/Stop fire in
+  the parent. Every run goes to `<data dir>/hooks/runs.jsonl`; `ferrule
+  hooks list` shows the hooks and recent runs. Eval never loads hooks.
 
 **Goal.** Ferrule's built-ins (`verify_command`, gate scripts) become
 instances of a general mechanism users can automate on — the extension

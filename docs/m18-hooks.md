@@ -113,6 +113,30 @@ its working directory.
   stderr. The model never sees it, and the turn goes on as if the hook
   weren't there.
 
+On the owner's screen, `ferrule run`/`chat` print an error as
+``[hook <Event> `cmd`: <error>]`` on stderr (the error is `exit code N:
+<stderr tail>`, `timed out and was killed` or `couldn't start: …`) and a
+block as ``[hook <Event> `cmd` blocked]``.
+
+### Environment
+
+A command hook runs in the shell tool's shell (`sh -c`; on Windows Git
+Bash's `bash -c`, else PowerShell with `-EncodedCommand`) in the
+workspace, with the payload on stdin and `FERRULE_PROJECT_DIR`,
+`CLAUDE_PROJECT_DIR` (so Claude Code hook scripts work unchanged) and
+`FERRULE_HOOK_EVENT` set. It runs as the owner, **outside the sandbox and
+the credential proxy**: whatever the owner can do, a hook can do.
+
+### What the model sees
+
+- A Stop block: a user message ``[hook: Stop] This isn't done yet:\n\n<reason>``
+  (SubagentStop: the same with `SubagentStop`, as the child's next message).
+- A PreToolUse block: the tool isn't run, and its result is
+  `error: not run: a PreToolUse hook blocked it: <reason>`.
+- A PostToolUse block: the result is kept and the reason is appended, as
+  a note is (§5), since the tool already ran.
+- Notes: §5.
+
 ## 2. Configuration
 
 Two places, same entry format:
@@ -173,6 +197,13 @@ Workspace hooks run only when both are true:
    changes afterwards — edited by the owner, a `git pull`, or the model —
    its hooks stop running until it is trusted again.
 
+`ferrule hooks trust` shows every entry and asks `[y/N]`, and only at a
+terminal: with stdin not a terminal it refuses ("asks the owner at a
+terminal"). The shell tool's stdin is never a terminal, so the model
+can't answer the prompt for the owner. After the answer it compares the
+fingerprint it stored with the text it showed, and undoes the trust if
+the file changed in between. `ferrule hooks untrust` removes the record.
+
 Untrusted workspace hooks never run. Each time an agent is built, the
 owner is told, once per process: `ferrule: <workspace>/.ferrule/hooks.toml
 has N hooks that won't run: <why>. Run \`ferrule hooks trust\` if you
@@ -192,8 +223,11 @@ trust them.` `ferrule hooks list` and `ferrule doctor` say the same.
   sandboxed commands and refused by the file tools.
 
 The one limit: with `[sandbox] mode = "off"`, a shell command can write
-anything the owner can, including the global config. No ferrule
-guarantee survives that, and hooks are no exception.
+anything the owner can, including the global config and the trust
+record. No ferrule guarantee survives that, and hooks are no exception.
+The same holds for a `--config`/`$FERRULE_CONFIG` file the owner keeps
+inside a workspace the agent can write to: it is trusted by where it was
+named, not by where it lives.
 
 ## 4. Matchers, ordering and merging
 
@@ -269,6 +303,9 @@ every behaviour it had:
   (`` `cmd` still fails after N rounds of fixes ``).
 - A failing check stops that finish: user Stop hooks don't run until
   the check passes.
+- Once it passed, it doesn't run again at a later finish of the same
+  run unless files changed since (the loop's `needs_check` flag), so a
+  user Stop hook sending the run back doesn't rerun a passing check.
 
 The existing verify tests pass unchanged, and M14's engineered eval
 variant (which uses `with_verifier`) stays at 20/20.
@@ -300,7 +337,16 @@ supervisor. They use the parent's session id and the child's
 task, before its first model call and after its final answer. So a
 blocking SubagentStart shows up as the child failing with the hook's
 reason, which the parent gets in its `agent_notice` (as for any failed
-child), rather than as an error from `spawn_agent` itself.
+child), rather than as an error from `spawn_agent` itself. Their working
+directory is the parent's workspace, not the child's worktree. A child
+run that fails still fires SubagentStop (with no
+`last_assistant_message`), but a block then can't send it on: it stays
+failed.
+
+The supervisor takes the hooks from the root agent when the root is
+attached (`attach_root`), so there's one hook set per process: a process
+has one config and one workspace. A sub-agent is built without the
+config's hooks and gets only what the supervisor hands it.
 
 **Eval is hermetic.** `ferrule eval` builds its agents itself
 (`ferrule-eval`'s `variant::build`). It never reads `[hooks]` or a
@@ -387,3 +433,25 @@ isn't under `private/`. Commands may read it, and they can't write it
 7. SessionEnd fires for `ferrule run` and `ferrule chat`, not for
    gateway sessions, which don't end: they idle until the process stops.
 8. Eval has no hook opt-in yet.
+9. A PostToolUse block can't undo the call, so it reaches the model as a
+   note on the result rather than stopping anything.
+10. Hook errors are shown to the owner and logged, never to the model.
+
+## 11. Open edges
+
+- A `--config`/`$FERRULE_CONFIG` file inside a writable workspace is
+  trusted (§3); `doctor` doesn't warn about it yet.
+- With `[sandbox] mode = "off"` the shell can write the trust record.
+- A workspace hook's relative command (`./scripts/guard.sh`) runs in the
+  root's workspace, also for a child working in its own worktree: the
+  child's PreToolUse sees the child's `cwd` in the payload, but the
+  command runs from the root's workspace.
+- Gateway sessions never fire SessionEnd (§10.7).
+- **Unverified on macOS/Windows until the batch CI pass:** the shell
+  choice (`sh -c`, Git Bash, or PowerShell when Git Bash is missing;
+  `cmd /C` isn't used), exit codes as Git Bash and PowerShell report them
+  (exit 2 from a PowerShell script needs an explicit `exit 2`), killing a timed-out process tree (`killpg` on macOS,
+  `taskkill /T /F` on Windows), piping the payload to stdin and reading
+  stdout/stderr, the trust and audit files' permissions, `canonicalize` in
+  the trust record's workspace key (`/private/var`, `\\?\`), and the
+  integration tests, which are `#[cfg(unix)]` and use `sh` scripts.
