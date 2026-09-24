@@ -146,6 +146,11 @@ step(c, "Use the recommended one", "y\r")
 i = c.expect([r"sandbox works here . [^\r]+", "commands will run unsandboxed"])
 check("sandbox reported", True)
 print("  sandbox:", c.match.group(0))
+# The browser is offered only when this machine has Chrome and agent-browser.
+if c.expect([r"Let the agent use [^\r]+\?", "No Chrome or Chromium found|isn't ready"]) == 0:
+    time.sleep(0.15)
+    c.send("n\r")
+step(c, "Add an MCP server now", "n\r")
 i = c.expect(["No background service here", "Run it in the background now"])
 if i == 1:
     c.send("n\r")
