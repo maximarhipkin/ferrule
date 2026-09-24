@@ -57,6 +57,12 @@ pub struct McpServerConfig {
     /// browser; not reachable from a config file.
     #[serde(skip)]
     pub desktop_services: bool,
+    /// Arguments for a short run of the same command, env and sandbox, with
+    /// no stdio, before each tool call. Set only for the built-in browser
+    /// on Windows (see `browser::WINDOWS_WARM_UP`); not reachable from a
+    /// config file.
+    #[serde(skip)]
+    pub warm_up: Vec<String>,
 }
 
 impl Default for McpServerConfig {
@@ -74,6 +80,7 @@ impl Default for McpServerConfig {
             env_remove: Vec::new(),
             hide_args: Vec::new(),
             desktop_services: false,
+            warm_up: Vec::new(),
         }
     }
 }

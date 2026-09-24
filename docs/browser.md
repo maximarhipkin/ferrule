@@ -57,7 +57,9 @@ LocalAppData on Windows.
   may talk to the window server, the pasteboard, the keychain daemon and
   the other per-user services any app can. Its file writes and the hidden
   paths are confined exactly as before, and the model's own commands never
-  get this. Windows has no sandbox yet, so there the browser runs
+  get this. Its home is the state dir there too: macOS apps look up
+  `~/Library` through CoreFoundation, which ignores `HOME`, so ferrule sets
+  `CFFIXED_USER_HOME` as well. Windows has no sandbox yet, so there the browser runs
   unconfined, like every MCP server.
 - **The credential proxy.** With `[secrets]`, Chrome sends HTTPS through
   ferrule's credential proxy, authenticates to it, and trusts the proxy's
@@ -129,7 +131,13 @@ not have one. `doctor` recognises the failure and suggests, in this order:
 ## Limits
 
 - Screenshots are saved as files in the state dir; the model doesn't see
-  the image itself yet.
+  the image itself yet. An image a tool returns inline is replaced by a
+  note saying what was left out, so the model knows it's there.
+- On Windows agent-browser 0.38's MCP server hangs on the first command
+  that has to start its background daemon (the daemon inherits the pipe
+  the server is reading). ferrule runs `agent-browser get url` with no
+  output attached before each browser call, which starts the daemon if it
+  isn't running. It costs one short process per call, on Windows only.
 - `read` with a URL fetches it with agent-browser's own HTTP client rather
   than Chrome, so Chrome's proxy flags don't apply to it; it gets only the
   proxy environment every sandboxed process gets.
