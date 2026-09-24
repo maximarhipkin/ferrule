@@ -157,13 +157,17 @@ pub fn reporter(report: &'static str) -> Brain {
 
 /// Attaches a root that never thinks; for driving the supervisor directly.
 pub fn idle_root(rig: &Rig, id: &str) {
+    idle_root_in(rig, id, rig.dir.path());
+}
+
+pub fn idle_root_in(rig: &Rig, id: &str, workspace: &std::path::Path) {
     let provider = Scripted {
         brain: reporter("root"),
         gate: None,
         seen: Arc::default(),
     };
     rig.sup
-        .attach_root(agent(provider, None, rig.dir.path()), id, rig.dir.path())
+        .attach_root(agent(provider, None, workspace), id, workspace)
         .unwrap();
 }
 
@@ -174,6 +178,7 @@ pub fn spawn(sup: &Supervisor, caller: &str, task: &str) -> Result<String, Agent
             task: task.into(),
             name: None,
             role: Role::Worker,
+            worktree: true,
         },
     )
     .map(|s| s.id)

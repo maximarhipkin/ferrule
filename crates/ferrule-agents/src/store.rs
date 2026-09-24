@@ -62,6 +62,8 @@ pub struct AgentRow {
     pub workspace: PathBuf,
     pub worktree: Option<PathBuf>,
     pub branch: Option<String>,
+    /// The commit the worktree started at.
+    pub base: Option<String>,
     pub status: Status,
     pub result: Option<String>,
     pub tokens: u64,
@@ -75,7 +77,7 @@ pub struct AgentStore {
 
 const AGENT_COLUMNS: &str =
     "id, tree, parent, depth, name, role, task, session, workspace, worktree, branch, \
-     status, result, tokens, created_at, updated_at";
+     base, status, result, tokens, created_at, updated_at";
 
 impl AgentStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AgentsError> {
@@ -102,6 +104,7 @@ impl AgentStore {
                  workspace TEXT NOT NULL,
                  worktree TEXT,
                  branch TEXT,
+                 base TEXT,
                  status TEXT NOT NULL,
                  result TEXT,
                  tokens INTEGER NOT NULL DEFAULT 0,
@@ -154,7 +157,7 @@ impl AgentStore {
     pub fn insert(&self, a: &AgentRow) -> Result<(), AgentsError> {
         self.conn.lock().unwrap().execute(
             &format!(
-                "INSERT INTO agents ({AGENT_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+                "INSERT INTO agents ({AGENT_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
             ),
             params![
                 a.id,
@@ -168,6 +171,7 @@ impl AgentStore {
                 a.workspace.to_string_lossy(),
                 a.worktree.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 a.branch,
+                a.base,
                 a.status.as_str(),
                 a.result,
                 a.tokens as i64,
@@ -254,19 +258,33 @@ impl AgentStore {
         Ok(n > 0)
     }
 
+    /// Records the copy of the repo an agent works in.
     pub fn set_worktree(
         &self,
         id: &str,
-        worktree: Option<&Path>,
+        workspace: &Path,
+        worktree: &Path,
         branch: Option<&str>,
+        base: &str,
     ) -> Result<(), AgentsError> {
         self.conn.lock().unwrap().execute(
-            "UPDATE agents SET worktree = ?2, branch = ?3 WHERE id = ?1",
+            "UPDATE agents SET workspace = ?2, worktree = ?3, branch = ?4, base = ?5 WHERE id = ?1",
             params![
                 id,
-                worktree.map(|p| p.to_string_lossy().into_owned()),
-                branch
+                workspace.to_string_lossy(),
+                worktree.to_string_lossy(),
+                branch,
+                base
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Back to working in `workspace`, with no copy of the repo.
+    pub fn clear_worktree(&self, id: &str, workspace: &Path) -> Result<(), AgentsError> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE agents SET workspace = ?2, worktree = NULL, branch = NULL, base = NULL WHERE id = ?1",
+            params![id, workspace.to_string_lossy()],
         )?;
         Ok(())
     }
@@ -330,11 +348,12 @@ fn row_to_agent(r: &Row) -> rusqlite::Result<AgentRow> {
         workspace: PathBuf::from(r.get::<_, String>(8)?),
         worktree: r.get::<_, Option<String>>(9)?.map(PathBuf::from),
         branch: r.get(10)?,
-        status: Status::parse(&r.get::<_, String>(11)?),
-        result: r.get(12)?,
-        tokens: r.get::<_, i64>(13)? as u64,
-        created_at: r.get(14)?,
-        updated_at: r.get(15)?,
+        base: r.get(11)?,
+        status: Status::parse(&r.get::<_, String>(12)?),
+        result: r.get(13)?,
+        tokens: r.get::<_, i64>(14)? as u64,
+        created_at: r.get(15)?,
+        updated_at: r.get(16)?,
     })
 }
 
@@ -355,6 +374,7 @@ mod tests {
             workspace: PathBuf::from("/w"),
             worktree: None,
             branch: None,
+            base: None,
             status,
             result: None,
             tokens: 0,

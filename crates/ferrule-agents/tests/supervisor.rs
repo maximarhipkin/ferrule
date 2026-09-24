@@ -370,6 +370,7 @@ async fn a_finished_child_wakes_its_idle_root_with_a_fenced_notice() {
                 task: "Run the tests.".into(),
                 name: Some("tester".into()),
                 role: Role::Verifier,
+                worktree: true,
             },
         )
         .unwrap();
@@ -423,6 +424,7 @@ async fn a_notice_that_cant_wake_waits_in_the_inbox_until_wait_takes_the_report(
                 task: "b".into(),
                 name: None,
                 role: Role::Worker,
+                worktree: true,
             },
         )
         .unwrap();

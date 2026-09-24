@@ -148,9 +148,21 @@ impl AgentTool {
                     })?,
                 };
                 let name = str_arg(args, "name").map(str::to_string);
+                let worktree = args
+                    .get("worktree")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
                 let s = self
                     .sup
-                    .spawn(&self.caller, SpawnRequest { task, name, role })
+                    .spawn(
+                        &self.caller,
+                        SpawnRequest {
+                            task,
+                            name,
+                            role,
+                            worktree,
+                        },
+                    )
                     .map_err(|e| self.map_err(e))?;
                 let mut out = format!(
                     "Started agent {} ({}), working in {}.",
@@ -258,7 +270,8 @@ impl Tool for AgentTool {
                     "properties": {
                         "task": {"type": "string", "description": "The complete task: goal, context, constraints, what to report."},
                         "name": {"type": "string", "description": "A short label, for you and the owner."},
-                        "role": {"type": "string", "enum": ["worker", "planner", "verifier"]}
+                        "role": {"type": "string", "enum": ["worker", "planner", "verifier"]},
+                        "worktree": {"type": "boolean", "description": "In a git repo: its own worktree and branch (default true). false shares your files."}
                     },
                     "required": ["task"]
                 }),

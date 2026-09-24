@@ -8,6 +8,7 @@ use crate::fence::{cap, fence, first_line};
 use crate::prompts;
 use crate::store::{AgentRow, AgentStore, Status};
 use crate::tools;
+use crate::worktree;
 use ferrule_core::message::Role as MsgRole;
 use ferrule_core::{Agent, Budget, CoreError, Inbox, StopFlag, Transcript, Usage};
 use std::collections::HashMap;
@@ -127,6 +128,17 @@ pub struct SpawnRequest {
     pub task: String,
     pub name: Option<String>,
     pub role: Role,
+    /// Its own worktree when the parent is in a git repo (a verifier gets
+    /// a snapshot); false shares the parent's workspace.
+    pub worktree: bool,
+}
+
+/// What `close_tree` did.
+#[derive(Debug, Clone, Default)]
+pub struct Closed {
+    pub ids: Vec<String>,
+    /// Branches kept because they hold work, and the like.
+    pub notes: Vec<String>,
 }
 
 pub(crate) struct InboxItem {
@@ -229,6 +241,9 @@ pub struct Supervisor {
     /// Bumped whenever an agent's status changes; `wait_agent` watches it.
     tick: watch::Sender<u64>,
     waker: RwLock<Option<Arc<dyn Waker>>>,
+    /// Where children's worktrees go; none, and every child shares its
+    /// parent's workspace.
+    worktrees: RwLock<Option<PathBuf>>,
     me: Weak<Supervisor>,
 }
 
@@ -261,12 +276,19 @@ impl Supervisor {
             spawn_lock: Mutex::new(()),
             tick: watch::channel(0).0,
             waker: RwLock::new(None),
+            worktrees: RwLock::new(None),
             me: me.clone(),
         }))
     }
 
     pub fn set_waker(&self, waker: Arc<dyn Waker>) {
         *self.waker.write().unwrap() = Some(waker);
+    }
+
+    /// Lets children on their parent's repo work in worktrees under `dir`
+    /// (in the data dir, outside any repo).
+    pub fn set_worktrees_dir(&self, dir: impl Into<PathBuf>) {
+        *self.worktrees.write().unwrap() = Some(dir.into());
     }
 
     pub fn store(&self) -> &AgentStore {
@@ -328,6 +350,7 @@ impl Supervisor {
                     workspace: workspace.to_path_buf(),
                     worktree: None,
                     branch: None,
+                    base: None,
                     status: Status::Idle,
                     result: None,
                     tokens: 0,
@@ -442,6 +465,7 @@ impl Supervisor {
                 workspace: parent.workspace.clone(),
                 worktree: None,
                 branch: None,
+                base: None,
                 status: Status::Running,
                 result: None,
                 tokens: 0,
@@ -451,6 +475,8 @@ impl Supervisor {
             self.store.insert(&row)?;
             row
         };
+        let mut row = row;
+        let notes = self.place(&mut row, &parent, req.worktree);
         if let Err(e) = self.start(&row, &req.task) {
             let _ = self
                 .store
@@ -462,10 +488,51 @@ impl Supervisor {
         Ok(Spawned {
             id: row.id,
             workspace: row.workspace,
-            notes: Vec::new(),
+            notes,
             wakes_parent: parent_is_root && self.can_wake(&parent.id),
             parent_is_root,
         })
+    }
+
+    /// Gives `row` its own copy of `parent`'s repo when there is one: a
+    /// worktree for a worker or planner, a snapshot for a verifier. Returns
+    /// what the parent should know about it.
+    fn place(&self, row: &mut AgentRow, parent: &AgentRow, want: bool) -> Vec<String> {
+        let Some(root) = self.worktrees.read().unwrap().clone() else {
+            return Vec::new();
+        };
+        let made = match Role::parse(&row.role) {
+            _ if !want => return Vec::new(),
+            Some(Role::Verifier) => worktree::snapshot(&parent.workspace, &root, &row.id),
+            _ => worktree::for_worker(&parent.workspace, &root, &row.id),
+        };
+        let made = match made {
+            Ok(m) => m,
+            Err(note) => return note.into_iter().collect(),
+        };
+        if let Err(e) = self.store.set_worktree(
+            &row.id,
+            &made.workspace,
+            &made.worktree,
+            made.branch.as_deref(),
+            &made.base,
+        ) {
+            worktree::discard(&parent.workspace, &made.worktree);
+            if let Some(b) = &made.branch {
+                let _ = worktree::git(&parent.workspace, &["branch", "-q", "-D", b]);
+            }
+            return vec![format!("It shares your workspace: {e}.")];
+        }
+        row.workspace = made.workspace;
+        row.worktree = Some(made.worktree);
+        row.branch = made.branch;
+        row.base = Some(made.base);
+        made.notes
+    }
+
+    fn parent_workspace(&self, row: &AgentRow) -> Option<PathBuf> {
+        let parent = row.parent.as_deref()?;
+        Some(self.store.get(parent).ok()??.workspace)
     }
 
     fn can_wake(&self, root: &str) -> bool {
@@ -489,8 +556,14 @@ impl Supervisor {
             depth: row.depth,
             role,
             workspace: row.workspace.clone(),
-            extra_writable: Vec::new(),
-            read_only: role == Role::Verifier,
+            extra_writable: match (&row.worktree, &row.branch, self.parent_workspace(row)) {
+                (Some(wt), Some(_), Some(pw)) => {
+                    worktree::writable_git_dir(wt, &pw).into_iter().collect()
+                }
+                _ => Vec::new(),
+            },
+            // A verifier without a snapshot works in its parent's files.
+            read_only: role == Role::Verifier && row.worktree.is_none(),
             transcript,
         };
         let agent = (self.factory)(&spec).map_err(AgentsError::Build)?;
@@ -554,12 +627,23 @@ impl Supervisor {
                 warn!(agent = id, "releasing a failed agent's tasks failed: {e}");
             }
         }
-        self.bump();
-        // A closed agent's parent asked for it to stop; no notice.
+        // A closed agent's parent asked for it to stop; no notice, and
+        // close tidies its worktree.
         if !recorded {
+            self.bump();
             return;
         }
-        let Ok(row) = self.get(id) else { return };
+        let Ok(row) = self.get(id) else {
+            self.bump();
+            return;
+        };
+        // A verifier's snapshot is thrown away as soon as it's done.
+        if let (Some(wt), None, Some(pw)) =
+            (&row.worktree, &row.branch, self.parent_workspace(&row))
+        {
+            worktree::discard(&pw, wt);
+        }
+        self.bump();
         let Some(parent) = row.parent.clone() else {
             return;
         };
@@ -694,7 +778,7 @@ impl Supervisor {
 
     /// Gives an idle, failed or interrupted child another instruction.
     pub fn resume(&self, caller: &str, id: &str, message: &str) -> Result<(), AgentsError> {
-        let row = self.child_of(caller, id)?;
+        let mut row = self.child_of(caller, id)?;
         {
             let _guard = self.spawn_lock.lock().unwrap();
             match row.status {
@@ -715,6 +799,16 @@ impl Supervisor {
             self.store.set_status(id, Status::Running, now())?;
         }
         self.bump();
+        // A verifier checks the parent's work as it is now.
+        if row.worktree.is_some() && row.branch.is_none() {
+            let parent = self.get(caller)?;
+            row.worktree = None;
+            self.place(&mut row, &parent, true);
+            if row.worktree.is_none() {
+                row.workspace = parent.workspace.clone();
+                self.store.clear_worktree(id, &row.workspace)?;
+            }
+        }
         if let Err(e) = self.start(&row, message) {
             let _ = self.store.finish(id, Status::Failed, &e.to_string(), now());
             self.bump();
@@ -727,17 +821,24 @@ impl Supervisor {
     pub async fn close(&self, caller: &str, id: &str) -> Result<String, AgentsError> {
         self.child_of(caller, id)?;
         let closed = self.close_tree(id).await?;
-        if closed.is_empty() {
+        if closed.ids.is_empty() {
             return Ok(format!("Agent {id} was already closed."));
         }
-        Ok(format!("Closed {}.", closed.join(", ")))
+        let mut out = format!("Closed {}.", closed.ids.join(", "));
+        for note in closed.notes {
+            out.push('\n');
+            out.push_str(&note);
+        }
+        Ok(out)
     }
 
     /// Closes `id` and its descendants. Owner-side (`ferrule agents
     /// close`) as well as the tool's. Every agent is told to stop first, so
     /// they wind down together; any still going after the grace period is
-    /// aborted.
-    pub async fn close_tree(&self, id: &str) -> Result<Vec<String>, AgentsError> {
+    /// aborted. Then each worktree is tidied, deepest first: a worker's
+    /// uncommitted work is committed to its branch, and the branch kept
+    /// only if it holds work.
+    pub async fn close_tree(&self, id: &str) -> Result<Closed, AgentsError> {
         let mut order = Vec::new();
         let mut stack = vec![id.to_string()];
         while let Some(next) = stack.pop() {
@@ -748,6 +849,7 @@ impl Supervisor {
         }
         let mut closed = Vec::new();
         let mut handles = Vec::new();
+        let mut tidy = Vec::new();
         for agent in order {
             let row = self.get(&agent)?;
             if row.status == Status::Closed {
@@ -763,6 +865,9 @@ impl Supervisor {
             if let Some(parent) = &row.parent {
                 self.inbox(parent).forget_about(&agent);
             }
+            if let (Some(_), Some(pw)) = (&row.worktree, self.parent_workspace(&row)) {
+                tidy.push((row, pw));
+            }
             closed.push(agent);
         }
         let deadline = tokio::time::Instant::now() + CLOSE_GRACE;
@@ -775,8 +880,31 @@ impl Supervisor {
                 handle.abort();
             }
         }
+        let notes = tokio::task::spawn_blocking(move || {
+            tidy.into_iter()
+                .rev()
+                .filter_map(|(row, pw)| {
+                    let wt = row.worktree.as_deref()?;
+                    match &row.branch {
+                        Some(b) => worktree::close(
+                            &pw,
+                            wt,
+                            b,
+                            row.base.as_deref().unwrap_or("HEAD"),
+                            &row.id,
+                        ),
+                        None => {
+                            worktree::discard(&pw, wt);
+                            None
+                        }
+                    }
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
         self.bump();
-        Ok(closed)
+        Ok(Closed { ids: closed, notes })
     }
 
     /// The caller's children, one line each.

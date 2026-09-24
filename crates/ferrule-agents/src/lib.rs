@@ -11,10 +11,11 @@ mod shared;
 pub mod store;
 pub mod supervisor;
 pub mod tools;
+mod worktree;
 
 pub use board::{Entry, Task, TaskStatus};
 pub use error::AgentsError;
 pub use store::{AgentRow, AgentStore, Status};
 pub use supervisor::{
-    ChildFactory, ChildSpec, Limits, Role, SpawnRequest, Spawned, Supervisor, Waker,
+    ChildFactory, ChildSpec, Closed, Limits, Role, SpawnRequest, Spawned, Supervisor, Waker,
 };

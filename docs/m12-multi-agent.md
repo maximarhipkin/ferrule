@@ -251,6 +251,17 @@ Only when a child works on the same git repo as its parent (msg 3088):
 Worktrees live under the data dir, not inside the repo, so they don't show
 up in the parent's `git status` or get swept up by `git add -A`.
 
+ferrule's own git calls (worktree add/remove, the commit on close, the
+snapshot) run outside any sandbox on a repo a child could write to, so each
+one sets `core.hooksPath` to an empty place and `core.fsmonitor=false`: a
+hook or fsmonitor a child planted doesn't run as the owner. Other
+config-driven commands (a clean filter set in `.git/config`) are not
+blocked; a child can only write that config when its parent could.
+
+The verifier's snapshot is made at spawn and again at each resume (so it
+checks the parent's work as it is then), and removed as soon as a run
+ends and on close.
+
 MCP servers are shared per process and run in the root's workspace; a
 child in a worktree that uses a file-writing MCP tool writes to the
 parent's checkout. `docs/agents.md` says so. The verifier keeps only MCP
