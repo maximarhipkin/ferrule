@@ -125,9 +125,10 @@ the same context window.
 | knob | engineered | naive |
 |---|---|---|
 | profile | the provider's profile (`kimi`, `openai`, `anthropic`, `generic`) | same, with `retain_reasoning = false`, `compaction_threshold = 1.0`, `system_directive = ""` |
-| over the context budget | structured compaction at the profile's threshold, request kept verbatim, skills carried | **rolling truncation**: drop the oldest non-system messages until under budget |
+| over the context budget | structured compaction at the profile's threshold, request kept verbatim, skills carried; since M15, old large tool results are first shortened to a ref (`search_history` fetches them back) | **rolling truncation**: drop the oldest non-system messages until under budget |
 | `verify_command` | the task's `check` | none |
-| memory tools (`remember`/`recall`) | yes, on a fresh per-run database | no |
+| memory tools (`remember`/`recall`; since M15 also `update_memory`/`forget`) | yes, on a fresh per-run database | no |
+| `search_history` (M15) | yes, over the run's own transcript | no |
 | transient-error retries | the default policy (4 tries) | none |
 | stuck detector | on | off |
 | system prompt | ferrule's full prompt: directive, validation policy, skills catalog of the fixture, AGENTS.md baseline | one line: "You are an autonomous agent… Workspace: …" |

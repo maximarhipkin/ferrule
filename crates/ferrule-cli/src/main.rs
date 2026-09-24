@@ -238,6 +238,10 @@ enum MemoryCmd {
         #[arg(long, default_value_t = 10)]
         n: usize,
     },
+    /// Delete a memory for good, with its older versions
+    Forget {
+        id: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -351,6 +355,14 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                     for m in store.recent(n)? {
                         println!("#{} {}", m.id, m.content);
                     }
+                }
+                MemoryCmd::Forget { id } => {
+                    let deleted = store.forget(id)?;
+                    if deleted.is_empty() {
+                        bail!("there is no memory #{id}");
+                    }
+                    let ids: Vec<String> = deleted.iter().map(|d| format!("#{d}")).collect();
+                    println!("forgot {}", ids.join(", "));
                 }
             }
         }
@@ -587,10 +599,16 @@ fn build_agent_from(
     if sandbox.policy().mode == Mode::ReadOnly || read_only {
         registry.remove("write_file");
     }
-    for tool in memory_tools::tools(config::data_dir()?.join("memory.db")) {
-        if !(read_only && tool.definition().name == "remember") {
-            registry.register(tool);
-        }
+    // M15: the root corrects and deletes memories, a writing child only
+    // adds, a read-only child only recalls (docs/m15-memory.md §8).
+    let memory_db = config::data_dir()?.join("memory.db");
+    let access = memory_tools::MemoryAccess::for_child(child);
+    for tool in memory_tools::tools_for(memory_db.clone(), access) {
+        registry.register(tool);
+    }
+    // Its own session's history, including what compaction dropped.
+    if let Some(t) = &transcript {
+        registry.register(Arc::new(ferrule_core::SearchHistoryTool::new(t)));
     }
     // M12 × M13: a sub-agent uses what is installed, narrowed by its role
     // like any other tool, but never gets the tools that install, remove
@@ -656,14 +674,6 @@ fn build_agent_from(
         registry.attach(tools);
     }
 
-    if let Ok(store) = MemoryStore::open(config::data_dir()?.join("memory.db")) {
-        if let Ok(mem) = store.assemble_context(None, 2_000) {
-            if !mem.is_empty() {
-                system.push_str(&format!("\n\n[Long-term memory]\n{mem}"));
-            }
-        }
-    }
-
     let mut agent = Agent::new(
         provider,
         registry,
@@ -675,7 +685,9 @@ fn build_agent_from(
         tool_ctx,
         transcript,
     )
-    .with_system_prompt(system);
+    .with_system_prompt(system)
+    // The memory block is picked on the first run, from the session's goal.
+    .with_session_recall(Arc::new(memory_tools::GoalRecall { db: memory_db }));
     if let Some(tag) = ledger {
         agent = agent.with_ledger(tag.sink, tag.task_shape, tag.origin, pcfg.model.clone());
     }
