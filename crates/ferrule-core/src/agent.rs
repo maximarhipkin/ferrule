@@ -31,6 +31,23 @@ pub struct AgentConfig {
     pub retry: RetryPolicy,
     /// Failed checks a run gets to fix before it stops (see [`Verifier`]).
     pub max_verify_rounds: usize,
+    /// What happens when the context passes the profile's trigger.
+    pub overflow: ContextOverflow,
+    /// Watch for a run going in circles, nudge once, then stop it.
+    pub detect_stuck: bool,
+}
+
+/// What the loop does when the context outgrows the profile's trigger.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContextOverflow {
+    /// Fold the older part into a structured summary, the request kept
+    /// verbatim: ferrule's way.
+    #[default]
+    Compact,
+    /// Drop the oldest messages until it fits, the system prompt kept: what
+    /// a harness without context management does. `ferrule eval` uses it for
+    /// its naive variant; nothing else should.
+    Truncate,
 }
 
 impl Default for AgentConfig {
@@ -42,6 +59,8 @@ impl Default for AgentConfig {
             compaction_keep_last: 6,
             retry: RetryPolicy::default(),
             max_verify_rounds: 3,
+            overflow: ContextOverflow::Compact,
+            detect_stuck: true,
         }
     }
 }
@@ -417,6 +436,7 @@ impl Agent {
             error_kind,
             error_message,
             cost_usd: None,
+            eval: None,
         };
         ledger.sink.record(record);
     }
@@ -597,7 +617,7 @@ impl Agent {
                 self.push(Message::tool_result(&call.id, content));
             }
 
-            if let Some(stuck) = Stuck::detect(&steps) {
+            if let Some(stuck) = Stuck::detect(&steps).filter(|_| self.config.detect_stuck) {
                 if nudged {
                     return self
                         .wrap_up(&tx, iteration + 1, StopReason::Stuck(stuck))
@@ -762,6 +782,10 @@ impl Agent {
             .await;
             return Ok(());
         }
+        if self.config.overflow == ContextOverflow::Truncate {
+            self.truncate_front(tx, before, trigger).await;
+            return Ok(());
+        }
         info!(before, trigger, "compacting context");
 
         self.dedupe_tool_results();
@@ -862,6 +886,51 @@ impl Agent {
             ));
         }
         Ok(())
+    }
+
+    /// [`ContextOverflow::Truncate`]: drop the oldest messages after the
+    /// system prompt until the context fits under `trigger`. An assistant
+    /// message goes together with the tool results that answer it, so no
+    /// result is left without its call; the last message always stays.
+    async fn truncate_front(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        before: usize,
+        trigger: usize,
+    ) {
+        let start = match self.messages.first() {
+            Some(m) if m.role == crate::message::Role::System => 1,
+            _ => 0,
+        };
+        let mut dropped = 0;
+        while self.est_context_tokens() > trigger {
+            let mut end = start + 1;
+            while end < self.messages.len() && self.messages[end].role == crate::message::Role::Tool
+            {
+                end += 1;
+            }
+            if end >= self.messages.len() {
+                break;
+            }
+            self.messages.drain(start..end);
+            dropped += end - start;
+        }
+        let after = self.est_context_tokens();
+        info!(before, after, dropped, "truncated context");
+        self.emit(
+            tx,
+            AgentEvent::Truncated {
+                dropped_messages: dropped,
+                est_tokens_before: before,
+                est_tokens_after: after,
+            },
+        )
+        .await;
+        if let Some(t) = &self.transcript {
+            let _ = t.log_event(&format!(
+                "truncated: {dropped} oldest messages dropped, {before} -> {after} est tokens"
+            ));
+        }
     }
 
     /// Drop duplicate tool results, keeping only the most recent copy —
@@ -1645,6 +1714,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn with_the_stuck_detector_off_a_loop_runs_on() {
+        let mut script = vec![echo("same"); 8];
+        script.push(say("done"));
+        let config = AgentConfig {
+            detect_stuck: false,
+            ..Default::default()
+        };
+        let mut agent = agent_with(script, config);
+        let (tx, mut rx) = events();
+        assert_eq!(agent.run("loop", tx).await.unwrap(), "done");
+        assert_eq!(agent.incomplete, None);
+        assert!(!drain(&mut rx)
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Stuck { .. })));
+    }
+
+    #[tokio::test]
     async fn a_loop_gets_one_warning_then_the_run_stops() {
         let mut script = vec![echo("same"); 8];
         script.push(say("I'm stuck on the same result."));
@@ -1829,6 +1915,110 @@ mod tests {
         agent.maybe_compact(&tx, 1).await.unwrap();
         let summary = agent.messages[0].content.clone().unwrap();
         assert!(!summary.contains(goal), "{summary}");
+    }
+
+    #[tokio::test]
+    async fn truncation_drops_the_oldest_and_keeps_the_system_prompt() {
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 200;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 1.0;
+        let config = AgentConfig {
+            overflow: ContextOverflow::Truncate,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        );
+        let filler = |tag: &str| format!("{tag} {}", "x".repeat(300));
+        agent.messages.push(Message::system("SYSTEM PROMPT"));
+        agent.messages.push(Message::user(filler("GOAL")));
+        agent.messages.push(Message::assistant(
+            None,
+            vec![crate::message::ToolCall {
+                id: "c1".into(),
+                name: "echo".into(),
+                arguments: serde_json::json!({}),
+            }],
+            None,
+        ));
+        agent
+            .messages
+            .push(Message::tool_result("c1", filler("RESULT")));
+        agent.messages.push(Message::user(filler("MIDDLE")));
+        agent.messages.push(Message::user(filler("LAST")));
+
+        let (tx, mut rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+
+        let texts: Vec<String> = agent
+            .messages
+            .iter()
+            .map(|m| m.content.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(texts[0], "SYSTEM PROMPT");
+        assert!(texts.iter().all(|t| !t.starts_with("GOAL")), "{texts:?}");
+        assert!(texts.last().unwrap().starts_with("LAST"));
+        // No tool result survives without the call it answers.
+        assert!(agent
+            .messages
+            .iter()
+            .all(|m| m.role != crate::message::Role::Tool));
+        assert!(agent.est_context_tokens() <= 200);
+        assert!(texts.iter().any(|t| t.starts_with("MIDDLE")));
+        // Nothing summarized: no provider call at all.
+        assert!(provider.prompts.lock().unwrap().is_empty());
+        let mut saw = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let AgentEvent::Truncated {
+                dropped_messages, ..
+            } = ev
+            {
+                assert_eq!(dropped_messages, 3);
+                saw = true;
+            }
+        }
+        assert!(saw);
+    }
+
+    #[tokio::test]
+    async fn truncation_never_drops_the_last_message() {
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 10;
+        profile.output_reserve = 0;
+        let config = AgentConfig {
+            overflow: ContextOverflow::Truncate,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider,
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        );
+        agent.messages.push(Message::system("S"));
+        agent.messages.push(Message::user("x".repeat(400)));
+        agent.messages.push(Message::user("y".repeat(400)));
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        assert_eq!(agent.messages.len(), 2);
+        assert_eq!(
+            agent.messages[1].content.as_deref(),
+            Some("y".repeat(400).as_str())
+        );
     }
 
     struct CapBudget {
