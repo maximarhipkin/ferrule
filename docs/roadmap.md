@@ -21,7 +21,7 @@ six-investigation synthesis that produced M14–M19.
 | **M8** | One-line install, `ferrule setup` wizard, `ferrule doctor`, a systemd/launchd service, Windows builds; `v0.1.0` released. |
 | **M9** | Never stuck: retries with backoff, a loop detector, a status answer at every limit, `verify_command` run by Ferrule itself. |
 | **M10** | MCP servers under the sandbox, `web_fetch` and MCP-over-HTTP through the credential proxy, a hardened system service as root, Chrome detection in `doctor`. |
-| **M11 p1** | The browser: agent-browser's MCP server on an installed Chrome, in the sandbox, behind the proxy (`docs/browser.md`). |
+| **M11** | The browser: agent-browser's MCP server on an installed Chrome, in the sandbox, behind the proxy, driven for real in CI on Linux, macOS and Windows (`docs/browser.md`). |
 | **M12 p1–5** | Sub-agents: `spawn_agent`/`wait`/`resume`/`close`, a board and a task list, a worktree per child, a verifier on a snapshot, roles on their own providers, tree limits and budget (`docs/agents.md`). |
 
 ## Next, in order
@@ -29,7 +29,7 @@ six-investigation synthesis that produced M14–M19.
 M11–M13 were approved 2026-09-24 (msg 3090). M14–M19 come from
 `docs/research-number-one-harness-strategy.md`, adopted the same day.
 
-### M11 — a browser (part 1 done)
+### M11 — a browser (done)
 
 **Goal.** The agent can use a real browser for pages that need JavaScript,
 logins or clicking, with the same confinement as everything else, and the
@@ -62,9 +62,26 @@ owner turns it on in one step.
 the sandbox against a test page in CI on Linux, macOS and Windows. Config,
 wiring and `doctor` are covered by unit tests. `docs/browser.md` exists.
 
-**Open questions.** Screenshots come back as images, which the MCP client
-currently drops (it keeps text only). Whether agent-browser's CA handling
-works the same on macOS and Windows as on Linux.
+**Status (2026-09-24): done.** CI drives a real headless Chrome through the
+MCP client on ubuntu-24.04, macos-14 and windows-latest. agent-browser's CA
+handling needed nothing extra on macOS or Windows.
+
+**Open edges.**
+- Tool results are text-only. Images (screenshots) and other non-text
+  content are replaced by a note naming what was left out, so the model
+  can't see them yet. Real image support is a provider-wide change.
+- On Windows the browser runs unconfined, like every MCP server there. It
+  also needs a workaround for agent-browser 0.38.1, whose daemon inherits the
+  CLI's output pipe and hangs the MCP server's first call: Ferrule runs
+  `agent-browser get url` before each call to start the daemon first. No
+  upstream issue has been filed yet.
+- On macOS, Seatbelt has to allow Chrome's desktop services (window server,
+  font and pasteboard lookups), and Chrome's own sandbox can't nest inside
+  Seatbelt, so it runs with `--no-sandbox` there. Ferrule's sandbox is the
+  only layer.
+- The shell can read the browser profile (cookies of sites the agent logged
+  into). `read` with a URL skips Chrome's proxy flags.
+- The `all` tool set exposes raw CDP.
 
 ### M12 — multi-agent (parts 1–5 done)
 
@@ -282,8 +299,9 @@ changes nothing before approval.
     CONNECT;
   - an unconfined MCP server (`sandbox = false`, or any server on Windows) can
     still read the saved keys and `/proc/<ppid>/environ`;
-  - the Streamable HTTP transport has no server-initiated stream or resumption;
-  - the Chrome launch check isn't run on macOS or Windows in CI.
+  - the Streamable HTTP transport has no server-initiated stream or resumption.
+    (The Chrome launch check now runs on macOS and Windows in CI, where M11
+    drives a real Chrome.)
 - **Anytime:** parallel read-only tool calls, streaming replies, and a stable
   prompt prefix for caching.
 - **The strategy backlog** (`docs/research-number-one-harness-strategy.md`

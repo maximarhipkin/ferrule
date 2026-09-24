@@ -177,13 +177,22 @@ that convention yet — ask before introducing one).
   adopted 2026-09-24 from `docs/research-number-one-harness-strategy.md` —
   the six-investigation synthesis; the reader-facing version with scope,
   security model and done criteria is `docs/roadmap.md`):
-  - **M11 browser**: **part 1 shipped** (2026-09-24): agent-browser's MCP
-    server driving an installed Chrome, in the sandbox, behind the
+  - **M11 browser**: **done** (2026-09-24, parts 1–3): agent-browser's
+    MCP server driving an installed Chrome, in the sandbox, behind the
     credential proxy — `crates/ferrule-mcp/src/browser.rs`,
-    `docs/browser.md`. **Remaining:** the MCP client must surface image
-    content — screenshots are dropped today (PLAN.md M4 scope limit);
-    agent-browser's CA handling on macOS and Windows; a real-headless-
-    Chrome e2e in CI.
+    `docs/browser.md`. CI drives a real headless Chrome through the MCP
+    client on ubuntu-24.04, macos-14 and windows-latest. **Open edges:**
+    tool results stay text-only — image and other non-text MCP content is
+    replaced by a note naming it, not passed to the model (needs a
+    provider-wide `ToolOutput` change); Windows runs the browser
+    unconfined (no sandbox backend) and depends on a warm-up
+    (`agent-browser get url` before each call) that works around
+    agent-browser 0.38.1's daemon inheriting the CLI's stdout pipe — no
+    upstream issue filed yet; macOS Seatbelt opens Chrome's desktop
+    services and Chrome's own sandbox is off under it (`--no-sandbox`);
+    on Linux `/proc` stays writable to Chrome; the shell can read the
+    browser profile; `read` with a URL bypasses Chrome's proxy flags;
+    the `all` tool set exposes raw CDP.
   - **M12 multi-agent**: **parts 1–5 shipped** (2026-09-24, branch
     `m12-multi-agent`, PR #1; see the M12 session-log entry); part 6
     (named long-lived agents) deferred on an open question. Original
@@ -1783,6 +1792,45 @@ drivers, file-read sandboxing, Windows sandbox and code plugins move to
 "designed, waiting on a decision" / Planned; the strategy backlog is
 referenced from Planned). Committed and pushed so the next session works
 from this plan.
+
+### 2026-09-24 — M11 browser closed: macOS and Windows (Devi, Opus 5.5)
+
+Part 1 (b41149a) shipped the browser on Linux; part 2 (b420023) and part 3
+(580f330) made the same real-Chrome test pass on macos-14 and
+windows-latest. Root causes, each found on a throwaway probe branch
+(`m11-probe`, `m11-probe2`, since deleted) running the browser test alone:
+- **macOS, "Failed to get the path for 1001".** Chrome finds
+  `~/Library/Application Support` through CoreFoundation, which ignores
+  `HOME`. Seatbelt blocked the real home, so Chrome died at start. Fix:
+  `CFFIXED_USER_HOME` = the server's state dir when sandboxed. Part 2 had
+  already opened the desktop services Chrome needs (window server, fonts,
+  pasteboard lookups), moved agent-browser's config file out of the
+  writable state dir, and recorded Chrome's own sandbox as a blocker under
+  Seatbelt (`--no-sandbox` there).
+- **Windows, the first tool call hung forever.** In agent-browser 0.38.1,
+  `mcp.rs::run_cli` spawns the CLI with piped stdout/stderr and reads to
+  EOF; the CLI's `ensure_daemon` spawns the daemon detached but with
+  inherited handles, so the daemon keeps the pipe open and EOF never
+  comes. Starting the daemon directly doesn't work (the CLI writes the
+  config fingerprint the daemon checks). Fix: a warm-up — the browser's
+  server config carries `warm_up = ["get", "url"]` on Windows only; the
+  MCP client runs it with null stdio and the server's env before every
+  call, so the daemon already exists (and is restarted after its idle
+  timeout) when the MCP server's CLI runs. Not reachable from user config.
+  Separately, `CI` and `AGENT_BROWSER_*` are removed from the env, since
+  agent-browser adds `--no-sandbox` under `CI`, and that hangs Chrome on
+  Windows.
+- **Image content** was silently dropped; it's now named in the tool
+  result (`[image/png content left out: …]`), so the model knows a
+  screenshot exists. Passing it to the model stays an open edge — the
+  strategy doc called it a hard blocker for M11; it isn't one for the
+  done criteria (a real Chrome driven in CI on three OSes), and real
+  support needs a provider-wide change.
+Probe note: bash `timeout` couldn't kill the Windows process tree (a run
+hung 50 min before being cancelled); the probe switched to a Python
+timeout plus `taskkill /T`. Decisions for Max: keep the Windows warm-up or
+file upstream and wait; image support across providers; the macOS
+Chrome-sandbox-off tradeoff.
 
 ### 2026-09-24 — M12 multi-agent (Devi, Opus 5.5)
 
