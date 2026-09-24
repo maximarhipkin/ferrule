@@ -131,6 +131,7 @@ fn env(provider: Scripted, rows: Arc<Rows>) -> Env {
         transcripts: None,
         judge: None,
         playbook: None,
+        owner_trust: None,
     }
 }
 
@@ -650,5 +651,104 @@ async fn the_owner_playbook_reaches_eval_only_when_the_suite_opts_in() {
         let get = |v: Variant| run.results.iter().find(|r| r.variant == v).unwrap().outcome;
         assert_eq!(get(Variant::Engineered), engineered, "opt-in `{opt}`");
         assert_eq!(get(Variant::Naive), Outcome::Fail, "naive never sees it");
+    }
+}
+
+/// M19 §10: a guard that lets one model call through and stops the run
+/// before the next, like a cap the first call crossed.
+struct OneCall(Mutex<u32>);
+
+#[async_trait::async_trait]
+impl ferrule_core::Guard for OneCall {
+    fn before_model_call(&self) -> Option<String> {
+        let mut n = self.0.lock().unwrap();
+        *n += 1;
+        (*n > 1).then(|| "OWNER CAP".to_string())
+    }
+
+    async fn before_tool_call(&self, _: ferrule_core::GuardedCall<'_>) -> ferrule_core::Verdict {
+        ferrule_core::Verdict::Allow
+    }
+
+    async fn halted(&self) -> String {
+        std::future::pending().await
+    }
+}
+
+/// Counts the rows it passes on, and the tree it was made for.
+struct Stamp {
+    inner: Arc<dyn LedgerSink>,
+    rows: Arc<Mutex<Vec<String>>>,
+    tree: String,
+}
+
+impl LedgerSink for Stamp {
+    fn record(&self, r: LedgerRecord) {
+        self.rows.lock().unwrap().push(self.tree.clone());
+        self.inner.record(r);
+    }
+}
+
+const OWNER_SUITE: &str = r#"
+[suite]
+name = "owner"
+{OPT}
+
+[[task]]
+id = "make"
+prompt = "Do the task."
+[task.grade]
+command = 'test -f out.txt'
+"#;
+
+/// The owner's guard and sink reach both variants of a suite that opts in,
+/// and nothing else: its stop is a stop, not a failed task.
+#[tokio::test]
+async fn the_owners_trust_reaches_eval_only_when_the_suite_opts_in() {
+    for (opt, outcome, rows) in [
+        ("", Outcome::Pass, 0),
+        ("owner_trust = true", Outcome::Stopped, 2),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let s = suite(dir.path(), &OWNER_SUITE.replace("{OPT}", opt));
+        let script = |t: &Turn<'_>| match t.step {
+            0 => call("write_file", json!({"path": "out.txt", "content": "x"})),
+            _ => done(),
+        };
+        let mut env = env(
+            Scripted::new(usage(100, 10), script),
+            Arc::new(Rows::default()),
+        );
+        let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+        let stamped = seen.clone();
+        env.owner_trust = Some(Arc::new(move |tree: &str, inner| {
+            let sink = Arc::new(Stamp {
+                inner,
+                rows: stamped.clone(),
+                tree: tree.to_string(),
+            });
+            (
+                sink as Arc<dyn LedgerSink>,
+                Arc::new(OneCall(Mutex::new(0))) as Arc<dyn ferrule_core::Guard>,
+            )
+        }));
+        let run = run_suite(
+            &s,
+            &env,
+            &opts(work.path(), vec![Variant::Engineered, Variant::Naive]),
+        )
+        .await
+        .unwrap();
+        for r in &run.results {
+            assert_eq!(r.outcome, outcome, "`{opt}` {:?}", r.variant);
+            if rows > 0 {
+                assert_eq!(r.stopped_early.as_deref(), Some("OWNER CAP"));
+            }
+        }
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), rows, "`{opt}`");
+        let tree = format!("eval:{}", run.run_id);
+        assert!(seen.iter().all(|t| *t == tree), "{seen:?}");
     }
 }

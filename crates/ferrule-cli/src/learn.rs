@@ -5,7 +5,7 @@
 
 use crate::config::{self, Config};
 use crate::ledger;
-use anyhow::{Context as _, Result};
+use anyhow::{anyhow, Context as _, Result};
 use clap::Subcommand;
 use ferrule_core::{HarnessProfile, LedgerRecord};
 use ferrule_gateway::{
@@ -321,6 +321,11 @@ async fn pass(
     provider: Option<String>,
     trigger: &str,
 ) -> Result<PassRecord> {
+    // M19: no pass while the owner's kill switch is on or a day cap is
+    // spent; the pass's own caps (`[learning]`) still apply on top.
+    if let Some(why) = crate::trust::hub(cfg)?.check("learn", None, false) {
+        return Err(anyhow!("no learning pass: {why}"));
+    }
     let env = env(cfg, workspace, provider)?;
     ferrule_learn::run_pass(&options(cfg, workspace, trigger), &env).await
 }

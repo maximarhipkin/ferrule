@@ -793,3 +793,165 @@ fn slash_plan_explores_asks_the_owner_and_runs_only_on_yes() {
     );
     assert!(audit[0]["tree"].as_str().unwrap().starts_with("plan__"));
 }
+
+/// A one-task suite whose task runs `rm -rf victim`, with `opt` in its
+/// `[suite]` table.
+fn eval_suite(home: &Path, opt: &str) -> String {
+    let suite = home.join("suite");
+    std::fs::create_dir_all(&suite).unwrap();
+    std::fs::write(
+        suite.join("suite.toml"),
+        format!(
+            "[suite]\nname = \"trust\"\n{opt}\n\n[[task]]\nid = \"wipe\"\nprompt = \"DELETE_IT in the eval\"\n[task.grade]\ncommand = \"true\"\n"
+        ),
+    )
+    .unwrap();
+    suite.to_str().unwrap().to_string()
+}
+
+/// The ledger's model calls, without eval's result rows.
+fn calls(home: &Path) -> Vec<Value> {
+    jsonl(&home.join("data/ledger.jsonl"))
+        .into_iter()
+        .filter(|r| r["call_kind"] != "eval_result")
+        .collect()
+}
+
+fn tool_results(seen: &Mutex<Vec<Value>>) -> Vec<String> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["messages"].as_array()?.last().cloned())
+        .filter(|m| m["role"] == "tool")
+        .map(|m| text(&m))
+        .collect()
+}
+
+#[test]
+fn eval_ignores_the_owners_caps_gates_and_switch_unless_the_suite_opts_in() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "max_tokens_per_run = 50\nmax_tokens_per_day = 50");
+    let home = dir.path();
+    assert!(ferrule(home, &["stop", "--reason", "no spending"])
+        .status
+        .success());
+
+    let suite = eval_suite(home, "");
+    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    // Both variants ran past the caps, with the switch on, and the rm ran.
+    assert_eq!(seen.lock().unwrap().len(), 4, "{}", describe(&out));
+    let results = tool_results(&seen);
+    assert_eq!(results.len(), 2);
+    assert!(
+        results.iter().all(|r| !r.contains("refused by ferrule")),
+        "{results:?}"
+    );
+    let events: Vec<Value> = jsonl(&home.join("data/trust/audit.jsonl"));
+    assert_eq!(events.len(), 1, "only the stop: {events:?}");
+    // The rows are in the ledger, and the owner's day doesn't count them.
+    let rows = calls(home);
+    assert_eq!(rows.len(), 4);
+    assert!(rows.iter().all(|r| r["tree"].is_null()));
+    let status = plain(&ferrule(home, &["trust", "status"]).stdout);
+    assert!(status.contains("today:    0 tokens"), "{status}");
+
+    // Opted in, the same suite is stopped before any model call.
+    seen.lock().unwrap().clear();
+    let suite = eval_suite(home, "owner_trust = true");
+    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    assert_eq!(out.status.code(), Some(3), "{}", describe(&out));
+    assert!(seen.lock().unwrap().is_empty(), "{}", describe(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("stopped (0 calls, 0 tokens) — Ferrule is stopped"),
+        "{}",
+        describe(&out)
+    );
+}
+
+#[test]
+fn an_eval_suite_that_opts_in_is_gated_unattended_and_counted() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    let suite = eval_suite(home, "owner_trust = true");
+    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let results = tool_results(&seen);
+    assert_eq!(results.len(), 2, "{}", describe(&out));
+    for r in &results {
+        assert!(r.contains("refused by ferrule"), "{r}");
+        assert!(r.contains("eval run, which runs unattended"), "{r}");
+    }
+    let rows = calls(home);
+    assert_eq!(rows.len(), 4);
+    let tree = rows[0]["tree"].as_str().unwrap().to_string();
+    assert!(tree.starts_with("eval:"), "{tree}");
+    assert!(rows.iter().all(|r| r["tree"] == tree.as_str()));
+    let refused = jsonl(&home.join("data/trust/audit.jsonl"))
+        .into_iter()
+        .filter(|e| e["tree"] == tree.as_str() && e["detail"]["answer"] == "unattended")
+        .count();
+    assert_eq!(refused, 2);
+    let status = plain(&ferrule(home, &["trust", "status"]).stdout);
+    assert!(status.contains("today:    440 tokens"), "{status}");
+}
+
+#[test]
+fn no_learning_pass_runs_while_stopped_or_over_the_day_cap() {
+    let (url, seen) = model_server();
+    let dir = home(&url, "");
+    let home = dir.path();
+    assert!(ferrule(home, &["stop"]).status.success());
+    let out = ferrule(home, &["learn", "run"]);
+    assert!(!out.status.success(), "{}", describe(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("no learning pass: Ferrule is stopped"),
+        "{err}"
+    );
+
+    let dir = self::home(&url, "max_tokens_per_day = 1000");
+    let home = dir.path();
+    let row = json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(), "session_id": "elsewhere",
+        "task_shape": "run", "provider": "mock", "model": "scripted", "iteration": 0,
+        "call_kind": "turn", "input_tokens": 1000, "cached_input_tokens": 0,
+        "output_tokens": 0, "tool_calls": 0, "latency_ms": 1, "outcome": "ok",
+    });
+    std::fs::write(home.join("data/ledger.jsonl"), format!("{row}\n")).unwrap();
+    let out = ferrule(home, &["learn", "run"]);
+    assert!(!out.status.success(), "{}", describe(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("no learning pass: Stopped: today's spend reached its token cap"),
+        "{err}"
+    );
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn doctor_reports_the_switch_the_caps_and_who_approves() {
+    let (url, _) = model_server();
+    let dir = home(&url, "max_tokens_per_day = 5000\nmax_usd_per_run = 2");
+    let home = dir.path();
+    let out = plain(&ferrule(home, &["doctor", "--offline"]).stdout);
+    assert!(
+        // Beside the defaults: 5,000,000 tokens a run and $20 a day.
+        out.contains(
+            "5,000,000 tokens / $2.00 per run, 5,000 tokens / $20.00 per day · today 0 tokens, $0.00 · gates on"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("no owner chat: only the terminal approves"),
+        "{out}"
+    );
+    assert!(!out.contains("Ferrule is stopped"), "{out}");
+    assert!(ferrule(home, &["stop", "--reason", "checking"])
+        .status
+        .success());
+    let out = plain(&ferrule(home, &["doctor", "--offline"]).stdout);
+    assert!(out.contains("Ferrule is stopped (by ferrule stop"), "{out}");
+}
