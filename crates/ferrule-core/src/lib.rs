@@ -12,10 +12,12 @@ pub mod ledger;
 pub mod message;
 pub mod profile;
 pub mod provider;
+pub mod stuck;
 pub mod tool;
 pub mod transcript;
+pub mod verify;
 
-pub use agent::{Agent, AgentConfig};
+pub use agent::{Agent, AgentConfig, RetryPolicy};
 pub use baseline::load_context_baseline;
 pub use error::CoreError;
 pub use event::AgentEvent;
@@ -25,3 +27,4 @@ pub use profile::HarnessProfile;
 pub use provider::{CompletionRequest, CompletionResponse, Provider};
 pub use tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
 pub use transcript::Transcript;
+pub use verify::Verifier;

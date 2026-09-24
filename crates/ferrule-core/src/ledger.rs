@@ -39,7 +39,8 @@ pub struct LedgerRecord {
     /// compaction-summary call.
     pub iteration: usize,
     /// `"turn"` for the main ReAct call, `"compaction"` for the summary call
-    /// `maybe_compact` makes — both can share one `iteration` index.
+    /// `maybe_compact` makes, `"status"` for the closing status answer when a
+    /// run stops early — all can share one `iteration` index.
     #[serde(default = "default_call_kind")]
     pub call_kind: String,
     /// Includes `cached_input_tokens` (OpenAI `prompt_tokens` convention).
@@ -50,7 +51,8 @@ pub struct LedgerRecord {
     /// compaction summary).
     pub tool_calls: usize,
     pub latency_ms: u64,
-    /// `"ok"` | `"error"`.
+    /// `"ok"` | `"error"` | `"retried"` (a transient error that was tried
+    /// again; every attempt gets its own row).
     pub outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,

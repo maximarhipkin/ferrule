@@ -10,14 +10,14 @@ mod setup;
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
 use ferrule_core::tool::Tool;
 use ferrule_gateway::{
-    Channel, Gateway, LocalChannel, NewTask, RunOutcome, RunStatus, Router, Scheduler, TaskKind, TaskStore, TelegramChannel,
+    Channel, Gateway, LocalChannel, NewTask, RunOutcome, Router, Scheduler, TaskKind, TaskStore, TelegramChannel,
 };
 use ferrule_memory::MemoryStore;
 use ferrule_providers::OpenAiCompatProvider;
 use ferrule_proxy::{Broker, BrokerConfig, Upstream};
 use ferrule_sandbox::{Mode, Sandbox};
 use ferrule_tools::standard_registry;
-use ferrule_tools::{ListDirTool, ReadFileTool, ShellTool, WriteFileTool};
+use ferrule_tools::{CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WriteFileTool};
 use ferrule_mcp::McpServerConfig;
 use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
@@ -373,11 +373,13 @@ fn build_agent_from(
         system.push_str(&format!("\n\n[Workspace context baseline: {name}]\n{content}"));
     }
 
-    // Validation: the build system is truth. Pass = submit; fail = fix forward.
+    // Validation: ferrule runs the check itself when a run that changed
+    // files tries to finish, and sends a failure back to be fixed.
     if let Some(cmd) = &cfg.agent.verify_command {
         system.push_str(&format!(
-            "\n\n[Validation policy] Before considering any code change complete, run `{cmd}` via the shell tool. \
-             If it fails, fix forward — do not revert, do not stop until it passes."
+            "\n\n[Validation policy] When you finish after changing files, ferrule runs `{cmd}`. \
+             If it fails you get its output back and keep working: fix forward, don't revert. \
+             You can run it yourself with the shell tool before finishing."
         ));
     }
 
@@ -413,6 +415,10 @@ fn build_agent_from(
     .with_system_prompt(system);
     if let Some(tag) = ledger {
         agent = agent.with_ledger(tag.sink, tag.task_shape, tag.origin, pcfg.model.clone());
+    }
+    if let Some(cmd) = &cfg.agent.verify_command {
+        let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
+        agent = agent.with_verifier(Arc::new(CommandVerifier::new(cmd.clone(), sandbox, timeout)));
     }
     Ok(agent)
 }
@@ -569,6 +575,15 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
                 AgentEvent::Usage { input_tokens, output_tokens, cached_input_tokens } => {
                     println!("\x1b[90m  [usage: in {input_tokens} (cached {cached_input_tokens}) / out {output_tokens}]\x1b[0m")
                 }
+                AgentEvent::ProviderRetry { attempt, max_attempts, delay_ms, error } => {
+                    println!("\x1b[33m[provider failed, retry {attempt}/{max_attempts} in {:.1}s: {error}]\x1b[0m", delay_ms as f64 / 1000.0)
+                }
+                AgentEvent::Stuck { note } => println!("\x1b[33m{note}\x1b[0m"),
+                AgentEvent::VerifyStarted { check } => println!("\x1b[36m▶ check\x1b[0m {check}"),
+                AgentEvent::VerifyFinished { check, ok } => {
+                    println!("\x1b[90m  {} check `{check}`\x1b[0m", if ok { "✓" } else { "✗" })
+                }
+                AgentEvent::RunIncomplete { reason, .. } => println!("\x1b[33m[stopped: {reason}]\x1b[0m"),
                 AgentEvent::Error { message } => eprintln!("\x1b[31merror: {message}\x1b[0m"),
                 _ => {}
             }
@@ -584,9 +599,16 @@ async fn run_once(prompt: &str, provider: Option<String>, workspace: PathBuf, ma
     let answer = agent.run(prompt, tx).await;
     match answer {
         Ok(text) => {
-            println!("\n\x1b[1;32mfinal:\x1b[0m {text}");
+            match &agent.incomplete {
+                Some(reason) => println!("\n\x1b[1;33mincomplete ({reason}):\x1b[0m {text}"),
+                None => println!("\n\x1b[1;32mfinal:\x1b[0m {text}"),
+            }
             let u = &agent.usage;
             println!("\x1b[90m[total usage: in {} (cached {}) / out {}]\x1b[0m", u.input_tokens, u.cached_input_tokens, u.output_tokens);
+            // Scripts can tell a status answer from a finished job.
+            if agent.incomplete.is_some() {
+                std::process::exit(2);
+            }
         }
         Err(e) => {
             eprintln!("\x1b[31mrun failed: {e}\x1b[0m");
@@ -614,7 +636,10 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
         }
         let tx = spawn_renderer(false);
         match agent.run(prompt, tx).await {
-            Ok(text) => println!("\n\x1b[1;32magent:\x1b[0m {text}"),
+            Ok(text) => match &agent.incomplete {
+                Some(reason) => println!("\n\x1b[1;33magent (incomplete: {reason}):\x1b[0m {text}"),
+                None => println!("\n\x1b[1;32magent:\x1b[0m {text}"),
+            },
             Err(e) => eprintln!("\x1b[31mrun failed: {e}\x1b[0m"),
         }
     }
@@ -788,12 +813,7 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
                 println!("no runs for {id}");
             }
             for r in runs {
-                let status = match r.status {
-                    RunStatus::Running => "running",
-                    RunStatus::Succeeded => "succeeded",
-                    RunStatus::Failed => "failed",
-                    RunStatus::Skipped => "skipped",
-                };
+                let status = r.status.as_str();
                 println!(
                     "{}  {:<10}  started={}  finished={}  {}",
                     r.id,
@@ -845,6 +865,7 @@ async fn tasks_run_now(id: &str, provider: Option<String>, workspace: PathBuf, m
 
     match scheduler.execute(&task).await {
         Ok(RunOutcome::Succeeded { answer }) => println!("succeeded:\n{answer}"),
+        Ok(RunOutcome::Incomplete { answer, reason }) => println!("incomplete ({reason}):\n{answer}"),
         Ok(RunOutcome::Skipped { reason }) => println!("skipped: {}", reason.unwrap_or_else(|| "(no reason given)".into())),
         Ok(RunOutcome::AlreadyRunning) => println!("a run for this task is already in progress; try again shortly"),
         Err(e) => {

@@ -43,6 +43,10 @@ pub struct RememberTool {
 
 #[async_trait::async_trait]
 impl Tool for RememberTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "remember".into(),
@@ -92,6 +96,10 @@ pub struct RecallTool {
 
 #[async_trait::async_trait]
 impl Tool for RecallTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "recall".into(),

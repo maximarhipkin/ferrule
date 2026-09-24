@@ -334,6 +334,16 @@ pub struct McpToolInfo {
     pub description: String,
     #[serde(default = "default_schema", rename = "inputSchema")]
     pub input_schema: Value,
+    #[serde(default)]
+    pub annotations: ToolAnnotations,
+}
+
+/// The hints a server may give about a tool. Only a hint: nothing enforces
+/// them, so they steer bookkeeping, never a security decision.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct ToolAnnotations {
+    #[serde(default, rename = "readOnlyHint")]
+    pub read_only: bool,
 }
 
 fn default_schema() -> Value {

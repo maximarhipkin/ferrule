@@ -99,6 +99,10 @@ impl ReadFileTool {
 
 #[async_trait::async_trait]
 impl Tool for ReadFileTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".into(),
@@ -174,6 +178,10 @@ impl ListDirTool {
 
 #[async_trait::async_trait]
 impl Tool for ListDirTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_dir".into(),

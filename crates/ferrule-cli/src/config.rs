@@ -28,12 +28,25 @@ fn default_profile() -> String {
     "generic".into()
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AgentSettings {
-    /// Validation command the agent must run green before finishing
-    /// (e.g. "cargo test", "npm test"). "The build system is truth":
-    /// IF verify == PASS THEN submit ELSE fix forward.
+    /// Check ferrule runs itself before a run that changed files may finish
+    /// (e.g. "cargo test", "npm test"). A failure goes back to the agent to
+    /// fix, a few rounds at most; then the run ends with a status.
     pub verify_command: Option<String>,
+    /// How long the check may take before it counts as failed.
+    #[serde(default = "default_verify_timeout_secs")]
+    pub verify_timeout_secs: u64,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self { verify_command: None, verify_timeout_secs: default_verify_timeout_secs() }
+    }
+}
+
+fn default_verify_timeout_secs() -> u64 {
+    600
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -184,7 +197,8 @@ profile = "openai"
 # profile = "generic"
 
 # [agent]
-# verify_command = "cargo test"   # agent must make this pass before finishing
+# verify_command = "cargo test"   # ferrule runs it before a run that changed files ends
+# verify_timeout_secs = 600
 
 # [gateway]
 # local = true                              # enable the stdin/stdout channel

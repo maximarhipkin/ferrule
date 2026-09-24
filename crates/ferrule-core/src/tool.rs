@@ -56,6 +56,12 @@ impl Default for ToolContext {
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     async fn call(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError>;
+    /// Whether a successful call may have changed what the verify command
+    /// checks. Tools that only read, and the agent's own notes under
+    /// `.ferrule/`, say no; anything unknown is assumed to.
+    fn changes_files(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Default, Clone)]
@@ -84,5 +90,8 @@ impl ToolRegistry {
     }
     pub fn contains(&self, name: &str) -> bool {
         self.tools.contains_key(name)
+    }
+    pub fn changes_files(&self, name: &str) -> bool {
+        self.tools.get(name).is_some_and(|t| t.changes_files())
     }
 }

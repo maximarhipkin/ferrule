@@ -15,11 +15,16 @@ pub struct McpRemoteTool {
     remote_name: String,
     description: String,
     input_schema: Value,
+    read_only: bool,
     timeout: Duration,
 }
 
 #[async_trait::async_trait]
 impl Tool for McpRemoteTool {
+    fn changes_files(&self) -> bool {
+        !self.read_only
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.full_name.clone(),
@@ -72,6 +77,7 @@ pub async fn connect_and_build_tools(cfg: McpServerConfig) -> Result<Vec<Arc<dyn
                 remote_name: info.name,
                 description: info.description,
                 input_schema: info.input_schema,
+                read_only: info.annotations.read_only,
                 timeout,
             }) as Arc<dyn Tool>
         })

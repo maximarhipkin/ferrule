@@ -69,6 +69,10 @@ pub struct ActivateSkillTool {
 
 #[async_trait::async_trait]
 impl Tool for ActivateSkillTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: ACTIVATE_TOOL.into(),
@@ -182,6 +186,10 @@ pub struct ReadSkillFileTool {
 
 #[async_trait::async_trait]
 impl Tool for ReadSkillFileTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: READ_TOOL.into(),

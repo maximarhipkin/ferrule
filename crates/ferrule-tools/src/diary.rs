@@ -14,6 +14,10 @@ pub struct WriteTodosTool;
 
 #[async_trait::async_trait]
 impl Tool for WriteTodosTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_todos".into(),
@@ -55,6 +59,10 @@ pub struct DiaryTool;
 
 #[async_trait::async_trait]
 impl Tool for DiaryTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "log_diary".into(),

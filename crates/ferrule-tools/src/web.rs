@@ -56,6 +56,10 @@ pub fn html_to_text(html: &str) -> String {
 
 #[async_trait::async_trait]
 impl Tool for WebFetchTool {
+    fn changes_files(&self) -> bool {
+        false
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_fetch".into(),

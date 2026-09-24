@@ -132,6 +132,36 @@ fn truncate(v: &Value) -> String {
     s.chars().take(500).collect()
 }
 
+fn transient(message: String, retry_after: Option<Duration>) -> CoreError {
+    CoreError::Transient { message, retry_after }
+}
+
+/// Worth another try: a rate limit, a timeout, or the server's own failure.
+fn retryable(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT || status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// `Retry-After` in seconds. The HTTP-date form is rare from these APIs and
+/// is ignored, falling back to backoff.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let secs: f64 = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()?;
+    (secs.is_finite() && secs >= 0.0).then(|| Duration::from_secs_f64(secs))
+}
+
+/// An error object in a 200 response (how OpenRouter and some gateways
+/// pass on an upstream failure) that says to try again.
+fn transient_error_object(err: &Value) -> bool {
+    let code = err.get("code");
+    if let Some(n) = code.and_then(Value::as_u64) {
+        return n == 408 || n == 429 || (500..600).contains(&n);
+    }
+    let words = [code, err.get("type"), err.get("status")];
+    words.iter().filter_map(|w| w.and_then(Value::as_str)).any(|w| {
+        let w = w.to_ascii_lowercase();
+        ["rate_limit", "overloaded", "server_error", "timeout", "unavailable", "resource_exhausted"].iter().any(|t| w.contains(t))
+    })
+}
+
 #[async_trait::async_trait]
 impl Provider for OpenAiCompatProvider {
     fn name(&self) -> &str {
@@ -154,19 +184,32 @@ impl Provider for OpenAiCompatProvider {
             payload["max_tokens"] = json!(m);
         }
 
-        let resp = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| CoreError::Provider(format!("request failed: {e}")))?;
+        let sent = self.client.post(format!("{}/chat/completions", self.base_url)).bearer_auth(&self.api_key).json(&payload).send().await;
+        let resp = match sent {
+            Ok(resp) => resp,
+            // No connection or no answer in time: the next try may get one.
+            Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => return Err(transient(format!("request failed: {e}"), None)),
+            Err(e) => return Err(CoreError::Provider(format!("request failed: {e}"))),
+        };
 
         let status = resp.status();
-        let body: Value = resp.json().await.map_err(|e| CoreError::Provider(format!("bad json (status {status}): {e}")))?;
+        let wait = retry_after(resp.headers());
+        let classify = |message: String| if retryable(status) { transient(message, wait) } else { CoreError::Provider(message) };
+        // Text first: a proxy's 502 is an HTML page, and it's still a 502.
+        let text = resp.text().await.map_err(|e| transient(format!("reading the response (HTTP {status}) failed: {e}"), None))?;
+        let body: Value = match serde_json::from_str(&text) {
+            Ok(body) => body,
+            Err(_) => {
+                let start: String = text.trim().chars().take(300).collect();
+                return Err(classify(format!("HTTP {status}, not JSON: {start}")));
+            }
+        };
         if !status.is_success() {
-            return Err(CoreError::Provider(format!("HTTP {status}: {}", truncate(&body))));
+            return Err(classify(format!("HTTP {status}: {}", truncate(&body))));
+        }
+        if let Some(err) = body.get("error").filter(|e| !e.is_null()) {
+            let message = format!("error in an HTTP 200 response: {}", truncate(err));
+            return Err(if transient_error_object(err) { transient(message, wait) } else { CoreError::Provider(message) });
         }
         Self::parse_response(&body)
     }
@@ -180,6 +223,11 @@ mod tests {
 
     /// Minimal canned HTTP server: one request in, one JSON response out.
     fn mock_server(response_body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        mock_response("200 OK", "content-type: application/json\r\n", response_body)
+    }
+
+    /// One request in, the given status line, extra headers and body out.
+    fn mock_response(status: &'static str, headers: &'static str, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = std::thread::spawn(move || {
@@ -187,15 +235,20 @@ mod tests {
             let mut buf = vec![0u8; 65536];
             let n = stream.read(&mut buf).unwrap();
             let request = String::from_utf8_lossy(&buf[..n]).to_string();
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                response_body.len(),
-                response_body
-            );
+            let resp = format!("HTTP/1.1 {status}\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
             stream.write_all(resp.as_bytes()).unwrap();
             request
         });
         (format!("http://127.0.0.1:{port}/v1"), handle)
+    }
+
+    fn request() -> CompletionRequest {
+        CompletionRequest { messages: vec![Message::user("hi")], tools: vec![], max_output_tokens: None, temperature: None }
+    }
+
+    async fn error_for(status: &'static str, headers: &'static str, body: &'static str) -> CoreError {
+        let (url, _h) = mock_response(status, headers, body);
+        OpenAiCompatProvider::new("test", url, "sk", "m").complete(request()).await.unwrap_err()
     }
 
     #[tokio::test]
@@ -233,11 +286,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_error_surfaces_status() {
-        let (url, _h) = mock_server(r#"{"error": {"message": "bad key"}}"#);
-        let _p = OpenAiCompatProvider::new("test", url, "bad", "m");
-        // mock always returns 200 in this helper; assert parse-level behavior instead
-        let err_body: Value = serde_json::from_str(r#"{"error": {"message": "bad key"}}"#).unwrap();
-        assert!(OpenAiCompatProvider::parse_response(&err_body).is_err());
+    async fn a_client_error_is_final() {
+        let err = error_for("401 Unauthorized", "content-type: application/json\r\n", r#"{"error": {"message": "bad key"}}"#).await;
+        assert!(matches!(&err, CoreError::Provider(m) if m.contains("401") && m.contains("bad key")), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn rate_limits_and_server_errors_are_transient() {
+        let err = error_for("429 Too Many Requests", "retry-after: 7\r\ncontent-type: application/json\r\n", r#"{"error": {"message": "slow down"}}"#).await;
+        assert!(matches!(&err, CoreError::Transient { retry_after: Some(d), .. } if *d == Duration::from_secs(7)), "{err:?}");
+
+        // A proxy's HTML error page: not JSON, still a 502.
+        let err = error_for("502 Bad Gateway", "content-type: text/html\r\n", "<html><h1>502 Bad Gateway</h1></html>").await;
+        assert!(matches!(&err, CoreError::Transient { message, retry_after: None } if message.contains("502 Bad Gateway")), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn an_error_object_in_a_200_is_classified_too() {
+        let err = error_for("200 OK", "", r#"{"error": {"code": 502, "message": "upstream provider error"}}"#).await;
+        assert!(err.is_transient(), "{err:?}");
+        let err = error_for("200 OK", "", r#"{"error": {"code": 400, "message": "context too long"}}"#).await;
+        assert!(matches!(&err, CoreError::Provider(m) if m.contains("context too long")), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn no_connection_is_transient() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port(); // closed again
+        let p = OpenAiCompatProvider::new("test", format!("http://127.0.0.1:{port}/v1"), "sk", "m");
+        let err = p.complete(request()).await.unwrap_err();
+        assert!(err.is_transient(), "{err:?}");
     }
 }

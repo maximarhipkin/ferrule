@@ -90,6 +90,19 @@ curl -fsSL https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.
 irm https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.ps1 | iex
 ```
 
+The repo is private for now, so these need a GitHub token that can read
+it, both for the script and for the download:
+
+```bash
+export GITHUB_TOKEN=…
+curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.sh | sh
+```
+
+```powershell
+$env:GITHUB_TOKEN = '…'
+irm -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN" } https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.ps1 | iex
+```
+
 The script downloads the release for your machine, checks its SHA-256,
 installs it and starts `ferrule setup`. Nothing to export, no file to edit.
 Run it again to upgrade: your settings stay, and on Linux and macOS a

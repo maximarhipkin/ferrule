@@ -64,6 +64,13 @@ pub enum RunOutcome {
     Succeeded {
         answer: String,
     },
+    /// The agent stopped before finishing (the step limit, a loop, a check
+    /// that kept failing) and answered with a status, delivered like any
+    /// answer: the person still hears where things stand.
+    Incomplete {
+        answer: String,
+        reason: String,
+    },
     Skipped {
         reason: Option<String>,
     },
@@ -75,6 +82,7 @@ pub enum RunOutcome {
 
 enum InnerOutcome {
     Succeeded(String),
+    Incomplete { answer: String, reason: String },
     Skipped(Option<String>),
 }
 
@@ -168,6 +176,11 @@ impl Scheduler {
                     .finish_run(&run_id, RunStatus::Succeeded, None, finished_at)?;
                 RunOutcome::Succeeded { answer }
             }
+            Ok(InnerOutcome::Incomplete { answer, reason }) => {
+                self.store
+                    .finish_run(&run_id, RunStatus::Incomplete, Some(&reason), finished_at)?;
+                RunOutcome::Incomplete { answer, reason }
+            }
             Ok(InnerOutcome::Skipped(reason)) => {
                 self.store.finish_run(
                     &run_id,
@@ -224,7 +237,8 @@ impl Scheduler {
             ts: now_unix(),
         };
 
-        let answer = self.router.dispatch_and_wait(inbound).await?;
+        let reply = self.router.dispatch_and_wait(inbound).await?;
+        let answer = reply.text;
 
         if let Some(channel) = self.channels.get(&task.channel) {
             let out = OutboundMessage {
@@ -241,7 +255,10 @@ impl Scheduler {
             tracing::warn!(task = %task.id, channel = %task.channel, "task succeeded but its destination channel is not registered in this process; result not delivered");
         }
 
-        Ok(InnerOutcome::Succeeded(answer))
+        Ok(match reply.incomplete {
+            Some(reason) => InnerOutcome::Incomplete { answer, reason },
+            None => InnerOutcome::Succeeded(answer),
+        })
     }
 
     /// Best-effort: let the destination chat know a task failed, rather
@@ -389,6 +406,9 @@ mod tests {
     enum Reply {
         Ok(String),
         Err(String),
+        /// Calls the same missing tool until told to stop, then answers
+        /// with this status.
+        Loop(String),
     }
 
     /// A `Provider` that counts every call (so tests can assert the agent
@@ -403,7 +423,7 @@ mod tests {
         fn name(&self) -> &str {
             "scripted"
         }
-        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             match &self.reply {
                 Reply::Ok(s) => Ok(CompletionResponse {
@@ -411,6 +431,16 @@ mod tests {
                     usage: Usage::default(),
                 }),
                 Reply::Err(e) => Err(CoreError::Provider(e.clone())),
+                Reply::Loop(status) => {
+                    let stopping = req.messages.last().and_then(|m| m.content.as_deref()).is_some_and(|c| c.starts_with("[ferrule] Stopping here"));
+                    let message = if stopping {
+                        Message::assistant(Some(status.clone()), vec![], None)
+                    } else {
+                        let call = ferrule_core::ToolCall { id: "c".into(), name: "missing".into(), arguments: serde_json::json!({}) };
+                        Message::assistant(None, vec![call], None)
+                    };
+                    Ok(CompletionResponse { message, usage: Usage::default() })
+                }
             }
         }
     }
@@ -467,11 +497,16 @@ mod tests {
                 calls: calls_for_factory.clone(),
                 reply: reply.clone(),
             });
+            // A looping agent gets one step, so the run hits the limit.
+            let config = match reply {
+                Reply::Loop(_) => AgentConfig { max_iterations: 1, ..AgentConfig::default() },
+                _ => AgentConfig::default(),
+            };
             Ok(Agent::new(
                 provider,
                 ToolRegistry::new(),
                 HarnessProfile::generic(),
-                AgentConfig::default(),
+                config,
                 ToolContext::default(),
                 Some(transcript),
             )
@@ -734,5 +769,29 @@ mod tests {
             due.iter().all(|t| t.id != task.id),
             "a fired one-shot task must never be due again"
         );
+    }
+
+    /// A run that hits the step limit delivers the agent's status like any
+    /// answer, and is recorded as incomplete, not succeeded or failed.
+    #[tokio::test]
+    async fn a_run_that_stops_early_is_incomplete() {
+        let (scheduler, _calls, recorder, _d1, _d2) =
+            test_scheduler(Reply::Loop("got halfway".into()), Duration::from_secs(5));
+        let task = add_task(&scheduler, None);
+
+        let outcome = scheduler.execute(&task).await.unwrap();
+        let RunOutcome::Incomplete { answer, reason } = outcome else {
+            panic!("expected Incomplete, got {outcome:?}");
+        };
+        assert_eq!(answer, "got halfway");
+        assert_eq!(reason, "it reached the limit of 1 step");
+
+        let sent = recorder.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].text, "got halfway");
+
+        let runs = scheduler.store().runs_for(&task.id, 5).unwrap();
+        assert_eq!(runs[0].status, RunStatus::Incomplete);
+        assert_eq!(runs[0].detail.as_deref(), Some(reason.as_str()));
     }
 }

@@ -46,15 +46,18 @@ impl TaskKind {
 pub enum RunStatus {
     Running,
     Succeeded,
+    /// The agent stopped before finishing and answered with a status.
+    Incomplete,
     Failed,
     Skipped,
 }
 
 impl RunStatus {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             RunStatus::Running => "running",
             RunStatus::Succeeded => "succeeded",
+            RunStatus::Incomplete => "incomplete",
             RunStatus::Failed => "failed",
             RunStatus::Skipped => "skipped",
         }
@@ -64,6 +67,7 @@ impl RunStatus {
         match s {
             "running" => RunStatus::Running,
             "succeeded" => RunStatus::Succeeded,
+            "incomplete" => RunStatus::Incomplete,
             "skipped" => RunStatus::Skipped,
             // Anything unrecognized is treated as `failed` rather than
             // panicking — a corrupt/foreign value in this column should

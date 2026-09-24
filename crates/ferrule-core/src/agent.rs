@@ -4,10 +4,12 @@ use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink};
 use crate::message::{Message, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Provider};
+use crate::stuck::{Step, Stuck};
 use crate::tool::{ToolContext, ToolRegistry};
 use crate::transcript::Transcript;
+use crate::verify::Verifier;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -25,11 +27,100 @@ pub struct AgentConfig {
     pub temperature: Option<f32>,
     /// Number of trailing messages always kept verbatim through compaction.
     pub compaction_keep_last: usize,
+    pub retry: RetryPolicy,
+    /// Failed checks a run gets to fix before it stops (see [`Verifier`]).
+    pub max_verify_rounds: usize,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        Self { max_iterations: 60, max_output_tokens: None, temperature: None, compaction_keep_last: 6 }
+        Self {
+            max_iterations: 60,
+            max_output_tokens: None,
+            temperature: None,
+            compaction_keep_last: 6,
+            retry: RetryPolicy::default(),
+            max_verify_rounds: 3,
+        }
+    }
+}
+
+/// How a provider call that failed transiently (`CoreError::Transient`) is
+/// retried: exponential backoff with jitter, or the server's `Retry-After`
+/// when it gives one, all within one time budget.
+#[derive(Debug, Clone)]
+pub struct RetryPolicy {
+    /// Tries per call, the first included. 1 turns retrying off.
+    pub max_attempts: u32,
+    pub base_delay: Duration,
+    /// Cap on the computed backoff. A server's `Retry-After` is only held
+    /// to the budget.
+    pub max_delay: Duration,
+    /// No retry that would start later than this after the first try.
+    pub budget: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self { max_attempts: 4, base_delay: Duration::from_secs(2), max_delay: Duration::from_secs(30), budget: Duration::from_secs(120) }
+    }
+}
+
+impl RetryPolicy {
+    /// The wait before trying again after `attempt` (1-based) failed with
+    /// `err`, `elapsed` after the first try started; `None` to give up.
+    pub fn delay(&self, err: &CoreError, attempt: u32, elapsed: Duration) -> Option<Duration> {
+        let CoreError::Transient { retry_after, .. } = err else {
+            return None;
+        };
+        if attempt >= self.max_attempts {
+            return None;
+        }
+        let delay = match retry_after {
+            Some(d) => *d,
+            None => jitter(self.base_delay.saturating_mul(1 << (attempt - 1).min(16)).min(self.max_delay)),
+        };
+        (elapsed + delay <= self.budget).then_some(delay)
+    }
+}
+
+/// Somewhere in the upper half of `d`, so sessions that failed together
+/// don't all come back at the same instant.
+fn jitter(d: Duration) -> Duration {
+    use std::hash::BuildHasher;
+    // Each `RandomState` is freshly keyed: a random number without a crate.
+    let r = std::collections::hash_map::RandomState::new().hash_one(0u8);
+    let half = d / 2;
+    half + Duration::from_nanos(r % (half.as_nanos() as u64 + 1))
+}
+
+/// Why a run ended before the model said it was done.
+#[derive(Debug, Clone)]
+enum StopReason {
+    MaxIterations(usize),
+    Stuck(Stuck),
+    VerifyFailing { check: String, rounds: usize },
+}
+
+impl std::fmt::Display for StopReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StopReason::MaxIterations(n) => write!(f, "it reached the limit of {n} step{}", if *n == 1 { "" } else { "s" }),
+            StopReason::Stuck(stuck) => f.write_str(&stuck.reason()),
+            StopReason::VerifyFailing { check, rounds } => {
+                let rounds = if *rounds == 1 { "one round".to_string() } else { format!("{rounds} rounds") };
+                write!(f, "`{check}` still fails after {rounds} of fixes")
+            }
+        }
+    }
+}
+
+impl StopReason {
+    fn into_error(self) -> CoreError {
+        match self {
+            StopReason::MaxIterations(n) => CoreError::MaxIterations(n),
+            other => CoreError::Stopped(other.to_string()),
+        }
     }
 }
 
@@ -43,8 +134,16 @@ pub struct Agent {
     tool_ctx: ToolContext,
     transcript: Option<Transcript>,
     ledger: Option<LedgerContext>,
+    verifier: Option<Arc<dyn Verifier>>,
+    /// What the current run was asked to do: kept verbatim through
+    /// compaction, since it's what says when the work is done.
+    goal: Option<String>,
     pub messages: Vec<Message>,
     pub usage: Usage,
+    /// Set when the last run stopped before finishing (the step limit, a
+    /// loop, a check that kept failing): why. Its answer is then a status,
+    /// not a result.
+    pub incomplete: Option<String>,
 }
 
 impl Agent {
@@ -56,7 +155,20 @@ impl Agent {
         tool_ctx: ToolContext,
         transcript: Option<Transcript>,
     ) -> Self {
-        Self { provider, tools, profile, config, tool_ctx, transcript, ledger: None, messages: Vec::new(), usage: Usage::default() }
+        Self {
+            provider,
+            tools,
+            profile,
+            config,
+            tool_ctx,
+            transcript,
+            ledger: None,
+            verifier: None,
+            goal: None,
+            messages: Vec::new(),
+            usage: Usage::default(),
+            incomplete: None,
+        }
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
@@ -71,6 +183,13 @@ impl Agent {
     /// by the caller because `Provider` exposes only `name()`, not a model.
     pub fn with_ledger(mut self, sink: Arc<dyn LedgerSink>, task_shape: impl Into<String>, origin: Option<String>, model: impl Into<String>) -> Self {
         self.ledger = Some(LedgerContext { sink, task_shape: task_shape.into(), origin, model: model.into() });
+        self
+    }
+
+    /// Check the work before a run that changed files may finish; see
+    /// [`Verifier`].
+    pub fn with_verifier(mut self, verifier: Arc<dyn Verifier>) -> Self {
+        self.verifier = Some(verifier);
         self
     }
 
@@ -93,15 +212,54 @@ impl Agent {
     /// emit one row for it — success or failure. This is the only place
     /// that writes to the ledger; both the main loop and the compaction
     /// summary call go through it.
-    async fn call_provider(&self, req: CompletionRequest, iteration: usize, call_kind: &str) -> Result<CompletionResponse, CoreError> {
-        let start = Instant::now();
-        let result = self.provider.complete(req).await;
-        let latency_ms = start.elapsed().as_millis() as u64;
-        self.record_completion(iteration, call_kind, latency_ms, &result);
-        result
+    ///
+    /// A transient failure is tried again per `config.retry`; every attempt
+    /// gets its own row, the ones that led to a retry marked `"retried"`.
+    async fn call_provider(
+        &self,
+        tx: &mpsc::Sender<AgentEvent>,
+        req: CompletionRequest,
+        iteration: usize,
+        call_kind: &str,
+    ) -> Result<CompletionResponse, CoreError> {
+        let first = Instant::now();
+        let mut attempt = 1;
+        loop {
+            let start = Instant::now();
+            let result = self.provider.complete(req.clone()).await;
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let retry_in = match &result {
+                Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
+                Ok(_) => None,
+            };
+            self.record_completion(iteration, call_kind, latency_ms, &result, retry_in.is_some());
+            let (Some(delay), Err(e)) = (retry_in, &result) else {
+                return result;
+            };
+            warn!(attempt, delay_ms = delay.as_millis() as u64, "provider call failed, retrying: {e}");
+            self.emit(
+                tx,
+                AgentEvent::ProviderRetry {
+                    attempt,
+                    max_attempts: self.config.retry.max_attempts,
+                    delay_ms: delay.as_millis() as u64,
+                    error: e.to_string(),
+                },
+            )
+            .await;
+            tokio::time::sleep(delay).await;
+            attempt += 1;
+        }
     }
 
-    fn record_completion(&self, iteration: usize, call_kind: &str, latency_ms: u64, result: &Result<CompletionResponse, CoreError>) {
+    fn record_completion(
+        &self,
+        iteration: usize,
+        call_kind: &str,
+        latency_ms: u64,
+        result: &Result<CompletionResponse, CoreError>,
+        retried: bool,
+    ) {
         let Some(ledger) = &self.ledger else { return };
         let (input_tokens, cached_input_tokens, output_tokens, tool_calls, outcome, error_kind, error_message) = match result {
             Ok(resp) => (
@@ -113,7 +271,10 @@ impl Agent {
                 None,
                 None,
             ),
-            Err(e) => (0, 0, 0, 0, "error".to_string(), Some(error_kind_of(e)), Some(truncate_error(&e.to_string()))),
+            Err(e) => {
+                let outcome = if retried { "retried" } else { "error" };
+                (0, 0, 0, 0, outcome.to_string(), Some(error_kind_of(e)), Some(truncate_error(&e.to_string())))
+            }
         };
         let record = LedgerRecord {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -138,41 +299,29 @@ impl Agent {
     }
 
     /// The ReAct loop: call → tool calls → observe → repeat until text-only.
+    ///
+    /// A run that can't finish still answers: at the step limit, in a loop
+    /// it was already warned about, or with a check that keeps failing, it
+    /// stops with a status of where things stand ([`Agent::incomplete`]
+    /// says why) instead of an error.
     pub async fn run(&mut self, goal: &str, tx: mpsc::Sender<AgentEvent>) -> Result<String, CoreError> {
         let session_id = self.session_id();
         self.emit(&tx, AgentEvent::RunStarted { session_id, goal: goal.into() }).await;
+        self.goal = Some(goal.to_string());
+        self.incomplete = None;
+        self.push(Message::user(goal));
 
-        let user = Message::user(goal);
-        self.log(&user);
-        self.messages.push(user);
+        let mut steps: Vec<Step> = Vec::new();
+        let mut nudged = false;
+        // A tool that changes files succeeded, so the check has to pass
+        // before the run may finish.
+        let mut unverified = false;
+        let mut failed_checks = 0;
 
         for iteration in 0..self.config.max_iterations {
             self.maybe_compact(&tx, iteration).await?;
-
-            let req = CompletionRequest {
-                messages: self.rendered_messages(),
-                tools: self.tools.definitions(),
-                max_output_tokens: self.config.max_output_tokens,
-                temperature: self.config.temperature,
-            };
-
-            let resp = self.call_provider(req, iteration, "turn").await.map_err(|e| {
-                let msg = e.to_string();
-                CoreError::Provider(msg)
-            })?;
-
-            self.usage.input_tokens += resp.usage.input_tokens;
-            self.usage.output_tokens += resp.usage.output_tokens;
-            self.usage.cached_input_tokens += resp.usage.cached_input_tokens;
-            self.emit(
-                &tx,
-                AgentEvent::Usage {
-                    input_tokens: resp.usage.input_tokens,
-                    output_tokens: resp.usage.output_tokens,
-                    cached_input_tokens: resp.usage.cached_input_tokens,
-                },
-            )
-            .await;
+            let resp = self.call_provider(&tx, self.request(), iteration, "turn").await?;
+            self.add_usage(&tx, &resp.usage).await;
 
             let msg = resp.message;
             if let Some(text) = &msg.content {
@@ -187,10 +336,27 @@ impl Agent {
             }
 
             let finished = msg.tool_calls.is_empty();
-            self.log(&msg);
-            self.messages.push(msg.clone());
+            self.push(msg.clone());
 
             if finished {
+                if let Some(verifier) = self.verifier.clone().filter(|_| unverified) {
+                    let check = verifier.describe();
+                    self.emit(&tx, AgentEvent::VerifyStarted { check: check.clone() }).await;
+                    let result = verifier.verify(&self.tool_ctx).await;
+                    self.emit(&tx, AgentEvent::VerifyFinished { check: check.clone(), ok: result.is_ok() }).await;
+                    if let Err(output) = result {
+                        failed_checks += 1;
+                        if failed_checks > self.config.max_verify_rounds {
+                            let reason = StopReason::VerifyFailing { check, rounds: self.config.max_verify_rounds };
+                            return self.wrap_up(&tx, iteration + 1, reason).await;
+                        }
+                        self.push(Message::user(format!(
+                            "[ferrule] `{check}` fails, so this isn't done yet. Fix what it reports, then finish again; \
+                             it runs again when you do.\n\n{output}"
+                        )));
+                        continue;
+                    }
+                }
                 let answer = msg.content.unwrap_or_default();
                 self.emit(&tx, AgentEvent::RunFinished { answer_chars: answer.len(), iterations: iteration + 1 }).await;
                 return Ok(answer);
@@ -212,6 +378,9 @@ impl Agent {
                 if !ok {
                     warn!(tool = %call.name, "tool call failed");
                 }
+                if ok && self.tools.changes_files(&call.name) {
+                    unverified = true;
+                }
                 self.emit(&tx, AgentEvent::ToolCallFinished {
                     id: call.id.clone(),
                     name: call.name.clone(),
@@ -220,12 +389,94 @@ impl Agent {
                 })
                 .await;
 
-                let tool_msg = Message::tool_result(&call.id, content);
-                self.log(&tool_msg);
-                self.messages.push(tool_msg);
+                steps.push(Step::new(&call.name, &call.arguments, &content, ok));
+                self.push(Message::tool_result(&call.id, content));
+            }
+
+            if let Some(stuck) = Stuck::detect(&steps) {
+                if nudged {
+                    return self.wrap_up(&tx, iteration + 1, StopReason::Stuck(stuck)).await;
+                }
+                // One warning first: told what it's repeating, a model
+                // usually changes course.
+                nudged = true;
+                steps.clear();
+                let note = stuck.nudge();
+                warn!(?stuck, "the run is going in circles");
+                self.emit(&tx, AgentEvent::Stuck { note: note.clone() }).await;
+                self.push(Message::user(note));
             }
         }
-        Err(CoreError::MaxIterations(self.config.max_iterations))
+        let limit = self.config.max_iterations;
+        self.wrap_up(&tx, limit, StopReason::MaxIterations(limit)).await
+    }
+
+    /// Ends a run that can't finish with one more call, for a status the
+    /// person can act on: what got done, what's blocking, what's next. An
+    /// error would throw all of that away.
+    async fn wrap_up(&mut self, tx: &mpsc::Sender<AgentEvent>, iterations: usize, reason: StopReason) -> Result<String, CoreError> {
+        let why = reason.to_string();
+        warn!(%why, "stopping the run before it finished");
+        self.incomplete = Some(why.clone());
+        self.push(Message::user(format!(
+            "[ferrule] Stopping here: {why}. Don't call any tools. Write a short status for the person you are \
+             working for, in their language: say first that you stopped before finishing and why, then what \
+             you got done, what is blocking, and the next step or the question they need to answer."
+        )));
+        if let Err(e) = self.maybe_compact(tx, iterations).await {
+            warn!("compaction before the status answer failed: {e}");
+        }
+        // The tools stay declared: some APIs refuse a history that holds
+        // tool calls when the request has no tools.
+        let resp = match self.call_provider(tx, self.request(), iterations, "status").await {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!("the status answer failed: {e}");
+                return Err(reason.into_error());
+            }
+        };
+        self.add_usage(tx, &resp.usage).await;
+        let mut msg = resp.message;
+        msg.tool_calls.clear();
+        let answer = match msg.content.as_deref().map(str::trim) {
+            Some(text) if !text.is_empty() => text.to_string(),
+            _ => format!("Stopped before finishing: {why}."),
+        };
+        msg.content = Some(answer.clone());
+        self.emit(tx, AgentEvent::AssistantText { text: answer.clone() }).await;
+        self.push(msg);
+        self.emit(tx, AgentEvent::RunIncomplete { reason: why, iterations }).await;
+        Ok(answer)
+    }
+
+    fn request(&self) -> CompletionRequest {
+        CompletionRequest {
+            messages: self.rendered_messages(),
+            tools: self.tools.definitions(),
+            max_output_tokens: self.config.max_output_tokens,
+            temperature: self.config.temperature,
+        }
+    }
+
+    async fn add_usage(&mut self, tx: &mpsc::Sender<AgentEvent>, usage: &Usage) {
+        self.usage.input_tokens += usage.input_tokens;
+        self.usage.output_tokens += usage.output_tokens;
+        self.usage.cached_input_tokens += usage.cached_input_tokens;
+        self.emit(
+            tx,
+            AgentEvent::Usage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cached_input_tokens: usage.cached_input_tokens,
+            },
+        )
+        .await;
+    }
+
+    /// Adds to the history and the transcript.
+    fn push(&mut self, msg: Message) {
+        self.log(&msg);
+        self.messages.push(msg);
     }
 
     fn log(&self, msg: &Message) {
@@ -300,7 +551,7 @@ impl Agent {
             max_output_tokens: Some(4096),
             temperature: Some(0.0),
         };
-        let summary = self.call_provider(summary_req, iteration, "compaction").await?.message.content.unwrap_or_default();
+        let summary = self.call_provider(tx, summary_req, iteration, "compaction").await?.message.content.unwrap_or_default();
 
         let mut rebuilt = Vec::with_capacity(keep + 2);
         if let Some(sys) = self.messages.first().filter(|m| m.role == crate::message::Role::System) {
@@ -310,6 +561,15 @@ impl Agent {
         if !carried.is_empty() {
             summary_msg.push_str("\n\n[Skill instructions activated earlier in this session — still in force]\n");
             summary_msg.push_str(&carried.join("\n\n"));
+        }
+        // The request itself, word for word: it's what says when the work
+        // is done, and a summary tends to blur exactly that.
+        let goal_in_tail = |goal: &str| {
+            self.messages[split..].iter().any(|m| m.role == crate::message::Role::User && m.content.as_deref() == Some(goal))
+        };
+        if let Some(goal) = self.goal.as_deref().filter(|g| !goal_in_tail(g)) {
+            summary_msg.push_str("\n\n[The request being worked on, verbatim]\n");
+            summary_msg.push_str(goal);
         }
         summary_msg.push_str("\n\nContinue from here.");
         rebuilt.push(Message::user(summary_msg));
@@ -406,12 +666,14 @@ fn elide_skill_blocks(text: &str) -> String {
 fn error_kind_of(e: &CoreError) -> String {
     match e {
         CoreError::Provider(_) => "provider",
+        CoreError::Transient { .. } => "transient",
         CoreError::MalformedResponse(_) => "malformed_response",
         CoreError::ToolNotFound(_) => "tool_not_found",
         CoreError::ToolFailed { .. } => "tool_failed",
         CoreError::Io(_) => "io",
         CoreError::Serde(_) => "serde",
         CoreError::MaxIterations(_) => "max_iterations",
+        CoreError::Stopped(_) => "stopped",
         CoreError::Aborted(_) => "aborted",
     }
     .to_string()
@@ -468,16 +730,39 @@ mod tests {
     }
 
     fn make_agent(script: Vec<Message>) -> Agent {
+        agent_with(script, AgentConfig::default())
+    }
+
+    fn agent_with(script: Vec<Message>, config: AgentConfig) -> Agent {
         let mut reg = ToolRegistry::new();
         reg.register(Arc::new(EchoTool));
         Agent::new(
             Arc::new(ScriptProvider { responses: Mutex::new(script) }),
             reg,
             HarnessProfile::generic(),
-            AgentConfig::default(),
+            config,
             ToolContext::default(),
             None,
         )
+    }
+
+    fn echo(text: &str) -> Message {
+        let call = crate::message::ToolCall { id: "1".into(), name: "echo".into(), arguments: serde_json::json!({ "text": text }) };
+        Message::assistant(None, vec![call], None)
+    }
+
+    fn say(text: &str) -> Message {
+        Message::assistant(Some(text.into()), vec![], None)
+    }
+
+    /// Room for every event of a long test run: `emit` waits on a full
+    /// channel, and these tests only read after the run.
+    fn events() -> (mpsc::Sender<AgentEvent>, mpsc::Receiver<AgentEvent>) {
+        mpsc::channel(4096)
+    }
+
+    fn drain(rx: &mut mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     #[tokio::test]
@@ -738,5 +1023,235 @@ mod tests {
         let summary = agent.messages[0].content.clone().unwrap();
         assert!(summary.starts_with("[Compaction summary"));
         assert!(!summary.contains(&block), "the tail already holds it");
+    }
+
+    fn fast_retry(max_attempts: u32) -> RetryPolicy {
+        RetryPolicy { max_attempts, base_delay: Duration::from_millis(1), max_delay: Duration::from_millis(2), budget: Duration::from_secs(5) }
+    }
+
+    /// Fails transiently `failures` times, then answers.
+    struct FlakyProvider {
+        failures: Mutex<u32>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for FlakyProvider {
+        fn name(&self) -> &str {
+            "flaky"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let mut left = self.failures.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
+                return Err(CoreError::Transient { message: "HTTP 503".into(), retry_after: None });
+            }
+            Ok(CompletionResponse { message: say("ok"), usage: Usage::default() })
+        }
+    }
+
+    fn flaky_agent(failures: u32, max_attempts: u32, sink: Arc<RecordingSink>) -> Agent {
+        let config = AgentConfig { retry: fast_retry(max_attempts), ..Default::default() };
+        Agent::new(Arc::new(FlakyProvider { failures: Mutex::new(failures) }), ToolRegistry::new(), HarnessProfile::generic(), config, ToolContext::default(), None)
+            .with_ledger(sink, "run", None, "m")
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_is_retried_with_a_row_per_attempt() {
+        let sink = Arc::new(RecordingSink { records: Mutex::new(Vec::new()) });
+        let mut agent = flaky_agent(2, 4, sink.clone());
+        let (tx, mut rx) = events();
+        assert_eq!(agent.run("hi", tx).await.unwrap(), "ok");
+
+        let outcomes: Vec<String> = sink.records.lock().unwrap().iter().map(|r| r.outcome.clone()).collect();
+        assert_eq!(outcomes, ["retried", "retried", "ok"]);
+        assert_eq!(sink.records.lock().unwrap()[0].error_kind.as_deref(), Some("transient"));
+        let retries: Vec<u32> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                AgentEvent::ProviderRetry { attempt, max_attempts: 4, .. } => Some(attempt),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(retries, [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn retries_stop_at_max_attempts() {
+        let sink = Arc::new(RecordingSink { records: Mutex::new(Vec::new()) });
+        let mut agent = flaky_agent(10, 3, sink.clone());
+        let (tx, _rx) = events();
+        let err = agent.run("hi", tx).await.unwrap_err();
+        assert!(err.is_transient(), "{err}");
+        let outcomes: Vec<String> = sink.records.lock().unwrap().iter().map(|r| r.outcome.clone()).collect();
+        assert_eq!(outcomes, ["retried", "retried", "error"]);
+    }
+
+    #[test]
+    fn retry_delay_backs_off_within_bounds() {
+        let policy = RetryPolicy::default();
+        let transient = CoreError::Transient { message: "x".into(), retry_after: None };
+        for attempt in 1..=3 {
+            let full = Duration::from_secs(2 << (attempt - 1));
+            let d = policy.delay(&transient, attempt, Duration::ZERO).unwrap();
+            assert!(d >= full / 2 && d <= full, "attempt {attempt}: {d:?}");
+        }
+        assert_eq!(policy.delay(&transient, 4, Duration::ZERO), None, "4 attempts in all");
+        assert_eq!(policy.delay(&transient, 1, Duration::from_secs(119)), None, "past the budget");
+        assert_eq!(policy.delay(&CoreError::Provider("401".into()), 1, Duration::ZERO), None);
+
+        // The server's own wait wins over the backoff cap, not over the budget.
+        let told = CoreError::Transient { message: "429".into(), retry_after: Some(Duration::from_secs(45)) };
+        assert_eq!(policy.delay(&told, 1, Duration::ZERO), Some(Duration::from_secs(45)));
+        assert_eq!(policy.delay(&told, 1, Duration::from_secs(80)), None);
+    }
+
+    #[tokio::test]
+    async fn the_step_limit_ends_with_a_status_not_an_error() {
+        let config = AgentConfig { max_iterations: 2, ..Default::default() };
+        let mut agent = agent_with(vec![echo("a"), echo("b"), say("Stopped: got a and b, c is next.")], config);
+        let (tx, mut rx) = events();
+        let answer = agent.run("do a, b and c", tx).await.unwrap();
+        assert_eq!(answer, "Stopped: got a and b, c is next.");
+        assert_eq!(agent.incomplete.as_deref(), Some("it reached the limit of 2 steps"));
+        let asked = agent.messages[agent.messages.len() - 2].content.clone().unwrap();
+        assert!(asked.starts_with("[ferrule] Stopping here: it reached the limit of 2 steps."), "{asked}");
+        assert!(drain(&mut rx).iter().any(|e| matches!(e, AgentEvent::RunIncomplete { iterations: 2, .. })));
+
+        // The next run starts clean.
+        agent.messages.clear();
+        let mut agent = agent_with(vec![say("fine")], AgentConfig::default());
+        let (tx, _rx) = events();
+        agent.run("again", tx).await.unwrap();
+        assert_eq!(agent.incomplete, None);
+    }
+
+    #[tokio::test]
+    async fn a_status_answer_that_calls_tools_anyway_falls_back() {
+        let config = AgentConfig { max_iterations: 1, ..Default::default() };
+        let mut agent = agent_with(vec![echo("a"), echo("b")], config);
+        let (tx, _rx) = events();
+        let answer = agent.run("go", tx).await.unwrap();
+        assert_eq!(answer, "Stopped before finishing: it reached the limit of 1 step.");
+        assert!(agent.messages.last().unwrap().tool_calls.is_empty(), "no dangling tool call in the history");
+    }
+
+    #[tokio::test]
+    async fn a_loop_gets_one_warning_then_the_run_stops() {
+        let mut script = vec![echo("same"); 8];
+        script.push(say("I'm stuck on the same result."));
+        let mut agent = make_agent(script);
+        let (tx, mut rx) = events();
+        let answer = agent.run("loop", tx).await.unwrap();
+        assert_eq!(answer, "I'm stuck on the same result.");
+        assert_eq!(agent.incomplete.as_deref(), Some("it kept repeating the same `echo` call after being warned"));
+
+        let events = drain(&mut rx);
+        assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::Stuck { .. })).count(), 1);
+        assert_eq!(events.iter().filter(|e| matches!(e, AgentEvent::ToolCallFinished { .. })).count(), 8);
+        let warned = agent.messages.iter().filter_map(|m| m.content.as_deref()).filter(|c| c.contains("Doing it again won't change")).count();
+        assert_eq!(warned, 1);
+    }
+
+    #[tokio::test]
+    async fn a_warned_loop_that_changes_course_finishes_normally() {
+        let mut script = vec![echo("same"); 4];
+        script.extend([echo("different"), say("done")]);
+        let mut agent = make_agent(script);
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("loop", tx).await.unwrap(), "done");
+        assert_eq!(agent.incomplete, None);
+    }
+
+    /// Answers from a script and counts its runs.
+    struct ScriptedCheck {
+        results: Mutex<Vec<Result<(), String>>>,
+        runs: Mutex<usize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Verifier for ScriptedCheck {
+        fn describe(&self) -> String {
+            "cargo test".into()
+        }
+        async fn verify(&self, _ctx: &ToolContext) -> Result<(), String> {
+            *self.runs.lock().unwrap() += 1;
+            self.results.lock().unwrap().remove(0)
+        }
+    }
+
+    fn check(results: Vec<Result<(), String>>) -> Arc<ScriptedCheck> {
+        Arc::new(ScriptedCheck { results: Mutex::new(results), runs: Mutex::new(0) })
+    }
+
+    #[tokio::test]
+    async fn a_failing_check_sends_the_run_back_to_work() {
+        let verifier = check(vec![Err("test foo ... FAILED".into()), Ok(())]);
+        let script = vec![echo("edit"), say("done"), echo("fix"), say("done, tests pass")];
+        let mut agent = make_agent(script).with_verifier(verifier.clone());
+        let (tx, mut rx) = events();
+        assert_eq!(agent.run("fix the bug", tx).await.unwrap(), "done, tests pass");
+        assert_eq!(*verifier.runs.lock().unwrap(), 2);
+        assert_eq!(agent.incomplete, None);
+
+        let told = agent.messages.iter().filter_map(|m| m.content.as_deref()).find(|c| c.starts_with("[ferrule] `cargo test` fails")).unwrap();
+        assert!(told.ends_with("test foo ... FAILED"), "the check's output reaches the model: {told}");
+        let results: Vec<bool> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                AgentEvent::VerifyFinished { ok, .. } => Some(ok),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results, [false, true]);
+    }
+
+    #[tokio::test]
+    async fn nothing_changed_nothing_to_check() {
+        let verifier = check(vec![]);
+        let mut agent = make_agent(vec![say("the answer is 4")]).with_verifier(verifier.clone());
+        let (tx, _rx) = events();
+        agent.run("what is 2+2", tx).await.unwrap();
+        assert_eq!(*verifier.runs.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_check_that_keeps_failing_ends_with_a_status() {
+        let verifier = check(vec![Err("1 failed".into()), Err("still 1 failed".into())]);
+        let config = AgentConfig { max_verify_rounds: 1, ..Default::default() };
+        let script = vec![echo("edit"), say("done"), say("done now"), say("One test still fails; I couldn't find why.")];
+        let mut agent = agent_with(script, config).with_verifier(verifier.clone());
+        let (tx, _rx) = events();
+        let answer = agent.run("fix it", tx).await.unwrap();
+        assert_eq!(answer, "One test still fails; I couldn't find why.");
+        assert_eq!(agent.incomplete.as_deref(), Some("`cargo test` still fails after one round of fixes"));
+        assert_eq!(*verifier.runs.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn compaction_keeps_the_request_verbatim() {
+        let provider = Arc::new(CapturingProvider { prompts: Mutex::new(Vec::new()) });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 1_000;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 0.1;
+        let config = AgentConfig { compaction_keep_last: 2, ..Default::default() };
+        let mut agent = Agent::new(provider, ToolRegistry::new(), profile, config, ToolContext::default(), None);
+
+        let goal = "Rename every `Foo` to `Bar`, but not in tests/.";
+        agent.goal = Some(goal.into());
+        agent.messages.push(Message::user(goal));
+        agent.messages.extend((0..4).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50)))));
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        let summary = agent.messages[0].content.clone().unwrap();
+        assert!(summary.contains(&format!("[The request being worked on, verbatim]\n{goal}")), "{summary}");
+        assert!(summary.ends_with("Continue from here."));
+
+        // Still in the verbatim tail: not repeated.
+        agent.messages.push(Message::user(goal));
+        agent.messages.push(Message::user("last"));
+        agent.maybe_compact(&tx, 1).await.unwrap();
+        let summary = agent.messages[0].content.clone().unwrap();
+        assert!(!summary.contains(goal), "{summary}");
     }
 }

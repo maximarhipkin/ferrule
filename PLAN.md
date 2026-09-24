@@ -78,9 +78,11 @@ that convention yet — ask before introducing one).
   no OS sandbox (Git Bash or PowerShell as the shell). CI
   (`.github/workflows/ci.yml`) tests Linux, macOS and Windows, all three
   green since `cee5de1`;
-  `release.yml` builds 5 targets on a `v*` tag. **The repo is public and
-  `v0.1.0` is released** (2026-09-24, msg 3074); the Linux one-liner was
-  run for real against it.
+  `release.yml` builds 5 targets on a `v*` tag. **`v0.1.0` is released**
+  (2026-09-24, msg 3074) and the Linux one-liner was run for real against
+  it while the repo was public. **The repo is private again** (msg 3076,
+  "for now"), so installing needs `GITHUB_TOKEN` (README) and CI minutes
+  count.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -137,10 +139,13 @@ that convention yet — ask before introducing one).
   and `web_fetch` bypassing it, and a real-Mac run. The Telegram sender
   allow-list closed with M8. Native Windows has no sandbox backend;
   AppContainer or a restricted token is the research item.)
-- **Next milestones, proposed** (`docs/research-autonomy-and-self-extension.md`,
-  msg 3066): M9 never stuck (provider retry and backoff, a stuck
-  detector, a graceful stop at `max_iterations`, `verify_command`
-  enforced by the runtime), M10 MCP servers and `web_fetch` under the
+- **M9 never stuck is done** (2026-09-24, Session Log): transient provider
+  errors are retried with backoff, a loop gets one warning and then the
+  run stops, every stop (step limit, loop, a check that keeps failing)
+  ends with a status answer instead of an error, `verify_command` is run
+  by ferrule itself, and compaction keeps the request verbatim.
+- **Next milestones** (`docs/research-autonomy-and-self-extension.md`,
+  msg 3066): M10 MCP servers and `web_fetch` under the
   sandbox and the credential proxy, M11 a browser via agent-browser's MCP
   server, M12 self-extension (skills and MCP servers hot-loaded). Max's
   answers (msg 3074): this order; self-install from an **allow-list of
@@ -1408,3 +1413,54 @@ run for real in a scratch HOME: downloads, verifies, installs
 `ferrule 0.1.0`, and `ferrule sandbox` passes. README drops the
 private-repo token instructions (the scripts still accept
 `GITHUB_TOKEN`, for private forks).
+
+### 2026-09-24 — M9 never stuck (Devi, Opus 5.5)
+
+Five pieces, from `docs/research-autonomy-and-self-extension.md`:
+
+- **Retry.** `CoreError::Transient { message, retry_after }` is what a
+  provider returns when trying again can help: 408, 429, 5xx, a timeout or
+  a dropped connection, an HTML error page, or an `error` object inside a
+  200 whose code says rate limit/overloaded/unavailable
+  (`openai_compat.rs`). `Agent::call_provider` retries it with capped,
+  jittered exponential backoff, honouring `Retry-After`, up to
+  `config.retry`. Every attempt gets a ledger row; the ones that led to a
+  retry have outcome `"retried"`. Anything else (a 400, a bad key) fails at
+  once.
+- **Stuck detector** (`stuck.rs`, after OpenHands' `StuckDetector`): the
+  same call with the same result 4 times, the same call failing 3 times,
+  or two calls taking turns 6 times. The first time, the model is told what
+  it's repeating and to change course; the second time, the run stops.
+- **A status at every stop.** The step limit, a second loop, or a check
+  that still fails after `max_verify_rounds` fixes no longer end in an
+  error: `wrap_up` asks the model (call kind `"status"`) for a short status
+  (what's done, what's left, what blocks it), with a fixed fallback if it
+  calls tools anyway. `Agent::incomplete` carries the reason.
+  `RunStatus::Incomplete` records it for scheduled tasks, the answer is
+  still delivered, and `ferrule run` exits 2.
+- **`verify_command` enforced.** `Verifier` (`verify.rs`) runs when a run
+  that changed files tries to finish (`Tool::changes_files`, false for the
+  read-only tools and for MCP tools marked `readOnlyHint`). A failure goes
+  back to the model with the tail of the output. `CommandVerifier` in
+  `ferrule-tools` runs the owner's command through the shell tool's
+  sandbox, with `agent.verify_timeout_secs` (default 600).
+- **Goal pinned through compaction.** If the request isn't in the kept
+  tail anymore, the summary carries it verbatim.
+
+**Bug found on the way: long runs hung the lane.** `Router::run_lane` gave
+the agent an event channel of 64 and kept the receiver alive without
+reading it (`_erx`). `Agent::emit` awaits the send, so the 65th event
+blocked the run for good, and with it every later message in that chat or
+task. Now the receiver is dropped, so sends fail fast and are ignored.
+`a_long_run_does_not_stall_the_lane` fails on the old code (control run)
+and passes on the new one. A failed run now also tells the chat why
+(transient: try again in a few minutes).
+
+Also: `docs/research-windows-sandbox.md` (research agent). Tier 1 needs no
+admin: a restricted copy of the user's own token plus a capability SID on
+the workspace ACL plus a Job Object, the way Codex's unelevated backend
+and Chromium do it. Network blocking (WFP) or a dedicated account needs a
+one-time elevated setup.
+
+Tests: `cargo test --workspace` green (core 30, gateway 48, tools 17,
+providers 5, the rest unchanged).

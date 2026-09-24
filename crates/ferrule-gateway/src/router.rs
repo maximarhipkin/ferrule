@@ -2,7 +2,7 @@ use crate::channel::Channel;
 use crate::error::GatewayError;
 use crate::message::{InboundMessage, OutboundMessage};
 use crate::session;
-use ferrule_core::{Agent, Role, Transcript};
+use ferrule_core::{Agent, CoreError, Role, Transcript};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,7 +26,16 @@ pub type AgentFactory = Arc<dyn Fn(&str, Transcript) -> Result<Agent, GatewayErr
 /// `dispatch_and_wait` fills this in and awaits it.
 struct LaneJob {
     msg: InboundMessage,
-    reply: Option<oneshot::Sender<Result<String, String>>>,
+    reply: Option<oneshot::Sender<Result<Reply, String>>>,
+}
+
+/// What an agent turn answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reply {
+    pub text: String,
+    /// Set when the run stopped before finishing (see `Agent::incomplete`):
+    /// why. `text` is then a status of where the work stands.
+    pub incomplete: Option<String>,
 }
 
 /// Routes inbound messages to one agent session per (channel, chat), each
@@ -66,12 +75,13 @@ impl Router {
     }
 
     /// Enqueue an inbound message and await the agent turn's own result:
-    /// `Ok(answer)` on a normal finish, `Err` (carrying the error text) when
-    /// `Agent::run` itself returned an error (provider failure, max
-    /// iterations, etc.). Used by the scheduler, which must be able to tell
-    /// a real failure apart from a normal reply rather than relying on the
-    /// best-effort "internal error: …" string `run_lane` also puts in chat.
-    pub async fn dispatch_and_wait(&self, msg: InboundMessage) -> Result<String, GatewayError> {
+    /// `Ok(reply)` when the run answered (a run that stopped early answers
+    /// with a status, marked in `Reply::incomplete`), `Err` (carrying the
+    /// error text) when `Agent::run` itself returned an error. Used by the
+    /// scheduler, which must be able to tell a real failure apart from a
+    /// normal reply rather than relying on the best-effort failure text
+    /// `run_lane` also puts in chat.
+    pub async fn dispatch_and_wait(&self, msg: InboundMessage) -> Result<Reply, GatewayError> {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
         let (reply_tx, reply_rx) = oneshot::channel();
         let tx = self.lane_for(&sid, &msg.channel).await?;
@@ -124,15 +134,17 @@ async fn run_lane(mut agent: Agent, mut rx: mpsc::Receiver<LaneJob>, channel: Op
         let LaneJob { msg: inbound, reply } = job;
         // The agent loop wants a live event sender; the gateway doesn't
         // stream token-by-token to channels (yet), so the receiver is
-        // dropped immediately. `Agent::emit` already tolerates a detached
-        // receiver by design.
-        let (etx, _erx) = mpsc::channel(64);
+        // dropped right away. It has to be: `Agent::emit` waits while a live
+        // receiver's buffer is full, so one merely kept alive (`_erx`)
+        // stalled the lane for good once a run passed 64 events.
+        let (etx, erx) = mpsc::channel(1);
+        drop(erx);
         let run_result = agent.run(&inbound.text, etx).await;
         let reply_text = match &run_result {
             Ok(answer) => answer.clone(),
             Err(e) => {
                 tracing::error!(session = %session_id, error = %e, "agent run failed");
-                format!("internal error: {e}")
+                failure_text(e)
             }
         };
         if let Some(ch) = &channel {
@@ -148,11 +160,20 @@ async fn run_lane(mut agent: Agent, mut rx: mpsc::Receiver<LaneJob>, channel: Op
             }
         }
         if let Some(reply_tx) = reply {
-            let outcome = run_result.map_err(|e| e.to_string());
+            let outcome = run_result.map(|text| Reply { text, incomplete: agent.incomplete.clone() }).map_err(|e| e.to_string());
             let _ = reply_tx.send(outcome); // receiver may have given up (e.g. caller timed out)
         }
     }
     tracing::debug!(session = %session_id, "session lane closed");
+}
+
+/// What the chat sees when a run fails outright, instead of silence.
+fn failure_text(e: &CoreError) -> String {
+    if e.is_transient() {
+        format!("The model provider isn't answering right now, so I couldn't reply ({e}). Please try again in a few minutes.")
+    } else {
+        format!("Something went wrong and I couldn't reply: {e}")
+    }
 }
 
 #[cfg(test)]
@@ -203,6 +224,29 @@ mod tests {
         }
         async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
             Err(CoreError::Provider("simulated provider outage".into()))
+        }
+    }
+
+    /// Calls a different missing tool each turn for `turns` turns, then
+    /// answers: a long run, far past 64 events, that never looks stuck.
+    struct LongRunProvider {
+        turns: usize,
+        calls: AtomicUsize,
+    }
+    #[async_trait]
+    impl Provider for LongRunProvider {
+        fn name(&self) -> &str {
+            "long"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let message = if n < self.turns {
+                let call = ferrule_core::ToolCall { id: format!("c{n}"), name: "missing".into(), arguments: serde_json::json!({ "n": n }) };
+                Message::assistant(None, vec![call], None)
+            } else {
+                Message::assistant(Some("finally".into()), vec![], None)
+            };
+            Ok(CompletionResponse { message, usage: Usage::default() })
         }
     }
 
@@ -342,7 +386,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let router = Router::new(dir.path(), echo_factory(), HashMap::new());
         let answer = router.dispatch_and_wait(inbound("chat-1", "ping")).await.unwrap();
-        assert_eq!(answer, "echo: ping");
+        assert_eq!(answer, Reply { text: "echo: ping".into(), incomplete: None });
     }
 
     /// The exact bug class this method exists to prevent: a provider error
@@ -356,6 +400,30 @@ mod tests {
         let result = router.dispatch_and_wait(inbound("chat-1", "ping")).await;
         assert!(result.is_err(), "provider error must not be reported as success");
         assert!(result.unwrap_err().to_string().contains("simulated provider outage"));
+    }
+
+    #[tokio::test]
+    async fn a_long_run_does_not_stall_the_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let factory: AgentFactory = Arc::new(|_sid, transcript| {
+            let provider = Arc::new(LongRunProvider { turns: 40, calls: AtomicUsize::new(0) });
+            Ok(Agent::new(provider, ToolRegistry::new(), HarnessProfile::generic(), AgentConfig::default(), ToolContext::default(), Some(transcript)))
+        });
+        let router = Router::new(dir.path(), factory, HashMap::new());
+        let reply = tokio::time::timeout(Duration::from_secs(10), router.dispatch_and_wait(inbound("chat-1", "go"))).await;
+        assert_eq!(reply.expect("the lane stalled").unwrap().text, "finally");
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_tells_the_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let router = Router::new(dir.path(), failing_factory(), channels);
+        router.dispatch(inbound("chat-1", "ping")).await.unwrap();
+        wait_until(|| recorder.texts().len() == 1).await;
+        assert!(recorder.texts()[0].starts_with("Something went wrong and I couldn't reply"), "{:?}", recorder.texts());
     }
 
     #[tokio::test]
@@ -375,7 +443,7 @@ mod tests {
         msg.channel = "scheduler".into(); // not registered above
         let answer = router.dispatch_and_wait(msg).await.unwrap();
 
-        assert_eq!(answer, "echo: ping");
+        assert_eq!(answer.text, "echo: ping");
         assert!(recorder.texts().is_empty(), "unregistered pseudo-channel must not receive a delivery");
     }
 }

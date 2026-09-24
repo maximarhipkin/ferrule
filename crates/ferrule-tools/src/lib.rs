@@ -8,7 +8,7 @@ pub mod web;
 
 pub use diary::{DiaryTool, WriteTodosTool};
 pub use fs_tools::{ListDirTool, ReadFileTool, WriteFileTool};
-pub use shell::ShellTool;
+pub use shell::{CommandVerifier, ShellTool};
 pub use web::WebFetchTool;
 
 use ferrule_core::tool::ToolRegistry;
