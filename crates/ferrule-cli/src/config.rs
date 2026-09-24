@@ -47,6 +47,11 @@ pub struct GatewayConfig {
     pub telegram_token_env: Option<String>,
     #[serde(default = "default_telegram_base_url")]
     pub telegram_base_url: String,
+    /// Telegram chat ids the bot answers. Empty = nobody: the bot replies
+    /// once per chat with that chat's id, so it can be added here. A group's
+    /// id lets every member of that group in.
+    #[serde(default)]
+    pub telegram_allowed_chats: Vec<i64>,
 }
 
 fn default_telegram_base_url() -> String {
@@ -150,8 +155,9 @@ impl From<&SecretSpec> for ferrule_proxy::SecretRule {
     }
 }
 
-pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration
-# API keys live in environment variables, never in this file.
+pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` writes and edits this for you.
+# API keys never go in this file: they live in environment variables, or in
+# the private secrets file `ferrule setup` keeps (a real env var wins).
 
 default_provider = "kimi"
 
@@ -183,6 +189,8 @@ profile = "openai"
 # [gateway]
 # local = true                              # enable the stdin/stdout channel
 # telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
+# telegram_allowed_chats = []               # chat ids the bot answers; empty =
+#                                           # nobody (it replies with the chat id)
 # telegram_base_url = "https://api.telegram.org"
 
 # [scheduler]
@@ -228,22 +236,37 @@ profile = "openai"
 # TELEGRAM_BOT_TOKEN = { hosts = ["api.telegram.org"], in_url = true }
 "#;
 
+/// `~/.config/ferrule/config.toml` (or the platform's equivalent).
+pub fn global_config_path() -> Result<PathBuf> {
+    Ok(dirs::config_dir()
+        .ok_or_else(|| anyhow!("no config dir"))?
+        .join("ferrule")
+        .join("config.toml"))
+}
+
+/// The file `Config::load` reads: `$FERRULE_CONFIG` (what `--config` sets),
+/// else `./ferrule.toml`, else the global one. `None` when none exists;
+/// `$FERRULE_CONFIG` is returned even if missing, so the error names it.
+pub fn config_path() -> Result<Option<PathBuf>> {
+    if let Some(path) = std::env::var_os("FERRULE_CONFIG").filter(|p| !p.is_empty()) {
+        return Ok(Some(PathBuf::from(path)));
+    }
+    let local = PathBuf::from("ferrule.toml");
+    if local.exists() {
+        return Ok(Some(local));
+    }
+    let global = global_config_path()?;
+    Ok(global.exists().then_some(global))
+}
+
 impl Config {
     pub fn load() -> Result<(Self, PathBuf)> {
-        let local = PathBuf::from("ferrule.toml");
-        if local.exists() {
-            let text = std::fs::read_to_string(&local)?;
-            return Ok((toml::from_str(&text)?, local));
-        }
-        let global = dirs::config_dir()
-            .ok_or_else(|| anyhow!("no config dir"))?
-            .join("ferrule")
-            .join("config.toml");
-        if global.exists() {
-            let text = std::fs::read_to_string(&global)?;
-            return Ok((toml::from_str(&text)?, global));
-        }
-        bail!("no config found. Run `ferrule config init` first.")
+        let Some(path) = config_path()? else {
+            bail!("no config found. Run `ferrule setup` first.")
+        };
+        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let cfg = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        Ok((cfg, path))
     }
 
     pub fn resolve_provider(&self, name: Option<&str>) -> Result<(String, &ProviderConfig, String)> {
@@ -255,14 +278,19 @@ impl Config {
             .providers
             .get(&name)
             .ok_or_else(|| anyhow!("provider `{name}` not in config"))?;
-        let key = std::env::var(&cfg.api_key_env)
-            .with_context(|| format!("env var `{}` not set (needed by provider `{name}`)", cfg.api_key_env))?;
+        let key = std::env::var(&cfg.api_key_env).with_context(|| {
+            format!(
+                "env var `{}` not set (needed by provider `{name}`) — run `ferrule setup`, or export it",
+                cfg.api_key_env
+            )
+        })?;
         Ok((name, cfg, key))
     }
 }
 
 pub fn data_dir() -> Result<PathBuf> {
-    let dir = dirs::data_dir()
+    // Windows: the local AppData, so saved keys don't roam with a profile.
+    let dir = if cfg!(windows) { dirs::data_local_dir() } else { dirs::data_dir() }
         .ok_or_else(|| anyhow!("no data dir"))?
         .join("ferrule");
     std::fs::create_dir_all(&dir)?;
@@ -287,6 +315,14 @@ mod tests {
         assert!(!rule("GITHUB_TOKEN").in_url);
         assert_eq!(rule("TELEGRAM_BOT_TOKEN").hosts, ["api.telegram.org"]);
         assert!(rule("TELEGRAM_BOT_TOKEN").in_url);
+    }
+
+    #[test]
+    fn telegram_allowed_chats_default_to_empty() {
+        let cfg: Config = toml::from_str("[gateway]\ntelegram_token_env = \"T\"").unwrap();
+        assert!(cfg.gateway.telegram_allowed_chats.is_empty());
+        let cfg: Config = toml::from_str("[gateway]\ntelegram_allowed_chats = [42, -1001234]").unwrap();
+        assert_eq!(cfg.gateway.telegram_allowed_chats, [42, -1001234]);
     }
 
     #[test]

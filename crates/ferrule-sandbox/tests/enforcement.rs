@@ -125,6 +125,101 @@ fn temp_dirs_are_writable_when_enabled() {
 }
 
 #[test]
+fn hidden_paths_stay_shut_even_inside_the_workspace() {
+    // The hard case: the workspace is an ancestor of the hidden directory,
+    // so the carve has to cut it out of a writable root, not just `/`.
+    let ws = tempfile::tempdir().unwrap();
+    let data = ws.path().join("data");
+    let private = data.join("private");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::create_dir_all(data.join("sub")).unwrap();
+    std::fs::write(private.join("secrets.env"), "API_KEY=sk-live\n").unwrap();
+    std::fs::write(data.join("memory.db"), "notes\n").unwrap();
+    let Some(sb) = sandbox(Policy {
+        hidden: vec![private.clone()],
+        ..no_tmp(Mode::WorkspaceWrite)
+    }) else {
+        return;
+    };
+
+    let out = sh(
+        &sb,
+        ws.path(),
+        "cat data/memory.db && echo more >> data/memory.db && ls data && \
+         echo x > data/sub/f && ln -s ../private data/sub/p",
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("notes"), "siblings stay readable");
+    assert!(stdout.contains("private"), "the parent still lists");
+
+    let secret = private.join("secrets.env");
+    let via_root = format!("/proc/self/root{}", secret.display());
+    for script in [
+        "cat data/private/secrets.env",
+        "cat data/sub/p/secrets.env",
+        via_root.as_str(),
+        "echo x > data/private/new",
+        "rm data/private/secrets.env",
+        "mv data/private/secrets.env data/sub/",
+    ] {
+        let script = if script.starts_with('/') {
+            format!("cat '{script}'")
+        } else {
+            script.to_string()
+        };
+        let out = sh(&sb, ws.path(), &script);
+        assert!(!out.status.success(), "`{script}` went through");
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("sk-live"),
+            "`{script}` leaked the secret"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&secret).unwrap(),
+        "API_KEY=sk-live\n"
+    );
+    // READ_DIR on the ancestors is inherited, so on Linux the names inside
+    // stay listable — only contents are shut. Seatbelt hides both.
+    assert!(!private.join("new").exists());
+}
+
+#[test]
+fn hidden_paths_outside_the_workspace_and_the_host_environ() {
+    let ws = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let private = elsewhere.path().join("private");
+    std::fs::create_dir(&private).unwrap();
+    std::fs::write(private.join("key.pem"), "PRIVATE").unwrap();
+    std::fs::write(elsewhere.path().join("bundle.pem"), "PUBLIC").unwrap();
+    let Some(sb) = sandbox(Policy {
+        hidden: vec![private.clone()],
+        ..no_tmp(Mode::WorkspaceWrite)
+    }) else {
+        return;
+    };
+    let dir = elsewhere.path().display();
+    let out = sh(&sb, ws.path(), &format!("cat '{dir}/bundle.pem'"));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "PUBLIC");
+    let out = sh(&sb, ws.path(), &format!("cat '{dir}/private/key.pem'"));
+    assert!(!out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("PRIVATE"));
+
+    // Secrets loaded from the secrets file live in the host's environment;
+    // Landlock's ptrace scoping keeps a sandboxed child out of it.
+    let out = sh(
+        &sb,
+        ws.path(),
+        &format!("cat /proc/{}/environ", std::process::id()),
+    );
+    assert!(!out.status.success(), "the host environ was readable");
+}
+
+#[test]
 fn secret_env_vars_do_not_reach_the_command() {
     std::env::set_var("FERRULE_TEST_API_KEY", "sk-should-not-leak");
     std::env::set_var("FERRULE_TEST_PLAIN", "visible");
@@ -133,7 +228,15 @@ fn secret_env_vars_do_not_reach_the_command() {
         ..Policy::default()
     })
     .unwrap();
-    let out = sh(&sb, Path::new("/"), "env");
+    let out = if cfg!(windows) {
+        sb.command("cmd", ["/d", "/c", "set"], &std::env::temp_dir())
+            .unwrap()
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    } else {
+        sh(&sb, Path::new("/"), "env")
+    };
     let env = String::from_utf8_lossy(&out.stdout);
     assert!(!env.contains("sk-should-not-leak"));
     assert!(env.contains("FERRULE_TEST_PLAIN=visible"));

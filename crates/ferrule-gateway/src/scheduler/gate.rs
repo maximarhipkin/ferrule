@@ -17,6 +17,7 @@
 //!   or `curl` it spawned.
 
 use super::error::SchedulerError;
+use ferrule_sandbox::Shell;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -33,11 +34,11 @@ pub async fn run_gate(
     workspace: &Path,
     timeout: Duration,
 ) -> Result<GateOutcome, SchedulerError> {
-    let mut cmd = Command::new("sh");
+    let shell = Shell::get();
+    let mut cmd = Command::new(&shell.program);
     #[cfg(unix)]
     cmd.process_group(0);
-    cmd.arg("-c")
-        .arg(command)
+    cmd.args(shell.args(command))
         .current_dir(workspace)
         .kill_on_drop(true)
         .stdin(Stdio::null())

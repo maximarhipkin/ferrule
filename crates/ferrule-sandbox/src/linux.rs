@@ -90,7 +90,7 @@ fn handled_fs(abi: u32) -> u64 {
     rights
 }
 
-fn ruleset(abi: u32, writable: &[PathBuf]) -> io::Result<OwnedFd> {
+fn ruleset(abi: u32, writable: &[PathBuf], hidden: &[PathBuf]) -> io::Result<OwnedFd> {
     let handled = handled_fs(abi);
     let attr = RulesetAttr {
         handled_access_fs: handled,
@@ -121,8 +121,14 @@ fn ruleset(abi: u32, writable: &[PathBuf]) -> io::Result<OwnedFd> {
     // SAFETY: a fresh descriptor the kernel just handed us (already O_CLOEXEC).
     let ruleset = unsafe { OwnedFd::from_raw_fd(fd as i32) };
 
-    // Reads and exec everywhere: the agent needs compilers, interpreters, libs.
-    allow(&ruleset, Path::new("/"), EXECUTE | READ_FILE | READ_DIR)?;
+    // Reads and exec everywhere but the hidden paths: the agent needs
+    // compilers, interpreters, libs.
+    allow_carved(
+        &ruleset,
+        Path::new("/"),
+        EXECUTE | READ_FILE | READ_DIR,
+        hidden,
+    )?;
     // `cmd > /dev/null` opens with O_TRUNC, hence TRUNCATE.
     allow(
         &ruleset,
@@ -130,9 +136,75 @@ fn ruleset(abi: u32, writable: &[PathBuf]) -> io::Result<OwnedFd> {
         (READ_FILE | WRITE_FILE | TRUNCATE | IOCTL_DEV) & handled,
     )?;
     for root in writable {
-        allow(&ruleset, root, handled)?;
+        allow_carved(&ruleset, root, handled, hidden)?;
     }
     Ok(ruleset)
+}
+
+/// `allow` for every rule `carve` computes. The top rule must succeed; an
+/// entry that vanished or can't be opened since `read_dir` is skipped.
+fn allow_carved(ruleset: &OwnedFd, root: &Path, access: u64, hidden: &[PathBuf]) -> io::Result<()> {
+    for (path, access) in carve(root, access, hidden) {
+        match allow(ruleset, &path, access) {
+            Err(e) if path != root => {
+                tracing::debug!("sandbox: skipping {}: {e}", path.display())
+            }
+            other => other?,
+        }
+    }
+    Ok(())
+}
+
+/// The rules that grant `access` beneath `root` except under `hidden`.
+///
+/// Landlock can only add rights, so hiding a subtree means never granting
+/// its ancestors: each directory on the way down gets `READ_DIR` alone (so
+/// `ls ~` still works) and every other entry of it gets the full `access`.
+/// `READ_DIR` is inherited like any right, so the file *names* inside a
+/// hidden directory stay listable; their contents don't. A symlink is judged by
+/// where it points, so one aimed into a hidden path grants nothing. All
+/// paths must be canonical. With nothing hidden under `root` this is just
+/// `[(root, access)]`.
+///
+/// Rules bind to inodes, so renaming an ancestor doesn't expose anything;
+/// entries created after the ruleset is built get no rule at the carved
+/// levels, and a bind mount of a hidden directory elsewhere isn't covered.
+pub(crate) fn carve(root: &Path, access: u64, hidden: &[PathBuf]) -> Vec<(PathBuf, u64)> {
+    let mut rules = Vec::new();
+    carve_into(root, access, hidden, &mut rules);
+    rules
+}
+
+fn carve_into(dir: &Path, access: u64, hidden: &[PathBuf], rules: &mut Vec<(PathBuf, u64)>) {
+    if hidden.iter().any(|h| dir.starts_with(h)) {
+        return;
+    }
+    if !hidden.iter().any(|h| h.starts_with(dir)) {
+        rules.push((dir.to_path_buf(), access));
+        return;
+    }
+    rules.push((dir.to_path_buf(), access & READ_DIR));
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(real) = path.canonicalize() else {
+            continue; // dangling symlink: nothing to grant
+        };
+        if hidden.iter().any(|h| real.starts_with(h)) {
+            continue;
+        }
+        if hidden.iter().any(|h| h.starts_with(&real)) {
+            // Another ancestor. Walk it under its own name only; a symlink
+            // to it would otherwise grant the whole subtree.
+            if real == path {
+                carve_into(&path, access, hidden, rules);
+            }
+            continue;
+        }
+        rules.push((path, access));
+    }
 }
 
 fn allow(ruleset: &OwnedFd, path: &Path, mut access: u64) -> io::Result<()> {
@@ -177,10 +249,17 @@ fn annotate(err: io::Error, what: &str) -> io::Error {
     io::Error::new(err.kind(), format!("{what}: {err}"))
 }
 
-/// Arrange for `cmd` to confine itself to `writable` (plus, when `network`
-/// is false, no sockets but Unix ones) right before it execs.
-pub fn apply(cmd: &mut Command, abi: u32, network: bool, writable: &[PathBuf]) -> io::Result<()> {
-    let ruleset = ruleset(abi, writable)?;
+/// Arrange for `cmd` to confine itself to `writable`, keep out of `hidden`
+/// (plus, when `network` is false, no sockets but Unix ones) right before
+/// it execs.
+pub fn apply(
+    cmd: &mut Command,
+    abi: u32,
+    network: bool,
+    writable: &[PathBuf],
+    hidden: &[PathBuf],
+) -> io::Result<()> {
+    let ruleset = ruleset(abi, writable, hidden)?;
     let filter = match (network, seccomp::deny_network()) {
         (true, _) => None,
         (false, Some(f)) => Some(f),
@@ -387,6 +466,57 @@ mod tests {
                 "x32 ABI"
             );
         }
+    }
+
+    #[test]
+    fn carve_grants_everything_but_the_hidden_subtree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let data = root.join("share/ferrule");
+        let hidden = data.join("private");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::create_dir_all(root.join("share/other")).unwrap();
+        std::fs::create_dir_all(data.join("sessions")).unwrap();
+        std::fs::write(root.join("top.txt"), "").unwrap();
+        std::fs::write(data.join("memory.db"), "").unwrap();
+        std::os::unix::fs::symlink(&hidden, root.join("sneaky")).unwrap();
+        std::os::unix::fs::symlink(&data, root.join("to-data")).unwrap();
+        std::os::unix::fs::symlink(root.join("gone"), root.join("dangling")).unwrap();
+        let all = EXECUTE | READ_FILE | READ_DIR;
+
+        let mut rules = carve(&root, all, std::slice::from_ref(&hidden));
+        rules.sort();
+        let rel: Vec<(String, u64)> = rules
+            .iter()
+            .map(|(p, a)| (p.strip_prefix(&root).unwrap().display().to_string(), *a))
+            .collect();
+        assert_eq!(
+            rel,
+            [
+                ("".into(), READ_DIR),
+                ("share".into(), READ_DIR),
+                ("share/ferrule".into(), READ_DIR),
+                ("share/ferrule/memory.db".into(), all),
+                ("share/ferrule/sessions".into(), all),
+                ("share/other".into(), all),
+                ("top.txt".into(), all),
+            ]
+        );
+
+        assert_eq!(carve(&root, all, &[]), [(root.clone(), all)]);
+        assert_eq!(
+            carve(
+                &root.join("share/other"),
+                all,
+                std::slice::from_ref(&hidden)
+            ),
+            [(root.join("share/other"), all)],
+            "a root beside the hidden path is untouched"
+        );
+        assert!(
+            carve(&hidden.join("x"), all, std::slice::from_ref(&hidden)).is_empty(),
+            "a root inside it grants nothing"
+        );
     }
 
     #[test]

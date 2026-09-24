@@ -23,7 +23,11 @@ const PREFS: &str = include_str!("seatbelt/prefs.sbpl");
 /// parameters rather than being spliced into the text, so a path containing
 /// `"` or `)` can't rewrite the policy. Roots must already be canonical —
 /// Seatbelt matches real paths (`/private/tmp`, not `/tmp`).
-pub fn profile(network: bool, writable: &[PathBuf]) -> (String, Vec<(String, PathBuf)>) {
+pub fn profile(
+    network: bool,
+    writable: &[PathBuf],
+    hidden: &[PathBuf],
+) -> (String, Vec<(String, PathBuf)>) {
     let mut sections = vec![
         BASE.to_string(),
         "; ferrule: reads are unrestricted, the agent needs its toolchain\n(allow file-read*)"
@@ -59,6 +63,16 @@ pub fn profile(network: bool, writable: &[PathBuf]) -> (String, Vec<(String, Pat
     // F_MAKECOMPRESSED (80) and F_TRANSFEREXTENTS (110) modify files through
     // read-only descriptors, bypassing file-write*.
     sections.push("(deny system-fcntl (fcntl-command 80 110))".to_string());
+    // Last, so they override both the blanket read grant and any writable
+    // root the hidden path sits in.
+    for (i, path) in hidden.iter().enumerate() {
+        let key = format!("HIDDEN_{i}");
+        let matcher = if path.is_dir() { "subpath" } else { "literal" };
+        sections.push(format!(
+            "(deny file-read* file-write* ({matcher} (param \"{key}\")))"
+        ));
+        params.push((key, path.clone()));
+    }
     (sections.join("\n"), params)
 }
 
@@ -66,6 +80,7 @@ pub fn profile(network: bool, writable: &[PathBuf]) -> (String, Vec<(String, Pat
 pub fn command<I, S>(
     network: bool,
     writable: &[PathBuf],
+    hidden: &[PathBuf],
     program: impl AsRef<OsStr>,
     args: I,
 ) -> Command
@@ -73,7 +88,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let (policy, params) = profile(network, writable);
+    let (policy, params) = profile(network, writable, hidden);
     let mut cmd = Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(policy);
     for (key, path) in params {
@@ -132,7 +147,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("f");
         std::fs::write(&file, "").unwrap();
-        let (p, params) = profile(false, &[dir.path().to_path_buf(), file.clone()]);
+        let (p, params) = profile(false, &[dir.path().to_path_buf(), file.clone()], &[]);
         assert!(p.starts_with("(version 1)"), "version must lead");
         assert!(p.contains("(deny default)"));
         assert!(p.contains("(subpath (param \"WRITABLE_ROOT_0\"))"));
@@ -148,7 +163,7 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert!(balanced(&p));
 
-        let (with_net, _) = profile(true, &[]);
+        let (with_net, _) = profile(true, &[], &[]);
         assert!(with_net.contains("(allow network-outbound)"));
         assert!(
             with_net.contains("com.apple.trustd.agent"),
@@ -162,8 +177,29 @@ mod tests {
     }
 
     #[test]
+    fn hidden_paths_are_denied_after_every_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("private");
+        std::fs::create_dir(&secret).unwrap();
+        let (p, params) = profile(true, &[dir.path().to_path_buf()], std::slice::from_ref(&secret));
+        let deny = "(deny file-read* file-write* (subpath (param \"HIDDEN_0\")))";
+        let at = p.find(deny).expect("deny rule present");
+        assert!(at > p.find("(allow file-read*)").unwrap());
+        assert!(at > p.find("(allow file-write*").unwrap());
+        assert!(at > p.find("(allow network-outbound)").unwrap());
+        assert!(params.contains(&("HIDDEN_0".to_string(), secret)));
+        assert!(balanced(&p));
+    }
+
+    #[test]
     fn command_uses_the_absolute_sandbox_exec() {
-        let cmd = command(true, &[PathBuf::from("/private/tmp")], "sh", ["-c", "true"]);
+        let cmd = command(
+            true,
+            &[PathBuf::from("/private/tmp")],
+            &[],
+            "sh",
+            ["-c", "true"],
+        );
         assert_eq!(cmd.get_program(), SANDBOX_EXEC);
         let args: Vec<_> = cmd
             .get_args()

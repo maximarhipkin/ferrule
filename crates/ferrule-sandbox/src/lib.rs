@@ -21,6 +21,9 @@
 #[cfg(target_os = "linux")]
 mod linux;
 pub mod seatbelt;
+mod shell;
+
+pub use shell::{Shell, ShellKind};
 
 use serde::Deserialize;
 use std::ffi::OsStr;
@@ -67,6 +70,12 @@ pub struct Policy {
     /// (provider `api_key_env`, the Telegram token var), not read from it.
     #[serde(skip)]
     pub secret_vars: Vec<String>,
+    /// Paths sandboxed commands can neither read nor write, even inside a
+    /// writable root — the host's secrets file and the proxy's CA key.
+    /// Filled in by the host, not read from the config. Missing ones are
+    /// skipped.
+    #[serde(skip)]
+    pub hidden: Vec<PathBuf>,
 }
 
 impl Default for Policy {
@@ -80,6 +89,7 @@ impl Default for Policy {
             scrub_secret_env: true,
             env_passthrough: Vec::new(),
             secret_vars: Vec::new(),
+            hidden: Vec::new(),
         }
     }
 }
@@ -204,8 +214,11 @@ impl Sandbox {
         S: AsRef<OsStr>,
     {
         let roots = self.writable_roots(workspace);
+        let hidden = self.hidden_paths();
         let mut cmd = match self.backend {
-            Backend::Seatbelt => seatbelt::command(self.policy.network, &roots, program, args),
+            Backend::Seatbelt => {
+                seatbelt::command(self.policy.network, &roots, &hidden, program, args)
+            }
             _ => {
                 let mut c = Command::new(program);
                 c.args(args);
@@ -219,7 +232,7 @@ impl Sandbox {
         cmd.envs(self.extra_env.iter().map(|(k, v)| (k, v)));
         #[cfg(target_os = "linux")]
         if let Backend::Landlock { abi } = self.backend {
-            linux::apply(&mut cmd, abi, self.policy.network, &roots)?;
+            linux::apply(&mut cmd, abi, self.policy.network, &roots, &hidden)?;
         }
         Ok(cmd)
     }
@@ -258,6 +271,19 @@ impl Sandbox {
             }
         }
         roots
+    }
+
+    /// `policy.hidden`, canonical, missing ones skipped.
+    pub fn hidden_paths(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        for path in &self.policy.hidden {
+            if let Ok(p) = path.canonicalize() {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        out
     }
 
     /// Names of the variables in this process's environment that sandboxed
@@ -350,7 +376,12 @@ fn detect(policy: &Policy) -> Result<Backend, String> {
             Err(format!("{} not found", seatbelt::SANDBOX_EXEC))
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let _ = policy;
+        Err("Windows has no sandbox backend yet (under WSL2, the Linux build has one)".into())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = policy;
         Err("no sandbox backend for this OS".into())

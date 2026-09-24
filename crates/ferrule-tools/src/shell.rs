@@ -1,6 +1,6 @@
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
-use ferrule_sandbox::Sandbox;
+use ferrule_sandbox::{Sandbox, Shell};
 use serde_json::{json, Value};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -51,6 +51,10 @@ impl Tool for ShellTool {
                                Use for builds, tests, git, search. Output is truncated \
                                if very long. stdin is closed, so interactive prompts fail."
             .to_string();
+        if let Some(note) = Shell::get().model_note() {
+            description.push(' ');
+            description.push_str(&note);
+        }
         if let Some(note) = self.sandbox.model_note() {
             description.push(' ');
             description.push_str(&note);
@@ -75,11 +79,11 @@ impl Tool for ShellTool {
             return Err(Self::failed(format!("command blocked by deny list: `{cmd}`")));
         }
 
-        let shell = if cfg!(windows) { "cmd" } else { "sh" };
-        let flag = if cfg!(windows) { "/C" } else { "-c" };
+        let shell = Shell::get();
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut std_cmd = self
             .sandbox
-            .command(shell, [flag, cmd.as_str()], &ctx.workspace)
+            .command(&shell.program, shell.args(&cmd), &ctx.workspace)
             .map_err(|e| Self::failed(format!("sandbox setup failed: {e}")))?;
         // Its own process group, so a timeout can take down everything the
         // command started, not just the `sh` at the top.

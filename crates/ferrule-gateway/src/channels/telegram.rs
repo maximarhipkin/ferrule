@@ -3,12 +3,19 @@
 //! tests can point it at a local mock HTTP server instead of
 //! `https://api.telegram.org` — there is no real bot token available in
 //! this environment, so every behavior here is verified against a mock.
+//!
+//! Anyone can find a bot and message it, so only the chats in
+//! `allowed_chats` reach the agent. With none configured the bot answers
+//! each new chat once with that chat's id — the id is what goes into the
+//! allow-list — and forwards nothing.
 
 use crate::channel::{Channel, ChannelCapabilities};
 use crate::error::GatewayError;
 use crate::message::{InboundMessage, OutboundMessage};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Mutex;
 use tokio::sync::mpsc;
 
 pub struct TelegramChannel {
@@ -18,6 +25,10 @@ pub struct TelegramChannel {
     /// `getUpdates` offset: one past the highest `update_id` seen so far,
     /// so Telegram doesn't redeliver already-processed updates.
     offset: AtomicI64,
+    /// Chats whose messages are forwarded. A group id admits the whole group.
+    allowed_chats: Vec<i64>,
+    /// Chats already told their id, while `allowed_chats` is empty.
+    told: Mutex<HashSet<i64>>,
 }
 
 impl TelegramChannel {
@@ -39,7 +50,38 @@ impl TelegramChannel {
             token: token.into(),
             client: builder.build().expect("reqwest client"),
             offset: AtomicI64::new(0),
+            allowed_chats: Vec::new(),
+            told: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// The chats this bot answers; everyone else is ignored.
+    pub fn with_allowed_chats(mut self, chats: Vec<i64>) -> Self {
+        self.allowed_chats = chats;
+        self
+    }
+
+    /// Whether `msg` may reach the agent. A refused chat gets one reply with
+    /// its id while no chat is allowed yet (so setup can finish), and
+    /// silence once the list is in use.
+    async fn admits(&self, msg: &InboundMessage) -> bool {
+        let Ok(chat) = msg.chat_id.parse::<i64>() else {
+            return false;
+        };
+        if self.allowed_chats.contains(&chat) {
+            return true;
+        }
+        tracing::info!(chat, sender = %msg.sender, "telegram: ignoring a chat that isn't in telegram_allowed_chats");
+        if self.allowed_chats.is_empty() && self.told.lock().unwrap().insert(chat) {
+            let text = format!(
+                "This bot is private. Your chat id is {chat} — add it to telegram_allowed_chats in the ferrule config, or run `ferrule setup`."
+            );
+            let reply = OutboundMessage { channel: "telegram".into(), chat_id: msg.chat_id.clone(), text, reply_to: None, attachments: vec![] };
+            if let Err(e) = self.send(reply).await {
+                tracing::warn!(error = %e, "telegram: couldn't tell a chat its id");
+            }
+        }
+        false
     }
 
     fn api_url(&self, method: &str) -> String {
@@ -91,6 +133,9 @@ impl Channel for TelegramChannel {
                     self.offset.store(update_id + 1, Ordering::SeqCst);
                 }
                 if let Some(inbound) = Self::parse_update(update) {
+                    if !self.admits(&inbound).await {
+                        continue;
+                    }
                     if tx.send(inbound).await.is_err() {
                         return Ok(());
                     }
@@ -201,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn long_poll_forwards_message_then_send_and_edit_post_to_the_api() {
         let (base_url, sent) = mock_telegram_server();
-        let channel = Arc::new(TelegramChannel::with_base_url("TESTTOKEN", base_url));
+        let channel = Arc::new(TelegramChannel::with_base_url("TESTTOKEN", base_url).with_allowed_chats(vec![9999]));
         let (tx, mut rx) = mpsc::channel(8);
         let run_channel = channel.clone();
         let handle = tokio::spawn(async move { run_channel.run(tx).await });
@@ -230,6 +275,49 @@ mod tests {
         drop(sent_bodies);
 
         handle.abort();
+    }
+
+    /// Runs a channel against the mock (whose one update is from chat 9999)
+    /// and returns what reached the agent and what the bot sent.
+    async fn poll_once(allowed: Vec<i64>) -> (Option<InboundMessage>, Vec<Value>) {
+        let (base_url, sent) = mock_telegram_server();
+        let channel = Arc::new(TelegramChannel::with_base_url("TESTTOKEN", base_url).with_allowed_chats(allowed));
+        let (tx, mut rx) = mpsc::channel(8);
+        let run_channel = channel.clone();
+        let handle = tokio::spawn(async move { run_channel.run(tx).await });
+        let inbound = timeout(Duration::from_millis(700), rx.recv()).await.ok().flatten();
+        handle.abort();
+        let sent = sent.lock().unwrap().clone();
+        (inbound, sent)
+    }
+
+    #[tokio::test]
+    async fn with_no_allowed_chats_the_bot_tells_the_sender_its_id_and_forwards_nothing() {
+        let (inbound, sent) = poll_once(vec![]).await;
+        assert!(inbound.is_none());
+        assert_eq!(sent.len(), 1, "told exactly once: {sent:?}");
+        assert_eq!(sent[0]["chat_id"], "9999");
+        assert!(sent[0]["text"].as_str().unwrap().contains("Your chat id is 9999"));
+    }
+
+    #[tokio::test]
+    async fn each_refused_chat_is_told_only_once() {
+        let (base_url, sent) = mock_telegram_server();
+        let channel = TelegramChannel::with_base_url("TESTTOKEN", base_url);
+        let msg = |chat: &str| InboundMessage { channel: "telegram".into(), chat_id: chat.into(), sender: "x".into(), message_id: "1".into(), text: "hi".into(), attachments: vec![], reply_to: None, ts: 0 };
+        for chat in ["5", "5", "6", "5"] {
+            assert!(!channel.admits(&msg(chat)).await);
+        }
+        let sent = sent.lock().unwrap();
+        let chats: Vec<&str> = sent.iter().map(|b| b["chat_id"].as_str().unwrap()).collect();
+        assert_eq!(chats, ["5", "6"]);
+    }
+
+    #[tokio::test]
+    async fn a_chat_outside_a_non_empty_list_gets_silence() {
+        let (inbound, sent) = poll_once(vec![1, -1001]).await;
+        assert!(inbound.is_none());
+        assert!(sent.is_empty(), "strangers learn nothing: {sent:?}");
     }
 
     #[test]

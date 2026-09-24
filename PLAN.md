@@ -66,7 +66,20 @@ that convention yet — ask before introducing one).
   those hosts, only in `Authorization` or credential-named headers (the
   URL too with `in_url = true`, never bodies), and scrubs it back out of
   their responses. Other hosts get a blind tunnel. Design, threat model,
-  prior art and limits: `docs/research-credential-gateway.md`.
+  prior art and limits: `docs/research-credential-gateway.md`. **Install
+  and setup are one step** (Session Log 2026-09-24, M8): `curl … install.sh
+  | sh` (Linux/macOS) or `irm … install.ps1 | iex` (Windows) downloads a
+  release archive, checks its sha256 and starts `ferrule setup`, a wizard
+  for the provider and key, Telegram (with a chat allow-list), tool
+  credentials, the sandbox and a systemd/launchd service. Keys live in
+  `<data_dir>/private/secrets.env`, hidden from the shell sandbox and the
+  file tools. `ferrule doctor` checks everything, `ferrule config
+  path|edit|example` covers hand edits. **Windows builds and runs**, with
+  no OS sandbox (Git Bash or PowerShell as the shell). CI
+  (`.github/workflows/ci.yml`) tests Linux, macOS and Windows;
+  `release.yml` builds 5 targets on a `v*` tag. **No release has been
+  tagged yet**, so the install one-liners have nothing to download until
+  Max tags one.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -82,9 +95,13 @@ that convention yet — ask before introducing one).
   and the suite is green with `NO_PROXY` unset. A *binary* talking to a
   local endpoint still needs `NO_PROXY` in this sandbox.
   **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 156/156 green after M7** (27 of them in `ferrule-proxy`:
-  23 unit + 4 integration, plus 1 `#[ignore]`d live end-to-end test run
-  with `-- --ignored`),
+  --workspace` 180/180 green after M8** (plus 2 `#[ignore]`d: the proxy's
+  live end-to-end test, run with `-- --ignored`, and a sandbox helper),
+  `tests_e2e/setup_wizard.py` and `tests_e2e/hidden_keys.py` pass, and
+  `cargo check --target x86_64-pc-windows-gnu --workspace --all-targets`
+  is clean (C code via `zig cc`; a Windows *link* isn't possible here, CI
+  does it). Earlier M7 counts: 27 tests in `ferrule-proxy`, 23 unit + 4
+  integration,
   `cargo clippy --workspace
   --all-targets` has one pre-existing warning in `ferrule-core::agent`
   (collapsible_if, predates the gateway work) and zero warnings in
@@ -116,8 +133,9 @@ that convention yet — ask before introducing one).
   the macOS backend's real-Mac run are its open edges. The
   credential-injection gateway closed the same day, M7; its open edges
   are HTTP/2 and websockets on bound hosts, body injection, MCP servers
-  and `web_fetch` bypassing it, and a real-Mac run. The Telegram channel
-  has no sender allow-list: anyone who finds the bot can drive it.)
+  and `web_fetch` bypassing it, and a real-Mac run. The Telegram sender
+  allow-list closed with M8. Native Windows has no sandbox backend;
+  AppContainer or a restricted token is the research item.)
 
 ## Session Log
 
@@ -1207,3 +1225,103 @@ LoRA fine-tunes (Phase 3): too much for what they buy. Rule-based routing
 (Phase 1) stays under "Next". Removed from the README's Planned list and
 from `docs/assets/roadmap.svg`; the routing research doc keeps both
 sections, marked as dropped, for reference.
+
+### 2026-09-24 — M8 one-line install, setup wizard, Windows (Devi, Opus 5.5)
+
+Max (msg 3068) wanted install to work like NanoClaw's: download, run
+install, answer questions, done, with no env vars to export and an easy way
+to change settings later. Then (msg 3072) Windows support as well.
+
+**Setup wizard** (`ferrule-cli`: `setup.rs`, `probe.rs`, `secrets.rs`,
+`service.rs`, `doctor.rs`; new deps `inquire`, `toml_edit`):
+- `ferrule setup` runs five steps: provider and key, Telegram, tool
+  credentials (`[secrets]`), sandbox, background service. On a later run
+  it opens on a menu with a one-line summary of each, so one part can be
+  changed alone. Config edits go through `toml_edit`, so hand-written
+  comments survive.
+- Keys are checked live before they're saved: the provider's model list
+  (the wizard offers those models), Telegram `getMe`, and GitHub `/user`
+  for `GITHUB_TOKEN`.
+- **Saved keys** go to `<data_dir>/private/secrets.env` (0600 in a 0700
+  dir), loaded into the environment at startup before any thread starts.
+  A real env var wins, so `export` still overrides.
+- **Telegram allow-list:** `[gateway] telegram_allowed_chats`. With an
+  empty list the bot answers each new chat once with its id and forwards
+  nothing. The wizard gets your chat id by asking you to message the bot.
+- **Service:** a systemd user unit on Linux, a launchd agent
+  (`ai.ferrule.gateway`) on macOS; install, restart, status, logs hint.
+  None on Windows yet.
+- `ferrule doctor [--offline]` checks config, keys (and where each comes
+  from), Telegram, the sandbox (including that a sandboxed `cat` of the
+  keys file fails) and the service, with a fix for each problem.
+- `ferrule config path|edit|example|init`. `edit` re-parses after the
+  editor closes and falls back to nano, vi, then notepad.
+
+**Security fix found while testing:** when the workspace contains the data
+dir (e.g. `--workspace ~`), the agent's `read_file`/`write_file` could read
+the saved keys or plant a CA key. Both are now refused
+(`fs_tools::resolve` checks the canonical path against the hidden paths:
+`private/` and `proxy/keys/`, case-folded on macOS and Windows). The shell
+sandbox hides the same paths: Seatbelt with `deny` rules after every
+grant, Landlock by "carving" (it can't deny a subpath, so the read grant
+on `/` is split into grants for each sibling along the way down to the
+hidden dirs). Side effect on Linux: the dirs on that path become
+read-only for commands, so the workspace top level can't take new files.
+ferrule warns once and `ferrule sandbox` explains it. The simple fix is
+to keep the workspace apart from the data dir, which the README now says.
+`tests_e2e/hidden_keys.py` has a mock model try all three attacks:
+LEAK/TAMPERED/PLANTED all False.
+
+**Windows** (native, x86_64-pc-windows-msvc):
+- `ferrule-sandbox::Shell` picks the agent's shell once: Git Bash
+  (found via `git.exe` on PATH or the usual install dirs, never
+  `System32\bash.exe`, which is WSL), else `pwsh`, else Windows
+  PowerShell. PowerShell gets the script with `-EncodedCommand`
+  (UTF-16LE base64), so no quoting is involved, and UTF-8 output. The
+  shell tool's description tells the model which shell it has. The
+  scheduler's gate scripts use the same shell.
+- No OS sandbox: `Sandbox::new` reports degraded, the wizard says so
+  plainly and recommends WSL2 for isolation. Env scrubbing and the
+  file-tool refusals still apply.
+- Config in `%APPDATA%\ferrule`, data in `%LOCALAPPDATA%\ferrule`.
+- Verified by `cargo check --target x86_64-pc-windows-gnu --workspace
+  --all-targets` (zero warnings). Not yet run on Windows: CI is the
+  first run.
+
+**Install scripts:**
+- `install.sh` (POSIX sh; passes `dash -n`): picks the musl or darwin
+  target (Rosetta-aware), downloads with curl or wget, verifies sha256,
+  swaps the binary in with a rename, prints a PATH hint, restarts a
+  running service, then runs `ferrule setup </dev/tty` on a first install
+  (`curl | sh` has no stdin). With `GITHUB_TOKEN` it downloads through the
+  API, for the private repo. Tested with a fake `curl` serving a local
+  release: fresh, private, bad checksum, unknown version, upgrade keeping
+  config, unsupported arch, wizard under a pty, `cat install.sh | dash`.
+- `install.ps1`: everything in a function, so `irm | iex` doesn't change
+  the caller's session and a failure doesn't close the window. Installs to
+  `%LOCALAPPDATA%\Programs\ferrule`, renames a running `ferrule.exe`
+  aside instead of failing, adds the dir to the user PATH (raw registry
+  value, `ExpandString`) and broadcasts the change. Tested under pwsh 7.6
+  on Linux with mocked downloads and registry: fresh, private, bad
+  checksum, unknown version, x86, ARM64 upgrade. Not run on real Windows.
+
+**CI and releases** (`.github/workflows/`):
+- `ci.yml`: `cargo test --workspace --locked` on ubuntu-24.04, macos-14
+  and windows-latest; `ferrule sandbox` self-test on Linux and macOS; the
+  two `tests_e2e` scripts on Linux. Doc-only pushes are skipped.
+- `release.yml`: on a `v*` tag, builds x86_64/aarch64 Linux (static
+  musl), aarch64/x86_64 macOS and x86_64 Windows, packages
+  `ferrule-<target>.tar.gz|zip` plus `.sha256`, and publishes them with
+  the two install scripts. `workflow_dispatch` builds without releasing.
+  Checked locally with zig as the musl C compiler: x86_64 musl binary is
+  static-pie, 10.3 MB, and `ferrule sandbox` passes all checks on it.
+- `Cargo.lock` is committed now (was gitignored) for `--locked` builds.
+
+**Known limits:**
+- No release is tagged yet: the one-liners 404 until one exists (Max's
+  call). While the repo is private the one-liners need a token; the README
+  shows how.
+- No Windows sandbox and no Windows service. `ferrule gateway` in a
+  terminal or Task Scheduler for now.
+- The Landlock carve makes the workspace top level read-only when the
+  workspace contains the data dir (see above).

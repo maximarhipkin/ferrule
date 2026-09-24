@@ -1,0 +1,460 @@
+//! `ferrule doctor`: one pass over everything setup configures — the
+//! config, the saved keys, each provider, Telegram, the sandbox, the
+//! background service and the binary itself — with a line per check and
+//! what to do about each problem. Exits non-zero if anything is broken.
+
+use crate::setup::tilde;
+use crate::{config, probe, secrets, service};
+use anyhow::Result;
+use ferrule_sandbox::{Mode, Sandbox};
+use std::fmt::Display;
+use std::path::{Path, PathBuf};
+
+#[derive(Clone, Copy)]
+enum Level {
+    Ok,
+    Note,
+    Warn,
+    Fail,
+}
+
+struct Report {
+    color: bool,
+    warnings: usize,
+    failures: usize,
+}
+
+impl Report {
+    fn new() -> Self {
+        use std::io::IsTerminal;
+        let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        Self {
+            color,
+            warnings: 0,
+            failures: 0,
+        }
+    }
+
+    fn line(&mut self, level: Level, what: &str, text: impl Display) {
+        let (mark, ansi) = match level {
+            Level::Ok => ("✓", "32"),
+            Level::Note => ("·", "2"),
+            Level::Warn => {
+                self.warnings += 1;
+                ("!", "33")
+            }
+            Level::Fail => {
+                self.failures += 1;
+                ("✗", "31")
+            }
+        };
+        let mark = if self.color {
+            format!("\x1b[{ansi}m{mark}\x1b[0m")
+        } else {
+            mark.to_string()
+        };
+        println!("  {mark} {what:<9} {text}");
+    }
+
+    fn ok(&mut self, what: &str, text: impl Display) {
+        self.line(Level::Ok, what, text);
+    }
+
+    fn note(&mut self, what: &str, text: impl Display) {
+        self.line(Level::Note, what, text);
+    }
+
+    fn warn(&mut self, what: &str, text: impl Display) {
+        self.line(Level::Warn, what, text);
+    }
+
+    fn fail(&mut self, what: &str, text: impl Display) {
+        self.line(Level::Fail, what, text);
+    }
+
+    /// A follow-up line under the last check: what to do about it.
+    fn hint(&self, text: impl Display) {
+        println!("  {:<11} → {text}", "");
+    }
+
+    fn finish(self) -> bool {
+        println!();
+        let n = |count: usize, one: &str, many: &str| {
+            format!("{count} {}", if count == 1 { one } else { many })
+        };
+        match (self.warnings, self.failures) {
+            (0, 0) => println!("All good."),
+            (w, 0) => println!("{}, nothing broken.", n(w, "warning", "warnings")),
+            (w, f) => println!(
+                "{}, {}: fix the ✗ lines, then run `ferrule doctor` again.",
+                n(f, "problem", "problems"),
+                n(w, "warning", "warnings")
+            ),
+        }
+        self.failures == 0
+    }
+}
+
+pub async fn run(offline: bool) -> Result<bool> {
+    let mut r = Report::new();
+    println!(
+        "ferrule doctor · v{}{}\n",
+        env!("CARGO_PKG_VERSION"),
+        if offline { " · offline" } else { "" }
+    );
+    let (cfg, path) = match config::Config::load() {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            r.fail("config", format!("{e:#}"));
+            if config::config_path()?.is_none() {
+                r.hint("run `ferrule setup`");
+            }
+            binary(&mut r);
+            return Ok(r.finish());
+        }
+    };
+    r.ok("config", tilde(&path));
+    let secrets_path = secrets::path()?;
+    keys(&mut r, &secrets_path);
+    let http = probe::client();
+    providers(&mut r, &cfg, &http, offline).await;
+    let telegram_on = telegram(&mut r, &cfg, &http, offline).await;
+    sandbox(&mut r, &cfg, &secrets_path);
+    service_check(&mut r, &path, telegram_on)?;
+    binary(&mut r);
+    Ok(r.finish())
+}
+
+fn keys(r: &mut Report, path: &Path) {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            r.note("keys", "no saved keys (setup keeps them in a private file)");
+            return;
+        }
+        Err(e) => {
+            r.fail("keys", format!("can't read {}: {e}", tilde(path)));
+            return;
+        }
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let loose = |mode: u32| mode & 0o077 != 0;
+        let dir_mode = path
+            .parent()
+            .and_then(|dir| std::fs::metadata(dir).ok())
+            .map(|m| m.permissions().mode());
+        if loose(meta.permissions().mode()) || dir_mode.is_some_and(loose) {
+            r.warn(
+                "keys",
+                format!("{} can be read by other users", tilde(path)),
+            );
+            r.hint(format!(
+                "chmod 700 {} && chmod 600 {}",
+                tilde(path.parent().unwrap_or(path)),
+                tilde(path)
+            ));
+            return;
+        }
+    }
+    let _ = meta;
+    r.ok("keys", format!("{} (private)", tilde(path)));
+}
+
+fn key(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client, offline: bool) {
+    if cfg.providers.is_empty() {
+        r.fail("provider", "none set up");
+        r.hint("`ferrule setup` → Model provider");
+        return;
+    }
+    let default = cfg.default_provider.as_deref();
+    match default {
+        None => {
+            r.fail("provider", "no default_provider set");
+            r.hint("`ferrule setup` → Model provider → Make it the default");
+        }
+        Some(name) if !cfg.providers.contains_key(name) => {
+            r.fail(
+                "provider",
+                format!("default_provider is `{name}`, which isn't under [providers]"),
+            );
+            r.hint("`ferrule setup` → Model provider");
+        }
+        Some(_) => {}
+    }
+    let mut names: Vec<&String> = cfg.providers.keys().collect();
+    names.sort_by_key(|name| (Some(name.as_str()) != default, name.as_str()));
+    for name in names {
+        let p = &cfg.providers[name];
+        let is_default = Some(name.as_str()) == default;
+        let label = format!(
+            "{name}{} · {}",
+            if is_default { " (default)" } else { "" },
+            p.model
+        );
+        let broken = |r: &mut Report, text: String| {
+            if is_default {
+                r.fail("provider", text)
+            } else {
+                r.warn("provider", text)
+            }
+        };
+        let Some(value) = key(&p.api_key_env) else {
+            broken(r, format!("{label}: no key (${} isn't set)", p.api_key_env));
+            r.hint(format!(
+                "`ferrule setup` → Model provider → {name} → Replace the API key"
+            ));
+            continue;
+        };
+        let from = match secrets::source(&p.api_key_env) {
+            secrets::Source::Env => "key from your shell",
+            _ => "saved key",
+        };
+        if offline {
+            r.ok("provider", format!("{label} · {from}, not checked"));
+            continue;
+        }
+        match probe::models(http, &p.base_url, &value, p.profile == "anthropic").await {
+            Ok(models) if models.is_empty() || models.contains(&p.model) => {
+                r.ok("provider", format!("{label} · {from} works"));
+            }
+            Ok(_) => {
+                r.warn(
+                    "provider",
+                    format!(
+                        "{label}: the key works, but the provider doesn't list `{}`",
+                        p.model
+                    ),
+                );
+                r.hint(format!(
+                    "if calls fail, `ferrule setup` → Model provider → {name} → Change the model"
+                ));
+            }
+            Err(probe::Check::Rejected(why)) => {
+                broken(r, format!("{label}: {why} ({from}, ${})", p.api_key_env));
+                r.hint(format!(
+                    "`ferrule setup` → Model provider → {name} → Replace the API key"
+                ));
+            }
+            Err(e) => r.warn("provider", format!("{label}: couldn't check the key: {e}")),
+        }
+    }
+}
+
+/// Returns whether Telegram is configured.
+async fn telegram(
+    r: &mut Report,
+    cfg: &config::Config,
+    http: &reqwest::Client,
+    offline: bool,
+) -> bool {
+    let Some(env) = &cfg.gateway.telegram_token_env else {
+        r.note("telegram", "off");
+        return false;
+    };
+    let Some(token) = key(env) else {
+        r.fail("telegram", format!("no bot token (${env} isn't set)"));
+        r.hint("`ferrule setup` → Telegram → Replace the bot token");
+        return true;
+    };
+    let chats = cfg.gateway.telegram_allowed_chats.len();
+    let allowed = format!("{chats} chat{} allowed", if chats == 1 { "" } else { "s" });
+    if offline {
+        r.ok("telegram", format!("token set, not checked · {allowed}"));
+    } else {
+        let tg = probe::Telegram {
+            http,
+            base_url: &cfg.gateway.telegram_base_url,
+            token: &token,
+        };
+        match tg.get_me().await {
+            Ok(bot) => {
+                r.ok("telegram", format!("@{bot} · {allowed}"));
+                match tg.webhook().await {
+                    Ok(Some(_)) => {
+                        r.fail(
+                            "telegram",
+                            "the bot has a webhook set, so the gateway receives nothing",
+                        );
+                        r.hint("`ferrule setup` → Telegram offers to remove it");
+                    }
+                    Ok(None) => {}
+                    Err(e) => r.warn("telegram", format!("couldn't check for a webhook: {e}")),
+                }
+            }
+            Err(probe::Check::Rejected(why)) => {
+                r.fail("telegram", why);
+                r.hint("`ferrule setup` → Telegram → Replace the bot token");
+            }
+            Err(e) => r.warn("telegram", format!("couldn't reach Telegram: {e}")),
+        }
+    }
+    if chats == 0 {
+        r.warn(
+            "telegram",
+            "no chat is allowed, so the bot answers no one (it tells them their chat id)",
+        );
+        r.hint("`ferrule setup` → Telegram → Allow another chat");
+    }
+    true
+}
+
+fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) {
+    let sandbox = match Sandbox::new(crate::sandbox_policy(cfg)) {
+        Ok(sandbox) => sandbox,
+        Err(e) => {
+            r.fail("sandbox", e);
+            r.hint("`ferrule setup` → Sandbox, or `ferrule sandbox` for details");
+            return;
+        }
+    };
+    if !sandbox.is_active() {
+        let why = match (cfg.sandbox.mode, sandbox.degraded()) {
+            (Mode::Off, _) => "mode = off".to_string(),
+            (_, Some(why)) => why.to_string(),
+            (_, None) => "no sandbox on this system".to_string(),
+        };
+        r.warn("sandbox", format!("shell commands run unsandboxed: {why}"));
+        return;
+    }
+    let mode = match cfg.sandbox.mode {
+        Mode::Off => "off",
+        Mode::ReadOnly => "read-only",
+        Mode::WorkspaceWrite => "workspace-write",
+    };
+    let network = if cfg.sandbox.network {
+        "network on"
+    } else {
+        "network off"
+    };
+    r.ok(
+        "sandbox",
+        format!("{} · {mode} · {network}", sandbox.backend()),
+    );
+    if cfg!(unix) && secrets_path.exists() {
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let read = sandbox
+            .command(
+                "/bin/sh",
+                [
+                    "-c".as_ref(),
+                    "cat \"$1\"".as_ref(),
+                    "sh".as_ref(),
+                    secrets_path.as_os_str(),
+                ],
+                &workspace,
+            )
+            .and_then(|mut cmd| {
+                cmd.stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+            });
+        match read {
+            Ok(status) if status.success() => {
+                r.fail("sandbox", "commands the agent runs can read the saved keys");
+                r.hint("`ferrule sandbox` shows what's wrong");
+            }
+            Ok(_) => r.ok("sandbox", "the saved keys are out of the agent's reach"),
+            Err(e) => r.warn("sandbox", format!("couldn't run a sandboxed check: {e}")),
+        }
+    }
+}
+
+fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Result<()> {
+    match service::status() {
+        service::Status::Unsupported(why) => {
+            r.note("service", format!("not available here ({why})"));
+            if telegram_on {
+                r.hint("Telegram answers only while `ferrule gateway` runs");
+            }
+        }
+        service::Status::NotInstalled if telegram_on => {
+            r.warn(
+                "service",
+                "not installed, so Telegram answers only while `ferrule gateway` runs",
+            );
+            r.hint("`ferrule setup` → Background service");
+        }
+        service::Status::NotInstalled => {
+            r.note("service", "not installed (only needed for Telegram)")
+        }
+        service::Status::Installed { running: true, .. } => {
+            let workspace = service::installed().map_or("unknown".into(), |(_, ws)| tilde(&ws));
+            r.ok("service", format!("running · workspace {workspace}"));
+        }
+        service::Status::Installed { running: false, .. } => {
+            r.fail("service", "installed but not running");
+            r.hint(format!("see why: {}", service::logs_hint()));
+        }
+    }
+    if let Some((pinned, workspace)) = service::installed() {
+        let here = std::path::absolute(config_path)?;
+        if pinned != here {
+            r.warn(
+                "service",
+                format!("it runs with {}, not {}", tilde(&pinned), tilde(&here)),
+            );
+            r.hint("`ferrule setup` → Background service → Reinstall it, to switch");
+        }
+        let data = config::data_dir()?;
+        if data.starts_with(&workspace) {
+            r.warn(
+                "service",
+                format!(
+                    "its workspace {} holds ferrule's own data, which commands can then change",
+                    tilde(&workspace)
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Is `ferrule` on PATH, and is it this binary?
+fn binary(r: &mut Report) {
+    let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else {
+        return;
+    };
+    let name = if cfg!(windows) {
+        "ferrule.exe"
+    } else {
+        "ferrule"
+    };
+    let on_path = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(name))
+                .find(|p| p.is_file())
+        })
+        .unwrap_or_default();
+    match on_path {
+        None => {
+            r.warn("binary", format!("{} isn't on your PATH", tilde(&exe)));
+            if let Some(dir) = exe.parent() {
+                r.hint(format!(
+                    "add to your shell profile: export PATH=\"{}:$PATH\"",
+                    dir.display()
+                ));
+            }
+        }
+        Some(found) if found.canonicalize().is_ok_and(|p| p == exe) => {
+            r.ok("binary", tilde(&found))
+        }
+        Some(found) => {
+            r.warn(
+                "binary",
+                format!(
+                    "`ferrule` on your PATH is {}, not this one ({})",
+                    tilde(&found),
+                    tilde(&exe)
+                ),
+            );
+        }
+    }
+}

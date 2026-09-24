@@ -17,9 +17,9 @@ use std::sync::Arc;
 /// The standard toolbelt every agent gets.
 pub fn standard_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
-    reg.register(Arc::new(ReadFileTool));
-    reg.register(Arc::new(WriteFileTool));
-    reg.register(Arc::new(ListDirTool));
+    reg.register(Arc::new(ReadFileTool::default()));
+    reg.register(Arc::new(WriteFileTool::default()));
+    reg.register(Arc::new(ListDirTool::default()));
     reg.register(Arc::new(ShellTool::default()));
     reg.register(Arc::new(WebFetchTool::default()));
     reg.register(Arc::new(WriteTodosTool));

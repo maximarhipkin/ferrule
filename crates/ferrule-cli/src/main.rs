@@ -1,6 +1,11 @@
 mod config;
+mod doctor;
 mod ledger;
 mod memory_tools;
+mod probe;
+mod secrets;
+mod service;
+mod setup;
 
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
 use ferrule_core::tool::Tool;
@@ -12,7 +17,7 @@ use ferrule_providers::OpenAiCompatProvider;
 use ferrule_proxy::{Broker, BrokerConfig, Upstream};
 use ferrule_sandbox::{Mode, Sandbox};
 use ferrule_tools::standard_registry;
-use ferrule_tools::ShellTool;
+use ferrule_tools::{ListDirTool, ReadFileTool, ShellTool, WriteFileTool};
 use ferrule_mcp::McpServerConfig;
 use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
@@ -26,12 +31,25 @@ use tokio::sync::mpsc;
 #[derive(Parser)]
 #[command(name = "ferrule", version, about = "A portable, memory-efficient agent runtime in Rust")]
 struct Cli {
+    /// Config file to use instead of ./ferrule.toml or the global one
+    /// (also `$FERRULE_CONFIG`)
+    #[arg(long, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Interactive setup: provider and key, Telegram, tool credentials,
+    /// sandbox, background service. Re-run it any time to change one part
+    Setup,
+    /// Check the config, keys, Telegram, sandbox and service, and say what to fix
+    Doctor {
+        /// Skip the checks that call provider and Telegram APIs
+        #[arg(long)]
+        offline: bool,
+    },
     /// Run a one-shot task
     Run {
         prompt: String,
@@ -57,7 +75,8 @@ enum Cmd {
         #[command(subcommand)]
         op: MemoryCmd,
     },
-    /// Write an example ferrule.toml to the current directory
+    /// Where the config lives, and ways to open it (`ferrule setup` is the
+    /// guided way to change it)
     Config {
         #[command(subcommand)]
         op: ConfigCmd,
@@ -165,24 +184,50 @@ enum MemoryCmd {
 
 #[derive(Subcommand)]
 enum ConfigCmd {
+    /// Show the config file, the saved-keys file, the data dir and the
+    /// service unit
+    Path,
+    /// Open the config in $VISUAL / $EDITOR, then check it still parses
+    Edit,
+    /// Print a commented example with every option
+    Example,
+    /// Write that example to ./ferrule.toml
     Init,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Sync on purpose: `--config` and the secrets file go into the environment
+/// before the runtime starts any thread, since `set_var` isn't thread-safe.
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
-    match cli.cmd {
+    if let Some(path) = &cli.config {
+        std::env::set_var("FERRULE_CONFIG", std::path::absolute(path)?);
+    }
+    secrets::load_into_env();
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(dispatch(cli.cmd))
+}
+
+async fn dispatch(cmd: Cmd) -> Result<()> {
+    match cmd {
+        Cmd::Setup => setup::run().await?,
+        Cmd::Doctor { offline } => {
+            if !doctor::run(offline).await? {
+                std::process::exit(1);
+            }
+        }
+        Cmd::Config { op: ConfigCmd::Path } => config_path_cmd()?,
+        Cmd::Config { op: ConfigCmd::Edit } => config_edit_cmd()?,
+        Cmd::Config { op: ConfigCmd::Example } => print!("{}", config::EXAMPLE_CONFIG),
         Cmd::Config { op: ConfigCmd::Init } => {
             if PathBuf::from("ferrule.toml").exists() {
                 println!("ferrule.toml already exists");
             } else {
                 std::fs::write("ferrule.toml", config::EXAMPLE_CONFIG)?;
-                println!("wrote ferrule.toml — edit it, then set the referenced env vars");
+                println!("wrote ferrule.toml — edit it, or run `ferrule setup` to fill it in interactively");
             }
         }
         Cmd::Memory { op } => {
@@ -293,6 +338,14 @@ fn build_agent_from(
     let sandbox = shared_sandbox(&cfg)?;
     let broker = shared_broker(&cfg)?;
     registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone())));
+    // The file tools run in this process, outside the sandbox: they refuse
+    // its hidden paths themselves, or a workspace that contains the data
+    // dir would let `read_file` hand over the saved keys.
+    let hidden = sandbox.policy().hidden.clone();
+    registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
+    registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
+    registry.register(Arc::new(ListDirTool::hiding(hidden)));
+    warn_data_in_workspace(&sandbox, &tool_ctx.workspace);
     if sandbox.policy().mode == Mode::ReadOnly {
         registry.remove("write_file");
     }
@@ -365,14 +418,62 @@ fn build_agent_from(
 }
 
 /// The config's sandbox policy, completed with what only the host knows:
-/// the env vars the config names as holding secrets.
+/// the env vars the config names as holding secrets, and the directories
+/// holding them on disk.
 fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     let mut policy = cfg.sandbox.clone();
     policy.secret_vars.extend(cfg.providers.values().map(|p| p.api_key_env.clone()));
     policy.secret_vars.extend(cfg.gateway.telegram_token_env.clone());
     // Commands get these back as placeholders, from the credential proxy.
     policy.secret_vars.extend(cfg.secrets.keys().cloned());
+    policy.hidden.extend(hidden_paths());
     policy
+}
+
+/// The secrets file's directory and the credential proxy's CA key — never
+/// readable by a sandboxed command. The sandbox resolves them per command,
+/// so the proxy's keys (written when the broker first starts) are covered
+/// too; the secrets directory is created now so a file `ferrule setup`
+/// writes into it later lands inside something already hidden.
+fn hidden_paths() -> Vec<PathBuf> {
+    let Ok(data) = config::data_dir() else {
+        return Vec::new();
+    };
+    let private = data.join("private");
+    let _ = std::fs::create_dir_all(&private);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700));
+    }
+    vec![private, data.join("proxy").join("keys")]
+}
+
+/// Landlock can't grant a folder without what's in it, so when the
+/// workspace holds the data dir, the folders on the way down to the keys
+/// stay read-only for commands. Said once per process (the gateway builds
+/// an agent per session).
+fn warn_data_in_workspace(sandbox: &Sandbox, workspace: &Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    if let Some(data) = data_in_workspace(sandbox, workspace) {
+        ONCE.call_once(|| {
+            eprintln!(
+                "ferrule: the workspace {} contains ferrule's own data ({}). To keep your saved keys out of reach, \
+                 commands can't create files or folders directly in it, or in the folders on the way to the data; the rest works. \
+                 A folder of its own, like ~/ferrule-workspace, avoids this.",
+                setup::tilde(workspace),
+                setup::tilde(&data)
+            )
+        });
+    }
+}
+
+/// The data dir, when it sits inside `workspace` under an active Landlock
+/// sandbox — the one case where commands lose write access to the
+/// workspace root. Seatbelt denies by rule and has no such limit.
+fn data_in_workspace(sandbox: &Sandbox, workspace: &Path) -> Option<PathBuf> {
+    let data = config::data_dir().ok()?.canonicalize().ok()?;
+    (cfg!(target_os = "linux") && sandbox.is_active() && data.starts_with(workspace)).then_some(data)
 }
 
 /// Built (and probed) once per process — the gateway builds an agent per
@@ -533,9 +634,13 @@ fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channe
     }
 
     if let Some(env_var) = &cfg.gateway.telegram_token_env {
-        let token = std::env::var(env_var)
-            .map_err(|_| anyhow!("env var `{env_var}` not set (needed by [gateway].telegram_token_env)"))?;
-        let telegram: Arc<dyn Channel> = Arc::new(TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone()));
+        let token = std::env::var(env_var).map_err(|_| {
+            anyhow!("env var `{env_var}` not set (needed by [gateway].telegram_token_env) — run `ferrule setup`, or export it")
+        })?;
+        let telegram: Arc<dyn Channel> = Arc::new(
+            TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone())
+                .with_allowed_chats(cfg.gateway.telegram_allowed_chats.clone()),
+        );
         named_channels.insert(telegram.name().to_string(), telegram);
     }
 
@@ -559,7 +664,13 @@ async fn run_gateway(provider: Option<String>, workspace: PathBuf, max_iteration
 
     let named_channels = build_channels(&cfg)?;
     if named_channels.is_empty() {
-        bail!("no channel enabled in [gateway] — set `local = true` and/or `telegram_token_env` in ferrule.toml");
+        bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true` and/or `telegram_token_env` in the config");
+    }
+    if named_channels.contains_key("telegram") && cfg.gateway.telegram_allowed_chats.is_empty() {
+        tracing::warn!(
+            "telegram_allowed_chats is empty: the bot answers nobody, it only replies with each chat's id. \
+             Run `ferrule setup` or add the id to [gateway] telegram_allowed_chats"
+        );
     }
     let adapters: Vec<Arc<dyn Channel>> = named_channels.values().cloned().collect();
 
@@ -812,7 +923,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
             None
         }
     };
-    let policy = cfg.as_ref().map(sandbox_policy).unwrap_or_default();
+    let policy = cfg.as_ref().map(sandbox_policy).unwrap_or_else(|| ferrule_sandbox::Policy { hidden: hidden_paths(), ..Default::default() });
     let workspace = workspace.canonicalize()?;
     let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
     let broker = match &cfg {
@@ -870,7 +981,11 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     };
     println!("\nchecks");
 
-    let env = sh("env", Path::new(""))?;
+    let env = if cfg!(windows) {
+        sandbox.command("cmd", ["/d", "/c", "set"], &workspace)?.stdin(std::process::Stdio::null()).output()?
+    } else {
+        sh("env", Path::new(""))?
+    };
     let env = String::from_utf8_lossy(&env.stdout);
     let brokered: Vec<&str> = broker.map(|b| b.secrets().iter().map(|s| s.name.as_str()).collect()).unwrap_or_default();
     report("secret env vars are not visible to commands", withheld.iter().filter(|name| !brokered.contains(&name.as_str())).all(|name| !env.lines().any(|l| l.starts_with(&format!("{name}=")))));
@@ -893,6 +1008,10 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     match policy.mode {
         Mode::ReadOnly => report("workspace write is refused (read-only)", !wrote),
         _ => report("workspace write works", wrote),
+    }
+    if let Some(data) = data_in_workspace(&sandbox, &workspace).filter(|_| !wrote && policy.mode != Mode::ReadOnly) {
+        println!("        the workspace holds ferrule's data ({}), so commands can't create files or folders at its top level;", setup::tilde(&data));
+        println!("        inside existing folders they can. A folder of its own, like ~/ferrule-workspace, avoids this.");
     }
 
     // Aim outside every root, at a place this process itself can write — so
@@ -921,6 +1040,11 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         let environ = PathBuf::from(format!("/proc/{}/environ", std::process::id()));
         let read = sh("cat \"$1\" > /dev/null", &environ)?.status.success();
         report("ferrule's own environment is unreadable (/proc/<pid>/environ)", !read);
+    }
+    let saved = secrets::path()?;
+    if saved.exists() {
+        let read = sh("cat \"$1\" > /dev/null", &saved)?.status.success();
+        report(&format!("the saved keys are unreadable ({})", saved.display()), !read);
     }
 
     let me = std::env::current_exe()?;
@@ -952,6 +1076,58 @@ fn probe_net() {
             std::process::exit(1);
         }
     }
+}
+
+/// `ferrule config path`: where everything setup writes lives.
+fn config_path_cmd() -> Result<()> {
+    match config::config_path()? {
+        Some(path) => println!("config    {}", path.display()),
+        None => println!("config    none yet (`ferrule setup` writes {})", config::global_config_path()?.display()),
+    }
+    let keys = secrets::path()?;
+    println!("keys      {}{}", keys.display(), if keys.exists() { "" } else { " (none saved)" });
+    println!("data      {}", config::data_dir()?.display());
+    if let service::Status::Installed { unit, .. } = service::status() {
+        println!("service   {}", unit.display());
+    }
+    Ok(())
+}
+
+/// `ferrule config edit`: open the config in the user's editor, then say
+/// whether it still parses.
+fn config_edit_cmd() -> Result<()> {
+    let Some(path) = config::config_path()? else {
+        bail!("there's no config yet; `ferrule setup` writes one");
+    };
+    let on_path = |name: &str| {
+        std::env::var_os("PATH").is_some_and(|dirs| std::env::split_paths(&dirs).any(|dir| dir.join(name).is_file()))
+    };
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .find_map(|var| std::env::var(var).ok().filter(|e| !e.trim().is_empty()))
+        .or_else(|| ["nano", "vi"].into_iter().find(|e| on_path(e)).map(str::to_string))
+        .or_else(|| cfg!(windows).then(|| "notepad".to_string()))
+        .ok_or_else(|| anyhow!("no editor found; set $EDITOR"))?;
+    // $EDITOR may carry arguments, like "code --wait".
+    let mut words = editor.split_whitespace();
+    let program = words.next().ok_or_else(|| anyhow!("$EDITOR is blank"))?;
+    let status = std::process::Command::new(program)
+        .args(words)
+        .arg(&path)
+        .status()
+        .map_err(|e| anyhow!("couldn't start `{editor}`: {e}"))?;
+    if !status.success() {
+        bail!("`{editor}` exited with {status}");
+    }
+    let text = std::fs::read_to_string(&path)?;
+    if let Err(e) = toml::from_str::<config::Config>(&text) {
+        bail!("{} doesn't parse any more:\n{e}", path.display());
+    }
+    println!("✓ {} parses", path.display());
+    if matches!(service::status(), service::Status::Installed { running: true, .. }) {
+        println!("  the background service still runs the old settings: `ferrule setup` → Background service → Restart it");
+    }
+    Ok(())
 }
 
 fn ledger_cmd(since: Option<String>) -> Result<()> {
