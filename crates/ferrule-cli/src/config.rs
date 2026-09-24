@@ -181,12 +181,20 @@ pub struct HealthConfig {
     /// A polling channel (Telegram) with no successful poll for this long
     /// is stale: `/status` says so.
     pub poll_stale_secs: u64,
+    /// A turn with no progress (no model call or tool call started or
+    /// finished) for this long gets one message to the owner. 0 = off.
+    pub watchdog_after_secs: u64,
+    /// A turn running this long is ended the way `/stop` ends it, and its
+    /// chat is free again. 0 = no limit.
+    pub max_turn_minutes: u64,
 }
 
 impl Default for HealthConfig {
     fn default() -> Self {
         Self {
             poll_stale_secs: 300,
+            watchdog_after_secs: 600,
+            max_turn_minutes: 60,
         }
     }
 }
@@ -424,6 +432,9 @@ profile = "openai"
 # [health]                   # M19b (docs/m19b-reliability.md): the gateway is
 #                            # never silently deaf. /status answers from any chat.
 # poll_stale_secs = 300      # Telegram with no ok poll this long counts as stale.
+# watchdog_after_secs = 600  # a turn with no progress this long: one message to
+#                            # the owner ("stuck on … — /stop to cancel"). 0 = off.
+# max_turn_minutes = 60      # a turn this long is ended like /stop. 0 = no limit.
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).

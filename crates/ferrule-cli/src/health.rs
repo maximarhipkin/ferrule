@@ -72,6 +72,9 @@ pub fn build(
     let settings = HealthSettings {
         dir: Some(dir()?),
         poll_stale: Duration::from_secs(cfg.health.poll_stale_secs.max(1)),
+        watchdog_after: (cfg.health.watchdog_after_secs > 0)
+            .then(|| Duration::from_secs(cfg.health.watchdog_after_secs)),
+        owner: owner(cfg),
         ..HealthSettings::default()
     };
     let mut health = Health::new(env!("CARGO_PKG_VERSION"), settings)
@@ -84,6 +87,18 @@ pub fn build(
         health = health.with_section("schedule", Arc::new(move || schedule_lines(&store)));
     }
     Ok(health)
+}
+
+/// Where the gateway's own warnings go: the owner's Telegram chat, when
+/// the gateway runs Telegram.
+fn owner(cfg: &Config) -> Option<(String, String)> {
+    cfg.gateway.telegram_token_env.as_ref()?;
+    crate::trust::owner_chat(cfg).map(|c| ("telegram".to_string(), c.to_string()))
+}
+
+/// `max_turn_minutes`, `None` when off.
+pub fn max_turn(cfg: &Config) -> Option<Duration> {
+    (cfg.health.max_turn_minutes > 0).then(|| Duration::from_secs(cfg.health.max_turn_minutes * 60))
 }
 
 /// The next three runs and the last failed one.

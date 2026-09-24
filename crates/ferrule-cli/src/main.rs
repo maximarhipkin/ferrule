@@ -1391,11 +1391,10 @@ async fn run_gateway(
     // Arc'd so the same router serves both the gateway's channel adapters
     // and the scheduler's task-triggered turns — one router, two front
     // doors (see `ferrule_gateway::Gateway::new`'s doc comment).
-    let router = Arc::new(Router::new(
-        sessions_dir,
-        agent_factory,
-        named_channels.clone(),
-    ));
+    let router = Arc::new(
+        Router::new(sessions_dir, agent_factory, named_channels.clone())
+            .with_max_turn(health::max_turn(&cfg)),
+    );
     // A chat whose agents report while it's idle is run again, and its
     // answer goes to the chat.
     if let Some(sup) = &sup {

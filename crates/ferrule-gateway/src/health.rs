@@ -149,6 +149,12 @@ pub struct HealthSettings {
     pub status_every: Duration,
     /// A polling channel with no ok poll for this long is stale.
     pub poll_stale: Duration,
+    /// A turn with no progress for this long gets one message to the
+    /// owner; `None` turns the watchdog off.
+    pub watchdog_after: Option<Duration>,
+    /// Where the gateway's own warnings go: a channel name and a chat id.
+    /// `None` sends each to the chat it's about.
+    pub owner: Option<(String, String)>,
 }
 
 impl Default for HealthSettings {
@@ -157,6 +163,8 @@ impl Default for HealthSettings {
             dir: None,
             status_every: Duration::from_secs(5),
             poll_stale: Duration::from_secs(300),
+            watchdog_after: Some(Duration::from_secs(600)),
+            owner: None,
         }
     }
 }
@@ -253,6 +261,18 @@ impl Health {
     }
 
     /// What `/status` answers and `status.txt` holds, redacted.
+    /// The watchdog's one message about a turn that stopped moving.
+    pub fn stall_notice(&self, lane: &LaneSnapshot) -> String {
+        let quiet = lane.since_progress.unwrap_or_default();
+        self.redactor.redact(&format!(
+            "Stuck on {} for {} in {}, handling: '{}' — /stop to cancel it.",
+            lane.activity,
+            human(quiet),
+            lane.place(),
+            clip(&lane.text, 80)
+        ))
+    }
+
     pub fn report(&self, lanes: &[LaneSnapshot], channels: &[Arc<dyn Channel>]) -> String {
         let mut out = vec![
             format!(

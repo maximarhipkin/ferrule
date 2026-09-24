@@ -1027,6 +1027,63 @@ mod tests {
         assert_eq!(reply.expect("the lane stalled").unwrap().text, "finally");
     }
 
+    /// Hangs on "hang"; echoes anything else.
+    struct HangingProvider;
+    #[async_trait]
+    impl Provider for HangingProvider {
+        fn name(&self) -> &str {
+            "hanging"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let last = req
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::User)
+                .and_then(|m| m.content.clone())
+                .unwrap_or_default();
+            if last == "hang" {
+                std::future::pending::<()>().await;
+            }
+            Ok(CompletionResponse {
+                message: Message::assistant(Some(format!("echo: {last}")), vec![], None),
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn max_turn_ends_a_hanging_turn_and_frees_the_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let factory: AgentFactory = Arc::new(|_sid, transcript| {
+            Ok(Agent::new(
+                Arc::new(HangingProvider),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
+        });
+        let router = Router::new(dir.path(), factory, channels)
+            .with_max_turn(Some(Duration::from_millis(150)));
+        router.dispatch(inbound("chat-1", "hang")).await.unwrap();
+        router.dispatch(inbound("chat-1", "after")).await.unwrap();
+        wait_until(|| recorder.texts().len() == 2).await;
+        let texts = recorder.texts();
+        assert!(
+            texts[0].starts_with("Stopped: this turn ran for 0 s (max_turn_minutes)"),
+            "{texts:?}"
+        );
+        // The deadline is per turn: the next one isn't born expired.
+        assert_eq!(texts[1], "echo: after");
+        wait_until(|| router.snapshot().is_empty()).await;
+    }
+
     #[tokio::test]
     async fn a_failed_run_tells_the_chat() {
         let dir = tempfile::tempdir().unwrap();

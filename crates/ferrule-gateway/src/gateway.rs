@@ -133,14 +133,22 @@ impl Gateway {
             return Vec::new();
         };
         let (router, channels) = (self.router.clone(), self.channels.clone());
-        let changed = router.changed();
-        let every = health.settings().status_every;
-        vec![tokio::spawn(async move {
-            loop {
-                health.write_status(&health.report(&router.snapshot(), &channels));
-                let _ = tokio::time::timeout(every, changed.notified()).await;
-            }
-        })]
+        let mut tasks = Vec::new();
+        {
+            let (health, router, channels) = (health.clone(), router.clone(), channels.clone());
+            let changed = router.changed();
+            let every = health.settings().status_every;
+            tasks.push(tokio::spawn(async move {
+                loop {
+                    health.write_status(&health.report(&router.snapshot(), &channels));
+                    let _ = tokio::time::timeout(every, changed.notified()).await;
+                }
+            }));
+        }
+        if let Some(after) = health.settings().watchdog_after {
+            tasks.push(tokio::spawn(watchdog(health, router, channels, after)));
+        }
+        tasks
     }
 
     /// One inbound message: `/status`, an interceptor's, or the receipt,
@@ -233,6 +241,45 @@ impl Gateway {
         };
         if let Err(e) = channel.send(out).await {
             tracing::error!(error = %e, "failed to send an intercepted reply");
+        }
+    }
+}
+
+/// M19b's watchdog: a turn that has made no progress for `after` gets
+/// one message to the owner (or its own chat), once per stall — progress
+/// re-arms it. The turn itself is left alone; `/stop` or
+/// `max_turn_minutes` ends it.
+async fn watchdog(
+    health: Arc<Health>,
+    router: Arc<Router>,
+    channels: Vec<Arc<dyn Channel>>,
+    after: Duration,
+) {
+    let tick = (after / 4).clamp(Duration::from_millis(20), Duration::from_secs(15));
+    loop {
+        tokio::time::sleep(tick).await;
+        for lane in router.claim_stalled(after) {
+            tracing::warn!(chat = %lane.place(), activity = %lane.activity, "a turn has made no progress");
+            let (to_channel, to_chat) = health
+                .settings()
+                .owner
+                .clone()
+                .unwrap_or((lane.channel.clone(), lane.chat_id.clone()));
+            let Some(channel) = channels.iter().find(|c| c.name() == to_channel).cloned() else {
+                continue;
+            };
+            let out = OutboundMessage {
+                channel: to_channel,
+                chat_id: to_chat,
+                text: health.stall_notice(&lane),
+                reply_to: None,
+                attachments: vec![],
+            };
+            tokio::spawn(async move {
+                if let Err(e) = channel.send(out).await {
+                    tracing::warn!(error = %e, "couldn't send the watchdog's message");
+                }
+            });
         }
     }
 }
@@ -414,6 +461,8 @@ mod tests {
     struct ReactingChannel {
         script: Vec<InboundMessage>,
         log: Arc<std::sync::Mutex<Vec<String>>>,
+        /// How long the channel stays open after its script.
+        linger: Duration,
     }
     #[async_trait]
     impl Channel for ReactingChannel {
@@ -433,6 +482,7 @@ mod tests {
                     .map_err(|_| GatewayError::Channel("closed".into()))?;
                 tokio::time::sleep(std::time::Duration::from_millis(30)).await;
             }
+            tokio::time::sleep(self.linger).await;
             Ok(())
         }
         async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError> {
@@ -496,9 +546,20 @@ mod tests {
         log: &Log,
         release: &Arc<tokio::sync::Semaphore>,
     ) -> (Arc<ReactingChannel>, Arc<Router>) {
+        held_gateway_open(dir, script, log, release, Duration::ZERO)
+    }
+
+    fn held_gateway_open(
+        dir: &std::path::Path,
+        script: Vec<InboundMessage>,
+        log: &Log,
+        release: &Arc<tokio::sync::Semaphore>,
+        linger: Duration,
+    ) -> (Arc<ReactingChannel>, Arc<Router>) {
         let channel = Arc::new(ReactingChannel {
             script,
             log: log.clone(),
+            linger,
         });
         let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
         channels.insert("scripted".into(), channel.clone());
@@ -648,5 +709,73 @@ mod tests {
                 "send to 2: echo: second"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn the_watchdog_tells_the_owner_once_per_stall() {
+        let dir = tempfile::tempdir().unwrap();
+        let log: Log = Arc::default();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let script = numbered(&["first"]);
+        let (channel, router) = held_gateway_open(
+            dir.path(),
+            script,
+            &log,
+            &release,
+            Duration::from_millis(700),
+        );
+        let health = Arc::new(Health::new(
+            "9.9.9",
+            crate::health::HealthSettings {
+                watchdog_after: Some(Duration::from_millis(100)),
+                owner: Some(("scripted".into(), "owner".into())),
+                ..Default::default()
+            },
+        ));
+        let mut gateway = Gateway::new(router).with_health(health);
+        gateway.add_channel(channel);
+        tokio::time::timeout(Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+        let stalls: Vec<String> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("Stuck on"))
+            .cloned()
+            .collect();
+        // Held for ~700 ms against a 100 ms watchdog: one message, not six.
+        assert_eq!(
+            stalls,
+            ["send to : Stuck on a model call for 0 s in scripted chat c1, handling: 'first' — /stop to cancel it."]
+        );
+        release.add_permits(1);
+    }
+
+    #[tokio::test]
+    async fn no_watchdog_when_it_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let log: Log = Arc::default();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let (channel, router) = held_gateway_open(
+            dir.path(),
+            numbered(&["first"]),
+            &log,
+            &release,
+            Duration::from_millis(300),
+        );
+        let health = Arc::new(Health::new(
+            "9.9.9",
+            crate::health::HealthSettings {
+                watchdog_after: None,
+                ..Default::default()
+            },
+        ));
+        let mut gateway = Gateway::new(router).with_health(health);
+        gateway.add_channel(channel);
+        gateway.run().await.unwrap();
+        assert!(log.lock().unwrap().iter().all(|l| !l.contains("Stuck on")));
+        release.add_permits(1);
     }
 }

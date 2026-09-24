@@ -415,3 +415,31 @@ fn ferrule_status_says_when_no_gateway_is_running() {
         describe(&out)
     );
 }
+
+#[test]
+fn the_watchdog_tells_the_owner_about_another_chats_stuck_turn() {
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    let extra = format!("{}\n[health]\nwatchdog_after_secs = 1\n", telegram(&tg));
+    let dir = home(&url, &extra);
+    let _gw = gateway(dir.path());
+
+    tg.say(-100, "HANG please");
+    // Chat 42 is the owner: the first private chat the gateway allows.
+    let (n, notice) = tg.wait_for(42, "Stuck on", 0);
+    assert!(
+        notice.starts_with("Stuck on tool `shell` (sleep 30) for 1 s in telegram chat -100, handling: 'HANG please'"),
+        "{notice}"
+    );
+    // Once per stall, not once a second.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let again = tg
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .skip(n)
+        .filter(|m| m["text"].as_str().unwrap_or_default().contains("Stuck on"))
+        .count();
+    assert_eq!(again, 0);
+}
