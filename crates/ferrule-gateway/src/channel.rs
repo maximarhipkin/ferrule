@@ -51,6 +51,17 @@ pub trait Channel: Send + Sync {
         Err(GatewayError::Unsupported("reactions"))
     }
 
+    /// Whether this adapter polls a remote service for messages (M19b: its
+    /// health is how recently a poll last succeeded).
+    fn polls(&self) -> bool {
+        false
+    }
+
+    /// When a poll last succeeded; `None` before the first one.
+    fn last_ok_poll(&self) -> Option<std::time::SystemTime> {
+        None
+    }
+
     /// Optional: edit a previously sent message in place.
     async fn edit(
         &self,

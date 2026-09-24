@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 
 /// How long Telegram may hold a `getUpdates` call open when there's nothing new.
@@ -56,6 +56,8 @@ pub struct TelegramChannel {
     poll_deadline: Duration,
     backoff_min: Duration,
     backoff_max: Duration,
+    /// When `getUpdates` last answered ok (M19b: `/status`, the watchdog).
+    last_ok_poll: Mutex<Option<SystemTime>>,
 }
 
 impl TelegramChannel {
@@ -86,6 +88,7 @@ impl TelegramChannel {
             poll_deadline: POLL_DEADLINE,
             backoff_min: BACKOFF_MIN,
             backoff_max: BACKOFF_MAX,
+            last_ok_poll: Mutex::new(None),
         }
     }
 
@@ -148,13 +151,21 @@ impl TelegramChannel {
             .timeout(self.poll_deadline)
             .send()
             .await
-            .map_err(|e| PollError::Retry(format!("getUpdates request failed: {e}"), None))?;
+            .map_err(|e| {
+                PollError::Retry(
+                    format!("getUpdates request failed: {}", e.without_url()),
+                    None,
+                )
+            })?;
         let status = resp.status();
         let body: Value = match resp.json().await {
             Ok(v) => v,
             Err(e) => {
                 return Err(PollError::Retry(
-                    format!("getUpdates: bad json (status {status}): {e}"),
+                    format!(
+                        "getUpdates: bad json (status {status}): {}",
+                        e.without_url()
+                    ),
                     None,
                 ))
             }
@@ -177,6 +188,7 @@ impl TelegramChannel {
                 .map(Duration::from_secs);
             return Err(PollError::Retry(msg, wait));
         }
+        *self.last_ok_poll.lock().unwrap() = Some(SystemTime::now());
         let updates = body
             .get("result")
             .and_then(|r| r.as_array())
@@ -235,9 +247,18 @@ impl Channel for TelegramChannel {
 
     fn capabilities(&self) -> ChannelCapabilities {
         ChannelCapabilities {
+            reactions: true,
             edits: true,
             ..Default::default()
         }
+    }
+
+    fn polls(&self) -> bool {
+        true
+    }
+
+    fn last_ok_poll(&self) -> Option<SystemTime> {
+        *self.last_ok_poll.lock().unwrap()
     }
 
     /// Blocks forever, long-polling `getUpdates`. A failed poll — the
@@ -286,12 +307,53 @@ impl Channel for TelegramChannel {
             .json(&payload)
             .send()
             .await
-            .map_err(|e| GatewayError::Channel(format!("sendMessage request failed: {e}")))?;
+            .map_err(|e| {
+                GatewayError::Channel(format!("sendMessage request failed: {}", e.without_url()))
+            })?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(json!({}));
         if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
             return Err(GatewayError::Channel(format!(
                 "sendMessage failed (status {status}): {body}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// `setMessageReaction`: the 👀 receipt (M19b).
+    async fn react(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        emoji: &str,
+    ) -> Result<(), GatewayError> {
+        let Ok(id) = message_id.parse::<i64>() else {
+            return Err(GatewayError::Channel(format!(
+                "setMessageReaction: not a message id: {message_id}"
+            )));
+        };
+        let payload = json!({
+            "chat_id": chat_id,
+            "message_id": id,
+            "reaction": [{"type": "emoji", "emoji": emoji}],
+        });
+        let resp = self
+            .client
+            .post(self.api_url("setMessageReaction"))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                GatewayError::Channel(format!(
+                    "setMessageReaction request failed: {}",
+                    e.without_url()
+                ))
+            })?;
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(json!({}));
+        if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Err(GatewayError::Channel(format!(
+                "setMessageReaction failed (status {status}): {body}"
             )));
         }
         Ok(())
@@ -305,7 +367,12 @@ impl Channel for TelegramChannel {
             .json(&payload)
             .send()
             .await
-            .map_err(|e| GatewayError::Channel(format!("editMessageText request failed: {e}")))?;
+            .map_err(|e| {
+                GatewayError::Channel(format!(
+                    "editMessageText request failed: {}",
+                    e.without_url()
+                ))
+            })?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(json!({}));
         if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -355,7 +422,10 @@ mod tests {
                     } else {
                         r#"{"ok":true,"result":[]}"#.to_string()
                     }
-                } else if request.contains("sendMessage") || request.contains("editMessageText") {
+                } else if request.contains("sendMessage")
+                    || request.contains("editMessageText")
+                    || request.contains("setMessageReaction")
+                {
                     if let Some(idx) = request.find("\r\n\r\n") {
                         if let Ok(v) = serde_json::from_str::<Value>(&request[idx + 4..]) {
                             sent_clone.lock().unwrap().push(v);
@@ -408,14 +478,21 @@ mod tests {
             .await
             .unwrap();
         channel.edit("9999", "55", "edited text").await.unwrap();
+        channel.react("9999", "55", "👀").await.unwrap();
+        assert!(channel.last_ok_poll().is_some());
 
         let sent_bodies = sent.lock().unwrap();
-        assert_eq!(sent_bodies.len(), 2);
+        assert_eq!(sent_bodies.len(), 3);
         assert_eq!(sent_bodies[0]["text"], "reply");
         assert_eq!(sent_bodies[0]["chat_id"], "9999");
         assert_eq!(sent_bodies[0]["reply_to_message_id"], 55);
         assert_eq!(sent_bodies[1]["text"], "edited text");
         assert_eq!(sent_bodies[1]["message_id"], 55);
+        assert_eq!(
+            sent_bodies[2],
+            json!({"chat_id": "9999", "message_id": 55,
+                   "reaction": [{"type": "emoji", "emoji": "👀"}]})
+        );
         drop(sent_bodies);
 
         handle.abort();
@@ -485,11 +562,14 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_report_edits_but_not_reactions() {
+    fn capabilities_report_edits_and_reactions() {
         let channel = TelegramChannel::new("t");
         let caps = channel.capabilities();
         assert!(caps.edits);
-        assert!(!caps.reactions);
+        assert!(caps.reactions);
+        assert!(!caps.attachments);
+        assert!(channel.polls());
+        assert_eq!(channel.last_ok_poll(), None);
     }
 
     /// What the scripted server does with the n-th `getUpdates` call.

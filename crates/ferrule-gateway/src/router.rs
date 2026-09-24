@@ -3,12 +3,13 @@ use crate::error::GatewayError;
 use crate::message::{InboundMessage, OutboundMessage};
 use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
-use ferrule_core::{Agent, CoreError, Role, Transcript};
+use ferrule_core::{Agent, AgentEvent, CoreError, Guard, GuardedCall, Role, Transcript, Verdict};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tokio::sync::{mpsc, oneshot};
+use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::{mpsc, oneshot, Notify};
 
 /// Builds a ready-to-run `Agent` for a session: system prompt, provider,
 /// tools and harness profile already applied. Receives the freshly created
@@ -53,12 +54,82 @@ pub struct Router {
     channels: HashMap<String, Arc<dyn Channel>>,
     lanes: Mutex<HashMap<String, Lane>>,
     lane_queue_capacity: usize,
+    /// M19b: a turn running longer than this is ended the way `/stop` ends
+    /// one, and the lane takes its next message.
+    max_turn: Option<Duration>,
+    /// Woken whenever a lane starts or ends a turn (the running marker).
+    changed: Arc<Notify>,
 }
 
 struct Lane {
     tx: mpsc::Sender<LaneJob>,
     channel: String,
     chat_id: String,
+    state: Arc<Mutex<LaneState>>,
+}
+
+/// What a lane is doing, for `/status`, the busy notice and the watchdog
+/// (M19b). Fed by the lane itself and by its agent's events.
+#[derive(Default)]
+struct LaneState {
+    /// When the current turn started; `None` while idle.
+    busy_since: Option<(Instant, SystemTime)>,
+    /// The message the turn is handling.
+    text: String,
+    /// "a model call", or a tool and a short summary of its arguments.
+    activity: String,
+    /// The last agent event (a model call or a tool starting or finishing).
+    last_progress: Option<Instant>,
+    /// Messages waiting behind the current turn.
+    queued: usize,
+    /// The chat was told it's queued, this busy period.
+    busy_notice_sent: bool,
+    /// The owner was told this turn is stuck, since its last progress.
+    stall_reported: bool,
+}
+
+/// One lane as `/status` and the watchdog see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneSnapshot {
+    pub session_id: String,
+    pub channel: String,
+    pub chat_id: String,
+    /// `None` while idle.
+    pub busy_for: Option<Duration>,
+    pub started_at: Option<SystemTime>,
+    pub activity: String,
+    pub since_progress: Option<Duration>,
+    pub queued: usize,
+    /// The message the turn is handling (unredacted).
+    pub text: String,
+}
+
+impl LaneSnapshot {
+    fn of(session_id: &str, lane: &Lane, now: Instant) -> Self {
+        let st = lane.state.lock().unwrap();
+        Self {
+            session_id: session_id.to_string(),
+            channel: lane.channel.clone(),
+            chat_id: lane.chat_id.clone(),
+            busy_for: st
+                .busy_since
+                .map(|(at, _)| now.saturating_duration_since(at)),
+            started_at: st.busy_since.map(|(_, at)| at),
+            activity: st.activity.clone(),
+            since_progress: st.last_progress.map(|at| now.saturating_duration_since(at)),
+            queued: st.queued,
+            text: st.text.clone(),
+        }
+    }
+
+    /// Where the turn came from: "telegram chat 42", "scheduled task x".
+    pub fn place(&self) -> String {
+        if self.channel == SCHEDULER_PSEUDO_CHANNEL {
+            format!("scheduled task {}", self.chat_id)
+        } else {
+            format!("{} chat {}", self.channel, self.chat_id)
+        }
+    }
 }
 
 impl Router {
@@ -73,7 +144,70 @@ impl Router {
             channels,
             lanes: Mutex::new(HashMap::new()),
             lane_queue_capacity: 64,
+            max_turn: None,
+            changed: Arc::new(Notify::new()),
         }
+    }
+
+    /// Ends any turn that runs longer than `limit` (M19b's
+    /// `max_turn_minutes`), through the agent's guard, as `/stop` would.
+    pub fn with_max_turn(mut self, limit: Option<Duration>) -> Self {
+        self.max_turn = limit.filter(|d| !d.is_zero());
+        self
+    }
+
+    /// Notified whenever a lane starts or finishes a turn.
+    pub fn changed(&self) -> Arc<Notify> {
+        self.changed.clone()
+    }
+
+    /// Every lane that is running a turn or has messages waiting.
+    pub fn snapshot(&self) -> Vec<LaneSnapshot> {
+        let now = Instant::now();
+        let lanes = self.lanes.lock().unwrap();
+        let mut out: Vec<LaneSnapshot> = lanes
+            .iter()
+            .map(|(sid, lane)| LaneSnapshot::of(sid, lane, now))
+            .filter(|l| l.busy_for.is_some() || l.queued > 0)
+            .collect();
+        out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        out
+    }
+
+    /// If `msg`'s chat is in the middle of a turn and hasn't been told so
+    /// this busy period, marks it told and returns the lane: the caller
+    /// sends the busy notice. Only turns running at least `after` count.
+    pub fn claim_busy_notice(&self, msg: &InboundMessage, after: Duration) -> Option<LaneSnapshot> {
+        let sid = session::session_id(&msg.channel, &msg.chat_id);
+        let lanes = self.lanes.lock().unwrap();
+        let lane = lanes.get(&sid)?;
+        let snap = LaneSnapshot::of(&sid, lane, Instant::now());
+        let mut st = lane.state.lock().unwrap();
+        if st.busy_notice_sent || snap.busy_for? < after {
+            return None;
+        }
+        st.busy_notice_sent = true;
+        Some(snap)
+    }
+
+    /// Lanes that have made no progress for `after` and haven't been
+    /// reported since their last progress; marks them reported.
+    pub fn claim_stalled(&self, after: Duration) -> Vec<LaneSnapshot> {
+        let now = Instant::now();
+        let lanes = self.lanes.lock().unwrap();
+        let mut out = Vec::new();
+        for (sid, lane) in lanes.iter() {
+            let snap = LaneSnapshot::of(sid, lane, now);
+            let mut st = lane.state.lock().unwrap();
+            if st.busy_since.is_some()
+                && !st.stall_reported
+                && snap.since_progress.is_some_and(|d| d >= after)
+            {
+                st.stall_reported = true;
+                out.push(snap);
+            }
+        }
+        out
     }
 
     /// Enqueue an inbound message onto its session's lane, spawning the lane
@@ -82,10 +216,13 @@ impl Router {
     /// message was *queued*, not that the agent turn succeeded.
     pub async fn dispatch(&self, msg: InboundMessage) -> Result<(), GatewayError> {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
-        let tx = self.lane_for(&sid, &msg)?;
-        tx.send(LaneJob { msg, reply: None })
-            .await
-            .map_err(|_| GatewayError::SessionClosed(sid))
+        let (tx, state) = self.lane_for(&sid, &msg)?;
+        state.lock().unwrap().queued += 1;
+        let sent = tx.send(LaneJob { msg, reply: None }).await;
+        if sent.is_err() {
+            state.lock().unwrap().queued -= 1;
+        }
+        sent.map_err(|_| GatewayError::SessionClosed(sid))
     }
 
     /// Enqueue an inbound message and await the agent turn's own result:
@@ -98,13 +235,18 @@ impl Router {
     pub async fn dispatch_and_wait(&self, msg: InboundMessage) -> Result<Reply, GatewayError> {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
         let (reply_tx, reply_rx) = oneshot::channel();
-        let tx = self.lane_for(&sid, &msg)?;
-        tx.send(LaneJob {
-            msg,
-            reply: Some(reply_tx),
-        })
-        .await
-        .map_err(|_| GatewayError::SessionClosed(sid.clone()))?;
+        let (tx, state) = self.lane_for(&sid, &msg)?;
+        state.lock().unwrap().queued += 1;
+        let sent = tx
+            .send(LaneJob {
+                msg,
+                reply: Some(reply_tx),
+            })
+            .await;
+        if sent.is_err() {
+            state.lock().unwrap().queued -= 1;
+        }
+        sent.map_err(|_| GatewayError::SessionClosed(sid.clone()))?;
         match reply_rx.await {
             Ok(Ok(answer)) => Ok(answer),
             Ok(Err(err_text)) => Err(GatewayError::Channel(err_text)),
@@ -116,23 +258,25 @@ impl Router {
         &self,
         session_id: &str,
         msg: &InboundMessage,
-    ) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
+    ) -> Result<(mpsc::Sender<LaneJob>, Arc<Mutex<LaneState>>), GatewayError> {
         let mut lanes = self.lanes.lock().unwrap();
         if let Some(lane) = lanes.get(session_id) {
             if !lane.tx.is_closed() {
-                return Ok(lane.tx.clone());
+                return Ok((lane.tx.clone(), lane.state.clone()));
             }
         }
-        let tx = self.spawn_lane(session_id, &msg.channel)?;
+        let state = Arc::new(Mutex::new(LaneState::default()));
+        let tx = self.spawn_lane(session_id, &msg.channel, state.clone())?;
         lanes.insert(
             session_id.to_string(),
             Lane {
                 tx: tx.clone(),
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
+                state: state.clone(),
             },
         );
-        Ok(tx)
+        Ok((tx, state))
     }
 
     /// Drops `session_id`'s lane once its queue drains: the next message
@@ -179,13 +323,18 @@ impl Router {
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0),
         };
-        lane.tx.try_send(LaneJob { msg, reply: None }).is_ok()
+        let sent = lane.tx.try_send(LaneJob { msg, reply: None }).is_ok();
+        if sent {
+            lane.state.lock().unwrap().queued += 1;
+        }
+        sent
     }
 
     fn spawn_lane(
         &self,
         session_id: &str,
         channel_name: &str,
+        state: Arc<Mutex<LaneState>>,
     ) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
         let transcript = Transcript::create(&self.sessions_dir, session_id)?;
         let history = transcript.read_messages().unwrap_or_default();
@@ -196,9 +345,21 @@ impl Router {
         for m in history.into_iter().filter(|m| m.role != Role::System) {
             agent.messages.push(m);
         }
+        // The turn's deadline sits in front of whatever guard the factory
+        // gave the agent (M19's), so it ends a turn the way `/stop` does.
+        let deadline = self.max_turn.map(|limit| {
+            let d = Arc::new(TurnDeadline::new(agent.guard(), limit));
+            agent.set_guard(d.clone());
+            d
+        });
         let channel = self.channels.get(channel_name).cloned();
         let (tx, rx) = mpsc::channel(self.lane_queue_capacity);
-        tokio::spawn(run_lane(agent, rx, channel, session_id.to_string()));
+        let watch = LaneWatch {
+            state,
+            changed: self.changed.clone(),
+            deadline,
+        };
+        tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
         Ok(tx)
     }
 }
@@ -215,20 +376,30 @@ async fn run_lane(
     mut rx: mpsc::Receiver<LaneJob>,
     channel: Option<Arc<dyn Channel>>,
     session_id: String,
+    watch: LaneWatch,
 ) {
     while let Some(job) = rx.recv().await {
         let LaneJob {
             msg: inbound,
             reply,
         } = job;
-        // The agent loop wants a live event sender; the gateway doesn't
-        // stream token-by-token to channels (yet), so the receiver is
-        // dropped right away. It has to be: `Agent::emit` waits while a live
-        // receiver's buffer is full, so one merely kept alive (`_erx`)
-        // stalled the lane for good once a run passed 64 events.
-        let (etx, erx) = mpsc::channel(1);
-        drop(erx);
+        watch.start(&inbound.text);
+        // The agent's events only feed the lane's state (what it's doing,
+        // when it last moved). They're drained by their own task that
+        // never waits: `Agent::emit` blocks while a live receiver's buffer
+        // is full, and a stalled drain once stalled the lane for good.
+        let (etx, erx) = mpsc::channel(256);
+        let drain = tokio::spawn(drain_events(erx, watch.state.clone()));
+        if let Some(d) = &watch.deadline {
+            d.arm();
+        }
         let run_result = agent.run(&inbound.text, etx).await;
+        if let Some(d) = &watch.deadline {
+            d.disarm();
+        }
+        // Whatever still holds a sender (a sub-agent) now finds it closed
+        // rather than feeding the next turn's state.
+        drain.abort();
         let reply_text = match &run_result {
             Ok(answer) => answer.clone(),
             Err(e) => {
@@ -258,8 +429,171 @@ async fn run_lane(
                 .map_err(|e| e.to_string());
             let _ = reply_tx.send(outcome); // receiver may have given up (e.g. caller timed out)
         }
+        watch.finish();
     }
     tracing::debug!(session = %session_id, "session lane closed");
+}
+
+/// A lane's handles on its own state.
+struct LaneWatch {
+    state: Arc<Mutex<LaneState>>,
+    changed: Arc<Notify>,
+    deadline: Option<Arc<TurnDeadline>>,
+}
+
+impl LaneWatch {
+    fn start(&self, text: &str) {
+        {
+            let mut st = self.state.lock().unwrap();
+            st.queued = st.queued.saturating_sub(1);
+            st.busy_since = Some((Instant::now(), SystemTime::now()));
+            st.text = text.to_string();
+            st.activity = "starting".into();
+            st.last_progress = Some(Instant::now());
+            st.stall_reported = false;
+        }
+        self.changed.notify_waiters();
+    }
+
+    fn finish(&self) {
+        {
+            let mut st = self.state.lock().unwrap();
+            st.busy_since = None;
+            st.text.clear();
+            st.activity.clear();
+            st.last_progress = None;
+            if st.queued == 0 {
+                st.busy_notice_sent = false;
+            }
+        }
+        self.changed.notify_waiters();
+    }
+}
+
+async fn drain_events(mut rx: mpsc::Receiver<AgentEvent>, state: Arc<Mutex<LaneState>>) {
+    while let Some(ev) = rx.recv().await {
+        let activity = match &ev {
+            AgentEvent::RunStarted { .. }
+            | AgentEvent::ToolCallFinished { .. }
+            | AgentEvent::VerifyFinished { .. } => Some("a model call".to_string()),
+            AgentEvent::ToolCallStarted {
+                name, arguments, ..
+            } => Some(tool_activity(name, arguments)),
+            AgentEvent::VerifyStarted { check } => Some(format!("the check `{check}`")),
+            AgentEvent::ProviderRetry {
+                attempt,
+                max_attempts,
+                ..
+            } => Some(format!("a model call (retry {attempt} of {max_attempts})")),
+            _ => None,
+        };
+        let mut st = state.lock().unwrap();
+        if let Some(a) = activity {
+            st.activity = a;
+        }
+        st.last_progress = Some(Instant::now());
+        st.stall_reported = false;
+    }
+}
+
+/// "tool `shell` (sleep 100)": the tool and the one argument that says
+/// what it's doing, cut short.
+pub fn tool_activity(name: &str, args: &serde_json::Value) -> String {
+    let key = [
+        "command", "path", "url", "query", "pattern", "task", "name", "id",
+    ]
+    .into_iter()
+    .find_map(|k| args.get(k).and_then(|v| v.as_str()));
+    let detail = match key {
+        Some(v) => v.to_string(),
+        None if args.as_object().is_some_and(|o| o.is_empty()) || args.is_null() => String::new(),
+        None => args.to_string(),
+    };
+    let detail: String = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    if detail.is_empty() {
+        return format!("tool `{name}`");
+    }
+    format!("tool `{name}` ({})", crate::health::clip(&detail, 60))
+}
+
+/// M19b's `max_turn_minutes`: a guard in front of the agent's own that
+/// halts the turn once it's past its deadline, the way the kill switch
+/// does (the running model or tool call is dropped).
+struct TurnDeadline {
+    inner: Option<Arc<dyn Guard>>,
+    limit: Duration,
+    deadline: Mutex<Option<tokio::time::Instant>>,
+}
+
+impl TurnDeadline {
+    fn new(inner: Option<Arc<dyn Guard>>, limit: Duration) -> Self {
+        Self {
+            inner,
+            limit,
+            deadline: Mutex::new(None),
+        }
+    }
+
+    fn arm(&self) {
+        *self.deadline.lock().unwrap() = Some(tokio::time::Instant::now() + self.limit);
+    }
+
+    fn disarm(&self) {
+        *self.deadline.lock().unwrap() = None;
+    }
+
+    fn message(&self) -> String {
+        format!(
+            "Stopped: this turn ran for {} (max_turn_minutes), so I ended it to free the chat. Nothing after the last step was done; send a new message to continue.",
+            crate::health::human(self.limit)
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl Guard for TurnDeadline {
+    fn begin(&self) {
+        if let Some(g) = &self.inner {
+            g.begin();
+        }
+    }
+
+    fn before_model_call(&self) -> Option<String> {
+        if let Some(why) = self.inner.as_ref().and_then(|g| g.before_model_call()) {
+            return Some(why);
+        }
+        let deadline = *self.deadline.lock().unwrap();
+        deadline
+            .is_some_and(|d| tokio::time::Instant::now() >= d)
+            .then(|| self.message())
+    }
+
+    async fn before_tool_call(&self, call: GuardedCall<'_>) -> Verdict {
+        match &self.inner {
+            Some(g) => g.before_tool_call(call).await,
+            None => Verdict::Allow,
+        }
+    }
+
+    async fn halted(&self) -> String {
+        let deadline = *self.deadline.lock().unwrap();
+        let expired = async {
+            match deadline {
+                Some(d) => tokio::time::sleep_until(d).await,
+                None => std::future::pending().await,
+            }
+        };
+        match &self.inner {
+            Some(g) => tokio::select! {
+                why = g.halted() => why,
+                _ = expired => self.message(),
+            },
+            None => {
+                expired.await;
+                self.message()
+            }
+        }
+    }
 }
 
 /// What the chat sees when a run fails outright, instead of silence.

@@ -11,6 +11,7 @@ pub mod channel;
 pub mod channels;
 pub mod error;
 pub mod gateway;
+pub mod health;
 pub mod message;
 pub mod router;
 pub mod scheduler;
@@ -19,9 +20,10 @@ pub mod session;
 pub use channel::{Channel, ChannelCapabilities};
 pub use channels::{LocalChannel, TelegramChannel};
 pub use error::GatewayError;
-pub use gateway::{Gateway, Interceptor};
+pub use gateway::{Gateway, Interceptor, ACK_EMOJI};
+pub use health::Redactor;
 pub use message::{Attachment, InboundMessage, OutboundMessage};
-pub use router::{AgentFactory, Reply, Router};
+pub use router::{AgentFactory, LaneSnapshot, Reply, Router};
 pub use scheduler::{
     ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, Hold, JobReport, BUILTIN_CHANNEL,
 };

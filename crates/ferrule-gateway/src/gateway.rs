@@ -1,9 +1,20 @@
 use crate::channel::Channel;
 use crate::error::GatewayError;
-use crate::message::InboundMessage;
+use crate::health::{human, Redactor};
+use crate::message::{InboundMessage, OutboundMessage};
 use crate::router::Router;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
+
+/// The receipt: the gateway saw the message (M19b).
+pub const ACK_EMOJI: &str = "👀";
+/// How long the dispatcher waits for the receipt before moving on; the
+/// reaction keeps trying in the background.
+const ACK_WAIT: Duration = Duration::from_secs(2);
+/// A turn that has run less than this doesn't earn a busy notice: it's
+/// probably about to answer.
+pub const BUSY_NOTICE_AFTER: Duration = Duration::from_secs(3);
 
 /// Ties one or more channel adapters to a `Router`. Every adapter pushes
 /// onto the same inbound funnel and runs concurrently as its own tokio task;
@@ -12,7 +23,9 @@ use tokio::sync::mpsc;
 pub struct Gateway {
     channels: Vec<Arc<dyn Channel>>,
     router: Arc<Router>,
-    interceptor: Option<Arc<dyn Interceptor>>,
+    interceptors: Vec<Arc<dyn Interceptor>>,
+    busy_notice_after: Duration,
+    redactor: Arc<Redactor>,
 }
 
 /// Looks at every inbound message before the router does (M19: the owner's
@@ -32,12 +45,29 @@ impl Gateway {
         Self {
             channels: Vec::new(),
             router,
-            interceptor: None,
+            interceptors: Vec::new(),
+            busy_notice_after: BUSY_NOTICE_AFTER,
+            redactor: Arc::new(Redactor::default()),
         }
     }
 
+    /// Adds an interceptor; they're asked in the order added, and the
+    /// first to answer takes the message.
     pub fn with_interceptor(mut self, interceptor: Arc<dyn Interceptor>) -> Self {
-        self.interceptor = Some(interceptor);
+        self.interceptors.push(interceptor);
+        self
+    }
+
+    /// How long a turn must have run before a message queued behind it
+    /// gets the busy notice.
+    pub fn with_busy_notice_after(mut self, after: Duration) -> Self {
+        self.busy_notice_after = after;
+        self
+    }
+
+    /// Hides secrets in what the gateway itself says (the busy notice).
+    pub fn with_redactor(mut self, redactor: Arc<Redactor>) -> Self {
+        self.redactor = redactor;
         self
     }
 
@@ -69,15 +99,7 @@ impl Gateway {
         drop(tx);
 
         while let Some(msg) = rx.recv().await {
-            if let Some(i) = &self.interceptor {
-                if let Some(reply) = i.intercept(&msg).await {
-                    self.reply_directly(&msg, reply).await;
-                    continue;
-                }
-            }
-            if let Err(e) = self.router.dispatch(msg).await {
-                tracing::error!(error = %e, "failed to dispatch inbound message");
-            }
+            self.handle(msg).await;
         }
         for h in handles {
             let _ = h.await;
@@ -85,12 +107,71 @@ impl Gateway {
         Ok(())
     }
 
+    /// One inbound message: an interceptor's, or the receipt, the busy
+    /// notice if its chat is mid-turn, and its lane.
+    async fn handle(&self, msg: InboundMessage) {
+        for i in &self.interceptors {
+            if let Some(reply) = i.intercept(&msg).await {
+                self.reply_directly(&msg, reply).await;
+                return;
+            }
+        }
+        self.acknowledge(&msg).await;
+        if let Some(lane) = self.router.claim_busy_notice(&msg, self.busy_notice_after) {
+            let text = format!(
+                "Busy with {} for {}; your message is queued — /stop to cancel it.",
+                self.redactor.redact(&lane.activity),
+                human(lane.busy_for.unwrap_or_default())
+            );
+            if let Some(channel) = self.channel(&msg.channel) {
+                let out = OutboundMessage {
+                    channel: msg.channel.clone(),
+                    chat_id: msg.chat_id.clone(),
+                    text,
+                    reply_to: Some(msg.message_id.clone()),
+                    attachments: vec![],
+                };
+                tokio::spawn(async move {
+                    if let Err(e) = channel.send(out).await {
+                        tracing::warn!(error = %e, "couldn't send the busy notice");
+                    }
+                });
+            }
+        }
+        if let Err(e) = self.router.dispatch(msg).await {
+            tracing::error!(error = %e, "failed to dispatch inbound message");
+        }
+    }
+
+    /// Reacts 👀 to a message bound for a lane, before it's queued, so the
+    /// sender knows it arrived even while the chat's turn runs. Channels
+    /// without reactions skip it; a failure never holds the message up.
+    async fn acknowledge(&self, msg: &InboundMessage) {
+        let Some(channel) = self.channel(&msg.channel) else {
+            return;
+        };
+        if !channel.capabilities().reactions || msg.message_id.is_empty() {
+            return;
+        }
+        let (chat, id) = (msg.chat_id.clone(), msg.message_id.clone());
+        let react = tokio::spawn(async move {
+            if let Err(e) = channel.react(&chat, &id, ACK_EMOJI).await {
+                tracing::warn!(error = %e, "couldn't react to a message");
+            }
+        });
+        let _ = tokio::time::timeout(ACK_WAIT, react).await;
+    }
+
+    fn channel(&self, name: &str) -> Option<Arc<dyn Channel>> {
+        self.channels.iter().find(|c| c.name() == name).cloned()
+    }
+
     async fn reply_directly(&self, msg: &InboundMessage, text: String) {
-        let Some(channel) = self.channels.iter().find(|c| c.name() == msg.channel) else {
+        let Some(channel) = self.channel(&msg.channel) else {
             tracing::error!(channel = %msg.channel, "no channel to send an intercepted reply on");
             return;
         };
-        let out = crate::message::OutboundMessage {
+        let out = OutboundMessage {
             channel: msg.channel.clone(),
             chat_id: msg.chat_id.clone(),
             text,
@@ -274,5 +355,162 @@ mod tests {
         assert_eq!(sent[0].chat_id, "c1");
         assert_eq!(sent[1].text, "echo: hello");
         assert!(sent.iter().all(|m| !m.text.contains("/stop")));
+    }
+
+    /// Logs reactions and replies, in order, into a log a provider shares.
+    struct ReactingChannel {
+        script: Vec<InboundMessage>,
+        log: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    #[async_trait]
+    impl Channel for ReactingChannel {
+        fn name(&self) -> &str {
+            "scripted"
+        }
+        fn capabilities(&self) -> crate::channel::ChannelCapabilities {
+            crate::channel::ChannelCapabilities {
+                reactions: true,
+                ..Default::default()
+            }
+        }
+        async fn run(&self, tx: mpsc::Sender<InboundMessage>) -> Result<(), GatewayError> {
+            for m in self.script.clone() {
+                tx.send(m)
+                    .await
+                    .map_err(|_| GatewayError::Channel("closed".into()))?;
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            }
+            Ok(())
+        }
+        async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError> {
+            self.log.lock().unwrap().push(format!(
+                "send to {}: {}",
+                msg.reply_to.unwrap_or_default(),
+                msg.text
+            ));
+            Ok(())
+        }
+        async fn react(
+            &self,
+            _chat_id: &str,
+            message_id: &str,
+            emoji: &str,
+        ) -> Result<(), GatewayError> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("react {emoji} to {message_id}"));
+            Ok(())
+        }
+    }
+
+    /// Logs each turn; the turn for "first" waits until released.
+    struct HeldProvider {
+        log: Arc<std::sync::Mutex<Vec<String>>>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+    #[async_trait]
+    impl Provider for HeldProvider {
+        fn name(&self) -> &str {
+            "held"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let text = req
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == ferrule_core::Role::User)
+                .and_then(|m| m.content.clone())
+                .unwrap_or_default();
+            self.log.lock().unwrap().push(format!("turn: {text}"));
+            if text == "first" {
+                let _ = self.release.acquire().await.unwrap();
+            }
+            Ok(CompletionResponse {
+                message: Message::assistant(Some(format!("echo: {text}")), vec![], None),
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn every_message_is_seen_at_once_and_a_queued_one_is_told_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let log: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let mut script = vec![];
+        for (id, text) in [("1", "first"), ("2", "second"), ("3", "third")] {
+            let mut m = msg("c1", text);
+            m.message_id = id.into();
+            script.push(m);
+        }
+        let channel = Arc::new(ReactingChannel {
+            script,
+            log: log.clone(),
+        });
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("scripted".into(), channel.clone());
+        let factory: crate::router::AgentFactory = {
+            let (log, release) = (log.clone(), release.clone());
+            Arc::new(move |_sid, transcript| {
+                Ok(Agent::new(
+                    Arc::new(HeldProvider {
+                        log: log.clone(),
+                        release: release.clone(),
+                    }),
+                    ToolRegistry::new(),
+                    HarnessProfile::generic(),
+                    AgentConfig::default(),
+                    ToolContext::default(),
+                    Some(transcript),
+                )
+                .with_system_prompt("test"))
+            })
+        };
+        let router = Arc::new(Router::new(dir.path(), factory, channels));
+        let mut gateway = Gateway::new(router).with_busy_notice_after(Duration::ZERO);
+        gateway.add_channel(channel);
+        tokio::time::timeout(Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+        // All three are acknowledged and queued while "first" is held.
+        let wait = |n: usize| {
+            let log = log.clone();
+            async move {
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                while log.lock().unwrap().len() < n {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "{:?}",
+                        log.lock().unwrap()
+                    );
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
+        };
+        wait(5).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                "react 👀 to 1",
+                "turn: first",
+                "react 👀 to 2",
+                "send to 2: Busy with a model call for 0 s; your message is queued — /stop to cancel it.",
+                "react 👀 to 3",
+            ]
+        );
+        release.add_permits(1);
+        wait(8).await;
+        let log = log.lock().unwrap();
+        assert_eq!(
+            log[5..8],
+            [
+                "send to 1: echo: first",
+                "turn: second",
+                "send to 2: echo: second"
+            ]
+        );
     }
 }
