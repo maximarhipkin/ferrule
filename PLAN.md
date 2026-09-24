@@ -172,7 +172,8 @@ that convention yet — ask before introducing one).
   drift is judged from `ps` elapsed time and file mtime (±2 s), plus
   `/proc/<pid>/exe` on Linux. Part 3 of the brief was dropped by Max
   (msg 3088).
-- **Next milestones** (order approved 2026-09-24, msg 3090):
+- **Next milestones** (order approved 2026-09-24, msg 3090; the reader-facing
+  version with scope, security model and done criteria is `docs/roadmap.md`):
   - **M11 browser**: agent-browser's MCP server driving an installed
     Chrome, detected, never downloaded (Max, msg 3074). `browser.rs`
     already has the detection and a headless launch check.
