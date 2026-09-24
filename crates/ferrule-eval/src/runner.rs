@@ -129,7 +129,7 @@ pub struct TaskResult {
 }
 
 /// A whole suite run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuiteRun {
     pub run_id: String,
     pub suite: String,

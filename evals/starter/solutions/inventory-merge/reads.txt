@@ -1,0 +1,5 @@
+warehouses/w1.json
+warehouses/w2.json
+warehouses/w3.json
+warehouses/w4.json
+warehouses/w5.json

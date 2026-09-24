@@ -553,6 +553,7 @@ dependencies = [
  "dirs",
  "ferrule-agents",
  "ferrule-core",
+ "ferrule-eval",
  "ferrule-gateway",
  "ferrule-mcp",
  "ferrule-memory",

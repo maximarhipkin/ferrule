@@ -1,0 +1,6 @@
+logs/gateway.1.log
+logs/gateway.log
+logs/orders.1.log
+logs/orders.log
+logs/payments.1.log
+logs/payments.log

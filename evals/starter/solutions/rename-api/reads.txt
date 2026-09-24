@@ -1,0 +1,5 @@
+shop/catalog.py
+shop/pricing.py
+shop/tax.py
+shop/coupons.py
+shop/cart.py
