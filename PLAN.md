@@ -2555,3 +2555,30 @@ PostToolUse block is a note; hook errors go to the owner only.
 
 **M18 open edges and the macOS/Windows-unverified spots:** in the M18
 bullet under Current State and `docs/m18-hooks.md` §11.
+
+### 2026-09-25 — hotfix: the Telegram bot going deaf (Devi, Opus 5.5)
+
+Max's bot on his server stopped answering and there was no way to see why
+from the chat. Two causes in the Telegram adapter:
+
+- **No request deadline.** The `reqwest` client had no timeout, so a
+  half-open connection during the long poll parked `getUpdates` forever.
+  The process stayed up, so systemd's `Restart=always` never kicked in.
+- **Any failed poll ended the adapter.** A network blip, a 502 from a proxy,
+  a 409 or a 429 returned `Err` from `run()`. The gateway then ended with
+  the channel, the process exited, and systemd restarted it 5s later,
+  dropping whatever turn was in flight.
+
+Fix: a 10s connect deadline, a 30s deadline on send/edit, and 45s on the
+poll (the 30s long poll plus slack), with TCP keepalive. A failed poll is
+now logged and retried with backoff (1s doubling to 60s, reset by the next
+good poll; Telegram's `retry_after` wins when it's given). Only a rejected
+token (401/404) stops the adapter. Three new tests use a scripted mock
+server: two polls that never answer, then a message; four failed polls
+(HTML 502, not-ok 500/409/429), then a message; and a 401 that ends `run()`
+after one poll with no retry.
+
+Not covered here, and queued as a reliability milestone after M19: a stuck
+turn still silently blocks its chat's lane. The planned fixes are an
+out-of-lane 👀 on receipt, `/status` and `/stop` answered by the gateway
+itself, a turn watchdog that tells the owner, and an external dead-man alert.
