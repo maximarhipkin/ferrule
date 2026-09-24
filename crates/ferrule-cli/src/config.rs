@@ -160,6 +160,9 @@ pub struct Config {
     /// Sub-agents: whether an agent may start them, and their limits.
     #[serde(default)]
     pub agents: AgentsConfig,
+    /// M16's learning pass and the playbook in prompts.
+    #[serde(default)]
+    pub learning: crate::learn::LearningConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -316,6 +319,14 @@ profile = "openai"
 #                            # Anything else waits for `ferrule extensions approve`.
 #                            # Read only from --config or the global config, never
 #                            # from ./ferrule.toml. Every tool text is scanned.
+
+# [learning]                # The learning pass: reviews failed or retried runs,
+# enabled = true             # keeps a lesson in data/learn/playbook.md only when the
+# schedule = "0 3 * * *"     # task's check passes with it, merges duplicate memories.
+# timezone = "UTC"           # Off by default: it spends unattended and changes every
+# playbook = true            # prompt. playbook = false keeps lessons out of prompts.
+# max_usd_per_pass = 0.5     # Caps come from the ledger (call_kind "learn"); the pass
+# max_usd_per_day = 1.0      # stops cleanly at either. `ferrule learn show|diff|revert`.
 
 # [sandbox]                 # OS sandbox for the shell tool (Landlock / Seatbelt).
 # mode = "workspace-write"   # or "read-only", or "off". `ferrule sandbox` shows

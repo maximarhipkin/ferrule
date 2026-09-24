@@ -18,6 +18,8 @@ pub enum SchedulerError {
     InvalidKind(String),
     #[error("gate script error: {0}")]
     Gate(String),
+    #[error("built-in job failed: {0}")]
+    Builtin(String),
     #[error("gateway error: {0}")]
     Gateway(#[from] crate::error::GatewayError),
 }

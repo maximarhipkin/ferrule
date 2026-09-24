@@ -556,6 +556,7 @@ dependencies = [
  "ferrule-eval",
  "ferrule-extensions",
  "ferrule-gateway",
+ "ferrule-learn",
  "ferrule-mcp",
  "ferrule-memory",
  "ferrule-providers",

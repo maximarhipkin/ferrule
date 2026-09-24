@@ -266,6 +266,22 @@ impl TaskStore {
         Ok(n > 0)
     }
 
+    /// Moves a task to a new schedule and timezone (a built-in task whose
+    /// config changed). Returns `true` if the row existed.
+    pub fn update_schedule(
+        &self,
+        id: &str,
+        schedule: &str,
+        timezone: &str,
+        next_run_at: Option<i64>,
+    ) -> Result<bool, SchedulerError> {
+        let n = self.conn.lock().unwrap().execute(
+            "UPDATE tasks SET schedule = ?2, timezone = ?3, next_run_at = ?4 WHERE id = ?1",
+            params![id, schedule, timezone, next_run_at],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Records that a task was executed: advances (or clears) its
     /// `next_run_at` and stamps `last_run_at`. Called once per `execute()`
     /// regardless of whether the run succeeded, failed, or was skipped by
