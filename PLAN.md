@@ -265,9 +265,23 @@ that convention yet — ask before introducing one).
     per run, so there's nothing to recall); the mock model never calls
     `search_history`, so the eval measures shortening only. **Unverified on
     macOS/Windows until the batch CI pass:** see the M15 session-log entry.
-  - **M16 learning loop** (§4.1): scheduled offline consolidation
-    (dedupe, promote, curate) plus an ACE-style playbook in the system
-    prompt, additions gated on verify success.
+  - **M16 learning loop** (§4.1): **built** (2026-09-25, parts 1–3 on
+    branch `m16-learning-loop`, PR to main open, not merged; CI deferred
+    to the roadmap batch; see the M16 session-log entry). Design:
+    `docs/m16-learning-loop.md`. A pass (`ferrule learn run`, or the
+    built-in `ferrule-learn` scheduler task when `[learning] enabled`,
+    off by default) reviews failed/incomplete scheduled runs and
+    retried/stopped sessions, has a reflector propose one add/edit/retire
+    per episode, and keeps an add or edit only when the task's check
+    passes twice in a scratch copy. Kept lessons go to
+    `<data>/learn/playbook.md` (the owner's lines untouched) and into
+    every agent's system prompt after `[Skills]`, sub-agents included,
+    read-only. Near-duplicate memories are merged through M15's UPDATE.
+    Ledger caps per pass and per day (`call_kind = "learn"`). Every pass
+    is a folder of files; `ferrule learn show`/`diff`/`revert`. Eval
+    stays hermetic unless a suite sets `owner_playbook = true`. **Open
+    edges and the macOS/Windows-unverified list:** see the M16
+    session-log entry.
   - **M17 MCP hot-add + `ferrule mcp add`** (§4.5): **parts 1–4 done**
     (2026-09-24, branch `m17-mcp-add`; see the M17 session-log entry).
     Guided add with a live `initialize` + `tools/list` smoke test and
@@ -2348,3 +2362,123 @@ only which MCP tools exist.
 - The throwaway and late proxies' CA bundle, as the server's runtime
   (Node, Python) reads it on macOS and Windows.
 - Killing the probe's process tree on Windows.
+
+### 2026-09-25 — M16 the learning loop (Devi, Opus 5.5)
+
+The design is `docs/m16-learning-loop.md`. The work is on branch `m16-learning-loop`,
+cut from `main` at `7a975a4`, with a PR to `main` (not merged). M17 was built at the
+same time on `m17-mcp-add` and merged first; this branch took `main` in by a merge
+commit at the end (PLAN.md: both sides kept) and doesn't otherwise build on it.
+
+Every part was checked locally on Linux: fmt, clippy `-D warnings`, and
+`cargo test --workspace`. **CI was deferred at Max's request**; a full 3-OS pass runs
+after the roadmap batch. No real model was called: everything ran against mocks.
+
+**Commits:**
+- `fd0fd39` design: triggers and episodes, consolidation, the playbook format and its
+  caps, the reflector, the success gate, the budget, the files, revert, eval
+  hermeticity, the off switch, failure modes and tests.
+- `9768fb8` part 1, the new `ferrule-learn` crate:
+  - a delta-only playbook: `- [pb-N] lesson` lines, the owner's lines kept byte for
+    byte and shown to the reflector read-only; 300 chars a lesson, 40 lessons and
+    4,000 chars injected
+  - the reflector: at most one add/edit/retire per failed or retried episode, the
+    transcript fenced as data; proposals screened for shape, secrets, injection
+    phrases and near-duplicates (Jaccard ≥ 0.9)
+  - the success gate: the episode's goal re-run with `ferrule eval`'s engineered
+    harness in a scratch copy under the temp dir, the candidate playbook in its
+    prompt; kept only when the check passes twice
+  - memory consolidation of Jaccard ≥ 0.5 clusters through M15's UPDATE, with
+    `undo_update` in `ferrule-memory` for revert
+  - per-pass and per-day caps from ledger rows tagged `call_kind = "learn"`, checked
+    before every call, a clean `stopped-budget` stop; three provider errors in a row
+    end the pass (`stopped-errors`)
+  - a lock file, `pass.json` rewritten after every step (a crashed pass is marked
+    `interrupted`), before/after snapshots, `playbook.diff` and `changelog.md` per
+    pass; revert restores the whole file, or inverts the pass's own lines after an
+    owner edit, and undoes its merges
+  - the review cursor never moves past an episode whose call failed
+- `104ece9` part 2, the scheduler and the CLI:
+  - built-in scheduler jobs in `ferrule-gateway`: tasks on channel `builtin`, keyed
+    by name, run in place of an agent turn (a user task can't be hijacked by name);
+    `ensure_builtin` adds, reschedules or removes one; an unregistered job is
+    skipped and an erring or stopped-early one is logged truthfully
+  - `[learning]` in config, off by default with the reason in its doc, and an
+    example block; `ferrule learn run [--dry-run]`/`show`/`diff`/`revert`
+  - the gateway (and `tasks run-now`) registers `ferrule-learn` only when enabled
+  - task episodes from `tasks.db` (the newest failed or incomplete run per task,
+    "fixed" when a later run succeeded, built-ins excluded); today's spend from the
+    ledger's last 24 h, a pass refused when the ledger can't be read
+  - the `[Playbook]` block after `[Skills]` in every agent's system prompt; `data/learn`
+    added to the sandbox's hidden paths: the file tools refuse it, and so does the
+    sandboxed shell; agents and sub-agents only see it in their prompt
+- `a81f834` part 3, eval hermeticity and the binary tests:
+  - `[suite] owner_playbook = true` (default false) hands the owner's block to the
+    engineered variant only; documented in `docs/eval.md`
+  - `runs_for` breaks a same-second tie by rowid (found by the binary test: a
+    failure and its fix in the same second read as not fixed)
+  - `tests/learn.rs` through the real binary: fail → fix → lesson kept → in the next
+    `ferrule run` prompt, in the failed task's next `run-now` prompt, in `learn diff`
+    and `learn show` → `learn revert` restores the owner's file byte for byte; a
+    lesson failing its gate is in the changelog and the playbook is byte-identical;
+    consolidation leaves one live fact for `memory search`, revert brings both
+    back; a 150-token cap stops the pass after 2 calls (`stopped-budget`, the rest
+    skipped); eval sees the playbook only on opt-in and only in the engineered
+    variant; a sub-agent sees the playbook in its prompt and its `write_file` to
+    `data/learn/playbook.md` is refused (data dir inside the workspace, sandbox off)
+- a follow-up fix after the merge with `main`: `ferrule --help` showed the ledger's
+  description glued onto `learn`'s and none on `ledger` (a doc comment left above
+  the wrong variant in part 2); a binary test now checks both lines.
+
+**Measured on the mock** (the real binary, all 20 tasks, `--variant ab`, with a
+canary playbook in the data dir): engineered 20/20, naive 11/20 (+45 pts), identical
+to M15 to the token (engineered 513.5k input / 88 calls / 13 compactions, naive
+438.0k / 62 / 11 truncations). The canary appears in no eval transcript.
+
+**Design defaults for Max to confirm:**
+- `[learning] enabled = false`: it spends unattended and rewrites every prompt. A
+  hand-written playbook is still injected (`playbook = true`). `ferrule learn run`
+  works while disabled.
+- Schedule `0 3 * * *` UTC; caps $0.50 / 300k tokens a pass, $1.00 / 1M tokens a day;
+  at most 5 episodes and 5 memory clusters a pass.
+- The gate: the episode's goal re-run in a scratch copy (data dir skipped), up to
+  20 steps and 900 s, the check from `[learning] check` or `agent.verify_command`,
+  two passes required. No check → adds and edits are rejected, retires still run.
+- One delta per episode; lessons ≤ 300 chars, ≤ 40 injected, ≤ 4,000 chars.
+- Consolidation: clusters at word-set Jaccard ≥ 0.5, merged only when the model says
+  merge; always an UPDATE, never a delete.
+- Sub-agents get the playbook in their prompt, never a tool that writes it.
+- Eval: hermetic unless `owner_playbook = true`, which feeds only the engineered
+  variant.
+
+**M16 open edges:**
+- A pass runs inside the scheduler tick, so a long pass (a slow gate) delays other
+  due tasks until it ends.
+- `ferrule setup` doesn't ask about learning; the example config documents it.
+- The hidden-path refusal still says "(saved keys)" for `data/learn` too.
+- With `[sandbox] mode = "off"` the shell tool can write `data/learn` (as it can read
+  the saved keys): read-only is enforced by the file tools and the OS sandbox, not by
+  the process.
+- The cursor is whole seconds: an episode left for later that finished in the same
+  second as one reviewed can be skipped. Rare; a (time, id) cursor would close it.
+- The gate proves the lesson didn't break the task, not that it caused the fix: a
+  task that passes anyway keeps any harmless lesson.
+- The mock eval has no playbook-aware tasks, so the opt-in measures nothing yet.
+- The M13 flaky test (`a_list_changed_that_introduces_a_poisoned_tool_is_caught`)
+  failed once again under load and passed 3/3 alone.
+
+**Unverified on macOS/Windows until the batch CI pass:**
+- `copy_workspace` for the gate's scratch copy: symlinks are handled on unix only;
+  long paths and file locks on Windows.
+- The lock file (`create_new`, staleness by mtime) and atomic renames of
+  `playbook.md`/`pass.json` over an open file on Windows.
+- Scratch copies under the temp dir (`%TEMP%`, `/var/folders` symlinked to
+  `/private`), and their cleanup.
+- The data dir inside the workspace and the hidden-path check for `data/learn`,
+  including case folding on APFS/NTFS.
+- The playbook path under `~/Library/Application Support` and `%APPDATA%`, and CRLF
+  in a hand-edited `playbook.md` (the owner's lines are kept byte for byte).
+- The schedule's timezone (`chrono-tz`) and the check command run through `sh -c`
+  vs `cmd /C`.
+- The binary tests (`tests/learn.rs`): environment isolation and the scripted
+  server on each OS.

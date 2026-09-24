@@ -32,11 +32,13 @@
 //! it's next observed due, even late) and then never fires again
 //! (`next_run_at` is cleared). See `advance_next_run_at` below.
 
+pub mod builtin;
 pub mod error;
 pub mod gate;
 pub mod store;
 pub mod timing;
 
+pub use builtin::{ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, JobReport, BUILTIN_CHANNEL};
 pub use error::SchedulerError;
 pub use store::{NewTask, Run, RunStatus, Task, TaskKind, TaskStore};
 
@@ -81,8 +83,12 @@ pub enum RunOutcome {
 }
 
 enum InnerOutcome {
-    Succeeded(String),
-    Incomplete { answer: String, reason: String },
+    /// The answer, and a detail for the run log (built-in jobs only).
+    Succeeded(String, Option<String>),
+    Incomplete {
+        answer: String,
+        reason: String,
+    },
     Skipped(Option<String>),
 }
 
@@ -96,6 +102,9 @@ pub struct Scheduler {
     /// directory; a fixed value keeps behavior identical between the daemon
     /// and a one-off `run-now` invocation.
     gate_workspace: PathBuf,
+    /// Built-in jobs by task name, run instead of an agent turn for tasks
+    /// stored under [`BUILTIN_CHANNEL`].
+    builtins: HashMap<String, Arc<dyn BuiltinJob>>,
 }
 
 impl Scheduler {
@@ -124,7 +133,14 @@ impl Scheduler {
             tick_interval,
             gate_timeout,
             gate_workspace,
+            builtins: HashMap::new(),
         })
+    }
+
+    /// Registers the job a built-in task named `name` runs.
+    pub fn with_builtin(mut self, name: &str, job: Arc<dyn BuiltinJob>) -> Self {
+        self.builtins.insert(name.to_string(), job);
+        self
     }
 
     /// Runs forever, checking for due tasks every `tick_interval`.
@@ -171,9 +187,13 @@ impl Scheduler {
         let finished_at = now_unix();
 
         let outcome = match inner {
-            Ok(InnerOutcome::Succeeded(answer)) => {
-                self.store
-                    .finish_run(&run_id, RunStatus::Succeeded, None, finished_at)?;
+            Ok(InnerOutcome::Succeeded(answer, detail)) => {
+                self.store.finish_run(
+                    &run_id,
+                    RunStatus::Succeeded,
+                    detail.as_deref(),
+                    finished_at,
+                )?;
                 RunOutcome::Succeeded { answer }
             }
             Ok(InnerOutcome::Incomplete { answer, reason }) => {
@@ -214,6 +234,9 @@ impl Scheduler {
     }
 
     async fn execute_inner(&self, task: &Task) -> Result<InnerOutcome, SchedulerError> {
+        if task.channel == BUILTIN_CHANNEL {
+            return self.execute_builtin(task).await;
+        }
         let mut gate_context = None;
         if let Some(gate_cmd) = &task.gate {
             match gate::run_gate(gate_cmd, &self.gate_workspace, self.gate_timeout).await {
@@ -261,7 +284,24 @@ impl Scheduler {
 
         Ok(match reply.incomplete {
             Some(reason) => InnerOutcome::Incomplete { answer, reason },
-            None => InnerOutcome::Succeeded(answer),
+            None => InnerOutcome::Succeeded(answer, None),
+        })
+    }
+
+    async fn execute_builtin(&self, task: &Task) -> Result<InnerOutcome, SchedulerError> {
+        let Some(job) = self.builtins.get(&task.name) else {
+            return Ok(InnerOutcome::Skipped(Some(format!(
+                "built-in job `{}` isn't enabled in this process",
+                task.name
+            ))));
+        };
+        let report = job.run(task).await.map_err(SchedulerError::Builtin)?;
+        Ok(match report.incomplete {
+            Some(reason) => InnerOutcome::Incomplete {
+                answer: report.summary,
+                reason,
+            },
+            None => InnerOutcome::Succeeded(report.summary.clone(), Some(report.summary)),
         })
     }
 
@@ -811,5 +851,167 @@ mod tests {
         let runs = scheduler.store().runs_for(&task.id, 5).unwrap();
         assert_eq!(runs[0].status, RunStatus::Incomplete);
         assert_eq!(runs[0].detail.as_deref(), Some(reason.as_str()));
+    }
+
+    // -- Built-in jobs ------------------------------------------------------
+
+    struct CountingJob {
+        runs: Arc<AtomicUsize>,
+        report: Result<JobReport, String>,
+    }
+    #[async_trait]
+    impl BuiltinJob for CountingJob {
+        async fn run(&self, _task: &Task) -> Result<JobReport, String> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            self.report.clone()
+        }
+    }
+
+    fn spec(schedule: &str) -> BuiltinSpec {
+        BuiltinSpec {
+            name: "ferrule-learn".into(),
+            schedule: schedule.into(),
+            timezone: "UTC".into(),
+            description: "learning pass".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_builtin_job_runs_instead_of_an_agent_turn() {
+        let (scheduler, calls, recorder, _d1, _d2) =
+            test_scheduler(Reply::Ok("agent".into()), Duration::from_secs(5));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let scheduler = scheduler.with_builtin(
+            "ferrule-learn",
+            Arc::new(CountingJob {
+                runs: runs.clone(),
+                report: Ok(JobReport {
+                    summary: "pass 1: 1 kept".into(),
+                    incomplete: None,
+                }),
+            }),
+        );
+        let now = chrono::Utc::now();
+        let Ensured::Added(id) = ensure_builtin(
+            scheduler.store(),
+            "ferrule-learn",
+            Some(&spec("0 3 * * *")),
+            now,
+        )
+        .unwrap() else {
+            panic!("not added")
+        };
+        let task = scheduler.store().get(&id).unwrap().unwrap();
+        let out = scheduler.execute(&task).await.unwrap();
+        assert!(matches!(out, RunOutcome::Succeeded { .. }));
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no agent turn");
+        assert!(recorder.sent.lock().unwrap().is_empty());
+        let run = &scheduler.store().runs_for(&id, 1).unwrap()[0];
+        assert_eq!(run.status, RunStatus::Succeeded);
+        assert_eq!(run.detail.as_deref(), Some("pass 1: 1 kept"));
+
+        // A user task with the same name is still an agent turn.
+        let mut user = add_task(&scheduler, None);
+        user.name = "ferrule-learn".into();
+        scheduler.execute(&user).await.unwrap();
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_builtin_job_that_errs_or_stops_early_is_logged_truthfully() {
+        for (report, want) in [
+            (Err("ledger unreadable".to_string()), RunStatus::Failed),
+            (
+                Ok(JobReport {
+                    summary: "pass 2".into(),
+                    incomplete: Some("stopped-budget".into()),
+                }),
+                RunStatus::Incomplete,
+            ),
+        ] {
+            let (scheduler, _calls, _r, _d1, _d2) =
+                test_scheduler(Reply::Ok("agent".into()), Duration::from_secs(5));
+            let scheduler = scheduler.with_builtin(
+                "ferrule-learn",
+                Arc::new(CountingJob {
+                    runs: Arc::default(),
+                    report,
+                }),
+            );
+            let now = chrono::Utc::now();
+            ensure_builtin(
+                scheduler.store(),
+                "ferrule-learn",
+                Some(&spec("0 3 * * *")),
+                now,
+            )
+            .unwrap();
+            let task = scheduler.store().list().unwrap().remove(0);
+            let _ = scheduler.execute(&task).await;
+            let run = &scheduler.store().runs_for(&task.id, 1).unwrap()[0];
+            assert_eq!(run.status, want);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unregistered_builtin_is_skipped() {
+        let (scheduler, calls, _r, _d1, _d2) =
+            test_scheduler(Reply::Ok("agent".into()), Duration::from_secs(5));
+        let now = chrono::Utc::now();
+        ensure_builtin(
+            scheduler.store(),
+            "ferrule-learn",
+            Some(&spec("0 3 * * *")),
+            now,
+        )
+        .unwrap();
+        let task = scheduler.store().list().unwrap().remove(0);
+        let out = scheduler.execute(&task).await.unwrap();
+        assert!(matches!(out, RunOutcome::Skipped { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn ensure_builtin_adds_updates_and_removes() {
+        let store = TaskStore::in_memory().unwrap();
+        let now = chrono::Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+        let want = spec("0 3 * * *");
+        let Ensured::Added(id) = ensure_builtin(&store, "ferrule-learn", Some(&want), now).unwrap()
+        else {
+            panic!("not added")
+        };
+        let t = store.get(&id).unwrap().unwrap();
+        assert_eq!(t.channel, BUILTIN_CHANNEL);
+        let three_am = chrono::Utc.with_ymd_and_hms(2026, 3, 2, 3, 0, 0).unwrap();
+        assert_eq!(t.next_run_at, Some(three_am.timestamp()));
+        assert_eq!(
+            ensure_builtin(&store, "ferrule-learn", Some(&want), now).unwrap(),
+            Ensured::Unchanged(id.clone())
+        );
+
+        store.set_enabled(&id, false).unwrap();
+        let moved = spec("30 4 * * *");
+        assert_eq!(
+            ensure_builtin(&store, "ferrule-learn", Some(&moved), now).unwrap(),
+            Ensured::Updated(id.clone())
+        );
+        let t = store.get(&id).unwrap().unwrap();
+        assert_eq!(t.schedule, "30 4 * * *");
+        assert!(!t.enabled, "a paused built-in stays paused");
+        let four_thirty = chrono::Utc.with_ymd_and_hms(2026, 3, 2, 4, 30, 0).unwrap();
+        assert_eq!(t.next_run_at, Some(four_thirty.timestamp()));
+
+        assert!(ensure_builtin(&store, "ferrule-learn", Some(&spec("nope")), now).is_err());
+        assert_eq!(
+            ensure_builtin(&store, "ferrule-learn", None, now).unwrap(),
+            Ensured::Removed(1)
+        );
+        assert!(store.list().unwrap().is_empty());
+        assert_eq!(
+            ensure_builtin(&store, "ferrule-learn", None, now).unwrap(),
+            Ensured::Absent
+        );
     }
 }

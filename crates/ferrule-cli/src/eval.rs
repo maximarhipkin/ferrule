@@ -192,6 +192,11 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 pricing,
                 transcripts: Some(data.join("eval")),
                 judge,
+                // Read only for a suite that opts in (M16 §9).
+                playbook: suite
+                    .owner_playbook
+                    .then(|| crate::learn::prompt_section(&cfg.learning))
+                    .flatten(),
             };
             let opts = Options {
                 variants,

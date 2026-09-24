@@ -22,6 +22,7 @@ pub use error::GatewayError;
 pub use gateway::Gateway;
 pub use message::{Attachment, InboundMessage, OutboundMessage};
 pub use router::{AgentFactory, Reply, Router};
+pub use scheduler::{ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, JobReport, BUILTIN_CHANNEL};
 pub use scheduler::{
     initial_next_run_at, NewTask, Run, RunOutcome, RunStatus, Scheduler, SchedulerError, Task,
     TaskKind, TaskStore, SCHEDULER_PSEUDO_CHANNEL,

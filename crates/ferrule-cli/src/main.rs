@@ -4,6 +4,7 @@ mod config;
 mod config_follow;
 mod doctor;
 mod eval;
+mod learn;
 mod ledger;
 mod mcp_add;
 mod mcp_config;
@@ -116,6 +117,11 @@ enum Cmd {
     Tasks {
         #[command(subcommand)]
         op: TasksCmd,
+    },
+    /// The learning loop: run a pass, show the playbook, diff or revert a pass
+    Learn {
+        #[command(subcommand)]
+        op: learn::LearnCmd,
     },
     /// Per-call provider ledger: calls, errors, tokens, cache hits, latency, cost
     Ledger {
@@ -403,6 +409,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Ledger { since } => {
             ledger_cmd(since)?;
         }
+        Cmd::Learn { op } => learn::cmd(op).await?,
         Cmd::Agents { op } => match op {
             AgentsCmd::List { all } => agents::list(all)?,
             AgentsCmd::Close { id } => {
@@ -684,6 +691,12 @@ fn build_agent_from(
         registry.attach(tools);
     }
 
+    // M16: the playbook's lessons, read per agent so a pass's changes show
+    // up in the next session. The file itself is hidden from the agent.
+    if let Some(block) = learn::prompt_section(&cfg.learning) {
+        system.push_str(&format!("\n\n{block}"));
+    }
+
     let mut agent = Agent::new(
         provider,
         registry,
@@ -745,7 +758,7 @@ fn hidden_paths() -> Vec<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700));
     }
-    vec![private, data.join("proxy").join("keys")]
+    vec![private, data.join("proxy").join("keys"), data.join("learn")]
 }
 
 /// Landlock can't grant a folder without what's in it, so when the
@@ -1161,7 +1174,7 @@ async fn run_gateway(
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let (agent_factory, sup) =
-        gateway_factory(&cfg, provider, workspace.clone(), max_iterations).await?;
+        gateway_factory(&cfg, provider.clone(), workspace.clone(), max_iterations).await?;
 
     let named_channels = build_channels(&cfg)?;
     if named_channels.is_empty() {
@@ -1190,14 +1203,15 @@ async fn run_gateway(
     }
 
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
-    let scheduler = Arc::new(Scheduler::new(
+    let scheduler = Scheduler::new(
         store,
         router.clone(),
         named_channels,
         Duration::from_secs(cfg.scheduler.tick_interval_secs),
         Duration::from_secs(cfg.scheduler.gate_timeout_secs),
         cfg.scheduler.gate_workspace.clone(),
-    )?);
+    )?;
+    let scheduler = Arc::new(learn::register(&cfg, scheduler, &workspace, provider, true));
     let scheduler_handle = {
         let scheduler = scheduler.clone();
         tokio::spawn(async move {
@@ -1365,7 +1379,7 @@ async fn tasks_run_now(
         .ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
     let (agent_factory, sup) =
-        gateway_factory(&cfg, provider, workspace.clone(), max_iterations).await?;
+        gateway_factory(&cfg, provider.clone(), workspace.clone(), max_iterations).await?;
 
     let named_channels = build_channels(&cfg)?;
     let router = Arc::new(Router::new(
@@ -1385,6 +1399,7 @@ async fn tasks_run_now(
         Duration::from_secs(cfg.scheduler.gate_timeout_secs),
         cfg.scheduler.gate_workspace.clone(),
     )?;
+    let scheduler = learn::register(&cfg, scheduler, &workspace, provider, false);
 
     let outcome = scheduler.execute(&task).await;
     // Nothing is left behind to run in a process that's about to exit.

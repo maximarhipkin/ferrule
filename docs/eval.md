@@ -354,6 +354,7 @@ kind = "regression"          # or "capability": whether a failed task fails the 
 context_window = 32000       # optional: manage the model as if it had this window
 max_iterations = 40
 timeout_secs = 900
+owner_playbook = false       # true: the engineered variant gets your M16 playbook
 
 [[task]]
 id = "fix-median"
@@ -371,6 +372,12 @@ command = 'python3 "{suite_dir}/graders/fix-median.py"'   # exit 0 = pass
 `check` and `grade.command`. Commands run in the task's workspace. The
 full format, including `files` for inline fixtures and per-task overrides,
 is in [`m14-eval.md`](m14-eval.md#suite-file-format).
+
+Eval is hermetic: no run sees your memories or your learned playbook
+(`<data>/learn/playbook.md`, see [`m16-learning-loop.md`](m16-learning-loop.md)).
+`owner_playbook = true` is the one opt-in: the engineered variant's system
+prompt then gets the same `[Playbook]` block your agents get, and the
+naive variant still doesn't. Use it to measure what the playbook is worth.
 
 ### Grading with a rubric
 

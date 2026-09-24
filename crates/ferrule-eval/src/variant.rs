@@ -78,6 +78,10 @@ pub struct Build<'a> {
     /// The engineered variant's verify command.
     pub check: Option<&'a str>,
     pub transcript: Option<Transcript>,
+    /// M16: the playbook block for the engineered variant's system prompt.
+    /// The eval runner passes one only when a suite opts in; the learning
+    /// pass's gate passes the candidate playbook.
+    pub playbook: Option<&'a str>,
 }
 
 /// The base of ferrule's own system prompt, kept in step with the CLI's
@@ -159,6 +163,9 @@ pub fn build(b: Build<'_>) -> Agent {
                 for tool in ferrule_skills::tools(skills) {
                     registry.register(tool);
                 }
+            }
+            if let Some(block) = b.playbook {
+                system.push_str(&format!("\n\n{block}"));
             }
             if let Some(make) = b.memory_tools {
                 for tool in make(b.state.join("memory.db")) {
