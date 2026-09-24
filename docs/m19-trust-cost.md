@@ -142,7 +142,9 @@ The learning pass keeps its own caps (`[learning] max_usd_per_pass` and
 friends, rolling 24 hours, `call_kind = "learn"` rows). They are a
 sub-budget: learn rows count toward M19's day like any other row, and a
 pass doesn't start while the kill switch is on or the day's cap is spent.
-M16's rolling window stays as it is. Changing it would change a shipped
+That is checked when the pass starts: a pass already running finishes
+under its own caps, and the switch doesn't halt it mid-pass (its calls
+don't go through the guard). M16's rolling window stays as it is. Changing it would change a shipped
 behavior for no gain: the pass runs once a night.
 
 ## 3. The stop message
@@ -280,9 +282,11 @@ The terminal: the same text on stderr, one line read from stdin, same rule.
    there only when the OS sandbox is really active, and then in read-only
    mode with the network off. No `write_file`, no memory writes, no MCP
    tools (a server can do anything; we can't tell reading ones apart), no
-   extension installs. Sub-agents may be started, always read-only. The
-   guard refuses anything that `changes_files()` and every gated command,
-   whatever tools are present.
+   extension installs. Sub-agents may be started, always read-only, and
+   only with `worktree: false` (a worktree is a new branch, which is a
+   change). The guard refuses anything that `changes_files()` and every
+   gated command, whatever tools are present. `ferrule run --plan` starts
+   no MCP server at all.
 2. **The plan** is the run's answer, saved as `<data>/plans/<id>.json`
    (task, workspace, session, plan text, its SHA-256, status).
 3. **Approval.** Telegram: the plan is sent with "Reply `yes` to run this
@@ -291,7 +295,14 @@ The terminal: the same text on stderr, one line read from stdin, same rule.
    Without one: `ferrule plan approve <id>` / `ferrule plan reject <id>`,
    and `ferrule plan list`.
 4. **Execution** runs in the same session (it keeps what the exploration
-   read) with the normal tools, under the same caps and gates. Its first
+   read) with the normal tools, under the same caps and gates. The CLI
+   builds a new agent and replays the session's transcript into it; the
+   gateway drops the planning lane (`Router::retire`), so the next turn
+   builds a new agent from the transcript. A plan from Telegram runs in a
+   session of its own (`plan__<id>`, on a channel no adapter listens to),
+   and its answer is sent to the chat that asked. When it ends, the plan
+   is marked `executed` with the run's id (`plan_executed` in the audit
+   log). Its first
    message is the approved plan, verbatim, with "carry it out; if you
    depart from it, say where and why in your answer."
 
@@ -332,16 +343,24 @@ a `tree` (`eval:<run id>`), which makes them count toward the owner's day.
 Both variants, unlike M16's `owner_playbook`, which only the engineered one
 gets: a cap that only one side runs under would skew the comparison.
 
+A task the owner's guard stops (the switch, a cap) is `stopped`, with no
+verdict, and `ferrule eval` exits 3, as for its own budget. The judge's
+calls (rubric grading) go through eval's own sink only, so they aren't
+charged to the owner's day even with `owner_trust`.
+
 Tested: with tiny caps, the kill switch on and a destructive command in a
-task, the starter suite's numbers don't move; with `owner_trust` the same
-suite is stopped.
+task, the suite runs and the rm runs, nothing reaches the owner's day and
+the audit log is untouched; with `owner_trust` the same suite is stopped
+before any model call, and without the switch its rm is refused
+(unattended) and its calls count toward the owner's day. The full starter
+suite was also run with the switch on and tiny caps.
 
 ## 11. The audit trail
 
 `<data>/trust/audit.jsonl`, one line per event: `cap_stop`, `cap_warning`,
 `stop_engaged`, `stop_cleared`, `approval_asked`, `approval_answered`
 (`yes`, `no`, `timeout`, `unattended`, `unreachable`, `halted`),
-`plan_proposed`, `plan_approved`, `plan_rejected`. Each has the time, the
+`plan_proposed`, `plan_approved`, `plan_rejected`, `plan_executed`. Each has the time, the
 tree, the run and the detail (the command, the cap and spend, the plan
 hash). `ferrule trust audit [--since 7d]` prints it; `ferrule trust status`
 shows the caps, today's spend and the switch. The ledger gets the `tree`

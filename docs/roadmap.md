@@ -332,6 +332,20 @@ hook blocks a command in a test and the model sees why.
 
 ### M19 — trust & cost
 
+**Status.** Built (`docs/m19-trust-cost.md`; PR open). Caps on tokens and
+dollars per run, per day and per scheduled task, read from the ledger so
+they hold across processes and restarts, with a one-time warning at 80%
+sent to the owner's Telegram chat. A kill switch (`ferrule stop`, `/stop`
+from any allowed chat, `/resume` from the owner's) halts running calls and
+holds the scheduler. `rm -r`, force pushes and DELETEs to a bound host wait
+for the owner's `yes` over Telegram or at the terminal; an unattended run
+refuses them. Plan mode (`ferrule run --plan`, `/plan`) explores read-only
+and runs the plan only once approved. Sub-agents share their root's caps,
+switch, gates and plan phase. Eval is untouched unless a suite sets
+`owner_trust = true`. Everything but the Telegram round-trips works
+without Telegram. Checked on Linux; the macOS/Windows pass runs with the
+batch CI.
+
 **Goal.** Unattended runs are capped and safe to leave alone.
 
 **Scope.** Hard budget caps — tokens and dollars per run, per day and per
