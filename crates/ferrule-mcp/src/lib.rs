@@ -20,4 +20,4 @@ pub use browser::BrowserConfig;
 pub use client::{CallToolResult, McpClient, McpToolInfo, ServerHost};
 pub use config::McpServerConfig;
 pub use error::McpError;
-pub use tool::{connect_and_build_tools, McpRemoteTool};
+pub use tool::{build_tools, connect_and_build_tools, McpRemoteTool};

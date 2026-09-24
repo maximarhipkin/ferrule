@@ -148,6 +148,8 @@ pub struct Config {
     #[serde(default)]
     pub skills: SkillsConfig,
     #[serde(default)]
+    pub extensions: crate::self_extend::ExtensionsConfig,
+    #[serde(default)]
     pub sandbox: ferrule_sandbox::Policy,
     /// Env var name → where its value may go (credential gateway).
     #[serde(default)]
@@ -306,6 +308,14 @@ profile = "openai"
 # project = true             # then `paths`, ~/.config/ferrule/skills,
 # paths = []                 # ~/.agents/skills, ~/.claude/skills. First name wins.
 # disabled = []              # skill names to ignore. `ferrule skills` lists them all.
+
+# [extensions]              # Self-extension: the agent installs MCP servers and
+# enabled = false            # skills mid-run (mcp_add, skill_install, skill_keep…).
+# allow = []                 # Installable without asking, exact pins only, e.g.
+#                            # ["npm:@modelcontextprotocol/*", "git:https://github.com/me/*"].
+#                            # Anything else waits for `ferrule extensions approve`.
+#                            # Read only from --config or the global config, never
+#                            # from ./ferrule.toml. Every tool text is scanned.
 
 # [sandbox]                 # OS sandbox for the shell tool (Landlock / Seatbelt).
 # mode = "workspace-write"   # or "read-only", or "off". `ferrule sandbox` shows

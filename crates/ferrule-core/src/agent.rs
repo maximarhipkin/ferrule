@@ -1143,6 +1143,96 @@ mod tests {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
+    /// A tool that another tool adds mid-run (M13: `mcp_add`) is in the
+    /// very next provider request and can be called in the same run.
+    #[tokio::test]
+    async fn a_tool_added_mid_run_reaches_the_next_request() {
+        #[derive(Default)]
+        struct Live(Mutex<Vec<Arc<dyn Tool>>>);
+        impl crate::tool::ToolSource for Live {
+            fn tools(&self) -> Vec<Arc<dyn Tool>> {
+                self.0.lock().unwrap().clone()
+            }
+        }
+        struct Install(Arc<Live>);
+        #[async_trait::async_trait]
+        impl Tool for Install {
+            fn definition(&self) -> ToolDefinition {
+                ToolDefinition {
+                    name: "install".into(),
+                    description: "adds echo".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }
+            }
+            async fn call(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &ToolContext,
+            ) -> Result<ToolOutput, CoreError> {
+                self.0 .0.lock().unwrap().push(Arc::new(EchoTool));
+                Ok(ToolOutput::ok("installed"))
+            }
+        }
+        struct Recording {
+            script: Mutex<Vec<Message>>,
+            seen: Arc<Mutex<Vec<Vec<String>>>>,
+        }
+        #[async_trait::async_trait]
+        impl Provider for Recording {
+            fn name(&self) -> &str {
+                "recording"
+            }
+            async fn complete(
+                &self,
+                req: CompletionRequest,
+            ) -> Result<CompletionResponse, CoreError> {
+                self.seen
+                    .lock()
+                    .unwrap()
+                    .push(req.tools.iter().map(|t| t.name.clone()).collect());
+                Ok(CompletionResponse {
+                    message: self.script.lock().unwrap().remove(0),
+                    usage: Usage::default(),
+                })
+            }
+        }
+        let live = Arc::new(Live::default());
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(Install(live.clone())));
+        reg.attach(live);
+        let install = crate::message::ToolCall {
+            id: "1".into(),
+            name: "install".into(),
+            arguments: serde_json::json!({}),
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let provider = Recording {
+            script: Mutex::new(vec![
+                Message::assistant(None, vec![install], None),
+                echo("from the new tool"),
+                say("done"),
+            ]),
+            seen: seen.clone(),
+        };
+        let mut agent = Agent::new(
+            Arc::new(provider),
+            reg,
+            HarnessProfile::generic(),
+            AgentConfig::default(),
+            ToolContext::default(),
+            None,
+        );
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("extend yourself", tx).await.unwrap(), "done");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0], ["install"]);
+        assert_eq!(seen[1], ["echo", "install"]);
+        assert!(agent
+            .messages
+            .iter()
+            .any(|m| m.content.as_deref() == Some("from the new tool")));
+    }
+
     #[tokio::test]
     async fn loop_runs_tool_then_finishes() {
         let script = vec![

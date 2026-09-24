@@ -27,6 +27,6 @@ pub use ledger::{EvalTag, LedgerContext, LedgerRecord, LedgerSink};
 pub use message::{Message, Role, ToolCall, Usage};
 pub use profile::HarnessProfile;
 pub use provider::{CompletionRequest, CompletionResponse, Provider};
-pub use tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
+pub use tool::{Tool, ToolContext, ToolOutput, ToolRegistry, ToolSource};
 pub use transcript::Transcript;
 pub use verify::Verifier;

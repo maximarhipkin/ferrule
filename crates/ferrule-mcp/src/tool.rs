@@ -1,4 +1,4 @@
-use crate::client::{McpClient, ServerHost};
+use crate::client::{McpClient, McpToolInfo, ServerHost};
 use crate::config::McpServerConfig;
 use crate::error::McpError;
 use ferrule_core::error::CoreError;
@@ -78,8 +78,6 @@ pub async fn connect_and_build_tools(
     host: ServerHost,
 ) -> Result<Vec<Arc<dyn Tool>>, McpError> {
     let server_name = cfg.name.clone();
-    let timeout = cfg.timeout();
-    let hidden: Arc<[String]> = cfg.hide_args.clone().into();
     let client = Arc::new(McpClient::new(cfg, host)?);
     if let Some(reason) = client.sandbox_degraded() {
         tracing::warn!(
@@ -89,7 +87,17 @@ pub async fn connect_and_build_tools(
         );
     }
     let infos = client.list_tools().await?;
-    Ok(infos
+    Ok(build_tools(&client, infos))
+}
+
+/// Wrap tools already listed from `client` as `mcp__<server>__<tool>`
+/// `Tool`s. For a caller that inspects the list before exposing it — M13's
+/// scan — and so connects and lists on its own.
+pub fn build_tools(client: &Arc<McpClient>, infos: Vec<McpToolInfo>) -> Vec<Arc<dyn Tool>> {
+    let server_name = client.name().to_string();
+    let timeout = client.config().timeout();
+    let hidden: Arc<[String]> = client.config().hide_args.clone().into();
+    infos
         .into_iter()
         .map(|info| {
             Arc::new(McpRemoteTool {
@@ -103,7 +111,7 @@ pub async fn connect_and_build_tools(
                 hidden: hidden.clone(),
             }) as Arc<dyn Tool>
         })
-        .collect())
+        .collect()
 }
 
 /// `schema` without the properties named in `hidden`, in `properties` and

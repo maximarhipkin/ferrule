@@ -554,6 +554,7 @@ dependencies = [
  "ferrule-agents",
  "ferrule-core",
  "ferrule-eval",
+ "ferrule-extensions",
  "ferrule-gateway",
  "ferrule-mcp",
  "ferrule-memory",
@@ -607,6 +608,27 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "ferrule-extensions"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "ferrule-core",
+ "ferrule-mcp",
+ "ferrule-sandbox",
+ "ferrule-skills",
+ "ferrule-tools",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
  "tracing",
  "uuid",
 ]

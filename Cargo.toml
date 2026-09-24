@@ -12,6 +12,7 @@ members = [
     "crates/ferrule-memory",
     "crates/ferrule-cli",
     "crates/ferrule-agents",
+    "crates/ferrule-extensions",
     "crates/ferrule-eval",
 ]
 

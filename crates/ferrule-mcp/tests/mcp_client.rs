@@ -274,3 +274,44 @@ async fn the_warm_up_runs_with_the_servers_env_before_every_call() {
     let runs = std::fs::read_to_string(&log).unwrap();
     assert_eq!(runs.lines().collect::<Vec<_>>(), ["yes", "yes"]);
 }
+
+/// M13's hook: a server that changes its tool list mid-session says so, the
+/// client passes it on, and a fresh `tools/list` shows the new tool.
+#[tokio::test]
+async fn tools_list_changed_is_passed_on_and_a_relist_sees_the_new_tool() {
+    let client = Arc::new(ferrule_mcp::McpClient::new(fixture_cfg("grow", None), host()).unwrap());
+    let mut changed = client.subscribe_list_changed();
+    assert_eq!(client.list_tools().await.unwrap().len(), 8);
+    assert!(!changed.has_changed().unwrap());
+
+    let out = client
+        .call_tool(
+            "grow",
+            json!({"name": "late", "description": "added later"}),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.text(), "grown");
+    tokio::time::timeout(Duration::from_secs(5), changed.changed())
+        .await
+        .expect("list_changed arrives")
+        .unwrap();
+    let infos = client.list_tools().await.unwrap();
+    assert!(infos.iter().any(|t| t.name == "late"));
+    let tools = ferrule_mcp::build_tools(&client, infos);
+    assert!(tools
+        .iter()
+        .any(|t| t.definition().name == "mcp__grow__late"));
+}
+
+#[tokio::test]
+async fn a_shut_down_server_is_not_respawned() {
+    let client = Arc::new(ferrule_mcp::McpClient::new(fixture_cfg("stop", None), host()).unwrap());
+    client.list_tools().await.unwrap();
+    client.shutdown().await;
+    assert!(matches!(
+        client.list_tools().await,
+        Err(ferrule_mcp::McpError::NotConnected)
+    ));
+}
