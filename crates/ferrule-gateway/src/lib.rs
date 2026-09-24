@@ -15,6 +15,7 @@ pub mod health;
 pub mod message;
 pub mod router;
 pub mod scheduler;
+pub mod sdnotify;
 pub mod session;
 
 pub use channel::{Channel, ChannelCapabilities};

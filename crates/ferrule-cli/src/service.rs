@@ -609,6 +609,8 @@ pub fn system_unit(spec: &Spec, data: &Path) -> String {
          ReadWritePaths={} {}\n\
          Restart=always\n\
          RestartSec=5\n\
+         WatchdogSec=120\n\
+         NotifyAccess=main\n\
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
@@ -638,6 +640,8 @@ pub fn systemd_unit(spec: &Spec) -> String {
          Environment={}\n\
          Restart=always\n\
          RestartSec=5\n\
+         WatchdogSec=120\n\
+         NotifyAccess=main\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
@@ -852,6 +856,19 @@ mod tests {
             "Environment=\"FERRULE_CONFIG=/home/a b/.config/ferrule/100%%\\\"x\\\".toml\""
         );
         assert_eq!(parse_unit(&unit), Some((spec().config, spec().workspace)));
+    }
+
+    #[test]
+    fn both_units_turn_on_systemds_watchdog() {
+        for unit in [
+            systemd_unit(&spec()),
+            system_unit(&system_spec(), Path::new(SYSTEM_DATA)),
+        ] {
+            assert!(
+                unit.contains("\nWatchdogSec=120\nNotifyAccess=main\n"),
+                "{unit}"
+            );
+        }
     }
 
     #[test]

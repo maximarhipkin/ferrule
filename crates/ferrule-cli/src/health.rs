@@ -87,7 +87,9 @@ pub fn build(
         health = health.with_section("schedule", Arc::new(move || schedule_lines(&store)));
     }
     let notice = startup_notice(cfg, &health);
-    Ok(health.with_startup_notice(notice))
+    Ok(health
+        .with_startup_notice(notice)
+        .with_systemd(ferrule_gateway::sdnotify::SystemdWatchdog::from_env()))
 }
 
 /// What the owner hears when this gateway starts: the restart notice if

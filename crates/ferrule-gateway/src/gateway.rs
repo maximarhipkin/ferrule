@@ -163,6 +163,12 @@ impl Gateway {
                 tasks.push(tokio::spawn(send_with_retries(channel, out)));
             }
         }
+        if let Some(sd) = health.systemd().cloned() {
+            let (health, channels) = (health.clone(), channels.clone());
+            tasks.push(tokio::spawn(async move {
+                ping_systemd(sd, health, channels).await
+            }));
+        }
         if let Some(after) = health.settings().watchdog_after {
             tasks.push(tokio::spawn(watchdog(health, router, channels, after)));
         }
@@ -274,6 +280,38 @@ async fn send_with_retries(channel: Arc<dyn Channel>, out: OutboundMessage) {
         }
         tokio::time::sleep(wait).await;
         wait = (wait * 2).min(Duration::from_secs(30));
+    }
+}
+
+/// `WATCHDOG=1` every third of systemd's timeout, withheld while the
+/// gateway can't hear the owner so that systemd restarts it.
+async fn ping_systemd(
+    sd: crate::sdnotify::SystemdWatchdog,
+    health: Arc<Health>,
+    channels: Vec<Arc<dyn Channel>>,
+) {
+    let mut withheld = false;
+    loop {
+        match health.watchdog_ok(&channels) {
+            Ok(()) => {
+                if withheld {
+                    tracing::info!("pinging systemd's watchdog again");
+                    withheld = false;
+                }
+                if let Err(e) = sd.notify("WATCHDOG=1") {
+                    tracing::warn!(error = %e, "couldn't ping systemd's watchdog");
+                }
+            }
+            Err(why) => {
+                if !withheld {
+                    tracing::warn!(
+                        "{why}: not pinging systemd's watchdog, so it restarts the service"
+                    );
+                    withheld = true;
+                }
+            }
+        }
+        tokio::time::sleep(sd.every).await;
     }
 }
 
@@ -809,5 +847,100 @@ mod tests {
         gateway.run().await.unwrap();
         assert!(log.lock().unwrap().iter().all(|l| !l.contains("Stuck on")));
         release.add_permits(1);
+    }
+
+    /// Polls "successfully" while `fresh`; runs until `stop`.
+    struct PollingChannel {
+        last_ok: std::sync::Mutex<std::time::SystemTime>,
+        fresh: std::sync::atomic::AtomicBool,
+        stop: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl Channel for PollingChannel {
+        fn name(&self) -> &str {
+            "polling"
+        }
+        fn polls(&self) -> bool {
+            true
+        }
+        fn last_ok_poll(&self) -> Option<std::time::SystemTime> {
+            let mut last = self.last_ok.lock().unwrap();
+            if self.fresh.load(std::sync::atomic::Ordering::SeqCst) {
+                *last = std::time::SystemTime::now();
+            }
+            Some(*last)
+        }
+        async fn run(&self, _tx: mpsc::Sender<InboundMessage>) -> Result<(), GatewayError> {
+            self.stop.notified().await;
+            Ok(())
+        }
+        async fn send(&self, _msg: OutboundMessage) -> Result<(), GatewayError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn systemd_is_pinged_only_while_polling_works() {
+        use std::os::unix::net::UnixDatagram;
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("notify");
+        let rx = UnixDatagram::bind(&socket).unwrap();
+        rx.set_nonblocking(true).unwrap();
+        let drain = || {
+            let mut buf = [0u8; 64];
+            let mut pings = 0;
+            while let Ok(n) = rx.recv(&mut buf) {
+                assert_eq!(&buf[..n], b"WATCHDOG=1");
+                pings += 1;
+            }
+            pings
+        };
+        let channel = Arc::new(PollingChannel {
+            last_ok: std::sync::Mutex::new(std::time::SystemTime::now()),
+            fresh: true.into(),
+            stop: tokio::sync::Notify::new(),
+        });
+        let health = Arc::new(
+            Health::new(
+                "9.9.9",
+                crate::health::HealthSettings {
+                    poll_stale: Duration::from_millis(200),
+                    watchdog_after: None,
+                    ..Default::default()
+                },
+            )
+            .with_systemd(Some(crate::sdnotify::SystemdWatchdog {
+                socket: socket.to_string_lossy().into(),
+                every: Duration::from_millis(20),
+            })),
+        );
+        let router = Arc::new(Router::new(
+            dir.path(),
+            Arc::new(|_, _| unreachable!()),
+            HashMap::new(),
+        ));
+        let mut gateway = Gateway::new(router).with_health(health);
+        gateway.add_channel(channel.clone());
+        let run = tokio::spawn(gateway.run());
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(drain() >= 3, "no pings while polling works");
+
+        // Polling stops succeeding: after poll_stale the pings stop.
+        channel.fresh.store(false, SeqCst);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drain();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(drain(), 0, "pinged with polling stale");
+
+        // A good poll again: so are the pings.
+        channel.fresh.store(true, SeqCst);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(drain() >= 3, "pings didn't come back");
+
+        channel.stop.notify_one();
+        run.await.unwrap().unwrap();
     }
 }

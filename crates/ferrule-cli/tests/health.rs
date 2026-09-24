@@ -319,6 +319,11 @@ impl Drop for Running {
 }
 
 fn gateway(home: &Path) -> Running {
+    gateway_env(home, &[])
+}
+
+/// A gateway with `env` set, and systemd's variables only if they're in it.
+fn gateway_env(home: &Path, env: &[(&str, &str)]) -> Running {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ferrule"));
     cmd.args(["gateway"])
         .current_dir(home.join("work"))
@@ -339,9 +344,13 @@ fn gateway(home: &Path) -> Running {
         "http_proxy",
         "https_proxy",
         "all_proxy",
+        "NOTIFY_SOCKET",
+        "WATCHDOG_USEC",
+        "WATCHDOG_PID",
     ] {
         cmd.env_remove(var);
     }
+    cmd.envs(env.iter().copied());
     Running(cmd.spawn().unwrap())
 }
 
@@ -546,4 +555,30 @@ fn a_clean_stop_leaves_no_marker_and_the_next_start_is_only_back_up() {
         texts.iter().all(|t| !t.contains("I restarted")),
         "{texts:?}"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn under_systemd_the_gateway_pings_its_watchdog() {
+    use std::os::unix::net::UnixDatagram;
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    let dir = home(&url, &telegram(&tg));
+    let socket = dir.path().join("notify");
+    let rx = UnixDatagram::bind(&socket).unwrap();
+    rx.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    // WatchdogSec=0.3: a ping every 100 ms.
+    let _gw = gateway_env(
+        dir.path(),
+        &[
+            ("NOTIFY_SOCKET", socket.to_str().unwrap()),
+            ("WATCHDOG_USEC", "300000"),
+        ],
+    );
+    let mut buf = [0u8; 64];
+    for _ in 0..3 {
+        let n = rx.recv(&mut buf).expect("no watchdog ping");
+        assert_eq!(&buf[..n], b"WATCHDOG=1");
+    }
 }

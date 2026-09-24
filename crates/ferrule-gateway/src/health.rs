@@ -5,6 +5,7 @@
 
 use crate::channel::Channel;
 use crate::router::LaneSnapshot;
+use crate::sdnotify::SystemdWatchdog;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -191,9 +192,14 @@ pub struct Health {
     closed: AtomicBool,
     /// Sent once when the gateway runs: the restart notice or "back up".
     startup: Mutex<Option<Notice>>,
+    /// systemd's watchdog, when the unit asks for it.
+    systemd: Option<SystemdWatchdog>,
 }
 
 pub const STATUS_FILE: &str = "status.txt";
+/// The dispatcher only acknowledges and queues; on one message this long,
+/// it's wedged.
+pub const DISPATCH_STUCK: Duration = Duration::from_secs(60);
 /// Says a gateway is running and which turns it's in the middle of; left
 /// behind only by an unclean exit.
 pub const RUNNING_FILE: &str = "running.json";
@@ -254,7 +260,39 @@ impl Health {
             dispatching: Mutex::new(None),
             closed: AtomicBool::new(false),
             startup: Mutex::new(None),
+            systemd: None,
         }
+    }
+
+    /// Pings systemd's watchdog while [`Health::watchdog_ok`] holds.
+    pub fn with_systemd(mut self, watchdog: Option<SystemdWatchdog>) -> Self {
+        self.systemd = watchdog;
+        self
+    }
+
+    pub fn systemd(&self) -> Option<&SystemdWatchdog> {
+        self.systemd.as_ref()
+    }
+
+    /// Whether the gateway can hear the owner: the dispatcher isn't stuck
+    /// on one message and every polling channel has polled lately (the
+    /// first `poll_stale` after start count as fine). `Err` says why not.
+    pub fn watchdog_ok(&self, channels: &[Arc<dyn Channel>]) -> Result<(), String> {
+        if let Some(d) = self.dispatch_busy_for().filter(|d| *d > DISPATCH_STUCK) {
+            return Err(format!(
+                "the dispatcher has been on one message for {}",
+                human(d)
+            ));
+        }
+        let stale = self.stale_channels(channels);
+        if !stale.is_empty() {
+            return Err(format!(
+                "no successful poll from {} for over {}",
+                stale.join(", "),
+                human(self.settings.poll_stale)
+            ));
+        }
+        Ok(())
     }
 
     /// Sets the message the gateway sends once it runs.
