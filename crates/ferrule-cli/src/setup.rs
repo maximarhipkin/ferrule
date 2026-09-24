@@ -91,6 +91,10 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(browser_step(t))?.quit() {
         return Ok(false);
     }
+    heading("MCP servers");
+    if settle(crate::mcp_add::setup_step(t, true).await)?.quit() {
+        return Ok(false);
+    }
     if t.config()?.gateway.telegram_token_env.is_some() {
         heading("Background service");
         if settle(service_step(t, true))?.quit() {
@@ -111,6 +115,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Sandbox              {}", sandbox_summary(&cfg)),
             format!("Browser              {}", browser_summary(&cfg)),
+            format!("MCP servers          {}", mcp_summary(&cfg)),
             format!("Background service   {}", service_summary(&service)),
             "Done".to_string(),
         ];
@@ -130,7 +135,8 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             2 => credentials_step(t, http, false).await,
             3 => sandbox_step(t, false),
             4 => browser_step(t),
-            5 => service_step(t, false),
+            5 => crate::mcp_add::setup_step(t, false).await,
+            6 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -258,6 +264,15 @@ impl Target {
         };
         t.config().with_context(broken)?;
         Ok(t)
+    }
+
+    /// Read the file again after something else wrote it, as a change.
+    pub(crate) fn reload(&mut self) -> Result<()> {
+        *self = Self {
+            changed: true,
+            ..Self::load(self.path.clone())?
+        };
+        Ok(())
     }
 
     pub(crate) fn config(&self) -> Result<config::Config> {
@@ -435,6 +450,20 @@ fn browser_summary(cfg: &config::Config) -> String {
         (false, _) => "off".into(),
         (true, true) => "on".into(),
         (true, false) => "on · without Chrome's own sandbox".into(),
+    }
+}
+
+fn mcp_summary(cfg: &config::Config) -> String {
+    match cfg.mcp.servers.len() {
+        0 => "none".into(),
+        n if n <= 3 => cfg
+            .mcp
+            .servers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        n => plural(n, "server", "servers"),
     }
 }
 

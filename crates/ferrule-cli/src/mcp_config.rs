@@ -1,7 +1,6 @@
 //! M17: `[[mcp.servers]]` entries written and removed through `toml_edit`,
 //! so the rest of the owner's file keeps its comments and order. Used by
 //! `ferrule mcp add`/`remove` and the setup wizard's MCP step.
-#![allow(dead_code)] // TEMP(part 3): the writer's user, `ferrule mcp add`, is next
 
 use crate::config;
 use crate::setup::{table, Target};

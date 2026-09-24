@@ -5,6 +5,7 @@ mod config_follow;
 mod doctor;
 mod eval;
 mod ledger;
+mod mcp_add;
 mod mcp_config;
 mod memory_tools;
 mod probe;
@@ -137,6 +138,12 @@ enum Cmd {
     Extensions {
         #[command(subcommand)]
         op: self_extend::ExtCmd,
+    },
+    /// Add an MCP server (started, scanned and its keys bound before it's
+    /// written; running gateways pick it up, no restart), list, remove
+    Mcp {
+        #[command(subcommand)]
+        op: mcp_add::McpCmd,
     },
     /// Evaluate the harness: run a task suite, as ferrule and as a naive
     /// baseline, and report pass rates, tokens and cost (docs/eval.md)
@@ -396,6 +403,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             skills_cmd(workspace);
         }
         Cmd::Extensions { op } => self_extend::run(op).await?,
+        Cmd::Mcp { op } => mcp_add::run(op).await?,
         Cmd::Sandbox {
             probe_net: true, ..
         } => probe_net(),
