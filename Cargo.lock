@@ -536,6 +536,7 @@ dependencies = [
  "clap",
  "dirs",
  "ferrule-core",
+ "ferrule-extensions",
  "ferrule-gateway",
  "ferrule-mcp",
  "ferrule-memory",

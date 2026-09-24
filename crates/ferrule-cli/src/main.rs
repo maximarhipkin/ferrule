@@ -5,12 +5,12 @@ mod ledger;
 mod memory_tools;
 mod probe;
 mod secrets;
+mod self_extend;
 mod service;
 mod setup;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
-use ferrule_core::tool::Tool;
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
 use ferrule_gateway::{
     Channel, Gateway, LocalChannel, NewTask, Router, RunOutcome, Scheduler, TaskKind, TaskStore,
@@ -122,6 +122,12 @@ enum Cmd {
     Skills {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
+    },
+    /// MCP servers and skills the agent installed: list, approve or deny
+    /// its requests, remove, resume what the scan suspended
+    Extensions {
+        #[command(subcommand)]
+        op: self_extend::ExtCmd,
     },
     /// Show the shell sandbox that applies here, and test that it holds.
     /// `ferrule sandbox -- CMD…` runs CMD the way the agent's shell tool would
@@ -353,6 +359,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Skills { workspace } => {
             skills_cmd(workspace);
         }
+        Cmd::Extensions { op } => self_extend::run(op).await?,
         Cmd::Sandbox {
             probe_net: true, ..
         } => probe_net(),
@@ -387,7 +394,10 @@ async fn build_agent(
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
     let sandbox = shared_sandbox(&cfg)?;
-    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await;
+    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await?;
+    if task_shape == "chat" {
+        mcp_tools.ask_at_terminal();
+    }
     let ledger = ledger::LedgerTag::new(&ledger::build_sink(&cfg), task_shape, None);
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
@@ -413,11 +423,12 @@ fn mcp_servers(cfg: &config::Config) -> Vec<McpServerConfig> {
     servers
 }
 
-/// Spawn every configured MCP server once and return its tools. A server
-/// that fails to start is logged and skipped — it never stops the agent.
-/// Callers that build many agents (the gateway, one per session) call this
-/// once and share the result, so N sessions don't mean N copies of each
-/// server process.
+/// Spawn every configured MCP server once, under the process's extension
+/// manager, which also loads what the agent installed. A server that fails
+/// to start is logged and skipped — it never stops the agent. Callers that
+/// build many agents (the gateway, one per session) call this once and
+/// share the result, so N sessions don't mean N copies of each server
+/// process.
 ///
 /// Servers run in the workspace, through the same sandbox as shell commands
 /// plus a state dir of their own under the data dir — see `ServerHost`.
@@ -425,33 +436,8 @@ async fn connect_mcp_servers(
     servers: &[McpServerConfig],
     sandbox: Arc<Sandbox>,
     workspace: &Path,
-) -> Vec<Arc<dyn Tool>> {
-    let mut tools = Vec::new();
-    for server in servers {
-        let state_dir = match mcp_state_dir(&server.name) {
-            Ok(dir) => dir,
-            Err(e) => {
-                tracing::warn!(
-                    "mcp server `{}`: couldn't create its state dir ({e}); continuing without it",
-                    server.name
-                );
-                continue;
-            }
-        };
-        let host = ferrule_mcp::ServerHost {
-            sandbox: sandbox.clone(),
-            workspace: workspace.to_path_buf(),
-            state_dir,
-        };
-        match ferrule_mcp::connect_and_build_tools(server.clone(), host).await {
-            Ok(t) => tools.extend(t),
-            Err(e) => tracing::warn!(
-                "mcp server `{}` failed to start ({e}); continuing without it",
-                server.name
-            ),
-        }
-    }
-    tools
+) -> Result<self_extend::Extensions> {
+    self_extend::start(servers.to_vec(), sandbox, workspace).await
 }
 
 /// `<data dir>/mcp/<name>`, created if missing: one server's home, caches
@@ -498,7 +484,7 @@ fn build_agent_from(
     workspace: PathBuf,
     max_iterations: usize,
     transcript: Option<Transcript>,
-    mcp_tools: &[Arc<dyn Tool>],
+    mcp_tools: &self_extend::Extensions,
     ledger: Option<ledger::LedgerTag>,
 ) -> Result<Agent> {
     let (cfg, _) = config::Config::load()?;
@@ -538,9 +524,7 @@ fn build_agent_from(
     for tool in memory_tools::tools(config::data_dir()?.join("memory.db")) {
         registry.register(tool);
     }
-    for tool in mcp_tools {
-        registry.register(tool.clone());
-    }
+    mcp_tools.attach(&mut registry, cfg.skills.enabled);
 
     let mut system = format!(
         "You are an autonomous agent running inside ferrule. Workspace: {}. \
@@ -559,6 +543,7 @@ fn build_agent_from(
 
     let browser_prefix = format!("mcp__{}__", ferrule_mcp::browser::SERVER_NAME);
     if mcp_tools
+        .tools()
         .iter()
         .any(|t| t.definition().name.starts_with(&browser_prefix))
     {
@@ -584,15 +569,14 @@ fn build_agent_from(
 
     // Agent Skills: names + descriptions in the prompt, full instructions
     // loaded on demand through the activate_skill tool. Rescanned per agent,
-    // so a skill installed while the gateway runs shows up in new sessions.
+    // so a skill installed while the gateway runs shows up in new sessions;
+    // the tools follow the live set, so one installed mid-session works too.
     if cfg.skills.enabled {
-        let skills = Arc::new(discover_skills(&cfg.skills, &tool_ctx.workspace));
-        if let Some(catalog) = skills.catalog() {
+        let (skills, tools) = mcp_tools.skill_tools();
+        if let Some(catalog) = skills.get().catalog() {
             system.push_str(&format!("\n\n[Skills]\n{catalog}"));
         }
-        for tool in ferrule_skills::tools(skills) {
-            registry.register(tool);
-        }
+        registry.attach(tools);
     }
 
     if let Ok(store) = MemoryStore::open(config::data_dir()?.join("memory.db")) {
@@ -968,7 +952,7 @@ async fn run_gateway(
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let sandbox = shared_sandbox(&cfg)?;
-    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await;
+    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await?;
     let ledger_sink = ledger::build_sink(&cfg);
     let factory_provider = provider;
     let factory_workspace = workspace.clone();
@@ -1183,7 +1167,7 @@ async fn tasks_run_now(
         .ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
     let sandbox = shared_sandbox(&cfg)?;
-    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await;
+    let mcp_tools = connect_mcp_servers(&mcp_servers(&cfg), sandbox, &workspace).await?;
     let ledger_sink = ledger::build_sink(&cfg);
     let factory_provider = provider;
     let factory_workspace = workspace.clone();

@@ -246,6 +246,11 @@ impl ExtensionManager {
         &self.cfg.layout
     }
 
+    /// The live skill set the manager refreshes, if it was given one.
+    pub fn skills(&self) -> Option<&SkillsHandle> {
+        self.cfg.skills.as_ref()
+    }
+
     pub fn queue(&self) -> &PendingQueue {
         &self.queue
     }

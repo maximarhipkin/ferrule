@@ -57,8 +57,33 @@ impl Layout {
             .join("pending")
     }
 
-    /// A server's own state dir, the same one a configured server gets.
+    /// A server's own state dir, the same one a configured server got
+    /// before the manager ran them (`ferrule-cli`'s `mcp_dir_name`).
     pub fn mcp_state(&self, name: &str) -> PathBuf {
-        self.data_dir.join("mcp").join(name)
+        self.data_dir.join("mcp").join(mcp_dir_name(name))
     }
+}
+
+/// A server name as a directory name. A name that had to be changed gets a
+/// hash of the original, so `a.b` and `a_b` don't share a home. Installed
+/// servers' names are already safe; configured ones may not be.
+pub fn mcp_dir_name(name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if safe == name && !safe.is_empty() {
+        return safe;
+    }
+    // FNV-1a: stable across Rust versions, unlike `DefaultHasher`.
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{safe}-{:08x}", hash as u32)
 }
