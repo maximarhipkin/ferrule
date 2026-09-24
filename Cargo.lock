@@ -583,6 +583,7 @@ dependencies = [
  "ferrule-mcp",
  "ferrule-sandbox",
  "ferrule-skills",
+ "ferrule-tools",
  "ring",
  "serde",
  "serde_json",
