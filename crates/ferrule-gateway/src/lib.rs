@@ -21,7 +21,7 @@ pub use channel::{Channel, ChannelCapabilities};
 pub use channels::{LocalChannel, TelegramChannel};
 pub use error::GatewayError;
 pub use gateway::{Gateway, Interceptor, ACK_EMOJI};
-pub use health::{Health, HealthSettings, RecentLog, Redactor};
+pub use health::{Health, HealthSettings, Leftover, Notice, RecentLog, Redactor, RunningMarker};
 pub use message::{Attachment, InboundMessage, OutboundMessage};
 pub use router::{AgentFactory, LaneSnapshot, Reply, Router};
 pub use scheduler::{

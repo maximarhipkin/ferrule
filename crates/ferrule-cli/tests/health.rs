@@ -443,3 +443,107 @@ fn the_watchdog_tells_the_owner_about_another_chats_stuck_turn() {
         .count();
     assert_eq!(again, 0);
 }
+
+/// Waits until `path` exists and contains `needle`.
+fn wait_for_file(path: &Path, needle: &str) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if text.contains(needle) {
+            return text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} never had {needle:?}: {text}",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn texts_to(tg: &FakeTelegram, chat: i64) -> Vec<String> {
+    tg.sent
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m["chat_id"] == chat.to_string().as_str())
+        .map(|m| m["text"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+#[test]
+fn a_killed_gateway_says_what_it_interrupted_and_never_reruns_it() {
+    let (url, seen) = model_server();
+    let tg = FakeTelegram::start();
+    let dir = home(&url, &telegram(&tg));
+    let marker = dir.path().join("data/gateway/running.json");
+    {
+        let mut gw = gateway(dir.path());
+        tg.say(-100, "HANG please");
+        wait_for_file(&marker, "HANG please");
+        // SIGKILL: no chance to clean up, like a crash or the OOM killer.
+        gw.0.kill().unwrap();
+        gw.0.wait().unwrap();
+    }
+    assert!(marker.exists());
+    let calls = seen.lock().unwrap().len();
+
+    let _gw = gateway(dir.path());
+    let (_, notice) = tg.wait_for(42, "I restarted at ", 0);
+    assert!(
+        notice.ends_with("; the turn for telegram chat -100 was interrupted while handling: 'HANG please'. It won't be re-run — send it again if it's still needed."),
+        "{notice}"
+    );
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(seen.lock().unwrap().len(), calls, "the turn was re-run");
+    assert_eq!(
+        texts_to(&tg, 42)
+            .iter()
+            .filter(|t| t.contains("I restarted"))
+            .count(),
+        1
+    );
+    // The new process owns the marker now: no turn in it.
+    let now = wait_for_file(&marker, "\"turns\": []");
+    assert!(!now.contains("HANG"), "{now}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_clean_stop_leaves_no_marker_and_the_next_start_is_only_back_up() {
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    let extra = format!("{}\n[health]\nnotify_on_start = true\n", telegram(&tg));
+    let dir = home(&url, &extra);
+    let gw_dir = dir.path().join("data/gateway");
+    {
+        let mut gw = gateway(dir.path());
+        tg.wait_for(42, "Back up: ferrule ", 0);
+        wait_for_file(&gw_dir.join("running.json"), "\"pid\"");
+        unsafe { libc::kill(gw.0.id() as libc::pid_t, libc::SIGTERM) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = gw.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SIGTERM didn't stop it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        assert!(status.success(), "{status:?}");
+    }
+    assert!(!gw_dir.join("running.json").exists());
+    assert!(!gw_dir.join("status.txt").exists());
+
+    let _gw = gateway(dir.path());
+    let (n, _) = tg.wait_for(42, "Back up: ferrule ", 0);
+    tg.wait_for(42, "Back up: ferrule ", n);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let texts = texts_to(&tg, 42);
+    assert!(
+        texts.iter().all(|t| !t.contains("I restarted")),
+        "{texts:?}"
+    );
+}

@@ -187,6 +187,9 @@ pub struct HealthConfig {
     /// A turn running this long is ended the way `/stop` ends it, and its
     /// chat is free again. 0 = no limit.
     pub max_turn_minutes: u64,
+    /// Tell the owner every time the gateway starts, not only after an
+    /// unclean exit.
+    pub notify_on_start: bool,
 }
 
 impl Default for HealthConfig {
@@ -195,6 +198,7 @@ impl Default for HealthConfig {
             poll_stale_secs: 300,
             watchdog_after_secs: 600,
             max_turn_minutes: 60,
+            notify_on_start: false,
         }
     }
 }
@@ -435,6 +439,8 @@ profile = "openai"
 # watchdog_after_secs = 600  # a turn with no progress this long: one message to
 #                            # the owner ("stuck on … — /stop to cancel"). 0 = off.
 # max_turn_minutes = 60      # a turn this long is ended like /stop. 0 = no limit.
+# notify_on_start = false    # "back up" on every start; after a crash or a kill
+#                            # the owner hears it anyway, with the interrupted turn.
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).

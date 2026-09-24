@@ -1454,7 +1454,15 @@ async fn run_gateway(
     }
 
     tracing::info!("gateway starting");
-    let result = gateway.run().await;
+    // SIGTERM (systemctl stop) and ctrl-c are a clean shutdown: the
+    // running marker goes, so the next start sends no restart notice.
+    let result = tokio::select! {
+        r = gateway.run() => r,
+        why = shutdown_signal() => {
+            tracing::info!("{why}: shutting down");
+            Ok(())
+        }
+    };
     // The scheduler's own `run()` loops forever by design (see its doc
     // comment); once the gateway is done there is nothing left to serve, so
     // it's stopped explicitly rather than left dangling.
@@ -1462,6 +1470,30 @@ async fn run_gateway(
     health.shutdown();
     result?;
     Ok(())
+}
+
+/// Resolves on SIGTERM or ctrl-c, naming which.
+async fn shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = term.recv() => "SIGTERM",
+                _ = tokio::signal::ctrl_c() => "ctrl-c",
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "can't listen for SIGTERM");
+                let _ = tokio::signal::ctrl_c().await;
+                "ctrl-c"
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "ctrl-c"
+    }
 }
 
 fn parse_task_kind(s: &str) -> Result<TaskKind> {

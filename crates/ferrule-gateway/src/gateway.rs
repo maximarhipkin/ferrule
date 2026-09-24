@@ -140,10 +140,28 @@ impl Gateway {
             let every = health.settings().status_every;
             tasks.push(tokio::spawn(async move {
                 loop {
-                    health.write_status(&health.report(&router.snapshot(), &channels));
+                    let lanes = router.snapshot();
+                    health.write_running(&lanes);
+                    health.write_status(&health.report(&lanes, &channels));
                     let _ = tokio::time::timeout(every, changed.notified()).await;
                 }
             }));
+        }
+        if let Some(notice) = health.take_startup_notice() {
+            let target = health.settings().owner.clone().or(notice.fallback);
+            let channel = target
+                .as_ref()
+                .and_then(|(name, _)| channels.iter().find(|c| c.name() == name).cloned());
+            if let (Some((name, chat)), Some(channel)) = (target, channel) {
+                let out = OutboundMessage {
+                    channel: name,
+                    chat_id: chat,
+                    text: health.redactor().redact(&notice.text),
+                    reply_to: None,
+                    attachments: vec![],
+                };
+                tasks.push(tokio::spawn(send_with_retries(channel, out)));
+            }
         }
         if let Some(after) = health.settings().watchdog_after {
             tasks.push(tokio::spawn(watchdog(health, router, channels, after)));
@@ -242,6 +260,20 @@ impl Gateway {
         if let Err(e) = channel.send(out).await {
             tracing::error!(error = %e, "failed to send an intercepted reply");
         }
+    }
+}
+
+/// The startup notice: the network may not be up yet after a crash, so a
+/// failed send is tried again, for about two minutes.
+async fn send_with_retries(channel: Arc<dyn Channel>, out: OutboundMessage) {
+    let mut wait = Duration::from_secs(1);
+    for attempt in 1..=8 {
+        match channel.send(out.clone()).await {
+            Ok(()) => return,
+            Err(e) => tracing::warn!(attempt, error = %e, "couldn't send the startup notice"),
+        }
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(Duration::from_secs(30));
     }
 }
 

@@ -5,8 +5,8 @@
 
 use crate::config::{self, Config};
 use anyhow::Result;
-use ferrule_gateway::health::{human, stamp, STATUS_FILE};
-use ferrule_gateway::{Health, HealthSettings, RecentLog, Redactor, TaskStore};
+use ferrule_gateway::health::{human, restart_notice, stamp, STATUS_FILE};
+use ferrule_gateway::{Health, HealthSettings, Leftover, Notice, RecentLog, Redactor, TaskStore};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -86,7 +86,39 @@ pub fn build(
     if let Some(store) = store {
         health = health.with_section("schedule", Arc::new(move || schedule_lines(&store)));
     }
-    Ok(health)
+    let notice = startup_notice(cfg, &health);
+    Ok(health.with_startup_notice(notice))
+}
+
+/// What the owner hears when this gateway starts: the restart notice if
+/// the last one didn't shut down cleanly, "back up" if they asked for it.
+fn startup_notice(cfg: &Config, health: &Health) -> Option<Notice> {
+    let now = SystemTime::now();
+    match health.leftover(pid_alive) {
+        Some(Leftover::Unclean(marker)) => {
+            tracing::warn!(
+                pid = marker.pid,
+                interrupted = marker.turns.len(),
+                "the last gateway exited without a clean shutdown"
+            );
+            Some(restart_notice(&marker, now))
+        }
+        Some(Leftover::Running(marker)) => {
+            tracing::warn!(
+                pid = marker.pid,
+                "another gateway seems to be running on this data directory"
+            );
+            None
+        }
+        None => cfg.health.notify_on_start.then(|| Notice {
+            text: format!(
+                "Back up: ferrule {} started at {}.",
+                env!("CARGO_PKG_VERSION"),
+                stamp(now)
+            ),
+            fallback: None,
+        }),
+    }
 }
 
 /// Where the gateway's own warnings go: the owner's Telegram chat, when

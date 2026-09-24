@@ -5,8 +5,10 @@
 
 use crate::channel::Channel;
 use crate::router::LaneSnapshot;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -185,9 +187,59 @@ pub struct Health {
     sections: Vec<(String, Section)>,
     /// When the dispatcher started on the message it's handling now.
     dispatching: Mutex<Option<Instant>>,
+    /// Set by a clean shutdown: nothing writes the files again.
+    closed: AtomicBool,
+    /// Sent once when the gateway runs: the restart notice or "back up".
+    startup: Mutex<Option<Notice>>,
 }
 
 pub const STATUS_FILE: &str = "status.txt";
+/// Says a gateway is running and which turns it's in the middle of; left
+/// behind only by an unclean exit.
+pub const RUNNING_FILE: &str = "running.json";
+
+/// What `running.json` holds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunningMarker {
+    pub pid: u32,
+    pub version: String,
+    /// Unix seconds.
+    pub started: u64,
+    /// The turns in progress, their messages redacted and cut to 80
+    /// characters.
+    pub turns: Vec<MarkedTurn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarkedTurn {
+    pub place: String,
+    pub channel: String,
+    pub chat_id: String,
+    pub text: String,
+}
+
+/// A message the gateway sends on its own: to `settings.owner`, else to
+/// `fallback`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Notice {
+    pub text: String,
+    pub fallback: Option<(String, String)>,
+}
+
+/// A marker another process left: the unclean exit it proves, or a
+/// gateway still running.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Leftover {
+    /// The process that wrote it is gone without cleaning up.
+    Unclean(RunningMarker),
+    /// The marker is fresh and its pid is alive: a second gateway on the
+    /// same data directory.
+    Running(RunningMarker),
+}
+
+/// A marker not rewritten for this long belongs to a dead process, even
+/// if its pid now belongs to another one (a reboot reuses pids).
+pub const MARKER_STALE: Duration = Duration::from_secs(30);
 
 impl Health {
     pub fn new(version: impl Into<String>, settings: HealthSettings) -> Self {
@@ -200,7 +252,48 @@ impl Health {
             recent: RecentLog::global(),
             sections: Vec::new(),
             dispatching: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            startup: Mutex::new(None),
         }
+    }
+
+    /// Sets the message the gateway sends once it runs.
+    pub fn with_startup_notice(self, notice: Option<Notice>) -> Self {
+        *self.startup.lock().unwrap() = notice;
+        self
+    }
+
+    pub(crate) fn take_startup_notice(&self) -> Option<Notice> {
+        self.startup.lock().unwrap().take()
+    }
+
+    /// The marker a previous run left in `dir`, if any. `alive` says
+    /// whether a pid exists (`None` when the platform can't tell). Call it
+    /// before the gateway runs: from then on the marker is ours.
+    pub fn leftover(&self, alive: impl Fn(u32) -> Option<bool>) -> Option<Leftover> {
+        let path = self.settings.dir.as_ref()?.join(RUNNING_FILE);
+        let bytes = std::fs::read(&path).ok()?;
+        let Ok(marker) = serde_json::from_slice::<RunningMarker>(&bytes) else {
+            tracing::warn!(path = %path.display(), "an unreadable running marker; treating it as an unclean exit");
+            return Some(Leftover::Unclean(RunningMarker {
+                pid: 0,
+                version: String::new(),
+                started: 0,
+                turns: Vec::new(),
+            }));
+        };
+        if marker.pid == std::process::id() {
+            return None;
+        }
+        let age = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| SystemTime::now().duration_since(m).ok())
+            .unwrap_or_default();
+        if age < MARKER_STALE && alive(marker.pid) != Some(false) {
+            return Some(Leftover::Running(marker));
+        }
+        Some(Leftover::Unclean(marker))
     }
 
     pub fn with_redactor(mut self, redactor: Arc<Redactor>) -> Self {
@@ -357,17 +450,90 @@ impl Health {
         let Some(dir) = &self.settings.dir else {
             return;
         };
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
         if let Err(e) = write_atomic(&dir.join(STATUS_FILE), report.as_bytes()) {
             tracing::debug!(error = %e, "couldn't write the status file");
         }
     }
 
-    /// A clean shutdown: the files that say a gateway is running go.
-    pub fn shutdown(&self) {
-        if let Some(dir) = &self.settings.dir {
-            let _ = std::fs::remove_file(dir.join(STATUS_FILE));
+    /// Writes `<dir>/running.json`: this process, and the turns it's in
+    /// the middle of.
+    pub fn write_running(&self, lanes: &[LaneSnapshot]) {
+        let Some(dir) = &self.settings.dir else {
+            return;
+        };
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        let marker = RunningMarker {
+            pid: std::process::id(),
+            version: self.version.clone(),
+            started: unix(self.started),
+            turns: lanes
+                .iter()
+                .filter(|l| l.busy_for.is_some())
+                .map(|l| MarkedTurn {
+                    place: l.place(),
+                    channel: l.channel.clone(),
+                    chat_id: l.chat_id.clone(),
+                    text: clip(&self.redactor.redact(&l.text), 80),
+                })
+                .collect(),
+        };
+        let bytes = serde_json::to_vec_pretty(&marker).unwrap_or_default();
+        if let Err(e) = write_atomic(&dir.join(RUNNING_FILE), &bytes) {
+            tracing::debug!(error = %e, "couldn't write the running marker");
         }
     }
+
+    /// A clean shutdown: the files that say a gateway is running go, and
+    /// nothing writes them again.
+    pub fn shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        if let Some(dir) = &self.settings.dir {
+            let _ = std::fs::remove_file(dir.join(STATUS_FILE));
+            let _ = std::fs::remove_file(dir.join(RUNNING_FILE));
+        }
+    }
+}
+
+/// The owner's one message after an unclean exit. The interrupted turns
+/// are named, never run again.
+pub fn restart_notice(marker: &RunningMarker, now: SystemTime) -> Notice {
+    let at = stamp(now);
+    let text = match marker.turns.as_slice() {
+        [] => format!(
+            "I restarted at {at} after an unclean exit (a crash or a kill); no turn was running."
+        ),
+        [t] => format!(
+            "I restarted at {at}; the turn for {} was interrupted while handling: '{}'. It won't be re-run — send it again if it's still needed.",
+            t.place, t.text
+        ),
+        turns => {
+            let mut text = format!(
+                "I restarted at {at}; these turns were interrupted and won't be re-run — send them again if they're still needed:"
+            );
+            for t in turns {
+                text.push_str(&format!("\n- {}: '{}'", t.place, t.text));
+            }
+            text
+        }
+    };
+    Notice {
+        text,
+        fallback: marker
+            .turns
+            .first()
+            .map(|t| (t.channel.clone(), t.chat_id.clone())),
+    }
+}
+
+fn unix(at: SystemTime) -> u64 {
+    at.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
 }
 
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -429,5 +595,143 @@ mod tests {
         assert_eq!(human(Duration::from_secs(5)), "5 s");
         assert_eq!(human(Duration::from_secs(600)), "10 min");
         assert_eq!(human(Duration::from_secs(3900)), "1 h 5 min");
+    }
+
+    fn busy(chat: &str, text: &str) -> LaneSnapshot {
+        LaneSnapshot {
+            session_id: format!("telegram-{chat}"),
+            channel: "telegram".into(),
+            chat_id: chat.into(),
+            busy_for: Some(Duration::from_secs(3)),
+            started_at: Some(SystemTime::now()),
+            activity: "a model call".into(),
+            since_progress: Some(Duration::from_secs(1)),
+            queued: 0,
+            text: text.into(),
+        }
+    }
+
+    fn marker_health(dir: &Path) -> Health {
+        Health::new(
+            "9.9.9",
+            HealthSettings {
+                dir: Some(dir.to_path_buf()),
+                ..Default::default()
+            },
+        )
+        .with_redactor(Arc::new(Redactor::new(["hunter2".to_string()])))
+    }
+
+    #[test]
+    fn the_marker_names_the_turns_in_progress_and_a_clean_shutdown_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let health = marker_health(dir.path());
+        let mut idle = busy("7", "done");
+        idle.busy_for = None;
+        let long = format!("my password is hunter2 {}", "x".repeat(200));
+        health.write_running(&[busy("-100", &long), idle]);
+        let marker: RunningMarker =
+            serde_json::from_slice(&std::fs::read(dir.path().join(RUNNING_FILE)).unwrap()).unwrap();
+        assert_eq!(marker.pid, std::process::id());
+        assert_eq!(marker.turns.len(), 1);
+        assert_eq!(marker.turns[0].place, "telegram chat -100");
+        assert!(marker.turns[0]
+            .text
+            .starts_with("my password is [redacted] xx"));
+        // The first 80 characters, and a mark that there was more.
+        assert_eq!(marker.turns[0].text.chars().count(), 81);
+        assert!(marker.turns[0].text.ends_with('…'));
+        // Our own marker isn't a leftover.
+        assert_eq!(health.leftover(|_| Some(true)), None);
+        health.write_status("report");
+        health.shutdown();
+        assert!(!dir.path().join(RUNNING_FILE).exists());
+        assert!(!dir.path().join(STATUS_FILE).exists());
+        // Nothing writes them after a clean shutdown.
+        health.write_running(&[]);
+        health.write_status("late");
+        assert!(!dir.path().join(RUNNING_FILE).exists());
+        assert!(!dir.path().join(STATUS_FILE).exists());
+    }
+
+    #[test]
+    fn a_leftover_marker_is_an_unclean_exit_unless_its_gateway_still_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let health = marker_health(dir.path());
+        let path = dir.path().join(RUNNING_FILE);
+        let marker = RunningMarker {
+            pid: 999_999,
+            version: "9.9.8".into(),
+            started: 1,
+            turns: vec![MarkedTurn {
+                place: "telegram chat -100".into(),
+                channel: "telegram".into(),
+                chat_id: "-100".into(),
+                text: "deploy the site".into(),
+            }],
+        };
+        std::fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        assert_eq!(
+            health.leftover(|_| Some(false)),
+            Some(Leftover::Unclean(marker.clone()))
+        );
+        // Fresh and alive: another gateway, not a crash.
+        assert_eq!(
+            health.leftover(|_| Some(true)),
+            Some(Leftover::Running(marker.clone()))
+        );
+        // Stale: its pid belongs to someone else now.
+        let old = SystemTime::now() - Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(
+            health.leftover(|_| Some(true)),
+            Some(Leftover::Unclean(marker.clone()))
+        );
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(matches!(
+            health.leftover(|_| Some(true)),
+            Some(Leftover::Unclean(_))
+        ));
+    }
+
+    #[test]
+    fn the_restart_notice_names_what_was_interrupted() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+        let turn = |chat: &str, text: &str| MarkedTurn {
+            place: format!("telegram chat {chat}"),
+            channel: "telegram".into(),
+            chat_id: chat.into(),
+            text: text.into(),
+        };
+        let mut marker = RunningMarker {
+            pid: 1,
+            version: "1".into(),
+            started: 0,
+            turns: vec![],
+        };
+        let none = restart_notice(&marker, at);
+        assert_eq!(
+            none.text,
+            "I restarted at 2026-09-21 14:13:20 UTC after an unclean exit (a crash or a kill); no turn was running."
+        );
+        assert_eq!(none.fallback, None);
+        marker.turns.push(turn("-100", "deploy the site"));
+        let one = restart_notice(&marker, at);
+        assert_eq!(
+            one.text,
+            "I restarted at 2026-09-21 14:13:20 UTC; the turn for telegram chat -100 was interrupted while handling: 'deploy the site'. It won't be re-run — send it again if it's still needed."
+        );
+        assert_eq!(one.fallback, Some(("telegram".into(), "-100".into())));
+        marker.turns.push(turn("42", "hi"));
+        let two = restart_notice(&marker, at).text;
+        assert!(
+            two.ends_with(":\n- telegram chat -100: 'deploy the site'\n- telegram chat 42: 'hi'"),
+            "{two}"
+        );
     }
 }
