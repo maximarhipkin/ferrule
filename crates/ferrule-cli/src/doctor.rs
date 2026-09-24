@@ -121,6 +121,7 @@ pub async fn run(offline: bool) -> Result<bool> {
     let telegram_on = telegram(&mut r, &cfg, &http, offline).await;
     let confined = sandbox(&mut r, &cfg, &secrets_path);
     mcp(&mut r, &cfg, confined);
+    proxy(&mut r, &cfg);
     service_check(&mut r, &path, telegram_on)?;
     binary(&mut r);
     Ok(r.finish())
@@ -372,7 +373,8 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> bool {
 /// MCP servers that run outside the sandbox. Only the config is read: the
 /// servers themselves aren't started.
 fn mcp(r: &mut Report, cfg: &config::Config, confined: bool) {
-    let servers = &cfg.mcp.servers;
+    // Servers reached by URL aren't processes of ours: nothing to confine.
+    let servers: Vec<_> = cfg.mcp.servers.iter().filter(|s| s.url.is_none()).collect();
     if servers.is_empty() {
         return;
     }
@@ -407,6 +409,42 @@ fn mcp(r: &mut Report, cfg: &config::Config, confined: bool) {
             ),
         ),
     }
+}
+
+/// Whether ferrule's own HTTPS — `web_fetch`, MCP servers by URL — and
+/// commands' go through the credential proxy, or straight out.
+fn proxy(r: &mut Report, cfg: &config::Config) {
+    if cfg.secrets.is_empty() {
+        r.note(
+            "proxy",
+            "off (no [secrets]): web_fetch and MCP servers by URL connect directly",
+        );
+        return;
+    }
+    let set = cfg
+        .secrets
+        .keys()
+        .filter(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+        .count();
+    if set == 0 {
+        let names: Vec<&str> = cfg.secrets.keys().map(String::as_str).collect();
+        r.warn(
+            "proxy",
+            format!(
+                "off: none of {} is set, so web_fetch and MCP servers by URL connect directly",
+                names.join(", ")
+            ),
+        );
+        r.hint("`ferrule setup` → Tool credentials, or export them");
+        return;
+    }
+    r.ok(
+        "proxy",
+        format!(
+            "on for {set} secret{}: web_fetch, MCP servers and commands go through it",
+            if set == 1 { "" } else { "s" }
+        ),
+    );
 }
 
 fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Result<()> {

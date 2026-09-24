@@ -2,11 +2,13 @@
 name = "ferrule-mcp"
 version = "0.1.0"
 edition = "2021"
-description = "stdio MCP client: spawns MCP servers and exposes their tools as ferrule Tools"
+description = "MCP client (stdio and Streamable HTTP): exposes MCP servers' tools as ferrule Tools"
 
 [dependencies]
 ferrule-core = { path = "../ferrule-core" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
+ferrule-tools = { path = "../ferrule-tools" }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

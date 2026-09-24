@@ -2,6 +2,7 @@
 //! verbose tool output is the number one source of context bloat.
 
 pub mod diary;
+pub mod egress;
 pub mod fs_tools;
 pub mod shell;
 pub mod web;

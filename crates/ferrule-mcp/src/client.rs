@@ -1,5 +1,6 @@
 use crate::config::McpServerConfig;
 use crate::error::McpError;
+use crate::http::HttpTransport;
 use ferrule_sandbox::Sandbox;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 
-const PROTOCOL_VERSION: &str = "2025-06-18";
+pub(crate) const PROTOCOL_VERSION: &str = "2025-06-18";
 
 type PendingMap = Arc<StdMutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
@@ -49,11 +50,14 @@ pub struct ServerHost {
     pub state_dir: PathBuf,
 }
 
-/// A client for one stdio MCP server. Owns lazy respawn: a dead connection
-/// is only reconnected on the next call, and only once — if that attempt
-/// also fails, the call reports an error rather than looping.
+/// A client for one MCP server: a command spoken to over stdio, or a URL.
+/// For a command it owns lazy respawn: a dead connection is only
+/// reconnected on the next call, and only once — if that attempt also
+/// fails, the call reports an error rather than looping.
 pub struct McpClient {
     cfg: McpServerConfig,
+    /// Set for a server reached by URL; `conn` is then never used.
+    http: Option<HttpTransport>,
     /// This server's own sandbox: the host's, plus its state dir and
     /// `writable_roots`, or unconfined for `sandbox = false`. Either way
     /// secret-looking env is scrubbed and the credential proxy's env set.
@@ -64,7 +68,7 @@ pub struct McpClient {
     next_id: AtomicU64,
 }
 
-fn extract_result(resp: Value) -> Result<Value, McpError> {
+pub(crate) fn extract_result(resp: Value) -> Result<Value, McpError> {
     if let Some(err) = resp.get("error") {
         let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
         let message = err
@@ -78,7 +82,24 @@ fn extract_result(resp: Value) -> Result<Value, McpError> {
 }
 
 impl McpClient {
-    pub fn new(cfg: McpServerConfig, host: ServerHost) -> Self {
+    /// Fails only on a config that can't work: both or neither of
+    /// `command` and `url`, a bad URL or header, or a `${VAR}` in a header
+    /// that isn't set. Nothing is started yet.
+    pub fn new(cfg: McpServerConfig, host: ServerHost) -> Result<Self, McpError> {
+        let http = match (cfg.url.as_deref(), cfg.command.is_empty()) {
+            (Some(_), false) => {
+                return Err(McpError::Config("set `command` or `url`, not both".into()))
+            }
+            (None, true) => return Err(McpError::Config("set `command` or `url`".into())),
+            (Some(url), true) => Some(HttpTransport::new(
+                url,
+                &cfg.headers,
+                |name| host.sandbox.child_env_var(name),
+                host.sandbox.egress(),
+                cfg.startup_timeout(),
+            )?),
+            (None, false) => None,
+        };
         let sandbox = if cfg.sandbox {
             host.sandbox
                 .for_helper(&host.state_dir, &cfg.writable_roots)
@@ -86,14 +107,15 @@ impl McpClient {
             host.sandbox
                 .unconfined(format!("mcp.servers `{}` has sandbox = false", cfg.name))
         };
-        Self {
+        Ok(Self {
             cfg,
+            http,
             sandbox,
             workspace: host.workspace,
             state_dir: host.state_dir,
             conn: AsyncMutex::new(None),
             next_id: AtomicU64::new(1),
-        }
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -101,9 +123,13 @@ impl McpClient {
     }
 
     /// Why this server runs without the OS sandbox, if it does:
-    /// `sandbox = false` in its config, or none available here.
+    /// `sandbox = false` in its config, or none available here. `None` for
+    /// a server reached by URL, which runs nowhere near this machine.
     pub fn sandbox_degraded(&self) -> Option<&str> {
-        self.sandbox.degraded()
+        match self.http {
+            Some(_) => None,
+            None => self.sandbox.degraded(),
+        }
     }
 
     /// Ensure a live connection exists (spawning + handshaking if needed),
@@ -116,6 +142,10 @@ impl McpClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, McpError> {
+        if let Some(http) = &self.http {
+            let resp = http.request(&self.next_id, method, params, timeout).await?;
+            return extract_result(resp);
+        }
         let handle = {
             let mut guard = self.conn.lock().await;
             let needs_connect = match guard.as_ref() {

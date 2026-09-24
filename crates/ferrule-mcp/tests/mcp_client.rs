@@ -15,6 +15,8 @@ fn fixture_cfg(name: &str, timeout_secs: Option<u64>) -> McpServerConfig {
         command: "python3".into(),
         args: vec![script.into()],
         env: Default::default(),
+        url: None,
+        headers: Default::default(),
         timeout_secs,
         sandbox: true,
         writable_roots: vec![],

@@ -1,5 +1,6 @@
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
+use ferrule_sandbox::Egress;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -8,12 +9,25 @@ use std::time::Duration;
 /// behind MCP, not in the core toolbelt.
 pub struct WebFetchTool {
     pub timeout: Duration,
+    /// The credential proxy, when there is one: HTTPS then goes through
+    /// it, like sandboxed commands' requests do.
+    pub egress: Option<Egress>,
 }
 
 impl Default for WebFetchTool {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(30),
+            egress: None,
+        }
+    }
+}
+
+impl WebFetchTool {
+    pub fn with_egress(egress: Option<Egress>) -> Self {
+        Self {
+            egress,
+            ..Self::default()
         }
     }
 }
@@ -92,7 +106,11 @@ impl Tool for WebFetchTool {
                 message: "only http(s) URLs allowed".into(),
             });
         }
-        let client = reqwest::Client::builder()
+        let client = crate::egress::client_builder(self.egress.as_ref())
+            .map_err(|e| CoreError::ToolFailed {
+                tool: "web_fetch".into(),
+                message: format!("the credential proxy's settings: {e}"),
+            })?
             .timeout(self.timeout)
             .build()
             .map_err(|e| CoreError::Provider(e.to_string()))?;

@@ -237,6 +237,13 @@ profile = "openai"
 #                            # always gets the workspace, tmp and its own state
 #                            # dir (HOME, caches) under the data dir, plus network
 # sandbox = true             # false: no OS sandbox for it (doctor warns)
+#
+# [[mcp.servers]]           # or a remote one, over Streamable HTTP: `url`
+# name = "remote"            # instead of `command`. With [secrets] it goes
+# url = "https://mcp.example.com/mcp"  # through the credential proxy, so a
+# headers = { Authorization = "Bearer ${EXAMPLE_TOKEN}" }  # secret's
+#                            # placeholder is swapped for the real value only
+#                            # on its hosts; ${VAR} is read from ferrule's env.
 
 # [skills]                  # Agent Skills (SKILL.md folders, Claude-compatible).
 # enabled = true             # Searched: <workspace>/.ferrule|.agents|.claude/skills,

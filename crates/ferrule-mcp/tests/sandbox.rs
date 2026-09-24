@@ -55,6 +55,8 @@ fn server(sandboxed: bool, extra: &Path) -> McpServerConfig {
         command: "python3".into(),
         args: vec![concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_mcp.py").into()],
         env: Default::default(),
+        url: None,
+        headers: Default::default(),
         timeout_secs: Some(20),
         sandbox: sandboxed,
         writable_roots: vec![extra.to_path_buf()],

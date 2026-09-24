@@ -73,7 +73,7 @@ pub async fn connect_and_build_tools(
 ) -> Result<Vec<Arc<dyn Tool>>, McpError> {
     let server_name = cfg.name.clone();
     let timeout = cfg.timeout();
-    let client = Arc::new(McpClient::new(cfg, host));
+    let client = Arc::new(McpClient::new(cfg, host)?);
     if let Some(reason) = client.sandbox_degraded() {
         tracing::warn!(
             server = %server_name,

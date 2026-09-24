@@ -2,17 +2,29 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// `[[mcp.servers]]` entry in `ferrule.toml`. One entry spawns one stdio MCP
-/// server whose tools all become ferrule tools named `mcp__<name>__<tool>`.
+/// `[[mcp.servers]]` entry in `ferrule.toml`: a command to spawn and speak
+/// to over stdio, or the URL of a server speaking Streamable HTTP. Its
+/// tools all become ferrule tools named `mcp__<name>__<tool>`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpServerConfig {
     /// Namespace for this server's tools; must be stable across restarts.
     pub name: String,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// A remote server's endpoint, instead of `command`. HTTPS goes through
+    /// the credential proxy when there is one.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Sent with every request to `url`. `${VAR}` expands to the variable
+    /// as a sandboxed command would see it, so a `[secrets]` entry arrives
+    /// as its placeholder and the proxy swaps the real value in for the
+    /// hosts it is bound to.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     /// Per-call timeout for `tools/call`. Defaults to 60s if unset. Startup
     /// gets at least 60s regardless, see [`Self::startup_timeout`].
     pub timeout_secs: Option<u64>,

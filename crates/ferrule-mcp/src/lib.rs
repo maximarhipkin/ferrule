@@ -1,6 +1,6 @@
-//! `ferrule-mcp`: a stdio MCP (Model Context Protocol) client. Spawns a
-//! server process, speaks newline-delimited JSON-RPC 2.0 over its stdio, and
-//! exposes each of its tools as an ordinary `ferrule_core::tool::Tool` named
+//! `ferrule-mcp`: an MCP (Model Context Protocol) client. Spawns a server
+//! process and speaks newline-delimited JSON-RPC 2.0 over its stdio, or
+//! POSTs to a server's URL (Streamable HTTP), and exposes each of its tools as an ordinary `ferrule_core::tool::Tool` named
 //! `mcp__<server>__<tool>` — the same convention Claude Code uses.
 //!
 //! A separate crate (rather than a module in `ferrule-tools`) because MCP
@@ -12,6 +12,7 @@
 pub mod client;
 pub mod config;
 pub mod error;
+mod http;
 pub mod tool;
 
 pub use client::{CallToolResult, McpClient, McpToolInfo, ServerHost};

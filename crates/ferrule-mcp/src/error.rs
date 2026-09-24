@@ -16,6 +16,10 @@ pub enum McpError {
     Handshake(String),
     #[error("mcp rpc error {code}: {message}")]
     Rpc { code: i64, message: String },
+    #[error("mcp server config: {0}")]
+    Config(String),
+    #[error("mcp over http: {0}")]
+    Http(String),
     #[error("mcp response decode error: {0}")]
     Serde(#[from] serde_json::Error),
 }

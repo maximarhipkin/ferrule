@@ -7,7 +7,7 @@ mod secrets;
 mod service;
 mod setup;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
 use ferrule_core::tool::Tool;
 use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
@@ -19,9 +19,11 @@ use ferrule_mcp::McpServerConfig;
 use ferrule_memory::MemoryStore;
 use ferrule_providers::OpenAiCompatProvider;
 use ferrule_proxy::{Broker, BrokerConfig, Upstream};
-use ferrule_sandbox::{Mode, Sandbox};
+use ferrule_sandbox::{Egress, Mode, Sandbox};
 use ferrule_tools::standard_registry;
-use ferrule_tools::{CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WriteFileTool};
+use ferrule_tools::{
+    CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WebFetchTool, WriteFileTool,
+};
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -465,6 +467,9 @@ fn build_agent_from(
     let sandbox = shared_sandbox(&cfg)?;
     let broker = shared_broker(&cfg)?;
     registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone())));
+    registry.register(Arc::new(WebFetchTool::with_egress(
+        sandbox.egress().cloned(),
+    )));
     // The file tools run in this process, outside the sandbox: they refuse
     // its hidden paths themselves, or a workspace that contains the data
     // dir would let `read_file` hand over the saved keys.
@@ -640,7 +645,14 @@ fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
         eprintln!("ferrule: {w}");
     }
     if let Some(broker) = broker {
-        sandbox = sandbox.with_env(broker.child_env());
+        let ca_cert_pem = std::fs::read_to_string(broker.ca_cert_path())
+            .with_context(|| format!("reading {}", broker.ca_cert_path().display()))?;
+        sandbox = sandbox
+            .with_env(broker.child_env())
+            .with_egress(Some(Egress {
+                proxy_url: broker.proxy_url(),
+                ca_cert_pem,
+            }));
     }
     Ok(SANDBOX.get_or_init(|| Arc::new(sandbox)).clone())
 }
