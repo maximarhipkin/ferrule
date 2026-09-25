@@ -12,7 +12,7 @@
 # under WSL2 (curl -fsSL .../install.sh | sh inside it).
 #
 # Optional environment:
-#   $env:FERRULE_VERSION      a release tag such as v0.2.0 (default: the latest)
+#   $env:FERRULE_VERSION      a release tag such as v0.3.0 (default: the latest)
 #   $env:FERRULE_INSTALL_DIR  where ferrule.exe goes
 #   $env:FERRULE_NO_SETUP=1   install only, don't start the wizard
 #   $env:GITHUB_TOKEN         optional: download through the API (a private fork)

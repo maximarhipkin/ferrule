@@ -316,7 +316,7 @@
           ["last served", v.last_served || "–"],
         ])),
         table(["model", "price", "context", "state", ""], v.models.map((r) => [
-          el("span", {}, r.reference, r.default ? " " : null, r.default ? tag("default", "ok") : null, r.aliases.length ? el("div", { class: "muted", text: r.aliases.join(", ") }) : null),
+          el("span", {}, r.reference, r.default ? " " : null, r.default ? tag("default", "ok") : null, r.aliases.length ? el("div", { class: "muted", text: r.aliases.join(", ") }) : null, r.driver ? el("div", { class: "muted", text: r.driver + " api" }) : null),
           el("span", {}, r.pricing ? price(r.pricing) : tag("no price", "warn"), r.price_source ? el("div", { class: "muted", text: r.price_source }) : null),
           r.context_window ? num(r.context_window) : "–",
           r.down_secs !== null && r.down_secs !== undefined

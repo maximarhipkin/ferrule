@@ -500,6 +500,28 @@ journal, without reading code.
 page, sees the outage on top, picks a catalog model as the default, and
 the next message works.
 
+### M23 — native drivers
+
+**Status.** Built (`docs/m23-drivers.md`; user guide in `docs/models.md`,
+Drivers). PR to `main` open, not merged.
+- Three drivers behind the one `Provider` trait: OpenAI-compatible Chat,
+  Anthropic's native Messages API, and OpenAI's Responses API, stateless
+  (`store: false`, encrypted reasoning).
+- `api = "chat" | "anthropic" | "responses"`, inferred from `base_url`
+  when unset. A v0.3.0 Anthropic config moves to native by itself;
+  `api = "chat"` keeps the old route.
+- Anthropic prompt caching with cache writes priced in the ledger;
+  optional thinking and reasoning, replayed unchanged within a turn,
+  never shown or logged.
+- Fallback across drivers mid-conversation carries the plain transcript
+  only. `model test`, doctor and the dashboard show each model's driver.
+- Failure classes and per-call cost and latency are ready for M25's
+  router, which isn't built here.
+
+**Done means.** An Anthropic user's second turn is billed mostly at the
+cached price, and a conversation that falls over from Claude to another
+driver mid-turn keeps going.
+
 ### M24 — the dashboard's leftovers
 
 **Status.** Built, PR open (`docs/m24-dashboard-2.md`, user guide

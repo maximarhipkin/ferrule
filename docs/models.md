@@ -38,10 +38,64 @@ Keys are never written to the config. Setup saves them to the private
 secrets file, or you export them. The config only names the variable
 (`api_key_env`).
 
-**Anthropic** is reached through its OpenAI-compatible endpoint. Chat and
-tools work, but prompt caching is lost (every turn pays full input price),
-and so are extended-thinking output and PDF input. A native driver is
-planned.
+## Drivers
+
+Each provider is spoken to by one of three drivers, set with `api`:
+
+| `api` | endpoint | inferred when |
+|---|---|---|
+| `"chat"` | `/chat/completions` (OpenAI-compatible) | anything else |
+| `"anthropic"` | Anthropic's native `/v1/messages` | `base_url` is `api.anthropic.com` |
+| `"responses"` | OpenAI's `/v1/responses`, stateless | never; set it yourself |
+
+When `api` is unset, Ferrule infers it from `base_url`. A value you write
+always wins. `ferrule doctor`, `ferrule model list` and the dashboard show
+the driver and whether it was set or inferred.
+
+**Anthropic** runs on the native Messages API. Prompt caching is on, so a
+long conversation pays the cheaper cached price for everything it has
+already sent. Cache writes cost 1.25× the input price unless you set
+`price_cache_write_per_mtok`. A config from v0.3.0 that points at
+`api.anthropic.com` moves to the native driver by itself. To keep the old
+OpenAI-compatible route, write `api = "chat"`.
+
+**OpenAI Responses** keeps no state on OpenAI's side (`store: false`).
+Reasoning comes back encrypted and is sent back unchanged on the next call
+of the same turn. It works against `api.openai.com` and hosts that
+implement the same endpoint. For OpenRouter, keep `"chat"`.
+
+Ferrule doesn't ask for thinking or reasoning unless you set it. A model
+that thinks by default still does, and its thinking is carried through the
+turn. Either way it is never shown in the chat and never written to logs:
+
+```toml
+[providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-sonnet-5"
+# api = "anthropic"                    # inferred from base_url
+thinking = "adaptive"                  # "disabled", or a budget (older models): 8000
+effort = "medium"                      # optional
+max_tokens = 32000                     # optional; at least 16000 is sent
+price_input_per_mtok = 3.0
+price_cached_input_per_mtok = 0.3
+price_cache_write_per_mtok = 3.75      # optional; 1.25× input by default
+price_output_per_mtok = 15.0
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-5.2"
+api = "responses"
+effort = "low"                         # "none", "low", "medium", "high"
+```
+
+`thinking`, `effort` and `max_tokens` can also be set on one model under
+`[providers.<name>.models."<id>"]`. `api` belongs to the provider only.
+
+If a fallback moves a conversation to a model on another driver, the new
+model gets the plain conversation: text, tool calls and tool results. The
+old model's thinking or reasoning stays behind.
 
 By hand, a config looks like this:
 

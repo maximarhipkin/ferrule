@@ -422,6 +422,24 @@ that convention yet — ask before introducing one).
       | recommend | fill-prices`; `doctor` warns on unpriced models.
     - **Decisions for Max and open edges:** see the M22 session-log
       entry.
+  - **M23 native drivers**: **built** (2026-09-25, branch `m23-drivers`,
+    PR to main open, not merged). Design and as-built notes are in
+    `docs/m23-drivers.md`; the user guide is `docs/models.md`, Drivers.
+    - `ferrule-providers` has three drivers behind `Provider`: Chat
+      (OpenAI-compatible, as before), Anthropic's native Messages API and
+      OpenAI's Responses API (stateless: `store: false` and encrypted
+      reasoning).
+    - `api = "chat" | "anthropic" | "responses"` per provider, inferred
+      from `base_url` (only `api.anthropic.com` → anthropic). `thinking`,
+      `effort` and `max_tokens` per provider or per model.
+    - Provider-native blocks ride on the neutral transcript and are
+      replayed only within the loop, to the same api and model; compaction
+      and cross-driver fallback drop them. Redacted from logs and never
+      shown.
+    - Cache writes are counted and priced (`price_cache_write_per_mtok`,
+      1.25× input by default on the anthropic api). `CoreError::class()`
+      gives M25 its failure classes.
+    - **Decisions for Max and open edges:** see the M23 session-log entry.
   - **M24 the dashboard's leftovers**: **built, PR open** (2026-09-25,
     branch `m24-dashboard-2`). Design and as-built notes are in
     `docs/m24-dashboard-2.md`; the user guide is `docs/dashboard.md`.
@@ -3457,6 +3475,81 @@ There's no build step and no library.
   container's TLS-intercepting proxy is in the way.
 - RTL rendering was checked by construction (`dir="auto"` on every text
   that comes from outside), not on a device.
+- macOS and Windows until this PR's CI run.
+
+### 2026-09-25 — M23 native drivers (Devi, Opus 5.5)
+
+The design is `docs/m23-drivers.md`. Its **As built** section lists where
+the build departs from it. The user guide is `docs/models.md`, Drivers.
+The work is on branch `m23-drivers`, cut from `main` at `59e0d96` (0.3.0),
+with a PR to `main` (not merged).
+
+**Commits:**
+- `2293dae` design: three drivers, the neutral transcript with native
+  blocks and their replay policy, Anthropic caching and thinking, usage and
+  prices, stateless Responses, selection and back-compat, tests, failure
+  modes.
+- `4ae45cd` core: `NativeBlocks` on `Message` (replayed only in the
+  current loop, cleared by compaction, redacted from logs),
+  `cache_write_input_tokens` in `Usage` and the ledger,
+  `CoreError::class()` and the refusal class.
+- `ce38fd4` drivers: `anthropic.rs` (top-level system, tool_use and
+  tool_result with multi-tool turns, id sanitizing, cache_control
+  breakpoints, optional thinking passed back unchanged, the 16 000
+  `max_tokens` floor, no temperature, 529/429/400 mapped to the M19b
+  retry and M21 fallback classes) and `responses.rs` (`store: false`,
+  `include: ["reasoning.encrypted_content"]`, effort, cached-token usage).
+  Hermetic mocks on 127.0.0.1 with hand-written fixtures.
+- `3006d39` selection: `api`, `thinking`, `effort`, `max_tokens` and
+  `price_cache_write_per_mtok` in the config; one `client()` builder used
+  by run/chat/gateway, `model test`, learn and eval; setup's Anthropic
+  preset on the native driver; doctor, `model list` and the dashboard show
+  the driver; `fill-prices` reads write prices.
+- `9701fe2` tests: fallback mid-conversation Anthropic-with-thinking →
+  Chat and Responses-with-reasoning → Anthropic through the real `Agent`
+  and `RoutedProvider`; `model test` on each driver; two `#[ignore]` live
+  smoke tests.
+- docs: `docs/models.md`, the design's As built section, the roadmap, this
+  entry.
+
+**Checks:** fmt clean; clippy `-D warnings` clean; `cargo test --workspace`
+753 passed, 0 failed, 4 ignored (two of them the new live tests). Checked
+on Linux. macOS and Windows are this PR's CI.
+
+**Eval (mock, `ferrule eval run evals/starter --variant ab`, all 20
+tasks, real binary):**
+- engineered 20/20, naive 11/20, +45 pts
+- 150 calls, 951.5k input + 6.2k output tokens, $0.98 ($0.53 / $0.45)
+- 13 compactions / 11 truncations; 4 failed checks fixed
+
+That is identical to the run before M23 (the mock is on the Chat
+driver). A first attempt counted 151 calls: the harness started before the
+mock was listening, and one connection refusal was retried.
+
+**Decisions for Max:**
+- A v0.3.0 config pointing at `api.anthropic.com` moves to the native
+  driver without being edited (why it's safe: design §7). `api = "chat"`
+  keeps the old route.
+- Thinking and reasoning aren't requested unless set (a model that thinks
+  by default still does). Cache writes default to 1.25×
+  input on the anthropic api.
+- Responses' `max_output_tokens` is floored at 16 000 unless
+  `effort = "none"`; a reasoning item without `encrypted_content` is
+  dropped rather than replayed.
+- The live tests default to `claude-sonnet-5` and `gpt-5-mini`.
+
+**Open edges:** no streaming; no PDFs or citations; the 1-hour cache TTL,
+preserved thinking across user turns and strict tools are follow-ups
+(design §11). M25's router isn't built; its inputs (failure class, cost,
+latency per call) are.
+
+**Unverified:**
+- Both drivers against the real APIs: this container has no Anthropic or
+  OpenAI key. Max runs
+  `ANTHROPIC_API_KEY=… OPENAI_API_KEY=… cargo test -p ferrule-providers --test live -- --ignored --nocapture`.
+- The cache hit rate on a real account (the mock test checks the
+  breakpoints and the arithmetic).
+- A Responses-compatible host other than api.openai.com.
 - macOS and Windows until this PR's CI run.
 
 ### 2026-09-25 — M24 the dashboard's leftovers (Devi, Opus 5.5)

@@ -6,19 +6,24 @@ use ferrule_core::{EvalTag, LedgerRecord, LedgerSink, StopFlag};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
-/// USD per million tokens. `input` is charged on the uncached part only.
+/// USD per million tokens. `input` is charged on the part neither read
+/// from nor written to the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Pricing {
     pub input: f64,
     pub cached_input: f64,
     pub output: f64,
+    /// M23: a cache write. `None`: the input price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
 }
 
 impl Pricing {
-    pub fn cost(&self, input: u64, cached: u64, output: u64) -> f64 {
-        let uncached = input.saturating_sub(cached);
-        (uncached as f64 * self.input
+    pub fn cost(&self, input: u64, cached: u64, written: u64, output: u64) -> f64 {
+        let rest = input.saturating_sub(cached).saturating_sub(written);
+        (rest as f64 * self.input
             + cached as f64 * self.cached_input
+            + written as f64 * self.cache_write.unwrap_or(self.input)
             + output as f64 * self.output)
             / 1_000_000.0
     }
@@ -161,6 +166,7 @@ impl EvalSink {
                 record.cost_usd = Some(p.cost(
                     record.input_tokens,
                     record.cached_input_tokens,
+                    record.cache_write_input_tokens,
                     record.output_tokens,
                 ));
             }

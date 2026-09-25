@@ -112,7 +112,7 @@ pub fn render(p: &PlanInput<'_>) -> Result<String> {
         out,
         "  worst-case cost: {}",
         match p.pricing {
-            Some(pr) => usd(Some(pr.cost(all_in, 0, all_out))),
+            Some(pr) => usd(Some(pr.cost(all_in, 0, 0, all_out))),
             None => format!(
                 "n/a — set price_input_per_mtok, price_cached_input_per_mtok and \
                  price_output_per_mtok under [providers.{}] to price it",

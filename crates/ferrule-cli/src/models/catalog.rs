@@ -11,6 +11,7 @@ use crate::ledger::ProviderPricing;
 use crate::setup::{put, table};
 use chrono::{DateTime, Utc};
 use ferrule_core::LedgerRecord;
+use ferrule_providers::Api;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -276,6 +277,7 @@ pub fn parse(body: &serde_json::Value) -> Option<Vec<Listed>> {
                     input,
                     cached_input: per_m(p.get("input_cache_read")).unwrap_or(input),
                     output: per_m(p.get("completion"))?,
+                    cache_write: per_m(p.get("input_cache_write")),
                 })
             });
             let tools = m
@@ -755,7 +757,7 @@ impl Models {
                 if e.pricing.is_some() && e.price_source.is_none() {
                     continue;
                 }
-                let Some((l, p)) = price_for(e, listings) else {
+                let Some((l, p)) = price_for(e, listings).map(|(l, p)| (l, as_billed(e, p))) else {
                     if e.pricing.is_none() {
                         unknown.push(format!("{}: no list has its price", e.reference()));
                     }
@@ -841,6 +843,7 @@ impl Models {
             said.push(self.add_model(provider, id, None, by)?.said);
         }
         if let Some(p) = listing.and_then(|l| l.find(id)).and_then(|m| m.pricing) {
+            let p = as_billed(&base, p);
             let note = source_note(listing.unwrap());
             let wrote = self.edit_config(|t, cat| {
                 let e = cat
@@ -887,7 +890,19 @@ impl Models {
     }
 }
 
-/// `[providers.P.models."M"]`'s three prices and where they came from.
+/// A list's prices as the ledger would bill them on `e`'s driver (M23): a
+/// cache-write price counts only where writes are reported (the anthropic
+/// api), and there it defaults to 1.25× input.
+fn as_billed(e: &Entry, p: ProviderPricing) -> ProviderPricing {
+    let listed = p.cache_write.filter(|_| e.api == Api::Anthropic);
+    ProviderPricing {
+        cache_write: crate::ledger::write_price(listed, e.api, p.input),
+        ..p
+    }
+}
+
+/// `[providers.P.models."M"]`'s prices and where they came from. A write
+/// price goes in only when it isn't the default.
 fn write_prices(
     t: &mut crate::setup::Target,
     e: &Entry,
@@ -898,6 +913,14 @@ fn write_prices(
     put(tbl, "price_input_per_mtok", p.input);
     put(tbl, "price_cached_input_per_mtok", p.cached_input);
     put(tbl, "price_output_per_mtok", p.output);
+    match p.cache_write {
+        Some(w) if crate::ledger::write_price(None, e.api, p.input) != Some(w) => {
+            put(tbl, "price_cache_write_per_mtok", w);
+        }
+        _ => {
+            tbl.remove("price_cache_write_per_mtok");
+        }
+    }
     put(tbl, "price_source", note);
     Ok(())
 }
@@ -1044,6 +1067,7 @@ mod tests {
             input: 1.0,
             cached_input: 0.1,
             output: 2.0,
+            cache_write: None,
         };
         // (2 + 0.1 + 2) USD over 10 days → 12.30 for 30.
         assert_eq!(u.monthly(&p), Some(12.3));
@@ -1072,6 +1096,89 @@ mod tests {
         assert_eq!(load(&src, dir.path(), false).await.error, None);
     }
 
+    /// M23: a list's cache-write price lands only where the driver
+    /// reports writes, isn't written when it's the default, and a second
+    /// fill changes nothing.
+    #[test]
+    fn fill_prices_writes_a_cache_write_price_only_for_the_anthropic_api() {
+        let text = r#"
+default_provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-sonnet-5"
+
+[providers.anthropic.models."claude-haiku-5"]
+
+[providers.or]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+model = "anthropic/claude-sonnet-5"
+"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferrule.toml");
+        std::fs::write(&path, text).unwrap();
+        let models = Models::new(path.clone(), None, &toml::from_str(text).unwrap());
+        let listed = |id: &str, input: f64, write: Option<f64>| Listed {
+            id: id.into(),
+            name: None,
+            context: None,
+            pricing: Some(ProviderPricing {
+                input,
+                cached_input: input / 10.0,
+                output: input * 5.0,
+                cache_write: write,
+            }),
+            tools: None,
+            free: false,
+        };
+        let listings = vec![Listing {
+            source: "openrouter".into(),
+            provider: None,
+            from: "live",
+            fetched_at: Some(1_790_000_000),
+            error: None,
+            models: vec![
+                listed("claude-sonnet-5", 2.0, Some(2.5)),
+                listed("claude-haiku-5", 1.0, Some(1.5)),
+                listed("anthropic/claude-sonnet-5", 2.0, Some(2.5)),
+            ],
+        }];
+        let f = models.fill_prices(&listings, "test").unwrap();
+        assert_eq!(f.filled.len(), 3, "{f:?}");
+        let written: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let p = &written["providers"];
+        let at = |prov: &str, model: &str| {
+            p[prov]["models"][model]
+                .get("price_cache_write_per_mtok")
+                .cloned()
+        };
+        assert_eq!(
+            at("anthropic", "claude-sonnet-5"),
+            None,
+            "1.25× is the default"
+        );
+        assert_eq!(
+            at("anthropic", "claude-haiku-5"),
+            Some(toml::Value::Float(1.5))
+        );
+        assert_eq!(
+            at("or", "anthropic/claude-sonnet-5"),
+            None,
+            "the chat api reports no writes"
+        );
+        let cat = models.catalog();
+        let price = |r: &str| cat.resolve(r).unwrap().pricing.unwrap().cache_write;
+        assert_eq!(price("anthropic/claude-sonnet-5"), Some(2.5));
+        assert_eq!(price("anthropic/claude-haiku-5"), Some(1.5));
+        assert_eq!(price("or"), None);
+
+        let again = models.fill_prices(&listings, "test").unwrap();
+        assert!(again.filled.is_empty(), "{again:?}");
+    }
+
     #[test]
     fn unpriced_models_are_named() {
         let mut cat = Catalog::default();
@@ -1086,11 +1193,15 @@ mod tests {
             pricing,
             price_source: None,
             aliases: vec![],
+            api: ferrule_providers::Api::Chat,
+            api_set: false,
+            options: Default::default(),
         };
         let zero = Some(ProviderPricing {
             input: 0.0,
             cached_input: 0.0,
             output: 0.0,
+            cache_write: None,
         });
         cat.entries = vec![e("a", None), e("b", zero), e("c:free", zero)];
         let u = unpriced(&cat);

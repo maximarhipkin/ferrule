@@ -9,7 +9,7 @@ use crate::ledger::{Prices, ProviderPricing};
 use chrono::{DateTime, Utc};
 use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
 use ferrule_core::{CoreError, FailOver, HarnessProfile, Served};
-use ferrule_providers::OpenAiCompatProvider;
+use ferrule_providers::{Api, DriverOptions};
 use ferrule_trust::Hub;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -20,6 +20,8 @@ use std::time::{Duration, Instant, SystemTime};
 mod admin;
 pub mod catalog;
 mod cli;
+#[cfg(test)]
+mod cross_driver;
 mod door;
 pub use admin::*;
 pub use cli::{cmd, render, ModelCmd};
@@ -43,9 +45,32 @@ pub struct Entry {
     /// The model's `price_source`: who wrote its prices, if not by hand.
     pub price_source: Option<String>,
     pub aliases: Vec<String>,
+    /// M23: the driver, and whether the config names it (else inferred).
+    pub api: Api,
+    pub api_set: bool,
+    #[serde(skip)]
+    pub options: DriverOptions,
 }
 
 impl Entry {
+    /// A driver for this model with `key`.
+    pub fn client(&self, key: impl Into<String>) -> Arc<dyn Provider> {
+        ferrule_providers::build(
+            self.api,
+            self.provider.clone(),
+            &self.base_url,
+            key,
+            &self.model,
+            self.options.clone(),
+        )
+    }
+
+    /// `anthropic (inferred)`, `responses (set)`: for doctor and the page.
+    pub fn driver(&self) -> String {
+        let how = if self.api_set { "set" } else { "inferred" };
+        format!("{} ({how})", self.api)
+    }
+
     /// `provider/model`.
     pub fn reference(&self) -> String {
         format!("{}/{}", self.provider, self.model)
@@ -231,12 +256,19 @@ fn entry(
     // Field by field, the model's own, else the provider's; and then all
     // three prices or none (M19's rule).
     let pricing = (|| {
+        let input = mc.price_input_per_mtok.or(p.price_input_per_mtok)?;
         Some(ProviderPricing {
-            input: mc.price_input_per_mtok.or(p.price_input_per_mtok)?,
+            input,
             cached_input: mc
                 .price_cached_input_per_mtok
                 .or(p.price_cached_input_per_mtok)?,
             output: mc.price_output_per_mtok.or(p.price_output_per_mtok)?,
+            cache_write: crate::ledger::write_price(
+                mc.price_cache_write_per_mtok
+                    .or(p.price_cache_write_per_mtok),
+                p.api(),
+                input,
+            ),
         })
     })();
     Entry {
@@ -250,6 +282,9 @@ fn entry(
         pricing,
         price_source: mc.price_source.clone(),
         aliases: Vec::new(),
+        api: p.api(),
+        api_set: p.api.is_some(),
+        options: p.driver_options(model),
     }
 }
 
@@ -308,6 +343,9 @@ impl Scope {
 /// running lane.
 pub type TaskModels = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+/// A driver is reused while everything it was built from stays the same.
+type ClientKey = (String, String, String, String, Api, DriverOptions);
+
 struct Down {
     until: Instant,
     reason: String,
@@ -323,7 +361,7 @@ struct State {
     pins_seen: Option<(SystemTime, u64)>,
     down: HashMap<String, Down>,
     served: HashMap<String, (String, DateTime<Utc>)>,
-    clients: HashMap<(String, String, String, String), Arc<OpenAiCompatProvider>>,
+    clients: HashMap<ClientKey, Arc<dyn Provider>>,
     warned: HashSet<String>,
 }
 
@@ -476,15 +514,10 @@ impl Models {
                 entry.base_url.clone(),
                 key.clone(),
                 entry.model.clone(),
+                entry.api,
+                entry.options.clone(),
             ))
-            .or_insert_with(|| {
-                Arc::new(OpenAiCompatProvider::new(
-                    entry.provider.clone(),
-                    &entry.base_url,
-                    key,
-                    &entry.model,
-                ))
-            })
+            .or_insert_with(|| entry.client(key))
             .clone();
         Ok(Route {
             entry,
@@ -674,17 +707,24 @@ fn short_reason(error: &CoreError) -> String {
             return format!("HTTP {code} after its retries");
         }
     }
-    if msg.starts_with("request failed") {
+    if no_connection(msg) {
         return "no connection, after its retries".into();
     }
     let short: String = msg.chars().take(80).collect();
     format!("{short} after its retries")
 }
 
+/// The drivers' words for a call that never got an answer.
+fn no_connection(msg: &str) -> bool {
+    ["request failed", "could not connect", "request timed out"]
+        .iter()
+        .any(|p| msg.starts_with(p))
+}
+
 /// Where one call goes.
 pub struct Route {
     pub entry: Entry,
-    pub client: Arc<OpenAiCompatProvider>,
+    pub client: Arc<dyn Provider>,
     /// The model it stands in for, which is down.
     pub instead_of: Option<String>,
 }
@@ -821,6 +861,79 @@ model = "vendor/shared"
         assert_eq!(cat.resolve("b/b-small").unwrap().aliases, vec!["fast"]);
     }
 
+    /// M23: a v0.3.0 config (no `api` anywhere) loads as it did, except
+    /// that Anthropic's own URL now gets the native driver; `api = "chat"`
+    /// keeps the old route, and an explicit word beats the URL.
+    #[test]
+    fn the_driver_is_inferred_from_the_url_unless_the_config_names_it() {
+        let v030 = r#"
+default_provider = "anthropic"
+
+[providers.anthropic]
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-sonnet-5"
+profile = "anthropic"
+price_input_per_mtok = 2.0
+price_cached_input_per_mtok = 0.2
+price_output_per_mtok = 10.0
+
+[providers.anthropic.models."claude-opus-5"]
+
+[providers.kimi]
+base_url = "https://api.moonshot.ai/v1"
+api_key_env = "MOONSHOT_API_KEY"
+model = "kimi-k2.6"
+profile = "kimi"
+"#;
+        let cat = Catalog::from_config(&cfg(v030));
+        let sonnet = cat.resolve("anthropic/claude-sonnet-5").unwrap();
+        assert_eq!((sonnet.api, sonnet.api_set), (Api::Anthropic, false));
+        assert_eq!(sonnet.driver(), "anthropic (inferred)");
+        // Cache writes default to 1.25× input on the native driver.
+        assert_eq!(sonnet.pricing.unwrap().cache_write, Some(2.5));
+        let opus = cat.resolve("anthropic/claude-opus-5").unwrap();
+        assert_eq!(opus.api, Api::Anthropic, "a model takes its provider's");
+        let kimi = cat.resolve("kimi").unwrap();
+        assert_eq!(kimi.api, Api::Chat);
+
+        let pinned = v030.replace(
+            "profile = \"anthropic\"",
+            "profile = \"anthropic\"\napi = \"chat\"",
+        );
+        let cat = Catalog::from_config(&cfg(&pinned));
+        let sonnet = cat.resolve("anthropic").unwrap();
+        assert_eq!(
+            (sonnet.api, sonnet.driver().as_str()),
+            (Api::Chat, "chat (set)")
+        );
+        assert_eq!(sonnet.pricing.unwrap().cache_write, None);
+
+        let gateway = r#"
+[providers.gw]
+base_url = "https://gateway.example/v1"
+api_key_env = "GW_KEY"
+model = "gpt-5.5"
+api = "responses"
+effort = "low"
+
+[providers.gw.models."o-mini"]
+effort = "high"
+max_tokens = 32000
+"#;
+        let cat = Catalog::from_config(&cfg(gateway));
+        let main = cat.resolve("gw/gpt-5.5").unwrap();
+        assert_eq!((main.api, main.api_set), (Api::Responses, true));
+        assert_eq!(main.options.effort.as_deref(), Some("low"));
+        let mini = cat.resolve("gw/o-mini").unwrap();
+        assert_eq!(mini.options.effort.as_deref(), Some("high"));
+        assert_eq!(mini.options.max_tokens, Some(32_000));
+
+        let bad = toml::from_str::<Config>(&gateway.replace("\"responses\"", "\"grpc\""));
+        let e = bad.unwrap_err().to_string();
+        assert!(e.contains("unknown api \"grpc\""), "{e}");
+    }
+
     #[test]
     fn a_model_takes_its_providers_fields_one_by_one() {
         let cat = Catalog::from_config(&cfg(CONFIG));
@@ -830,7 +943,8 @@ model = "vendor/shared"
             Some(ProviderPricing {
                 input: 1.0,
                 cached_input: 0.5,
-                output: 8.0
+                output: 8.0,
+                cache_write: None,
             })
         );
         assert_eq!(two.profile, "openai");

@@ -46,6 +46,12 @@ pub struct LedgerRecord {
     /// Includes `cached_input_tokens` (OpenAI `prompt_tokens` convention).
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
+    /// Input tokens written to the provider's prompt cache on this call
+    /// (Anthropic `cache_creation_input_tokens`; M23). Also included in
+    /// `input_tokens`, and priced at the cache-write rate. 0 on providers
+    /// that don't report it, and on older rows.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_input_tokens: u64,
     pub output_tokens: u64,
     /// Number of tool calls in the response (0 for a final answer or a
     /// compaction summary).
@@ -120,4 +126,8 @@ pub struct LedgerContext {
     pub task_shape: String,
     pub origin: Option<String>,
     pub model: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }

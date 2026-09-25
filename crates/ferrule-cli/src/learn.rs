@@ -14,7 +14,6 @@ use ferrule_gateway::{
 };
 use ferrule_learn::files::{Change, DONE};
 use ferrule_learn::{Caps, Episode, LearnDir, Options, PassRecord, Spent, WorkspaceGate};
-use ferrule_providers::OpenAiCompatProvider;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -236,12 +235,7 @@ fn env(cfg: &Config, workspace: &Path, provider: Option<String>) -> Result<ferru
         .filter(|k| !k.is_empty())
         .ok_or_else(|| anyhow::anyhow!(entry.no_key()))?;
     let name = entry.provider.clone();
-    let model = Arc::new(OpenAiCompatProvider::new(
-        name.clone(),
-        &entry.base_url,
-        key,
-        &entry.model,
-    ));
+    let model = entry.client(key);
     let pricing = entry.pricing;
     let price: ferrule_learn::PriceFn =
         Arc::new(move |r: &LedgerRecord| pricing.map(|p| p.cost_usd(r)));

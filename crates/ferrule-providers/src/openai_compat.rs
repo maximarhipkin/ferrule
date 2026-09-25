@@ -1,9 +1,9 @@
+use crate::common::{self, truncate};
 use ferrule_core::error::CoreError;
 use ferrule_core::message::{Message, Role, ToolCall, Usage};
 use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
 use ferrule_core::tool::ToolDefinition;
 use serde_json::{json, Value};
-use std::time::Duration;
 
 /// OpenAI-compatible chat-completions driver. Handles the dialect details:
 /// tool schemas as `function` objects, arguments as JSON strings, and
@@ -23,14 +23,7 @@ impl OpenAiCompatProvider {
         api_key: impl Into<String>,
         model: impl Into<String>,
     ) -> Self {
-        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(600));
-        // Test builds only: bypass any ambient proxy (e.g. the sandbox's
-        // ONECLI gateway) so tests against a local mock server don't depend
-        // on NO_PROXY being set in the environment. Never affects release binaries.
-        if cfg!(test) {
-            builder = builder.no_proxy();
-        }
-        let client = builder.build().expect("reqwest client");
+        let client = common::client();
         Self {
             name: name.into(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
@@ -66,8 +59,10 @@ impl OpenAiCompatProvider {
         if let Some(id) = &msg.tool_call_id {
             m["tool_call_id"] = json!(id);
         }
-        // Preserve interleaved thinking for models trained on it.
-        if retain_reasoning {
+        // Preserve interleaved thinking for models trained on it — but not
+        // another driver's (a native Anthropic or Responses turn carries
+        // `native`; its thinking was never this model's, M23).
+        if retain_reasoning && msg.native.is_none() {
             if let Some(r) = &msg.reasoning {
                 m["reasoning_content"] = json!(r);
             }
@@ -150,67 +145,10 @@ impl OpenAiCompatProvider {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0),
                 cached_input_tokens: cached,
+                cache_write_input_tokens: 0,
             },
         })
     }
-}
-
-fn truncate(v: &Value) -> String {
-    let s = v.to_string();
-    s.chars().take(500).collect()
-}
-
-fn transient(message: String, retry_after: Option<Duration>) -> CoreError {
-    CoreError::Transient {
-        message,
-        retry_after,
-    }
-}
-
-/// Worth another try: a rate limit, a timeout, or the server's own failure.
-fn retryable(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::REQUEST_TIMEOUT
-        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
-}
-
-/// `Retry-After` in seconds. The HTTP-date form is rare from these APIs and
-/// is ignored, falling back to backoff.
-fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let secs: f64 = headers
-        .get(reqwest::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    (secs.is_finite() && secs >= 0.0).then(|| Duration::from_secs_f64(secs))
-}
-
-/// An error object in a 200 response (how OpenRouter and some gateways
-/// pass on an upstream failure) that says to try again.
-fn transient_error_object(err: &Value) -> bool {
-    let code = err.get("code");
-    if let Some(n) = code.and_then(Value::as_u64) {
-        return n == 408 || n == 429 || (500..600).contains(&n);
-    }
-    let words = [code, err.get("type"), err.get("status")];
-    words
-        .iter()
-        .filter_map(|w| w.and_then(Value::as_str))
-        .any(|w| {
-            let w = w.to_ascii_lowercase();
-            [
-                "rate_limit",
-                "overloaded",
-                "server_error",
-                "timeout",
-                "unavailable",
-                "resource_exhausted",
-            ]
-            .iter()
-            .any(|t| w.contains(t))
-        })
 }
 
 #[async_trait::async_trait]
@@ -235,60 +173,16 @@ impl Provider for OpenAiCompatProvider {
             payload["max_tokens"] = json!(m);
         }
 
-        let sent = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&payload)
-            .send()
-            .await;
-        // `without_url()`: the URL isn't secret here, but some gateways put
-        // a key in it, and these errors end up in logs and chats.
-        let resp = match sent.map_err(|e| e.without_url()) {
-            Ok(resp) => resp,
-            // No connection or no answer in time: the next try may get one.
-            Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
-                return Err(transient(format!("request failed: {e}"), None))
-            }
-            Err(e) => return Err(CoreError::Provider(format!("request failed: {e}"))),
-        };
-
-        let status = resp.status();
-        let wait = retry_after(resp.headers());
-        let classify = |message: String| {
-            if retryable(status) {
-                transient(message, wait)
-            } else {
-                CoreError::Provider(message)
-            }
-        };
-        // Text first: a proxy's 502 is an HTML page, and it's still a 502.
-        let text = resp.text().await.map_err(|e| {
-            transient(
-                format!(
-                    "reading the response (HTTP {status}) failed: {}",
-                    e.without_url()
-                ),
-                None,
-            )
-        })?;
-        let body: Value = match serde_json::from_str(&text) {
-            Ok(body) => body,
-            Err(_) => {
-                let start: String = text.trim().chars().take(300).collect();
-                return Err(classify(format!("HTTP {status}, not JSON: {start}")));
-            }
-        };
-        if !status.is_success() {
-            return Err(classify(format!("HTTP {status}: {}", truncate(&body))));
-        }
+        let reply = common::send(
+            self.client
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&payload),
+        )
+        .await?;
+        let body = reply.body;
         if let Some(err) = body.get("error").filter(|e| !e.is_null()) {
-            let message = format!("error in an HTTP 200 response: {}", truncate(err));
-            return Err(if transient_error_object(err) {
-                transient(message, wait)
-            } else {
-                CoreError::Provider(message)
-            });
+            return Err(common::error_in_body(err, reply.wait));
         }
         Self::parse_response(&body)
     }
@@ -299,6 +193,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::time::Duration;
 
     /// Minimal canned HTTP server: one request in, one JSON response out.
     fn mock_server(response_body: &'static str) -> (String, std::thread::JoinHandle<String>) {
@@ -307,6 +202,24 @@ mod tests {
             "content-type: application/json\r\n",
             response_body,
         )
+    }
+
+    #[test]
+    fn another_drivers_thinking_is_not_replayed_as_reasoning_content() {
+        let own = Message::assistant(Some("a".into()), vec![], Some("mine".into()));
+        assert_eq!(
+            OpenAiCompatProvider::to_wire(&own, true)["reasoning_content"],
+            "mine"
+        );
+        // A turn a native driver served (M21 fell back mid-conversation).
+        let foreign = own.clone().with_native(ferrule_core::NativeBlocks {
+            api: "anthropic".into(),
+            model: "claude-sonnet-5".into(),
+            items: vec![json!({"type": "thinking", "thinking": "mine", "signature": "s"})],
+        });
+        let wire = OpenAiCompatProvider::to_wire(&foreign, true);
+        assert!(wire.get("reasoning_content").is_none(), "{wire}");
+        assert_eq!(wire["content"], "a");
     }
 
     /// One request in, the given status line, extra headers and body out.

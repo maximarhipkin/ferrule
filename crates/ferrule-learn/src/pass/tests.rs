@@ -21,6 +21,7 @@ impl Provider for Queue {
                     input_tokens: 90,
                     output_tokens: 10,
                     cached_input_tokens: 0,
+                    cache_write_input_tokens: 0,
                 },
             }),
             None => Err(CoreError::Provider("down".into())),
