@@ -75,6 +75,10 @@ pub struct McpServerConfig {
     /// config file.
     #[serde(skip)]
     pub warm_up: Vec<String>,
+    /// Where a `url` server's credential comes from, asked per request: a
+    /// connection's token (M20). Not reachable from a config file.
+    #[serde(skip)]
+    pub auth: Option<crate::auth::Auth>,
 }
 
 impl Default for McpServerConfig {
@@ -96,6 +100,7 @@ impl Default for McpServerConfig {
             output_caps: HashMap::new(),
             desktop_services: false,
             warm_up: Vec::new(),
+            auth: None,
         }
     }
 }

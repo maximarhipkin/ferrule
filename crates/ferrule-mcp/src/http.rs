@@ -2,6 +2,7 @@
 //! is a POST, answered with JSON or a short SSE stream. Only what tool
 //! calls need — no server-initiated GET stream, no resumption.
 
+use crate::auth::Auth;
 use crate::client::PROTOCOL_VERSION;
 use crate::error::McpError;
 use ferrule_sandbox::Egress;
@@ -21,6 +22,15 @@ pub(crate) struct HttpTransport {
     headers: HeaderMap,
     startup_timeout: Duration,
     session: AsyncMutex<Option<Session>>,
+    /// Asked for a credential per request (a connection's token).
+    auth: Option<Auth>,
+}
+
+/// A credential header as sent, and its value, to scrub from error text.
+struct Credential {
+    name: HeaderName,
+    value: HeaderValue,
+    raw: String,
 }
 
 #[derive(Clone)]
@@ -37,6 +47,7 @@ impl HttpTransport {
         lookup: impl Fn(&str) -> Option<String>,
         egress: Option<&Egress>,
         startup_timeout: Duration,
+        auth: Option<Auth>,
     ) -> Result<Self, McpError> {
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return Err(McpError::Config(format!("`{url}` isn't an http(s) URL")));
@@ -60,6 +71,7 @@ impl HttpTransport {
             headers: map,
             startup_timeout,
             session: AsyncMutex::new(None),
+            auth,
         })
     }
 
@@ -123,9 +135,8 @@ impl HttpTransport {
                 .to_string(),
         };
         let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}});
-        let sent = self
-            .post(&note, Some(&session))
-            .send()
+        let (sent, _) = self
+            .send(&note, Some(&session))
             .await
             .map_err(|e| McpError::Handshake(e.to_string()))?;
         if !sent.status().is_success() {
@@ -138,13 +149,51 @@ impl HttpTransport {
         Ok(session)
     }
 
-    fn post(&self, msg: &Value, session: Option<&Session>) -> reqwest::RequestBuilder {
+    /// POST `msg` with the current credential; on a 401, once more with a
+    /// refreshed one. Also hands back the credential's value, which the
+    /// caller scrubs from any error text built from the response.
+    async fn send(
+        &self,
+        msg: &Value,
+        session: Option<&Session>,
+    ) -> Result<(reqwest::Response, Option<String>), McpError> {
+        let Some(auth) = &self.auth else {
+            let resp = self.post(msg, session, None).send().await;
+            return Ok((resp.map_err(http_error)?, None));
+        };
+        let cred = credential(auth.0.header().await)?;
+        let resp = self
+            .post(msg, session, Some(&cred))
+            .send()
+            .await
+            .map_err(|e| scrubbed(http_error(e), &cred.raw))?;
+        if resp.status() != StatusCode::UNAUTHORIZED {
+            return Ok((resp, Some(cred.raw)));
+        }
+        let fresh = credential(auth.0.refreshed(&cred.raw).await)?;
+        let resp = self
+            .post(msg, session, Some(&fresh))
+            .send()
+            .await
+            .map_err(|e| scrubbed(http_error(e), &fresh.raw))?;
+        Ok((resp, Some(fresh.raw)))
+    }
+
+    fn post(
+        &self,
+        msg: &Value,
+        session: Option<&Session>,
+        cred: Option<&Credential>,
+    ) -> reqwest::RequestBuilder {
         let mut req = self
             .client
             .post(&self.url)
             .headers(self.headers.clone())
             .header(ACCEPT, "application/json, text/event-stream")
             .json(msg);
+        if let Some(cred) = cred {
+            req = req.header(cred.name.clone(), cred.value.clone());
+        }
         if let Some(session) = session {
             req = req.header("mcp-protocol-version", &session.protocol);
             if let Some(id) = &session.id {
@@ -165,14 +214,24 @@ impl HttpTransport {
     ) -> Result<Result<(Value, Option<String>), McpError>, Expired> {
         let has_session = session.and_then(|s| s.id.as_ref()).is_some();
         let call = async {
-            let resp = self.post(msg, session).send().await.map_err(http_error)?;
+            let (resp, raw) = self.send(msg, session).await?;
             let status = resp.status();
             if status == StatusCode::NOT_FOUND && has_session {
                 return Ok(Err(Expired));
             }
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
+                let body = match &raw {
+                    Some(raw) => scrub(&body, raw),
+                    None => body,
+                };
                 let body: String = body.chars().take(300).collect();
+                if status == StatusCode::UNAUTHORIZED && raw.is_some() {
+                    return Err(McpError::Http(format!(
+                        "HTTP {status}: the service refused the connection's credential \
+                         even after a refresh; the owner may need to reconnect it"
+                    )));
+                }
                 return Err(McpError::Http(format!("HTTP {status}: {body}")));
             }
             let session_id = resp
@@ -206,6 +265,34 @@ impl HttpTransport {
 
 /// The server no longer knows our session.
 struct Expired;
+
+fn credential(got: Result<(String, String), String>) -> Result<Credential, McpError> {
+    let (name, raw) = got.map_err(|e| McpError::Http(format!("credential: {e}")))?;
+    let name = HeaderName::from_bytes(name.as_bytes())
+        .map_err(|_| McpError::Config("credential: a bad header name".into()))?;
+    let mut value = HeaderValue::from_str(&raw)
+        .map_err(|_| McpError::Http("credential: not a valid header value".into()))?;
+    value.set_sensitive(true);
+    Ok(Credential { name, value, raw })
+}
+
+/// `text` with the credential `raw`, and the token after its `Bearer `,
+/// taken out.
+fn scrub(text: &str, raw: &str) -> String {
+    let token = raw.rsplit(' ').next().unwrap_or(raw);
+    if token.len() < 8 {
+        return text.replace(raw, "[credential]");
+    }
+    text.replace(raw, "[credential]")
+        .replace(token, "[credential]")
+}
+
+fn scrubbed(e: McpError, raw: &str) -> McpError {
+    match e {
+        McpError::Http(text) => McpError::Http(scrub(&text, raw)),
+        other => other,
+    }
+}
 
 fn http_error(e: reqwest::Error) -> McpError {
     // reqwest hides the cause (a TLS failure, a refused connection) a
@@ -295,6 +382,18 @@ mod tests {
         assert_eq!(expand("plain", lookup).unwrap(), "plain");
         assert!(expand("Bearer ${NOPE}", lookup).is_err());
         assert!(expand("Bearer ${TOKEN", lookup).is_err());
+    }
+
+    #[test]
+    fn a_credential_is_scrubbed_from_error_text() {
+        let raw = "Bearer lin_oauth_abcdef123456";
+        assert_eq!(
+            scrub(
+                "bad token lin_oauth_abcdef123456 for Bearer lin_oauth_abcdef123456",
+                raw
+            ),
+            "bad token [credential] for [credential]"
+        );
     }
 
     #[test]

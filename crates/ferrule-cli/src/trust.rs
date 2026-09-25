@@ -51,6 +51,11 @@ pub fn bound_hosts(cfg: &Config) -> Vec<HostPattern> {
 
 /// `[trust] owner_chat`, else the first private chat (a positive id) the
 /// gateway allows.
+/// The hub, if something in this process made it already.
+pub fn existing_hub() -> Option<Arc<Hub>> {
+    HUB.lock().unwrap().clone()
+}
+
 pub fn owner_chat(cfg: &Config) -> Option<i64> {
     cfg.trust.owner_chat.or_else(|| {
         cfg.gateway

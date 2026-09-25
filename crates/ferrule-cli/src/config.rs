@@ -206,6 +206,9 @@ pub struct Config {
     /// M19b: the gateway's watchdogs, restart notice and heartbeat.
     #[serde(default)]
     pub health: HealthConfig,
+    /// M20: connected services and the relay their logins come back through.
+    #[serde(default)]
+    pub connections: ferrule_connections::ConnectionsConfig,
 }
 
 /// `[health]` (docs/m19b-reliability.md).

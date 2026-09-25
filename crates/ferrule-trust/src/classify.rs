@@ -20,6 +20,8 @@ pub enum Kind {
     RecursiveDelete,
     ForcePush,
     HttpDelete,
+    /// M20: a connected service's tool that doesn't say it only reads.
+    ConnectedWrite,
 }
 
 impl fmt::Display for Kind {
@@ -28,6 +30,7 @@ impl fmt::Display for Kind {
             Kind::RecursiveDelete => "recursive delete",
             Kind::ForcePush => "force push",
             Kind::HttpDelete => "DELETE request to a host with a bound secret",
+            Kind::ConnectedWrite => "change through a connected service",
         })
     }
 }
@@ -46,6 +49,19 @@ pub fn classify(tool: &str, args: &Value, bound_hosts: &[HostPattern]) -> Option
     }
     let command = args.get("command")?.as_str()?;
     classify_command(command, bound_hosts)
+}
+
+/// M20: a tool of a connected service (`mcp__<name>__*`, `name` in
+/// `connected`) that can change things: every tool whose server doesn't
+/// mark it read-only. The hint only ever skips the gate for a tool that
+/// claims to read; a missing one gates.
+pub fn classify_connected(tool: &str, changes: bool, connected: &[String]) -> Option<Gated> {
+    let rest = tool.strip_prefix("mcp__")?;
+    let (server, _) = rest.split_once("__")?;
+    (changes && connected.iter().any(|c| c == server)).then(|| Gated {
+        kind: Kind::ConnectedWrite,
+        command: tool.to_string(),
+    })
 }
 
 pub fn classify_command(command: &str, bound_hosts: &[HostPattern]) -> Option<Gated> {
@@ -418,6 +434,16 @@ fn host_of(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_connected_servers_changing_tools_are_gated() {
+        let c = vec!["notion".to_string()];
+        assert!(classify_connected("mcp__notion__create", true, &c).is_some());
+        assert!(classify_connected("mcp__notion__search", false, &c).is_none());
+        assert!(classify_connected("mcp__notionx__create", true, &c).is_none());
+        assert!(classify_connected("notion__create", true, &c).is_none());
+        assert!(classify_connected("mcp__notion", true, &c).is_none());
+    }
 
     fn bound() -> Vec<HostPattern> {
         ["api.github.com", "*.example.com"]

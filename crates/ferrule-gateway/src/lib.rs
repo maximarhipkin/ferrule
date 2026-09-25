@@ -18,7 +18,9 @@ pub mod scheduler;
 pub mod sdnotify;
 pub mod session;
 
-pub use channel::{Channel, ChannelCapabilities};
+pub use channel::{
+    buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
+};
 pub use channels::{LocalChannel, TelegramChannel};
 pub use error::GatewayError;
 pub use gateway::{Gateway, Interceptor, ACK_EMOJI};

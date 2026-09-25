@@ -102,6 +102,12 @@ pub fn build(
             Arc::new(move || crate::models::status_lines(&models)),
         );
     }
+    if let Some(conns) = crate::connections::shared(cfg) {
+        health = health.with_section(
+            "connections",
+            Arc::new(move || crate::connections::status_lines(&conns)),
+        );
+    }
     let notice = startup_notice(cfg, &health);
     Ok(health
         .with_startup_notice(notice)

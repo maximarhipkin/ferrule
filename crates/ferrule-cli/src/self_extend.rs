@@ -169,6 +169,7 @@ pub async fn start(
     manager.start(servers).await;
     manager.spawn_sync();
     crate::config_follow::spawn(&manager, &cfg, &path, allow_trusted(&path));
+    crate::connections::follow(&manager, &cfg);
     Ok(Extensions {
         manager,
         enabled: cfg.extensions.enabled,

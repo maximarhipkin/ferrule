@@ -9,6 +9,7 @@
 //! needs `McpServerConfig` for `ferrule.toml` regardless of which other
 //! tools are compiled in.
 
+pub mod auth;
 pub mod browser;
 pub mod client;
 pub mod config;
@@ -16,6 +17,7 @@ pub mod error;
 mod http;
 pub mod tool;
 
+pub use auth::{Auth, CredentialSource};
 pub use browser::BrowserConfig;
 pub use client::{CallToolResult, McpClient, McpToolInfo, ServerHost};
 pub use config::McpServerConfig;

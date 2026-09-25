@@ -1,0 +1,30 @@
+[package]
+name = "ferrule-connections"
+version = "0.2.0"
+edition = "2021"
+description = "M20 connections: the agent asks, the owner approves, ferrule holds the token — OAuth (PKCE, DCR), the relay, API keys through an encrypted form, the catalog"
+
+[dependencies]
+ferrule-core = { path = "../ferrule-core" }
+ferrule-mcp = { path = "../ferrule-mcp" }
+ferrule-sandbox = { path = "../ferrule-sandbox" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+toml = { workspace = true }
+ring = "0.17"
+base64 = "0.22"
+url = "2"
+
+[dev-dependencies]
+ferrule-extensions = { path = "../ferrule-extensions" }
+tempfile = { workspace = true }
+bytes = "1"
+http = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"

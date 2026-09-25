@@ -84,6 +84,8 @@ pub struct Hub {
     changed: watch::Sender<u64>,
     poll: Duration,
     bound: Vec<HostPattern>,
+    /// M20: the connected services, whose changing tools are gated.
+    connected: RwLock<Vec<String>>,
 }
 
 impl Hub {
@@ -113,6 +115,7 @@ impl Hub {
             changed: watch::channel(0).0,
             poll: Duration::from_secs(1),
             bound,
+            connected: RwLock::new(Vec::new()),
         };
         // A restart doesn't warn twice for today's windows.
         let today = hub.meter.day(hub.clock.now()).to_string();
@@ -141,6 +144,15 @@ impl Hub {
 
     pub fn bound_hosts(&self) -> &[HostPattern] {
         &self.bound
+    }
+
+    /// M20: the services connected now (their MCP server names).
+    pub fn set_connected(&self, names: Vec<String>) {
+        *self.connected.write().unwrap() = names;
+    }
+
+    pub fn connected(&self) -> Vec<String> {
+        self.connected.read().unwrap().clone()
     }
 
     pub fn audit(&self) -> &Audit {
