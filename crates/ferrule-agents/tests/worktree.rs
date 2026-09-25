@@ -39,7 +39,7 @@ fn repo(rig: &Rig) -> PathBuf {
 }
 
 fn same(a: &Path, b: &Path) -> bool {
-    std::fs::canonicalize(a).unwrap() == std::fs::canonicalize(b).unwrap()
+    dunce::canonicalize(a).unwrap() == dunce::canonicalize(b).unwrap()
 }
 
 fn spawn_as(sup: &Supervisor, caller: &str, role: Role, worktree: bool) -> Spawned {

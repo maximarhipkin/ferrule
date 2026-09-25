@@ -255,7 +255,31 @@ pub fn pid_alive(pid: u32) -> Option<bool> {
         let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
         Some(r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_ACCESS_DENIED, STILL_ACTIVE,
+        };
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: plain Win32 calls; the handle is ours and closed before returning.
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                // Denied means it exists but isn't ours (like EPERM); anything
+                // else (ERROR_INVALID_PARAMETER) means no such process.
+                return Some(GetLastError() == ERROR_ACCESS_DENIED);
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            // An exited process can still be opened while a handle to it is
+            // held; its exit code tells. (One that exited with 259 reads as alive.)
+            (ok != 0).then_some(code == STILL_ACTIVE as u32)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         None

@@ -486,9 +486,7 @@ pub async fn add_to(path: PathBuf, mut a: AddArgs) -> Result<Vec<String>> {
         .expect("just added");
 
     // 4-5. Start it as the daemon would, list and scan.
-    let workspace = a
-        .workspace
-        .canonicalize()
+    let workspace = dunce::canonicalize(&a.workspace)
         .map_err(|e| anyhow!("workspace {}: {e}", a.workspace.display()))?;
     let state_dir = layout.mcp_state(&a.name);
     let fresh_dir = !state_dir.exists();

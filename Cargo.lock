@@ -487,6 +487,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -528,9 +534,10 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "ferrule-agents"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
+ "dunce",
  "ferrule-core",
  "rusqlite",
  "serde",
@@ -544,13 +551,14 @@ dependencies = [
 
 [[package]]
 name = "ferrule-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
  "clap",
  "dirs",
+ "dunce",
  "ferrule-agents",
  "ferrule-core",
  "ferrule-eval",
@@ -578,11 +586,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "ferrule-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -597,11 +606,12 @@ dependencies = [
 
 [[package]]
 name = "ferrule-eval"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "dunce",
  "ferrule-core",
  "ferrule-sandbox",
  "ferrule-skills",
@@ -617,10 +627,11 @@ dependencies = [
 
 [[package]]
 name = "ferrule-extensions"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "dunce",
  "ferrule-core",
  "ferrule-mcp",
  "ferrule-sandbox",
@@ -638,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -659,10 +670,11 @@ dependencies = [
 
 [[package]]
 name = "ferrule-hooks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "dunce",
  "ferrule-core",
  "ferrule-sandbox",
  "ring",
@@ -676,11 +688,12 @@ dependencies = [
 
 [[package]]
 name = "ferrule-learn"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "dunce",
  "ferrule-core",
  "ferrule-eval",
  "ferrule-memory",
@@ -696,9 +709,10 @@ dependencies = [
 
 [[package]]
 name = "ferrule-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
+ "dunce",
  "ferrule-core",
  "ferrule-sandbox",
  "ferrule-tools",
@@ -713,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -724,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-providers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "ferrule-core",
@@ -738,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-proxy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -768,8 +782,9 @@ dependencies = [
 
 [[package]]
 name = "ferrule-sandbox"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "dunce",
  "libc",
  "serde",
  "serde_json",
@@ -779,10 +794,11 @@ dependencies = [
 
 [[package]]
 name = "ferrule-skills"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "dirs",
+ "dunce",
  "ferrule-core",
  "serde_json",
  "tempfile",
@@ -792,9 +808,10 @@ dependencies = [
 
 [[package]]
 name = "ferrule-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
+ "dunce",
  "ferrule-core",
  "ferrule-sandbox",
  "reqwest",
@@ -807,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-trust"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",

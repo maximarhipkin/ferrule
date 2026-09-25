@@ -163,7 +163,7 @@ pub fn register(
     if !learning.enabled {
         return scheduler;
     }
-    let workspace = workspace.canonicalize().unwrap_or(workspace.to_path_buf());
+    let workspace = dunce::canonicalize(workspace).unwrap_or(workspace.to_path_buf());
     scheduler.with_builtin(
         TASK_NAME,
         Arc::new(Job {
@@ -351,7 +351,7 @@ pub async fn cmd(op: LearnCmd) -> Result<()> {
             provider,
         } => {
             let (cfg, _) = Config::load()?;
-            let workspace = workspace.canonicalize().unwrap_or(workspace);
+            let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
             if dry_run {
                 let env = env(&cfg, &workspace, provider)?;
                 print_plan(&ferrule_learn::plan(

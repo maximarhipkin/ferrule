@@ -43,11 +43,11 @@ impl Fixture {
         std::fs::create_dir_all(&state)?;
         // macOS: /var/folders/… is /private/var/folders/…; the sandbox and
         // the file tools compare canonical paths.
-        let workspace = ws.canonicalize()?;
+        let workspace = dunce::canonicalize(ws)?;
         let fixture = Fixture {
             root,
             workspace,
-            state: state.canonicalize()?,
+            state: dunce::canonicalize(state)?,
             keep,
         };
 

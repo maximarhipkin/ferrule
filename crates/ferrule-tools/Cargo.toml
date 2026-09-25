@@ -1,10 +1,11 @@
 [package]
 name = "ferrule-tools"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Workspace-scoped built-in tools: fs, shell, web"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
 serde = { workspace = true }

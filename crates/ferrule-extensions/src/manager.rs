@@ -523,7 +523,7 @@ impl ExtensionManager {
         // there and nowhere else it couldn't already.
         let verifier = ferrule_tools::CommandVerifier::new(check, self.sandbox(), CHECK_TIMEOUT);
         let ctx = ToolContext {
-            workspace: draft.canonicalize()?,
+            workspace: dunce::canonicalize(&draft)?,
             max_output_chars: 4_000,
         };
         if let Err(out) = verifier.verify(&ctx).await {

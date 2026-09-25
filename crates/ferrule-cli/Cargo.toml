@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "ferrule binary: run, chat, memory, config"
 
@@ -9,6 +9,7 @@ name = "ferrule"
 path = "src/main.rs"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 ferrule-providers = { path = "../ferrule-providers" }
 ferrule-tools = { path = "../ferrule-tools" }
@@ -40,6 +41,9 @@ reqwest = { workspace = true }
 inquire = "0.9"
 toml_edit = "0.22"
 libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

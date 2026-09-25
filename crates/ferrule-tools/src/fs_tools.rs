@@ -26,7 +26,7 @@ fn resolve(workspace: &Path, hidden: &[PathBuf], path: &str) -> Result<PathBuf, 
         tool: "fs".into(),
         message: format!("path `{path}` escapes workspace `{}`", ws.display()),
     };
-    let ws_real = ws.canonicalize().unwrap_or_else(|_| ws.clone());
+    let ws_real = dunce::canonicalize(&ws).unwrap_or_else(|_| ws.clone());
     let resolved = match real(&lexical(&candidate)) {
         Some(resolved) if resolved.starts_with(&ws_real) => resolved,
         _ => return Err(escapes()),
@@ -90,7 +90,7 @@ fn real(path: &Path) -> Option<PathBuf> {
         rest.push(existing.file_name()?);
         existing = existing.parent()?;
     }
-    let mut resolved = existing.canonicalize().ok()?;
+    let mut resolved = dunce::canonicalize(existing).ok()?;
     resolved.extend(rest.iter().rev());
     Some(resolved)
 }

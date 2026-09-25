@@ -1,10 +1,11 @@
 [package]
 name = "ferrule-skills"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Agent Skills (SKILL.md) discovery, catalog and activation tools"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

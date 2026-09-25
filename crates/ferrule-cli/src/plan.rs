@@ -67,7 +67,7 @@ pub async fn run(
 ) -> Result<()> {
     let (cfg, _) = config::Config::load()?;
     let hub = trust::hub(&cfg)?;
-    let workspace = workspace.canonicalize().unwrap_or(workspace);
+    let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let session = uuid::Uuid::new_v4().to_string();
     trust::set_planning(&session, true);
     let explored = crate::run_root(

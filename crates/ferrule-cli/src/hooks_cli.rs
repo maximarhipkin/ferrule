@@ -86,14 +86,14 @@ pub fn run(op: HooksCmd) -> Result<()> {
                     (HooksConfig::default(), None)
                 }
             };
-            let workspace = workspace.canonicalize().unwrap_or(workspace);
+            let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
             print!(
                 "{}",
                 ferrule_hooks::render_list(&settings, verify.as_deref(), &workspace, &data, runs)
             );
         }
         HooksCmd::Trust { workspace } => {
-            let workspace = workspace.canonicalize()?;
+            let workspace = dunce::canonicalize(workspace)?;
             let file = ferrule_hooks::trust::workspace_file(&workspace);
             let text = std::fs::read_to_string(&file)
                 .map_err(|e| anyhow!("can't read {}: {e}", file.display()))?;
@@ -141,7 +141,7 @@ pub fn run(op: HooksCmd) -> Result<()> {
             }
         }
         HooksCmd::Untrust { workspace } => {
-            let workspace = workspace.canonicalize().unwrap_or(workspace);
+            let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
             if TrustStore::in_data_dir(&data)
                 .untrust(&workspace)
                 .map_err(|e| anyhow!(e))?

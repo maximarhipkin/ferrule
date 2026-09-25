@@ -221,9 +221,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
-            workspace: std::env::temp_dir()
-                .canonicalize()
-                .unwrap_or(PathBuf::from("/tmp")),
+            workspace: dunce::canonicalize(std::env::temp_dir()).unwrap_or(PathBuf::from("/tmp")),
             max_output_chars: 10_000,
         }
     }
@@ -362,7 +360,7 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let c = ToolContext {
-            workspace: ws.path().canonicalize().unwrap(),
+            workspace: dunce::canonicalize(ws.path()).unwrap(),
             max_output_chars: 1_000,
         };
         let target = outside.path().join("x");
