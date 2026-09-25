@@ -3274,6 +3274,19 @@ isn't bumped. Everything ran against a fake Bot API and mock models.
 - fmt and clippy are clean, and `cargo test --workspace` has 681 passed,
   0 failed, 2 ignored.
 
+**CI fix (windows-latest red, two pushes):** the telegram tests that read
+the log went red on Windows (`no poll failed`). The first fix waited up to
+20 s for the log line, and it failed again, so the timing theory was wrong.
+The real cause: each test set a scoped `set_default` subscriber. With
+parallel tests, scoped dispatchers come and go while other threads register
+callsites. tracing's global interest cache then drops events at random.
+It reproduced locally too: 3 of 25 runs of the gateway lib tests failed
+with 16 threads, once in the token test and twice in the ignored-chat test,
+which captured nothing. The fix is one global capture subscriber for the
+test binary, installed once, writing to a per-thread sink, with the
+interest cache rebuilt after install. After it: 0 fails in 40 runs with
+16 threads and 40 runs with 64 threads. No product code changed.
+
 **Eval** (mock, `ferrule eval run evals/starter --variant ab`, all 20 tasks):
 - pass rate: engineered 20/20, naive 11/20, +45 pts;
 - usage: 150 calls, 951.5k input + 6.2k output tokens;

@@ -1616,10 +1616,29 @@ mod tests {
         );
     }
 
-    /// Every event's rendered message and fields, from inside `f`.
-    fn logged() -> (Arc<Mutex<Vec<String>>>, impl tracing::Subscriber) {
+    thread_local! {
+        static SINK: std::cell::RefCell<Option<Arc<Mutex<Vec<String>>>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Clears this thread's log sink when the test ends.
+    struct Logged;
+    impl Drop for Logged {
+        fn drop(&mut self) {
+            SINK.with(|s| s.borrow_mut().take());
+        }
+    }
+
+    /// Every event's level, message and fields logged on this thread (a
+    /// `#[tokio::test]` runtime and its spawned tasks run on the test's
+    /// thread) until the returned guard drops. One global subscriber for
+    /// the whole test binary, not a scoped `set_default` per test: scoped
+    /// dispatchers come and go while other tests register callsites, and
+    /// tracing's global interest cache then drops events at random (seen
+    /// on windows-latest and locally with 16 test threads).
+    fn logged() -> (Arc<Mutex<Vec<String>>>, Logged) {
         use tracing_subscriber::layer::SubscriberExt;
-        struct Capture(Arc<Mutex<Vec<String>>>);
+        struct Capture;
         struct Text(String);
         impl tracing::field::Visit for Text {
             fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
@@ -1632,20 +1651,30 @@ mod tests {
                 event: &tracing::Event<'_>,
                 _: tracing_subscriber::layer::Context<'_, S>,
             ) {
+                let Some(sink) = SINK.with(|s| s.borrow().clone()) else {
+                    return;
+                };
                 let mut text = Text(event.metadata().level().to_string());
                 event.record(&mut text);
-                self.0.lock().unwrap().push(text.0);
+                sink.lock().unwrap().push(text.0);
             }
         }
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            tracing::subscriber::set_global_default(tracing_subscriber::registry().with(Capture))
+                .expect("the only global subscriber in this test binary");
+        });
+        // A callsite registering on another thread while the subscriber
+        // was being installed may have cached "never"; recompute.
+        tracing::callsite::rebuild_interest_cache();
         let lines: Arc<Mutex<Vec<String>>> = Arc::default();
-        let sub = tracing_subscriber::registry().with(Capture(lines.clone()));
-        (lines, sub)
+        SINK.with(|s| *s.borrow_mut() = Some(lines.clone()));
+        (lines, Logged)
     }
 
     #[tokio::test]
     async fn an_ignored_chat_is_a_warning_naming_it_once_an_hour() {
-        let (lines, sub) = logged();
-        let _guard = tracing::subscriber::set_default(sub);
+        let (lines, _guard) = logged();
         let bot = Bot::start("", vec![]);
         let channel = channel(&bot);
         let msg = |chat: &str| InboundMessage {
@@ -1681,8 +1710,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_log_line_or_error_carries_the_bot_token() {
-        let (lines, sub) = logged();
-        let _guard = tracing::subscriber::set_default(sub);
+        let (lines, _guard) = logged();
         // Nothing listens here: every call fails at connect, the kind of
         // reqwest error whose Display would include the URL.
         let port = TcpListener::bind("127.0.0.1:0")
@@ -1710,7 +1738,11 @@ mod tests {
             .iter()
             .any(|l| l.contains("poll failed"))
         {
-            assert!(std::time::Instant::now() < deadline, "no poll failed");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no poll failed: {:?}",
+                lines.lock().unwrap()
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         handle.abort();
