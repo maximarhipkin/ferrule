@@ -2924,8 +2924,9 @@ fixed. Identical to the run before M19b. The eval's data directory had no
 **Unverified on macOS/Windows until the batch CI pass:**
 - SIGTERM/Ctrl-C handling and the clean shutdown (`tokio::signal::unix` on unix,
   only Ctrl-C on Windows; a Windows service stop isn't a Ctrl-C).
-- `pid_alive` for the leftover marker (`kill(pid, 0)` on unix; Windows returns
-  "can't tell", so only the 30 s staleness decides).
+- `pid_alive` for the leftover marker: `kill(pid, 0)` on unix, and on Windows
+  `OpenProcess` + `GetExitCodeProcess` (added after PR #12's first 3-OS CI run, where
+  "can't tell" made a killed gateway's fresh marker look like a second live gateway).
 - The marker's and status file's write-then-rename over an existing file on Windows,
   and `File::set_modified` in the tests.
 - sd_notify and the watchdog pings (Linux only by design; off elsewhere, and the
