@@ -4,6 +4,7 @@ mod config;
 mod config_follow;
 mod doctor;
 mod eval;
+mod filewrite;
 mod health;
 mod hooks_cli;
 mod learn;
@@ -132,6 +133,12 @@ enum Cmd {
     /// What the running gateway is doing: turns, spend, schedule, channels
     /// and recent errors (the same report `/status` answers in a chat)
     Status,
+    /// Models: list the connected ones, set the default, test one, add,
+    /// remove, alias, pin a chat, set the fallback order (docs/models.md)
+    Model {
+        #[command(subcommand)]
+        op: models::ModelCmd,
+    },
     /// Scheduled task management (cron / one-shot agent turns)
     Tasks {
         #[command(subcommand)]
@@ -476,6 +483,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::Model { op } => models::cmd(op).await?,
         Cmd::Tasks { op } => {
             tasks_cmd(op).await?;
         }

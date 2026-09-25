@@ -17,6 +17,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
+mod admin;
+mod cli;
+pub use admin::*;
+#[allow(unused_imports)] // M21 part 4: `/model` shows it
+pub use cli::{cmd, render, ModelCmd};
+
 /// How long a model that stayed down after its retries is skipped for.
 pub const DOWN_FOR: Duration = Duration::from_secs(5 * 60);
 
@@ -378,14 +384,9 @@ impl Models {
         *self.hub.lock().unwrap() = Some(hub);
     }
 
-    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
+    #[allow(dead_code)] // M21 part 5: the scheduler's task models
     pub fn set_task_models(&self, f: TaskModels) {
         *self.tasks.lock().unwrap() = Some(f);
-    }
-
-    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
-    pub fn config_path(&self) -> &Path {
-        &self.path
     }
 
     /// The catalog, re-read if the file changed since.
@@ -557,13 +558,13 @@ impl Models {
     }
 
     /// The model `session` ran its last call on, and when.
-    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
+    #[cfg(test)]
     pub fn last_served(&self, session: &str) -> Option<(String, DateTime<Utc>)> {
         self.state.lock().unwrap().served.get(session).cloned()
     }
 
     /// Models marked down, with how long they're skipped for.
-    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
+    #[cfg(test)]
     pub fn down(&self) -> Vec<(String, Duration, String)> {
         let st = self.state.lock().unwrap();
         let now = Instant::now();
@@ -572,13 +573,6 @@ impl Models {
             .filter(|(_, d)| d.until > now)
             .map(|(r, d)| (r.clone(), d.until - now, d.reason.clone()))
             .collect()
-    }
-
-    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
-    pub fn pins(&self) -> BTreeMap<String, String> {
-        let mut st = self.state.lock().unwrap();
-        self.refresh_pins(&mut st);
-        st.pins.clone()
     }
 
     fn audit(&self, event: &str, detail: serde_json::Value) {
@@ -1029,5 +1023,137 @@ profile = "kimi"
             ),
             "{e}"
         );
+    }
+
+    #[test]
+    fn a_change_is_written_into_the_file_as_it_is_now_and_keeps_its_comments() {
+        let (dir, m) = models(&format!("# mine\n{CONFIG}"));
+        let path = dir.path().join("ferrule.toml");
+        // A hand edit after the process started, which the change keeps.
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("# mine", "# mine, edited")).unwrap();
+        let done = m.set_default("fast", "cli").unwrap();
+        assert_eq!(done.said, "The default is now b/b-small (was a/a-one).");
+        assert_eq!(done.view.default.as_deref(), Some("b/b-small"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine, edited"), "{text}");
+        // An alias stays an alias, so it follows the alias.
+        assert!(text.contains("default = \"fast\""), "{text}");
+        assert!(!dir.path().join("ferrule.toml.lock").exists());
+        // A new process reads the same.
+        let again = Models::new(path.clone(), None, &cfg(&text));
+        assert_eq!(
+            again.wanted(&Scope::default()).unwrap().reference(),
+            "b/b-small"
+        );
+        // Nothing connected by that name: nothing written, and why.
+        let err = m.set_default("nope", "cli").unwrap_err().to_string();
+        assert!(err.contains("isn't a connected model"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn pins_fallback_add_remove_and_aliases() {
+        let (dir, m) = models(CONFIG);
+        let chat = Scope::for_session("telegram__42");
+        m.pin("telegram", "42", "a/a-two", "telegram chat 42")
+            .unwrap();
+        assert_eq!(m.wanted(&chat).unwrap().reference(), "a/a-two");
+        let pins = std::fs::read_to_string(dir.path().join("pins.json")).unwrap();
+        assert!(pins.contains("\"telegram:42\": \"a/a-two\""), "{pins}");
+        let done = m.unpin("telegram", "42", "cli").unwrap();
+        assert!(
+            done.said.contains("back on the default (a/a-one)"),
+            "{}",
+            done.said
+        );
+        assert_eq!(m.wanted(&chat).unwrap().reference(), "a/a-one");
+
+        let done = m
+            .set_fallback(&["fast".into(), "b".into(), "b/b-small".into()], "cli")
+            .unwrap();
+        assert_eq!(done.view.fallback, ["b/b-small", "b/b-large"]);
+        m.set_fallback(&[], "cli").unwrap();
+        assert!(m.catalog().fallback.is_empty());
+        let text = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+        assert!(!text.contains("fallback"), "{text}");
+
+        let done = m.add_model("a", "a-three", Some("cheap"), "cli").unwrap();
+        assert!(
+            done.said.starts_with("a/a-three is connected, as `cheap`."),
+            "{}",
+            done.said
+        );
+        assert_eq!(m.resolve("cheap").unwrap().reference(), "a/a-three");
+        // Its prices are the provider's.
+        assert_eq!(m.resolve("cheap").unwrap().pricing.unwrap().input, 1.0);
+        let err = m.add_model("zz", "x", None, "cli").unwrap_err().to_string();
+        assert!(err.contains("there's no provider `zz`"), "{err}");
+        let err = m
+            .add_model("a", "a-two", None, "cli")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("connected already"), "{err}");
+        let err = m.set_alias("a", Some("b"), "cli").unwrap_err().to_string();
+        assert!(err.contains("a provider's name"), "{err}");
+
+        m.set_fallback(&["cheap".into()], "cli").unwrap();
+        let done = m.remove_model("cheap", "cli").unwrap();
+        assert_eq!(
+            done.said,
+            "a/a-three isn't connected anymore. It's gone from the fallback list and the alias `cheap` too."
+        );
+        assert!(m.resolve("a/a-three").is_err());
+        let err = m.remove_model("a", "cli").unwrap_err().to_string();
+        assert!(err.contains("`a`'s own model"), "{err}");
+        m.set_default("b/b-small", "cli").unwrap();
+        let err = m.remove_model("b/b-small", "cli").unwrap_err().to_string();
+        assert!(err.contains("is the default"), "{err}");
+
+        m.set_alias("big", Some("fast"), "cli").unwrap();
+        assert_eq!(m.resolve("big").unwrap().reference(), "b/b-small");
+        m.set_alias("big", None, "cli").unwrap();
+        assert!(m.resolve("big").is_err());
+    }
+
+    #[test]
+    fn provider_errors_read_plainly() {
+        let cat = Catalog::from_config(&cfg(CONFIG));
+        let e = cat.resolve("a").unwrap();
+        let t = |m: &str| explain(e, &CoreError::Provider(m.into()));
+        assert!(t("HTTP 401 Unauthorized: {}")
+            .starts_with("the key was refused (HTTP 401). Check `$PATH`"));
+        assert!(t("HTTP 404 Not Found: {}").contains("doesn't know the model `a-one`"));
+        assert!(
+            t("HTTP 400 Bad Request: {\"error\":\"model 'x' does not exist\"}")
+                .contains("doesn't know the model `a-one`")
+        );
+        let x = explain(
+            e,
+            &CoreError::Transient {
+                message: "HTTP 503 Service Unavailable: {}".into(),
+                retry_after: None,
+            },
+        );
+        assert_eq!(x, "the provider is failing right now (HTTP 503)");
+        assert!(t("HTTP 429 Too Many Requests: {}").contains("rate-limited"));
+        assert!(t("request failed: connection refused")
+            .starts_with("couldn't reach http://127.0.0.1:1/v1"));
+    }
+
+    #[tokio::test]
+    async fn a_test_of_a_model_without_a_key_says_so_without_a_call() {
+        let (_dir, m) = models(CONFIG);
+        let out = m.test("c").await;
+        assert!(!out.ok);
+        assert!(
+            out.said
+                .starts_with("no key: `$FERRULE_M21_TEST_KEY_THAT_IS_NEVER_SET`"),
+            "{}",
+            out.said
+        );
+        let out = m.test("a").await;
+        assert!(!out.ok);
+        assert!(out.said.starts_with("couldn't reach"), "{}", out.said);
     }
 }

@@ -306,7 +306,7 @@ impl Target {
             .with_extension(format!("toml.tmp-{}", std::process::id()));
         std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
         let done = before().and_then(|()| {
-            std::fs::rename(&tmp, &self.path)
+            crate::filewrite::replace(&tmp, &self.path)
                 .with_context(|| format!("writing {}", self.path.display()))
         });
         if done.is_err() {
