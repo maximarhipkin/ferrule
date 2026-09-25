@@ -329,6 +329,19 @@ that convention yet — ask before introducing one).
     Sub-agents share their root's guard. Eval is hermetic unless a suite
     sets `owner_trust = true`. **Open edges and the macOS/Windows-unverified
     list:** see the M19 session-log entry.
+  - **M19b reliability — never silently deaf**: **built** (2026-09-25,
+    parts 1–6 on branch `m19b-reliability`, PR to main open, not merged;
+    CI deferred to the roadmap batch; see the M19b session-log entry).
+    Design and as-built notes: `docs/m19b-reliability.md`. From a phone
+    alone: a 👀 receipt on every admitted message (before the lane) and one
+    "busy, queued" notice per busy period; `/status` from any allowed chat,
+    answered while a turn hangs, and `ferrule status` on the box; a turn
+    watchdog (one message to the owner after `watchdog_after_secs` without
+    progress) and `max_turn_minutes`; a running marker and a restart notice
+    naming the interrupted turn (never re-run); systemd's watchdog
+    (`WatchdogSec=120`, pings only while polling works); an optional
+    outbound heartbeat. Eval emits none of it (tested). **Open edges and
+    the macOS/Windows-unverified list:** see the M19b session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): parallel read-only tool calls, provider streaming
@@ -2826,3 +2839,103 @@ that already existed. This pass adds no `cfg` gate (one `cfg!(windows)` conditio
 
 **Checks:** fmt clean; clippy `-D warnings` clean; `cargo test --workspace` passes locally;
 mock eval: engineered 20/20, naive 11/20, $0.98. It matches the M19 numbers.
+
+### 2026-09-25 — M19b reliability: never silently deaf (Devi, Opus 5.5)
+
+The design is `docs/m19b-reliability.md`; its **As built** section lists where the
+build departs from it. The work is on branch `m19b-reliability`, cut from `main` at
+`bf60851`, with a PR to `main` (not merged). It builds on M19's Interceptor, `/stop`,
+`/resume`, the owner chat and `ferrule-trust`, the M16 ledger (through M19's spend
+lines), the M3 scheduler, `ferrule doctor` and the systemd unit in `service.rs`.
+
+Every part was checked locally on Linux: fmt, clippy `-D warnings`, and
+`cargo test --workspace`. **CI was deferred at Max's request**; a full 3-OS pass runs
+after the roadmap batch. No real model was called: everything ran against mocks, a
+fake Bot API, a fake heartbeat receiver and a real unix datagram socket.
+
+**Commits:**
+- `56eca82` design: the failure modes a phone-only owner can't see, the six pieces,
+  the defaults, eval hermeticity, out of scope.
+- `62634a8` part 1: 👀 before the lane (Telegram `setMessageReaction`, 2 s
+  best-effort), one busy notice per busy period, per-lane state in the router, the
+  gateway's interceptor list, the `Redactor`, Telegram's last ok poll and errors
+  without their URL.
+- `617e3f1` part 2: `/status` answered by the gateway before the interceptors and
+  the lanes; `<data>/gateway/status.txt` and `ferrule status`; the `tracing` ring
+  of recent warnings; `offer()` never blocks the dispatcher.
+- `6daf339` part 3: the no-progress watchdog (one message per stall to the owner)
+  and `max_turn_minutes` through the router's `TurnDeadline`.
+- `3119fd2` part 4: `running.json`, clean SIGTERM/Ctrl-C shutdown, the restart
+  notice with retries, `notify_on_start`.
+- `70f835f` part 5a: `WatchdogSec=120` + `NotifyAccess=main` in both units;
+  `WATCHDOG=1` over a raw unix datagram only while the dispatcher and polling are
+  healthy.
+- `ca10e0c` part 5b: the heartbeat (`heartbeat_url`, `heartbeat_secs`) and the
+  test that `ferrule eval` sends no receipt, ping, heartbeat or notice and leaves
+  the marker alone.
+- part 6: the `health` line in `ferrule doctor`, the design doc's As built section
+  (including the shell tool's fixed 120 s ceiling), this entry, the roadmap status.
+
+**Checks (final):** fmt clean; clippy `-D warnings` clean; `cargo test --workspace`
+582 passed, 0 failed, 2 ignored (555 before M19b). The M13 flaky test didn't fail
+this time.
+
+**Eval (mock, `ferrule eval run evals/starter --variant ab`, all 20 tasks):**
+engineered 20/20, naive 11/20, +45 pts; 150 calls, 951.5k input + 6.2k output
+tokens, $0.98 ($0.53 / $0.45); 13 compactions / 11 truncations; 4 failed checks
+fixed. Identical to the run before M19b. The eval's data directory had no
+`gateway/` afterwards.
+
+**Defaults for Max to confirm:**
+- `watchdog_after_secs = 600`: one "stuck on … — /stop to cancel it" message after
+  10 minutes without a model or tool call starting or finishing;
+- `max_turn_minutes = 60`: a turn is ended the way `/stop` ends one;
+- `poll_stale_secs = 300`: Telegram with no ok poll for 5 minutes is stale, in
+  `/status`, and systemd's watchdog stops being pinged;
+- `WatchdogSec=120` in the units ferrule setup writes (restart ≈2 min after pings
+  stop); "the dispatcher is stuck" = one message for over 60 s;
+- `notify_on_start = false`: after a clean restart, silence; after an unclean one
+  the owner always hears it;
+- `heartbeat_url = ""` (off), `heartbeat_secs = 60`;
+- the notices go to trust's owner chat, else to the chat they're about; the busy
+  notice waits until the turn in front has run 3 s; `/status` works from any allowed
+  chat, not only the owner's.
+
+**Open edges:**
+- A clean stop (SIGTERM, `systemctl restart`) during a turn says nothing on the next
+  start: the turn is dropped as before. Only an unclean exit leaves a marker.
+- An interrupted turn is never re-run; the owner re-sends it.
+- A long Telegram outage (past `poll_stale_secs`) means systemd kills and restarts
+  the gateway about every 7 minutes (`poll_stale_secs` + `WatchdogSec`) until polling
+  works again. Each kill leaves the
+  marker, so each start queues a restart notice, retried for about two minutes; the
+  ones that can't reach Telegram in that time are lost (they're still in the log).
+- The heartbeat has no retry within an interval; a checker should allow a missed
+  ping or two. A heartbeat URL that isn't a URL is a warning per streak and a ✗ in
+  doctor, not a startup error.
+- The watchdog doesn't see inside sub-agents: their progress counts only through the
+  root's tool call that runs them.
+- A unit written by an older ferrule has no `WatchdogSec`; doctor warns, and
+  `ferrule setup` rewrites it. launchd (macOS) has no equivalent watchdog.
+- A wedged dispatcher silences every chat, `/status` included; only systemd's
+  watchdog (Linux, under a unit ferrule wrote) catches it, after 60 s plus
+  `WatchdogSec`. Elsewhere the heartbeat, if one is set, reports it as degraded.
+
+**Unverified on macOS/Windows until the batch CI pass:**
+- SIGTERM/Ctrl-C handling and the clean shutdown (`tokio::signal::unix` on unix,
+  only Ctrl-C on Windows; a Windows service stop isn't a Ctrl-C).
+- `pid_alive` for the leftover marker: `kill(pid, 0)` on unix, and on Windows
+  `OpenProcess` + `GetExitCodeProcess` (added after PR #12's first 3-OS CI run, where
+  "can't tell" made a killed gateway's fresh marker look like a second live gateway).
+- The marker's and status file's write-then-rename over an existing file on Windows,
+  and `File::set_modified` in the tests.
+- sd_notify and the watchdog pings (Linux only by design; off elsewhere, and the
+  datagram and abstract-socket tests are `#[cfg(target_os = "linux")]`).
+- The launchd plist: unchanged, no watchdog; `ferrule doctor`'s unit check is
+  Linux-only.
+- The binary tests (`crates/ferrule-cli/tests/health.rs`, the new eval test): the
+  fake Bot API, heartbeat receiver and process killing (`libc::kill`, `#[cfg(unix)]`
+  parts) on each OS.
+- The shell tool's 120 s process-group kill during a watchdog'd or deadlined turn
+  (`killpg` on macOS, no process groups on Windows).
+

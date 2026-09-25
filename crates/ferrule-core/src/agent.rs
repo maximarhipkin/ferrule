@@ -329,6 +329,17 @@ impl Agent {
         self
     }
 
+    /// The owner's guard, if any.
+    pub fn guard(&self) -> Option<Arc<dyn Guard>> {
+        self.guard.clone()
+    }
+
+    /// Replaces the guard (the gateway puts a turn deadline in front of
+    /// the owner's).
+    pub fn set_guard(&mut self, guard: Arc<dyn Guard>) {
+        self.guard = Some(guard);
+    }
+
     pub fn with_session_recall(mut self, recall: Arc<dyn SessionRecall>) -> Self {
         self.session_recall = Some(recall);
         self

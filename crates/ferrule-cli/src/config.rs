@@ -169,6 +169,45 @@ pub struct Config {
     /// M19: spending caps, the kill switch and the approval gates.
     #[serde(default)]
     pub trust: ferrule_trust::TrustConfig,
+    /// M19b: the gateway's watchdogs, restart notice and heartbeat.
+    #[serde(default)]
+    pub health: HealthConfig,
+}
+
+/// `[health]` (docs/m19b-reliability.md).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HealthConfig {
+    /// A polling channel (Telegram) with no successful poll for this long
+    /// is stale: `/status` says so.
+    pub poll_stale_secs: u64,
+    /// A turn with no progress (no model call or tool call started or
+    /// finished) for this long gets one message to the owner. 0 = off.
+    pub watchdog_after_secs: u64,
+    /// A turn running this long is ended the way `/stop` ends it, and its
+    /// chat is free again. 0 = no limit.
+    pub max_turn_minutes: u64,
+    /// Tell the owner every time the gateway starts, not only after an
+    /// unclean exit.
+    pub notify_on_start: bool,
+    /// A URL that gets `{status, reason, version, uptime_secs}` POSTed
+    /// every `heartbeat_secs`, for a dead man's switch outside the
+    /// machine. Empty = no heartbeat.
+    pub heartbeat_url: String,
+    pub heartbeat_secs: u64,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            poll_stale_secs: 300,
+            watchdog_after_secs: 600,
+            max_turn_minutes: 60,
+            notify_on_start: false,
+            heartbeat_url: String::new(),
+            heartbeat_secs: 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -400,6 +439,20 @@ profile = "openai"
 # approval_timeout_secs = 600 # No answer refuses the command.
 # plan_timeout_secs = 3600
 # gates = true               # Ask before rm -rf, force pushes, DELETE to a bound host.
+#
+# [health]                   # M19b (docs/m19b-reliability.md): the gateway is
+#                            # never silently deaf. /status answers from any chat.
+# poll_stale_secs = 300      # Telegram with no ok poll this long counts as stale.
+# watchdog_after_secs = 600  # a turn with no progress this long: one message to
+#                            # the owner ("stuck on … — /stop to cancel"). 0 = off.
+# max_turn_minutes = 60      # a turn this long is ended like /stop. 0 = no limit.
+# notify_on_start = false    # "back up" on every start; after a crash or a kill
+#                            # the owner hears it anyway, with the interrupted turn.
+# heartbeat_url = ""         # POSTed {status: ok|degraded, reason, version,
+#                            # uptime_secs} every heartbeat_secs, e.g. a
+#                            # healthchecks.io check that alerts when it stops.
+#                            # The reason never holds messages or secrets.
+# heartbeat_secs = 60
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).

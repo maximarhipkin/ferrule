@@ -11,7 +11,7 @@ use ferrule_sandbox::{Mode, Sandbox};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Level {
     Ok,
     Note,
@@ -128,6 +128,7 @@ pub async fn run(offline: bool) -> Result<bool> {
     hooks_check(&mut r, &cfg, &path);
     trust_check(&mut r, &cfg, telegram_on);
     service_check(&mut r, &path, telegram_on)?;
+    health_check(&mut r, &cfg, telegram_on);
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
     Ok(r.finish())
@@ -880,4 +881,122 @@ fn browser_check(r: &mut Report, cfg: Option<&config::Config>) {
         b.allowed_domains.join(", ")
     };
     r.ok("browser", format!("on · {domains} · {route}"));
+}
+
+/// M19b: what watches the gateway — systemd's watchdog in the installed
+/// unit, the heartbeat, the turn watchdog and deadline.
+fn health_check(r: &mut Report, cfg: &config::Config, telegram_on: bool) {
+    let unit = match service::status() {
+        service::Status::Installed { unit, .. } if cfg!(target_os = "linux") => {
+            Some(std::fs::read_to_string(unit).unwrap_or_default())
+        }
+        _ => None,
+    };
+    for (level, text, hint) in health_lines(&cfg.health, unit.as_deref(), telegram_on) {
+        r.line(level, "health", text);
+        if let Some(hint) = hint {
+            r.hint(hint);
+        }
+    }
+}
+
+type Line = (Level, String, Option<&'static str>);
+
+fn health_lines(h: &config::HealthConfig, unit: Option<&str>, telegram_on: bool) -> Vec<Line> {
+    let mut out: Vec<Line> = Vec::new();
+    let turns = match (h.watchdog_after_secs, h.max_turn_minutes) {
+        (0, 0) => "no turn watchdog, no turn deadline".to_string(),
+        (0, m) => format!("no turn watchdog; turns end after {m} min"),
+        (w, 0) => format!(
+            "a stuck turn is reported after {}; no turn deadline",
+            human(w)
+        ),
+        (w, m) => format!(
+            "a stuck turn is reported after {}; turns end after {m} min",
+            human(w)
+        ),
+    };
+    out.push((Level::Ok, turns, None));
+    if let Some(unit) = unit {
+        if unit
+            .lines()
+            .any(|l| l.trim_start().starts_with("WatchdogSec="))
+        {
+            out.push((
+                Level::Ok,
+                "the unit has systemd's watchdog: a wedged gateway is restarted".into(),
+                None,
+            ));
+        } else {
+            out.push((
+                Level::Warn,
+                "the unit has no systemd watchdog (an older ferrule wrote it): a wedged gateway stays up".into(),
+                Some("`ferrule setup` → Background service rewrites it"),
+            ));
+        }
+    }
+    let url = h.heartbeat_url.trim();
+    if url.is_empty() {
+        if telegram_on {
+            out.push((
+                Level::Note,
+                "no heartbeat: nothing outside this machine notices if it goes down".into(),
+                Some("[health] heartbeat_url, e.g. a healthchecks.io check"),
+            ));
+        }
+    } else {
+        // Only the host: the rest of the URL is often the check's secret.
+        match reqwest::Url::parse(url) {
+            Ok(u) if u.host_str().is_some() => out.push((
+                Level::Ok,
+                format!(
+                    "heartbeat to {} every {}",
+                    u.host_str().unwrap_or_default(),
+                    human(h.heartbeat_secs.max(1))
+                ),
+                None,
+            )),
+            _ => out.push((
+                Level::Fail,
+                "heartbeat_url isn't a URL; no heartbeat is sent".into(),
+                None,
+            )),
+        }
+    }
+    out
+}
+
+fn human(secs: u64) -> String {
+    ferrule_gateway::health::human(std::time::Duration::from_secs(secs))
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn the_health_line_names_the_watchdogs_and_the_heartbeat_host_only() {
+        let mut h = config::HealthConfig::default();
+        let lines = health_lines(&h, Some("[Service]\nRestart=always\n"), true);
+        assert_eq!(
+            lines[0].1,
+            "a stuck turn is reported after 10 min; turns end after 60 min"
+        );
+        assert_eq!(lines[1].0, Level::Warn);
+        assert_eq!(lines[2].0, Level::Note);
+        assert!(lines[2].1.starts_with("no heartbeat"));
+
+        h.heartbeat_url = "https://hc-ping.com/5f1c-secret-uuid".into();
+        h.watchdog_after_secs = 0;
+        let lines = health_lines(&h, Some("Restart=always\nWatchdogSec=120\n"), true);
+        assert_eq!(lines[0].1, "no turn watchdog; turns end after 60 min");
+        assert_eq!(lines[1].0, Level::Ok);
+        assert_eq!(lines[2].1, "heartbeat to hc-ping.com every 1 min");
+        assert!(lines.iter().all(|l| !l.1.contains("secret")));
+
+        h.heartbeat_url = "not a url".into();
+        let lines = health_lines(&h, None, false);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1].0, Level::Fail);
+    }
 }

@@ -389,6 +389,24 @@ existing `read-only` sandbox mode.
 waits for a Telegram approval and proceeds only on "yes"; a plan-mode run
 changes nothing before approval.
 
+### M19b — reliability: never silently deaf
+
+**Status.** Built (`docs/m19b-reliability.md`; PR open). The owner's server
+takes no inbound connections, so everything reaches the phone: 👀 on every
+message the gateway admits, before the lane, and one "busy, queued"
+notice; `/status` from any allowed chat while a turn hangs, and `ferrule
+status` on the box; one watchdog message after 10 minutes without
+progress, and `max_turn_minutes` to end a turn like `/stop`; a restart
+notice after a crash or kill naming the interrupted turn (never re-run);
+systemd's watchdog restarting a gateway that can't poll; an optional
+heartbeat for an outside checker (healthchecks.io today, M20's relay
+later). Eval stays hermetic. Checked on Linux; the macOS/Windows pass runs
+with the batch CI.
+
+**Done means.** From a phone alone the owner can tell that a message
+arrived, what the agent is doing or where it's stuck, and that the
+process is down — and a wedged or crashed gateway comes back and says so.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

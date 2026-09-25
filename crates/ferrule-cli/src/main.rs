@@ -4,6 +4,7 @@ mod config;
 mod config_follow;
 mod doctor;
 mod eval;
+mod health;
 mod hooks_cli;
 mod learn;
 mod ledger;
@@ -120,6 +121,9 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         max_iterations: usize,
     },
+    /// What the running gateway is doing: turns, spend, schedule, channels
+    /// and recent errors (the same report `/status` answers in a chat)
+    Status,
     /// Scheduled task management (cron / one-shot agent turns)
     Tasks {
         #[command(subcommand)]
@@ -312,9 +316,19 @@ enum ConfigCmd {
 /// Sync on purpose: `--config` and the secrets file go into the environment
 /// before the runtime starts any thread, since `set_var` isn't thread-safe.
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
+    // Printed as RUST_LOG says; warnings and errors are also kept for
+    // the gateway's `/status` (M19b).
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+        )
+        .with(
+            health::RingLayer(ferrule_gateway::RecentLog::global())
+                .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+        )
         .init();
 
     let cli = Cli::parse();
@@ -444,6 +458,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             max_iterations,
         } => {
             run_gateway(provider, workspace, max_iterations).await?;
+        }
+        Cmd::Status => {
+            if !health::status_cmd()? {
+                std::process::exit(1);
+            }
         }
         Cmd::Tasks { op } => {
             tasks_cmd(op).await?;
@@ -1372,11 +1391,10 @@ async fn run_gateway(
     // Arc'd so the same router serves both the gateway's channel adapters
     // and the scheduler's task-triggered turns — one router, two front
     // doors (see `ferrule_gateway::Gateway::new`'s doc comment).
-    let router = Arc::new(Router::new(
-        sessions_dir,
-        agent_factory,
-        named_channels.clone(),
-    ));
+    let router = Arc::new(
+        Router::new(sessions_dir, agent_factory, named_channels.clone())
+            .with_max_turn(health::max_turn(&cfg)),
+    );
     // A chat whose agents report while it's idle is run again, and its
     // answer goes to the chat.
     if let Some(sup) = &sup {
@@ -1395,6 +1413,13 @@ async fn run_gateway(
     // M19: the owner's warnings and questions go out through Telegram, and
     // the scheduler waits while the kill switch is on.
     let hub = trust::hub(&cfg)?;
+    let health = Arc::new(health::build(
+        &cfg,
+        hub.clone(),
+        TaskStore::open(config::data_dir()?.join("tasks.db"))
+            .ok()
+            .map(Arc::new),
+    )?);
     hub.set_notifier(
         telegram
             .clone()
@@ -1417,22 +1442,58 @@ async fn run_gateway(
         telegram,
         dunce::canonicalize(&workspace).unwrap_or(workspace),
     );
-    let mut gateway = Gateway::new(router).with_interceptor(Arc::new(trust::OwnerDoor {
-        hub,
-        plan: Some(plan),
-    }));
+    let mut gateway = Gateway::new(router)
+        .with_health(health.clone())
+        .with_redactor(Arc::new(health::redactor(&cfg)))
+        .with_interceptor(Arc::new(trust::OwnerDoor {
+            hub,
+            plan: Some(plan),
+        }));
     for channel in adapters {
         gateway.add_channel(channel);
     }
 
     tracing::info!("gateway starting");
-    let result = gateway.run().await;
+    // SIGTERM (systemctl stop) and ctrl-c are a clean shutdown: the
+    // running marker goes, so the next start sends no restart notice.
+    let result = tokio::select! {
+        r = gateway.run() => r,
+        why = shutdown_signal() => {
+            tracing::info!("{why}: shutting down");
+            Ok(())
+        }
+    };
     // The scheduler's own `run()` loops forever by design (see its doc
     // comment); once the gateway is done there is nothing left to serve, so
     // it's stopped explicitly rather than left dangling.
     scheduler_handle.abort();
+    health.shutdown();
     result?;
     Ok(())
+}
+
+/// Resolves on SIGTERM or ctrl-c, naming which.
+async fn shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = term.recv() => "SIGTERM",
+                _ = tokio::signal::ctrl_c() => "ctrl-c",
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "can't listen for SIGTERM");
+                let _ = tokio::signal::ctrl_c().await;
+                "ctrl-c"
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "ctrl-c"
+    }
 }
 
 fn parse_task_kind(s: &str) -> Result<TaskKind> {

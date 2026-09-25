@@ -333,6 +333,19 @@ impl TaskStore {
         Ok(())
     }
 
+    /// The most recent failed run of any task (M19b's `/status`).
+    pub fn last_failed_run(&self) -> Result<Option<Run>, SchedulerError> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, task_id, started_at, finished_at, status, detail FROM runs
+             WHERE status = 'failed' ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            [],
+            row_to_run,
+        )
+        .optional()
+        .map_err(SchedulerError::from)
+    }
+
     pub fn runs_for(&self, task_id: &str, limit: usize) -> Result<Vec<Run>, SchedulerError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
