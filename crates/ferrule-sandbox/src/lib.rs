@@ -196,6 +196,9 @@ pub struct Sandbox {
     /// macOS only: let the helper reach the system's Mach/XPC services, which
     /// a desktop app needs (see [`Sandbox::with_desktop_services`]).
     desktop: bool,
+    /// Writes and the network as open as the user's, only the read denies
+    /// enforced (see [`Sandbox::unconfined`]).
+    hide_only: bool,
 }
 
 /// The credential proxy as seen by an HTTP client inside ferrule
@@ -221,6 +224,7 @@ impl Sandbox {
             helper_roots: Vec::new(),
             egress: None,
             desktop: false,
+            hide_only: false,
         }
     }
 
@@ -282,8 +286,21 @@ impl Sandbox {
         self.degraded.as_deref()
     }
 
+    /// Whether commands are confined: false for no backend, and for a
+    /// hide-only sandbox, which only keeps reads out of the denied paths.
     pub fn is_active(&self) -> bool {
+        self.backend != Backend::None && !self.hide_only
+    }
+
+    /// Whether the read denies are enforced by the OS: a confining sandbox,
+    /// or a hide-only one.
+    pub fn hides_reads(&self) -> bool {
         self.backend != Backend::None
+    }
+
+    /// See [`Sandbox::unconfined`].
+    pub fn is_hide_only(&self) -> bool {
+        self.hide_only
     }
 
     /// Variables to set on every command, after secrets are scrubbed — so a
@@ -356,21 +373,28 @@ impl Sandbox {
         self
     }
 
-    /// The same secret scrubbing and credential env as `self`, with the OS
+    /// The same secret scrubbing and credential env as `self`, with the
     /// confinement off: the escape hatch for a helper its config opted out
     /// of the sandbox. `reason` is what `degraded()` reports.
+    ///
+    /// Where there is a backend it stays on, hide-only: writes and the
+    /// network as open as the user's, but the read denies still hold, so
+    /// the helper can't read ferrule's secrets, the credential dirs, or
+    /// (Landlock, Windows) ferrule's own process. Windows keeps the job
+    /// too. [`Sandbox::is_active`] is false either way.
     pub fn unconfined(&self, reason: impl Into<String>) -> Self {
         Self {
             policy: Policy {
-                mode: Mode::Off,
+                network: true,
                 ..self.policy.clone()
             },
-            backend: Backend::None,
+            backend: self.backend,
             degraded: Some(reason.into()),
             extra_env: self.extra_env.clone(),
             helper_roots: Vec::new(),
             egress: self.egress.clone(),
             desktop: false,
+            hide_only: self.backend != Backend::None,
         }
     }
 
@@ -401,22 +425,27 @@ impl Sandbox {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let roots = self.writable_roots(workspace);
+        // Hide-only: all of `/` writable, carved around the denies.
+        let roots = match self.hide_only {
+            true if cfg!(target_os = "linux") => vec![PathBuf::from("/")],
+            true => Vec::new(),
+            false => self.writable_roots(workspace),
+        };
         let hidden = self.read_denies(workspace);
         let mut cmd = match self.backend {
-            Backend::Seatbelt => seatbelt::command(
-                self.policy.network,
-                self.desktop,
-                &roots,
-                &hidden,
-                program,
-                args,
-            ),
+            Backend::Seatbelt => {
+                let profile = if self.hide_only {
+                    seatbelt::open_profile(&hidden)
+                } else {
+                    seatbelt::profile(self.policy.network, self.desktop, &roots, &hidden)
+                };
+                seatbelt::command(profile, program, args)
+            }
             Backend::Windows => {
                 let spec = launch::Spec {
                     write_roots: roots.clone(),
                     protect: self.owned_denies(workspace),
-                    confine_writes: true,
+                    confine_writes: !self.hide_only,
                     process_limit: self.policy.process_limit,
                     memory_mb: self.policy.memory_mb,
                     state_file: self
@@ -995,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn unconfined_keeps_scrubbing_and_env_but_drops_the_backend() {
+    fn unconfined_keeps_scrubbing_env_and_the_read_denies() {
         let sb = Sandbox {
             policy: Policy {
                 secret_vars: vec!["MY_PROVIDER".into()],
@@ -1007,9 +1036,14 @@ mod tests {
             ..Sandbox::off()
         };
         let un = sb.unconfined("mcp.servers.foo: sandbox = false");
-        assert_eq!(un.backend(), Backend::None);
+        assert_eq!(un.backend(), Backend::Seatbelt, "still hides reads");
         assert!(!un.is_active());
+        assert!(un.is_hide_only() && un.hides_reads());
+        assert!(un.policy().network, "the network is the user's");
         assert_eq!(un.degraded(), Some("mcp.servers.foo: sandbox = false"));
+        // With no backend there is nothing to hide with.
+        let none = Sandbox::off().unconfined("x");
+        assert!(!none.hides_reads() && !none.is_hide_only());
         assert!(
             un.is_secret_var("MY_PROVIDER"),
             "kept the caller's secret_vars"

@@ -187,9 +187,11 @@ fn saved_keys_and_denied_paths_are_unreadable() {
     let state = tempfile::tempdir().unwrap();
     // An MCP server's sandbox keeps the same denies.
     let helper = sb.for_helper(state.path(), &[]);
+    // And one with `sandbox = false`, whose writes are open.
+    let open = sb.unconfined("sandbox = false");
     for shell in shells() {
         let ws = tempfile::tempdir().unwrap();
-        for sb in [&sb, &helper] {
+        for sb in [&sb, &helper, &open] {
             for secret in [private.join("secrets.env"), mine.path().join("token")] {
                 let out = run(sb, &shell, ws.path(), &read(&shell, &p(&shell, &secret)));
                 assert!(!out.status.success(), "{}: {}", shell.name, show(&out));
@@ -213,6 +215,23 @@ fn saved_keys_and_denied_paths_are_unreadable() {
                 show(&out)
             );
         }
+    }
+    for shell in shells() {
+        let ws = tempfile::tempdir().unwrap();
+        let target = mine.path().parent().unwrap().join(format!(
+            "ferrule-open-{}-{}",
+            std::process::id(),
+            shell.kind as u8
+        ));
+        let out = run(
+            &open,
+            &shell,
+            ws.path(),
+            &write(&shell, &p(&shell, &target), "w"),
+        );
+        assert!(out.status.success(), "{}: {}", shell.name, show(&out));
+        assert!(target.exists(), "{}: writes are open", shell.name);
+        let _ = std::fs::remove_file(target);
     }
     // Ferrule itself, and anything else of the user's, still reads it.
     assert_eq!(

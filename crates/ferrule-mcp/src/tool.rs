@@ -80,7 +80,8 @@ impl Tool for McpRemoteTool {
 ///
 /// When `cfg.sandbox` is `false`, or this OS has no sandbox backend, the
 /// server runs unconfined — still with secrets scrubbed and the proxy env
-/// set — and that is logged loudly, once, here.
+/// set, and with a backend the read denies still enforced — and that is
+/// logged loudly, once, here.
 pub async fn connect_and_build_tools(
     cfg: McpServerConfig,
     host: ServerHost,
@@ -88,10 +89,15 @@ pub async fn connect_and_build_tools(
     let server_name = cfg.name.clone();
     let client = Arc::new(McpClient::new(cfg, host)?);
     if let Some(reason) = client.sandbox_degraded() {
+        let reads = if client.hides_reads() {
+            "the saved keys and denied paths stay shut"
+        } else {
+            "it can read ferrule's environment (secrets aside)"
+        };
         tracing::warn!(
             server = %server_name,
-            "mcp server `{server_name}` runs UNSANDBOXED: {reason} — it can read ferrule's \
-             environment (secrets aside) and write anywhere its own OS user can"
+            "mcp server `{server_name}` runs UNSANDBOXED: {reason} — it can write anywhere its \
+             own OS user can; {reads}"
         );
     }
     let infos = client.list_tools().await?;

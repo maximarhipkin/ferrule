@@ -222,6 +222,18 @@ fn hidden_paths_outside_the_workspace_and_the_host_environ() {
         &format!("cat /proc/{}/environ", std::process::id()),
     );
     assert!(!out.status.success(), "the host environ was readable");
+    if cfg!(target_os = "linux") {
+        let open = sb.unconfined("sandbox = false");
+        let out = sh(
+            &open,
+            ws.path(),
+            &format!("cat /proc/{}/environ", std::process::id()),
+        );
+        assert!(
+            !out.status.success(),
+            "an unconfined helper read the environ"
+        );
+    }
 }
 
 #[test]
@@ -261,6 +273,30 @@ fn denied_reads_fail_and_allowed_reads_work() {
     assert!(!out.status.success());
     let out = sh(&helper, ws.path(), "cat notes.txt");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "fine\n");
+
+    // One with `sandbox = false` writes where it likes, but the denies hold.
+    // (On Linux not directly beside a denied path: the carve grants that
+    // dir's entries, not new ones in it.)
+    std::fs::create_dir(elsewhere.path().join("out")).unwrap();
+    let open = sb.unconfined("sandbox = false");
+    assert!(open.is_hide_only());
+    let out = sh(&open, ws.path(), &format!("cat '{dir}/creds/key'"));
+    assert!(
+        !out.status.success(),
+        "an unconfined helper read a denied path"
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("sk-live"));
+    let out = sh(
+        &open,
+        ws.path(),
+        &format!("echo w > '{dir}/out/written' && cat '{dir}/open.txt' .env"),
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("sk-live"));
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("fine\n"));
+    assert!(
+        elsewhere.path().join("out/written").exists(),
+        "writes are open"
+    );
 }
 
 #[test]

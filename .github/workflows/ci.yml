@@ -55,7 +55,6 @@ jobs:
 
       # The sandbox and service code paths only this OS has.
       - name: Sandbox self-test
-        if: runner.os != 'Windows'
         shell: bash
         run: |
           cargo build --locked -p ferrule-cli

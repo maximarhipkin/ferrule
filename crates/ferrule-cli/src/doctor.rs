@@ -7,7 +7,7 @@ use crate::setup::tilde;
 use crate::{browser, config, probe, secrets, service};
 use anyhow::Result;
 use ferrule_mcp::McpServerConfig;
-use ferrule_sandbox::{Mode, Sandbox};
+use ferrule_sandbox::{Backend, Mode, Sandbox};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
@@ -122,8 +122,9 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     providers(&mut r, &cfg, &http, offline).await;
     models_check(&mut r, ping_models).await;
     let telegram_on = telegram(&mut r, &cfg, &http, offline).await;
-    let confined = sandbox(&mut r, &cfg, &secrets_path);
-    mcp(&mut r, &cfg, confined);
+    let backend = sandbox(&mut r, &cfg, &secrets_path);
+    let confined = backend != Backend::None;
+    mcp(&mut r, &cfg, backend);
     proxy(&mut r, &cfg);
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
@@ -461,14 +462,14 @@ async fn telegram(
     true
 }
 
-/// Whether commands run confined.
-fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> bool {
+/// The backend commands run confined by, `None` if they don't.
+fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> Backend {
     let sandbox = match Sandbox::new(crate::sandbox_policy(cfg)) {
         Ok(sandbox) => sandbox,
         Err(e) => {
             r.fail("sandbox", e);
             r.hint("`ferrule setup` → Sandbox, or `ferrule sandbox` for details");
-            return false;
+            return Backend::None;
         }
     };
     if !sandbox.is_active() {
@@ -478,7 +479,13 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> bool {
             (_, None) => "no sandbox on this system".to_string(),
         };
         r.warn("sandbox", format!("shell commands run unsandboxed: {why}"));
-        return false;
+        if cfg!(windows) && cfg.sandbox.mode != Mode::Off {
+            r.hint(format!(
+                "{} couldn't run under the restricted token; docs/windows-sandbox.md",
+                ferrule_sandbox::Shell::get().name
+            ));
+        }
+        return Backend::None;
     }
     let mode = match cfg.sandbox.mode {
         Mode::Off => "off",
@@ -494,19 +501,32 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> bool {
         "sandbox",
         format!("{} · {mode} · {network}", sandbox.backend()),
     );
-    if cfg!(unix) && secrets_path.exists() {
+    if sandbox.backend() == Backend::Windows {
+        if !cfg.sandbox.network {
+            r.warn(
+                "sandbox",
+                "network = false isn't enforced on Windows: commands are only told not to use it",
+            );
+        }
+        if cfg.sandbox.deny_default_reads {
+            r.note(
+                "sandbox",
+                "~/.ssh, cloud credential dirs and browser profiles: only the file tools refuse \
+                 them on Windows; add a path to deny_read to close it to commands too",
+            );
+        }
+    }
+    if secrets_path.exists() {
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let (program, args): (&str, Vec<&std::ffi::OsStr>) = if cfg!(windows) {
+            let args = ["/d".as_ref(), "/c".as_ref(), "type".as_ref()];
+            ("cmd.exe", [&args[..], &[secrets_path.as_os_str()]].concat())
+        } else {
+            let args = ["-c".as_ref(), "cat \"$1\"".as_ref(), "sh".as_ref()];
+            ("/bin/sh", [&args[..], &[secrets_path.as_os_str()]].concat())
+        };
         let read = sandbox
-            .command(
-                "/bin/sh",
-                [
-                    "-c".as_ref(),
-                    "cat \"$1\"".as_ref(),
-                    "sh".as_ref(),
-                    secrets_path.as_os_str(),
-                ],
-                &workspace,
-            )
+            .command(program, args, &workspace)
             .and_then(|mut cmd| {
                 cmd.stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
@@ -522,12 +542,13 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> bool {
             Err(e) => r.warn("sandbox", format!("couldn't run a sandboxed check: {e}")),
         }
     }
-    true
+    sandbox.backend()
 }
 
 /// MCP servers that run outside the sandbox. Only the config is read: the
-/// servers themselves aren't started.
-fn mcp(r: &mut Report, cfg: &config::Config, confined: bool) {
+/// servers themselves aren't started. `backend` is what confines commands.
+fn mcp(r: &mut Report, cfg: &config::Config, backend: Backend) {
+    let confined = backend != Backend::None;
     let all = &cfg.mcp.servers;
     if all.is_empty() {
         return;
@@ -565,8 +586,9 @@ fn mcp(r: &mut Report, cfg: &config::Config, confined: bool) {
         r.warn(
             "mcp",
             format!(
-                "`{}` has sandbox = false: it can write anywhere you can and read the saved keys",
-                s.name
+                "`{}` has sandbox = false: {}",
+                s.name,
+                unconfined_gaps(backend)
             ),
         );
     }
@@ -581,6 +603,22 @@ fn mcp(r: &mut Report, cfg: &config::Config, confined: bool) {
             "mcp",
             format!("unsandboxed, like shell commands: {}", names(&rest)),
         ),
+    }
+}
+
+/// What a `sandbox = false` server can still do: with a backend it runs
+/// hide-only (`Sandbox::unconfined`), without one it's fully open.
+fn unconfined_gaps(backend: Backend) -> &'static str {
+    match backend {
+        Backend::None => "it can write anywhere you can and read the saved keys",
+        Backend::Windows => {
+            "it can write anywhere you can and use the network, and read ~/.ssh, cloud \
+             credentials and browser profiles; the saved keys and deny_read stay shut"
+        }
+        _ => {
+            "it can write anywhere you can (not beside a denied path) and use the network; \
+             the saved keys and the read denies stay shut"
+        }
     }
 }
 
