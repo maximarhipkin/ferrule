@@ -66,8 +66,10 @@ impl OpenAiCompatProvider {
         if let Some(id) = &msg.tool_call_id {
             m["tool_call_id"] = json!(id);
         }
-        // Preserve interleaved thinking for models trained on it.
-        if retain_reasoning {
+        // Preserve interleaved thinking for models trained on it — but not
+        // another driver's (a native Anthropic or Responses turn carries
+        // `native`; its thinking was never this model's, M23).
+        if retain_reasoning && msg.native.is_none() {
             if let Some(r) = &msg.reasoning {
                 m["reasoning_content"] = json!(r);
             }
@@ -150,6 +152,7 @@ impl OpenAiCompatProvider {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0),
                 cached_input_tokens: cached,
+                cache_write_input_tokens: 0,
             },
         })
     }
@@ -307,6 +310,24 @@ mod tests {
             "content-type: application/json\r\n",
             response_body,
         )
+    }
+
+    #[test]
+    fn another_drivers_thinking_is_not_replayed_as_reasoning_content() {
+        let own = Message::assistant(Some("a".into()), vec![], Some("mine".into()));
+        assert_eq!(
+            OpenAiCompatProvider::to_wire(&own, true)["reasoning_content"],
+            "mine"
+        );
+        // A turn a native driver served (M21 fell back mid-conversation).
+        let foreign = own.clone().with_native(ferrule_core::NativeBlocks {
+            api: "anthropic".into(),
+            model: "claude-sonnet-5".into(),
+            items: vec![json!({"type": "thinking", "thinking": "mine", "signature": "s"})],
+        });
+        let wire = OpenAiCompatProvider::to_wire(&foreign, true);
+        assert!(wire.get("reasoning_content").is_none(), "{wire}");
+        assert_eq!(wire["content"], "a");
     }
 
     /// One request in, the given status line, extra headers and body out.

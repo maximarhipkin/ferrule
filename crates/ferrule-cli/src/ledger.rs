@@ -354,6 +354,7 @@ mod tests {
             call_kind: "turn".into(),
             input_tokens: input,
             cached_input_tokens: cached,
+            cache_write_input_tokens: 0,
             output_tokens: output,
             tool_calls: 0,
             latency_ms,

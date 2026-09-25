@@ -190,6 +190,7 @@ pub fn row(
         call_kind: CALL_KIND.into(),
         input_tokens: usage.input_tokens,
         cached_input_tokens: usage.cached_input_tokens,
+        cache_write_input_tokens: usage.cache_write_input_tokens,
         output_tokens: usage.output_tokens,
         tool_calls: 0,
         latency_ms,
@@ -220,6 +221,7 @@ mod tests {
             input_tokens: i,
             output_tokens: o,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
         }
     }
 
