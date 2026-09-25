@@ -2,14 +2,32 @@
 name = "ferrule-sandbox"
 version = "0.3.0"
 edition = "2021"
-description = "OS-level sandbox for agent shell commands: Landlock + seccomp on Linux, Seatbelt on macOS"
+description = "OS-level sandbox for agent shell commands: Landlock + seccomp on Linux, Seatbelt on macOS, a restricted token in a job on Windows"
 
 [dependencies]
 dunce = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 libc = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-serde_json = { workspace = true }
+
+[[bin]]
+name = "ferrule-sandbox-launch"
+path = "src/bin/ferrule-sandbox-launch.rs"

@@ -420,6 +420,9 @@ fn log_filter(daemon: bool) -> tracing_subscriber::EnvFilter {
 /// Sync on purpose: `--config` and the secrets file go into the environment
 /// before the runtime starts any thread, since `set_var` isn't thread-safe.
 fn main() -> Result<()> {
+    // On Windows, ferrule is also the sandbox's launcher (M26): run as
+    // `ferrule __sandbox-launch <program> <args…>`, it never gets here.
+    ferrule_sandbox::launch::intercept();
     let cli = Cli::parse();
     // Printed as RUST_LOG says; warnings and errors are also kept for
     // the gateway's `/status` (M19b).
@@ -1012,6 +1015,7 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     // Commands get these back as placeholders, from the credential proxy.
     policy.secret_vars.extend(cfg.secrets.keys().cloned());
     policy.hidden.extend(hidden_paths());
+    policy.state_dir = config::data_dir().ok().map(|d| d.join("sandbox"));
     policy
 }
 

@@ -11,6 +11,10 @@
 //!   interpreter or a backgrounded job all stay inside.
 //! - **macOS**: Seatbelt through `/usr/bin/sandbox-exec`, with a profile
 //!   adapted from OpenAI Codex's.
+//! - **Windows**: a restricted token in a job object, started through a
+//!   launcher ([`launch`]): writes only where a capability SID is granted,
+//!   ferrule's own secrets and process shut, the tree killed with the job.
+//!   The network is not enforced there.
 //!
 //! On every platform, secret-looking environment variables (API keys, bot
 //! tokens) are dropped from the child's environment, so a prompt-injected
@@ -25,12 +29,19 @@
 //!
 //! Not covered: anything that needs a kernel bug.
 
+pub mod launch;
 #[cfg(target_os = "linux")]
 mod linux;
 pub mod seatbelt;
 mod shell;
+#[cfg(windows)]
+mod windows;
 
 pub use shell::{Shell, ShellKind};
+/// For tests: whether this process can open `pid` to read its memory.
+#[cfg(windows)]
+#[doc(hidden)]
+pub use windows::can_read_process;
 
 use serde::Deserialize;
 use std::ffi::OsStr;
@@ -40,7 +51,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// What a refused write prints: Seatbelt denies with EPERM, Landlock with
-/// EACCES.
+/// EACCES, and Git Bash maps Windows' access-denied to EACCES too.
 pub const DENIED: &str = if cfg!(target_os = "macos") {
     "Operation not permitted"
 } else {
@@ -106,6 +117,11 @@ pub struct Policy {
     pub process_limit: u32,
     /// Windows: the job's memory limit for the whole command tree, in MB.
     pub memory_mb: Option<u64>,
+    /// Windows: where the launcher keeps the writable roots' capability
+    /// SIDs (`<data>/sandbox`). Filled in by the host; without it, under
+    /// `%LOCALAPPDATA%`.
+    #[serde(skip)]
+    pub state_dir: Option<PathBuf>,
 }
 
 impl Default for Policy {
@@ -125,6 +141,7 @@ impl Default for Policy {
             deny_default_reads: true,
             process_limit: 256,
             memory_mb: None,
+            state_dir: None,
         }
     }
 }
@@ -135,6 +152,8 @@ pub enum Backend {
         abi: u32,
     },
     Seatbelt,
+    /// A restricted token in a job, through the launcher.
+    Windows,
     /// Commands run unsandboxed; `Sandbox::degraded` says why.
     None,
 }
@@ -144,6 +163,7 @@ impl fmt::Display for Backend {
         match self {
             Backend::Landlock { abi } => write!(f, "landlock (ABI {abi})"),
             Backend::Seatbelt => write!(f, "seatbelt"),
+            Backend::Windows => write!(f, "windows (restricted token)"),
             Backend::None => write!(f, "none"),
         }
     }
@@ -225,7 +245,15 @@ impl Sandbox {
             Ok(sandbox)
         });
         match attempt {
-            Ok(sandbox) => Ok(sandbox),
+            Ok(sandbox) => {
+                // Ferrule's own memory holds the real secrets: shut its
+                // process to the sandbox token before anything runs in it.
+                #[cfg(windows)]
+                if let Err(e) = windows::harden_self() {
+                    tracing::warn!("sandbox: couldn't protect ferrule's own process: {e}");
+                }
+                Ok(sandbox)
+            }
             Err(reason) if policy.require => Err(format!(
                 "sandbox.require is set but the sandbox can't be applied: {reason}"
             )),
@@ -384,6 +412,25 @@ impl Sandbox {
                 program,
                 args,
             ),
+            Backend::Windows => {
+                let spec = launch::Spec {
+                    write_roots: roots.clone(),
+                    protect: self.owned_denies(workspace),
+                    confine_writes: true,
+                    process_limit: self.policy.process_limit,
+                    memory_mb: self.policy.memory_mb,
+                    state_file: self
+                        .policy
+                        .state_dir
+                        .as_ref()
+                        .map(|d| d.join("windows-caps.json")),
+                };
+                let launcher = launch::launcher().map_err(io::Error::other)?;
+                let mut c = Command::new(launcher);
+                c.arg(launch::LAUNCH_ARG).arg(program).args(args);
+                c.env(launch::SPEC_VAR, spec.to_json());
+                c
+            }
             _ => {
                 let mut c = Command::new(program);
                 c.args(args);
@@ -421,8 +468,18 @@ impl Sandbox {
             wanted.push(expand(root, home.as_deref(), workspace));
         }
         if self.policy.tmp && !read_only {
-            wanted.push(PathBuf::from("/tmp"));
-            wanted.extend(std::env::var_os("TMPDIR").map(PathBuf::from));
+            if cfg!(windows) {
+                wanted.extend(
+                    ["TEMP", "TMP"]
+                        .into_iter()
+                        .filter_map(std::env::var_os)
+                        .filter(|v| !v.is_empty())
+                        .map(PathBuf::from),
+                );
+            } else {
+                wanted.push(PathBuf::from("/tmp"));
+                wanted.extend(std::env::var_os("TMPDIR").map(PathBuf::from));
+            }
             if cfg!(target_os = "linux") {
                 wanted.push(PathBuf::from("/dev/shm"));
             }
@@ -472,6 +529,23 @@ impl Sandbox {
     /// the OS backends enforce for a command starting now.
     pub fn read_denies(&self, workspace: &Path) -> Vec<PathBuf> {
         canonical_existing(&self.read_deny_list(workspace))
+    }
+
+    /// The part of [`Sandbox::read_denies`] ferrule may rewrite the ACLs of
+    /// on Windows: its own secrets (`hidden`) and the owner's `deny_read`.
+    /// The default credential dirs belong to other programs, which check
+    /// their ACLs (OpenSSH) or own them (browsers); only the file tools
+    /// refuse those on Windows.
+    pub fn owned_denies(&self, workspace: &Path) -> Vec<PathBuf> {
+        let home = home_dir();
+        let mut out = self.policy.hidden.clone();
+        out.extend(
+            self.policy
+                .deny_read
+                .iter()
+                .map(|p| expand(p, home.as_deref(), workspace)),
+        );
+        canonical_existing(&out)
     }
 
     /// Names of the variables in this process's environment that sandboxed
@@ -524,18 +598,28 @@ impl Sandbox {
                 )
             }
         };
-        let net = if self.policy.network {
-            "Network access is allowed."
-        } else {
-            "Network access is blocked."
+        let net = match (self.policy.network, self.backend) {
+            (true, _) => "Network access is allowed.",
+            // Not enforced there (doctor says so); the model is still told.
+            (false, Backend::Windows) => "Don't use the network.",
+            (false, _) => "Network access is blocked.",
         };
         Some(format!("Commands run in a sandbox. {fs} {net}"))
     }
 
     fn probe(&self) -> Result<(), String> {
         let dir = std::env::temp_dir();
+        // On Windows, the shell commands will actually use: Git Bash or
+        // PowerShell failing under the token is what matters.
+        let (program, args): (std::ffi::OsString, Vec<std::ffi::OsString>) =
+            if self.backend == Backend::Windows {
+                let shell = Shell::get();
+                (shell.program.clone().into_os_string(), shell.args("exit 0"))
+            } else {
+                ("/bin/sh".into(), vec!["-c".into(), "exit 0".into()])
+            };
         let status = self
-            .command("/bin/sh", ["-c", "exit 0"], &dir)
+            .command(&program, &args, &dir)
             .and_then(|mut c| c.stdin(std::process::Stdio::null()).status())
             .map_err(|e| format!("{} failed to start a probe command: {e}", self.backend))?;
         if !status.success() {
@@ -674,8 +758,11 @@ fn detect(policy: &Policy) -> Result<Backend, String> {
     }
     #[cfg(windows)]
     {
+        // `network = false` isn't enforced here (it needs WFP, so admin);
+        // writes and reads still are, and doctor warns about the rest.
         let _ = policy;
-        Err("Windows has no sandbox backend yet (under WSL2, the Linux build has one)".into())
+        launch::launcher()?;
+        Ok(Backend::Windows)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {

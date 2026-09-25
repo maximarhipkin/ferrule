@@ -7,6 +7,10 @@ use std::path::Path;
 use std::process::{Output, Stdio};
 
 fn sandbox(policy: Policy) -> Option<Sandbox> {
+    if cfg!(windows) {
+        eprintln!("skipping: these run /bin/sh; Windows has tests/windows.rs");
+        return None;
+    }
     let sb = Sandbox::new(Policy {
         require: false,
         ..policy

@@ -364,9 +364,11 @@ mod tests {
             max_output_chars: 1_000,
         };
         let target = outside.path().join("x");
+        // Git Bash drops backslashes; forward slashes suit every shell.
+        let path = target.display().to_string().replace('\\', "/");
         let out = t
             .call(
-                json!({"command": format!("echo in > ok && echo out > {}", target.display())}),
+                json!({"command": format!("echo in > ok; echo out > '{path}'")}),
                 &c,
             )
             .await
