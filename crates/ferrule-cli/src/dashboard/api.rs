@@ -923,6 +923,10 @@ fn logs(ctx: &Ctx, req: &Request) -> Answer {
             ));
         }
     }
+    // Both sources come oldest first, and lines pushed in the same
+    // microsecond (macOS's clock) tie: reversed, the stable sort keeps
+    // them newest first.
+    rows.reverse();
     rows.sort_by(|a, b| b.0.cmp(&a.0));
     let rows: Vec<Value> = rows
         .into_iter()
