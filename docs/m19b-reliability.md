@@ -1,7 +1,9 @@
 # M19b: reliability — never silently deaf (design)
 
-Status: design, 2026-09-25. Follows M19 (trust & cost) and the Telegram
-hotfix (PR #8). Where the build departs from this, the PLAN log says so.
+Status: built 2026-09-25 on branch `m19b-reliability` (parts 1–6, PR open,
+not merged). Follows M19 (trust & cost) and the Telegram hotfix (PR #8).
+The design is below as written; **As built** at the end lists where the
+build departs from it or pins down what it left open.
 
 ## Why
 
@@ -87,8 +89,9 @@ clear final message, and the lane takes its next message. It covers the
 lane's root agent; sub-agents already run under their parent's own tools
 and timeouts.
 
-The existing ceilings stay: `shell` kills its process group after 120 s by
-default (the model can't raise it), the provider has its request timeout,
+The existing ceilings stay: `shell` kills its process group after 120 s
+(`ShellTool`'s fixed timeout: no config key, and no tool argument, so the
+model can't raise it), the provider has its request timeout,
 and MCP calls theirs. The watchdog is for what those miss.
 
 ### 4. Restart notice
@@ -152,6 +155,53 @@ The unit: `WatchdogSec=120`.
 reactions, watchdog messages, heartbeats, sd_notify or restart marker. A
 binary test runs a suite with a heartbeat URL, a Telegram mock and a
 `NOTIFY_SOCKET` all set, and checks that nothing is hit or written.
+
+## As built
+
+- **Receipt and busy notice** (part 1) as designed. The busy notice waits
+  until the turn in front has run 3 s, so a quick turn doesn't earn one.
+- **`/status`** (part 2) doesn't have an "unclean last exit" line: the
+  restart notice is logged as a warning, so the report's recent warnings
+  show it. `ferrule status` exits 1 when there's no status file ("no
+  ferrule gateway is running"), and when the file is stale and its pid is
+  gone it says the gateway exited without a clean shutdown and prints the
+  last report with its age. The dispatcher shows up only once it's been
+  on one message for over 5 s.
+- **The turn watchdog** (part 3) sends its one message to trust's owner
+  chat when Telegram is configured, else to the stalled chat itself. It
+  checks every quarter of `watchdog_after_secs` (at most every 15 s). A
+  turn past `max_turn_minutes` gets "Stopped: this turn ran for N
+  (max_turn_minutes), so I ended it to free the chat…".
+- **The running marker** (part 4) is rewritten with the status file. A
+  marker not rewritten for 30 s counts as dead even if its pid is alive (a
+  reboot reuses pids); a fresh one with a live pid is a second gateway on
+  the same data directory: a warning, no notice. The notice is retried
+  for about two minutes (8 tries, backoff to 30 s); several interrupted
+  turns are listed one per line. SIGTERM and Ctrl-C now end `ferrule
+  gateway` cleanly (before, the process just died), and nothing writes
+  the files after that. A clean stop during a turn says nothing on the
+  next start: that turn is lost the way it always was.
+- **systemd's watchdog** (part 5a): "the dispatcher is stuck" means one
+  message for over 60 s. `WATCHDOG_PID` naming another process turns the
+  pings off. A failed ping is a warning.
+- **The heartbeat** (part 5b) is also sent right at start. Degraded also
+  covers a stuck dispatcher; "a stuck lane" means no progress for
+  `watchdog_after_secs`, or 600 s when the watchdog is off. The reason
+  holds fixed phrases, channel names, chat ids or scheduled task ids and
+  durations, never the activity (a tool's arguments) or the message, and
+  goes through the redactor besides. A failing ping is logged once until
+  one gets through again, without the URL (it's often the check's
+  secret). The kill switch reaches it through a probe the CLI adds
+  (`Health::with_probe`). `heartbeat_secs` is at least 1.
+- **Eval** (part 5b): the hermeticity test also sets `notify_on_start`
+  and leaves an unclean-exit marker, and checks that the eval leaves the
+  marker alone (the next gateway still reports it) and writes no status
+  file.
+- **`ferrule doctor`** (part 6) has a `health` line: the turn watchdog and
+  deadline, whether the installed systemd unit has `WatchdogSec` (a warning
+  for a unit an older ferrule wrote, with how to rewrite it), and the
+  heartbeat's host and interval (never the rest of its URL), or a note
+  when Telegram is on and no heartbeat is set.
 
 ## Out of scope
 
