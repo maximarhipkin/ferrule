@@ -114,7 +114,21 @@ pub fn follow(manager: &Arc<ferrule_extensions::ExtensionManager>, cfg: &config:
     let manager = Arc::downgrade(manager);
     let mut changed = conns.subscribe();
     tokio::spawn(async move {
-        while changed.changed().await.is_ok() {
+        // Our own changes bump `changed`; another process's show up as a
+        // new stamp on the store file, looked at every 2 s.
+        let mut stamp = conns.store_stamp();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            tokio::select! {
+                got = changed.changed() => if got.is_err() { return },
+                _ = tick.tick() => {
+                    let now = conns.store_stamp();
+                    if now == stamp {
+                        continue;
+                    }
+                }
+            }
+            stamp = conns.store_stamp();
             let Some(manager) = manager.upgrade() else {
                 return;
             };

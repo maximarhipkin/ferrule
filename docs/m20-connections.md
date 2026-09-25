@@ -516,3 +516,63 @@ pointing at a mock, and asserts neither is ever contacted.
 - Commands: `/connect`, `/connections`, `/disconnect`.
 - Relay TTLs: 5 min for a code, 15 min for an open slot.
 - Paste-back loopback port 8976.
+
+## As built
+
+Where the build (parts 1–5 on branch `m20-connections`) departs from the
+design above, or pins down what it left open:
+
+- **The quick tunnel is for DCR services only.** A tunnel's hostname is new
+  each time, so it can't be a registered redirect URI. Google and GitHub
+  skip straight from the relay to paste-back.
+- **GitHub read-only** comes from the catalog's `read_only_headers`
+  (`X-MCP-Readonly: true`), sent on every request when the connection is
+  read-only. Linear uses its read scope.
+- **Buttons.** `ferrule-gateway` gained `Buttons` on outgoing messages and
+  `ChannelCapabilities::buttons`. Telegram shows them as an inline keyboard.
+  A tap arrives as the text of its command and is answered with
+  `answerCallbackQuery`, and it is trusted no more than typing that
+  command. A channel without buttons gets the links as text.
+- **Who may manage connections.** The CLI's `ConnectionsDoor` interceptor
+  runs after M19's `OwnerDoor`:
+  - The owner's Telegram chat is `Owner`.
+  - The local channel is `Terminal`.
+  - Every other chat is `Other`, and gets `connection_refused` if it tries
+    `/connect`, `/connections`, `/disconnect` or `/decline`.
+- **The gate.** A connected service's tools are classified by
+  `trust::classify_connected`. Any tool without MCP's `readOnlyHint` is
+  `Kind::ConnectedWrite` and needs the owner's yes, when
+  `[connections] gate_writes` is on (the default).
+- **Live tools.** One `Connections` service per process. Its servers are
+  merged with the config's `[[mcp.servers]]` into one list for M17's
+  `set_configured`, so the two followers never undo each other. If a
+  config server has a connection's name, the config wins. That shows as a
+  log warning, not in `/status`.
+  - The follower re-applies the list on the service's own change signal.
+  - It also checks the store file's hash every 2 s, which catches
+    `ferrule connections add` run while a gateway is up.
+- **Audit event names:**
+  - `connection_requested`, `_started`, `_declined`, `_refused`, `_failed`
+  - `connection_expired` (a flow or link timed out)
+  - `connection_added` (connected)
+  - `connection_broken` (a refresh or key was refused)
+  - `connection_removed` (disconnected)
+- **Not built:**
+  - `ferrule connections test`.
+  - Probing the relay in `ferrule doctor`. Doctor's `connect` line says
+    how many services are connected and whether a relay URL and key are
+    set; `ferrule connections relay check` does the live round trip.
+  - An automatic relay step in `ferrule setup` (M21 is reworking setup).
+- **Eval hermeticity** is checked two ways:
+  - A test reads `ferrule-eval`'s manifest and the CLI's `eval.rs`, and
+    fails if either reaches connections, MCP servers or self-extension.
+  - The starter suite's data dir is checked after a run: no store and no
+    `mcp/connections`.
+- **Deploying through a TLS-intercepting proxy.** ferrule's HTTP client
+  uses rustls with the webpki roots, so it won't trust a proxy's own CA. On
+  a normal machine `relay deploy` and `relay check` talk to Cloudflare
+  directly.
+  - The first deploy of `ferrule-relay` was done from a container behind
+    such a proxy. It made the same REST calls as `relay::deploy`, by hand.
+  - The same container ran the live smoke test (every step of `relay
+    check`, plus the replay and 5-minute expiry cases), which passed.

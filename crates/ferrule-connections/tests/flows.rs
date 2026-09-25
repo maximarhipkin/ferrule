@@ -755,6 +755,27 @@ async fn an_api_key_without_the_relay_only_goes_in_at_the_terminal() {
     assert_eq!(states, [State::NeedsReconnect]);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gateway_sees_a_connection_the_terminal_added() {
+    let w = world(RelayMode::Unreachable).await;
+    // The gateway's service, on the same private dir as the terminal's.
+    let gateway = Connections::new(
+        &w.dir.path().join("private"),
+        w.conns.config().clone(),
+        Arc::new(|_: &str| None),
+        Arc::new(Recorder::default()),
+        None,
+    )
+    .unwrap();
+    let before = gateway.store_stamp();
+    assert!(gateway.servers().is_empty());
+    w.provider.st.lock().unwrap().access.insert("k-9".into());
+    w.conns.add_key("keyed", "k-9").await.unwrap();
+    assert_ne!(gateway.store_stamp(), before);
+    let names: Vec<String> = gateway.servers().into_iter().map(|s| s.name).collect();
+    assert_eq!(names, ["keyed"]);
+}
+
 #[tokio::test]
 async fn a_relay_value_of_the_wrong_kind_is_not_a_sign_in() {
     // An envelope posted to an OAuth flow's slot doesn't connect anything.

@@ -247,6 +247,12 @@ impl Connections {
         self.changed.send_modify(|n| *n += 1);
     }
 
+    /// A fingerprint of the store file, to notice another process's
+    /// change (`ferrule connections add` while a gateway runs).
+    pub fn store_stamp(&self) -> Option<String> {
+        self.store.stamp()
+    }
+
     fn relay(&self) -> Option<Relay> {
         let url = self.cfg.relay_url.as_deref()?;
         let key = (self.secrets)(RELAY_KEY_ENV)?;

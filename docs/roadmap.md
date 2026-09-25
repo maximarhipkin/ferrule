@@ -407,6 +407,29 @@ with the batch CI.
 arrived, what the agent is doing or where it's stuck, and that the
 process is down — and a wedged or crashed gateway comes back and says so.
 
+### M20 — connections
+
+**Status.** Built (`docs/m20-connections.md`; PR open).
+- The agent asks for a service; the owner taps one Telegram button and logs in.
+- The login code comes back through the owner's own Cloudflare Worker relay (one
+  read, 5 minutes). Else it comes back through a cloudflared quick tunnel (DCR
+  services), else through a pasted address.
+- Tokens are sealed on disk, refreshed per request and never seen by the model.
+- API keys come through a form that encrypts in the browser.
+- The seven-service catalog: Atlassian, Attio, Gmail, Google Drive, GitHub,
+  Notion, Linear.
+- Access is read-only by default. Tools that can change something go through
+  M19's gate.
+- `/connections` and `/disconnect` work from Telegram; `ferrule connections` works
+  at the terminal.
+- Eval stays hermetic.
+- Checked on Linux, and the relay was checked live. Real provider logins aren't
+  verified yet.
+
+**Done means.** The owner connects a service from a phone with one tap
+and a login, and its tools appear. No token ever reaches the model, a
+tool result, the audit log, `/status` or an error.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
