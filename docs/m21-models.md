@@ -1,6 +1,6 @@
 # M21: models — several at once, a default, a model per agent (design)
 
-Status: design, 2026-09-25, branch `m21-models` (cut from M19b's branch).
+Status: built, 2026-09-25, branch `m21-models` (cut from M19b's branch). The user guide is `docs/models.md`.
 Follows M19 (trust & cost) and M19b (reliability). M22 adds a dashboard
 page on top of the API in §9. This file doesn't build that page.
 
