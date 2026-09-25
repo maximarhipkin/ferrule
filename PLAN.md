@@ -2727,6 +2727,19 @@ one with `owner_trust`), fires no hooks. All of this is settled in
 - Mock eval: engineered 20/20, naive 11/20, $0.98. It matches the pre-merge run line
   for line.
 
+### 2026-09-25 — fix: the flaky M13 test was a real crash window (Devi, Opus 5.5)
+
+`a_list_changed_that_introduces_a_poisoned_tool_is_caught` kept failing
+under load with the server's status still `Active` after its tools were gone.
+When a `list_changed` brought a flagged tool, the manager unloaded the
+server first (the tools vanish, then it awaits the client's shutdown) and
+only then recorded `Suspended`. The test could land in that gap. So could
+a crash: a process that died during the shutdown would have restarted the
+flagged server as active. The suspension is now recorded before the
+unload. The test is unchanged, because its "status is already Suspended once the tools are
+gone" assertion is exactly the ordering guard. Stress run of the test
+binary, 10 in parallel × 8: 3/80 failures before the fix, 0/80 after.
+
 ### 2026-09-25 — M19b reliability: never silently deaf (Devi, Opus 5.5)
 
 The design is `docs/m19b-reliability.md`; its **As built** section lists where the

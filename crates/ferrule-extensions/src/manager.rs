@@ -1361,8 +1361,11 @@ impl ExtensionManager {
         if managed {
             if let Some(reason) = suspend_reason(&surface) {
                 tracing::warn!(server = %name, "installed mcp server `{name}` suspended mid-session: {reason}\n{}", scan::report_for_owner(&surface.findings));
-                self.unload(name).await;
+                // Record the suspension before tearing the server down: the
+                // client's shutdown can take a while, and a crash in between
+                // must not let a restart bring the flagged server back.
                 self.mark_suspended(name, &reason);
+                self.unload(name).await;
                 return false;
             }
             if let Err(e) = self.store.update(|l| {
