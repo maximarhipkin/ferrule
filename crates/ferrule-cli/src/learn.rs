@@ -559,6 +559,7 @@ mod tests {
                 chat_id: "c".into(),
                 prompt: format!("do {name}"),
                 gate: None,
+                model: None,
             };
             store.add(t, name.into(), 0, Some(0)).unwrap()
         };

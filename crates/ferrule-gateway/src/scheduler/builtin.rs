@@ -83,6 +83,7 @@ pub fn ensure_builtin(
             chat_id: name.to_string(),
             prompt: spec.description.clone(),
             gate: None,
+            model: None,
         };
         store.add(task, id.clone(), now.timestamp(), next)?;
         return Ok(Ensured::Added(id));

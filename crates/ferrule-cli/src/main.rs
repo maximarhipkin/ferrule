@@ -267,9 +267,16 @@ enum TasksCmd {
         /// `scheduler::gate` module doc for the full contract.
         #[arg(long)]
         gate: Option<String>,
+        /// The model it runs on: `provider/model`, a provider or an alias
+        /// (`ferrule model list`); the default without one
+        #[arg(long)]
+        model: Option<String>,
     },
     /// List all tasks
     List,
+    /// Set the model a task runs on, or put it back on the default:
+    /// `ferrule tasks model <id> fast`, `ferrule tasks model <id> default`
+    Model { id: String, reference: String },
     /// Pause a task — it stays configured but never fires until resumed
     Pause { id: String },
     /// Resume a paused task
@@ -1365,6 +1372,10 @@ async fn gateway_factory(
     let workspace = workspace.canonicalize().unwrap_or(workspace);
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     let ledger_sink = ledger::build_sink(cfg);
+    // M21: a scheduled task's own model, read per call from tasks.db so
+    // `ferrule tasks model` reaches a lane that's already running.
+    let tasks = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+    models::shared()?.set_task_models(Arc::new(move |id| tasks.model_of(id).ok().flatten()));
     let sup = agents::supervisor(
         cfg,
         provider.clone(),
@@ -1584,8 +1595,14 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
             chat_id,
             prompt,
             gate,
+            model,
         } => {
             let kind = parse_task_kind(&kind)?;
+            if let Some(word) = &model {
+                models::shared()?
+                    .resolve(word)
+                    .map_err(|why| anyhow!("--model {word}: {why}"))?;
+            }
             let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
             let now = chrono::Utc::now();
             let next_run_at =
@@ -1601,12 +1618,16 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
                     chat_id,
                     prompt,
                     gate,
+                    model,
                 },
                 id,
                 now.timestamp(),
                 next_run_at,
             )?;
             println!("added task {} ({})", task.id, task.name);
+            if let Some(m) = &task.model {
+                println!("model: {m}");
+            }
             match task.next_run_at {
                 Some(t) => println!("next run: {}", fmt_ts(t)),
                 None => println!("next run: never (no schedule computed)"),
@@ -1620,7 +1641,7 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
             }
             for t in tasks {
                 println!(
-                    "{}  {:<24}  {:<5}  {:<24}  {:<7}  next={}",
+                    "{}  {:<24}  {:<5}  {:<24}  {:<7}  next={}  model={}",
                     t.id,
                     t.name,
                     if t.kind == TaskKind::Cron {
@@ -1631,7 +1652,32 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
                     t.schedule,
                     if t.enabled { "enabled" } else { "paused" },
                     t.next_run_at.map(fmt_ts).unwrap_or_else(|| "-".into()),
+                    t.model.as_deref().unwrap_or("default"),
                 );
+            }
+        }
+        TasksCmd::Model { id, reference } => {
+            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+            let word = (reference != "default").then_some(reference);
+            if let Some(w) = &word {
+                models::shared()?
+                    .resolve(w)
+                    .map_err(|why| anyhow!("{w}: {why}"))?;
+            }
+            if !store.set_model(&id, word.as_deref())? {
+                bail!("no such task: {id}");
+            }
+            let (cfg, _) = config::Config::load()?;
+            trust::hub(&cfg)?.audit().record(
+                chrono::Utc::now(),
+                "model.task",
+                None,
+                None,
+                serde_json::json!({ "task": id, "to": word, "by": "cli" }),
+            );
+            match word {
+                Some(w) => println!("task {id} now runs on {w}"),
+                None => println!("task {id} now runs on the default"),
             }
         }
         TasksCmd::Pause { id } => {

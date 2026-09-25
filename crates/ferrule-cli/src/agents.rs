@@ -52,9 +52,12 @@ pub fn supervisor(
             let sup = me.get().and_then(Weak::upgrade);
             let mut scope = Scope::for_session(&spec.tree);
             scope.session = spec.id.clone();
-            let scope = match role_provider(&roles, sup.as_deref(), spec) {
-                Some((role, word)) => scope.fixed(Some(word), &format!("role {role}")),
-                None => scope.fixed(provider.clone(), "the root's model"),
+            // A model spawn_agent named (checked as connected when it
+            // spawned) goes ahead of its role's.
+            let scope = match (&spec.model, role_provider(&roles, sup.as_deref(), spec)) {
+                (Some(m), _) => scope.fixed(Some(m.clone()), "spawn_agent's model"),
+                (None, Some((role, word))) => scope.fixed(Some(word), &format!("role {role}")),
+                (None, None) => scope.fixed(provider.clone(), "the root's model"),
             };
             let tag =
                 ledger::LedgerTag::new(&sink, "agent", Some(format!("agent:{}", spec.parent)));
@@ -65,6 +68,10 @@ pub fn supervisor(
     let store = AgentStore::open(data.join("agents.db"))?;
     let sup = Supervisor::new(store, data.join("sessions"), cfg.agents.limits(), factory)?;
     let _ = me.set(Arc::downgrade(&sup));
+    let models = crate::models::shared()?;
+    sup.set_model_check(Arc::new(move |word| {
+        models.resolve(word).map(|e| e.reference())
+    }));
     sup.set_worktrees_dir(data.join("worktrees"));
     Ok(Some(sup))
 }
@@ -227,8 +234,13 @@ fn below(
             .as_deref()
             .map(|b| format!(", branch {b}"))
             .unwrap_or_default();
+        let model = r
+            .model
+            .as_deref()
+            .map(|m| format!(", on {m}"))
+            .unwrap_or_default();
         lines.push(format!(
-            "{}{}{name} [{}] {}{elsewhere}, {} tokens{branch}",
+            "{}{}{name} [{}] {}{elsewhere}, {} tokens{branch}{model}",
             "  ".repeat(depth),
             r.id,
             r.role,

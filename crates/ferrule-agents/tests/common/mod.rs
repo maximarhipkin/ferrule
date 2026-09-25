@@ -179,6 +179,7 @@ pub fn spawn(sup: &Supervisor, caller: &str, task: &str) -> Result<String, Agent
             name: None,
             role: Role::Worker,
             worktree: true,
+            model: None,
         },
     )
     .map(|s| s.id)

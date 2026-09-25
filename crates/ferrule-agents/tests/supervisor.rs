@@ -376,6 +376,7 @@ async fn a_finished_child_wakes_its_idle_root_with_a_fenced_notice() {
                 name: Some("tester".into()),
                 role: Role::Verifier,
                 worktree: true,
+                model: None,
             },
         )
         .unwrap();
@@ -430,6 +431,7 @@ async fn a_notice_that_cant_wake_waits_in_the_inbox_until_wait_takes_the_report(
                 name: None,
                 role: Role::Worker,
                 worktree: true,
+                model: None,
             },
         )
         .unwrap();
@@ -458,4 +460,53 @@ async fn wait_times_out_with_the_children_still_running() {
     gate.add_permits(1);
     let out = rig.sup.wait("r", &[a], Some(10)).await.unwrap();
     assert!(out.contains("late"), "{out}");
+}
+
+#[tokio::test]
+async fn a_child_runs_on_a_named_connected_model_and_an_unconnected_one_is_refused() {
+    let rig = rig(Limits::default(), reporter("ok"), None);
+    idle_root(&rig, "r");
+    let ask = |model: &str| SpawnRequest {
+        task: "t".into(),
+        name: None,
+        role: Role::Worker,
+        worktree: false,
+        model: Some(model.into()),
+    };
+    // No check set: a named model is refused, nothing is started.
+    let err = rig.sup.spawn("r", ask("fast")).err().unwrap().to_string();
+    assert!(err.contains("picks no models per agent"), "{err}");
+
+    rig.sup.set_model_check(Arc::new(|w: &str| match w {
+        "fast" => Ok("b/b-small".to_string()),
+        _ => Err(format!("`{w}` isn't a connected model")),
+    }));
+    let err = rig
+        .sup
+        .spawn("r", ask("nowhere"))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains("`nowhere` isn't a connected model"), "{err}");
+    assert!(rig.specs.lock().unwrap().is_empty(), "nothing was built");
+
+    let s = rig.sup.spawn("r", ask("fast")).unwrap();
+    // Stored and handed to the factory as the canonical ref.
+    assert_eq!(
+        rig.sup
+            .store()
+            .get(&s.id)
+            .unwrap()
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("b/b-small")
+    );
+    assert_eq!(
+        rig.specs.lock().unwrap()[0].model.as_deref(),
+        Some("b/b-small")
+    );
+    // A child without one has none.
+    spawn(&rig.sup, "r", "plain").unwrap();
+    assert_eq!(rig.specs.lock().unwrap()[1].model, None);
 }

@@ -424,6 +424,7 @@ mod tests {
             created_at: 0,
             next_run_at,
             last_run_at: None,
+            model: None,
         }
     }
 
@@ -622,6 +623,7 @@ mod tests {
             chat_id: "chat-1".into(),
             prompt: "do the thing".into(),
             gate: gate.map(str::to_string),
+            model: None,
         };
         scheduler
             .store()
@@ -700,6 +702,7 @@ mod tests {
             chat_id: "chat-1".into(),
             prompt: "p".into(),
             gate: None,
+            model: None,
         };
         let task = store.add(new_task, "id-1".into(), 0, Some(0)).unwrap();
         // Simulate a previous process dying mid-run: a `running` row with no
@@ -851,6 +854,7 @@ mod tests {
             chat_id: "chat-1".into(),
             prompt: "p".into(),
             gate: None,
+            model: None,
         };
         let task = scheduler
             .store()

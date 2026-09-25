@@ -385,7 +385,6 @@ impl Models {
         *self.hub.lock().unwrap() = Some(hub);
     }
 
-    #[allow(dead_code)] // M21 part 5: the scheduler's task models
     pub fn set_task_models(&self, f: TaskModels) {
         *self.tasks.lock().unwrap() = Some(f);
     }
