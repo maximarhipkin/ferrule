@@ -180,7 +180,7 @@ pub struct Sandbox {
 
 /// The credential proxy as seen by an HTTP client inside ferrule
 /// (`web_fetch`, MCP over HTTP): its URL, credentials included, and the CA
-/// it signs its certificates with. Plain HTTP never goes through it.
+/// it signs its certificates with. Plain HTTP goes through it too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Egress {
     pub proxy_url: String,

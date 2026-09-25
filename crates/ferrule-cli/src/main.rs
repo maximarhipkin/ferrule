@@ -1139,6 +1139,7 @@ fn broker_config(cfg: &config::Config) -> Result<BrokerConfig> {
             .collect(),
         state_dir: config::data_dir()?.join("proxy"),
         upstream: Upstream::from_env()?,
+        http_upstream: Upstream::from_env_http()?,
         ca_bundle: None,
     })
 }
