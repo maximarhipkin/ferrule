@@ -22,6 +22,37 @@ pub struct ProviderConfig {
     pub price_cached_input_per_mtok: Option<f64>,
     #[serde(default)]
     pub price_output_per_mtok: Option<f64>,
+    /// More models on the same endpoint and key (M21), besides `model`:
+    /// `[providers.X.models."id"]`, each field falling back to the
+    /// provider's.
+    #[serde(default)]
+    pub models: BTreeMap<String, ModelConfig>,
+}
+
+/// `[providers.X.models."id"]`: where a model differs from its provider.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelConfig {
+    pub profile: Option<String>,
+    /// Tokens; overrides the profile's window.
+    pub context_window: Option<usize>,
+    pub price_input_per_mtok: Option<f64>,
+    pub price_cached_input_per_mtok: Option<f64>,
+    pub price_output_per_mtok: Option<f64>,
+}
+
+/// `[models]` (docs/m21-models.md): the default, the fallback list and
+/// aliases. Every entry is a reference: `provider/model`, a provider (its
+/// own `model`), an alias or a model id only one provider has.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelsConfig {
+    /// Unset: `default_provider`'s model.
+    pub default: Option<String>,
+    /// Tried in order when a model stays down after its retries. Empty:
+    /// no fallback.
+    pub fallback: Vec<String>,
+    pub aliases: BTreeMap<String, String>,
 }
 
 fn default_profile() -> String {
@@ -137,6 +168,9 @@ pub struct Config {
     pub default_provider: Option<String>,
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+    /// M21: the default model, the fallback list and aliases.
+    #[serde(default)]
+    pub models: ModelsConfig,
     #[serde(default)]
     pub agent: AgentSettings,
     #[serde(default)]
@@ -259,8 +293,10 @@ impl AgentsConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleConfig {
-    /// A name from `[providers]`.
+    /// A name from `[providers]`: its own model.
     pub provider: Option<String>,
+    /// A model reference (M21); not with `provider`.
+    pub model: Option<String>,
 }
 
 /// A `[secrets]` entry: the allowed hosts, or a table that also opts the
@@ -312,6 +348,22 @@ base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-5.2"
 profile = "openai"
+
+# More models on the same key; each field is optional (the provider's if unset).
+# [providers.openai.models."gpt-5.2-mini"]
+# context_window = 400000
+# price_input_per_mtok = 0.25
+# price_cached_input_per_mtok = 0.025
+# price_output_per_mtok = 2.0
+
+# Which model answers, and what takes over in an outage. A model is named
+# `provider/model`, a provider (its `model` above), or an alias.
+# `ferrule model default <ref>` and Telegram's `/model default <ref>` edit this.
+# [models]
+# default = "openai/gpt-5.2"
+# fallback = []                   # e.g. ["kimi"]; empty = no fallback
+# [models.aliases]
+# mini = "openai/gpt-5.2-mini"
 
 # Any OpenAI-compatible endpoint works: OpenRouter, DeepSeek, Ollama, vLLM…
 # [providers.local]

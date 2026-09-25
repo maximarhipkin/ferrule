@@ -9,10 +9,10 @@
 
 <p align="center">
   <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.1.0-c4764a" alt="release v0.1.0"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.2.0-c4764a" alt="release v0.2.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-232-8a929a" alt="232 workspace tests">
+  <img src="https://img.shields.io/badge/tests-582-8a929a" alt="582 workspace tests">
 </p>
 
 <p align="center">
@@ -67,8 +67,7 @@ ferrule setup        # provider + key (tested live), Telegram, credentials, sand
 ferrule run "list the files here and summarise the project"
 ```
 
-While the repo is private the installer needs a GitHub token — one extra
-line, see [Install](#install). On Windows it's `irm … install.ps1 | iex`.
+On Windows it's `irm … install.ps1 | iex`.
 
 And this is what you get: real output, unedited (macOS build; on Linux the
 sandbox rows read Landlock + seccomp instead of Seatbelt). Here the
@@ -177,14 +176,21 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
 | **Providers** | One OpenAI-compatible driver: Kimi, OpenAI, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. |
 | **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. |
-| **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. |
+| **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. `ferrule mcp add` tests and scans a server, then adds it to the running daemon without a restart. |
+| **Browser** | agent-browser's MCP server on your installed Chrome, in the sandbox and behind the proxy ([`docs/browser.md`](docs/browser.md)). |
+| **Sub-agents** | `spawn_agent` / `wait` / `resume` / `close`: planner, worker and verifier roles with isolated contexts, a worktree per child, roles on their own providers, tree limits and a shared budget ([`docs/agents.md`](docs/agents.md)). |
+| **Self-extension** | The agent installs vetted skills and MCP servers for itself: a poisoning scan, version pinning and an allow-list ([`docs/m13-self-extension.md`](docs/m13-self-extension.md)). |
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. |
-| **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall. |
-| **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. |
+| **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall. `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
+| **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons, kept only when the task passes twice with the lesson in the prompt ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md)). |
+| **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
 | **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, and secret env vars are stripped. Native Windows has no sandbox yet ([below](#windows)). |
 | **Credential gateway** | Commands get a placeholder token. A local proxy swaps in the real one only for the hosts you allow. |
 | **Ledger** | Every model call is logged: tokens, cache hits, latency, errors, cost. |
+| **Trust & cost** | Token and dollar caps per run, per day and per scheduled task, with an 80% warning; a kill switch (`ferrule stop`, `/stop`, `/resume`); approvals for destructive actions; plan mode ([`docs/m19-trust-cost.md`](docs/m19-trust-cost.md)). |
+| **Hooks** | Ten lifecycle events (SessionStart, PreToolUse, PostToolUse, Stop, PreCompact and more) with Claude Code's JSON payload and exit-code contract ([`docs/m18-hooks.md`](docs/m18-hooks.md)). |
+| **Eval** | `ferrule eval run`: task suites through the real agent loop, graded by commands and LLM rubrics, with a naive-vs-engineered A/B on the same model ([`docs/eval.md`](docs/eval.md)). |
 | **Context baseline** | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `ferrule.md` in the workspace goes into the system prompt. |
 
 ## Install
@@ -201,23 +207,19 @@ curl -fsSL https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.
 irm https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.ps1 | iex
 ```
 
-The repo is private for now, so these need a GitHub token that can read
-it, both for the script and for the download:
-
-```bash
-export GITHUB_TOKEN=…
-curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.sh | sh
-```
-
-```powershell
-$env:GITHUB_TOKEN = '…'
-irm -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN" } https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.ps1 | iex
-```
-
 The script downloads the release for your machine, checks its SHA-256,
 installs it and starts `ferrule setup`. Nothing to export, no file to edit.
 Run it again to upgrade: your settings stay, and on Linux and macOS a
 running background service is restarted on the new binary.
+
+**Running 0.1.0 as a Telegram bot? Upgrade.** 0.1.0 can go silently deaf:
+a dropped long-poll connection hangs forever while the process looks alive.
+0.2.0 fixes that, and adds `/status` and `/stop` that answer even in the
+middle of a turn, a watchdog message when a turn stops making progress, a
+systemd watchdog for a wedged process and an optional outbound heartbeat
+([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). After the
+upgrade, `ferrule doctor` tells you if your service unit predates the
+watchdog and how to rewrite it.
 
 | | Installs to | Prebuilt for |
 |---|---|---|
@@ -493,7 +495,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 232 tests on Linux, 229 on macOS (the Linux-only ones are cfg'd out)
+cargo test --workspace                     # 582 tests on Linux, 575 on macOS, 543 on Windows (platform-only ones are cfg'd out)
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -531,29 +533,39 @@ and a dated entry for every session.
 - [x] M10: MCP servers and `web_fetch` under the sandbox and the proxy,
       Streamable HTTP MCP, a hardened system service on Linux
 
+- [x] M11: a browser for the agent, driving an installed Chrome over MCP
+- [x] M12: multi-agent orchestration — planner, worker and verifier
+      sub-agents with isolated contexts that return summaries only
+- [x] M13: self-extension — the agent installs vetted skills and MCP
+      servers for itself (poisoning scan, version pinning, allow-list)
+- [x] M14: `ferrule eval` — harness task suites with verify/rubric
+      graders, results into the ledger
+- [x] M15: memory update pipeline (edit, forget, goal-driven recall) and
+      reversible compaction (`search_history` over the transcript)
+- [x] M16: the learning loop — offline consolidation and a curated
+      playbook in the system prompt
+- [x] M17: MCP hot-add and `ferrule mcp add` — guided, no restart, a
+      wizard step
+- [x] M18: lifecycle hooks (SessionStart, PreToolUse, PostToolUse, Stop,
+      PreCompact)
+- [x] M19: budget caps with a kill switch, destructive-action approvals,
+      plan mode
+- [x] M19b: reliability — never silently deaf (`/status` and `/stop`
+      mid-turn, watchdogs, heartbeat); `v0.2.0` released
+- [x] Tests green on Linux, macOS and Windows in CI
+
 **Next**
 
-- [ ] M11: a browser for the agent, driving an installed Chrome over MCP
-      ([research](docs/research-autonomy-and-self-extension.md); needs MCP
-      image content for screenshots)
-- [ ] M12: multi-agent orchestration — planner, implementer and verifier
-      subagents with isolated contexts that return summaries only
-- [ ] M13: self-extension — the agent installs vetted skills and MCP
-      servers for itself (poisoning scan, version pinning, allow-list)
-- [ ] M14: `ferrule eval` — harness task suites with verify/rubric
-      graders, results into the ledger
-- [ ] M15: memory update pipeline (edit, forget, goal-driven recall) and
-      reversible compaction (`search_history` over the transcript)
-- [ ] M16: the learning loop — offline consolidation and a curated
-      playbook in the system prompt
-- [ ] M17: MCP hot-add and `ferrule mcp add` — guided, no restart, a
-      wizard step
-- [ ] M18: lifecycle hooks (SessionStart, PreToolUse, PostToolUse, Stop,
-      PreCompact)
-- [ ] M19: budget caps with a kill switch, destructive-action approvals,
-      plan mode
+- [ ] M20: connections — the agent connects Jira, Gmail, Drive, Attio and
+      more by itself: one Telegram button, OAuth through a small Cloudflare
+      Worker relay (no inbound ports), tokens encrypted and never shown to
+      the model
+- [ ] M21: models — several providers and models at once, a default, a
+      model per chat, task or sub-agent, and a fallback on outage
+- [ ] M22: one dashboard page for the whole app — status, stats, logs,
+      connections and models
 
-M11–M13 were approved in order; M14–M19 come from the six-investigation
+M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
 [`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md).
 Designed, waiting on a decision: multi-provider routing Phase 1
@@ -570,7 +582,7 @@ sandbox (AppContainer or a restricted token), code-extension plugins.
 - [ ] More channels (Discord, Slack, WhatsApp — in that order)
 - [ ] The strategy backlog: parallel tool calls, `web_search`,
       keyword-triggered skills, Aider-style edit mechanics, local-model
-      polish, migration importers, a dashboard, an SSH backend, egress
+      polish, migration importers, an SSH backend, egress
       domain policy, OTel export
       ([strategy](docs/research-number-one-harness-strategy.md))
 
@@ -593,4 +605,13 @@ day-to-day state is tracked in [`PLAN.md`](PLAN.md).
   deployment shapes and isolation, from a process to a container
 - [`docs/research-windows-sandbox.md`](docs/research-windows-sandbox.md):
   a native Windows sandbox, tiered by what needs admin
+- Milestone docs: [`agents.md`](docs/agents.md) (sub-agents),
+  [`browser.md`](docs/browser.md), [`eval.md`](docs/eval.md),
+  [`m13-self-extension.md`](docs/m13-self-extension.md),
+  [`m15-memory.md`](docs/m15-memory.md),
+  [`m16-learning-loop.md`](docs/m16-learning-loop.md),
+  [`m17-mcp-add.md`](docs/m17-mcp-add.md), [`m18-hooks.md`](docs/m18-hooks.md),
+  [`m19-trust-cost.md`](docs/m19-trust-cost.md),
+  [`m19b-reliability.md`](docs/m19b-reliability.md)
+- [`docs/roadmap.md`](docs/roadmap.md): every milestone's design and status
 - [`PLAN.md`](PLAN.md): current state and session log

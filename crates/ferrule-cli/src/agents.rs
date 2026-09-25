@@ -5,6 +5,7 @@
 
 use crate::config::{self, AgentsConfig, Config};
 use crate::ledger;
+use crate::models::Scope;
 use anyhow::{bail, Result};
 use ferrule_agents::{
     AgentRow, AgentStore, ChildFactory, ChildSpec, Role, Status, Supervisor, Waker,
@@ -19,14 +20,15 @@ use tokio::sync::mpsc;
 /// Builds one agent: the CLI's `build_agent_from`, handed in so this module
 /// doesn't need to know how.
 pub type Build = Arc<
-    dyn Fn(Option<String>, &ChildSpec, Option<ledger::LedgerTag>) -> Result<ferrule_core::Agent>
+    dyn Fn(Scope, &ChildSpec, Option<ledger::LedgerTag>) -> Result<ferrule_core::Agent>
         + Send
         + Sync,
 >;
 
 /// The supervisor for this process, or None when `[agents] enabled =
-/// false`. `provider` is what the root runs on; a role in `[agents.roles]`
-/// can name another.
+/// false`. `provider` is the process's one-off (`--provider`/`--model`);
+/// a role in `[agents.roles]` can name another model. Otherwise a child
+/// runs on what its root's task or chat runs on (docs/m21-models.md §3).
 pub fn supervisor(
     cfg: &Config,
     provider: Option<String>,
@@ -41,23 +43,35 @@ pub fn supervisor(
         .agents
         .roles
         .iter()
-        .map(|(r, c)| (r.clone(), c.provider.clone()))
+        .map(|(r, c)| (r.clone(), c.model.clone().or_else(|| c.provider.clone())))
         .collect();
     let me: Arc<OnceLock<Weak<Supervisor>>> = Arc::default();
     let factory: ChildFactory = {
         let me = me.clone();
         Arc::new(move |spec: &ChildSpec| {
             let sup = me.get().and_then(Weak::upgrade);
-            let provider = role_provider(&roles, sup.as_deref(), spec).or(provider.clone());
+            let mut scope = Scope::for_session(&spec.tree);
+            scope.session = spec.id.clone();
+            // A model spawn_agent named (checked as connected when it
+            // spawned) goes ahead of its role's.
+            let scope = match (&spec.model, role_provider(&roles, sup.as_deref(), spec)) {
+                (Some(m), _) => scope.fixed(Some(m.clone()), "spawn_agent's model"),
+                (None, Some((role, word))) => scope.fixed(Some(word), &format!("role {role}")),
+                (None, None) => scope.fixed(provider.clone(), "the root's model"),
+            };
             let tag =
                 ledger::LedgerTag::new(&sink, "agent", Some(format!("agent:{}", spec.parent)));
-            build(provider, spec, tag).map_err(|e| format!("{e:#}"))
+            build(scope, spec, tag).map_err(|e| format!("{e:#}"))
         })
     };
     let data = config::data_dir()?;
     let store = AgentStore::open(data.join("agents.db"))?;
     let sup = Supervisor::new(store, data.join("sessions"), cfg.agents.limits(), factory)?;
     let _ = me.set(Arc::downgrade(&sup));
+    let models = crate::models::shared()?;
+    sup.set_model_check(Arc::new(move |word| {
+        models.resolve(word).map(|e| e.reference())
+    }));
     sup.set_worktrees_dir(data.join("worktrees"));
     Ok(Some(sup))
 }
@@ -74,18 +88,27 @@ pub fn check_roles(cfg: &Config) -> Result<()> {
                 bail!("[agents.roles.{role}] provider = \"{p}\": there is no [providers.{p}]");
             }
         }
+        if let Some(m) = &rc.model {
+            if rc.provider.is_some() {
+                bail!("[agents.roles.{role}]: set `model` or `provider`, not both");
+            }
+            if let Err(e) = crate::models::Catalog::from_config(cfg).resolve(m) {
+                bail!("[agents.roles.{role}] model = \"{m}\": {e}");
+            }
+        }
     }
     Ok(())
 }
 
-/// The provider for `spec`: its own role's, else the nearest ancestor's
-/// whose role has one, so a verifier's helpers stay on the verifier's
-/// model. None: the root's.
+/// The model for `spec` (a ref, or a provider's name) and the role that
+/// names it: its own role's, else the nearest ancestor's whose role has
+/// one, so a verifier's helpers stay on the verifier's model. None: the
+/// root's.
 fn role_provider(
     roles: &HashMap<String, Option<String>>,
     sup: Option<&Supervisor>,
     spec: &ChildSpec,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let mut chain = vec![spec.role.as_str().to_string()];
     if let Some(sup) = sup {
         let mut next = Some(spec.parent.clone());
@@ -97,7 +120,9 @@ fn role_provider(
             next = row.parent;
         }
     }
-    chain.iter().find_map(|r| roles.get(r).cloned().flatten())
+    chain
+        .iter()
+        .find_map(|r| Some((r.clone(), roles.get(r).cloned().flatten()?)))
 }
 
 /// What a child may use of the tools the root has: a read-only child
@@ -209,8 +234,13 @@ fn below(
             .as_deref()
             .map(|b| format!(", branch {b}"))
             .unwrap_or_default();
+        let model = r
+            .model
+            .as_deref()
+            .map(|m| format!(", on {m}"))
+            .unwrap_or_default();
         lines.push(format!(
-            "{}{}{name} [{}] {}{elsewhere}, {} tokens{branch}",
+            "{}{}{name} [{}] {}{elsewhere}, {} tokens{branch}{model}",
             "  ".repeat(depth),
             r.id,
             r.role,

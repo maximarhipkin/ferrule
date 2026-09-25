@@ -587,6 +587,7 @@ mod tests {
             channel: channel.into(),
             chat_id: chat.into(),
             sender: "someone".into(),
+            sender_id: None,
             message_id: String::new(),
             text: text.into(),
             attachments: vec![],

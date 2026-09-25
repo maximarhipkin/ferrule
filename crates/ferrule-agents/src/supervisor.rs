@@ -103,7 +103,14 @@ pub struct ChildSpec {
     pub read_only: bool,
     /// Its session: build the agent on this transcript.
     pub transcript: Transcript,
+    /// The model `spawn_agent` named (already checked as connected):
+    /// ahead of its role's model.
+    pub model: Option<String>,
 }
+
+/// Checks a model `spawn_agent` names: its canonical ref, or why it
+/// can't run on it (M21: connected models only).
+pub type ModelCheck = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
 pub type ChildFactory = Arc<dyn Fn(&ChildSpec) -> Result<Agent, String> + Send + Sync>;
 
@@ -135,6 +142,8 @@ pub struct SpawnRequest {
     /// Its own worktree when the parent is in a git repo (a verifier gets
     /// a snapshot); false shares the parent's workspace.
     pub worktree: bool,
+    /// A connected model to run on (checked with the [`ModelCheck`]).
+    pub model: Option<String>,
 }
 
 /// What `close_tree` did.
@@ -248,6 +257,9 @@ pub struct Supervisor {
     /// Where children's worktrees go; none, and every child shares its
     /// parent's workspace.
     worktrees: RwLock<Option<PathBuf>>,
+    /// Which models a child may be asked to run on; none, and a spawn
+    /// that names one is refused.
+    models: RwLock<Option<ModelCheck>>,
     /// The root's hooks: children inherit PreToolUse/PostToolUse, and
     /// SubagentStart/Stop fire around their runs (M18).
     hooks: RwLock<HookSet>,
@@ -289,10 +301,16 @@ impl Supervisor {
             tick: watch::channel(0).0,
             waker: RwLock::new(None),
             worktrees: RwLock::new(None),
+            models: RwLock::new(None),
             hooks: RwLock::new(HookSet::default()),
             finishing: AtomicUsize::new(0),
             me: me.clone(),
         }))
+    }
+
+    /// How a model named in `spawn_agent` is checked (M21).
+    pub fn set_model_check(&self, check: ModelCheck) {
+        *self.models.write().unwrap() = Some(check);
     }
 
     pub fn set_waker(&self, waker: Arc<dyn Waker>) {
@@ -373,6 +391,7 @@ impl Supervisor {
                     tokens: 0,
                     created_at: t,
                     updated_at: t,
+                    model: None,
                 };
                 self.store.insert(&row)?;
                 row
@@ -451,6 +470,27 @@ impl Supervisor {
     /// Starts a child of `caller` on `req.task`.
     pub fn spawn(&self, caller: &str, req: SpawnRequest) -> Result<Spawned, AgentsError> {
         let parent = self.get(caller)?;
+        let model = match req
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        {
+            None => None,
+            Some(word) => {
+                let check = self.models.read().unwrap().clone();
+                let Some(check) = check else {
+                    return Err(AgentsError::Invalid(format!(
+                        "can't run an agent on `{word}`: this process picks no models per agent; leave `model` out"
+                    )));
+                };
+                Some(check(word).map_err(|why| {
+                    AgentsError::Invalid(format!(
+                        "can't run an agent on `{word}`: {why}. Leave `model` out to use its role's or yours"
+                    ))
+                })?)
+            }
+        };
         let row = {
             let _guard = self.spawn_lock.lock().unwrap();
             let depth = parent.depth + 1;
@@ -489,6 +529,7 @@ impl Supervisor {
                 tokens: 0,
                 created_at: t,
                 updated_at: t,
+                model,
             };
             self.store.insert(&row)?;
             row
@@ -583,6 +624,7 @@ impl Supervisor {
             // A verifier without a snapshot works in its parent's files.
             read_only: role == Role::Verifier && row.worktree.is_none(),
             transcript,
+            model: row.model.clone(),
         };
         let agent = (self.factory)(&spec).map_err(AgentsError::Build)?;
         let mut agent = self.equip(agent, row);

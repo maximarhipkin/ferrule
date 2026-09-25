@@ -275,6 +275,7 @@ impl Scheduler {
             channel: SCHEDULER_PSEUDO_CHANNEL.into(),
             chat_id: task.id.clone(),
             sender: "scheduler".into(),
+            sender_id: None,
             message_id: uuid::Uuid::new_v4().to_string(),
             text: prompt,
             attachments: vec![],
@@ -423,6 +424,7 @@ mod tests {
             created_at: 0,
             next_run_at,
             last_run_at: None,
+            model: None,
         }
     }
 
@@ -621,6 +623,7 @@ mod tests {
             chat_id: "chat-1".into(),
             prompt: "do the thing".into(),
             gate: gate.map(str::to_string),
+            model: None,
         };
         scheduler
             .store()
@@ -699,6 +702,7 @@ mod tests {
             chat_id: "chat-1".into(),
             prompt: "p".into(),
             gate: None,
+            model: None,
         };
         let task = store.add(new_task, "id-1".into(), 0, Some(0)).unwrap();
         // Simulate a previous process dying mid-run: a `running` row with no
@@ -850,6 +854,7 @@ mod tests {
             chat_id: "chat-1".into(),
             prompt: "p".into(),
             gate: None,
+            model: None,
         };
         let task = scheduler
             .store()

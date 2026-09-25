@@ -28,6 +28,7 @@ six-investigation synthesis that produced M14–M19.
 
 M11–M13 were approved 2026-09-24 (msg 3090). M14–M19 come from
 `docs/research-number-one-harness-strategy.md`, adopted the same day.
+M21 came from Max on 2026-09-25 (msg 3160).
 
 ### M11 — a browser (done)
 
@@ -407,6 +408,30 @@ with the batch CI.
 arrived, what the agent is doing or where it's stuck, and that the
 process is down — and a wedged or crashed gateway comes back and says so.
 
+### M21 — models
+
+**Status.** Built (`docs/m21-models.md`, user guide `docs/models.md`; PR
+open). Several models connected at once, named `provider/model`, by a
+provider, an alias or a unique model id, with their own prices, context
+window and profile; old single-model configs unchanged. A default,
+changed from `ferrule setup`, `ferrule model default` or `/model default`
+in Telegram (owner only), written under a lock that survives Windows'
+rename. A model per chat (`/model use`), per task (`ferrule tasks add
+--model`), per role and per sub-agent (`spawn_agent`'s `model`, connected
+models only, inside its root's caps, gates and plan mode); one-off > role >
+task > chat pin > default. An optional fallback list (off by default) for
+outages only, told to the owner once. The model that ran is in the ledger,
+the audit log and `/status`, and caps price by it. `ferrule model test`,
+setup and `ferrule doctor --ping-models` make one real call and say why a
+model fails. Presets: OpenAI, Anthropic (OpenAI-compatible endpoint, no
+prompt caching), Gemini, OpenRouter, DeepSeek, Kimi, Groq, Ollama. The
+eval never follows the owner's default, pins or fallback. M22's dashboard
+reads and changes all of it through one `Models` API.
+
+**Done means.** The owner connects two models, makes one the default from
+the phone, pins a chat and a task to the other, and a sub-agent runs on a
+third; each call's model shows in the ledger, and an outage moves the turn
+to the fallback with one message.
 ### M20 — connections
 
 **Status.** Built (`docs/m20-connections.md`; PR open).

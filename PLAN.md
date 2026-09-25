@@ -342,6 +342,23 @@ that convention yet — ask before introducing one).
     (`WatchdogSec=120`, pings only while polling works); an optional
     outbound heartbeat. Eval emits none of it (tested). **Open edges and
     the macOS/Windows-unverified list:** see the M19b session-log entry.
+  - **M21 — models**: **built** (2026-09-25, parts 1–7 on branch
+    `m21-models`, PR to main open, not merged; see the M21 session-log
+    entry). Design: `docs/m21-models.md`; user guide: `docs/models.md`.
+    Several models connected at once (`provider/model`, a provider, an
+    alias or a unique model id; per-model price, window and profile under
+    `[providers.X.models."m"]`; old configs unchanged), a `[models]`
+    default, fallback and aliases. `models.rs` resolves a ref and picks
+    one-off > role > task > chat pin > default per call through a
+    `RoutedProvider`; `models/admin.rs` is the one `Models` API (`view()`,
+    `set_default`, `pin`/`unpin`, `set_fallback`, `add_model`,
+    `remove_model`, `set_alias`, `test`) behind `ferrule model`, Telegram's
+    owner-only `/model`, setup, and M22's page later. Pins in
+    `<data>/models/pins.json`, a task's model in tasks.db, a sub-agent's in
+    agents.db. Fallback off by default, transient failures only, owner told
+    once. The served model is in the ledger, caps, the audit log and
+    `/status`. `ferrule doctor --ping-models`, `ferrule eval --model`.
+    **Decisions for Max and open edges:** see the M21 session-log entry.
   - **M20 connections**: **built** (2026-09-25, parts 1–5 on branch
     `m20-connections`; PR to main open, not merged). Design and as-built
     notes are in `docs/m20-connections.md`; the relay is in
@@ -2963,6 +2980,97 @@ fixed. Identical to the run before M19b. The eval's data directory had no
 - The shell tool's 120 s process-group kill during a watchdog'd or deadlined turn
   (`killpg` on macOS, no process groups on Windows).
 
+
+### 2026-09-25 — M21 models: several at once, a default, a model per agent (Devi, Opus 5.5)
+
+Max, msg 3160: connect several models in parallel, pick a default, and run a
+given agent on a different model, from Telegram and `ferrule setup`. The design
+is `docs/m21-models.md` and the user guide is `docs/models.md`. The branch is
+`m21-models`, cut from `cda13b5` (M19b), with `origin/main` merged in at 0.2.0.
+The PR to `main` is open and not merged. No real model was called: everything ran
+against mock providers and a fake Bot API.
+
+**Commits:**
+- `bcf9b88` design: refs, `[models]`, per-model entries, precedence, pins,
+  owner-only `/model`, the locked write, fallback, what's recorded, eval
+  hermeticity, failure modes, the API for M22.
+- `a3bad79` part 1: `ferrule-core` records the served provider and model per
+  call, and `Provider::fail_over` fires only after the retries on a transient
+  failure (transport, 408, 429, 5xx), at most 8 times per call.
+- `afe55d8` part 2: `Catalog` and `RoutedProvider` in `models.rs`. A ref
+  resolves, and each call picks one-off > role > task > chat pin > default. A
+  hand-edited config is reloaded. A model that's down is skipped for 5 minutes,
+  and the owner is told once. The ledger and caps price by the served model.
+- `50bd7d5` part 3: the one `Models` API and `ferrule model`. Writes go under
+  `<config>.lock` through `toml_edit`, into a temp file renamed with Windows'
+  retry, and are audited.
+- `a735fa7` part 4: Telegram `/model` (owner only) and a models section in
+  `/status`. A change retires the affected lanes.
+- `e974777` part 5: a task's model (`tasks add --model`, `tasks model`) and
+  `spawn_agent`'s `model`.
+- `c3a7fc7` part 6: the setup presets (Gemini, Groq, the Anthropic note),
+  "Add another model", "Test it" and "Default model"; `doctor --ping-models`;
+  `eval --model` by ref; the learning pass on the default model.
+- part 7: seven end-to-end tests through the real binary (`tests/models.rs`)
+  and `docs/models.md`.
+- part 8: this entry, the roadmap and the Current State section.
+
+**Checks (after merging main):**
+- fmt is clean, and so is clippy with `-D warnings`.
+- `cargo test --workspace`: 610 passed, 0 failed, 2 ignored.
+- `tests_e2e/setup_wizard.py` and `hidden_keys.py` pass locally.
+
+**Eval** (mock, `ferrule eval run evals/starter --variant ab`, all 20 tasks):
+- pass rate: engineered 20/20, naive 11/20, +45 pts;
+- usage: 150 calls, 952.0k input + 6.2k output tokens;
+- cost: $0.98 ($0.53 / $0.45);
+- context: 13 compactions / 11 truncations, 4 failed checks fixed.
+
+Input was 951.5k at M19b. The 0.5k difference wasn't traced; the pass rates and
+the cost are the same.
+
+**Decisions for Max to confirm:**
+- Fallback is off by default. It covers only transient failures after the
+  retries. A 401/403, an unknown model or a missing key never falls back.
+- A missing key fails when the agent is built, not at the first call.
+- Telegram has no one-off per message: `/model use` pins the chat, and the one-off
+  is `ferrule run/chat --model` or `spawn_agent`'s `model`. There's no
+  agent-facing tool for changing a task's model or scheduling on a model.
+- Pins live in `<data>/models/pins.json`, not in the config. A task's model is
+  in tasks.db.
+- In a group, the owner is the owner's own Telegram id (`sender_id`). Anyone
+  else, the group's admins included, is refused.
+- A new default retires every chat lane, so the next message builds on the new
+  model's harness profile. Scheduled lanes are left alone.
+- An alias is stored as the alias (a pin or task on `fast` follows the alias when
+  it moves).
+- `remove_model` refuses a provider's primary model and the current default.
+- `model test` sends no `max_tokens`, because newer OpenAI models refuse it.
+- A process that can't pick models per agent refuses `spawn_agent`'s `model`
+  rather than ignoring it.
+- `ferrule eval` never follows `[models] default`, pins or fallback.
+- Anthropic goes through its OpenAI-compatible endpoint, which has no prompt
+  caching, no thinking output and no PDF input. A native driver is a follow-up.
+- Preset models: Groq `llama-3.3-70b-versatile`, Gemini `gemini-2.5-flash`.
+
+**For M22:** `models::admin` reads everything through `Models::view()` (serde
+`ModelsView`: models with aliases, default, fallback rank, key present, prices,
+window, profile and outage; pins, the last model per session, problems). It
+changes things through `set_default`, `pin`/`unpin`, `set_fallback`,
+`add_model`, `remove_model`, `set_alias` and `test`, each taking a `by` for the
+audit.
+
+**Open edges:**
+- A native Anthropic driver.
+- The last model per session is in the gateway's memory, so a restart forgets
+  it until the next call.
+- A running `ferrule run` keeps its one-off even if the default moves.
+
+**Unverified until CI runs:**
+- macOS and Windows: the locked write and its rename retry, and the
+  `tests/models.rs` binaries (fake servers, gateway kill).
+- setup's new steps in a real pty on anything but Linux.
+
 ### 2026-09-25 — M20 connections (Devi, Opus 5.5)
 
 The design is `docs/m20-connections.md`, and its **As built** section lists where
@@ -3027,8 +3135,11 @@ real provider was logged into. The flows ran against:
     credentials).
   - The design doc's As built section, this entry, the roadmap status.
 
-**Checks (final):** fmt clean; clippy `-D warnings` clean; `cargo test --workspace`
-all pass (624 at part 4; 582 before M20).
+**Checks (final, after merging `main` with M21 and 0.2.0):** fmt clean; clippy
+`-D warnings` clean; `cargo test --workspace` 656 passed, 0 failed, 2 ignored (624
+at part 4, before the merge). The merge needed two changes: a button tap now carries
+`sender_id` (M21's field, the tapper's Telegram id), and `ferrule-connections` is
+0.2.0 like every other crate.
 
 **Eval (mock, `ferrule eval run evals/starter --variant ab`, all 20 tasks):**
 - engineered 20/20, naive 11/20, +45 pts

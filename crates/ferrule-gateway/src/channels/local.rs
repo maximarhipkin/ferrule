@@ -85,6 +85,7 @@ where
                 channel: "local".into(),
                 chat_id: self.chat_id.clone(),
                 sender: "local".into(),
+                sender_id: None,
                 message_id: NEXT_LOCAL_ID.fetch_add(1, Ordering::SeqCst).to_string(),
                 text,
                 attachments: vec![],

@@ -18,5 +18,6 @@ pub use board::{Entry, Task, TaskStatus};
 pub use error::AgentsError;
 pub use store::{AgentRow, AgentStore, Status};
 pub use supervisor::{
-    ChildFactory, ChildSpec, Closed, Limits, Role, SpawnRequest, Spawned, Supervisor, Waker,
+    ChildFactory, ChildSpec, Closed, Limits, ModelCheck, Role, SpawnRequest, Spawned, Supervisor,
+    Waker,
 };

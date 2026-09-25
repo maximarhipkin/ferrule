@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-extensions"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Self-extension: allow-listed MCP servers and skills installed mid-session, pinned, scanned and hot-loaded"
 

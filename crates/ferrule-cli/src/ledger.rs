@@ -7,14 +7,14 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use ferrule_core::{LedgerRecord, LedgerSink};
 use ferrule_gateway::SCHEDULER_PSEUDO_CHANNEL;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// USD per million tokens. Only built when all three prices are configured —
 /// a partial set would silently undercount.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct ProviderPricing {
     pub input: f64,
     pub cached_input: f64,
@@ -41,20 +41,24 @@ impl ProviderPricing {
     }
 }
 
+/// The prices of a call on `(provider, model)` (M21: per model, else the
+/// provider's), `None` when not all three are configured.
+pub type Prices = Arc<dyn Fn(&str, &str) -> Option<ProviderPricing> + Send + Sync>;
+
 /// Appends one JSON line per record. Shared by every session in the
 /// process; the mutex keeps concurrent sessions' lines from interleaving.
 /// A write failure is logged and the row dropped — it never fails a turn.
 pub struct FileLedgerSink {
     path: PathBuf,
-    pricing: HashMap<String, ProviderPricing>,
+    prices: Prices,
     lock: Mutex<()>,
 }
 
 impl FileLedgerSink {
-    pub fn new(path: PathBuf, pricing: HashMap<String, ProviderPricing>) -> Self {
+    pub fn new(path: PathBuf, prices: Prices) -> Self {
         Self {
             path,
-            pricing,
+            prices,
             lock: Mutex::new(()),
         }
     }
@@ -72,7 +76,7 @@ impl FileLedgerSink {
 impl LedgerSink for FileLedgerSink {
     fn record(&self, mut record: LedgerRecord) {
         if record.cost_usd.is_none() && !record.is_error() {
-            if let Some(p) = self.pricing.get(&record.provider) {
+            if let Some(p) = (self.prices)(&record.provider, &record.model) {
                 record.cost_usd = Some(p.cost_usd(&record));
             }
         }
@@ -99,7 +103,7 @@ pub fn ledger_path() -> Result<PathBuf> {
     Ok(crate::config::data_dir()?.join("ledger.jsonl"))
 }
 
-/// One sink per process, priced from `[providers.*]`. `None` (with a
+/// One sink per process, priced per model from `[providers.*]`. `None` (with a
 /// warning) if the data dir is unavailable — the agent runs without a ledger
 /// rather than not at all.
 pub fn build_sink(cfg: &Config) -> Option<Arc<dyn LedgerSink>> {
@@ -110,12 +114,10 @@ pub fn build_sink(cfg: &Config) -> Option<Arc<dyn LedgerSink>> {
             return None;
         }
     };
-    let pricing = cfg
-        .providers
-        .iter()
-        .filter_map(|(name, p)| ProviderPricing::from_config(p).map(|pr| (name.clone(), pr)))
-        .collect();
-    Some(Arc::new(FileLedgerSink::new(path, pricing)))
+    Some(Arc::new(FileLedgerSink::new(
+        path,
+        crate::models::prices(cfg),
+    )))
 }
 
 /// Which entry point a ledger row came from. The sink is shared; the tag is
@@ -475,15 +477,14 @@ mod tests {
     fn sink_round_trip_prices_ok_rows_and_skips_malformed_lines() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ledger.jsonl");
-        let pricing = HashMap::from([(
-            "kimi".to_string(),
-            ProviderPricing {
+        let prices: Prices = Arc::new(|p: &str, _: &str| {
+            (p == "kimi").then_some(ProviderPricing {
                 input: 1.0,
                 cached_input: 0.0,
                 output: 0.0,
-            },
-        )]);
-        let sink = FileLedgerSink::new(path.clone(), pricing);
+            })
+        });
+        let sink = FileLedgerSink::new(path.clone(), prices);
         sink.record(rec("run", "kimi", 10, 2_000_000, 0, 0, "ok"));
         sink.record(rec("run", "kimi", 10, 0, 0, 0, "error"));
         sink.record(rec("run", "unpriced", 10, 5, 0, 0, "ok"));

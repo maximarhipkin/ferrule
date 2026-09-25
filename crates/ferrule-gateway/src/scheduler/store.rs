@@ -94,6 +94,9 @@ pub struct Task {
     pub created_at: i64,
     pub next_run_at: Option<i64>,
     pub last_run_at: Option<i64>,
+    /// The model it runs on (M21: a `provider/model`, alias or provider);
+    /// `None` runs it on the default.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +109,7 @@ pub struct NewTask {
     pub chat_id: String,
     pub prompt: String,
     pub gate: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +171,13 @@ impl TaskStore {
              CREATE INDEX IF NOT EXISTS idx_runs_task_status ON runs(task_id, status);
              CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(enabled, next_run_at);",
         )?;
+        // M21: a task's model, added to a database made before it.
+        let has_model = conn
+            .prepare("SELECT 1 FROM pragma_table_info('tasks') WHERE name = 'model'")?
+            .exists([])?;
+        if !has_model {
+            conn.execute_batch("ALTER TABLE tasks ADD COLUMN model TEXT")?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -180,8 +191,8 @@ impl TaskStore {
         next_run_at: Option<i64>,
     ) -> Result<Task, SchedulerError> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO tasks (id, name, kind, schedule, timezone, channel, chat_id, prompt, gate, enabled, created_at, next_run_at, last_run_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, NULL)",
+            "INSERT INTO tasks (id, name, kind, schedule, timezone, channel, chat_id, prompt, gate, enabled, created_at, next_run_at, last_run_at, model)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, NULL, ?12)",
             params![
                 id,
                 task.name,
@@ -194,6 +205,7 @@ impl TaskStore {
                 task.gate,
                 created_at,
                 next_run_at,
+                task.model,
             ],
         )?;
         Ok(Task {
@@ -210,13 +222,14 @@ impl TaskStore {
             created_at,
             next_run_at,
             last_run_at: None,
+            model: task.model,
         })
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Task>, SchedulerError> {
         self.conn.lock().unwrap()
             .query_row(
-                "SELECT id, name, kind, schedule, timezone, channel, chat_id, prompt, gate, enabled, created_at, next_run_at, last_run_at
+                "SELECT id, name, kind, schedule, timezone, channel, chat_id, prompt, gate, enabled, created_at, next_run_at, last_run_at, model
                  FROM tasks WHERE id = ?1",
                 params![id],
                 row_to_task,
@@ -228,7 +241,7 @@ impl TaskStore {
     pub fn list(&self) -> Result<Vec<Task>, SchedulerError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, kind, schedule, timezone, channel, chat_id, prompt, gate, enabled, created_at, next_run_at, last_run_at
+            "SELECT id, name, kind, schedule, timezone, channel, chat_id, prompt, gate, enabled, created_at, next_run_at, last_run_at, model
              FROM tasks ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], row_to_task)?;
@@ -239,7 +252,7 @@ impl TaskStore {
     pub fn due_tasks(&self, now: i64) -> Result<Vec<Task>, SchedulerError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, kind, schedule, timezone, channel, chat_id, prompt, gate, enabled, created_at, next_run_at, last_run_at
+            "SELECT id, name, kind, schedule, timezone, channel, chat_id, prompt, gate, enabled, created_at, next_run_at, last_run_at, model
              FROM tasks WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ?1
              ORDER BY next_run_at ASC",
         )?;
@@ -255,6 +268,28 @@ impl TaskStore {
             params![id, enabled as i64],
         )?;
         Ok(n > 0)
+    }
+
+    /// Sets or clears a task's model. `true` if the row existed.
+    pub fn set_model(&self, id: &str, model: Option<&str>) -> Result<bool, SchedulerError> {
+        let n = self.conn.lock().unwrap().execute(
+            "UPDATE tasks SET model = ?2 WHERE id = ?1",
+            params![id, model],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// A task's model, read fresh (a running lane asks per call).
+    pub fn model_of(&self, id: &str) -> Result<Option<String>, SchedulerError> {
+        Ok(self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT model FROM tasks WHERE id = ?1", params![id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten())
     }
 
     pub fn delete(&self, id: &str) -> Result<bool, SchedulerError> {
@@ -390,6 +425,7 @@ fn row_to_task(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         created_at: row.get(10)?,
         next_run_at: row.get(11)?,
         last_run_at: row.get(12)?,
+        model: row.get(13)?,
     })
 }
 
@@ -419,7 +455,44 @@ mod tests {
             chat_id: "c1".into(),
             prompt: "say hi".into(),
             gate: None,
+            model: None,
         }
+    }
+
+    #[test]
+    fn a_tasks_model_is_kept_and_an_old_database_gets_the_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.db");
+        // A tasks table from before M21, without `model`.
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE tasks (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+                 schedule TEXT NOT NULL, timezone TEXT NOT NULL, channel TEXT NOT NULL,
+                 chat_id TEXT NOT NULL, prompt TEXT NOT NULL, gate TEXT,
+                 enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+                 next_run_at INTEGER, last_run_at INTEGER);
+                 INSERT INTO tasks VALUES ('old', 'o', 'cron', '* * * * *', 'UTC', 'local', 'c',
+                 'p', NULL, 1, 1, NULL, NULL);",
+            )
+            .unwrap();
+        let store = TaskStore::open(&path).unwrap();
+        assert_eq!(store.get("old").unwrap().unwrap().model, None);
+        let mut t = sample("t");
+        t.model = Some("fast".into());
+        store.add(t, "new".into(), 2, None).unwrap();
+        assert_eq!(store.model_of("new").unwrap().as_deref(), Some("fast"));
+        assert!(store.set_model("old", Some("b/b-large")).unwrap());
+        assert!(store.set_model("new", None).unwrap());
+        assert!(!store.set_model("gone", None).unwrap());
+        assert_eq!(
+            store.get("old").unwrap().unwrap().model.as_deref(),
+            Some("b/b-large")
+        );
+        assert_eq!(store.model_of("new").unwrap(), None);
+        // Opening it again doesn't add the column twice.
+        drop(store);
+        TaskStore::open(&path).unwrap();
     }
 
     #[test]
