@@ -365,3 +365,118 @@ fn a_second_run_reports_its_diff_against_the_first() {
     assert!(!out.status.success());
     assert!(texts(&out).1.contains("no saved eval run of suite `nope`"));
 }
+
+/// Counts connections to a port that nothing should call.
+fn tripwire() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = hits.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    (port, hits)
+}
+
+/// M19b: an eval run is hermetic. With Telegram, a heartbeat, "back up"
+/// on start, systemd's watchdog and an unclean-exit marker all set up, it
+/// reacts to nothing, pings nothing, sends no notice and writes no marker.
+#[test]
+fn an_eval_run_sends_no_receipts_pings_heartbeats_or_notices() {
+    if !have_python() {
+        return;
+    }
+    let mock = Mock::start();
+    let home = home(&mock.url);
+    let (tg_port, tg_hits) = tripwire();
+    let (beat_port, beat_hits) = tripwire();
+    let mut toml = std::fs::read_to_string(home.path().join("ferrule.toml")).unwrap();
+    toml.push_str(&format!(
+        "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"http://127.0.0.1:{tg_port}\"\ntelegram_allowed_chats = [42]\n\n[health]\nnotify_on_start = true\nheartbeat_url = \"http://127.0.0.1:{beat_port}/ping\"\nheartbeat_secs = 1\n"
+    ));
+    std::fs::write(home.path().join("ferrule.toml"), toml).unwrap();
+    // What a killed gateway leaves: a stale marker with a turn in it.
+    let gw = home.path().join("data/gateway");
+    std::fs::create_dir_all(&gw).unwrap();
+    let marker = r#"{"pid":999999,"version":"0.0.0","started":1,"turns":[{"place":"telegram chat 42","channel":"telegram","chat_id":"42","text":"hi"}]}"#;
+    std::fs::write(gw.join("running.json"), marker).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(gw.join("running.json"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    let suite = suite();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ferrule"));
+    cmd.args([
+        "eval",
+        "run",
+        suite.to_str().unwrap(),
+        "--task",
+        "fix-median",
+        "--variant",
+        "ab",
+    ])
+    .current_dir(home.path().join("work"))
+    .env("FERRULE_CONFIG", home.path().join("ferrule.toml"))
+    .env("FERRULE_DATA_DIR", home.path().join("data"))
+    .env("FERRULE_TEST_KEY", "sk-test")
+    .env("FERRULE_TEST_TG", "TESTTOKEN")
+    .env("TMPDIR", home.path().join("tmp"));
+    for var in ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME"] {
+        cmd.env(var, home.path().join("home"));
+    }
+    for var in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "NOTIFY_SOCKET",
+        "WATCHDOG_USEC",
+        "WATCHDOG_PID",
+    ] {
+        cmd.env_remove(var);
+    }
+    #[cfg(unix)]
+    let notify = {
+        let path = home.path().join("notify");
+        let rx = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+        rx.set_nonblocking(true).unwrap();
+        cmd.env("NOTIFY_SOCKET", &path)
+            .env("WATCHDOG_USEC", "300000");
+        rx
+    };
+    let out = cmd.output().unwrap();
+    let (stdout, stderr) = texts(&out);
+    assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(row(&stdout, "fix-median").contains("pass"), "{stdout}");
+    // Give anything stray a moment to land.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
+    let hits = |h: &std::sync::atomic::AtomicUsize| h.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(hits(&tg_hits), 0, "the eval called Telegram");
+    assert_eq!(hits(&beat_hits), 0, "the eval sent a heartbeat");
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 64];
+        let got = notify.recv(&mut buf);
+        assert!(
+            got.is_err(),
+            "the eval pinged systemd: {:?}",
+            got.map(|n| String::from_utf8_lossy(&buf[..n]).into_owned())
+        );
+    }
+    // The marker is left for the next gateway; no status file appeared.
+    assert_eq!(
+        std::fs::read_to_string(gw.join("running.json")).unwrap(),
+        marker
+    );
+    assert!(!gw.join("status.txt").exists());
+}

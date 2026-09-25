@@ -6,7 +6,9 @@
 use crate::config::{self, Config};
 use anyhow::Result;
 use ferrule_gateway::health::{human, restart_notice, stamp, STATUS_FILE};
-use ferrule_gateway::{Health, HealthSettings, Leftover, Notice, RecentLog, Redactor, TaskStore};
+use ferrule_gateway::{
+    Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, TaskStore,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -75,14 +77,22 @@ pub fn build(
         watchdog_after: (cfg.health.watchdog_after_secs > 0)
             .then(|| Duration::from_secs(cfg.health.watchdog_after_secs)),
         owner: owner(cfg),
+        heartbeat: (!cfg.health.heartbeat_url.trim().is_empty()).then(|| Heartbeat {
+            url: cfg.health.heartbeat_url.trim().to_string(),
+            every: Duration::from_secs(cfg.health.heartbeat_secs.max(1)),
+        }),
         ..HealthSettings::default()
     };
+    let kill = hub.clone();
     let mut health = Health::new(env!("CARGO_PKG_VERSION"), settings)
         .with_redactor(Arc::new(redactor(cfg)))
         .with_section(
             "spend and caps",
             Arc::new(move || crate::trust::status_lines(&hub)),
-        );
+        )
+        .with_probe(Arc::new(move || {
+            kill.stopped().map(|_| "the kill switch is on".to_string())
+        }));
     if let Some(store) = store {
         health = health.with_section("schedule", Arc::new(move || schedule_lines(&store)));
     }

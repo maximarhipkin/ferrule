@@ -582,3 +582,127 @@ fn under_systemd_the_gateway_pings_its_watchdog() {
         assert_eq!(&buf[..n], b"WATCHDOG=1");
     }
 }
+
+/// A heartbeat receiver: every POSTed body, parsed.
+fn heartbeat_server() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "http://127.0.0.1:{}/ping/abc123",
+        listener.local_addr().unwrap().port()
+    );
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+            }
+            let mut body = vec![0; length];
+            if reader.read_exact(&mut body).is_ok() {
+                log.lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nOK"
+            );
+        }
+    });
+    (url, seen)
+}
+
+#[test]
+fn the_heartbeat_names_a_stuck_turn_but_not_its_message() {
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    let (beat_url, beats) = heartbeat_server();
+    let extra = format!(
+        "{}\n[health]\nheartbeat_url = \"{beat_url}\"\nheartbeat_secs = 1\nwatchdog_after_secs = 1\n",
+        telegram(&tg)
+    );
+    let dir = home(&url, &extra);
+    let _gw = gateway(dir.path());
+
+    let wait = |pred: &dyn Fn(&Value) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if let Some(v) = beats.lock().unwrap().iter().find(|v| pred(v)) {
+                return v.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no such heartbeat in {:#?}",
+                beats.lock().unwrap()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    let ok = wait(&|v| v["status"] == "ok");
+    assert_eq!(ok["reason"], "");
+    assert_eq!(ok["version"], env!("CARGO_PKG_VERSION"));
+    assert!(ok["uptime_secs"].is_u64(), "{ok}");
+
+    tg.say(42, "HANG with my password hunter2-private and sk-test");
+    let bad = wait(&|v| v["status"] == "degraded");
+    let reason = bad["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("a turn in telegram chat 42 has made no progress for "),
+        "{reason}"
+    );
+    let all = serde_json::to_string(&*beats.lock().unwrap()).unwrap();
+    for leak in [
+        "hunter2",
+        "HANG",
+        "password",
+        "sk-test",
+        "TESTTOKEN",
+        "sleep",
+        "shell",
+    ] {
+        assert!(!all.contains(leak), "{leak} in {all}");
+    }
+}
+
+#[test]
+fn a_heartbeat_that_fails_is_a_warning_and_the_gateway_keeps_answering() {
+    let (url, _) = model_server();
+    let tg = FakeTelegram::start();
+    // Nothing listens there.
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let extra = format!(
+        "{}\n[health]\nheartbeat_url = \"http://127.0.0.1:{port}/ping/secret-uuid\"\nheartbeat_secs = 1\n",
+        telegram(&tg)
+    );
+    let dir = home(&url, &extra);
+    let _gw = gateway(dir.path());
+    let (mut n, mut report) = (0, String::new());
+    for _ in 0..40 {
+        tg.say(42, "/status");
+        (n, report) = tg.wait_for(42, "ferrule ", n);
+        if report.contains("the heartbeat failed") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(report.contains("the heartbeat failed"), "{report}");
+    assert!(!report.contains("secret-uuid"), "{report}");
+    tg.say(42, "hello");
+    tg.wait_for(42, "PLAIN", n);
+}

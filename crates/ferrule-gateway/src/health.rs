@@ -158,7 +158,21 @@ pub struct HealthSettings {
     /// Where the gateway's own warnings go: a channel name and a chat id.
     /// `None` sends each to the chat it's about.
     pub owner: Option<(String, String)>,
+    /// Where the heartbeat goes, and how often; `None` sends none.
+    pub heartbeat: Option<Heartbeat>,
 }
+
+/// `[health] heartbeat_url`: a URL (a dead man's switch such as
+/// healthchecks.io, or the owner's own) that gets a POST every `every`.
+#[derive(Debug, Clone)]
+pub struct Heartbeat {
+    pub url: String,
+    pub every: Duration,
+}
+
+/// A turn this quiet counts as stuck in the heartbeat when the watchdog
+/// is off.
+pub const HEARTBEAT_STUCK: Duration = Duration::from_secs(600);
 
 impl Default for HealthSettings {
     fn default() -> Self {
@@ -168,12 +182,17 @@ impl Default for HealthSettings {
             poll_stale: Duration::from_secs(300),
             watchdog_after: Some(Duration::from_secs(600)),
             owner: None,
+            heartbeat: None,
         }
     }
 }
 
 /// Lines for a `/status` section, computed when asked.
 pub type Section = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
+/// Another reason the heartbeat says `degraded` (the kill switch, from the
+/// CLI). It must return a fixed phrase: the heartbeat leaves the machine.
+pub type Probe = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// The gateway's health: what `/status` and `ferrule status` report, and
 /// (with [`crate::Gateway::with_health`]) the tasks that keep the status
@@ -194,6 +213,8 @@ pub struct Health {
     startup: Mutex<Option<Notice>>,
     /// systemd's watchdog, when the unit asks for it.
     systemd: Option<SystemdWatchdog>,
+    /// More reasons for a degraded heartbeat.
+    probes: Vec<Probe>,
 }
 
 pub const STATUS_FILE: &str = "status.txt";
@@ -261,7 +282,48 @@ impl Health {
             closed: AtomicBool::new(false),
             startup: Mutex::new(None),
             systemd: None,
+            probes: Vec::new(),
         }
+    }
+
+    /// Adds a reason the heartbeat can give for `degraded`.
+    pub fn with_probe(mut self, probe: Probe) -> Self {
+        self.probes.push(probe);
+        self
+    }
+
+    /// The heartbeat's body: `ok`, or `degraded` with why — a stale
+    /// channel, a stuck dispatcher, a turn with no progress, a probe (the
+    /// kill switch). Built from fixed phrases, channel names, chat ids and
+    /// durations only: never a message, a tool call's arguments or a
+    /// secret.
+    pub fn heartbeat(
+        &self,
+        lanes: &[LaneSnapshot],
+        channels: &[Arc<dyn Channel>],
+    ) -> serde_json::Value {
+        let mut reasons = Vec::new();
+        if let Err(why) = self.watchdog_ok(channels) {
+            reasons.push(why);
+        }
+        let stuck = self.settings.watchdog_after.unwrap_or(HEARTBEAT_STUCK);
+        for lane in lanes.iter().filter(|l| l.busy_for.is_some()) {
+            if let Some(quiet) = lane.since_progress.filter(|d| *d >= stuck) {
+                reasons.push(format!(
+                    "a turn in {} has made no progress for {}",
+                    lane.place(),
+                    human(quiet)
+                ));
+            }
+        }
+        reasons.extend(self.probes.iter().filter_map(|p| p()));
+        let reason = self.redactor.redact(&reasons.join("; "));
+        serde_json::json!({
+            "status": if reasons.is_empty() { "ok" } else { "degraded" },
+            "reason": reason,
+            "version": self.version,
+            "uptime_secs": self.uptime().as_secs(),
+        })
     }
 
     /// Pings systemd's watchdog while [`Health::watchdog_ok`] holds.
@@ -658,6 +720,34 @@ mod tests {
             },
         )
         .with_redactor(Arc::new(Redactor::new(["hunter2".to_string()])))
+    }
+
+    #[test]
+    fn the_heartbeat_says_why_it_is_degraded_without_messages_or_secrets() {
+        let health = marker_health(Path::new("/nonexistent"));
+        let ok = health.heartbeat(&[busy("42", "hi")], &[]);
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["reason"], "");
+        assert_eq!(ok["version"], "9.9.9");
+        assert!(ok["uptime_secs"].is_u64());
+
+        let mut stuck = busy("42", "my password is hunter2, deploy it");
+        stuck.activity = "tool `shell` (curl -H 'token: hunter2' x)".into();
+        stuck.since_progress = Some(Duration::from_secs(700));
+        let mut idle = busy("7", "old");
+        idle.busy_for = None;
+        idle.since_progress = Some(Duration::from_secs(9999));
+        let health = health.with_probe(Arc::new(|| Some("the kill switch is on".into())));
+        let beat = health.heartbeat(&[stuck, idle], &[]);
+        assert_eq!(beat["status"], "degraded");
+        assert_eq!(
+            beat["reason"],
+            "a turn in telegram chat 42 has made no progress for 11 min; the kill switch is on"
+        );
+        let body = beat.to_string();
+        for leak in ["hunter2", "password", "deploy", "curl", "shell", "redacted"] {
+            assert!(!body.contains(leak), "{leak} in {body}");
+        }
     }
 
     #[test]

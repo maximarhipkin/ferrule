@@ -169,6 +169,10 @@ impl Gateway {
                 ping_systemd(sd, health, channels).await
             }));
         }
+        if let Some(beat) = health.settings().heartbeat.clone() {
+            let (health, router, channels) = (health.clone(), router.clone(), channels.clone());
+            tasks.push(tokio::spawn(heartbeat(health, router, channels, beat)));
+        }
         if let Some(after) = health.settings().watchdog_after {
             tasks.push(tokio::spawn(watchdog(health, router, channels, after)));
         }
@@ -312,6 +316,55 @@ async fn ping_systemd(
             }
         }
         tokio::time::sleep(sd.every).await;
+    }
+}
+
+/// POSTs [`Health::heartbeat`] to `beat.url` now and every `beat.every`.
+/// A failure is a warning (once, until a ping gets through again), never
+/// fatal; the URL itself isn't logged, in case it holds a token.
+async fn heartbeat(
+    health: Arc<Health>,
+    router: Arc<Router>,
+    channels: Vec<Arc<dyn Channel>>,
+    beat: crate::health::Heartbeat,
+) {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "no heartbeat: couldn't build an HTTP client");
+            return;
+        }
+    };
+    let mut failing = false;
+    loop {
+        let body = health.heartbeat(&router.snapshot(), &channels);
+        let sent = client
+            .post(&beat.url)
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await;
+        let result = match sent {
+            Ok(r) if r.status().is_success() => Ok(()),
+            Ok(r) => Err(format!("HTTP {}", r.status())),
+            Err(e) => Err(e.without_url().to_string()),
+        };
+        match result {
+            Ok(()) if failing => {
+                tracing::info!("the heartbeat gets through again");
+                failing = false;
+            }
+            Ok(()) => {}
+            Err(e) if !failing => {
+                tracing::warn!(error = %e, "the heartbeat failed; retrying every interval");
+                failing = true;
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(beat.every).await;
     }
 }
 

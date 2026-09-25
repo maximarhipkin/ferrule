@@ -190,6 +190,11 @@ pub struct HealthConfig {
     /// Tell the owner every time the gateway starts, not only after an
     /// unclean exit.
     pub notify_on_start: bool,
+    /// A URL that gets `{status, reason, version, uptime_secs}` POSTed
+    /// every `heartbeat_secs`, for a dead man's switch outside the
+    /// machine. Empty = no heartbeat.
+    pub heartbeat_url: String,
+    pub heartbeat_secs: u64,
 }
 
 impl Default for HealthConfig {
@@ -199,6 +204,8 @@ impl Default for HealthConfig {
             watchdog_after_secs: 600,
             max_turn_minutes: 60,
             notify_on_start: false,
+            heartbeat_url: String::new(),
+            heartbeat_secs: 60,
         }
     }
 }
@@ -441,6 +448,11 @@ profile = "openai"
 # max_turn_minutes = 60      # a turn this long is ended like /stop. 0 = no limit.
 # notify_on_start = false    # "back up" on every start; after a crash or a kill
 #                            # the owner hears it anyway, with the interrupted turn.
+# heartbeat_url = ""         # POSTed {status: ok|degraded, reason, version,
+#                            # uptime_secs} every heartbeat_secs, e.g. a
+#                            # healthchecks.io check that alerts when it stops.
+#                            # The reason never holds messages or secrets.
+# heartbeat_secs = 60
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).
