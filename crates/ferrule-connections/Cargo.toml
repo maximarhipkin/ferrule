@@ -21,6 +21,7 @@ base64 = "0.22"
 url = "2"
 
 [dev-dependencies]
+ferrule-extensions = { path = "../ferrule-extensions" }
 tempfile = { workspace = true }
 bytes = "1"
 http = "1"

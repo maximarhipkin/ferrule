@@ -598,6 +598,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "ferrule-core",
+ "ferrule-extensions",
  "ferrule-mcp",
  "ferrule-sandbox",
  "http",

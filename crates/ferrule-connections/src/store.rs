@@ -165,6 +165,12 @@ impl Store {
         Ok(out)
     }
 
+    /// Save while already holding the lock (a change that awaits between
+    /// reading and writing, like a token refresh).
+    pub fn save_locked(&self, _held: &LockGuard, records: &[Record]) -> Result<()> {
+        self.save(records)
+    }
+
     pub fn sealer(&self) -> Result<Sealer> {
         Sealer::load_or_create(&self.key_path)
     }
