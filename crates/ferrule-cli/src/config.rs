@@ -209,6 +209,40 @@ pub struct Config {
     /// M20: connected services and the relay their logins come back through.
     #[serde(default)]
     pub connections: ferrule_connections::ConnectionsConfig,
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
+}
+
+/// `[dashboard]` (docs/m22-dashboard.md).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DashboardConfig {
+    /// The gateway serves the page on 127.0.0.1.
+    pub enabled: bool,
+    /// 0: any free port (written to `<data>/gateway/dashboard.json`).
+    pub port: u16,
+    /// `tunnel`: `/dashboard` opens a cloudflared quick tunnel for the
+    /// phone; `off`: local links only.
+    pub remote: String,
+    /// A session, and the tunnel, close after this long without a request.
+    pub idle_minutes: u64,
+    /// A session ends this long after its login regardless.
+    pub session_hours: u64,
+    /// An unused login link expires after this.
+    pub link_minutes: u64,
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: 0,
+            remote: "tunnel".into(),
+            idle_minutes: 30,
+            session_hours: 12,
+            link_minutes: 10,
+        }
+    }
 }
 
 /// `[health]` (docs/m19b-reliability.md).
