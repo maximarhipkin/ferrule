@@ -68,6 +68,27 @@ pub trait Provider: Send + Sync {
     ) -> Option<FailOver> {
         None
     }
+
+    /// Whether this provider routes between tiers (M25). The loop only
+    /// keeps the books for [`Provider::escalate`] when it does, so a
+    /// provider that doesn't runs exactly as before.
+    fn routes(&self) -> bool {
+        false
+    }
+
+    /// A new turn starts: a routing provider goes back to its floor.
+    fn begin_turn(&self) {}
+
+    /// The loop saw `signal`. A routing provider may move up a tier for
+    /// the rest of the turn and says so.
+    fn escalate(&self, _signal: &crate::routing::Signal) -> Option<crate::routing::Escalation> {
+        None
+    }
+
+    /// The tier the last call went to, for its ledger row.
+    fn route_tag(&self) -> Option<crate::routing::RouteTag> {
+        None
+    }
 }
 
 /// What [`Provider::fail_over`] switched to.

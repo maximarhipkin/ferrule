@@ -458,6 +458,26 @@ that convention yet — ask before introducing one).
       Hebrew unchanged through the API).
     - **Decisions for Max and open edges:** see the M24 session-log
       entry.
+  - **M25 routing, Phase 1**: **built** (2026-09-25, branch `m25-routing`,
+    PR to main open, not merged). Design and as-built notes are in
+    `docs/m25-routing.md`; the user guide is `docs/routing.md`.
+    - `[routing] tiers` (two or more connected models, cheap → strong).
+      Every turn starts on the floor and moves up one tier per failure
+      signal: a call failure retrying won't fix, 2 invalid tool calls in a
+      row, a failed verify check, a Stop hook, the same call 3 times, the
+      watchdog, or `/model strong`. Sticky for the turn; back down at the
+      next turn by default. Off by default and byte-identical when off.
+    - Tier refs (`tier:cheap`, `tier:strong`, `tier:N`) as pins, task,
+      role and `spawn_agent` models set the floor; a concrete model isn't
+      routed. M21's fallback applies to whichever tier is chosen.
+    - Ledger rows carry `route: {tier, escalated}`; every call is priced at
+      the model that served it; optional `strong_daily_usd` cap.
+    - Surfaces: `ferrule model route [set|off]`, `/model strong|tiers`,
+      the dashboard's Routing section and API, doctor, setup.
+    - `ferrule eval run <suite> --variant routing --cheap A --strong B`:
+      cheap only vs routed vs strong only; `evals/routing/weak_mock.py`
+      shows it with no model.
+    - **Decisions for Max and open edges:** see the M25 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): parallel read-only tool calls, provider streaming
@@ -3631,3 +3651,57 @@ That is identical to the run before M24, both before and after merging
 **Not verified live:** the cloudflared tunnel (not installed here), the
 live OpenRouter catalog (see above), a real phone, and a real Telegram
 bot. Each of these is behind a mock or the smoke script.
+
+### 2026-09-25 — M25 routing Phase 1: start cheap, escalate when needed (Devi, Opus 5.5)
+
+**Scope.** Built Phase 1 of `docs/research-routing-and-local-models.md` on
+branch `m25-routing`: design (`docs/m25-routing.md`), core, CLI, surfaces,
+the eval variant and the user guide (`docs/routing.md`). Phases 2–3 stay
+dropped.
+
+**What it does.** Each turn starts on the cheap tier (or a tier-ref floor)
+and moves up one tier per failure signal: `call_failed:<class>` (the same
+request goes again one tier up), `tool_errors` (2 in a row),
+`check_failed`, `stop_hook`, `no_progress` (the same call 3 times or the
+stuck nudge), `watchdog`, `owner` (`/model strong`, next turn only).
+Sticky for the turn, back to the floor at the next one unless
+`de_escalate = false`. Rows carry `route: {tier, escalated}`; every call
+is priced at the model that served it. Off by default: a golden session
+written by the pre-M25 code is replayed unchanged.
+
+**Measured (mock, real binary).** `eval run evals/starter --variant ab`:
+engineered 20/20, naive 11/20, $0.98, unchanged. `--variant routing
+--cheap weak/mock --strong mock/mock` (the weak mock ignores failed
+checks): cheap 16/20 $0.05, routed 20/20 $0.06 with 4 escalations (all
+`check_failed`), strong 20/20 $0.53.
+
+**Decisions for Max:**
+- Auth errors and outages (429, 5xx, timeouts) don't escalate; M21's
+  fallback handles them, and it composes with the tier chosen (design §5).
+- One tier per signal, not straight to the top.
+- `/model strong` is one turn; a lasting "strong" is the pin
+  `/model tier:strong`.
+- `strong_daily_usd` counts spend above tier 0 per UTC day, seeded from
+  the ledger. Past it, floors above 0 also start on tier 0; concrete pins
+  aren't limited.
+- A lane's context window is the smallest of its tiers', so compaction
+  holds whichever tier answers.
+- Eval: the three arms share the cheap model's harness profile; the
+  strong model judges rubrics unless `--judge-provider` is given; routed
+  uses `Policy::default()` (every trigger on); a regression suite gates on
+  routed; the default pair comes from `[routing] tiers`, config only.
+- The gateway now attaches the trust hub to the models at start, so a
+  model or routing change made before the first turn is audited too (a
+  gap that predates M25).
+
+**Unverified:**
+- A real cheap/strong pair: no live comparison was run here. `docs/routing.md`,
+  Measuring it, has the commands, the expected cost ($5–15 a full repeat at
+  $3/$15 strong; $1–2 for the smoke subset) and the ignored live test.
+- Escalation from a real model's failure classes (the scripted tests
+  cover each class).
+- macOS and Windows until this PR's CI run.
+
+**Open edges:** a verifier sub-agent's verdict isn't a signal (free
+text); the report's "failed checks fixed" line sums failed checks whether
+or not the task then passed (pre-existing, visible on the cheap arm).

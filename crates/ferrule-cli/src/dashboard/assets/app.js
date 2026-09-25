@@ -398,6 +398,57 @@
     },
   };
 
+  // M25: which models a turn climbs, why it climbed, and what each tier cost.
+  sections.routing = {
+    every: 30,
+    days: "7",
+    mount(root) {
+      this.box = el("div");
+      const pick = el("select", {}, [["1", "today"], ["7", "7 days"], ["30", "30 days"]].map(([v, t]) => el("option", { value: v, text: t })));
+      pick.value = this.days;
+      pick.onchange = () => { this.days = pick.value; this.load(); };
+      root.append(el("div", { class: "row" }, el("h2", { text: "Routing" }), pick), this.box);
+    },
+    async load() {
+      const r = await api("/api/routing?days=" + this.days);
+      const v = r.routing, st = r.stats, sg = r.suggestion;
+      const tiers = el("input", { placeholder: "models, cheap first, comma-separated", size: 40,
+        value: v.tiers.length ? v.tiers.map((t) => t.name).join(", ") : [sg.cheap, sg.strong].filter(Boolean).map((p) => p.reference).join(", ") });
+      const cap = el("input", { type: "number", min: "0", step: "0.5", placeholder: "daily $ above cheap", size: 10,
+        value: v.strong_daily_usd === null || v.strong_daily_usd === undefined ? "" : String(v.strong_daily_usd) });
+      const on = el("button", { class: "primary", text: v.on ? "Save" : "Turn on" });
+      on.onclick = () => act("routing/set", {
+        tiers: tiers.value.split(",").map((s) => s.trim()).filter(Boolean),
+        strong_daily_usd: cap.value === "" ? null : Number(cap.value),
+      }, on);
+      const reasons = (m) => Object.entries(m).map(([k, n]) => k + " ×" + n).join(", ");
+      this.box.replaceChildren(
+        el("p", { class: "muted", text: "Every turn starts on the cheapest tier and moves up only when it fails: a call error, invalid tool calls, a failed check or Stop hook, no progress. The next turn starts cheap again." }),
+        el("div", { class: "card" }, kv([
+          ["state", v.on ? tag("on", "ok") : v.enabled ? tag("set but not usable", "bad") : tag("off")],
+          ["de-escalate", v.de_escalate ? "at the next turn" : "stays up for the chat"],
+          ["daily cap above cheap", v.strong_daily_usd ? usd(v.strong_spent_today) + " of " + usd(v.strong_daily_usd) + " today" : "no cap"],
+        ])),
+        v.problems.length ? el("div", {}, v.problems.map((p) => el("p", { class: "bad msg", dir: "auto", text: p }))) : null,
+        v.tiers.length ? table(["tier", "model", "price", "context", "key"], v.tiers.map((t, i) => [
+          String(i + 1) + " · " + t.name, t.reference, t.pricing ? price(t.pricing) : tag("no price", "warn"),
+          t.context_window ? num(t.context_window) : "–",
+          t.key_present ? tag("ready", "ok") : tag(t.key_env + " not set", "bad"),
+        ])) : el("p", { class: "muted", text: "No tiers set." }),
+        el("h3", { text: "Escalations" }),
+        st.escalations
+          ? table(["day", "escalations", "why"], st.days.map((d) => [d.day, String(d.escalations), text(reasons(d.reasons))]))
+          : el("p", { class: "muted", text: "None in this window." }),
+        el("h3", { text: "Spend per tier" }),
+        st.tiers.length
+          ? table(["tier", "calls", "cost"], st.tiers.map((t) => [t.tier, String(t.calls), usd(t.usd)]))
+          : el("p", { class: "muted", text: "No routed calls in this window." }),
+        el("h3", { text: "Change" }),
+        sg.said ? el("p", { class: "muted", dir: "auto", text: sg.said }) : null,
+        el("div", { class: "row" }, tiers, cap, on, v.enabled ? btn("Turn off", "routing/unset", {}, "danger") : null));
+    },
+  };
+
   sections.connections = {
     every: 10,
     mount(root) {
@@ -592,7 +643,7 @@
 
   // ---- navigation and polling --------------------------------------------
 
-  const order = ["health", "models", "connections", "usage", "tasks", "logs", "extensions", "agents"];
+  const order = ["health", "models", "routing", "connections", "usage", "tasks", "logs", "extensions", "agents"];
   let current = "health";
   let timer = null;
   let banner = null;

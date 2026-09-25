@@ -200,6 +200,7 @@ pub fn row(
         cost_usd: None,
         eval: None,
         tree: None,
+        route: None,
     }
 }
 

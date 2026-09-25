@@ -794,14 +794,14 @@ fn build_agent_from(
 ) -> Result<Agent> {
     let (cfg, cfg_path) = config::Config::load()?;
     // M21: the model is picked per call from the agent's scope; the one
-    // it would run on now sets the harness profile, and a missing key is
-    // an error now rather than at the first call.
+    // it would run on now sets the harness profile (M25: routed, the
+    // smallest window of the tiers), and a missing key is an error now
+    // rather than at the first call.
     let models = models::shared()?;
-    let entry = models.wanted(&scope).map_err(|e| anyhow!(e))?;
+    let (entry, profile) = models.wanted_profile(&scope).map_err(|e| anyhow!(e))?;
     if entry.key().is_none() {
         bail!("{}", entry.no_key());
     }
-    let profile = entry.harness();
     let provider = Arc::new(models::RoutedProvider::new(
         models.clone(),
         scope,
@@ -1233,6 +1233,9 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
                 AgentEvent::ModelFallback { from, to, error } => {
                     println!("\x1b[33m[{from} isn't answering ({error}); {to} takes over]\x1b[0m")
                 }
+                AgentEvent::Escalated { from, to, reason } => {
+                    println!("\x1b[33m[routing: {from} → {to} ({reason})]\x1b[0m")
+                }
                 AgentEvent::Stuck { note } => println!("\x1b[33m{note}\x1b[0m"),
                 // A hook's error is the owner's to see, not the model's.
                 AgentEvent::HookFinished {
@@ -1501,6 +1504,9 @@ async fn gateway_factory(
     // `ferrule tasks model` reaches a lane that's already running.
     let tasks = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     models::shared()?.set_task_models(Arc::new(move |id| tasks.model_of(id).ok().flatten()));
+    // A change from the page or Telegram before the first turn is audited
+    // too; building an agent attaches the same hub again.
+    models::shared()?.attach_hub(trust::hub(cfg)?);
     let sup = agents::supervisor(
         cfg,
         provider.clone(),

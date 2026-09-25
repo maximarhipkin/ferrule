@@ -322,6 +322,10 @@ limit and task prompt. Only the harness differs:
 The naive harness stands for what ferrule replaces. It isn't a straw man:
 truncating from the front is what most simple agent loops do.
 
+`--variant routing` is a different comparison: ferrule's harness three
+times, on a cheap model, routed cheap → strong, and a strong model
+(`--cheap <ref> --strong <ref>`). It's in `docs/routing.md`, Measuring it.
+
 ## The starter suite (`evals/starter`)
 
 There are 20 tasks, each with a fixture, a hidden grader (in `graders/`

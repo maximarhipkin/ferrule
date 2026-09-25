@@ -19,6 +19,8 @@ pub struct VariantSummary {
     pub truncations: u32,
     pub compactions: u32,
     pub verify_failures: u32,
+    /// M25: moves up a tier, by reason.
+    pub escalations: BTreeMap<String, u32>,
 }
 
 impl VariantSummary {
@@ -46,6 +48,9 @@ pub fn summarize(results: &[TaskResult]) -> BTreeMap<Variant, VariantSummary> {
         s.truncations += r.truncations;
         s.compactions += r.compactions;
         s.verify_failures += r.verify_failures;
+        for why in &r.escalations {
+            *s.escalations.entry(why.clone()).or_default() += 1;
+        }
     }
     out
 }
@@ -95,6 +100,9 @@ fn cell(r: &TaskResult) -> String {
     }
     if r.verify_failures > 0 {
         notes.push(format!("{}×check", r.verify_failures));
+    }
+    if !r.escalations.is_empty() {
+        notes.push(format!("{}×up", r.escalations.len()));
     }
     if !notes.is_empty() {
         let _ = write!(s, " ({})", notes.join(", "));
@@ -151,6 +159,13 @@ pub fn render(run: &SuiteRun) -> String {
             }
         );
     }
+    if let Some(pair) = &run.routing {
+        let _ = writeln!(
+            out,
+            "routing: cheap {}, strong {}; each row priced at the model that served it",
+            pair.cheap, pair.strong
+        );
+    }
     let variants: Vec<Variant> = {
         let mut v: Vec<Variant> = run.results.iter().map(|r| r.variant).collect();
         v.sort();
@@ -194,7 +209,7 @@ pub fn render(run: &SuiteRun) -> String {
     let sums = summarize(&run.results);
     let mut header = vec![String::new()];
     header.extend(variants.iter().map(|v| v.to_string()));
-    let ab = variants.len() == 2;
+    let ab = variants == [Variant::Engineered, Variant::Naive];
     if ab {
         header.push("engineered − naive".into());
     }
@@ -286,6 +301,24 @@ pub fn render(run: &SuiteRun) -> String {
         &|s| s.verify_failures.to_string(),
         None,
     );
+    if variants.contains(&Variant::Routed) {
+        line(
+            "escalations",
+            &|s| {
+                let n: u32 = s.escalations.values().sum();
+                if n == 0 {
+                    return "0".into();
+                }
+                let why: Vec<String> = s
+                    .escalations
+                    .iter()
+                    .map(|(r, k)| format!("{r}×{k}"))
+                    .collect();
+                format!("{n} ({})", why.join(", "))
+            },
+            None,
+        );
+    }
     out.push('\n');
     out.push_str(&table(&rows));
 

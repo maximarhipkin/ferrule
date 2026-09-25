@@ -8,6 +8,7 @@ use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
 use crate::message::{Message, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Provider};
+use crate::routing::Signal;
 use crate::stuck::{Step, Stuck};
 use crate::tool::{Tool, ToolContext, ToolRegistry};
 use crate::transcript::Transcript;
@@ -519,13 +520,22 @@ impl Agent {
                 }
                 _ => None,
             };
+            // M25: a failure a stronger model may not repeat moves the turn
+            // up a tier, and the same request goes again there.
+            let route = self.provider.route_tag();
+            let escalated = match (&result, retry_in, &fell_over) {
+                (Err(e), None, None) if self.provider.routes() => crate::routing::escalates_on(e)
+                    .and_then(|class| self.provider.escalate(&Signal::CallFailed(class))),
+                _ => None,
+            };
             self.record_completion(
                 iteration,
                 call_kind,
                 latency_ms,
                 &result,
-                retry_in.is_some() || fell_over.is_some(),
+                retry_in.is_some() || fell_over.is_some() || escalated.is_some(),
                 served.as_ref(),
+                route,
             );
             if let (Some(budget), Ok(resp)) = (&self.budget, &result) {
                 budget.charge(&resp.usage);
@@ -544,6 +554,12 @@ impl Agent {
                 first = Instant::now();
                 attempt = 1;
                 fallbacks += 1;
+                continue;
+            }
+            if let Some(up) = escalated {
+                self.emit_escalation(tx, up).await;
+                first = Instant::now();
+                attempt = 1;
                 continue;
             }
             let (Some(delay), Err(e)) = (retry_in, &result) else {
@@ -569,6 +585,7 @@ impl Agent {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_completion(
         &self,
         iteration: usize,
@@ -577,6 +594,7 @@ impl Agent {
         result: &Result<CompletionResponse, CoreError>,
         retried: bool,
         served: Option<&crate::provider::Served>,
+        route: Option<crate::routing::RouteTag>,
     ) {
         let Some(ledger) = &self.ledger else { return };
         let (
@@ -638,8 +656,35 @@ impl Agent {
             cost_usd: None,
             eval: None,
             tree: None,
+            route,
         };
         ledger.sink.record(record);
+    }
+
+    /// Tell the provider about `signal`; if it moved up a tier, say so.
+    /// A no-op unless the provider routes.
+    async fn signal(&self, tx: &mpsc::Sender<AgentEvent>, signal: crate::routing::Signal) -> bool {
+        if !self.provider.routes() {
+            return false;
+        }
+        let Some(up) = self.provider.escalate(&signal) else {
+            return false;
+        };
+        self.emit_escalation(tx, up).await;
+        true
+    }
+
+    async fn emit_escalation(&self, tx: &mpsc::Sender<AgentEvent>, up: crate::routing::Escalation) {
+        info!(from = %up.from, to = %up.to, reason = %up.reason, "routing: escalating");
+        self.emit(
+            tx,
+            AgentEvent::Escalated {
+                from: up.from,
+                to: up.to,
+                reason: up.reason,
+            },
+        )
+        .await;
     }
 
     /// The ReAct loop: call → tool calls → observe → repeat until text-only.
@@ -660,6 +705,7 @@ impl Agent {
         if let Some(guard) = &self.guard {
             guard.begin();
         }
+        self.provider.begin_turn();
         let result = self.run_inner(goal, tx).await;
         if let Some(inbox) = &inbox {
             inbox.end();
@@ -748,6 +794,11 @@ impl Agent {
         // was sent back by any (the payload's `stop_hook_active`).
         let mut stop_blocks = 0;
         let mut sent_back = false;
+        // M25, kept only when the provider routes: invalid tool calls in a
+        // row, and the same call repeated in a row.
+        let routes = self.provider.routes();
+        let mut misfits = 0;
+        let mut repeats: (Option<(String, String)>, u32) = (None, 0);
 
         for iteration in 0..self.config.max_iterations {
             if self.stopped() {
@@ -807,6 +858,7 @@ impl Agent {
                             "[ferrule] `{check}` fails, so this isn't done yet. Fix what it reports, then finish again; \
                              it runs again when you do.\n\n{output}"
                         )));
+                        self.signal(&tx, Signal::CheckFailed).await;
                         continue;
                     }
                     needs_check = false;
@@ -833,6 +885,7 @@ impl Agent {
                     self.push(Message::user(format!(
                         "[hook: Stop] This isn't done yet:\n\n{reason}"
                     )));
+                    self.signal(&tx, Signal::StopHook).await;
                     continue;
                 }
                 let answer = msg.content.unwrap_or_default();
@@ -995,6 +1048,27 @@ impl Agent {
 
                 steps.push(Step::new(&call.name, &call.arguments, &raw, ok));
                 self.push(Message::tool_result(&call.id, content));
+                if routes {
+                    misfits = if self.tools.misfit(&call.name, &call.arguments) {
+                        misfits + 1
+                    } else {
+                        0
+                    };
+                    let key = (call.name.clone(), call.arguments.to_string());
+                    repeats = match repeats {
+                        (Some(last), n) if last == key => (Some(last), n + 1),
+                        _ => (Some(key), 1),
+                    };
+                    // A move starts both counts again, so the next tier
+                    // gets the same allowance.
+                    let moved = (misfits > 0
+                        && self.signal(&tx, Signal::ToolErrors(misfits)).await)
+                        || self.signal(&tx, Signal::Repeated(repeats.1)).await;
+                    if moved {
+                        misfits = 0;
+                        repeats.1 = 0;
+                    }
+                }
             }
 
             if let Some(stuck) = Stuck::detect(&steps).filter(|_| self.config.detect_stuck) {
@@ -1012,6 +1086,7 @@ impl Agent {
                 self.emit(&tx, AgentEvent::Stuck { note: note.clone() })
                     .await;
                 self.push(Message::user(note));
+                self.signal(&tx, Signal::Stuck).await;
             }
         }
         let limit = self.config.max_iterations;

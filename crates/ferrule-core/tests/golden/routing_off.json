@@ -1,0 +1,2078 @@
+{
+  "answers": [
+    {
+      "Ok": "done: a.rs"
+    },
+    {
+      "Err": "provider returned malformed response: no choices"
+    },
+    {
+      "Err": "provider error: HTTP 400: context window"
+    },
+    {
+      "Ok": "second turn"
+    }
+  ],
+  "events": [
+    {
+      "goal": "fix the bug",
+      "type": "run_started"
+    },
+    {
+      "est_tokens": 15,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 101,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "arguments": {
+        "path": "a.rs"
+      },
+      "id": "c4",
+      "name": "edit",
+      "type": "tool_call_started"
+    },
+    {
+      "id": "c4",
+      "name": "edit",
+      "ok": true,
+      "output_chars": 12,
+      "type": "tool_call_finished"
+    },
+    {
+      "est_tokens": 30,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 102,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "text": "done",
+      "type": "assistant_text"
+    },
+    {
+      "check": "make test",
+      "type": "verify_started"
+    },
+    {
+      "check": "make test",
+      "ok": false,
+      "type": "verify_finished"
+    },
+    {
+      "est_tokens": 72,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 103,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "arguments": {},
+      "id": "c4",
+      "name": "look",
+      "type": "tool_call_started"
+    },
+    {
+      "id": "c4",
+      "name": "look",
+      "ok": true,
+      "output_chars": 18,
+      "type": "tool_call_finished"
+    },
+    {
+      "est_tokens": 85,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 104,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "arguments": {
+        "what": "x"
+      },
+      "id": "c6",
+      "name": "nosuch",
+      "type": "tool_call_started"
+    },
+    {
+      "id": "c6",
+      "name": "nosuch",
+      "ok": false,
+      "output_chars": 30,
+      "type": "tool_call_finished"
+    },
+    {
+      "est_tokens": 104,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 105,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "arguments": "not an object",
+      "id": "c4",
+      "name": "look",
+      "type": "tool_call_started"
+    },
+    {
+      "id": "c4",
+      "name": "look",
+      "ok": true,
+      "output_chars": 18,
+      "type": "tool_call_finished"
+    },
+    {
+      "est_tokens": 120,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 106,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "arguments": {
+        "what": "same"
+      },
+      "id": "c4",
+      "name": "look",
+      "type": "tool_call_started"
+    },
+    {
+      "id": "c4",
+      "name": "look",
+      "ok": true,
+      "output_chars": 20,
+      "type": "tool_call_finished"
+    },
+    {
+      "est_tokens": 137,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 107,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "arguments": {
+        "what": "same"
+      },
+      "id": "c4",
+      "name": "look",
+      "type": "tool_call_started"
+    },
+    {
+      "id": "c4",
+      "name": "look",
+      "ok": true,
+      "output_chars": 20,
+      "type": "tool_call_finished"
+    },
+    {
+      "est_tokens": 154,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 108,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "arguments": {
+        "what": "same"
+      },
+      "id": "c4",
+      "name": "look",
+      "type": "tool_call_started"
+    },
+    {
+      "id": "c4",
+      "name": "look",
+      "ok": true,
+      "output_chars": 20,
+      "type": "tool_call_finished"
+    },
+    {
+      "est_tokens": 171,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 109,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "arguments": {
+        "path": "a.rs",
+        "really": true
+      },
+      "id": "c4",
+      "name": "edit",
+      "type": "tool_call_started"
+    },
+    {
+      "id": "c4",
+      "name": "edit",
+      "ok": true,
+      "output_chars": 12,
+      "type": "tool_call_finished"
+    },
+    {
+      "est_tokens": 190,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 110,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "text": "done now",
+      "type": "assistant_text"
+    },
+    {
+      "check": "make test",
+      "type": "verify_started"
+    },
+    {
+      "check": "make test",
+      "ok": true,
+      "type": "verify_finished"
+    },
+    {
+      "blocked": true,
+      "command": "nope",
+      "error": null,
+      "event": "Stop",
+      "exit_code": 2,
+      "source": "user",
+      "type": "hook_finished"
+    },
+    {
+      "est_tokens": 215,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 111,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "text": "done: a.rs",
+      "type": "assistant_text"
+    },
+    {
+      "blocked": false,
+      "command": "nope",
+      "error": null,
+      "event": "Stop",
+      "exit_code": 0,
+      "source": "user",
+      "type": "hook_finished"
+    },
+    {
+      "answer_chars": 10,
+      "iterations": 11,
+      "type": "run_finished"
+    },
+    {
+      "goal": "a malformed answer",
+      "type": "run_started"
+    },
+    {
+      "est_tokens": 229,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "goal": "too long",
+      "type": "run_started"
+    },
+    {
+      "est_tokens": 235,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "goal": "and again",
+      "type": "run_started"
+    },
+    {
+      "est_tokens": 241,
+      "threshold_tokens": 78400,
+      "type": "context_ready"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 114,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "text": "second turn",
+      "type": "assistant_text"
+    },
+    {
+      "blocked": false,
+      "command": "nope",
+      "error": null,
+      "event": "Stop",
+      "exit_code": 0,
+      "source": "user",
+      "type": "hook_finished"
+    },
+    {
+      "answer_chars": 11,
+      "iterations": 1,
+      "type": "run_finished"
+    }
+  ],
+  "ledger": [
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 101,
+      "iteration": 0,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 1
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 102,
+      "iteration": 1,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 0
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 103,
+      "iteration": 2,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 1
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 104,
+      "iteration": 3,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 1
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 105,
+      "iteration": 4,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 1
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 106,
+      "iteration": 5,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 1
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 107,
+      "iteration": 6,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 1
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 108,
+      "iteration": 7,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 1
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 109,
+      "iteration": 8,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 1
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 110,
+      "iteration": 9,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 0
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 111,
+      "iteration": 10,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 0
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "error_kind": "malformed_response",
+      "error_message": "provider returned malformed response: no choices",
+      "input_tokens": 0,
+      "iteration": 0,
+      "model": "the-model",
+      "outcome": "error",
+      "output_tokens": 0,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 0
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "error_kind": "provider",
+      "error_message": "provider error: HTTP 400: context window",
+      "input_tokens": 0,
+      "iteration": 0,
+      "model": "the-model",
+      "outcome": "error",
+      "output_tokens": 0,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 0
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 114,
+      "iteration": 0,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 0
+    }
+  ],
+  "sent": [
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs",
+                "really": true
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs",
+                "really": true
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done now",
+          "role": "assistant"
+        },
+        {
+          "content": "[hook: Stop] This isn't done yet:\n\nsay which file you changed",
+          "role": "user"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs",
+                "really": true
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done now",
+          "role": "assistant"
+        },
+        {
+          "content": "[hook: Stop] This isn't done yet:\n\nsay which file you changed",
+          "role": "user"
+        },
+        {
+          "content": "done: a.rs",
+          "role": "assistant"
+        },
+        {
+          "content": "a malformed answer",
+          "role": "user"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs",
+                "really": true
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done now",
+          "role": "assistant"
+        },
+        {
+          "content": "[hook: Stop] This isn't done yet:\n\nsay which file you changed",
+          "role": "user"
+        },
+        {
+          "content": "done: a.rs",
+          "role": "assistant"
+        },
+        {
+          "content": "a malformed answer",
+          "role": "user"
+        },
+        {
+          "content": "too long",
+          "role": "user"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "fix the bug",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs"
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {},
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "x"
+              },
+              "id": "c6",
+              "name": "nosuch"
+            }
+          ]
+        },
+        {
+          "content": "error: tool `nosuch` not found",
+          "role": "tool",
+          "tool_call_id": "c6"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": "not an object",
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about null",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "what": "same"
+              },
+              "id": "c4",
+              "name": "look"
+            }
+          ]
+        },
+        {
+          "content": "nothing about \"same\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs",
+                "really": true
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done now",
+          "role": "assistant"
+        },
+        {
+          "content": "[hook: Stop] This isn't done yet:\n\nsay which file you changed",
+          "role": "user"
+        },
+        {
+          "content": "done: a.rs",
+          "role": "assistant"
+        },
+        {
+          "content": "a malformed answer",
+          "role": "user"
+        },
+        {
+          "content": "too long",
+          "role": "user"
+        },
+        {
+          "content": "and again",
+          "role": "user"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    }
+  ]
+}

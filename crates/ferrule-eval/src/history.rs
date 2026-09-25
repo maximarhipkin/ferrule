@@ -24,7 +24,8 @@ pub fn load_runs(root: &Path) -> Vec<SuiteRun> {
 }
 
 /// The latest run before `run` that is comparable for `variant`: the
-/// same suite, kind and model, and it ran that variant.
+/// same suite, kind and model (for `--variant routing`, the same pair),
+/// and it ran that variant.
 pub fn previous<'a>(
     runs: &'a [SuiteRun],
     run: &SuiteRun,
@@ -35,6 +36,7 @@ pub fn previous<'a>(
             && p.suite == run.suite
             && p.kind == run.kind
             && p.model == run.model
+            && p.routing == run.routing
             && p.results.iter().any(|r| r.variant == variant)
     })
 }
@@ -226,6 +228,7 @@ mod tests {
             compactions: 0,
             verify_failures: 0,
             stopped_early: None,
+            escalations: vec![],
             fingerprint: fp.into(),
             context_window: 32000,
             ferrule_version: "0".into(),
@@ -246,6 +249,7 @@ mod tests {
             not_run: 0,
             judge: None,
             self_judged: false,
+            routing: None,
         }
     }
 

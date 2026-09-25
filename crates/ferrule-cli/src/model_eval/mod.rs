@@ -656,6 +656,7 @@ pub async fn run(
         judge: None,
         playbook: None,
         owner_trust: Some(owner),
+        routing: None,
     };
     let opts = Options {
         variants: vec![ferrule_eval::Variant::Engineered],

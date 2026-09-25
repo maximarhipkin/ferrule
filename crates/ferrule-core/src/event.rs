@@ -73,6 +73,13 @@ pub enum AgentEvent {
         to: String,
         error: String,
     },
+    /// Routing moved this turn up a tier (M25): `from` and `to` are tier
+    /// names, `reason` is what the ledger records.
+    Escalated {
+        from: String,
+        to: String,
+        reason: String,
+    },
     /// The run was going in circles; the model has been told to change course.
     Stuck {
         note: String,

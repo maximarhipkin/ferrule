@@ -199,6 +199,10 @@ pub type Section = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 /// CLI). It must return a fixed phrase: the heartbeat leaves the machine.
 pub type Probe = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
+/// Told the session id of a turn the watchdog saw stall (M25: its next
+/// call moves up a tier).
+pub type StallHook = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// The gateway's health: what `/status` and `ferrule status` report, and
 /// (with [`crate::Gateway::with_health`]) the tasks that keep the status
 /// file current.
@@ -224,6 +228,7 @@ pub struct Health {
     last_beat: Mutex<Option<(SystemTime, Option<String>)>>,
     /// What the startup notice said, kept after it's sent (M22).
     last_start: Mutex<Option<String>>,
+    stall_hooks: Vec<StallHook>,
 }
 
 pub const STATUS_FILE: &str = "status.txt";
@@ -294,10 +299,24 @@ impl Health {
             probes: Vec::new(),
             last_beat: Mutex::new(None),
             last_start: Mutex::new(None),
+            stall_hooks: Vec::new(),
         }
     }
 
     /// Adds a reason the heartbeat can give for `degraded`.
+    /// Also tell `hook` when the watchdog sees a turn stall.
+    pub fn with_stall_hook(mut self, hook: StallHook) -> Self {
+        self.stall_hooks.push(hook);
+        self
+    }
+
+    /// The watchdog saw `session`'s turn stall.
+    pub fn stalled(&self, session: &str) {
+        for hook in &self.stall_hooks {
+            hook(session);
+        }
+    }
+
     pub fn with_probe(mut self, probe: Probe) -> Self {
         self.probes.push(probe);
         self

@@ -75,6 +75,10 @@ pub struct LedgerRecord {
     /// can be read back from the ledger. `None` on older rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree: Option<String>,
+    /// M25: the routing tier that answered, and on the first call after an
+    /// escalation, why it moved. `None` when routing is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<crate::routing::RouteTag>,
 }
 
 /// Where an eval row belongs. The per-call rows carry it with `result`
