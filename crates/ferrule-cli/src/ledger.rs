@@ -19,26 +19,52 @@ pub struct ProviderPricing {
     pub input: f64,
     pub cached_input: f64,
     pub output: f64,
+    /// M23: a cache write. `None`: the input price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write: Option<f64>,
 }
 
 impl ProviderPricing {
     pub fn from_config(p: &ProviderConfig) -> Option<Self> {
+        let input = p.price_input_per_mtok?;
         Some(Self {
-            input: p.price_input_per_mtok?,
+            input,
             cached_input: p.price_cached_input_per_mtok?,
             output: p.price_output_per_mtok?,
+            cache_write: write_price(p.price_cache_write_per_mtok, p.api(), input),
         })
     }
 
+    pub fn cache_write(&self) -> f64 {
+        self.cache_write.unwrap_or(self.input)
+    }
+
     /// `input_tokens` includes the cached ones (OpenAI `prompt_tokens`
-    /// convention), so only the uncached remainder is billed at full price.
+    /// convention) and, since M23, the ones written to the cache, so only
+    /// the remainder is billed at the input price.
     pub fn cost_usd(&self, r: &LedgerRecord) -> f64 {
-        let uncached = r.input_tokens.saturating_sub(r.cached_input_tokens);
-        (uncached as f64 * self.input
-            + r.cached_input_tokens as f64 * self.cached_input
-            + r.output_tokens as f64 * self.output)
+        self.cost(
+            r.input_tokens,
+            r.cached_input_tokens,
+            r.cache_write_input_tokens,
+            r.output_tokens,
+        )
+    }
+
+    pub fn cost(&self, input: u64, cached: u64, written: u64, output: u64) -> f64 {
+        let rest = input.saturating_sub(cached).saturating_sub(written);
+        (rest as f64 * self.input
+            + cached as f64 * self.cached_input
+            + written as f64 * self.cache_write()
+            + output as f64 * self.output)
             / 1_000_000.0
     }
+}
+
+/// The cache-write price: as set, else Anthropic's 5-minute write price
+/// (1.25 × input) on the native driver, else `None` (the input price).
+pub fn write_price(set: Option<f64>, api: ferrule_providers::Api, input: f64) -> Option<f64> {
+    set.or((api == ferrule_providers::Api::Anthropic).then_some(input * 1.25))
 }
 
 /// The prices of a call on `(provider, model)` (M21: per model, else the
@@ -354,6 +380,7 @@ mod tests {
             call_kind: "turn".into(),
             input_tokens: input,
             cached_input_tokens: cached,
+            cache_write_input_tokens: 0,
             output_tokens: output,
             tool_calls: 0,
             latency_ms,
@@ -376,11 +403,40 @@ mod tests {
     }
 
     #[test]
+    fn cache_writes_are_billed_at_the_write_rate() {
+        let p = ProviderPricing {
+            input: 2.0,
+            cached_input: 0.2,
+            output: 10.0,
+            cache_write: write_price(None, ferrule_providers::Api::Anthropic, 2.0),
+        };
+        assert_eq!(p.cache_write, Some(2.5));
+        // 1M input: 500k read, 300k written, 200k neither; 100k output.
+        let mut r = rec("run", "anthropic", 1, 1_000_000, 500_000, 100_000, "ok");
+        r.cache_write_input_tokens = 300_000;
+        let want = 0.2 * 2.0 + 0.5 * 0.2 + 0.3 * 2.5 + 0.1 * 10.0;
+        assert!((p.cost_usd(&r) - want).abs() < 1e-9, "{}", p.cost_usd(&r));
+        // No write price: writes cost what input does.
+        assert_eq!(write_price(None, ferrule_providers::Api::Chat, 2.0), None);
+        assert_eq!(
+            write_price(Some(3.0), ferrule_providers::Api::Chat, 2.0),
+            Some(3.0)
+        );
+        let chat = ProviderPricing {
+            cache_write: None,
+            ..p
+        };
+        let want = 0.5 * 2.0 + 0.5 * 0.2 + 0.1 * 10.0;
+        assert!((chat.cost_usd(&r) - want).abs() < 1e-9);
+    }
+
+    #[test]
     fn cost_bills_cached_tokens_at_the_cached_rate_only() {
         let p = ProviderPricing {
             input: 1.0,
             cached_input: 0.1,
             output: 4.0,
+            cache_write: None,
         };
         // 1M input of which 400k cached, 250k output:
         // 600k*1.0 + 400k*0.1 + 250k*4.0 = 0.6 + 0.04 + 1.0 per 1M-token unit.
@@ -405,7 +461,8 @@ mod tests {
             Some(ProviderPricing {
                 input: 1.0,
                 cached_input: 0.5,
-                output: 2.0
+                output: 2.0,
+                cache_write: None,
             })
         );
     }
@@ -482,6 +539,7 @@ mod tests {
                 input: 1.0,
                 cached_input: 0.0,
                 output: 0.0,
+                cache_write: None,
             })
         });
         let sink = FileLedgerSink::new(path.clone(), prices);

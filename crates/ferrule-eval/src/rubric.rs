@@ -344,6 +344,7 @@ pub async fn grade(judge: &Judge, sink: &EvalSink, ask: Ask<'_>, bundle: &Bundle
         call_kind: JUDGE_KIND.into(),
         input_tokens: 0,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 0,
         tool_calls: 0,
         latency_ms: started.elapsed().as_millis() as u64,
@@ -358,6 +359,7 @@ pub async fn grade(judge: &Judge, sink: &EvalSink, ask: Ask<'_>, bundle: &Bundle
         Ok(r) => {
             row.input_tokens = r.usage.input_tokens;
             row.cached_input_tokens = r.usage.cached_input_tokens;
+            row.cache_write_input_tokens = r.usage.cache_write_input_tokens;
             row.output_tokens = r.usage.output_tokens;
             sink.record_priced(row, judge.pricing);
             let reply = r.message.content.unwrap_or_default();

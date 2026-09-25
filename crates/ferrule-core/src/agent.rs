@@ -582,6 +582,7 @@ impl Agent {
         let (
             input_tokens,
             cached_input_tokens,
+            cache_write_input_tokens,
             output_tokens,
             tool_calls,
             outcome,
@@ -591,6 +592,7 @@ impl Agent {
             Ok(resp) => (
                 resp.usage.input_tokens,
                 resp.usage.cached_input_tokens,
+                resp.usage.cache_write_input_tokens,
                 resp.usage.output_tokens,
                 resp.message.tool_calls.len(),
                 "ok".to_string(),
@@ -600,6 +602,7 @@ impl Agent {
             Err(e) => {
                 let outcome = if retried { "retried" } else { "error" };
                 (
+                    0,
                     0,
                     0,
                     0,
@@ -625,6 +628,7 @@ impl Agent {
             call_kind: call_kind.to_string(),
             input_tokens,
             cached_input_tokens,
+            cache_write_input_tokens,
             output_tokens,
             tool_calls,
             latency_ms,
@@ -1125,12 +1129,14 @@ impl Agent {
         self.usage.input_tokens += usage.input_tokens;
         self.usage.output_tokens += usage.output_tokens;
         self.usage.cached_input_tokens += usage.cached_input_tokens;
+        self.usage.cache_write_input_tokens += usage.cache_write_input_tokens;
         self.emit(
             tx,
             AgentEvent::Usage {
                 input_tokens: usage.input_tokens,
                 output_tokens: usage.output_tokens,
                 cached_input_tokens: usage.cached_input_tokens,
+                cache_write_input_tokens: usage.cache_write_input_tokens,
             },
         )
         .await;
@@ -1313,7 +1319,13 @@ impl Agent {
         }
         summary_msg.push_str("\n\nContinue from here.");
         rebuilt.push(Message::user(summary_msg));
-        rebuilt.extend(self.messages[split..].iter().cloned());
+        // A provider's own blocks (signed thinking, encrypted reasoning)
+        // are bound to the prefix they were made under; the summary just
+        // replaced it, so the kept tail goes back as neutral messages (M23).
+        rebuilt.extend(self.messages[split..].iter().cloned().map(|mut m| {
+            m.native = None;
+            m
+        }));
 
         let folded = self.messages.len() - rebuilt.len();
         self.messages = rebuilt;
@@ -1364,6 +1376,12 @@ impl Agent {
             }
             self.messages.drain(start..end);
             dropped += end - start;
+        }
+        if dropped > 0 {
+            // The prefix changed: provider-bound blocks can't be replayed (M23).
+            for m in &mut self.messages {
+                m.native = None;
+            }
         }
         let after = self.est_context_tokens();
         info!(before, after, dropped, "truncated context");
@@ -1633,6 +1651,7 @@ mod tests {
                     input_tokens: 10,
                     output_tokens: 5,
                     cached_input_tokens: 0,
+                    cache_write_input_tokens: 0,
                 },
             })
         }
@@ -1959,6 +1978,7 @@ mod tests {
                     input_tokens: 100,
                     output_tokens: 10,
                     cached_input_tokens: 20,
+                    cache_write_input_tokens: 0,
                 },
             ),
             (
@@ -1967,6 +1987,7 @@ mod tests {
                     input_tokens: 150,
                     output_tokens: 8,
                     cached_input_tokens: 30,
+                    cache_write_input_tokens: 40,
                 },
             ),
         ];
@@ -2011,6 +2032,8 @@ mod tests {
         assert_eq!(records[1].iteration, 1);
         assert_eq!(records[1].input_tokens, 150);
         assert_eq!(records[1].cached_input_tokens, 30);
+        assert_eq!(records[1].cache_write_input_tokens, 40);
+        assert_eq!(records[0].cache_write_input_tokens, 0);
         assert_eq!(records[1].output_tokens, 8);
         assert_eq!(records[1].tool_calls, 0);
         assert_eq!(records[1].outcome, "ok");
@@ -2726,6 +2749,44 @@ mod tests {
         agent.maybe_compact(&tx, 1).await.unwrap();
         let summary = agent.messages[0].content.clone().unwrap();
         assert!(!summary.contains(goal), "{summary}");
+    }
+
+    #[tokio::test]
+    async fn compaction_drops_native_blocks_from_the_kept_tail() {
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 1_000;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 0.1;
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider,
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        );
+        let native = crate::message::NativeBlocks {
+            api: "anthropic".into(),
+            model: "m".into(),
+            items: vec![serde_json::json!({"type": "thinking", "signature": "s"})],
+        };
+        agent.messages.extend((0..4).map(|i| {
+            Message::assistant(Some(format!("{}{i}", "filler ".repeat(50))), vec![], None)
+                .with_native(native.clone())
+        }));
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        assert_eq!(agent.messages.len(), 3);
+        // Thinking signed under the old prefix can't follow the summary.
+        assert!(agent.messages.iter().all(|m| m.native.is_none()));
+        assert!(agent.messages[2].content.as_deref().unwrap().ends_with('3'));
     }
 
     #[tokio::test]

@@ -55,6 +55,9 @@ pub enum AgentEvent {
         input_tokens: u64,
         output_tokens: u64,
         cached_input_tokens: u64,
+        /// Input tokens written to the prompt cache (M23; 0 when the
+        /// provider doesn't report it).
+        cache_write_input_tokens: u64,
     },
     /// A provider call failed transiently and will be tried again.
     ProviderRetry {

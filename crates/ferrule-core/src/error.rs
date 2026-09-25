@@ -1,3 +1,4 @@
+use serde::Serialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -97,6 +98,95 @@ impl CoreError {
     }
 }
 
+/// What kind of failure a provider error is, for a router that escalates
+/// on some and not others (M25) and for the owner's words. Derived from the
+/// error text every driver produces (`HTTP {status}` plus the provider's
+/// own message), so it needs nothing new from the drivers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    /// HTTP 429.
+    RateLimited,
+    /// Anthropic's 529, or a 503 or body that says overloaded.
+    Overloaded,
+    /// Another 5xx.
+    Server,
+    /// The call timed out (or HTTP 408).
+    Timeout,
+    /// The provider couldn't be reached.
+    Connect,
+    /// The key was refused (401/403).
+    Auth,
+    /// The request was refused as invalid (400/422).
+    BadRequest,
+    /// The prompt is longer than the model's context window.
+    ContextTooLong,
+    /// The model name isn't known (404).
+    ModelNotFound,
+    /// The model declined to answer (a safety refusal).
+    Refused,
+    /// The provider answered, but not in a shape we understand.
+    Malformed,
+    /// Anything else, including errors that aren't the provider's.
+    Other,
+}
+
+impl CoreError {
+    /// This error's [`FailureClass`].
+    pub fn class(&self) -> FailureClass {
+        let text = match self {
+            CoreError::MalformedResponse(_) => return FailureClass::Malformed,
+            CoreError::Provider(t) => t.as_str(),
+            CoreError::Transient { message, .. } => message.as_str(),
+            _ => return FailureClass::Other,
+        };
+        let lower = text.to_ascii_lowercase();
+        if lower.starts_with("refused") {
+            return FailureClass::Refused;
+        }
+        if lower.contains("prompt is too long")
+            || lower.contains("context_length_exceeded")
+            || lower.contains("maximum context length")
+            || lower.contains("context window")
+        {
+            return FailureClass::ContextTooLong;
+        }
+        // An error in an HTTP 200 body (OpenRouter's upstream errors) says
+        // what went wrong only in its text.
+        match http_status(&lower).filter(|s| *s >= 400) {
+            Some(429) => FailureClass::RateLimited,
+            Some(529) => FailureClass::Overloaded,
+            Some(503) if lower.contains("overloaded") => FailureClass::Overloaded,
+            Some(408) => FailureClass::Timeout,
+            Some(s) if s >= 500 => FailureClass::Server,
+            Some(401 | 403) => FailureClass::Auth,
+            Some(404) => FailureClass::ModelNotFound,
+            Some(400 | 413 | 422) => FailureClass::BadRequest,
+            Some(_) => FailureClass::Other,
+            None if lower.contains("timed out") || lower.contains("timeout") => {
+                FailureClass::Timeout
+            }
+            None if lower.contains("connect") || lower.contains("dns") => FailureClass::Connect,
+            None if lower.contains("overloaded") => FailureClass::Overloaded,
+            None if lower.contains("rate limit") || lower.contains("\"code\":429") => {
+                FailureClass::RateLimited
+            }
+            None if matches!(self, CoreError::Transient { .. }) => FailureClass::Server,
+            None => FailureClass::Other,
+        }
+    }
+}
+
+/// The status in the first `http NNN` of an error's text.
+fn http_status(lower: &str) -> Option<u16> {
+    let at = lower.find("http ")? + "http ".len();
+    let digits: String = lower[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    (digits.len() == 3).then(|| digits.parse().ok()).flatten()
+}
+
 /// N from the "(tried N times)" [`CoreError::after_attempts`] adds.
 fn retries(text: &str) -> Option<u32> {
     let rest = &text[text.rfind("(tried ")? + "(tried ".len()..];
@@ -154,6 +244,42 @@ mod tests {
             .plain_words()
             .is_none());
         assert!(CoreError::MaxIterations(3).plain_words().is_none());
+    }
+
+    #[test]
+    fn failure_classes_come_from_the_drivers_error_text() {
+        use FailureClass::*;
+        let p = |t: &str| CoreError::Provider(t.into()).class();
+        let t = |m: &str| transient(m).class();
+        assert_eq!(t(FREE_PER_MIN), RateLimited);
+        assert_eq!(t(UPSTREAM), RateLimited);
+        assert_eq!(
+            t(
+                r#"HTTP 529 <unknown status code>: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#
+            ),
+            Overloaded
+        );
+        assert_eq!(t("HTTP 502 Bad Gateway, not JSON: <html>"), Server);
+        assert_eq!(t("HTTP 408 Request Timeout: x"), Timeout);
+        assert_eq!(t("request timed out: error sending request"), Timeout);
+        assert_eq!(t("could not connect: error sending request"), Connect);
+        assert_eq!(p("HTTP 401 Unauthorized: invalid x-api-key"), Auth);
+        assert_eq!(p(NO_TOOLS), ModelNotFound);
+        assert_eq!(
+            p(r#"HTTP 400 Bad Request: {"error":{"message":"bad"}}"#),
+            BadRequest
+        );
+        assert_eq!(
+            p("HTTP 400 Bad Request: prompt is too long: 210000 tokens > 200000 maximum"),
+            ContextTooLong
+        );
+        assert_eq!(
+            p(r#"HTTP 400 Bad Request: {"error":{"code":"context_length_exceeded"}}"#),
+            ContextTooLong
+        );
+        assert_eq!(p("refused: cyber"), Refused);
+        assert_eq!(CoreError::MalformedResponse("x".into()).class(), Malformed);
+        assert_eq!(CoreError::MaxIterations(3).class(), Other);
     }
 
     #[test]

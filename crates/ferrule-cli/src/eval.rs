@@ -10,7 +10,6 @@ use ferrule_core::HarnessProfile;
 use ferrule_eval::{
     history, plan, report, Caps, Env, Judge, Options, Pricing, Suite, SuiteKind, Variant,
 };
-use ferrule_providers::OpenAiCompatProvider;
 use ferrule_sandbox::Sandbox;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -127,6 +126,7 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                     input: p.input,
                     cached_input: p.cached_input,
                     output: p.output,
+                    cache_write: p.cache_write,
                 })
             };
             let own = cat
@@ -139,6 +139,7 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                     input: p.input,
                     cached_input: p.cached_input,
                     output: p.output,
+                    cache_write: p.cache_write,
                 })
                 .or_else(|| prices(pcfg));
             let base = HarnessProfile::by_name(own.map_or(&pcfg.profile, |e| &e.profile));
@@ -165,12 +166,7 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
             }
 
             let (_, _, key) = cfg.resolve_provider(Some(&name))?;
-            let provider = Arc::new(OpenAiCompatProvider::new(
-                name.clone(),
-                &pcfg.base_url,
-                key,
-                &model,
-            ));
+            let provider = pcfg.client(&name, key, &model);
             // The config's sandbox without the credential broker: a task's
             // result mustn't depend on the keys this machine holds.
             let sandbox =
@@ -191,12 +187,7 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                         .ok_or_else(|| anyhow!("--judge-provider: `{jname}` not in config"))?;
                     let (_, _, jkey) = cfg.resolve_provider(Some(jname))?;
                     Some(Judge {
-                        provider: Arc::new(OpenAiCompatProvider::new(
-                            jname.clone(),
-                            &jcfg.base_url,
-                            jkey,
-                            &jcfg.model,
-                        )),
+                        provider: jcfg.client(jname, jkey, &jcfg.model),
                         provider_name: jname.clone(),
                         model: jcfg.model.clone(),
                         pricing: prices(jcfg),

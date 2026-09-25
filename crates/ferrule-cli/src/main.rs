@@ -1169,8 +1169,14 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
                     input_tokens,
                     output_tokens,
                     cached_input_tokens,
+                    cache_write_input_tokens,
                 } => {
-                    println!("\x1b[90m  [usage: in {input_tokens} (cached {cached_input_tokens}) / out {output_tokens}]\x1b[0m")
+                    let written = if cache_write_input_tokens > 0 {
+                        format!(", written {cache_write_input_tokens}")
+                    } else {
+                        String::new()
+                    };
+                    println!("\x1b[90m  [usage: in {input_tokens} (cached {cached_input_tokens}{written}) / out {output_tokens}]\x1b[0m")
                 }
                 AgentEvent::ProviderRetry {
                     attempt,
