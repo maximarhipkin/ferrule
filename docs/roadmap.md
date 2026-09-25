@@ -455,10 +455,31 @@ to the fallback with one message.
 and a login, and its tools appear. No token ever reaches the model, a
 tool result, the audit log, `/status` or an error.
 
+### M19c — live-bot fixes
+
+**Status.** Built and merged (`docs/m19c-live-fixes.md`; PR #15; ships as 0.2.1).
+Found on a live bot that stayed silent. Every reason it doesn't answer is
+now told to the owner in Telegram, or shown by `/status`, `ferrule
+status` and `ferrule doctor`:
+- The gateway logs warn plus info from ferrule, with no token in any line.
+- A 409 lasting a minute is told once, naming both causes, and its end too.
+- A webhook on the bot is removed at start, keeping waiting messages.
+- A caption becomes the text; a voice message, photo or file gets a plain
+  reply.
+- An ignored chat is warned once an hour.
+- OpenRouter's no-tool-endpoint 404 and free-pool 429 come out in plain
+  words, and a rate-limit wait counts down.
+- Doctor warns about a webhook, a second gateway and a `:free` model, and
+  prints where the service logs are.
+
+**Done means.** An owner whose bot doesn't answer finds the reason in the
+chat, or by going /status → `ferrule status` → `ferrule doctor` → the
+journal, without reading code.
+
 ### M22 — the dashboard
 
-**Status.** Built (`docs/m22-dashboard.md`, user guide
-`docs/dashboard.md`; PR open).
+**Status.** Built and merged (`docs/m22-dashboard.md`, user guide
+`docs/dashboard.md`; PR #16).
 - One page on 127.0.0.1: health first (with a failing default's fix on
   top), connections, models with an OpenRouter catalog and
   recommendations, usage from the ledger, tasks, logs, extensions and

@@ -88,6 +88,9 @@ struct LaneState {
     busy_notice_sent: bool,
     /// The owner was told this turn is stuck, since its last progress.
     stall_reported: bool,
+    /// Waiting to call the model again (M19c): when, which retry, and
+    /// whether it's a rate limit. Cleared by the next event.
+    retry_at: Option<(Instant, u32, bool)>,
 }
 
 /// One lane as `/status` and the watchdog see it.
@@ -117,7 +120,18 @@ impl LaneSnapshot {
                 .busy_since
                 .map(|(at, _)| now.saturating_duration_since(at)),
             started_at: st.busy_since.map(|(_, at)| at),
-            activity: st.activity.clone(),
+            activity: match st.retry_at {
+                Some((at, retry, rate_limit)) if at > now => {
+                    let secs = at.saturating_duration_since(now).as_secs_f64().ceil() as u64;
+                    let why = if rate_limit {
+                        "waiting out the model's rate limit"
+                    } else {
+                        "waiting to call the model again after an error"
+                    };
+                    format!("{why}, retry {retry} in {secs} s")
+                }
+                _ => st.activity.clone(),
+            },
             since_progress: st.last_progress.map(|at| now.saturating_duration_since(at)),
             queued: st.queued,
             text: st.text.clone(),
@@ -540,6 +554,19 @@ async fn drain_events(
             let mut st = state.lock().unwrap();
             st.last_progress = Some(Instant::now());
             st.stall_reported = false;
+            st.retry_at = match &ev {
+                AgentEvent::ProviderRetry {
+                    attempt,
+                    delay_ms,
+                    error,
+                    ..
+                } => Some((
+                    Instant::now() + Duration::from_millis(*delay_ms),
+                    *attempt,
+                    rate_limited(error),
+                )),
+                _ => None,
+            };
             match activity {
                 Some(a) if a != st.activity => {
                     st.activity = a;
@@ -686,8 +713,21 @@ impl Guard for TurnGuard {
     }
 }
 
-/// What the chat sees when a run fails outright, instead of silence.
+/// A retried model error that's the provider rate-limiting us.
+fn rate_limited(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("http 429") || lower.contains("\"code\":429") || lower.contains("rate limit")
+}
+
+/// What the chat sees when a run fails outright, instead of silence: the
+/// plain words for the failures a real bot hits most, then the raw error.
 fn failure_text(e: &CoreError) -> String {
+    if let Some(words) = e.plain_words() {
+        return format!(
+            "I couldn't reply: {words}\n\nThe error: {}",
+            crate::health::clip(&e.to_string(), 400)
+        );
+    }
     if e.is_transient() {
         format!("The model provider isn't answering right now, so I couldn't reply ({e}). Please try again in a few minutes.")
     } else {
@@ -1190,6 +1230,98 @@ mod tests {
             "{:?}",
             recorder.texts()
         );
+    }
+
+    /// OpenRouter's 429 from the shared free pool, as the adapter words it.
+    const FREE_429: &str = r#"HTTP 429 Too Many Requests: {"error":{"code":429,"message":"Rate limit exceeded: free-models-per-min. "}}"#;
+
+    /// Always rate-limited, asking to be retried after `wait`.
+    struct RateLimitedProvider {
+        wait: std::time::Duration,
+    }
+    #[async_trait]
+    impl Provider for RateLimitedProvider {
+        fn name(&self) -> &str {
+            "limited"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            Err(CoreError::Transient {
+                message: FREE_429.into(),
+                retry_after: Some(self.wait),
+            })
+        }
+    }
+
+    fn rate_limited_factory(wait: std::time::Duration, attempts: u32) -> AgentFactory {
+        Arc::new(move |_sid, transcript| {
+            let mut config = AgentConfig::default();
+            config.retry.max_attempts = attempts;
+            config.retry.base_delay = std::time::Duration::from_millis(1);
+            Ok(Agent::new(
+                Arc::new(RateLimitedProvider { wait }),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                config,
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
+        })
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_run_says_so_in_plain_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let factory = rate_limited_factory(std::time::Duration::from_millis(5), 3);
+        let router = Router::new(dir.path(), factory, channels);
+        router.dispatch(inbound("chat-1", "ping")).await.unwrap();
+        wait_until(|| recorder.texts().len() == 1).await;
+        let text = &recorder.texts()[0];
+        assert!(
+            text.starts_with("I couldn't reply: the model provider is rate-limiting us"),
+            "{text}"
+        );
+        assert!(text.contains("shared pool for free models"), "{text}");
+        assert!(text.contains("I tried 3 times"), "{text}");
+        assert!(
+            text.contains("\n\nThe error: provider temporarily unavailable: HTTP 429"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn status_counts_down_a_rate_limit_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let factory = rate_limited_factory(std::time::Duration::from_secs(30), 4);
+        let router = Router::new(dir.path(), factory, channels);
+        router.dispatch(inbound("chat-1", "ping")).await.unwrap();
+        wait_until(|| {
+            router
+                .snapshot()
+                .first()
+                .is_some_and(|l| l.activity.starts_with("waiting out"))
+        })
+        .await;
+        let activity = router.snapshot()[0].activity.clone();
+        assert!(
+            activity.starts_with("waiting out the model's rate limit, retry 1 in "),
+            "{activity}"
+        );
+        let secs: u64 = activity
+            .rsplit(" in ")
+            .next()
+            .unwrap()
+            .trim_end_matches(" s")
+            .parse()
+            .unwrap();
+        assert!((29..=30).contains(&secs), "{activity}");
+        assert!(recorder.texts().is_empty(), "nothing's final yet");
     }
 
     #[tokio::test]

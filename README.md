@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.2.0-c4764a" alt="release v0.2.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-656-8a929a" alt="656 workspace tests">
+  <img src="https://img.shields.io/badge/tests-681-8a929a" alt="681 workspace tests">
 </p>
 
 <p align="center">
@@ -184,7 +184,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. |
 | **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall. `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
 | **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons, kept only when the task passes twice with the lesson in the prompt ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md)). |
-| **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). |
+| **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
 | **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, and secret env vars are stripped. Native Windows has no sandbox yet ([below](#windows)). |
 | **Credential gateway** | Commands get a placeholder token. A local proxy swaps in the real one only for the hosts you allow. |
@@ -513,7 +513,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 656 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 681 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -575,12 +575,12 @@ and a dated entry for every session.
       inbound ports), tokens encrypted and never shown to the model
 - [x] M21: models — several at once, a default, a model per chat, task
       or sub-agent, `/model` in Telegram, a fallback on outage
+- [x] M19c: the live-bot fixes — every reason the bot stays quiet is told
+      in Telegram or shown by `ferrule doctor`
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-- [ ] M19c: the live-bot fixes — every reason the bot stays quiet is told
-      in Telegram or shown by `ferrule doctor`
 - [ ] M22: one dashboard page for the whole app — status, stats, logs,
       connections, and models with a catalog, prices and recommendations
 

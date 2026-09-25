@@ -547,7 +547,7 @@ impl Agent {
                 continue;
             }
             let (Some(delay), Err(e)) = (retry_in, &result) else {
-                return result;
+                return result.map_err(|e| e.after_attempts(attempt));
             };
             warn!(
                 attempt,

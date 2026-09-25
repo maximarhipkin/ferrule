@@ -121,6 +121,13 @@ pub trait Channel: Send + Sync {
         None
     }
 
+    /// What keeps this channel from hearing messages right now, in plain
+    /// words (M19c: Telegram's 409 Conflict), for `/status`. `None` when
+    /// nothing is known to be wrong.
+    fn problem(&self) -> Option<String> {
+        None
+    }
+
     /// Optional: edit a previously sent message in place.
     async fn edit(
         &self,
