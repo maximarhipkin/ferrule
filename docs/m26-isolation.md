@@ -25,7 +25,7 @@ Seatbelt, the Windows backend, and the in-process file tools
 | Part | Paths | Can be un-denied? |
 |---|---|---|
 | ferrule's secrets (`policy.hidden`, host-filled) | `<data>/private` (saved keys, the connections store and its key, the hooks trust list, dashboard sessions), `<data>/proxy/keys`, `<data>/learn`, and new in M26 `<data>/sessions` (transcripts: every secret a tool ever printed) | no |
-| the default credential dirs (`deny_default_reads`, on by default) | `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`, `~/.config/gh`, `~/.gnupg`, and the browser profiles: Chrome, Chromium, Edge, Brave and Firefox, in each OS's own place | yes, with `allow_read` |
+| the default credential dirs (`deny_default_reads`, on by default) | `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`, and the browser profiles: Chrome, Chromium, Edge, Brave and Firefox, in each OS's own place | yes, with `allow_read` |
 | the owner's own additions (`deny_read`) | anything | no, the owner wrote it |
 
 `allow_read` removes a default entry when the entry is equal to or under
@@ -75,7 +75,7 @@ one of these paths, for example when the workspace is `~`.
 ```toml
 [sandbox]
 deny_read = ["~/work/.env.production"]   # extra paths, never readable
-allow_read = ["~/.config/gh"]            # re-open a default deny (gh wants its config)
+allow_read = ["~/.kube"]                 # re-open a default deny (kubectl wants its config)
 deny_default_reads = true                # the default list above
 ```
 

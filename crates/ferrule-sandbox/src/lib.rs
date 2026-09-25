@@ -19,7 +19,11 @@
 //! MCP servers go through the same path, with their own state dir writable
 //! ([`Sandbox::for_helper`]).
 //!
-//! Not covered: reads, and anything that needs a kernel bug.
+//! Reads are open except for [`Sandbox::read_denies`]: ferrule's own
+//! secrets, the usual credential dirs and browser profiles, and what the
+//! owner adds. The in-process file tools refuse the same list.
+//!
+//! Not covered: anything that needs a kernel bug.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -87,6 +91,21 @@ pub struct Policy {
     /// skipped.
     #[serde(skip)]
     pub hidden: Vec<PathBuf>,
+    /// Extra paths sandboxed commands and the file tools can't read (or
+    /// write). `~/` is the home dir; relative paths are relative to the
+    /// workspace.
+    pub deny_read: Vec<PathBuf>,
+    /// Re-open entries of the default deny list ([`default_read_denies`])
+    /// equal to or under one of these. Never `hidden` or `deny_read`.
+    pub allow_read: Vec<PathBuf>,
+    /// Deny the usual credential dirs and browser profiles
+    /// ([`default_read_denies`]).
+    pub deny_default_reads: bool,
+    /// Windows: most processes a command tree may run at once (the job's
+    /// limit). 0 means no limit.
+    pub process_limit: u32,
+    /// Windows: the job's memory limit for the whole command tree, in MB.
+    pub memory_mb: Option<u64>,
 }
 
 impl Default for Policy {
@@ -101,6 +120,11 @@ impl Default for Policy {
             env_passthrough: Vec::new(),
             secret_vars: Vec::new(),
             hidden: Vec::new(),
+            deny_read: Vec::new(),
+            allow_read: Vec::new(),
+            deny_default_reads: true,
+            process_limit: 256,
+            memory_mb: None,
         }
     }
 }
@@ -350,7 +374,7 @@ impl Sandbox {
         S: AsRef<OsStr>,
     {
         let roots = self.writable_roots(workspace);
-        let hidden = self.hidden_paths();
+        let hidden = self.read_denies(workspace);
         let mut cmd = match self.backend {
             Backend::Seatbelt => seatbelt::command(
                 self.policy.network,
@@ -385,7 +409,7 @@ impl Sandbox {
         if read_only && self.helper_roots.is_empty() {
             return Vec::new();
         }
-        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = home_dir();
         let mut wanted = Vec::new();
         let configured: &[PathBuf] = if read_only {
             &[]
@@ -394,12 +418,7 @@ impl Sandbox {
             &self.policy.writable_roots
         };
         for root in configured.iter().chain(&self.helper_roots) {
-            let expanded = match (root.strip_prefix("~"), &home) {
-                (Ok(rest), Some(home)) => home.join(rest),
-                _ if root.is_relative() => workspace.join(root),
-                _ => root.clone(),
-            };
-            wanted.push(expanded);
+            wanted.push(expand(root, home.as_deref(), workspace));
         }
         if self.policy.tmp && !read_only {
             wanted.push(PathBuf::from("/tmp"));
@@ -421,17 +440,38 @@ impl Sandbox {
         roots
     }
 
-    /// `policy.hidden`, canonical, missing ones skipped.
+    /// `policy.hidden`, canonical, missing ones skipped: ferrule's own
+    /// secrets, the part of [`Sandbox::read_denies`] no config can open.
     pub fn hidden_paths(&self) -> Vec<PathBuf> {
-        let mut out: Vec<PathBuf> = Vec::new();
-        for path in &self.policy.hidden {
-            if let Ok(p) = dunce::canonicalize(path) {
-                if !out.contains(&p) {
-                    out.push(p);
-                }
-            }
+        canonical_existing(&self.policy.hidden)
+    }
+
+    /// Everything commands and the file tools may not read, as configured:
+    /// `hidden`, the default credential dirs unless `allow_read` re-opens
+    /// them, and `deny_read`. Expanded (`~/`, relative to `workspace`) but
+    /// not resolved, so a path created later still matches — what the
+    /// in-process file tools want.
+    pub fn read_deny_list(&self, workspace: &Path) -> Vec<PathBuf> {
+        let home = home_dir();
+        let expand = |p: &PathBuf| expand(p, home.as_deref(), workspace);
+        let allowed: Vec<PathBuf> = self.policy.allow_read.iter().map(expand).collect();
+        let mut out: Vec<PathBuf> = self.policy.hidden.clone();
+        if self.policy.deny_default_reads {
+            out.extend(
+                default_read_denies()
+                    .iter()
+                    .map(expand)
+                    .filter(|d| !allowed.iter().any(|a| within(d, a))),
+            );
         }
+        out.extend(self.policy.deny_read.iter().map(expand));
         out
+    }
+
+    /// [`Sandbox::read_deny_list`], canonical, missing ones skipped — what
+    /// the OS backends enforce for a command starting now.
+    pub fn read_denies(&self, workspace: &Path) -> Vec<PathBuf> {
+        canonical_existing(&self.read_deny_list(workspace))
     }
 
     /// Names of the variables in this process's environment that sandboxed
@@ -506,6 +546,112 @@ impl Sandbox {
         }
         Ok(())
     }
+}
+
+/// The home dir: `HOME`, or on Windows `USERPROFILE` first (Git Bash sets
+/// a `HOME` of its own spelling).
+pub fn home_dir() -> Option<PathBuf> {
+    let vars: &[&str] = if cfg!(windows) {
+        &["USERPROFILE", "HOME"]
+    } else {
+        &["HOME"]
+    };
+    vars.iter()
+        .filter_map(std::env::var_os)
+        .find(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// `~/x` against the home dir, a relative path against the workspace.
+fn expand(path: &Path, home: Option<&Path>, workspace: &Path) -> PathBuf {
+    match (path.strip_prefix("~"), home) {
+        (Ok(rest), Some(home)) => home.join(rest),
+        _ if path.is_relative() => workspace.join(path),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// Whether `path` is `dir` or under it, ignoring case where the
+/// filesystem usually does.
+fn within(path: &Path, dir: &Path) -> bool {
+    if !cfg!(any(target_os = "macos", windows)) {
+        return path.starts_with(dir);
+    }
+    let fold = |p: &Path| {
+        p.components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect::<Vec<_>>()
+    };
+    fold(path).starts_with(&fold(dir))
+}
+
+fn canonical_existing(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for path in paths {
+        if let Ok(p) = dunce::canonicalize(path) {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Where credentials and browser profiles usually live on this OS,
+/// unexpanded (`~/…`, or absolute under `%APPDATA%`/`%LOCALAPPDATA%` on
+/// Windows). Denied to commands and the file tools unless the policy says
+/// `deny_default_reads = false` or re-opens one with `allow_read`.
+pub fn default_read_denies() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = [
+        "~/.ssh",
+        "~/.aws",
+        "~/.azure",
+        "~/.config/gcloud",
+        "~/.kube",
+        "~/.docker/config.json",
+        "~/.netrc",
+        "~/.git-credentials",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    let browsers: &[&str] = if cfg!(target_os = "macos") {
+        &[
+            "~/Library/Application Support/Google/Chrome",
+            "~/Library/Application Support/Chromium",
+            "~/Library/Application Support/Microsoft Edge",
+            "~/Library/Application Support/BraveSoftware",
+            "~/Library/Application Support/Firefox",
+            "~/Library/Safari",
+            "~/Library/Cookies",
+        ]
+    } else if cfg!(windows) {
+        &[]
+    } else {
+        &[
+            "~/.mozilla",
+            "~/.config/google-chrome",
+            "~/.config/chromium",
+            "~/.config/microsoft-edge",
+            "~/.config/BraveSoftware",
+        ]
+    };
+    out.extend(browsers.iter().map(PathBuf::from));
+    if cfg!(windows) {
+        for (var, rel) in [
+            ("LOCALAPPDATA", "Google\\Chrome\\User Data"),
+            ("LOCALAPPDATA", "Chromium\\User Data"),
+            ("LOCALAPPDATA", "Microsoft\\Edge\\User Data"),
+            ("LOCALAPPDATA", "BraveSoftware"),
+            ("APPDATA", "Mozilla\\Firefox"),
+            ("APPDATA", "gcloud"),
+        ] {
+            if let Some(base) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+                out.push(PathBuf::from(base).join(rel));
+            }
+        }
+    }
+    out
 }
 
 fn detect(policy: &Policy) -> Result<Backend, String> {
@@ -782,6 +928,111 @@ mod tests {
             "kept the caller's secret_vars"
         );
         assert_eq!(un.extra_env, sb.extra_env, "credential env is preserved");
+    }
+
+    #[test]
+    fn read_policy_parses_and_defaults_on() {
+        let p: Policy = serde_json::from_str(
+            r#"{"deny_read": [".env", "~/work/secret"], "allow_read": ["~/.kube"], "process_limit": 64, "memory_mb": 2048}"#,
+        )
+        .unwrap();
+        assert_eq!(p.deny_read, [PathBuf::from(".env"), "~/work/secret".into()]);
+        assert!(p.deny_default_reads);
+        assert_eq!((p.process_limit, p.memory_mb), (64, Some(2048)));
+        let d = Policy::default();
+        assert!(d.deny_default_reads && d.deny_read.is_empty() && d.memory_mb.is_none());
+        assert!(serde_json::from_str::<Policy>(r#"{"hidden": []}"#).is_err());
+    }
+
+    #[test]
+    fn read_denies_merge_hidden_defaults_and_config() {
+        let ws = tempfile::tempdir().unwrap();
+        let Some(home) = home_dir() else { return };
+        let sb = |policy: Policy| Sandbox {
+            policy,
+            ..Sandbox::off()
+        };
+        let base = Policy {
+            hidden: vec!["/data/private".into()],
+            deny_read: vec![".env".into(), "~/work/secret".into()],
+            ..Policy::default()
+        };
+        let list = sb(base.clone()).read_deny_list(ws.path());
+        assert!(list.contains(&PathBuf::from("/data/private")));
+        assert!(
+            list.contains(&ws.path().join(".env")),
+            "relative to the workspace"
+        );
+        assert!(list.contains(&home.join("work/secret")));
+        assert!(list.contains(&home.join(".ssh")));
+        assert!(list.contains(&home.join(".aws")));
+
+        // allow_read re-opens a default entry at or under it, never the rest.
+        let opened = sb(Policy {
+            allow_read: vec![
+                "~/.ssh".into(),
+                "~/.config".into(),
+                "/data".into(),
+                "~/work".into(),
+            ],
+            ..base.clone()
+        })
+        .read_deny_list(ws.path());
+        assert!(!opened.contains(&home.join(".ssh")));
+        assert!(!opened.contains(&home.join(".config/gcloud")));
+        assert!(opened.contains(&home.join(".aws")));
+        assert!(
+            opened.contains(&PathBuf::from("/data/private")),
+            "hidden stays"
+        );
+        assert!(
+            opened.contains(&home.join("work/secret")),
+            "deny_read stays"
+        );
+        // Allowing something under a denied dir doesn't open the dir.
+        let partial = sb(Policy {
+            allow_read: vec!["~/.ssh/known_hosts".into()],
+            ..base.clone()
+        })
+        .read_deny_list(ws.path());
+        assert!(partial.contains(&home.join(".ssh")));
+
+        let no_defaults = sb(Policy {
+            deny_default_reads: false,
+            ..base
+        })
+        .read_deny_list(ws.path());
+        assert!(!no_defaults.contains(&home.join(".ssh")));
+        assert_eq!(no_defaults.len(), 3);
+    }
+
+    #[test]
+    fn read_denies_resolve_and_skip_missing() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::write(ws.path().join(".env"), "K=v").unwrap();
+        let sb = Sandbox {
+            policy: Policy {
+                deny_read: vec![".env".into(), "missing".into(), ".env".into()],
+                deny_default_reads: false,
+                ..Policy::default()
+            },
+            ..Sandbox::off()
+        };
+        assert_eq!(
+            sb.read_denies(ws.path()),
+            [dunce::canonicalize(ws.path().join(".env")).unwrap()]
+        );
+    }
+
+    #[test]
+    fn default_denies_cover_keys_clouds_and_browsers() {
+        let list = default_read_denies();
+        for want in ["~/.ssh", "~/.aws", "~/.config/gcloud", "~/.azure"] {
+            assert!(list.contains(&PathBuf::from(want)), "{want}");
+        }
+        let text = format!("{list:?}").to_lowercase();
+        assert!(text.contains("chrome") && text.contains("firefox") || text.contains("mozilla"));
+        assert!(text.contains("edge"));
     }
 
     #[test]

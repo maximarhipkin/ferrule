@@ -836,9 +836,9 @@ fn build_agent_from(
         sandbox.egress().cloned(),
     )));
     // The file tools run in this process, outside the sandbox: they refuse
-    // its hidden paths themselves, or a workspace that contains the data
-    // dir would let `read_file` hand over the saved keys.
-    let hidden = sandbox.policy().hidden.clone();
+    // its read denies themselves, or a workspace that contains the data
+    // dir (or is `~`) would let `read_file` hand over the saved keys.
+    let hidden = sandbox.read_deny_list(&tool_ctx.workspace);
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(ListDirTool::hiding(hidden)));
@@ -1015,8 +1015,9 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     policy
 }
 
-/// The secrets file's directory and the credential proxy's CA key — never
-/// readable by a sandboxed command. The sandbox resolves them per command,
+/// The secrets file's directory, the credential proxy's CA key, the
+/// learning loop's notes and the session transcripts (whatever a tool ever
+/// printed) — never readable by a sandboxed command. The sandbox resolves them per command,
 /// so the proxy's keys (written when the broker first starts) are covered
 /// too; the secrets directory is created now so a file `ferrule setup`
 /// writes into it later lands inside something already hidden.
@@ -1031,7 +1032,12 @@ fn hidden_paths() -> Vec<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700));
     }
-    vec![private, data.join("proxy").join("keys"), data.join("learn")]
+    vec![
+        private,
+        data.join("proxy").join("keys"),
+        data.join("learn"),
+        data.join("sessions"),
+    ]
 }
 
 /// Landlock can't grant a folder without what's in it, so when the

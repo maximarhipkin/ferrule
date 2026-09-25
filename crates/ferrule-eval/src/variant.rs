@@ -114,7 +114,7 @@ pub fn build(b: Build<'_>) -> Agent {
     registry.register(Arc::new(WebFetchTool::with_egress(
         b.sandbox.egress().cloned(),
     )));
-    let hidden = b.sandbox.policy().hidden.clone();
+    let hidden = b.sandbox.read_deny_list(b.workspace);
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(ListDirTool::hiding(hidden)));

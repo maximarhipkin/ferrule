@@ -221,6 +221,45 @@ fn hidden_paths_outside_the_workspace_and_the_host_environ() {
 }
 
 #[test]
+fn denied_reads_fail_and_allowed_reads_work() {
+    let ws = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(ws.path().join(".env"), "TOKEN=sk-live\n").unwrap();
+    std::fs::write(ws.path().join("notes.txt"), "fine\n").unwrap();
+    let creds = elsewhere.path().join("creds");
+    std::fs::create_dir(&creds).unwrap();
+    std::fs::write(creds.join("key"), "sk-live\n").unwrap();
+    std::fs::write(elsewhere.path().join("open.txt"), "fine\n").unwrap();
+    let Some(sb) = sandbox(Policy {
+        deny_read: vec![".env".into(), creds.clone()],
+        ..no_tmp(Mode::WorkspaceWrite)
+    }) else {
+        return;
+    };
+    let dir = elsewhere.path().display();
+    for script in [
+        "cat .env".to_string(),
+        format!("cat '{dir}/creds/key'"),
+        format!("cp '{dir}/creds/key' stolen"),
+    ] {
+        let out = sh(&sb, ws.path(), &script);
+        assert!(!out.status.success(), "`{script}` went through");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("sk-live"));
+    }
+    assert!(!ws.path().join("stolen").exists());
+    let out = sh(&sb, ws.path(), &format!("cat notes.txt '{dir}/open.txt'"));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "fine\nfine\n");
+
+    // An MCP server's sandbox keeps the same denies on top of its state dir.
+    let state = tempfile::tempdir().unwrap();
+    let helper = sb.for_helper(state.path(), &[]);
+    let out = sh(&helper, ws.path(), &format!("cat '{dir}/creds/key'"));
+    assert!(!out.status.success());
+    let out = sh(&helper, ws.path(), "cat notes.txt");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "fine\n");
+}
+
+#[test]
 fn secret_env_vars_do_not_reach_the_command() {
     std::env::set_var("FERRULE_TEST_API_KEY", "sk-should-not-leak");
     std::env::set_var("FERRULE_TEST_PLAIN", "visible");
