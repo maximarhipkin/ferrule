@@ -1265,9 +1265,19 @@ headers = {{ Authorization = "Bearer MCP-HEADER-SECRET" }}
         "logs?kind=warn",
         "extensions",
         "agents",
+        "eval",
     ] {
         let (s, v) = page.get(path);
         assert!(s == 200 || s == 503, "{path}: {s} {v}");
+        each.push((path.into(), v.to_string()));
+    }
+    // M24's reads that are POSTs: the eval's estimate and its question.
+    for (path, body) in [
+        ("eval/estimate", json!({ "model": "a" })),
+        ("eval/start", json!({ "model": "b/b-large" })),
+    ] {
+        let (s, v) = page.post(path, body);
+        assert!(s == 200 || s == 409 || s == 400, "{path}: {s} {v}");
         each.push((path.into(), v.to_string()));
     }
     for (_, body) in &each {
@@ -1318,6 +1328,9 @@ fn an_eval_run_never_starts_or_touches_the_dashboard() {
 base_url = "{url}"
 api_key_env = "FERRULE_TEST_KEY"
 model = "mock"
+price_input_per_mtok = 1.0
+price_cached_input_per_mtok = 0.1
+price_output_per_mtok = 2.0
 
 [skills]
 enabled = false
@@ -1327,6 +1340,9 @@ mode = "off"
 
 [dashboard]
 enabled = true
+
+[eval]
+suite = {suite:?}
 "#
     ));
     let home = dir.path();
@@ -1334,12 +1350,198 @@ enabled = true
         home,
         &["eval", "run", suite.to_str().unwrap(), "--tag", "smoke"],
     );
-    drop(mock);
     assert!(
         plain(&out.stdout).contains("smoke") || out.status.success(),
         "{}",
         describe(&out)
     );
+
+    // M24: `ferrule model eval` asks first; with --yes it runs the smoke
+    // subset, stores it, and puts it beside the default's run above.
+    let out = ferrule(home, &["model", "eval", "mock"]);
+    assert!(!out.status.success(), "{}", describe(&out));
+    assert!(describe(&out).contains("--yes"), "{}", describe(&out));
+    let out = ferrule(home, &["model", "eval", "mock", "--yes"]);
+    let (said, told) = (plain(&out.stdout), describe(&out));
+    assert!(out.status.success(), "{told}");
+    assert!(told.contains("Estimate: about"), "{told}");
+    assert!(said.contains("mock/mock: 4/4 pass"), "{told}");
+    assert!(said.contains("the default, mock/mock: 4/4 pass"), "{told}");
+    // A tiny cap stops it: exit 3, the stop said.
+    let config = std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!("{config}\n[trust]\nmax_tokens_per_run = 1500\n"),
+    )
+    .unwrap();
+    let out = ferrule(home, &["model", "eval", "mock", "--yes"]);
+    drop(mock);
+    assert_eq!(out.status.code(), Some(3), "{}", describe(&out));
+    assert!(plain(&out.stdout).contains("stopped"), "{}", describe(&out));
     assert!(!home.join("data/gateway/dashboard.json").exists());
     assert!(!home.join("data/private/dashboard").exists());
+}
+
+// ---- M24: evaluating a candidate -----------------------------------------
+
+fn starter() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../evals/starter")
+}
+
+/// `[eval]` at the checkout's starter suite, and `b` priced.
+fn eval_extra(tg: &FakeTelegram, trust: &str) -> String {
+    format!(
+        "{}\n[eval]\nsuite = {:?}\n\n[trust]\n{trust}\n",
+        telegram(tg),
+        starter().display().to_string()
+    )
+}
+
+#[test]
+fn the_page_estimates_an_eval_asks_first_runs_it_and_stores_it_beside_the_default() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let config = two(&a, &b, "", &eval_extra(&tg, "max_usd_per_day = 10.0")).replace(
+        "model = \"b-large\"\n",
+        "model = \"b-large\"\nprice_input_per_mtok = 2.0\nprice_cached_input_per_mtok = 0.5\nprice_output_per_mtok = 8.0\n",
+    );
+    let dir = home(&config);
+    let home = dir.path();
+    let _gw = gateway(home, &[]);
+    let (_, page) = sign_in(&tg, 0);
+    assert_eq!(page.read("eval")["job"], Value::Null);
+
+    // The estimate: the smoke subset's typical use at b's prices.
+    let (s, v) = page.post(
+        "eval/estimate",
+        json!({ "model": "b/b-large", "suite": "smoke" }),
+    );
+    assert_eq!(s, 200, "{v}");
+    let e = &v["estimate"];
+    assert_eq!(e["tasks"].as_array().unwrap().len(), 4, "{e:#}");
+    let usd = e["usd"].as_f64().expect("priced");
+    let (tin, tout) = (
+        e["typical"]["input"].as_f64().unwrap(),
+        e["typical"]["output"].as_f64().unwrap(),
+    );
+    assert!((usd - (tin * 2.0 + tout * 8.0) / 1e6).abs() < 1e-9, "{e:#}");
+    assert!(e["text"].as_str().unwrap().contains("Estimate:"), "{e:#}");
+    assert_eq!(e["default"], "a/a-one");
+    assert_eq!(e["refused"], Value::Null);
+    assert!(
+        (e["budget"]["max_usd"].as_f64().unwrap() - 5.0).abs() < 1e-9,
+        "the per-run cap is the lesser: {e:#}"
+    );
+
+    // Starting asks first, with the estimate as the question; nothing ran.
+    let (s, v) = page.post("eval/start", json!({ "model": "b/b-large" }));
+    assert_eq!(s, 409, "{v}");
+    assert!(v["confirm"].as_str().unwrap().contains("Estimate:"), "{v}");
+    assert!(b.calls().is_empty(), "nothing is sent before the confirm");
+    // Without the CSRF header it's refused outright.
+    let o = origin(page.port);
+    let (s, _, _) = http(
+        page.port,
+        "POST",
+        "/api/eval/start",
+        &[
+            ("cookie", &page.cookie),
+            ("origin", &o),
+            ("content-type", "application/json"),
+        ],
+        &json!({ "model": "b/b-large", "confirm": true }).to_string(),
+    );
+    assert_eq!(s, 403);
+
+    // The default's run first, so the candidate has something beside it.
+    let (s, v) = page.post("eval/start", json!({ "model": "a", "confirm": true }));
+    assert_eq!(s, 200, "{v}");
+    let done = |j: &Value| j["job"]["running"] == false;
+    let first = page.until("eval", done);
+    assert_eq!(first["job"]["done"], 4, "{first:#}");
+    assert_eq!(first["job"]["model"], "a/a-one");
+    assert!(a.calls().iter().any(|m| m == "a-one"));
+
+    let (s, v) = page.post(
+        "eval/start",
+        json!({ "model": "b/b-large", "suite": "smoke", "confirm": true }),
+    );
+    assert_eq!(s, 200, "{v}");
+    // Progress shows while it runs, then the result beside the default's.
+    let j = page.until("eval", |j| {
+        j["job"]["model"] == "b/b-large" && j["job"]["running"] == false
+    });
+    let job = &j["job"];
+    assert_eq!(job["done"], 4, "{job:#}");
+    assert!(job["lines"].as_array().unwrap().len() >= 8, "{job:#}");
+    let f = &job["finished"];
+    assert_eq!(f["summary"]["planned"], 4, "{job:#}");
+    assert_eq!(f["summary"]["ran"], 4, "{job:#}");
+    assert_eq!(f["summary"]["reference"], "b/b-large");
+    assert!(f["summary"]["usd"].as_f64().unwrap() > 0.0, "{job:#}");
+    assert_eq!(f["baseline"]["reference"], "a/a-one", "{job:#}");
+    assert_eq!(
+        f["baseline"]["run_id"],
+        first["job"]["finished"]["summary"]["run_id"]
+    );
+    assert!(b.calls().iter().all(|m| m == "b-large"));
+
+    // Stored as `ferrule eval` stores a run, and listed by it.
+    let run_id = f["summary"]["run_id"].as_str().unwrap();
+    let saved = home.join("data/eval").join(run_id);
+    assert!(saved.join("run.json").is_file() && saved.join("report.txt").is_file());
+    let rep = ferrule(home, &["eval", "report", "--run", run_id]);
+    assert!(rep.status.success(), "{}", describe(&rep));
+    assert!(plain(&rep.stdout).contains("b-large"), "{}", describe(&rep));
+    // Counted as the owner's spend, under the eval's own tree, and audited.
+    let ledger = std::fs::read_to_string(home.join("data/ledger.jsonl")).unwrap();
+    assert!(ledger.contains(&format!("eval:{run_id}")), "{ledger}");
+    let audit = std::fs::read_to_string(home.join("data/trust/audit.jsonl")).unwrap();
+    assert!(
+        audit.contains("\"model.eval\"") && audit.contains("\"dashboard\""),
+        "{audit}"
+    );
+    // Nothing of the eval's leaks a key into the page.
+    assert!(!j.to_string().contains("sk-test"));
+}
+
+#[test]
+fn an_eval_obeys_the_owners_caps_and_kill_switch() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    // The day's $1 cap, $1.50 already spent today.
+    let dir = home(&two(&a, &b, "", &eval_extra(&tg, "max_usd_per_day = 1.0")));
+    let home = dir.path();
+    let row = json!({"timestamp": chrono::Utc::now().to_rfc3339(), "session_id": "telegram__42",
+        "task_shape": "chat", "provider": "a", "model": "a-one", "iteration": 0,
+        "input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 1, "tool_calls": 0, "latency_ms": 1,
+        "outcome": "ok", "cost_usd": 1.5});
+    std::fs::write(home.join("data/ledger.jsonl"), format!("{row}\n")).unwrap();
+    let _gw = gateway(home, &[]);
+    let (_, page) = sign_in(&tg, 0);
+    let (s, v) = page.post("eval/estimate", json!({ "model": "a" }));
+    assert_eq!(s, 200, "{v}");
+    assert!(
+        v["estimate"]["refused"]
+            .as_str()
+            .unwrap()
+            .contains("used up"),
+        "{v}"
+    );
+    let (s, v) = page.post("eval/start", json!({ "model": "a", "confirm": true }));
+    assert_eq!(s, 400, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("used up"), "{v}");
+    assert!(a.calls().is_empty(), "nothing was sent: {:?}", a.calls());
+
+    // The CLI refuses the same way, and so does the kill switch.
+    let out = ferrule(home, &["model", "eval", "a", "--yes"]);
+    assert!(!out.status.success(), "{}", describe(&out));
+    assert!(describe(&out).contains("used up"), "{}", describe(&out));
+    std::fs::remove_file(home.join("data/ledger.jsonl")).unwrap();
+    let (s, v) = page.post("kill/on", json!({ "confirm": true }));
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = page.post("eval/start", json!({ "model": "a", "confirm": true }));
+    assert_eq!(s, 400, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("kill switch"), "{v}");
+    assert!(a.calls().is_empty());
 }

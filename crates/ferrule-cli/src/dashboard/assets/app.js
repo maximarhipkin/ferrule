@@ -213,11 +213,16 @@
       this.sort = el("select", {}, ["in", "out", "context", "name"].map((s) => el("option", { value: s, text: "sort: " + s })));
       this.list = el("div");
       this.rec = el("div");
+      this.evalBox = el("div");
+      this.suite = el("select", {}, el("option", { value: "smoke", text: "eval: smoke subset (4 tasks)" }), el("option", { value: "starter", text: "eval: whole starter suite (20)" }));
       const go = () => this.catalog(false);
       this.search.addEventListener("change", go);
       this.tools.onchange = go;
       this.sort.onchange = go;
       root.append(this.box,
+        el("h3", { text: "Evaluate a candidate" }),
+        el("p", { class: "muted", text: "Runs ferrule's starter suite on a model, after its estimated cost and a confirm, under your caps. Pick the tasks here, then Evaluate on a row." }),
+        el("div", { class: "row" }, this.suite), this.evalBox,
         el("h3", { text: "Recommended" }), this.rec,
         el("h3", { text: "Catalog" }),
         el("div", { class: "row" }, this.search, this.tools, this.sort,
@@ -227,7 +232,36 @@
       this.catalog(false);
       this.recommend();
     },
+    // The estimate is the confirm's question; the run's progress polls in.
+    evalButton(model, provider) {
+      const b = el("button", { text: "Evaluate" });
+      b.onclick = () => act("eval/start", { model, provider, suite: this.suite.value }, b).then(() => this.loadEval());
+      return b;
+    },
+    async loadEval() {
+      try {
+        const j = (await api("/api/eval")).job;
+        if (!j) { this.evalBox.replaceChildren(el("p", { class: "muted", text: "No eval has run from here yet; `ferrule eval report` prints the saved ones." })); return; }
+        const f = j.finished;
+        const line = (x) => x.passed + "/" + x.planned + " pass · " + num(x.tokens) + " tokens · " + usd(x.usd);
+        this.evalBox.replaceChildren(el("div", { class: "card" },
+          kv([
+            ["model", j.model],
+            ["tasks", j.subset === "starter" ? "the whole starter suite" : "the smoke subset"],
+            ["progress", j.done + " of " + j.planned + " done" + (j.current ? " · now " + j.current : "") + (j.running ? "" : " · finished")],
+            f ? ["result", el("span", {}, line(f.summary), f.summary.stopped ? el("div", { class: "warn msg", dir: "auto", text: "stopped: " + f.summary.stopped }) : null)] : null,
+            f ? ["the default", f.baseline ? f.baseline.reference + ": " + line(f.baseline) + " (run " + f.baseline.run_id + ")" : "no saved run on these tasks to compare with"] : null,
+            f ? ["saved as", "run " + f.summary.run_id] : null,
+            j.error ? ["error", el("span", { class: "bad msg", dir: "auto", text: j.error })] : null,
+          ]),
+          j.running ? el("div", { class: "row" }, btn("Cancel", "eval/cancel", {}, "danger")) : null,
+          j.lines.length ? el("pre", { class: "msg", dir: "auto", text: j.lines.slice(-12).join("\n") }) : null));
+      } catch (e) {
+        this.evalBox.replaceChildren(el("p", { class: "bad", text: e.message }));
+      }
+    },
     async load() {
+      this.loadEval();
       const m = await api("/api/models");
       const v = m.view;
       const names = v.models.map((r) => r.reference);
@@ -256,6 +290,7 @@
           el("div", { class: "row" },
             r.default ? null : btn("Default", "models/default", { model: r.reference }),
             btn("Test", "models/test", { model: r.reference }),
+            this.evalButton(r.reference),
             btn("Remove", "models/remove", { model: r.reference }, "danger")),
         ])),
         el("h3", { text: "Pins" }),
@@ -281,10 +316,12 @@
         })());
     },
     addButtons(row) {
-      if (!row.provider) return el("span", { class: "muted", text: "price reference" });
-      if (row.connected) return tag("connected", "ok");
+      const ev = this.evalButton(row.id, row.provider || undefined);
+      if (!row.provider) return el("div", { class: "row" }, el("span", { class: "muted", text: "price reference" }), ev);
+      if (row.connected) return el("div", { class: "row" }, tag("connected", "ok"), ev);
       const body = (as) => ({ provider: row.provider, id: row.id, as });
       return el("div", { class: "row" },
+        ev,
         btn("Add", "catalog/add", body("model")),
         btn("Default", "catalog/add", body("default"), "primary"),
         btn("Fallback", "catalog/add", body("fallback")));

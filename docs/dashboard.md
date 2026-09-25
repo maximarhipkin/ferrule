@@ -30,6 +30,14 @@ link.
 
 **`/dashboard off`** revokes every link and session and closes the tunnel.
 
+**A restart keeps you signed in** (M24). Sessions are kept in
+`<data>/private/dashboard/sessions.json` (hashes only, owner-only), and
+the page comes back on the port it had, so a local or `ssh -L` tab keeps
+working. A revoked session stays revoked, and a used link stays used. A
+session through a tunnel can't survive, because the next tunnel has a new
+name. When one was live, the gateway opens a new tunnel after the restart
+and sends you a fresh link, at most once every 10 minutes.
+
 At the machine (when Telegram itself is the problem):
 
 ```bash
@@ -102,6 +110,48 @@ ferrule model fill-prices                      # price every unpriced model from
 `ferrule doctor` warns about each connected model without prices, since
 the dollar caps can't see its spend.
 
+## Evaluating a candidate model
+
+Before switching models, you can see how one does on Ferrule's own
+harness (M24). **Evaluate** is on every row of the Models table and the
+catalog. Pick the tasks above it:
+
+- the **smoke subset**: 4 quick tasks, one of each kind (the default);
+- the **whole starter suite**: all 20.
+
+The page first asks with an estimate: the tasks, the tokens and dollars
+at the model's prices (configured, or else the catalog's), your budget,
+and how the default did on the same tasks last time. The estimate is what
+the suite's mock model uses on those tasks. A real model takes more turns,
+often several times more, so treat it as a floor.
+
+The eval runs in the background, one at a time, without slowing the
+gateway, with progress and a **Cancel**. It runs under your caps like any
+unattended run:
+
+- the kill switch or a used-up day cap refuses it before anything is sent;
+- its budget is the lower of the per-run caps and what's left of today's;
+- with no cap at all, it uses `ferrule eval`'s own defaults ($5, 20M tokens);
+- its calls count toward the day, under the tree `eval:<run id>`;
+- a model that isn't connected runs through its provider for the eval
+  only, and isn't added.
+
+The result sits next to the default's last result on the same tasks. It's
+saved like any `ferrule eval run` (`<data>/eval/<run id>/`), so `ferrule
+eval report --run <id>` prints it later.
+
+```bash
+ferrule model eval openrouter/qwen/qwen3-coder              # smoke subset; asks first
+ferrule model eval fast --suite starter --yes               # all 20, no question
+```
+
+The CLI prints the estimate and asks. Without a terminal it needs `--yes`.
+It exits 3 when a cap stopped the run. It needs the starter suite from a
+Ferrule checkout, looked up in this order: `[eval] suite`,
+`$FERRULE_EVAL_SUITE`, `./evals/starter`, then the checkout the binary was
+built from. It needs `python3` for the graders. An eval never starts the
+dashboard or a tunnel.
+
 ## Settings
 
 ```toml
@@ -117,6 +167,10 @@ link_minutes = 10
 # Where prices come from when no connected provider is OpenRouter.
 # Unset: OpenRouter's public list. "": none.
 catalog_url = "https://openrouter.ai/api/v1/models"
+
+[eval]
+# The starter suite for Evaluate and `ferrule model eval` (an evals/starter directory).
+suite = "/path/to/ferrule/evals/starter"
 ```
 
 ## Security in three lines

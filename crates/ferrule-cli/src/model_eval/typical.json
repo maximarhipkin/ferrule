@@ -1,0 +1,125 @@
+{
+  "about": "Tokens per starter task, engineered variant, measured on evals/starter/mock/model.py through the real binary (docs/m24-dashboard-2.md section 2). A test re-measures it when python3 is present.",
+  "tasks": {
+    "fix-median": {
+      "input": 483,
+      "cached_input": 0,
+      "output": 78,
+      "calls": 2
+    },
+    "sales-summary": {
+      "input": 441,
+      "cached_input": 0,
+      "output": 80,
+      "calls": 2
+    },
+    "slugify": {
+      "input": 1868,
+      "cached_input": 0,
+      "output": 153,
+      "calls": 4
+    },
+    "release-notes": {
+      "input": 94358,
+      "cached_input": 0,
+      "output": 398,
+      "calls": 10
+    },
+    "config-migration": {
+      "input": 99329,
+      "cached_input": 0,
+      "output": 368,
+      "calls": 8
+    },
+    "incident-report": {
+      "input": 115186,
+      "cached_input": 0,
+      "output": 487,
+      "calls": 12
+    },
+    "rename-api": {
+      "input": 94664,
+      "cached_input": 0,
+      "output": 404,
+      "calls": 10
+    },
+    "inventory-merge": {
+      "input": 98913,
+      "cached_input": 0,
+      "output": 408,
+      "calls": 10
+    },
+    "parse-duration": {
+      "input": 1678,
+      "cached_input": 0,
+      "output": 161,
+      "calls": 4
+    },
+    "invoice-tests": {
+      "input": 1523,
+      "cached_input": 0,
+      "output": 161,
+      "calls": 4
+    },
+    "roman": {
+      "input": 1556,
+      "cached_input": 0,
+      "output": 153,
+      "calls": 4
+    },
+    "todo-json-flag": {
+      "input": 391,
+      "cached_input": 0,
+      "output": 80,
+      "calls": 2
+    },
+    "git-fix-commit": {
+      "input": 366,
+      "cached_input": 0,
+      "output": 80,
+      "calls": 2
+    },
+    "wordfreq": {
+      "input": 421,
+      "cached_input": 0,
+      "output": 76,
+      "calls": 2
+    },
+    "lru-cache": {
+      "input": 396,
+      "cached_input": 0,
+      "output": 78,
+      "calls": 2
+    },
+    "active-buyers": {
+      "input": 363,
+      "cached_input": 0,
+      "output": 80,
+      "calls": 2
+    },
+    "csv-to-markdown": {
+      "input": 391,
+      "cached_input": 0,
+      "output": 80,
+      "calls": 2
+    },
+    "normalize-dates": {
+      "input": 373,
+      "cached_input": 0,
+      "output": 80,
+      "calls": 2
+    },
+    "repair-json": {
+      "input": 360,
+      "cached_input": 0,
+      "output": 78,
+      "calls": 2
+    },
+    "dedupe-contacts": {
+      "input": 421,
+      "cached_input": 0,
+      "output": 80,
+      "calls": 2
+    }
+  }
+}

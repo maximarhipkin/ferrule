@@ -8,6 +8,7 @@
 use super::http::Request;
 use super::Ctx;
 use crate::config::Config;
+use crate::model_eval;
 use crate::models::catalog;
 use crate::models::Retire;
 use chrono::{DateTime, Utc};
@@ -94,6 +95,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "logs" => logs(ctx, req),
             "extensions" => extensions(ctx),
             "agents" => agents(ctx),
+            "eval" => ok(ctx.evals.view()),
             _ => None,
         };
     }
@@ -106,6 +108,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "catalog/fill-prices" => fill_prices(ctx).await,
         "connections/connect" | "connections/disconnect" => connection_op(ctx, path, body).await,
         "tasks/pause" | "tasks/resume" | "tasks/run" | "tasks/delete" => task_op(ctx, path, body),
+        "eval/estimate" | "eval/start" => eval_op(ctx, path == "eval/start", body).await,
+        "eval/cancel" => eval_cancel(ctx, body),
         _ => None,
     }
 }
@@ -689,6 +693,80 @@ async fn fill_prices(ctx: &Ctx) -> Answer {
         }
         Err(e) => bad(400, format!("{e:#}")),
     }
+}
+
+// ---- Evaluating a candidate (M24 §2) -------------------------------------
+
+/// The estimate, and on `start` (after the confirm) the run in the
+/// background: `{model, provider?, suite: smoke|starter}`.
+async fn eval_op(ctx: &Ctx, start: bool, body: &Value) -> Answer {
+    let (Some(hub), Some(data)) = (&ctx.hub, &ctx.data) else {
+        return missing("the trust hub");
+    };
+    let Some(cfg) = config(ctx) else {
+        return missing("the config");
+    };
+    let model = need!(arg(body, "model"));
+    let word = match body.get("provider").and_then(Value::as_str).map(str::trim) {
+        Some(p) if !p.is_empty() && !model.starts_with(&format!("{p}/")) => format!("{p}/{model}"),
+        _ => model.to_string(),
+    };
+    let subset = match model_eval::Subset::parse(
+        body.get("suite").and_then(Value::as_str).unwrap_or("smoke"),
+    ) {
+        Ok(s) => s,
+        Err(e) => return bad(400, format!("{e:#}")),
+    };
+    let mut c = match model_eval::candidate(&cfg, &word, None) {
+        Ok(c) => c,
+        Err(e) => return bad(400, format!("{e:#}")),
+    };
+    if c.pricing.is_none() {
+        if let Some((_, listings)) = listings(ctx, false).await {
+            if let Ok(priced) = model_eval::candidate(&cfg, &word, Some(&listings)) {
+                c = priced;
+            }
+        }
+    }
+    let e = match model_eval::estimate(&cfg, hub, data, c, subset) {
+        Ok(e) => e,
+        Err(e) => return bad(400, format!("{e:#}")),
+    };
+    if !start {
+        return ok(json!({ "estimate": e, "running": ctx.evals.running() }));
+    }
+    if let Some(why) = &e.refused {
+        return bad(400, format!("It can't run now: {why}"));
+    }
+    if ctx.evals.running() {
+        return bad(400, "An eval is already running: wait for it, or cancel it");
+    }
+    need!(confirmed(body, format!("{}Run it?", e.text)));
+    let setup = model_eval::Setup {
+        cfg,
+        data: data.clone(),
+        hub: hub.clone(),
+        estimate: e,
+        by: BY.into(),
+    };
+    match ctx.evals.start(setup) {
+        Ok(()) => ok(
+            json!({ "ok": true, "said": "Started: its progress is below.", "eval": ctx.evals.view() }),
+        ),
+        Err(_) => bad(400, "An eval is already running: wait for it, or cancel it"),
+    }
+}
+
+fn eval_cancel(ctx: &Ctx, body: &Value) -> Answer {
+    if !ctx.evals.running() {
+        return bad(400, "No eval is running.");
+    }
+    need!(confirmed(
+        body,
+        "Cancel the eval? The task running now stops at its next model call; what finished is kept.".into()
+    ));
+    ctx.evals.cancel();
+    ok(json!({ "ok": true, "said": "Cancelling: it stops at the next model call." }))
 }
 
 // ---- Usage --------------------------------------------------------------

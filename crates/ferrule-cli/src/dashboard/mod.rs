@@ -50,6 +50,8 @@ pub struct Ctx {
     pub config_path: Option<PathBuf>,
     /// Where project skills are found.
     pub workspace: Option<PathBuf>,
+    /// The candidate eval running from the page (M24), one at a time.
+    pub evals: Arc<crate::model_eval::Jobs>,
 }
 
 impl Ctx {
@@ -70,6 +72,7 @@ impl Ctx {
             data,
             config_path: crate::config::config_path().ok().flatten(),
             workspace: std::env::current_dir().ok(),
+            evals: Arc::default(),
         }
     }
 
@@ -88,6 +91,7 @@ impl Ctx {
             data: None,
             config_path: None,
             workspace: None,
+            evals: Arc::default(),
         }
     }
 }

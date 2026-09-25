@@ -14,6 +14,7 @@ mod ledger;
 mod mcp_add;
 mod mcp_config;
 mod memory_tools;
+mod model_eval;
 mod models;
 mod plan;
 mod probe;

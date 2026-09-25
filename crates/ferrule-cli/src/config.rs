@@ -218,6 +218,18 @@ pub struct Config {
     pub connections: ferrule_connections::ConnectionsConfig,
     #[serde(default)]
     pub dashboard: DashboardConfig,
+    /// M24: where `ferrule model eval` and the dashboard find the suite.
+    #[serde(default)]
+    pub eval: EvalConfig,
+}
+
+/// `[eval]` (docs/m24-dashboard-2.md §2).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EvalConfig {
+    /// The starter suite's directory; unset: `$FERRULE_EVAL_SUITE`, then
+    /// `./evals/starter`, then the checkout the binary was built from.
+    pub suite: Option<PathBuf>,
 }
 
 /// `[dashboard]` (docs/m22-dashboard.md).
