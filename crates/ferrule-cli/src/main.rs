@@ -1590,6 +1590,12 @@ async fn run_gateway(
             Ok(port) => {
                 dashboard::cli::write_marker(port);
                 tracing::info!(port, "dashboard on 127.0.0.1");
+                let (d, h) = (dash.clone(), hub.clone());
+                tokio::spawn(async move {
+                    if let Some(text) = d.relink_after_restart().await {
+                        h.tell_owner(text);
+                    }
+                });
                 Some(dash)
             }
             Err(e) => {

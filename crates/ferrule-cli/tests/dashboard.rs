@@ -726,6 +726,66 @@ fn a_link_signs_in_once_for_the_owner_only_and_dashboard_off_revokes_it() {
 }
 
 #[test]
+fn a_session_survives_a_restart_and_so_do_revocation_and_a_used_link() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let dir = home(&two(&a, &b, "", &telegram(&tg)));
+    let home = dir.path();
+    let gw = gateway(home, &[]);
+    let (n, page) = sign_in(&tg, 0);
+    tg.say(42, "/dashboard");
+    let (n, second) = tg.wait_for(42, "Dashboard: ", n);
+    let (_, used) = link_in(&second);
+    assert!(login(page.port, &used).is_ok());
+    tg.say(42, "/dashboard");
+    let (_, third) = tg.wait_for(42, "Dashboard: ", n);
+    let (_, unused) = link_in(&third);
+    let sessions = home.join("data/private/dashboard/sessions.json");
+    let text = std::fs::read_to_string(&sessions).unwrap();
+    assert!(
+        !text.contains(page.cookie.split('=').nth(1).unwrap()),
+        "{text}"
+    );
+
+    // A hard stop, then a new gateway: the same browser is still in.
+    drop(gw);
+    let gw = gateway(home, &[]);
+    let port = restarted_port(home);
+    let page = Page { port, ..page };
+    assert_eq!(page.read("health")["gateway"], true);
+    let (s, v) = page.post("kill/on", json!({}));
+    assert_eq!(s, 409, "the CSRF token still holds: {v}");
+    // The used link stays used; the unused one still works, once.
+    assert_eq!(login(port, &used).err(), Some(401));
+    assert!(login(port, &unused).is_ok());
+    assert_eq!(login(port, &unused).err(), Some(401));
+
+    // Revoked, then restarted: still revoked.
+    let out = ferrule(home, &["dashboard", "revoke"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(page.get("health").0, 401);
+    drop(gw);
+    let _gw = gateway(home, &[]);
+    let port = restarted_port(home);
+    assert_eq!(Page { port, ..page }.get("health").0, 401);
+}
+
+/// The port of a freshly started gateway's page, from `ferrule dashboard
+/// link` once it answers.
+fn restarted_port(home: &Path) -> u16 {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let out = ferrule(home, &["dashboard", "link"]);
+        let text = plain(&out.stdout);
+        if out.status.success() && text.contains("/login#") {
+            return link_in(&text).0;
+        }
+        assert!(Instant::now() < deadline, "{}", describe(&out));
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
 fn the_page_shows_a_stuck_turn_and_stops_it() {
     let (a, b) = (Server::start("A"), Server::start("B"));
     let tg = FakeTelegram::start();
