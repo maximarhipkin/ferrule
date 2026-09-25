@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-753-8a929a" alt="753 workspace tests">
+  <img src="https://img.shields.io/badge/tests-782-8a929a" alt="782 workspace tests">
 </p>
 
 <p align="center">
@@ -185,7 +185,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall. `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
 | **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons, kept only when the task passes twice with the lesson in the prompt ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md)). |
 | **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
-| **Dashboard** | One page for the whole app: health first, connections, models with an OpenRouter catalog, prices and recommendations, usage, tasks, logs, extensions and sub-agents. Send `/dashboard` and get a one-use 10-minute link; a `cloudflared` quick tunnel opens on demand and `/dashboard off` revokes it all. It never calls the model, so it works when every model is down ([`docs/dashboard.md`](docs/dashboard.md)). |
+| **Dashboard** | One page for the whole app: health first, connections, models with an OpenRouter catalog, prices and recommendations, usage, tasks, logs, extensions and sub-agents. Send `/dashboard` and get a one-use 10-minute link; a `cloudflared` quick tunnel opens on demand and `/dashboard off` revokes it all. Caps, MCP servers, skills, hooks and task schedules are edited from the page, a candidate model can be evaluated on the starter suite (cost shown first), and the login survives a restart. It never calls the model, so it works when every model is down ([`docs/dashboard.md`](docs/dashboard.md)). |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
 | **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, and secret env vars are stripped. Native Windows has no sandbox yet ([below](#windows)). |
 | **Credential gateway** | Commands get a placeholder token. A local proxy swaps in the real one only for the hosts you allow. |
@@ -514,7 +514,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 753 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 782 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -583,17 +583,19 @@ and a dated entry for every session.
       `v0.3.0` released
 - [x] M23: native drivers — Anthropic Messages and OpenAI Responses, with
       fallback across drivers mid-conversation
+- [x] M24: the dashboard's leftovers — a login that survives a restart,
+      "evaluate a candidate", editing from the page, a 2-minute smoke script
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M24 the
-dashboard's leftovers, M25 routing (start cheap, escalate on failure), M26
-isolation (a native Windows sandbox, sandboxed reads), M27 speed (parallel
-tool calls, streaming, cache-stable prompts), M28 `web_search` and
-keyword-triggered skills, M29 edit mechanics and a tree-sitter repo map, M30
-vector recall, M31 Discord and Slack, M32 WASM plugins, M33 ops (SSH, egress
-policy, OTel, importers).
+Every open track, in order (Max, 25.09: "do everything"): M25 routing
+(start cheap, escalate on failure), M26 isolation (a native Windows
+sandbox, sandboxed reads), M27 speed (parallel tool calls, streaming,
+cache-stable prompts), M28 `web_search` and keyword-triggered skills, M29
+edit mechanics and a tree-sitter repo map, M30 vector recall, M31 Discord
+and Slack, M32 WASM plugins, M33 ops (SSH, egress policy, OTel,
+importers).
 
 M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
