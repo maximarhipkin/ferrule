@@ -20,6 +20,8 @@ use std::time::{Duration, Instant, SystemTime};
 mod admin;
 pub mod catalog;
 mod cli;
+#[cfg(test)]
+mod cross_driver;
 mod door;
 pub use admin::*;
 pub use cli::{cmd, render, ModelCmd};
