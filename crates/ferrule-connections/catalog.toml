@@ -1,0 +1,104 @@
+# Services ferrule can connect (M20, docs/m20-connections.md §2).
+#
+# Each entry was checked on 2026-09-25 against the vendor's docs, and the
+# OAuth metadata of each host fetched live. Adding a service is adding a
+# table; an owner can add their own in `[[connections.custom]]`, or connect
+# any remote MCP server that does OAuth discovery + DCR by its URL.
+#
+#   auth       "oauth" | "api_key"
+#   client     oauth: "dcr" (ferrule registers itself) | "owner" (a client
+#              the owner made; its id and secret are <client_env>_ID and
+#              <client_env>_SECRET in the secrets file)
+#   scopes     asked for by default; write_scopes by `/connect <name> write`
+#   read_only  how read-only is enforced: "scope" | "header" | "endpoint" |
+#              "none" (then every tool without readOnlyHint asks the owner)
+
+[[service]]
+name = "atlassian"
+title = "Atlassian (Jira, Confluence)"
+url = "https://mcp.atlassian.com/v2/mcp"
+auth = "oauth"
+client = "dcr"
+read_only = "none"
+docs = "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/"
+note = "An Atlassian admin can limit which sites may sign in; the relay's address may need adding there."
+
+[[service]]
+name = "attio"
+title = "Attio"
+url = "https://mcp.attio.com/mcp"
+auth = "oauth"
+client = "dcr"
+scopes = ["mcp", "offline_access"]
+read_only = "none"
+docs = "https://docs.attio.com/mcp/overview"
+revoke_note = "Attio has no way to revoke a token from outside: remove ferrule under Workspace settings → Apps if you want it cut off at Attio too."
+
+[[service]]
+name = "gmail"
+title = "Gmail"
+url = "https://gmailmcp.googleapis.com/mcp/v1"
+auth = "oauth"
+client = "owner"
+client_env = "FERRULE_GOOGLE_CLIENT"
+scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+write_scopes = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"]
+read_only = "scope"
+resource_param = false
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+revoke_url = "https://oauth2.googleapis.com/revoke"
+extra_params = { access_type = "offline", prompt = "consent" }
+docs = "https://developers.google.com/workspace/gmail/api/guides/mcp"
+note = "Google's MCP servers are a Developer Preview."
+
+[[service]]
+name = "gdrive"
+title = "Google Drive"
+url = "https://drivemcp.googleapis.com/mcp/v1"
+auth = "oauth"
+client = "owner"
+client_env = "FERRULE_GOOGLE_CLIENT"
+scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+write_scopes = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"]
+read_only = "scope"
+resource_param = false
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+revoke_url = "https://oauth2.googleapis.com/revoke"
+extra_params = { access_type = "offline", prompt = "consent" }
+docs = "https://developers.google.com/workspace/drive/api/guides/mcp"
+note = "Google's MCP servers are a Developer Preview."
+
+[[service]]
+name = "github"
+title = "GitHub"
+url = "https://api.githubcopilot.com/mcp/"
+auth = "api_key"
+header = "Authorization"
+header_value = "Bearer {key}"
+read_only = "header"
+read_only_headers = { "X-MCP-Readonly" = "true" }
+key_url = "https://github.com/settings/personal-access-tokens/new"
+docs = "https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md"
+revoke_note = "Delete the token at https://github.com/settings/personal-access-tokens to cut it off at GitHub too."
+
+[[service]]
+name = "notion"
+title = "Notion"
+url = "https://mcp.notion.com/mcp"
+auth = "oauth"
+client = "dcr"
+read_only = "none"
+docs = "https://developers.notion.com/docs/mcp"
+
+[[service]]
+name = "linear"
+title = "Linear"
+url = "https://mcp.linear.app/mcp"
+auth = "oauth"
+client = "dcr"
+scopes = ["read"]
+write_scopes = ["read", "write"]
+read_only = "scope"
+docs = "https://linear.app/docs/mcp"

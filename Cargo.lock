@@ -590,6 +590,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrule-connections"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "ferrule-core",
+ "ferrule-mcp",
+ "ferrule-sandbox",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "ferrule-core"
 version = "0.1.0"
 dependencies = [

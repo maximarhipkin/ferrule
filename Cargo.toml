@@ -17,6 +17,7 @@ members = [
     "crates/ferrule-hooks",
     "crates/ferrule-learn",
     "crates/ferrule-trust",
+    "crates/ferrule-connections",
 ]
 
 [workspace.dependencies]
