@@ -103,6 +103,7 @@ impl McpClient {
                 |name| host.sandbox.child_env_var(name),
                 host.sandbox.egress(),
                 cfg.startup_timeout(),
+                cfg.auth.clone(),
             )?),
             (None, false) => None,
         };

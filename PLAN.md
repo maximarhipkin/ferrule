@@ -359,6 +359,30 @@ that convention yet — ask before introducing one).
     once. The served model is in the ledger, caps, the audit log and
     `/status`. `ferrule doctor --ping-models`, `ferrule eval --model`.
     **Decisions for Max and open edges:** see the M21 session-log entry.
+  - **M20 connections**: **built** (2026-09-25, parts 1–5 on branch
+    `m20-connections`; PR to main open, not merged). Design and as-built
+    notes are in `docs/m20-connections.md`; the relay is in
+    `relay/worker.js`.
+    - The agent can only ask (`connection_request`). The owner taps one
+      Telegram button to connect, and `/connect`, `/connections`,
+      `/disconnect` and `/decline` work from the owner's chat only.
+    - The login code comes back one of three ways:
+      - through the owner's own Cloudflare Worker relay (one Durable
+        Object per slot, one read, 5 min);
+      - else a cloudflared quick tunnel (DCR services only);
+      - else a pasted address.
+    - Tokens are sealed in `<data>/private/connections/` and refreshed
+      per request inside the MCP HTTP transport. The model never sees
+      them.
+    - API keys come in only through a form that encrypts in the browser,
+      or at the terminal.
+    - Access is read-only by default. A connected service's tools that
+      can change something go through M19's gate.
+    - `ferrule connections list|add|remove|catalog|relay deploy|relay
+      check`.
+    - Max's relay is live at `https://ferrule-relay.maximarhipkin.workers.dev`.
+    - **Open edges and the unverified list:** see the M20 session-log
+      entry.
   - **M19c — live-bot fixes**: **built** (2026-09-25, parts 1–3 on branch
     `m19c-live-fixes`, PR to main open, not merged, to ship as 0.2.1; see
     the M19c session-log entry). Design, as-built notes, the owner's
@@ -3063,6 +3087,145 @@ audit.
   `tests/models.rs` binaries (fake servers, gateway kill).
 - setup's new steps in a real pty on anything but Linux.
 
+### 2026-09-25 — M20 connections (Devi, Opus 5.5)
+
+The design is `docs/m20-connections.md`, and its **As built** section lists where
+the build departs from it. The work is on branch `m20-connections`, cut from `main`
+at `edfce24`, with a PR to `main` (not merged).
+
+It builds on:
+- M17's `set_configured` hot-add
+- M19's gate, audit log and owner chat
+- M19b's interceptors, `/status` and `Redactor`
+- the Telegram channel and the secrets file
+
+There is one new crate, `ferrule-connections`, plus `relay/` (the Worker).
+
+Every part was checked on Linux: fmt, clippy `-D warnings`, and
+`cargo test --workspace`. The Worker has its own tests (`node --test relay/`). No
+real provider was logged into. The flows ran against:
+- a mock OAuth AS (DCR + PKCE)
+- a mock MCP server that wants a bearer token
+- a mock relay speaking the Worker's contract
+- a fake Bot API
+- temp dirs
+
+**Commits:**
+- `7801832` design:
+  - the flow, the catalog, OAuth, the relay (DO vs KV, threat model), the fallbacks
+  - the key form, the tools, Telegram, the gate, the CLI
+  - one service model for M22, audit, eval, failure modes, defaults
+- `b1d7bc1` part 1: the relay Worker.
+  - One Durable Object per slot. Only the relay key opens or reads one.
+  - A value is written once and read once. A used mark refuses replays.
+  - A value lives 5 min, an open slot 15 min.
+  - No logging, size limits, a strict CSP.
+  - The key form encrypts in the browser (ECDH P-256 → HKDF → AES-GCM).
+  - 13 `node --test` cases.
+- `3ce4157` part 2:
+  - `ferrule-mcp`'s HTTP transport asks a `CredentialSource` for a header on every
+    request, retries once on a 401, and scrubs the credential from errors.
+  - The catalog: 7 verified services.
+  - The sealed store: AES-GCM, a lock file, atomic writes.
+  - OAuth: discovery, DCR, PKCE, exchange, refresh, revoke.
+  - The relay client and `deploy`, the key form's decryption (cross-checked in
+    node), and paste-back parsing.
+- `6efa78c` part 3: the `Connections` service.
+  - A request, then consent, then the callback (relay, tunnel or paste), then the
+    token.
+  - Refresh happens under the lock. A refused refresh sends one reconnect notice.
+  - The owner-only commands, and API keys.
+  - 11 hermetic flow tests.
+- `4c8490d` part 4: the gateway and the CLI.
+  - Telegram inline buttons: a tap is its command, trusted no more than typing it.
+  - `ConnectedWrite` in M19's gate.
+  - Connections merged with the config's MCP servers, applied live.
+  - `ConnectionsDoor`, and connections in `/status` and `doctor` (no secrets).
+  - The root agent's `connection_request`/`connection_list`.
+  - `ferrule connections …`.
+- part 5:
+  - A running gateway also notices a connection added by another process (the
+    store's hash, every 2 s), with a test.
+  - `relay check` is tested against the mock relay, and `relay deploy` against a
+    mock Cloudflare API (idempotent, the migration sent once, errors without
+    credentials).
+  - The design doc's As built section, this entry, the roadmap status.
+
+**Checks (final, after merging `main` with M21 and 0.2.0):** fmt clean; clippy
+`-D warnings` clean; `cargo test --workspace` 656 passed, 0 failed, 2 ignored (624
+at part 4, before the merge). The merge needed two changes: a button tap now carries
+`sender_id` (M21's field, the tapper's Telegram id), and `ferrule-connections` is
+0.2.0 like every other crate.
+
+**Eval (mock, `ferrule eval run evals/starter --variant ab`, all 20 tasks):**
+- engineered 20/20, naive 11/20, +45 pts
+- 150 calls, 951.5k input + 6.2k output tokens, $0.98 ($0.53 / $0.45)
+- 13 compactions / 11 truncations; 4 failed checks fixed
+
+That is identical to the run before M20. The eval's data dir had no connections
+store and no `mcp/connections` afterwards.
+
+**The relay, live.** It is deployed to Max's Cloudflare account as the Worker
+`ferrule-relay`, at `https://ferrule-relay.maximarhipkin.workers.dev`.
+- Its binding is `SLOTS` (class `Slot`, sqlite migration `v1`), and its secret is
+  `RELAY_KEY`.
+- Observability and logpush are off.
+- The account holds that one script and nothing else. No test script was made.
+- The relay key is in the box's secrets file, outside the repo.
+
+The smoke test passed every step:
+- `/health`
+- a wrong key → 401
+- a callback to an unopened slot → 404
+- open → 204
+- callback → 200
+- a second callback → 409
+- read → 200 with the code
+- a second read → 410
+- a replayed callback → 409
+- after 5 min 20 s: a late callback → 404, and a poll → 204 (the value expired)
+
+The deploy and the smoke test were done with curl, making `relay::deploy`'s exact
+calls. ferrule's rustls client doesn't trust this container's TLS-intercepting
+proxy.
+
+**Defaults for Max to confirm:**
+- no default relay URL; each owner deploys their own with `ferrule connections
+  relay deploy`
+- read-only by default (Gmail/Drive read scopes, Linear `read`, GitHub's read-only
+  header); Atlassian, Notion and Attio have no read-only mode, so they rely on the
+  gate
+- `gate_writes = true`: a connected tool without `readOnlyHint` asks the owner first
+- paste-back redirect `http://127.0.0.1:8976/callback`
+- a login flow lives 15 min; the relay is polled every 2 s
+- a decline quiets the agent's asks for that service for 10 min
+- relay: a value for 5 min, an open slot for 15 min
+- GitHub by PAT through the key form, not OAuth
+- Google needs the owner's own OAuth client, with the id and secret in the secrets
+  file; in Testing mode its refresh tokens expire after 7 days
+
+**Open edges:**
+- A config `[[mcp.servers]]` entry with a connection's name wins. It shows only as
+  a log warning, not in `/status`.
+- There is no `ferrule connections test`. `ferrule doctor` doesn't probe the relay;
+  `relay check` does.
+- `ferrule setup` has no relay step yet (M21 is reworking setup).
+- The quick tunnel can't serve Google or GitHub, since their redirect URI must be
+  registered.
+
+**Unverified:**
+- Real logins with each provider:
+  - Google Web-client loopback redirects and the `resource` parameter
+  - Google's `initialize` without auth
+  - Atlassian's redirect allowlist
+  - Attio's `offline_access`
+  - Linear's read scope vs `/mcp/readonly`
+- `ferrule connections relay deploy`/`relay check` run live through the binary
+  (blocked here by the proxy's CA; tested against a mock Cloudflare API and a mock
+  relay).
+- macOS and Windows until this PR's CI run: the store's lock file and
+  write-then-rename, and the cloudflared tunnel spawn.
+
 ### 2026-09-25 — M19c live-bot fixes: the owner never guesses why the bot doesn't answer (Devi, Opus 5.5)
 
 A live bot stayed silent, and the owner had no way to learn why. M19c makes
@@ -3103,10 +3266,21 @@ isn't bumped. Everything ran against a fake Bot API and mock models.
   (`tests/models.rs`) fail once under load, and pass in the next three runs.
   It isn't touched here. Watch it in CI.
 
+**After merging `origin/main` (M20 connections):**
+- Resolved in `telegram.rs`: a button tap goes through `parse_update` as
+  a `Parsed` with nothing unread.
+- Resolved in `ferrule-mcp`: M20's transport already scrubs its errors.
+- PLAN.md keeps both sides.
+- fmt and clippy are clean, and `cargo test --workspace` has 681 passed,
+  0 failed, 2 ignored.
+
 **Eval** (mock, `ferrule eval run evals/starter --variant ab`, all 20 tasks):
 - pass rate: engineered 20/20, naive 11/20, +45 pts;
 - usage: 150 calls, 951.5k input + 6.2k output tokens;
 - cost: $0.98 ($0.53 / $0.45).
+
+The eval was run before the merge and again after it, with the same numbers
+both times.
 
 **Decisions for Max to confirm:**
 - 409 threshold: 60 s (`[health] telegram_conflict_secs`). The same length

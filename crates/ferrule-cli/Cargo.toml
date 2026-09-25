@@ -25,6 +25,7 @@ ferrule-eval = { path = "../ferrule-eval" }
 ferrule-hooks = { path = "../ferrule-hooks" }
 ferrule-learn = { path = "../ferrule-learn" }
 ferrule-trust = { path = "../ferrule-trust" }
+ferrule-connections = { path = "../ferrule-connections" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

@@ -20,7 +20,7 @@
 //! owner told why, a message with no text gets a plain reply, and a chat
 //! that isn't allowed is a warning (once an hour) that `/status` shows.
 
-use crate::channel::{Channel, ChannelCapabilities};
+use crate::channel::{Button, ButtonAction, Channel, ChannelCapabilities};
 use crate::error::GatewayError;
 use crate::health::human;
 use crate::message::{InboundMessage, OutboundMessage};
@@ -216,7 +216,7 @@ impl TelegramChannel {
     async fn poll_once(&self, tx: &mpsc::Sender<InboundMessage>) -> Result<bool, PollError> {
         let offset = self.offset.load(Ordering::SeqCst);
         let url = format!(
-            "{}?timeout={LONG_POLL_SECS}&offset={offset}",
+            "{}?timeout={LONG_POLL_SECS}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D",
             self.api_url("getUpdates")
         );
         let resp = self
@@ -279,6 +279,11 @@ impl TelegramChannel {
         for update in &updates {
             if let Some(update_id) = update.get("update_id").and_then(|v| v.as_i64()) {
                 self.offset.store(update_id + 1, Ordering::SeqCst);
+            }
+            if let Some(id) = update["callback_query"]["id"].as_str() {
+                // Stops the button's spinner; the tap itself is handled
+                // like typed text below.
+                self.answer_callback(id);
             }
             if let Some(parsed) = Self::parse_update(update) {
                 if !self.admits(&parsed.msg).await {
@@ -472,7 +477,26 @@ impl TelegramChannel {
         }
     }
 
+    fn answer_callback(&self, id: &str) {
+        let req = self
+            .client
+            .post(self.api_url("answerCallbackQuery"))
+            .json(&json!({ "callback_query_id": id }));
+        tokio::spawn(async move {
+            if let Err(e) = req.send().await {
+                tracing::warn!(error = %e.without_url(), "telegram: answerCallbackQuery failed");
+            }
+        });
+    }
+
     fn parse_update(update: &Value) -> Option<Parsed> {
+        if let Some(q) = update.get("callback_query") {
+            return Self::parse_callback(q).map(|msg| Parsed {
+                msg,
+                unread: None,
+                album: None,
+            });
+        }
         let message = update.get("message")?;
         let chat_id = message.get("chat")?.get("id")?.as_i64()?.to_string();
         let message_id = message.get("message_id")?.as_i64()?.to_string();
@@ -561,6 +585,89 @@ fn conflict_notice(description: &str, lasted: Duration) -> String {
     )
 }
 
+impl TelegramChannel {
+    /// A button tap (M20): its data arrives as if typed in the chat the
+    /// button's message is in, by whoever tapped it. It's only ever the
+    /// command the button carried, and trusted no more than typed text.
+    fn parse_callback(q: &Value) -> Option<InboundMessage> {
+        let message = q.get("message")?;
+        let chat_id = message.get("chat")?.get("id")?.as_i64()?.to_string();
+        let text = q.get("data")?.as_str()?.to_string();
+        let sender = q
+            .get("from")
+            .and_then(|f| f.get("username").or_else(|| f.get("first_name")))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        // Whoever tapped: Telegram's own id for them, as for a typed message.
+        let sender_id = q
+            .get("from")
+            .and_then(|f| f.get("id"))
+            .and_then(|v| v.as_i64())
+            .map(|id| id.to_string());
+        Some(InboundMessage {
+            channel: "telegram".into(),
+            chat_id,
+            sender,
+            sender_id,
+            // No message of the owner's to react to or reply to.
+            message_id: String::new(),
+            text,
+            attachments: vec![],
+            reply_to: None,
+            ts: message.get("date").and_then(|d| d.as_i64()).unwrap_or(0),
+        })
+    }
+
+    /// An inline keyboard, one button per row. `callback_data` holds at
+    /// most 64 bytes; a longer command can't be a button.
+    fn keyboard(buttons: &[Button]) -> Result<Value, GatewayError> {
+        let rows = buttons
+            .iter()
+            .map(|b| match &b.action {
+                ButtonAction::Url(url) => Ok(json!([{ "text": b.text, "url": url }])),
+                ButtonAction::Command(cmd) if cmd.len() <= 64 => {
+                    Ok(json!([{ "text": b.text, "callback_data": cmd }]))
+                }
+                ButtonAction::Command(_) => Err(GatewayError::Unsupported(
+                    "a button command longer than 64 bytes",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(json!({ "inline_keyboard": rows }))
+    }
+
+    async fn post_message(&self, payload: Value) -> Result<(), GatewayError> {
+        let resp = self
+            .client
+            .post(self.api_url("sendMessage"))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                GatewayError::Channel(format!("sendMessage request failed: {}", e.without_url()))
+            })?;
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or(json!({}));
+        if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Err(GatewayError::Channel(format!(
+                "sendMessage failed (status {status}): {body}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn payload(msg: &OutboundMessage) -> Value {
+        let mut payload = json!({ "chat_id": msg.chat_id, "text": msg.text });
+        if let Some(reply_to) = &msg.reply_to {
+            if let Ok(id) = reply_to.parse::<i64>() {
+                payload["reply_to_message_id"] = json!(id);
+            }
+        }
+        payload
+    }
+}
+
 #[async_trait::async_trait]
 impl Channel for TelegramChannel {
     fn name(&self) -> &str {
@@ -571,6 +678,7 @@ impl Channel for TelegramChannel {
         ChannelCapabilities {
             reactions: true,
             edits: true,
+            buttons: true,
             ..Default::default()
         }
     }
@@ -641,29 +749,17 @@ impl Channel for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError> {
-        let mut payload = json!({ "chat_id": msg.chat_id, "text": msg.text });
-        if let Some(reply_to) = &msg.reply_to {
-            if let Ok(id) = reply_to.parse::<i64>() {
-                payload["reply_to_message_id"] = json!(id);
-            }
-        }
-        let resp = self
-            .client
-            .post(self.api_url("sendMessage"))
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| {
-                GatewayError::Channel(format!("sendMessage request failed: {}", e.without_url()))
-            })?;
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(json!({}));
-        if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            return Err(GatewayError::Channel(format!(
-                "sendMessage failed (status {status}): {body}"
-            )));
-        }
-        Ok(())
+        self.post_message(Self::payload(&msg)).await
+    }
+
+    async fn send_buttons(
+        &self,
+        msg: OutboundMessage,
+        buttons: &[Button],
+    ) -> Result<(), GatewayError> {
+        let mut payload = Self::payload(&msg);
+        payload["reply_markup"] = Self::keyboard(buttons)?;
+        self.post_message(payload).await
     }
 
     /// `setMessageReaction`: the 👀 receipt (M19b).
@@ -908,6 +1004,168 @@ mod tests {
         assert!(sent.is_empty(), "strangers learn nothing: {sent:?}");
     }
 
+    /// A Bot API mock for M20's buttons: the first `getUpdates` is a
+    /// button tap from `chat`; every call is kept as (method, body/query).
+    /// (method, body) of every call the mock saw.
+    type Calls = Arc<Mutex<Vec<(String, String)>>>;
+
+    fn button_server(chat: i64) -> (String, Calls) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let kept = calls.clone();
+        let served = Arc::new(AtomicBool::new(false));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = vec![0u8; 65536];
+                let n = match stream.read(&mut buf) {
+                    Ok(n) if n > 0 => n,
+                    _ => continue,
+                };
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let line = request.lines().next().unwrap_or_default().to_string();
+                let method = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|p| p.rsplit('/').next())
+                    .map(|m| m.split('?').next().unwrap_or(m).to_string())
+                    .unwrap_or_default();
+                let body = request
+                    .find("\r\n\r\n")
+                    .map(|i| request[i + 4..].to_string())
+                    .unwrap_or_default();
+                kept.lock()
+                    .unwrap()
+                    .push((method.clone(), format!("{line}\n{body}")));
+                let reply = if method == "getUpdates" && !served.swap(true, Ordering::SeqCst) {
+                    format!(
+                        r#"{{"ok":true,"result":[{{"update_id":5,"callback_query":{{"id":"cb-1","from":{{"id":{chat},"username":"max"}},"message":{{"message_id":77,"chat":{{"id":{chat}}},"date":1700000000}},"data":"/connect notion"}}}}]}}"#
+                    )
+                } else if method == "getUpdates" {
+                    r#"{"ok":true,"result":[]}"#.to_string()
+                } else {
+                    r#"{"ok":true,"result":true}"#.to_string()
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    reply.len(),
+                    reply
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), calls)
+    }
+
+    #[tokio::test]
+    async fn a_button_tap_arrives_as_its_command_and_is_answered() {
+        let (base_url, calls) = button_server(9999);
+        let channel = Arc::new(
+            TelegramChannel::with_base_url("TESTTOKEN", base_url).with_allowed_chats(vec![9999]),
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        let run_channel = channel.clone();
+        let handle = tokio::spawn(async move { run_channel.run(tx).await });
+        let got = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.chat_id, "9999");
+        assert_eq!(got.text, "/connect notion");
+        assert_eq!(got.sender, "max");
+        assert!(got.message_id.is_empty(), "no owner message to react to");
+        for _ in 0..100 {
+            if calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(m, _)| m == "answerCallbackQuery")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        handle.abort();
+        let calls = calls.lock().unwrap();
+        let answer = calls
+            .iter()
+            .find(|(m, _)| m == "answerCallbackQuery")
+            .expect("the tap is answered");
+        assert!(answer.1.contains(r#""callback_query_id":"cb-1""#));
+        let poll = calls.iter().find(|(m, _)| m == "getUpdates").unwrap();
+        assert!(poll
+            .1
+            .contains("allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"));
+    }
+
+    #[tokio::test]
+    async fn a_tap_from_a_chat_that_isnt_allowed_goes_nowhere() {
+        let (base_url, _calls) = button_server(1234);
+        let channel = Arc::new(
+            TelegramChannel::with_base_url("TESTTOKEN", base_url).with_allowed_chats(vec![9999]),
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        let run_channel = channel.clone();
+        let handle = tokio::spawn(async move { run_channel.run(tx).await });
+        let got = timeout(Duration::from_millis(700), rx.recv()).await;
+        handle.abort();
+        assert!(got.is_err() || got.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn buttons_go_out_as_an_inline_keyboard() {
+        let (base_url, calls) = button_server(9999);
+        let channel = TelegramChannel::with_base_url("TESTTOKEN", base_url);
+        let out = OutboundMessage {
+            channel: "telegram".into(),
+            chat_id: "9999".into(),
+            text: "Connect Notion?".into(),
+            reply_to: None,
+            attachments: vec![],
+        };
+        let buttons = vec![
+            Button {
+                text: "Connect".into(),
+                action: ButtonAction::Url("https://relay.example/x".into()),
+            },
+            Button {
+                text: "Decline".into(),
+                action: ButtonAction::Command("/decline notion".into()),
+            },
+        ];
+        crate::channel::send_with_buttons(&channel, out.clone(), &buttons)
+            .await
+            .unwrap();
+        // Too long for callback_data: sent as text instead.
+        let long = vec![Button {
+            text: "Run".into(),
+            action: ButtonAction::Command(format!("/connect {}", "x".repeat(80))),
+        }];
+        crate::channel::send_with_buttons(&channel, out, &long)
+            .await
+            .unwrap();
+        let calls = calls.lock().unwrap();
+        let sent: Vec<Value> = calls
+            .iter()
+            .filter(|(m, _)| m == "sendMessage")
+            .map(|(_, b)| serde_json::from_str(b.split_once('\n').unwrap().1).unwrap())
+            .collect();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(
+            sent[0]["reply_markup"],
+            json!({"inline_keyboard": [
+                [{"text": "Connect", "url": "https://relay.example/x"}],
+                [{"text": "Decline", "callback_data": "/decline notion"}]
+            ]})
+        );
+        assert!(sent[1].get("reply_markup").is_none());
+        assert!(sent[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("• Run: send /connect xxx"));
+    }
+
     #[test]
     fn capabilities_report_edits_and_reactions() {
         let channel = TelegramChannel::new("t");
@@ -915,6 +1173,7 @@ mod tests {
         assert!(caps.edits);
         assert!(caps.reactions);
         assert!(!caps.attachments);
+        assert!(caps.buttons);
         assert!(channel.polls());
         assert_eq!(channel.last_ok_poll(), None);
     }

@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.2.0-c4764a" alt="release v0.2.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-582-8a929a" alt="582 workspace tests">
+  <img src="https://img.shields.io/badge/tests-656-8a929a" alt="656 workspace tests">
 </p>
 
 <p align="center">
@@ -174,7 +174,8 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | | |
 |---|---|
 | **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
-| **Providers** | One OpenAI-compatible driver: Kimi, OpenAI, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. |
+| **Providers & models** | One OpenAI-compatible driver: OpenAI, Anthropic, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on outage, and the ledger records the model that actually answered ([`docs/models.md`](docs/models.md)). |
+| **Connections** | The agent connects Jira and Confluence, Gmail, Drive, Notion, Linear, Attio and GitHub by itself. It asks, you tap one Telegram button, and the OAuth code (always PKCE) comes back through your own small Cloudflare Worker relay, a `cloudflared` quick tunnel or a pasted URL, so no inbound port. Tokens are sealed on disk, refreshed per request and never shown to the model. Read-only by default; writes ask you first ([`docs/m20-connections.md`](docs/m20-connections.md)). |
 | **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. |
 | **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. `ferrule mcp add` tests and scans a server, then adds it to the running daemon without a restart. |
 | **Browser** | agent-browser's MCP server on your installed Chrome, in the sandbox and behind the proxy ([`docs/browser.md`](docs/browser.md)). |
@@ -346,8 +347,25 @@ model = "qwen3-coder"
 profile = "generic"
 ```
 
-Pick a provider per run with `--provider NAME`. `run`, `chat` and `gateway`
-also take `--workspace DIR` and `--max-iterations N`.
+Pick a provider per run with `--provider NAME`, or a model with
+`--model REF`. `run`, `chat` and `gateway` also take `--workspace DIR` and
+`--max-iterations N`.
+
+**Several models** at once, with a default, aliases and a fallback:
+
+```toml
+[models]
+default = "openai/gpt-5.2"             # wins over default_provider
+fallback = ["deepseek"]                # off unless you list models
+
+[models.aliases]
+fast = "groq/llama-3.3-70b-versatile"
+```
+
+`ferrule model list | default | test | add | pin | fallback` from the
+terminal, or `/model` from Telegram (owner only). A chat can be pinned to a
+model (`/model use fast`), and so can a scheduled task (`ferrule tasks add
+--model`) or a sub-agent. Details: [`docs/models.md`](docs/models.md).
 
 **Telegram:**
 
@@ -495,7 +513,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 582 tests on Linux, 575 on macOS, 543 on Windows (platform-only ones are cfg'd out)
+cargo test --workspace                     # 656 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -552,18 +570,19 @@ and a dated entry for every session.
       plan mode
 - [x] M19b: reliability — never silently deaf (`/status` and `/stop`
       mid-turn, watchdogs, heartbeat); `v0.2.0` released
+- [x] M20: connections — the agent connects services by itself: one
+      Telegram button, OAuth through your own Cloudflare Worker relay (no
+      inbound ports), tokens encrypted and never shown to the model
+- [x] M21: models — several at once, a default, a model per chat, task
+      or sub-agent, `/model` in Telegram, a fallback on outage
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-- [ ] M20: connections — the agent connects Jira, Gmail, Drive, Attio and
-      more by itself: one Telegram button, OAuth through a small Cloudflare
-      Worker relay (no inbound ports), tokens encrypted and never shown to
-      the model
-- [ ] M21: models — several providers and models at once, a default, a
-      model per chat, task or sub-agent, and a fallback on outage
+- [ ] M19c: the live-bot fixes — every reason the bot stays quiet is told
+      in Telegram or shown by `ferrule doctor`
 - [ ] M22: one dashboard page for the whole app — status, stats, logs,
-      connections and models
+      connections, and models with a catalog, prices and recommendations
 
 M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
@@ -612,6 +631,8 @@ day-to-day state is tracked in [`PLAN.md`](PLAN.md).
   [`m16-learning-loop.md`](docs/m16-learning-loop.md),
   [`m17-mcp-add.md`](docs/m17-mcp-add.md), [`m18-hooks.md`](docs/m18-hooks.md),
   [`m19-trust-cost.md`](docs/m19-trust-cost.md),
-  [`m19b-reliability.md`](docs/m19b-reliability.md)
+  [`m19b-reliability.md`](docs/m19b-reliability.md),
+  [`m20-connections.md`](docs/m20-connections.md),
+  [`models.md`](docs/models.md) and [`m21-models.md`](docs/m21-models.md)
 - [`docs/roadmap.md`](docs/roadmap.md): every milestone's design and status
 - [`PLAN.md`](PLAN.md): current state and session log

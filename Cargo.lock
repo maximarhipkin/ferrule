@@ -560,6 +560,7 @@ dependencies = [
  "dirs",
  "dunce",
  "ferrule-agents",
+ "ferrule-connections",
  "ferrule-core",
  "ferrule-eval",
  "ferrule-extensions",
@@ -587,6 +588,33 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ferrule-connections"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "ferrule-core",
+ "ferrule-extensions",
+ "ferrule-mcp",
+ "ferrule-sandbox",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "url",
 ]
 
 [[package]]
