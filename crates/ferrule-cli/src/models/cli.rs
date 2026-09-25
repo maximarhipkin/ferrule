@@ -84,6 +84,36 @@ pub enum ModelCmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Routing (M25): turns start on a cheap model and move up to a
+    /// stronger one when they fail. Alone: the tiers, the last 7 days'
+    /// escalations and spend per tier, and a suggested pair with prices
+    Route {
+        #[command(subcommand)]
+        op: Option<RouteCmd>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum RouteCmd {
+    /// Turn routing on over these models, cheap first:
+    /// `ferrule model route set cheap strong --cap 2`
+    Set {
+        #[arg(required = true, num_args = 2..)]
+        references: Vec<String>,
+        /// Dollars a day (UTC) above the cheap tier; past it, turns stay cheap
+        #[arg(long)]
+        cap: Option<f64>,
+        /// Remove the daily cap
+        #[arg(long, conflicts_with = "cap")]
+        no_cap: bool,
+        /// A turn that moved up stays up for the rest of the session
+        #[arg(long)]
+        sticky: bool,
+    },
+    /// Turn routing off; the tiers stay written, so `tier:` refs still work
+    Off,
 }
 
 pub async fn cmd(op: ModelCmd) -> anyhow::Result<()> {
@@ -102,6 +132,7 @@ pub async fn cmd(op: ModelCmd) -> anyhow::Result<()> {
             | ModelCmd::Test { .. }
             | ModelCmd::Catalog { .. }
             | ModelCmd::Recommend { .. }
+            | ModelCmd::Route { op: None, .. }
     ) {
         let (cfg, _) = Config::load()?;
         models.attach_hub(crate::trust::hub(&cfg)?);
@@ -184,6 +215,47 @@ pub async fn cmd(op: ModelCmd) -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        ModelCmd::Route { op: None, json } => {
+            let view = models.view();
+            let since = Utc::now() - chrono::Duration::days(7);
+            let stats = crate::ledger::ledger_path()
+                .ok()
+                .and_then(|p| crate::ledger::read_records(&p, Some(since)).ok())
+                .map(|(rows, _)| routing_admin::stats(&rows))
+                .unwrap_or_default();
+            let (sources, listings) = catalog::listings(false).await.unwrap_or_default();
+            let rec = catalog::recommended_with(&models, &sources, &listings, None);
+            let suggestion = routing_admin::suggest(&models.catalog(), &listings, Some(&rec));
+            if json {
+                let out = serde_json::json!({
+                    "routing": view.routing,
+                    "last_7_days": stats,
+                    "suggestion": suggestion,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                print!("{}", render_route(&view.routing, &stats, &suggestion));
+            }
+            return Ok(());
+        }
+        ModelCmd::Route {
+            op:
+                Some(RouteCmd::Set {
+                    references,
+                    cap,
+                    no_cap,
+                    sticky,
+                }),
+            ..
+        } => {
+            let cap = if no_cap { Some(None) } else { cap.map(Some) };
+            let de = if sticky { Some(false) } else { None };
+            models.set_routing(&references, de, cap, by)?
+        }
+        ModelCmd::Route {
+            op: Some(RouteCmd::Off),
+            ..
+        } => models.unset_routing(by)?,
         ModelCmd::FillPrices => {
             let (_, listings) = catalog::listings(false).await?;
             println!("{}", models.fill_prices(&listings, by)?.said);
@@ -193,6 +265,72 @@ pub async fn cmd(op: ModelCmd) -> anyhow::Result<()> {
     };
     println!("{}", done.said);
     Ok(())
+}
+
+/// `ferrule model route` as text.
+fn render_route(
+    r: &routing_admin::RoutingView,
+    stats: &routing_admin::RoutingStats,
+    suggestion: &routing_admin::Suggestion,
+) -> String {
+    let mut out = routing_admin::render(r);
+    if out.is_empty() {
+        out.push_str("\nRouting: not set up\n");
+    }
+    for p in &r.problems {
+        out.push_str(&format!("problem: {p}\n"));
+    }
+    if r.tiers.len() >= 2 {
+        let t = &r.triggers;
+        out.push_str(&format!(
+            "Moves up on: {}\n",
+            [
+                ("a call that won't work on retry", t["call_failed"] == true),
+                ("a failed check", t["checks"] == true),
+                ("a Stop hook", t["stop_hooks"] == true),
+                ("the watchdog", t["watchdog"] == true),
+            ]
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(w, _)| w.to_string())
+            .chain(
+                (t["tool_errors"].as_u64().unwrap_or(0) > 0)
+                    .then(|| { format!("{} invalid tool calls in a row", t["tool_errors"]) })
+            )
+            .chain(
+                (t["no_progress"].as_u64().unwrap_or(0) > 0)
+                    .then(|| { format!("the same call {} times", t["no_progress"]) })
+            )
+            .collect::<Vec<_>>()
+            .join(", ")
+        ));
+        out.push_str(if r.de_escalate {
+            "Each turn starts on its floor again.\n"
+        } else {
+            "A turn that moved up stays up (de_escalate = false).\n"
+        });
+    }
+    out.push_str(&format!(
+        "\nLast 7 days: {} escalation{}\n",
+        stats.escalations,
+        if stats.escalations == 1 { "" } else { "s" }
+    ));
+    for d in &stats.days {
+        let why: Vec<String> = d.reasons.iter().map(|(k, n)| format!("{k} {n}")).collect();
+        out.push_str(&format!(
+            "- {}: {} ({})\n",
+            d.day,
+            d.escalations,
+            why.join(", ")
+        ));
+    }
+    for t in &stats.tiers {
+        out.push_str(&format!("- {}: {} calls, ${:.4}\n", t.tier, t.calls, t.usd));
+    }
+    if !r.on {
+        out.push_str(&format!("\n{}\n", suggestion.said));
+    }
+    out
 }
 
 fn split_chat(chat: &str) -> anyhow::Result<(&str, &str)> {
@@ -257,6 +395,7 @@ pub fn render(view: &ModelsView, chat: Option<(&str, &str)>) -> String {
         };
         out.push_str(&format!("{mark} {}{notes}\n", m.reference));
     }
+    out.push_str(&super::routing_admin::render(&view.routing));
     if view.fallback.is_empty() {
         out.push_str("\nFallback: off\n");
     } else {

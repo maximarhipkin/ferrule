@@ -87,6 +87,77 @@ pub struct ModelsConfig {
     pub catalog_url: Option<String>,
 }
 
+/// `[routing]` (docs/m25-routing.md): start every turn on the cheap tier
+/// and move up only on a failure. Off unless `enabled`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoutingConfig {
+    pub enabled: bool,
+    /// Model references, cheap first; two or more.
+    pub tiers: Vec<String>,
+    /// Back to the floor at the next turn; off: the level holds for the
+    /// session.
+    pub de_escalate: bool,
+    /// A cap on today's (UTC) spend above tier 0; unset: none.
+    pub strong_daily_usd: Option<f64>,
+    pub triggers: TriggersConfig,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tiers: Vec::new(),
+            de_escalate: true,
+            strong_daily_usd: None,
+            triggers: TriggersConfig::default(),
+        }
+    }
+}
+
+/// `[routing.triggers]`: which signals escalate. All on by default.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TriggersConfig {
+    pub call_failed: bool,
+    /// Invalid tool calls in a row; 0 = off.
+    pub tool_errors: u32,
+    pub checks: bool,
+    pub stop_hooks: bool,
+    /// The same tool call this many times in a row; 0 = off.
+    pub no_progress: u32,
+    pub watchdog: bool,
+}
+
+impl Default for TriggersConfig {
+    fn default() -> Self {
+        let p = ferrule_core::Policy::default();
+        Self {
+            call_failed: p.call_failed,
+            tool_errors: p.tool_errors,
+            checks: p.checks,
+            stop_hooks: p.stop_hooks,
+            no_progress: p.no_progress,
+            watchdog: p.watchdog,
+        }
+    }
+}
+
+impl RoutingConfig {
+    pub fn policy(&self) -> ferrule_core::Policy {
+        let t = &self.triggers;
+        ferrule_core::Policy {
+            de_escalate: self.de_escalate,
+            call_failed: t.call_failed,
+            tool_errors: t.tool_errors,
+            checks: t.checks,
+            stop_hooks: t.stop_hooks,
+            no_progress: t.no_progress,
+            watchdog: t.watchdog,
+        }
+    }
+}
+
 impl ProviderConfig {
     /// The wire API: as written, else inferred from `base_url`.
     pub fn api(&self) -> Api {
@@ -244,6 +315,9 @@ pub struct Config {
     /// M21: the default model, the fallback list and aliases.
     #[serde(default)]
     pub models: ModelsConfig,
+    /// M25: tiers, cheap first, and when to move up.
+    #[serde(default)]
+    pub routing: RoutingConfig,
     #[serde(default)]
     pub agent: AgentSettings,
     #[serde(default)]

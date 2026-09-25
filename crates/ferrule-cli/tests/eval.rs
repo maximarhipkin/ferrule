@@ -32,9 +32,20 @@ struct Mock {
 
 impl Mock {
     fn start() -> Mock {
+        Self::spawn(&suite().join("mock/model.py"), &[])
+    }
+
+    /// M25: `evals/routing/weak_mock.py`, weak or not.
+    fn routing(weak: bool) -> Mock {
+        let script = suite().join("../routing/weak_mock.py");
+        Self::spawn(&script, if weak { &["--weak"] } else { &[] })
+    }
+
+    fn spawn(script: &Path, extra: &[&str]) -> Mock {
         let mut child = Command::new("python3")
-            .arg(suite().join("mock/model.py"))
+            .arg(script)
             .args(["--port", "0"])
+            .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
@@ -537,4 +548,197 @@ fn the_eval_estimate_still_matches_the_mocks_use() {
         );
         assert_eq!(t["calls"], want["calls"], "{task}");
     }
+}
+
+/// `home` plus a second provider, `weak`, at a tenth of the price.
+fn routing_home(strong: &str, weak: &str, tiers: bool) -> tempfile::TempDir {
+    let home = home(strong);
+    let path = home.path().join("ferrule.toml");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str(&format!(
+        r#"
+[providers.weak]
+base_url = "{weak}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "mock"
+price_input_per_mtok = 0.1
+price_cached_input_per_mtok = 0.01
+price_output_per_mtok = 0.5
+
+[models]
+catalog_url = ""
+"#
+    ));
+    if tiers {
+        text.push_str("\n[routing]\ntiers = [\"weak/mock\", \"mock/mock\"]\n");
+    }
+    std::fs::write(&path, text).unwrap();
+    home
+}
+
+#[test]
+fn the_routing_variant_moves_the_weak_models_failed_check_up_and_prices_each_row() {
+    if !have_python() {
+        return;
+    }
+    let (weak, strong) = (Mock::routing(true), Mock::routing(false));
+    // No [routing] at all: the eval takes the pair from the flags, and the
+    // owner's routing (off) doesn't matter.
+    let home = routing_home(&strong.url, &weak.url, false);
+    let suite = suite();
+    let out = ferrule(
+        home.path(),
+        &[
+            "eval",
+            "run",
+            suite.to_str().unwrap(),
+            "--tag",
+            "smoke",
+            "--variant",
+            "routing",
+            "--cheap",
+            "weak/mock",
+            "--strong",
+            "mock/mock",
+        ],
+    );
+    let (stdout, stderr) = texts(&out);
+    assert_eq!(out.status.code(), Some(0), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("routing: cheap weak/mock, strong mock/mock"),
+        "{stdout}"
+    );
+    // The weak model never fixes slugify's failed check; routed moves it up.
+    let r = row(&stdout, "slugify");
+    assert!(r.contains("FAIL (") && r.contains("×check)"), "{r}");
+    assert!(r.contains("pass (1×check, 1×up)"), "{r}");
+    for task in ["fix-median", "sales-summary", "release-notes"] {
+        let r = row(&stdout, task);
+        assert_eq!(r.matches("pass").count(), 3, "{r}");
+        assert!(!r.contains("×up"), "{r}");
+    }
+    assert!(stdout.contains("3/4 (75%)"), "{stdout}");
+    assert_eq!(stdout.matches("4/4 (100%)").count(), 2, "{stdout}");
+    let line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("escalations"))
+        .expect(&stdout);
+    assert!(line.contains("1 (check_failed×1)"), "{line}");
+
+    // The ledger: every call priced at the model that served it.
+    let ledger = std::fs::read_to_string(home.path().join("data/ledger.jsonl")).unwrap();
+    let rows: Vec<serde_json::Value> = ledger
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .filter(|r: &serde_json::Value| r["call_kind"] != "eval_result")
+        .collect();
+    assert!(!rows.is_empty());
+    for r in &rows {
+        let (i, o) = (
+            r["input_tokens"].as_f64().unwrap(),
+            r["output_tokens"].as_f64().unwrap(),
+        );
+        let want = match r["provider"].as_str().unwrap() {
+            "weak" => (i * 0.1 + o * 0.5) / 1e6,
+            "mock" => (i * 1.0 + o * 5.0) / 1e6,
+            other => panic!("a row from {other}"),
+        };
+        let cost = r["cost_usd"].as_f64().unwrap();
+        assert!((cost - want).abs() < 1e-9, "{r}");
+    }
+    let up: Vec<&serde_json::Value> = rows
+        .iter()
+        .filter(|r| r["route"]["escalated"].is_string())
+        .collect();
+    assert_eq!(up.len(), 1, "{up:?}");
+    assert_eq!(up[0]["route"]["tier"], "mock/mock");
+    assert_eq!(up[0]["route"]["escalated"], "check_failed");
+    assert_eq!(up[0]["eval"]["task"], "slugify");
+    assert_eq!(up[0]["eval"]["variant"], "routed");
+}
+
+#[test]
+fn the_routing_variant_takes_its_pair_from_the_tiers_and_says_what_it_needs() {
+    let tiered = routing_home("http://127.0.0.1:9/v1", "http://127.0.0.1:9/v1", true);
+    let suite = suite();
+    let run = |extra: &[&str]| {
+        let mut args = vec!["eval", "run", suite.to_str().unwrap(), "--tag", "smoke"];
+        args.extend_from_slice(extra);
+        let out = ferrule(tiered.path(), &args);
+        let (stdout, stderr) = texts(&out);
+        (out.status.success(), format!("{stdout}{stderr}"))
+    };
+    let (ok, text) = run(&["--variant", "routing", "--dry-run"]);
+    assert!(ok, "{text}");
+    for want in [
+        "dry run — suite starter",
+        "weak/mock → mock/mock via routing",
+        "12 task run(s): 4 task(s) × cheap + routed + strong × 1 repeat(s)",
+        "worst-case cost: $",
+    ] {
+        assert!(text.contains(want), "{want:?} not in:\n{text}");
+    }
+    let (ok, text) = run(&["--variant", "routing", "--cheap", "mock", "--dry-run"]);
+    assert!(!ok && text.contains("both mock/mock"), "{text}");
+    let (ok, text) = run(&["--variant", "routing", "--strong", "nope/x", "--dry-run"]);
+    assert!(!ok && text.contains("--strong:"), "{text}");
+    let (ok, text) = run(&["--variant", "routing", "--model", "mock", "--dry-run"]);
+    assert!(!ok && text.contains("not --provider or --model"), "{text}");
+    let (ok, text) = run(&["--variant", "ab", "--cheap", "weak/mock", "--dry-run"]);
+    assert!(!ok && text.contains("go with --variant routing"), "{text}");
+    let bare = home("http://127.0.0.1:9/v1");
+    let out = ferrule(
+        bare.path(),
+        &[
+            "eval",
+            "run",
+            suite.to_str().unwrap(),
+            "--variant",
+            "routing",
+            "--dry-run",
+        ],
+    );
+    let (stdout, stderr) = texts(&out);
+    assert!(!out.status.success());
+    assert!(stderr.contains("needs --cheap"), "{stdout}{stderr}");
+}
+
+/// The real comparison on the smoke subset, against the models in your own
+/// config's `[routing] tiers` (see `docs/routing.md`, "Measuring it"):
+///
+/// ```text
+/// FERRULE_LIVE_CONFIG=~/.config/ferrule/ferrule.toml \
+///   cargo test -p ferrule-cli --test eval -- --ignored live_routing --nocapture
+/// ```
+///
+/// Capped at $1; the report is printed.
+#[test]
+#[ignore = "live: needs FERRULE_LIVE_CONFIG with [routing] tiers and their keys, costs cents"]
+fn live_routing_smoke_compares_cheap_routed_and_strong() {
+    let Some(config) = std::env::var_os("FERRULE_LIVE_CONFIG") else {
+        eprintln!("FERRULE_LIVE_CONFIG isn't set: skipped");
+        return;
+    };
+    if !have_python() {
+        return;
+    }
+    let data = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_ferrule"))
+        .args(["eval", "run", suite().to_str().unwrap()])
+        .args(["--tag", "smoke", "--variant", "routing", "--max-usd", "1"])
+        .env("FERRULE_CONFIG", config)
+        .env("FERRULE_DATA_DIR", data.path())
+        .output()
+        .unwrap();
+    let (stdout, stderr) = texts(&out);
+    println!("{stdout}");
+    assert_ne!(
+        out.status.code(),
+        Some(3),
+        "the $1 cap stopped it:\n{stderr}"
+    );
+    assert!(stdout.contains("routing: cheap "), "{stdout}\n{stderr}");
+    assert!(stdout
+        .lines()
+        .any(|l| l.trim_start().starts_with("escalations")));
 }

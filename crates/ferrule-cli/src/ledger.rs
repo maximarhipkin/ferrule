@@ -390,6 +390,7 @@ mod tests {
             cost_usd: None,
             eval: None,
             tree: None,
+            route: None,
         }
     }
 

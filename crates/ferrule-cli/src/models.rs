@@ -8,7 +8,7 @@ use crate::config::{Config, ProviderConfig};
 use crate::ledger::{Prices, ProviderPricing};
 use chrono::{DateTime, Utc};
 use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
-use ferrule_core::{CoreError, FailOver, HarnessProfile, Served};
+use ferrule_core::{CoreError, Escalation, FailOver, HarnessProfile, RouteTag, Served, Signal};
 use ferrule_providers::{Api, DriverOptions};
 use ferrule_trust::Hub;
 use serde::Serialize;
@@ -23,6 +23,8 @@ mod cli;
 #[cfg(test)]
 mod cross_driver;
 mod door;
+pub mod routing;
+pub mod routing_admin;
 pub use admin::*;
 pub use cli::{cmd, render, ModelCmd};
 pub use door::{status_lines, ModelDoor, Retire};
@@ -109,6 +111,8 @@ pub struct Catalog {
     pub default: Option<String>,
     pub default_provider: Option<String>,
     pub fallback: Vec<String>,
+    /// M25: `[routing]`, its tiers resolved.
+    pub routing: routing::Routing,
 }
 
 impl Catalog {
@@ -129,6 +133,7 @@ impl Catalog {
             default: cfg.models.default.clone(),
             default_provider: cfg.default_provider.clone(),
             fallback: cfg.models.fallback.clone(),
+            routing: routing::Routing::default(),
         };
         let named: Vec<(String, String)> = cat
             .aliases
@@ -140,14 +145,19 @@ impl Catalog {
                 e.aliases.push(alias);
             }
         }
+        cat.routing = routing::Routing::from_config(&cfg.routing, &cat);
         cat
     }
 
     /// The connected model `word` names (docs/m21-models.md §1): an alias,
     /// then a provider (its primary), then `provider/model`, then a model
-    /// id only one provider has.
+    /// id only one provider has. M25: a tier ref (`tier:strong`) is that
+    /// tier's model.
     pub fn resolve(&self, word: &str) -> Result<&Entry, String> {
         let word = word.trim();
+        if let Some(tier) = self.routing.tier_of(word) {
+            return tier.map(|i| &self.routing.tiers[i].entry);
+        }
         if let Some(target) = self.aliases.get(word) {
             return self
                 .resolve_plain(target)
@@ -363,6 +373,7 @@ struct State {
     served: HashMap<String, (String, DateTime<Utc>)>,
     clients: HashMap<ClientKey, Arc<dyn Provider>>,
     warned: HashSet<String>,
+    routing: routing::RoutingState,
 }
 
 /// The process's models: the catalog as the config file says now, the chat
@@ -388,6 +399,9 @@ pub fn shared() -> anyhow::Result<Arc<Models>> {
         .ok()
         .map(|d| d.join("models").join("pins.json"));
     let m = Arc::new(Models::new(path, pins, &cfg));
+    if let Ok(ledger) = crate::ledger::ledger_path() {
+        m.set_ledger(ledger);
+    }
     Ok(SHARED.get_or_init(|| m).clone())
 }
 
@@ -439,6 +453,7 @@ impl Models {
     }
 
     /// The model `scope` asks for, before outages are considered.
+    #[cfg(test)]
     pub fn wanted(&self, scope: &Scope) -> Result<Entry, String> {
         let mut st = self.state.lock().unwrap();
         self.refresh(&mut st);
@@ -447,42 +462,7 @@ impl Models {
     }
 
     fn pick(&self, st: &mut State, scope: &Scope) -> Result<Entry, String> {
-        let cat = st.catalog.clone();
-        if let Some(f) = &scope.fixed {
-            return cat
-                .resolve(&f.word)
-                .cloned()
-                .map_err(|e| format!("{} asks for `{}`, but {e}", f.by, f.word));
-        }
-        if let Some(task) = &scope.task {
-            let lookup = self.tasks.lock().unwrap().clone();
-            if let Some(word) = lookup.and_then(|f| f(task)) {
-                return cat
-                    .resolve(&word)
-                    .cloned()
-                    .map_err(|e| format!("scheduled task `{task}` runs on `{word}`, but {e}"));
-            }
-        }
-        if let Some((ch, chat)) = &scope.chat {
-            if let Some(word) = st.pins.get(&pin_key(ch, chat)).cloned() {
-                match cat.resolve(&word) {
-                    Ok(e) => return Ok(e.clone()),
-                    Err(e) => warn_once(
-                        st,
-                        &format!("pin {ch}:{chat}"),
-                        &format!(
-                            "{ch} chat {chat} is pinned to `{word}`, but {e}; it's on the default"
-                        ),
-                    ),
-                }
-            }
-        }
-        let (e, note) = cat.default_entry()?;
-        let e = e.clone();
-        if let Some(note) = note {
-            warn_once(st, "default", &note);
-        }
-        Ok(e)
+        self.pick_floor(st, scope).map(|(e, _)| e)
     }
 
     /// The model this call goes to: the wanted one, or while that's down,
@@ -492,38 +472,7 @@ impl Models {
         self.refresh(&mut st);
         self.refresh_pins(&mut st);
         let wanted = self.pick(&mut st, scope)?;
-        let mut entry = wanted.clone();
-        let mut instead_of = None;
-        if is_down(&st, &wanted.reference()) {
-            let cat = st.catalog.clone();
-            let next = cat
-                .fallback
-                .iter()
-                .filter_map(|f| cat.resolve(f).ok())
-                .find(|e| e.reference() != wanted.reference() && !is_down(&st, &e.reference()));
-            if let Some(next) = next {
-                entry = next.clone();
-                instead_of = Some(wanted.reference());
-            }
-        }
-        let key = entry.key().ok_or_else(|| entry.no_key())?;
-        let client = st
-            .clients
-            .entry((
-                entry.provider.clone(),
-                entry.base_url.clone(),
-                key.clone(),
-                entry.model.clone(),
-                entry.api,
-                entry.options.clone(),
-            ))
-            .or_insert_with(|| entry.client(key))
-            .clone();
-        Ok(Route {
-            entry,
-            client,
-            instead_of,
-        })
+        finish(&mut st, wanted)
     }
 
     /// A call on `route` came back: an answer clears an outage mark on
@@ -568,7 +517,20 @@ impl Models {
     /// `served` stayed down after its retries: mark it, and say which
     /// model the next call goes to. Nothing without a fallback list, or
     /// when there's nowhere else to go.
+    #[cfg(test)]
     pub fn fail_over(&self, scope: &Scope, served: &Served, error: &CoreError) -> Option<FailOver> {
+        self.fail_over_from(scope, None, served, error)
+    }
+
+    /// [`Models::fail_over`] for a call that wanted `wanted` (a routed
+    /// tier's model) rather than what `scope` picks.
+    fn fail_over_from(
+        &self,
+        scope: &Scope,
+        wanted: Option<Entry>,
+        served: &Served,
+        error: &CoreError,
+    ) -> Option<FailOver> {
         if !error.is_transient() || self.catalog().fallback.is_empty() {
             return None;
         }
@@ -589,7 +551,13 @@ impl Models {
             "model.down",
             serde_json::json!({ "model": from, "reason": reason }),
         );
-        let next = self.route(scope).ok()?.entry.reference();
+        let next = match wanted {
+            Some(w) => finish(&mut self.state.lock().unwrap(), w),
+            None => self.route(scope),
+        }
+        .ok()?
+        .entry
+        .reference();
         let st = self.state.lock().unwrap();
         (next != from && !is_down(&st, &next)).then_some(FailOver { from, to: next })
     }
@@ -657,6 +625,43 @@ impl Models {
         st.pins_seen = now;
         st.pins = read_pins(path);
     }
+}
+
+/// `wanted`, or while it's down the first fallback that isn't, and its
+/// driver.
+fn finish(st: &mut State, wanted: Entry) -> Result<Route, String> {
+    let mut entry = wanted.clone();
+    let mut instead_of = None;
+    if is_down(st, &wanted.reference()) {
+        let cat = st.catalog.clone();
+        let next = cat
+            .fallback
+            .iter()
+            .filter_map(|f| cat.resolve(f).ok())
+            .find(|e| e.reference() != wanted.reference() && !is_down(st, &e.reference()));
+        if let Some(next) = next {
+            entry = next.clone();
+            instead_of = Some(wanted.reference());
+        }
+    }
+    let key = entry.key().ok_or_else(|| entry.no_key())?;
+    let client = st
+        .clients
+        .entry((
+            entry.provider.clone(),
+            entry.base_url.clone(),
+            key.clone(),
+            entry.model.clone(),
+            entry.api,
+            entry.options.clone(),
+        ))
+        .or_insert_with(|| entry.client(key))
+        .clone();
+    Ok(Route {
+        entry,
+        client,
+        instead_of,
+    })
 }
 
 /// `channel:chat`, the key of a pin.
@@ -731,12 +736,14 @@ pub struct Route {
 
 /// An agent's provider: resolves its scope on every call, so a new default
 /// or pin reaches it without a rebuild, and falls over to the fallback
-/// list on an outage.
+/// list on an outage. M25: when its scope is routed, it keeps the agent's
+/// place on the tiers.
 pub struct RoutedProvider {
     models: Arc<Models>,
     scope: Scope,
     /// The provider it was built on, for rows of calls that never ran.
     name: String,
+    lane: Mutex<routing::Lane>,
 }
 
 impl RoutedProvider {
@@ -745,7 +752,12 @@ impl RoutedProvider {
             models,
             scope,
             name,
+            lane: Mutex::default(),
         }
+    }
+
+    fn lane(&self) -> std::sync::MutexGuard<'_, routing::Lane> {
+        self.lane.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -763,7 +775,8 @@ impl Provider for RoutedProvider {
         &self,
         req: CompletionRequest,
     ) -> (Option<Served>, Result<CompletionResponse, CoreError>) {
-        let route = match self.models.route(&self.scope) {
+        let routed = self.models.route_lane(&self.scope, &mut self.lane());
+        let (route, level) = match routed {
             Ok(r) => r,
             Err(e) => return (None, Err(CoreError::Provider(e))),
         };
@@ -773,11 +786,34 @@ impl Provider for RoutedProvider {
         };
         let result = route.client.complete(req).await;
         self.models.served(&self.scope, &route, result.is_ok());
+        if let (Some(level), Ok(r)) = (level, &result) {
+            self.models
+                .count_spend(level, route.entry.pricing, &r.usage);
+        }
         (Some(served), result)
     }
 
     fn fail_over(&self, served: Option<&Served>, error: &CoreError) -> Option<FailOver> {
-        self.models.fail_over(&self.scope, served?, error)
+        let wanted = self.lane().wanted.clone();
+        self.models
+            .fail_over_from(&self.scope, wanted, served?, error)
+    }
+
+    fn routes(&self) -> bool {
+        self.models.routed(&self.scope)
+    }
+
+    fn begin_turn(&self) {
+        self.lane().turn = true;
+    }
+
+    fn escalate(&self, signal: &Signal) -> Option<Escalation> {
+        self.models
+            .escalate_lane(&self.scope, &mut self.lane(), signal)
+    }
+
+    fn route_tag(&self) -> Option<RouteTag> {
+        self.lane().tag.clone()
     }
 }
 

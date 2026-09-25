@@ -99,10 +99,13 @@ pub fn build(
         health = health.with_section("schedule", Arc::new(move || schedule_lines(&store)));
     }
     if let Ok(models) = crate::models::shared() {
-        health = health.with_section(
-            "models",
-            Arc::new(move || crate::models::status_lines(&models)),
-        );
+        let stalls = models.clone();
+        health = health
+            .with_section(
+                "models",
+                Arc::new(move || crate::models::status_lines(&models)),
+            )
+            .with_stall_hook(Arc::new(move |session: &str| stalls.stalled(session)));
     }
     if let Some(conns) = crate::connections::shared(cfg) {
         health = health.with_section(

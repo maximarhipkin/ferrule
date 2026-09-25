@@ -26,6 +26,7 @@ pub use error::GatewayError;
 pub use gateway::{Gateway, Interceptor, ACK_EMOJI};
 pub use health::{
     Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, RunningMarker,
+    StallHook,
 };
 pub use message::{Attachment, InboundMessage, OutboundMessage};
 pub use router::{AgentFactory, LaneSnapshot, Reply, Router};

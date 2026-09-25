@@ -29,8 +29,8 @@ pub struct PlanInput<'a> {
 pub fn max_calls(v: Variant, max_iterations: usize) -> u64 {
     let steps = max_iterations as u64;
     match v {
-        Variant::Engineered => 2 * steps + 1,
         Variant::Naive => steps + 1,
+        _ => 2 * steps + 1,
     }
 }
 

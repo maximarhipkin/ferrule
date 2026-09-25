@@ -24,6 +24,14 @@ pub enum Variant {
     /// What ferrule replaced: truncation, no verification, no memory, no
     /// retries, no stuck detector, a one-line prompt.
     Naive,
+    /// M25 `--variant routing`: the engineered harness on the cheap model
+    /// only.
+    Cheap,
+    /// The engineered harness starting on the cheap model and escalating
+    /// to the strong one on a failure signal.
+    Routed,
+    /// The engineered harness on the strong model only.
+    Strong,
 }
 
 impl Variant {
@@ -31,7 +39,21 @@ impl Variant {
         match self {
             Variant::Engineered => "engineered",
             Variant::Naive => "naive",
+            Variant::Cheap => "cheap",
+            Variant::Routed => "routed",
+            Variant::Strong => "strong",
         }
+    }
+
+    /// Everything but the naive baseline runs ferrule's own harness.
+    pub fn engineered(self) -> bool {
+        self != Variant::Naive
+    }
+
+    /// The three arms of `--variant routing`, which need a cheap and a
+    /// strong model.
+    pub fn routing(self) -> bool {
+        matches!(self, Variant::Cheap | Variant::Routed | Variant::Strong)
     }
 
     pub fn parse(s: &str) -> Option<Vec<Variant>> {
@@ -39,6 +61,7 @@ impl Variant {
             "engineered" => Some(vec![Variant::Engineered]),
             "naive" => Some(vec![Variant::Naive]),
             "ab" | "both" => Some(vec![Variant::Engineered, Variant::Naive]),
+            "routing" => Some(vec![Variant::Cheap, Variant::Routed, Variant::Strong]),
             _ => None,
         }
     }
@@ -137,7 +160,7 @@ pub fn build(b: Build<'_>) -> Agent {
             config.retry.max_attempts = 1;
             naive_prompt(b.workspace)
         }
-        Variant::Engineered => {
+        Variant::Engineered | Variant::Cheap | Variant::Routed | Variant::Strong => {
             let mut system = engineered_prompt(b.workspace, &profile.system_directive);
             if let Some((name, content)) = ferrule_core::load_context_baseline(b.workspace) {
                 system.push_str(&format!(
@@ -189,7 +212,7 @@ pub fn build(b: Build<'_>) -> Agent {
         b.transcript,
     )
     .with_system_prompt(system);
-    if let (Variant::Engineered, Some(cmd)) = (b.variant, b.check) {
+    if let (true, Some(cmd)) = (b.variant.engineered(), b.check) {
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(
             cmd,
             b.sandbox.clone(),

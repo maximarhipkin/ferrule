@@ -185,6 +185,11 @@ another model. A sub-agent's `model` must be connected, or the spawn is
 refused with the reason. On any model, the child shares its root's caps,
 budget, gates and plan mode.
 
+With `[routing]` on, the default starts on a cheap model and moves up to a
+stronger one only when a turn fails, and any level above can name a tier
+(`tier:cheap`, `tier:strong`) instead of a model: see
+[routing.md](routing.md).
+
 ## When a model is down
 
 Fallback is **off** until you list models. With
