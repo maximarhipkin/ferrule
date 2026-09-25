@@ -674,11 +674,18 @@ fn short_reason(error: &CoreError) -> String {
             return format!("HTTP {code} after its retries");
         }
     }
-    if msg.starts_with("request failed") {
+    if no_connection(msg) {
         return "no connection, after its retries".into();
     }
     let short: String = msg.chars().take(80).collect();
     format!("{short} after its retries")
+}
+
+/// The drivers' words for a call that never got an answer.
+fn no_connection(msg: &str) -> bool {
+    ["request failed", "could not connect", "request timed out"]
+        .iter()
+        .any(|p| msg.starts_with(p))
 }
 
 /// Where one call goes.

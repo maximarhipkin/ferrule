@@ -643,7 +643,7 @@ pub fn explain(e: &Entry, err: &CoreError) -> String {
             "the provider doesn't know the model `{}`: {detail}",
             e.model
         ),
-        _ if msg.starts_with("request failed") => format!(
+        _ if super::no_connection(&msg) => format!(
             "couldn't reach {}. Is the endpoint up? ({detail})",
             e.base_url
         ),
