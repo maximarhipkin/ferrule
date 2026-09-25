@@ -35,6 +35,9 @@ toml = "0.8"
 dirs = "5"
 tempfile = "3"
 libc = "0.2"
+# canonicalize without Windows' `\\?\` verbatim prefix, which git,
+# python and cmd.exe can't take (the same as std::fs::canonicalize elsewhere).
+dunce = "1"
 
 [profile.release]
 opt-level = 3

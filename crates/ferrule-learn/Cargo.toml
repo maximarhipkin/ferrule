@@ -5,6 +5,7 @@ edition = "2021"
 description = "The M16 learning loop: a gated delta playbook, memory consolidation and the offline pass that writes them"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 ferrule-eval = { path = "../ferrule-eval" }
 ferrule-memory = { path = "../ferrule-memory" }

@@ -5,6 +5,7 @@ edition = "2021"
 description = "Multi-agent: spawn, wait, resume and close child agents; a shared board and task list; worktrees; limits"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 tokio = { workspace = true }
 serde = { workspace = true }

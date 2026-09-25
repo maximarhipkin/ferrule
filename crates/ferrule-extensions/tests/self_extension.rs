@@ -112,7 +112,7 @@ struct Env {
 
 fn env() -> Env {
     let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().canonicalize().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
     let data = root.join("data");
     let workspace = root.join("ws");
     fs::create_dir_all(&workspace).unwrap();

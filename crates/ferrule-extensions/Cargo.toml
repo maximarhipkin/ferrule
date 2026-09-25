@@ -5,6 +5,7 @@ edition = "2021"
 description = "Self-extension: allow-listed MCP servers and skills installed mid-session, pinned, scanned and hot-loaded"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 ferrule-mcp = { path = "../ferrule-mcp" }
 ferrule-skills = { path = "../ferrule-skills" }

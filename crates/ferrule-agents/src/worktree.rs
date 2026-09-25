@@ -80,7 +80,7 @@ fn repo_of(dir: &Path) -> Option<Repo> {
 }
 
 fn canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// `dir`'s place under the repo's top, reproduced in the copy at `copy`.

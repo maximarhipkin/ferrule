@@ -25,7 +25,7 @@ pub fn fingerprint(bytes: &[u8]) -> String {
 
 /// A workspace's key in the record: its canonical path when it has one.
 fn key(workspace: &Path) -> String {
-    std::fs::canonicalize(workspace)
+    dunce::canonicalize(workspace)
         .unwrap_or_else(|_| workspace.to_path_buf())
         .to_string_lossy()
         .into_owned()

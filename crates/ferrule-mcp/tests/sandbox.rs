@@ -22,7 +22,7 @@ fn dirs() -> Dirs {
     let make = |name: &str| {
         let dir = root.path().join(name);
         std::fs::create_dir(&dir).unwrap();
-        dir.canonicalize().unwrap()
+        dunce::canonicalize(dir).unwrap()
     };
     Dirs {
         workspace: make("workspace"),
