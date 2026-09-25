@@ -316,6 +316,7 @@ impl Health {
                 ));
             }
         }
+        reasons.extend(channels.iter().filter_map(|c| c.problem()));
         reasons.extend(self.probes.iter().filter_map(|p| p()));
         let reason = self.redactor.redact(&reasons.join("; "));
         serde_json::json!({
@@ -532,6 +533,9 @@ impl Health {
                 }
             };
             out.push(format!("  {}: {line}", c.name()));
+            if let Some(problem) = c.problem() {
+                out.push(format!("    {problem}"));
+            }
         }
         out.push(String::new());
         out.push("recent warnings and errors:".into());

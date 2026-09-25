@@ -242,7 +242,9 @@ impl Provider for OpenAiCompatProvider {
             .json(&payload)
             .send()
             .await;
-        let resp = match sent {
+        // `without_url()`: the URL isn't secret here, but some gateways put
+        // a key in it, and these errors end up in logs and chats.
+        let resp = match sent.map_err(|e| e.without_url()) {
             Ok(resp) => resp,
             // No connection or no answer in time: the next try may get one.
             Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
@@ -263,7 +265,10 @@ impl Provider for OpenAiCompatProvider {
         // Text first: a proxy's 502 is an HTML page, and it's still a 502.
         let text = resp.text().await.map_err(|e| {
             transient(
-                format!("reading the response (HTTP {status}) failed: {e}"),
+                format!(
+                    "reading the response (HTTP {status}) failed: {}",
+                    e.without_url()
+                ),
                 None,
             )
         })?;
