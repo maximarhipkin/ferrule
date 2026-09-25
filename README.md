@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.2.0-c4764a" alt="release v0.2.0"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
   <img src="https://img.shields.io/badge/tests-717-8a929a" alt="717 workspace tests">
@@ -229,7 +229,7 @@ watchdog and how to rewrite it.
 | macOS | `~/.local/bin/ferrule` | Apple silicon, Intel |
 | Windows | `%LOCALAPPDATA%\Programs\ferrule\ferrule.exe`, added to your PATH | x86-64 (ARM64 runs it under emulation) |
 
-Both scripts read `FERRULE_VERSION` (a tag such as `v0.2.0`; default the
+Both scripts read `FERRULE_VERSION` (a tag such as `v0.3.0`; default the
 latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 
 ### Setup
@@ -579,7 +579,8 @@ and a dated entry for every session.
 - [x] M19c: the live-bot fixes — every reason the bot stays quiet is told
       in Telegram or shown by `ferrule doctor`
 - [x] M22: one dashboard page for the whole app — status, stats, logs,
-      connections, and models with a catalog, prices and recommendations
+      connections, and models with a catalog, prices and recommendations;
+      `v0.3.0` released
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**

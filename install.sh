@@ -9,7 +9,7 @@
 # Running it again upgrades in place and keeps your settings.
 #
 # Optional environment:
-#   FERRULE_VERSION      a release tag such as v0.2.0 (default: the latest)
+#   FERRULE_VERSION      a release tag such as v0.3.0 (default: the latest)
 #   FERRULE_INSTALL_DIR  where the binary goes (default: ~/.local/bin; as root
 #                        on Linux /usr/local/bin, where the system service,
 #                        which can't see /root, runs it from)
