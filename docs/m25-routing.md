@@ -1,6 +1,6 @@
 # M25: routing Phase 1 — start cheap, escalate when needed (design)
 
-Status: design, 2026-09-25, branch `m25-routing` (cut from `main` after
+Status: built, 2026-09-25, branch `m25-routing` (cut from `main` after
 M23). The user guide is `docs/routing.md`. Background: Phase 1 of
 `docs/research-routing-and-local-models.md`; the model layer it sits on is
 M21 (`docs/m21-models.md`) and M23 (`docs/m23-drivers.md`).

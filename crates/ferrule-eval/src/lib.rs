@@ -15,7 +15,10 @@ pub mod suite;
 pub mod variant;
 
 pub use rubric::Judge;
-pub use runner::{run_suite, Env, Options, Outcome, OwnerTrust, SuiteRun, TaskResult, RESULT_KIND};
+pub use runner::{
+    run_suite, Arm, Env, Options, Outcome, OwnerTrust, Routing, RoutingPair, SuiteRun, TaskResult,
+    RESULT_KIND,
+};
 pub use sink::{Caps, Pricing, Totals};
 pub use suite::{Suite, SuiteKind, Task};
 pub use variant::{MemoryTools, Variant};

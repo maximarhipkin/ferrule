@@ -4,9 +4,12 @@
 
 use ferrule_core::{
     CompletionRequest, CompletionResponse, CoreError, HarnessProfile, LedgerRecord, LedgerSink,
-    Message, Provider, Role, ToolCall, Usage,
+    Message, Policy, Provider, Role, ToolCall, Usage,
 };
-use ferrule_eval::{run_suite, Caps, Env, Judge, Options, Outcome, Suite, Variant, RESULT_KIND};
+use ferrule_eval::{
+    report, run_suite, Arm, Caps, Env, Judge, Options, Outcome, Pricing, Routing, Suite, Variant,
+    RESULT_KIND,
+};
 use ferrule_sandbox::Sandbox;
 use serde_json::json;
 use std::collections::HashMap;
@@ -30,6 +33,7 @@ struct Scripted {
     script: Box<Script>,
     usage: Usage,
     steps: Mutex<HashMap<String, usize>>,
+    name: String,
 }
 
 impl Scripted {
@@ -38,7 +42,14 @@ impl Scripted {
             script: Box::new(script),
             usage,
             steps: Mutex::new(HashMap::new()),
+            name: "scripted".into(),
         }
+    }
+
+    /// Under another `[providers.*]` name, as a routing arm is.
+    fn named(mut self, name: &str) -> Self {
+        self.name = name.into();
+        self
     }
 }
 
@@ -52,7 +63,7 @@ fn workspace_of(req: &CompletionRequest) -> Option<String> {
 #[async_trait::async_trait]
 impl Provider for Scripted {
     fn name(&self) -> &str {
-        "scripted"
+        &self.name
     }
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let first = req.messages[0].content.as_deref().unwrap_or("");
@@ -132,6 +143,7 @@ fn env(provider: Scripted, rows: Arc<Rows>) -> Env {
         judge: None,
         playbook: None,
         owner_trust: None,
+        routing: None,
     }
 }
 
@@ -753,4 +765,148 @@ async fn the_owners_trust_reaches_eval_only_when_the_suite_opts_in() {
         let tree = format!("eval:{}", run.run_id);
         assert!(seen.iter().all(|t| *t == tree), "{seen:?}");
     }
+}
+
+const CHECKED: &str = r#"
+[suite]
+name = "checked"
+kind = "regression"
+
+[[task]]
+id = "alpha"
+prompt = "Write the word alpha to out.txt."
+check = 'test "$(cat out.txt)" = alpha'
+max_iterations = 8
+[task.grade]
+command = 'test "$(cat out.txt)" = alpha'
+"#;
+
+/// A weak model: writes the wrong word, then says it's done whatever the
+/// check says.
+fn weak_script(t: &Turn<'_>) -> Message {
+    match t.step {
+        0 => call("write_file", json!({"path": "out.txt", "content": "alfa"})),
+        _ => done(),
+    }
+}
+
+fn arm(name: &str, model: &str, script: fn(&Turn<'_>) -> Message, price: f64) -> Arm {
+    Arm {
+        provider: Arc::new(Scripted::new(usage(1_000, 100), script).named(name)),
+        provider_name: name.into(),
+        model: model.into(),
+        pricing: Some(Pricing {
+            input: price,
+            cached_input: price,
+            output: price,
+            cache_write: None,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn the_routing_variant_compares_cheap_routed_and_strong_priced_per_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let s = suite(dir.path(), CHECKED);
+    let rows = Arc::new(Rows::default());
+    let mut env = env(Scripted::new(usage(1, 1), three_script), rows.clone());
+    env.routing = Some(Routing {
+        cheap: arm("c", "small", weak_script, 1.0),
+        strong: arm("s", "large", three_script, 10.0),
+        policy: Policy::default(),
+    });
+    let run = run_suite(
+        &s,
+        &env,
+        &opts(work.path(), Variant::parse("routing").unwrap()),
+    )
+    .await
+    .unwrap();
+
+    let by = |v: Variant| run.results.iter().find(|r| r.variant == v).unwrap();
+    assert_eq!(by(Variant::Cheap).outcome, Outcome::Fail);
+    assert!(by(Variant::Cheap).escalations.is_empty());
+    assert_eq!(by(Variant::Strong).outcome, Outcome::Pass);
+    let routed = by(Variant::Routed);
+    assert_eq!(routed.outcome, Outcome::Pass, "{routed:?}");
+    assert_eq!(routed.escalations, vec!["check_failed".to_string()]);
+
+    // Every call row names the model that served it and is priced at it.
+    let rows = rows.0.lock().unwrap();
+    let calls: Vec<&LedgerRecord> = rows.iter().filter(|r| r.call_kind != RESULT_KIND).collect();
+    for r in &calls {
+        let per_token = match (r.provider.as_str(), r.model.as_str()) {
+            ("c", "small") => 1.0,
+            ("s", "large") => 10.0,
+            other => panic!("a row from {other:?}"),
+        };
+        let want = (r.input_tokens + r.output_tokens) as f64 * per_token / 1e6;
+        assert!((r.cost_usd.unwrap() - want).abs() < 1e-12, "{r:?}");
+    }
+    let routed_rows: Vec<&&LedgerRecord> = calls
+        .iter()
+        .filter(|r| r.eval.as_ref().unwrap().variant == "routed")
+        .collect();
+    assert_eq!(routed_rows[0].route.as_ref().unwrap().tier, "c/small");
+    let up = routed_rows
+        .iter()
+        .find(|r| r.provider == "s")
+        .expect("the routed run moved up");
+    let tag = up.route.as_ref().unwrap();
+    assert_eq!(
+        (tag.tier.as_str(), tag.escalated.as_deref()),
+        ("s/large", Some("check_failed"))
+    );
+    assert!(calls
+        .iter()
+        .filter(|r| r.eval.as_ref().unwrap().variant != "routed")
+        .all(|r| r.route.is_none()));
+    let verdict = |v: &str| {
+        rows.iter()
+            .find(|r| r.call_kind == RESULT_KIND && r.eval.as_ref().unwrap().variant == v)
+            .map(|r| (r.provider.clone(), r.model.clone()))
+            .unwrap()
+    };
+    assert_eq!(verdict("strong"), ("s".into(), "large".into()));
+    assert_eq!(verdict("routed"), ("c".into(), "small".into()));
+
+    let text = report::render(&run);
+    assert!(
+        text.contains("routing: cheap c/small, strong s/large"),
+        "{text}"
+    );
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("escalations"))
+        .expect(&text);
+    assert!(line.contains("1 (check_failed×1)"), "{line}");
+    assert!(text.contains("pass (1×check, 1×up)"), "{text}");
+    assert!(!text.contains("engineered − naive"));
+    let pair = run.routing.clone().unwrap();
+    assert_eq!(
+        (pair.cheap.as_str(), pair.strong.as_str()),
+        ("c/small", "s/large")
+    );
+    // Saved and read back, as the history does.
+    let back: ferrule_eval::SuiteRun =
+        serde_json::from_str(&serde_json::to_string(&run).unwrap()).unwrap();
+    assert_eq!(back.routing, run.routing);
+    assert_eq!(back.results[1].escalations, run.results[1].escalations);
+}
+
+#[tokio::test]
+async fn without_a_pair_the_routing_variants_are_errors_not_verdicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let s = suite(dir.path(), CHECKED);
+    let env = env(Scripted::new(usage(1, 1), three_script), Arc::default());
+    let run = run_suite(&s, &env, &opts(work.path(), vec![Variant::Routed]))
+        .await
+        .unwrap();
+    let r = &run.results[0];
+    assert_eq!(r.outcome, Outcome::Error);
+    assert!(r.stopped_early.as_deref().unwrap().contains("--cheap"));
+    assert_eq!(run.totals.calls, 0);
+    assert!(run.routing.is_none());
 }

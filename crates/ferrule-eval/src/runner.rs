@@ -9,8 +9,8 @@ use crate::suite::{Suite, Task};
 use crate::variant::{self, MemoryTools, Variant};
 use anyhow::{Context as _, Result};
 use ferrule_core::{
-    AgentEvent, CoreError, EvalTag, Guard, HarnessProfile, LedgerRecord, LedgerSink, Provider,
-    StopFlag, Transcript,
+    AgentEvent, CoreError, EvalTag, Guard, HarnessProfile, LedgerRecord, LedgerSink, Policy,
+    Provider, Served, StopFlag, Tier, Tiered, Transcript,
 };
 use ferrule_sandbox::Sandbox;
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,101 @@ pub struct Env {
     /// suite that doesn't opt in: no guard, and rows without a tree, which
     /// the owner's meter skips.
     pub owner_trust: Option<OwnerTrust>,
+    /// M25: the two models `--variant routing` compares. Without it the
+    /// routing variants end in an error, not a verdict.
+    pub routing: Option<Routing>,
+}
+
+/// One model a routing arm runs on.
+#[derive(Clone)]
+pub struct Arm {
+    pub provider: Arc<dyn Provider>,
+    pub provider_name: String,
+    pub model: String,
+    pub pricing: Option<Pricing>,
+}
+
+impl Arm {
+    /// `provider/model`.
+    pub fn reference(&self) -> String {
+        format!("{}/{}", self.provider_name, self.model)
+    }
+
+    fn served(&self) -> Served {
+        Served {
+            provider: self.provider_name.clone(),
+            model: self.model.clone(),
+        }
+    }
+}
+
+/// `--variant routing`: `cheap` runs on the cheap arm, `strong` on the
+/// strong one, and `routed` starts each task on the cheap one and moves up
+/// on a failure signal, under `policy` (every trigger, by default).
+#[derive(Clone)]
+pub struct Routing {
+    pub cheap: Arm,
+    pub strong: Arm,
+    pub policy: Policy,
+}
+
+/// The routing pair a run compared, for the report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoutingPair {
+    pub cheap: String,
+    pub strong: String,
+}
+
+/// What one variant's agent talks to, and the model its rows default to.
+struct Serving {
+    provider: Arc<dyn Provider>,
+    model: String,
+}
+
+impl Env {
+    /// The provider and model a variant's verdict row names: for `routed`,
+    /// the tier it starts on.
+    fn names(&self, v: Variant) -> (String, String) {
+        match (v, &self.routing) {
+            (Variant::Cheap | Variant::Routed, Some(r)) => {
+                (r.cheap.provider_name.clone(), r.cheap.model.clone())
+            }
+            (Variant::Strong, Some(r)) => (r.strong.provider_name.clone(), r.strong.model.clone()),
+            _ => (self.provider_name.clone(), self.model.clone()),
+        }
+    }
+
+    fn serving(&self, v: Variant) -> Option<Serving> {
+        let arm = |a: &Arm| Serving {
+            provider: a.provider.clone(),
+            model: a.model.clone(),
+        };
+        match (v, &self.routing) {
+            (Variant::Engineered | Variant::Naive, _) => Some(Serving {
+                provider: self.provider.clone(),
+                model: self.model.clone(),
+            }),
+            (_, None) => None,
+            (Variant::Cheap, Some(r)) => Some(arm(&r.cheap)),
+            (Variant::Strong, Some(r)) => Some(arm(&r.strong)),
+            (Variant::Routed, Some(r)) => {
+                // A fresh ladder per task run: nothing carries over.
+                let tier = |a: &Arm| Tier {
+                    name: a.reference(),
+                    provider: a.provider.clone(),
+                    served: a.served(),
+                };
+                Some(Serving {
+                    provider: Arc::new(Tiered::new(
+                        "routed",
+                        vec![tier(&r.cheap), tier(&r.strong)],
+                        r.policy.clone(),
+                    )),
+                    model: r.cheap.model.clone(),
+                })
+            }
+        }
+    }
 }
 
 pub type OwnerTrust =
@@ -153,6 +248,9 @@ pub struct TaskResult {
     /// Why the agent stopped before it was done, if it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_early: Option<String>,
+    /// M25: why the routed variant moved up a tier, once per move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub escalations: Vec<String>,
     #[serde(default)]
     pub fingerprint: String,
     #[serde(default)]
@@ -183,6 +281,9 @@ pub struct SuiteRun {
     /// The judge is the model under test.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub self_judged: bool,
+    /// M25: the models a `--variant routing` run compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingPair>,
 }
 
 /// `<UTC time to the millisecond>-<random>`: ids sort in the order the runs
@@ -200,7 +301,17 @@ pub async fn run_suite(suite: &Suite, env: &Env, opts: &Options) -> Result<Suite
     let run_id = new_run_id();
     let window = opts.context_window.or(suite.context_window);
     let profile = variant::windowed(&env.profile, window);
-    let sink = Arc::new(EvalSink::new(env.ledger.clone(), env.pricing, opts.caps));
+    let routes = opts.variants.iter().any(|v| v.routing());
+    let sink = match (&env.routing, routes) {
+        // Each row at the price of the model that served it, and a model
+        // without prices stays unpriced.
+        (Some(r), true) => EvalSink::new(env.ledger.clone(), None, opts.caps)
+            .price_model(&r.cheap.provider_name, &r.cheap.model, r.cheap.pricing)
+            .price_model(&r.strong.provider_name, &r.strong.model, r.strong.pricing)
+            .price_model(&env.provider_name, &env.model, env.pricing),
+        _ => EvalSink::new(env.ledger.clone(), env.pricing, opts.caps),
+    };
+    let sink = Arc::new(sink);
     let work = opts
         .work_root
         .clone()
@@ -292,6 +403,14 @@ pub async fn run_suite(suite: &Suite, env: &Env, opts: &Options) -> Result<Suite
         budget_stop: sink.exceeded(),
         not_run,
         results,
+        routing: env
+            .routing
+            .as_ref()
+            .filter(|_| routes)
+            .map(|r| RoutingPair {
+                cheap: r.cheap.reference(),
+                strong: r.strong.reference(),
+            }),
     })
 }
 
@@ -324,6 +443,7 @@ struct Seen {
     truncations: u32,
     compactions: u32,
     verify_failures: u32,
+    escalations: Vec<String>,
 }
 
 async fn run_one(p: RunOne<'_>) -> TaskResult {
@@ -350,11 +470,19 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
         compactions: 0,
         verify_failures: 0,
         stopped_early: None,
+        escalations: vec![],
         fingerprint: p.task.fingerprint.clone(),
         context_window: p.profile.context_window,
         ferrule_version: env!("CARGO_PKG_VERSION").into(),
     };
 
+    let Some(serving) = p.env.serving(p.variant) else {
+        result.stopped_early = Some(format!(
+            "the {} variant needs a cheap and a strong model (--cheap, --strong)",
+            p.variant
+        ));
+        return finish(p, tag, result, started);
+    };
     let fixture = match Fixture::prepare(p.work, p.label, p.task, &p.env.sandbox, p.keep).await {
         Ok(f) => f,
         Err(e) => {
@@ -374,7 +502,7 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
     let stop = StopFlag::new();
     let agent = variant::build(variant::Build {
         variant: p.variant,
-        provider: p.env.provider.clone(),
+        provider: serving.provider,
         profile: p.profile,
         sandbox: &p.env.sandbox,
         memory_tools: p.env.memory_tools.as_ref(),
@@ -400,7 +528,7 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
         }));
     }
     let mut agent = agent
-        .with_ledger(sink, "eval", None, p.env.model.clone())
+        .with_ledger(sink, "eval", None, serving.model.clone())
         .with_stop_flag(stop.clone());
     if let Some(g) = &owner_stop {
         agent = agent.with_guard(g.clone() as Arc<dyn Guard>);
@@ -415,6 +543,7 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
                 AgentEvent::Truncated { .. } => seen.truncations += 1,
                 AgentEvent::Compacted { .. } => seen.compactions += 1,
                 AgentEvent::VerifyFinished { ok: false, .. } => seen.verify_failures += 1,
+                AgentEvent::Escalated { reason, .. } => seen.escalations.push(reason),
                 AgentEvent::RunFinished { iterations, .. }
                 | AgentEvent::RunIncomplete { iterations, .. } => seen.iterations = iterations,
                 _ => {}
@@ -430,6 +559,7 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
     result.truncations = seen.truncations;
     result.compactions = seen.compactions;
     result.verify_failures = seen.verify_failures;
+    result.escalations = seen.escalations.clone();
     // Totals are taken after grading, so they include the judge's call.
     let end = |result: &mut TaskResult| {
         result.totals = p.sink.end();
@@ -560,13 +690,14 @@ impl Guard for OwnerStop {
 fn finish(p: RunOne<'_>, mut tag: EvalTag, mut result: TaskResult, started: Instant) -> TaskResult {
     result.wall_ms = started.elapsed().as_millis() as u64;
     tag.result = serde_json::to_value(&result).ok();
+    let (provider, model) = p.env.names(p.variant);
     p.sink.write_uncounted(LedgerRecord {
         timestamp: chrono::Utc::now().to_rfc3339(),
         session_id: format!("{}/{}", p.run_id, p.label),
         task_shape: "eval".into(),
         origin: Some(format!("{}/{}", p.suite.name, p.task.id)),
-        provider: p.env.provider_name.clone(),
-        model: p.env.model.clone(),
+        provider,
+        model,
         iteration: result.iterations,
         call_kind: RESULT_KIND.into(),
         input_tokens: 0,

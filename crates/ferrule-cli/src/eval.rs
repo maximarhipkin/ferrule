@@ -18,14 +18,26 @@ use std::sync::Arc;
 const EXIT_BUDGET: i32 = 3;
 
 #[derive(Subcommand)]
+// Parsed once per process: the size of `Run` doesn't matter.
+#[allow(clippy::large_enum_variant)]
 pub enum EvalCmd {
     /// Run a suite: `--variant ab` runs every task under both harnesses
     Run {
         /// Suite directory (or its suite.toml)
         suite: PathBuf,
-        /// engineered (ferrule's harness), naive (the baseline) or ab (both)
+        /// engineered (ferrule's harness), naive (the baseline), ab (both),
+        /// or routing (ferrule's harness three times: the cheap model only,
+        /// routed cheap → strong, the strong model only)
         #[arg(long, default_value = "engineered")]
         variant: String,
+        /// `--variant routing`: the cheap model, any connected model's ref
+        /// (default: the first of `[routing] tiers`)
+        #[arg(long)]
+        cheap: Option<String>,
+        /// `--variant routing`: the strong model (default: the last of
+        /// `[routing] tiers`)
+        #[arg(long)]
+        strong: Option<String>,
         /// A `[providers.*]` entry; default_provider if omitted
         #[arg(long)]
         provider: Option<String>,
@@ -82,6 +94,8 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
         EvalCmd::Run {
             suite,
             variant,
+            cheap,
+            strong,
             provider,
             model,
             context_window,
@@ -94,8 +108,18 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
             keep,
             judge_provider,
         } => {
-            let variants = Variant::parse(&variant)
-                .ok_or_else(|| anyhow!("--variant: `{variant}` isn't engineered, naive or ab"))?;
+            let variants = Variant::parse(&variant).ok_or_else(|| {
+                anyhow!("--variant: `{variant}` isn't engineered, naive, ab or routing")
+            })?;
+            let routes = variants.iter().any(|v| v.routing());
+            if !routes && (cheap.is_some() || strong.is_some()) {
+                return Err(anyhow!("--cheap and --strong go with --variant routing"));
+            }
+            if routes && (provider.is_some() || model.is_some()) {
+                return Err(anyhow!(
+                    "--variant routing takes its models from --cheap and --strong, not --provider or --model"
+                ));
+            }
             let suite = Suite::load(&suite)?;
             let caps = Caps {
                 max_usd: (max_usd > 0.0).then_some(max_usd),
@@ -106,6 +130,19 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
             // comparable with the last one whatever the owner has since made
             // the default, pinned or listed as a fallback.
             let cat = crate::models::Catalog::from_config(&cfg);
+            // M25: the routing pair, as named or from `[routing] tiers` (the
+            // config, never the owner's routing state).
+            let pair = if routes {
+                Some(routing_pair(&cfg, &cat, cheap, strong)?)
+            } else {
+                None
+            };
+            let (provider, model) = match &pair {
+                // The strong model stands in for the run: it judges rubrics
+                // when no --judge-provider is given.
+                Some((_, s)) => (Some(s.provider.clone()), Some(s.model.clone())),
+                None => (provider, model),
+            };
             let (provider, model) = match (provider, model) {
                 (None, Some(w)) => match cat.resolve(&w) {
                     Ok(e) => (Some(e.provider.clone()), Some(e.model.clone())),
@@ -133,6 +170,9 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 .entries
                 .iter()
                 .find(|e| e.provider == name && e.model == model);
+            // All three routing arms run with the cheap model's profile, so
+            // the model is the only difference.
+            let own = pair.as_ref().map(|(c, _)| c).or(own);
             let pricing = cat
                 .price(&name, &model)
                 .map(|p| Pricing {
@@ -156,8 +196,12 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                         variants: &variants,
                         repeat,
                         profile: &profile,
-                        provider: &name,
-                        model: &model,
+                        provider: if pair.is_some() { "routing" } else { &name },
+                        model: &match &pair {
+                            Some((c, s)) => format!("{} → {}", c.reference(), s.reference()),
+                            None => model.clone(),
+                        },
+                        // Priced as if every call went to the strong model.
                         pricing,
                         caps,
                     })?
@@ -218,6 +262,14 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                     owner_trust(&cfg)?
                 } else {
                     None
+                },
+                routing: match &pair {
+                    Some((c, s)) => Some(ferrule_eval::Routing {
+                        cheap: arm(&cfg, c)?,
+                        strong: arm(&cfg, s)?,
+                        policy: ferrule_core::Policy::default(),
+                    }),
+                    None => None,
                 },
             };
             let opts = Options {
@@ -284,6 +336,52 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
     }
 }
 
+/// `--cheap` and `--strong`, each defaulting to an end of `[routing]
+/// tiers`: two different connected models.
+fn routing_pair(
+    cfg: &config::Config,
+    cat: &crate::models::Catalog,
+    cheap: Option<String>,
+    strong: Option<String>,
+) -> Result<(crate::models::Entry, crate::models::Entry)> {
+    let tiers = &cfg.routing.tiers;
+    let pick = |flag: &str, given: Option<String>, from: Option<&String>| -> Result<_> {
+        let word = given.or_else(|| from.cloned()).ok_or_else(|| {
+            anyhow!(
+                "--variant routing needs {flag} <model> (or `[routing] tiers` in the config);                  `ferrule model route` suggests a pair"
+            )
+        })?;
+        cat.resolve(word.trim())
+            .cloned()
+            .map_err(|e| anyhow!("{flag}: {e}"))
+    };
+    let c = pick("--cheap", cheap, tiers.first())?;
+    let s = pick("--strong", strong, tiers.last().filter(|_| tiers.len() > 1))?;
+    if c.reference() == s.reference() {
+        return Err(anyhow!(
+            "--cheap and --strong are both {}: routing compares two models",
+            c.reference()
+        ));
+    }
+    Ok((c, s))
+}
+
+/// A routing arm: `e`'s driver with its key, and its prices.
+fn arm(cfg: &config::Config, e: &crate::models::Entry) -> Result<ferrule_eval::Arm> {
+    let (_, _, key) = cfg.resolve_provider(Some(&e.provider))?;
+    Ok(ferrule_eval::Arm {
+        provider: e.client(key),
+        provider_name: e.provider.clone(),
+        model: e.model.clone(),
+        pricing: e.pricing.map(|p| Pricing {
+            input: p.input,
+            cached_input: p.cached_input,
+            output: p.output,
+            cache_write: p.cache_write,
+        }),
+    })
+}
+
 /// Both variants of a suite with `owner_trust = true` run under the
 /// owner's guard, unattended, and charge the owner's day under the tree
 /// `eval:<run id>`.
@@ -308,7 +406,8 @@ fn owner_trust(cfg: &config::Config) -> Result<Option<ferrule_eval::OwnerTrust>>
 
 /// 3 when the budget stopped the suite; 1 when a grader couldn't decide,
 /// or a regression suite has a failure in the variant it gates (ferrule's
-/// own: the naive baseline is expected to fail); else 0.
+/// own, or with `--variant routing` the routed one: the naive baseline and
+/// the cheap model alone are expected to fail); else 0.
 fn exit_code(suite: &Suite, run: &ferrule_eval::SuiteRun) -> i32 {
     use ferrule_eval::Outcome;
     // Only the budget, or (for `owner_trust`) the owner's caps and kill
@@ -317,10 +416,13 @@ fn exit_code(suite: &Suite, run: &ferrule_eval::SuiteRun) -> i32 {
         return EXIT_BUDGET;
     }
     let error = run.results.iter().any(|r| r.outcome == Outcome::Error);
-    let failed = run
-        .results
-        .iter()
-        .any(|r| r.outcome == Outcome::Fail && r.variant == ferrule_eval::Variant::Engineered);
+    let failed = run.results.iter().any(|r| {
+        r.outcome == Outcome::Fail
+            && matches!(
+                r.variant,
+                ferrule_eval::Variant::Engineered | ferrule_eval::Variant::Routed
+            )
+    });
     if error || (suite.kind == SuiteKind::Regression && failed) {
         1
     } else {

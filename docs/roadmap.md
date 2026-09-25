@@ -522,6 +522,26 @@ Drivers). PR to `main` open, not merged.
 cached price, and a conversation that falls over from Claude to another
 driver mid-turn keeps going.
 
+### M25 — routing, Phase 1
+
+**Status.** Built (`docs/m25-routing.md`; user guide `docs/routing.md`).
+PR to `main` open, not merged.
+- `[routing] tiers`, cheap → strong. Every turn starts cheap and moves up
+  one tier on a failure signal only: a call failure retrying won't fix,
+  invalid tool calls in a row, a failed check, a Stop hook, no progress,
+  the watchdog, or `/model strong`. Sticky for the turn, back down at the
+  next one. Off by default, byte-identical when off.
+- Tier refs set the floor for pins, tasks, roles and sub-agents; M21's
+  fallback still covers outages. Ledger rows say which tier served and why
+  it moved; an optional daily cap on spend above the cheap tier.
+- `ferrule model route`, `/model strong|tiers`, the dashboard's Routing
+  section and API, doctor.
+- `ferrule eval --variant routing` compares cheap only, routed and strong
+  only on pass rate and cost.
+
+**Done means.** On a real pair, `routed` passes close to `strong` at close
+to `cheap`'s price, and the ledger says why each escalation happened.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

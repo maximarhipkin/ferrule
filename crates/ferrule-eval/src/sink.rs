@@ -91,6 +91,10 @@ struct State {
 pub struct EvalSink {
     inner: Option<Arc<dyn LedgerSink>>,
     pricing: Option<Pricing>,
+    /// M25: prices by `(provider, model)`, for a run whose rows come from
+    /// more than one model (`--variant routing`). A row priced here isn't
+    /// priced at `pricing`.
+    by_model: Vec<((String, String), Pricing)>,
     caps: Caps,
     state: Mutex<State>,
 }
@@ -100,6 +104,7 @@ impl EvalSink {
         Self {
             inner,
             pricing,
+            by_model: Vec::new(),
             caps,
             state: Mutex::new(State {
                 tag: None,
@@ -109,6 +114,15 @@ impl EvalSink {
                 exceeded: None,
             }),
         }
+    }
+
+    /// Prices `provider`'s `model` rows at `pricing` (`None`: unpriced)
+    /// rather than at the run's.
+    pub fn price_model(mut self, provider: &str, model: &str, pricing: Option<Pricing>) -> Self {
+        if let Some(p) = pricing {
+            self.by_model.push(((provider.into(), model.into()), p));
+        }
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -205,6 +219,12 @@ impl EvalSink {
 
 impl LedgerSink for EvalSink {
     fn record(&self, record: LedgerRecord) {
-        self.record_priced(record, self.pricing);
+        let pricing = self
+            .by_model
+            .iter()
+            .find(|((p, m), _)| *p == record.provider && *m == record.model)
+            .map(|(_, p)| *p)
+            .or(self.pricing);
+        self.record_priced(record, pricing);
     }
 }
