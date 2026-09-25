@@ -111,6 +111,7 @@ impl Models {
                 None
             }
         };
+        problems.extend(cat.routing.problems.iter().cloned());
         let fallback: Vec<String> = cat.fallback.clone();
         for f in &fallback {
             if let Err(e) = cat.resolve(f) {
@@ -511,7 +512,9 @@ impl Models {
 /// What to write for `word`: an alias stays an alias (it follows the
 /// alias), anything else becomes `provider/model`.
 fn stored(cat: &Catalog, word: &str, e: &Entry) -> String {
-    if cat.aliases.contains_key(word.trim()) {
+    // An alias or a tier ref (M25) is kept as written: it follows its
+    // model.
+    if cat.aliases.contains_key(word.trim()) || super::routing::is_tier_ref(word) {
         word.trim().to_string()
     } else {
         e.reference()

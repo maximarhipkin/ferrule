@@ -398,6 +398,7 @@ async fn watchdog(
         tokio::time::sleep(tick).await;
         for lane in router.claim_stalled(after) {
             tracing::warn!(chat = %lane.place(), activity = %lane.activity, "a turn has made no progress");
+            health.stalled(&lane.session_id);
             let (to_channel, to_chat) = health
                 .settings()
                 .owner
@@ -940,20 +941,27 @@ mod tests {
             &release,
             Duration::from_millis(700),
         );
-        let health = Arc::new(Health::new(
-            "9.9.9",
-            crate::health::HealthSettings {
-                watchdog_after: Some(Duration::from_millis(100)),
-                owner: Some(("scripted".into(), "owner".into())),
-                ..Default::default()
-            },
-        ));
+        let stalled: Log = Arc::default();
+        let seen = stalled.clone();
+        let health = Arc::new(
+            Health::new(
+                "9.9.9",
+                crate::health::HealthSettings {
+                    watchdog_after: Some(Duration::from_millis(100)),
+                    owner: Some(("scripted".into(), "owner".into())),
+                    ..Default::default()
+                },
+            )
+            .with_stall_hook(Arc::new(move |s: &str| seen.lock().unwrap().push(s.into()))),
+        );
         let mut gateway = Gateway::new(router).with_health(health);
         gateway.add_channel(channel);
         tokio::time::timeout(Duration::from_secs(2), gateway.run())
             .await
             .unwrap()
             .unwrap();
+        // M25: the routing provider hears of the stall, once too.
+        assert_eq!(*stalled.lock().unwrap(), ["scripted__c1"]);
         let stalls: Vec<String> = log
             .lock()
             .unwrap()

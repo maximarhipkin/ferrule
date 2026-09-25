@@ -750,14 +750,14 @@ fn build_agent_from(
 ) -> Result<Agent> {
     let (cfg, cfg_path) = config::Config::load()?;
     // M21: the model is picked per call from the agent's scope; the one
-    // it would run on now sets the harness profile, and a missing key is
-    // an error now rather than at the first call.
+    // it would run on now sets the harness profile (M25: routed, the
+    // smallest window of the tiers), and a missing key is an error now
+    // rather than at the first call.
     let models = models::shared()?;
-    let entry = models.wanted(&scope).map_err(|e| anyhow!(e))?;
+    let (entry, profile) = models.wanted_profile(&scope).map_err(|e| anyhow!(e))?;
     if entry.key().is_none() {
         bail!("{}", entry.no_key());
     }
-    let profile = entry.harness();
     let provider = Arc::new(models::RoutedProvider::new(
         models.clone(),
         scope,
