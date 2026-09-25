@@ -184,6 +184,7 @@ mod tests {
             cost_usd: Some(usd),
             eval: None,
             tree: Some(session.into()),
+            route: None,
         }
     }
 

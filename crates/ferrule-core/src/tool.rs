@@ -148,6 +148,24 @@ impl ToolRegistry {
     pub fn changes_files(&self, name: &str) -> bool {
         self.lookup(name).is_some_and(|t| t.changes_files())
     }
+    /// Whether a call can't be right as written: an unknown tool, arguments
+    /// that aren't an object, or a field its schema requires left out. M25
+    /// counts these toward escalation; the call itself still runs.
+    pub fn misfit(&self, name: &str, args: &serde_json::Value) -> bool {
+        let Some(tool) = self.lookup(name) else {
+            return true;
+        };
+        let Some(given) = args.as_object() else {
+            return true;
+        };
+        let def = tool.definition();
+        let required = def.parameters.get("required").and_then(|r| r.as_array());
+        required
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.as_str())
+            .any(|field| !given.contains_key(field))
+    }
 }
 
 #[cfg(test)]

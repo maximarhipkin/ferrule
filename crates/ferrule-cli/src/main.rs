@@ -1189,6 +1189,9 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
                 AgentEvent::ModelFallback { from, to, error } => {
                     println!("\x1b[33m[{from} isn't answering ({error}); {to} takes over]\x1b[0m")
                 }
+                AgentEvent::Escalated { from, to, reason } => {
+                    println!("\x1b[33m[routing: {from} → {to} ({reason})]\x1b[0m")
+                }
                 AgentEvent::Stuck { note } => println!("\x1b[33m{note}\x1b[0m"),
                 // A hook's error is the owner's to see, not the model's.
                 AgentEvent::HookFinished {

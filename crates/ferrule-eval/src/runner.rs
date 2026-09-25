@@ -581,6 +581,7 @@ fn finish(p: RunOne<'_>, mut tag: EvalTag, mut result: TaskResult, started: Inst
         cost_usd: None,
         eval: Some(tag),
         tree: None,
+        route: None,
     });
     result
 }

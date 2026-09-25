@@ -548,6 +548,7 @@ async fn drain_events(
                 ..
             } => Some(format!("a model call (retry {attempt} of {max_attempts})")),
             AgentEvent::ModelFallback { to, .. } => Some(format!("a model call (on {to})")),
+            AgentEvent::Escalated { to, .. } => Some(format!("a model call (moved up to {to})")),
             _ => None,
         };
         let moved = {
