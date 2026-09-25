@@ -395,6 +395,19 @@ fn key_is_set(name: &str) -> bool {
 // ── Menu labels ────────────────────────────────────────────────────────
 
 fn provider_summary(cfg: &config::Config) -> String {
+    let cat = crate::models::Catalog::from_config(cfg);
+    if cfg.models.default.is_some() {
+        if let Ok((e, _)) = cat.default_entry() {
+            let mut text = e.reference();
+            if !key_is_set(&e.key_env) {
+                text.push_str(" · key missing");
+            }
+            if cat.entries.len() > 1 {
+                text.push_str(&format!(" (+{} more)", cat.entries.len() - 1));
+            }
+            return text;
+        }
+    }
     let Some(name) = cfg
         .default_provider
         .as_ref()
@@ -411,8 +424,8 @@ fn provider_summary(cfg: &config::Config) -> String {
     if !key_is_set(&p.api_key_env) {
         text.push_str(" · key missing");
     }
-    if cfg.providers.len() > 1 {
-        text.push_str(&format!(" (+{} more)", cfg.providers.len() - 1));
+    if cat.entries.len() > 1 {
+        text.push_str(&format!(" (+{} more)", cat.entries.len() - 1));
     }
     text
 }
@@ -569,7 +582,25 @@ const PRESETS: &[Preset] = &[
         key_url: "https://platform.deepseek.com/api_keys",
     },
     Preset {
-        label: "Anthropic (Claude)",
+        label: "Google Gemini",
+        name: "gemini",
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        key_env: "GEMINI_API_KEY",
+        profile: "generic",
+        model: "gemini-2.5-flash",
+        key_url: "https://aistudio.google.com/apikey",
+    },
+    Preset {
+        label: "Groq",
+        name: "groq",
+        base_url: "https://api.groq.com/openai/v1",
+        key_env: "GROQ_API_KEY",
+        profile: "generic",
+        model: "llama-3.3-70b-versatile",
+        key_url: "https://console.groq.com/keys",
+    },
+    Preset {
+        label: "Anthropic (Claude, through its OpenAI-compatible endpoint)",
         name: "anthropic",
         base_url: "https://api.anthropic.com/v1",
         key_env: "ANTHROPIC_API_KEY",
@@ -663,10 +694,15 @@ async fn provider_step(t: &mut Target, http: &reqwest::Client, guided: bool) -> 
         })
         .collect();
     labels.push("Add a provider".into());
+    let several = crate::models::Catalog::from_config(&cfg).entries.len() > 1;
+    if several {
+        labels.push("Default model".into());
+    }
     let pick = Select::new("Which provider?", labels).raw_prompt()?.index;
     match names.get(pick) {
         Some(name) => edit_provider(t, http, name).await,
-        None => add_provider(t, http).await,
+        None if pick == names.len() => add_provider(t, http).await,
+        None => default_model_step(t),
     }
 }
 
@@ -685,29 +721,161 @@ async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
     if cfg.providers.contains_key(&np.name) {
         info(format!("You have `{}` already; this updates it.", np.name));
     }
+    if np.profile == "anthropic" {
+        info(ANTHROPIC_NOTE);
+    }
     let (key, models) = ask_provider_key(http, &np).await?;
     np.model = pick_model(&models, &np.model)?;
-    if let Some(key) = key {
-        t.set_secret(&np.key_env, &key)?;
+    if let Some(key) = &key {
+        t.set_secret(&np.key_env, key)?;
     }
     write_provider(t.root(), &np)?;
-    let default = cfg
-        .default_provider
-        .as_ref()
-        .filter(|d| cfg.providers.contains_key(*d));
+    let default = crate::models::Catalog::from_config(&cfg)
+        .default_entry()
+        .ok()
+        .map(|(e, _)| e.reference());
     let make_default = match default {
         None => true,
-        Some(d) if *d == np.name => false,
-        Some(d) => Confirm::new(&format!("Use `{}` instead of `{d}` by default?", np.name))
-            .with_default(false)
-            .prompt()?,
+        Some(d) if d.split('/').next() == Some(np.name.as_str()) => false,
+        Some(d) => Confirm::new(&format!(
+            "Use `{}/{}` instead of `{d}` by default?",
+            np.name, np.model
+        ))
+        .with_default(false)
+        .prompt()?,
     };
     if make_default {
-        put(t.root(), "default_provider", np.name.as_str());
+        make_provider_default(t.root(), &np.name)?;
     }
     t.save()?;
     ok(format!("saved `{}` · {}", np.name, np.model));
+    test_saved(t, &format!("{}/{}", np.name, np.model), key).await
+}
+
+const ANTHROPIC_NOTE: &str =
+    "Ferrule reaches Claude through Anthropic's OpenAI-compatible endpoint. \
+     That works for chat and tools, but loses prompt caching (every turn pays full input price), \
+     extended-thinking output and PDF input. A native Anthropic driver is planned.";
+
+/// `name` as the default: `default_provider`, and a `[models] default`
+/// that would override it goes.
+fn make_provider_default(root: &mut dyn TableLike, name: &str) -> Result<()> {
+    put(root, "default_provider", name);
+    if let Some(models) = root.get_mut("models").and_then(Item::as_table_like_mut) {
+        models.remove("default");
+    }
     Ok(())
+}
+
+/// One real call to a model just saved, said plainly; a failure is only
+/// a warning, the config is kept.
+async fn test_saved(t: &mut Target, reference: &str, key: Option<String>) -> Result<()> {
+    let cat = crate::models::Catalog::from_config(&t.config()?);
+    let Ok(entry) = cat.resolve(reference).cloned() else {
+        return Ok(());
+    };
+    let key = key.or_else(|| entry.key());
+    let out = interruptible(crate::models::test_entry_with(&entry, key)).await?;
+    if out.ok {
+        ok(format!("{}: {}", out.reference, out.said));
+    } else {
+        warn(format!("{}: {}", out.reference, out.said));
+    }
+    Ok(())
+}
+
+/// Every connected model, to pick the default from; `[models] default`
+/// is set to the pick.
+fn default_model_step(t: &mut Target) -> Result<()> {
+    let cat = crate::models::Catalog::from_config(&t.config()?);
+    let current = cat.default_entry().ok().map(|(e, _)| e.reference());
+    let refs: Vec<String> = cat.entries.iter().map(|e| e.reference()).collect();
+    let cursor = current
+        .as_ref()
+        .and_then(|c| refs.iter().position(|r| r == c))
+        .unwrap_or(0);
+    let pick = Select::new(
+        "Default model (chats, tasks and agents without their own)",
+        refs,
+    )
+    .with_starting_cursor(cursor)
+    .prompt()?;
+    if current.as_deref() == Some(pick.as_str()) {
+        return Ok(());
+    }
+    put(table(t.root(), &["models"])?, "default", pick.as_str());
+    t.save()?;
+    ok(format!("the default is {pick} now"));
+    Ok(())
+}
+
+/// `[providers.<name>.models."<model>"]`, and the alias if one's given.
+fn write_extra_model(
+    root: &mut dyn TableLike,
+    name: &str,
+    model: &str,
+    alias: Option<&str>,
+) -> Result<()> {
+    let mut own = toml_edit::Table::new();
+    own.set_implicit(false);
+    table(root, &["providers", name, "models"])?.insert(model, Item::Table(own));
+    if let Some(a) = alias {
+        put(
+            table(root, &["models", "aliases"])?,
+            a,
+            format!("{name}/{model}").as_str(),
+        );
+    }
+    Ok(())
+}
+
+/// Connect another model on provider `name` (`[providers.name.models.m]`).
+async fn add_model_step(t: &mut Target, http: &reqwest::Client, name: &str) -> Result<()> {
+    let cfg = t.config()?;
+    let p = cfg.providers[name].clone();
+    let models = match std::env::var(&p.api_key_env) {
+        Ok(key) => {
+            match interruptible(probe::models(
+                http,
+                &p.base_url,
+                &key,
+                p.profile == "anthropic",
+            ))
+            .await?
+            {
+                Ok(models) => models,
+                Err(e) => {
+                    warn(format!("couldn't fetch the model list: {e}"));
+                    Vec::new()
+                }
+            }
+        }
+        Err(_) => Vec::new(),
+    };
+    let have: Vec<&String> = std::iter::once(&p.model).chain(p.models.keys()).collect();
+    let offer: Vec<String> = models.into_iter().filter(|m| !have.contains(&m)).collect();
+    let model = pick_model(&offer, "")?;
+    if have.contains(&&model) {
+        info(format!("`{name}/{model}` is connected already"));
+        return Ok(());
+    }
+    let alias = Text::new("A short name for it (optional)")
+        .with_placeholder("fast")
+        .with_help_message("then `/model use fast` in Telegram; Esc to skip")
+        .prompt_skippable()?
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty());
+    let alias = alias.filter(|a| {
+        let taken = cfg.providers.contains_key(a) || cfg.models.aliases.contains_key(a);
+        if taken {
+            warn(format!("`{a}` is taken; no alias set"));
+        }
+        !taken
+    });
+    write_extra_model(t.root(), name, &model, alias.as_deref())?;
+    t.save()?;
+    ok(format!("connected `{name}/{model}`"));
+    test_saved(t, &format!("{name}/{model}"), None).await
 }
 
 fn ask_custom_provider(cfg: &config::Config) -> Result<NewProvider> {
@@ -893,7 +1061,12 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
     let cfg = t.config()?;
     let p = cfg.providers[name].clone();
     let is_default = cfg.default_provider.as_deref() == Some(name);
-    let mut actions = vec!["Change the model", "Replace the API key"];
+    let mut actions = vec![
+        "Change the model",
+        "Add another model on it",
+        "Test it",
+        "Replace the API key",
+    ];
     if !is_default {
         actions.push("Make it the default");
     }
@@ -927,7 +1100,10 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
             );
             t.save()?;
             ok(format!("`{name}` now uses {model}"));
+            test_saved(t, &format!("{name}/{model}"), None).await?;
         }
+        "Add another model on it" => add_model_step(t, http, name).await?,
+        "Test it" => test_saved(t, name, None).await?,
         "Replace the API key" => {
             let (key, _) = ask_provider_key(http, &NewProvider::from_config(name, &p)).await?;
             if let Some(key) = key {
@@ -936,7 +1112,7 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
             }
         }
         "Make it the default" => {
-            put(t.root(), "default_provider", name);
+            make_provider_default(t.root(), name)?;
             t.save()?;
             ok(format!("`{name}` is the default now"));
         }
@@ -1844,6 +2020,45 @@ mod tests {
             std::fs::write(&path, text).unwrap();
         }
         Target::load(path).unwrap()
+    }
+
+    #[test]
+    fn another_model_gets_its_own_table_and_a_new_default_provider_clears_models_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = target(dir.path(), "");
+        for preset in ["openai", "groq"] {
+            let p = PRESETS.iter().find(|p| p.name == preset).unwrap();
+            write_provider(t.root(), &NewProvider::from_preset(p)).unwrap();
+        }
+        put(t.root(), "default_provider", "openai");
+        write_extra_model(t.root(), "openai", "gpt-5-mini", Some("fast")).unwrap();
+        put(table(t.root(), &["models"]).unwrap(), "default", "fast");
+        t.save().unwrap();
+        let cat = crate::models::Catalog::from_config(&t.config().unwrap());
+        assert_eq!(cat.entries.len(), 3);
+        assert_eq!(
+            cat.default_entry().unwrap().0.reference(),
+            "openai/gpt-5-mini"
+        );
+        make_provider_default(t.root(), "groq").unwrap();
+        t.save().unwrap();
+        let cfg = t.config().unwrap();
+        assert_eq!(cfg.models.default, None);
+        let cat = crate::models::Catalog::from_config(&cfg);
+        assert_eq!(
+            cat.default_entry().unwrap().0.reference(),
+            "groq/llama-3.3-70b-versatile"
+        );
+        // The alias stays, pointing where it did.
+        assert_eq!(
+            cat.resolve("fast").unwrap().reference(),
+            "openai/gpt-5-mini"
+        );
+        let mut names: Vec<&str> = PRESETS.iter().map(|p| p.name).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), PRESETS.len());
+        assert!(names.contains(&"gemini"));
     }
 
     #[test]

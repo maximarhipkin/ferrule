@@ -77,6 +77,9 @@ enum Cmd {
         /// Skip the checks that call provider and Telegram APIs
         #[arg(long)]
         offline: bool,
+        /// Also make one real call to every connected model (costs a few tokens each)
+        #[arg(long, conflicts_with = "offline")]
+        ping_models: bool,
     },
     /// Run a one-shot task
     Run {
@@ -399,8 +402,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             }
             done?
         }
-        Cmd::Doctor { offline } => {
-            if !doctor::run(offline).await? {
+        Cmd::Doctor {
+            offline,
+            ping_models,
+        } => {
+            if !doctor::run(offline, ping_models).await? {
                 std::process::exit(1);
             }
         }

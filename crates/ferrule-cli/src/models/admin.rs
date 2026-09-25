@@ -560,13 +560,19 @@ fn broken_refs(cat: &Catalog) -> Vec<String> {
 
 /// One real call: a short prompt, no tools, no retries.
 pub async fn test_entry(e: &Entry) -> TestOutcome {
+    test_entry_with(e, e.key()).await
+}
+
+/// [`test_entry`] with a key that isn't in the environment yet (setup's,
+/// just typed in).
+pub async fn test_entry_with(e: &Entry, key: Option<String>) -> TestOutcome {
     let reference = e.reference();
     let fail = |said: String| TestOutcome {
         reference: reference.clone(),
         ok: false,
         said,
     };
-    let Some(key) = e.key().filter(|k| !k.is_empty()) else {
+    let Some(key) = key.filter(|k| !k.is_empty()) else {
         return fail(e.no_key());
     };
     let client = OpenAiCompatProvider::new(e.provider.clone(), &e.base_url, key, &e.model);

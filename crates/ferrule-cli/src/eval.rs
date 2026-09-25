@@ -31,7 +31,9 @@ pub enum EvalCmd {
         #[arg(long)]
         provider: Option<String>,
         /// Model to use instead of the provider's configured one (both
-        /// variants use the same)
+        /// variants use the same). Without --provider it can be any
+        /// connected model's ref: an alias or provider/model. The eval never
+        /// follows `[models] default`, a chat's pin or the fallback list
         #[arg(long)]
         model: Option<String>,
         /// Shrink the context window, for both variants, to put the harness
@@ -101,6 +103,17 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 max_tokens: (max_tokens > 0).then_some(max_tokens),
             };
             let (cfg, _) = config::Config::load()?;
+            // Only what's named here, or default_provider: a run is
+            // comparable with the last one whatever the owner has since made
+            // the default, pinned or listed as a fallback.
+            let cat = crate::models::Catalog::from_config(&cfg);
+            let (provider, model) = match (provider, model) {
+                (None, Some(w)) => match cat.resolve(&w) {
+                    Ok(e) => (Some(e.provider.clone()), Some(e.model.clone())),
+                    Err(_) => (None, Some(w)),
+                },
+                named => named,
+            };
             let name = provider
                 .or_else(|| cfg.default_provider.clone())
                 .ok_or_else(|| anyhow!("no --provider and no default_provider in the config"))?;
@@ -116,8 +129,19 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                     output: p.output,
                 })
             };
-            let pricing = prices(pcfg);
-            let base = HarnessProfile::by_name(&pcfg.profile);
+            let own = cat
+                .entries
+                .iter()
+                .find(|e| e.provider == name && e.model == model);
+            let pricing = cat
+                .price(&name, &model)
+                .map(|p| Pricing {
+                    input: p.input,
+                    cached_input: p.cached_input,
+                    output: p.output,
+                })
+                .or_else(|| prices(pcfg));
+            let base = HarnessProfile::by_name(own.map_or(&pcfg.profile, |e| &e.profile));
             let window = context_window.or(suite.context_window);
 
             if dry_run {

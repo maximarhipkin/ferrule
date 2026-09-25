@@ -96,7 +96,7 @@ impl Report {
     }
 }
 
-pub async fn run(offline: bool) -> Result<bool> {
+pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     let mut r = Report::new();
     println!(
         "ferrule doctor · v{}{}\n",
@@ -120,6 +120,7 @@ pub async fn run(offline: bool) -> Result<bool> {
     keys(&mut r, &secrets_path);
     let http = probe::client();
     providers(&mut r, &cfg, &http, offline).await;
+    models_check(&mut r, ping_models).await;
     let telegram_on = telegram(&mut r, &cfg, &http, offline).await;
     let confined = sandbox(&mut r, &cfg, &secrets_path);
     mcp(&mut r, &cfg, confined);
@@ -289,6 +290,63 @@ async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client,
                 ));
             }
             Err(e) => r.warn("provider", format!("{label}: couldn't check the key: {e}")),
+        }
+    }
+}
+
+/// M21: the models beyond each provider's own (a key for each), the
+/// default and fallback when set, anything they name that's gone, and with
+/// `--ping-models` one real call to each.
+async fn models_check(r: &mut Report, ping: bool) {
+    let Ok(models) = crate::models::shared() else {
+        return;
+    };
+    let view = models.view();
+    let extra = view.models.iter().filter(|m| !m.primary).count();
+    // A config with one model per provider and no [models]: the provider
+    // lines above said it all.
+    let in_use = extra > 0 || !view.fallback.is_empty() || !view.default_set.is_empty();
+    if in_use {
+        r.ok(
+            "models",
+            format!(
+                "{} connected · default {} · fallback {}",
+                view.models.len(),
+                view.default.as_deref().unwrap_or("none"),
+                if view.fallback.is_empty() {
+                    "off".to_string()
+                } else {
+                    view.fallback.join(" → ")
+                }
+            ),
+        );
+    }
+    for m in view.models.iter().filter(|m| !m.primary && !m.key_present) {
+        let text = format!("{}: no key (${} isn't set)", m.reference, m.key_env);
+        if m.default {
+            r.fail("models", text)
+        } else {
+            r.warn("models", text)
+        }
+    }
+    // A missing key was just said (or, for a provider's own model, above).
+    for p in view
+        .problems
+        .iter()
+        .filter(|p| in_use && !p.starts_with("no key:"))
+    {
+        r.fail("models", p);
+        r.hint("`ferrule model list` shows what's connected; `ferrule model default <ref>` fixes the default");
+    }
+    if !ping {
+        return;
+    }
+    for m in &view.models {
+        let out = models.test(&m.reference).await;
+        if out.ok {
+            r.ok("models", format!("{} · {}", out.reference, out.said));
+        } else {
+            r.warn("models", format!("{}: {}", out.reference, out.said));
         }
     }
 }

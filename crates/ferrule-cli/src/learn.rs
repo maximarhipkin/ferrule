@@ -7,7 +7,7 @@ use crate::config::{self, Config};
 use crate::ledger;
 use anyhow::{anyhow, Context as _, Result};
 use clap::Subcommand;
-use ferrule_core::{HarnessProfile, LedgerRecord};
+use ferrule_core::LedgerRecord;
 use ferrule_gateway::{
     ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, JobReport, RunStatus, Scheduler, Task,
     TaskStore, BUILTIN_CHANNEL, SCHEDULER_PSEUDO_CHANNEL,
@@ -223,23 +223,34 @@ fn options(cfg: &Config, workspace: &Path, trigger: &str) -> Options {
 fn env(cfg: &Config, workspace: &Path, provider: Option<String>) -> Result<ferrule_learn::Env> {
     let data = config::data_dir()?;
     let day_before = day_spent()?;
+    // `[learning] provider` (any model's ref), else the gateway's
+    // `--provider`, else the default model.
     let wanted = cfg.learning.provider.clone().or(provider);
-    let (name, pcfg, key) = cfg.resolve_provider(wanted.as_deref())?;
+    let cat = crate::models::Catalog::from_config(cfg);
+    let entry = match wanted.as_deref() {
+        Some(w) => cat.resolve(w).map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => cat.default_entry().map_err(|e| anyhow::anyhow!("{e}"))?.0,
+    };
+    let key = entry
+        .key()
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| anyhow::anyhow!(entry.no_key()))?;
+    let name = entry.provider.clone();
     let model = Arc::new(OpenAiCompatProvider::new(
         name.clone(),
-        &pcfg.base_url,
+        &entry.base_url,
         key,
-        &pcfg.model,
+        &entry.model,
     ));
-    let pricing = ledger::ProviderPricing::from_config(pcfg);
+    let pricing = entry.pricing;
     let price: ferrule_learn::PriceFn =
         Arc::new(move |r: &LedgerRecord| pricing.map(|p| p.cost_usd(r)));
     let dir = LearnDir::new(&data);
     let cursor = dir.state()?.cursor;
     let gate = WorkspaceGate {
         provider: model.clone(),
-        model: pcfg.model.clone(),
-        profile: HarnessProfile::by_name(&pcfg.profile),
+        model: entry.model.clone(),
+        profile: entry.harness(),
         sandbox: crate::shared_sandbox(cfg)?,
         workspace: workspace.to_path_buf(),
         check: cfg
@@ -257,7 +268,7 @@ fn env(cfg: &Config, workspace: &Path, provider: Option<String>) -> Result<ferru
         dir,
         provider: model,
         provider_name: name,
-        model: pcfg.model.clone(),
+        model: entry.model.clone(),
         ledger: ledger::build_sink(cfg),
         price,
         priced: pricing.is_some(),
