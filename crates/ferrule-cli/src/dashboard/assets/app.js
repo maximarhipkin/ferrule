@@ -536,8 +536,9 @@
   function schedule() {
     clearTimeout(timer);
     timer = null;
-    const every = sections[current].every || 15;
-    if (!document.hidden && csrf) timer = setTimeout(() => refresh(true), every * 1000);
+    // 0: only when asked (logs, extensions).
+    const every = sections[current].every ?? 15;
+    if (every > 0 && !document.hidden && csrf) timer = setTimeout(() => refresh(true), every * 1000);
   }
   function stopPolling() { clearTimeout(timer); timer = null; }
 

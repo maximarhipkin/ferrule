@@ -455,6 +455,30 @@ to the fallback with one message.
 and a login, and its tools appear. No token ever reaches the model, a
 tool result, the audit log, `/status` or an error.
 
+### M22 — the dashboard
+
+**Status.** Built (`docs/m22-dashboard.md`, user guide
+`docs/dashboard.md`; PR open).
+- One page on 127.0.0.1: health first (with a failing default's fix on
+  top), connections, models with an OpenRouter catalog and
+  recommendations, usage from the ledger, tasks, logs, extensions and
+  sub-agents.
+- The owner sends `/dashboard`, gets a one-use 10-minute link, and a
+  cloudflared quick tunnel opens on demand. `/dashboard off` revokes it
+  all.
+- Session cookies, CSRF, Origin checks and a host allow-list. Destructive
+  operations ask to confirm.
+- It works when the model doesn't: nothing on it calls the model, and
+  `/dashboard` is answered by the gateway itself.
+- `ferrule model catalog|recommend|fill-prices`; `doctor` warns on
+  unpriced models.
+- Eval stays hermetic. Checked on Linux; the Cloudflare account is
+  unchanged.
+
+**Done means.** From a phone, with every model down, the owner opens the
+page, sees the outage on top, picks a catalog model as the default, and
+the next message works.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

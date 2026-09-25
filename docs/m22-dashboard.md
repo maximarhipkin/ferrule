@@ -1,7 +1,9 @@
 # M22: the dashboard — one page for the whole app (design)
 
-Status: design, 2026-09-25, branch `m22-dashboard`. Follows M19b
-(reliability), M20 (connections) and M21 (models).
+Status: built, 2026-09-25, branch `m22-dashboard` (PR to main, not
+merged). Follows M19b (reliability), M20 (connections) and M21 (models).
+Where the build departs from this design: **As built** at the end. The
+user guide is [dashboard.md](dashboard.md).
 
 ## Why
 
@@ -286,3 +288,58 @@ link_minutes = 10     # a login link expires after this if unused
   may come later; it needs the eval harness wired into the gateway.
 - Transcripts, sub-agent control, and any write to the relay Worker.
 - A dashboard for `ferrule chat` / `ferrule run`.
+
+## As built
+
+The design held. Where the build differs, or adds something:
+
+- **Polling** is per section: health every 3 s, agents 5 s, models,
+  connections and tasks 10 s, usage 30 s. Logs and extensions refresh
+  only when asked or when a filter changes. It stops while the tab is
+  hidden, as designed.
+- **Log lines hide URL paths.** A warning quoting a failing request (for
+  example "error sending request for url (http://host/mcp/<token>)")
+  shows `http://host/…`. The secret-scan test caught an MCP server's URL
+  path in a reqwest error, so the rule the heartbeat and extensions already
+  followed now covers log text too.
+- **The reference catalog** is `[models] catalog_url`. Unset, it's
+  OpenRouter's public list, read when no connected provider is OpenRouter.
+  `""` turns it off, which every hermetic test does. A connected
+  OpenRouter provider is itself the reference.
+- **`ferrule model catalog`** takes `--search`, `--tools` and `--json`. No
+  `--provider`: rows name their source, and `--search` narrows them.
+- **Tasks.** `TasksAdmin` is behind `ferrule tasks pause|resume|delete` and
+  the page. Telegram has no task commands, so nothing there moved.
+  `ferrule tasks run-now` still runs the task in its own process. The
+  page's **Run now** makes the task due, so the gateway's scheduler runs it
+  at its next tick, with its no-overlap guard and gate.
+- **Eval hermeticity** is tested by running the smoke suite through the
+  binary with `[dashboard]` configured and checking that no marker or links
+  file was written. `ferrule eval` never builds the dashboard, so no fake
+  `cloudflared` was needed.
+- **Asset size:** `app.js` 30.4 KB, `app.css` 3.0 KB, `index.html` 0.5 KB,
+  33.9 KB in total, embedded with `include_str!`.
+
+**Tests.**
+- Unit tests in `dashboard/` (auth, http, api), `models/catalog.rs` and
+  `tasks_admin.rs`.
+- `tests/dashboard.rs` runs the real binary against a fake Telegram and
+  scripted model servers, one of them serving a recorded OpenRouter
+  `/models` (`tests/fixtures/openrouter-models.json`). It covers:
+  - the one-time link: used twice, a non-owner, tampered, no session or
+    CSRF, a foreign Origin;
+  - `/dashboard off`;
+  - the kill switch from the page;
+  - a stuck turn shown and stopped from the page;
+  - the default and pins agreeing with Telegram and the config, and a hand
+    edit showing on refresh;
+  - every model down: the outage on top, and a catalog pick as the default
+    fixing the next turn;
+  - the catalog: the tool filter, `:free`, prices per 1M, the offline
+    cache, a missing recommended entry, the monthly estimate;
+  - `ferrule doctor` on an unpriced model;
+  - the usage against `ferrule ledger`;
+  - a seeded-secret scan of every page and GET;
+  - the eval never touching the dashboard.
+- The connect/disconnect test drives M20's API against its mock
+  authorization server and relay.
