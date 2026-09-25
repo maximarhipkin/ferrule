@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-hooks"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Lifecycle hooks: command hooks, [hooks] config, workspace trust, the audit log"
 
