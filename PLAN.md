@@ -2731,10 +2731,10 @@ binary, 10 in parallel × 8: 3/80 failures before the fix, 0/80 after.
 
 Branch `ci-fix-3os`, cut from main at 0d091af, PR #11 (not merged). This is the 3-OS pass
 M12–M19 deferred. On 0d091af, CI (run 36070309686) was red on macOS, Windows and
-the ubuntu e2e step. **Final run: 36071977256 on 092873a, green on ubuntu-24.04
+the ubuntu e2e step. **Last completed green run: 36071977256 on 092873a (also green: PR run 36072883759 on 32cd8e6), green on ubuntu-24.04
 (555 passed, e2e included), macos-14 (552 passed) and windows-latest (521 passed); 2
 ignored on each, both pre-existing.** The counts differ because of `#[cfg(unix)]` gates
-that already existed; this pass adds none, and no test was ignored or loosened.
+that already existed. This pass adds no `cfg` gate (one `cfg!(windows)` condition, below), and no test was ignored or loosened.
 
 **Failures and fixes:**
 - **Windows `\\?\` paths.** `std::fs::canonicalize` gives verbatim paths on Windows.
@@ -2757,6 +2757,24 @@ that already existed; this pass adds none, and no test was ignored or loosened.
   `PathBuf::push` normalises separators after a verbatim prefix. Also, rename-api's
   reference `solve.sh` compared a Python `glob` result to `shop/__init__.py`, and glob
   gives `shop\__init__.py` on Windows. Neither the task, the grader nor the mock changed.
+- **Windows: `lock::tests::concurrent_writers_lose_nothing` failed in a later run**
+  (workflow_dispatch 36072885411 on 32cd8e6, `Access is denied`; PR #11's run on the same
+  sha had passed). The test was right; the bug was real. Windows answers
+  "access denied" for a moment in two places other systems don't. One is creating the
+  extensions lock's `.lk` file while the last holder's delete is still pending (the
+  delete-pending status maps to ERROR_ACCESS_DENIED). The other is renaming over
+  `extensions.lock.json` while something has it open (an antivirus or indexer scan). A
+  daemon and the owner's CLI updating at once could lose an update with an I/O error.
+  Both now wait it out like a held lock, within the lock's 5 s wait. On other OSes a
+  permission error is still an error at once, which makes this `cfg!(windows)` the one
+  platform condition this pass adds. The learning loop's own lock
+  (`ferrule-learn/src/files.rs`) refuses rather than waits, so there the same case
+  would read as "another pass is running", once. It is left as is.
+  **Not yet proven in CI:** both runs on the fix's commit ba5c48e (pull_request
+  36100515458, workflow_dispatch 36100513382) never started a job. GitHub refused them
+  because "recent account payments have failed or your spending limit needs to be
+  increased". So the fix has passed locally on Linux only. It still needs a PR run and
+  at least two dispatch runs on Windows once Actions billing is fixed.
 
 **Now verified by run 36071977256** (the named behaviour's tests passed on that OS):
 - M12: owner locks (`File::try_lock`, the startup sweep); worktree git calls and paths,
