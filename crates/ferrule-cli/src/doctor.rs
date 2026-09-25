@@ -375,6 +375,13 @@ async fn models_check(r: &mut Report, ping: bool) {
         r.fail("models", p);
         r.hint("`ferrule model list` shows what's connected; `ferrule model default <ref>` fixes the default");
     }
+    let unpriced = crate::models::catalog::unpriced(&models.catalog());
+    for u in &unpriced {
+        r.warn("models", u);
+    }
+    if !unpriced.is_empty() {
+        r.hint("`ferrule model fill-prices` fills them from the provider catalogs");
+    }
     if !ping {
         return;
     }

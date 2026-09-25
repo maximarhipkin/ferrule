@@ -125,6 +125,13 @@ pub struct Tunnel {
     _child: tokio::process::Child,
 }
 
+impl Tunnel {
+    /// Whether cloudflared is still running.
+    pub fn alive(&mut self) -> bool {
+        matches!(self._child.try_wait(), Ok(None))
+    }
+}
+
 /// `cloudflared tunnel --url http://127.0.0.1:<port>`, and the
 /// `https://….trycloudflare.com` it prints, within 30 s.
 pub async fn open(cloudflared: &Path, port: u16) -> Result<Tunnel> {

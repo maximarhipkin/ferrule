@@ -383,8 +383,8 @@ that convention yet — ask before introducing one).
     - Max's relay is live at `https://ferrule-relay.maximarhipkin.workers.dev`.
     - **Open edges and the unverified list:** see the M20 session-log
       entry.
-  - **M19c — live-bot fixes**: **built** (2026-09-25, parts 1–3 on branch
-    `m19c-live-fixes`, PR to main open, not merged, to ship as 0.2.1; see
+  - **M19c — live-bot fixes**: **built and merged** (2026-09-25, PR #15;
+    to ship as 0.2.1; see
     the M19c session-log entry). Design, as-built notes, the owner's
     "doesn't answer" checklist and the exact messages:
     `docs/m19c-live-fixes.md`.
@@ -399,6 +399,29 @@ that convention yet — ask before introducing one).
     - Doctor's webhook, second-gateway (`health::running_gateways`) and
       `:free` checks; the logs command in doctor and status.
     **Decisions for Max:** see the M19c session-log entry.
+  - **M22 dashboard**: **built and merged** (2026-09-25, PR #16). Design and as-built
+    notes are in `docs/m22-dashboard.md`; the user guide is
+    `docs/dashboard.md`.
+    - One page, served on 127.0.0.1 only by the gateway (or by `ferrule
+      dashboard` when none runs): health, connections, models with an
+      OpenRouter catalog and recommendations, usage, tasks, logs,
+      extensions and agents.
+    - The owner sends `/dashboard` and gets a one-use, 10-minute link. It
+      is answered by the gateway itself, ahead of every other door, so it
+      works mid-turn, with every model down or the kill switch on. A
+      cloudflared quick tunnel opens on demand and closes when idle;
+      `/dashboard off` revokes everything.
+    - Sessions are cookies (HttpOnly, SameSite=Strict, host-bound, idle
+      and absolute timeouts). Every POST needs CSRF, JSON and a matching
+      Origin. Destructive operations ask to confirm first.
+    - Every change goes through the existing APIs (M21's `Models`, M20's
+      `Connections`, M19's hub) or a new one in the same style:
+      `Router::stop`, `TasksAdmin`, `models::catalog`. Nothing on it calls
+      the model. Every response passes the `Redactor`.
+    - `ferrule dashboard [link [--remote] | off]`, `ferrule model catalog
+      | recommend | fill-prices`; `doctor` warns on unpriced models.
+    - **Decisions for Max and open edges:** see the M22 session-log
+      entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): parallel read-only tool calls, provider streaming
@@ -3319,3 +3342,101 @@ both times.
 - A real OpenRouter account and a real bot.
 - macOS's `ps` scan and the end-to-end tests on macOS and Windows, until CI
   runs.
+
+### 2026-09-25 — M22 dashboard (Devi, Opus 5.5)
+
+The design is `docs/m22-dashboard.md`. Its **As built** section lists where
+the build departs from it. The user guide is `docs/dashboard.md`. The work
+is on branch `m22-dashboard`, cut from `main` at `cd614dd`, with a PR to
+`main` (not merged).
+
+It builds on:
+- M19's hub (kill switch, caps, audit log, owner)
+- M19b's `Health`, `RecentLog`, `/status` and `Redactor`
+- M20's `Connections` and `ferrule_connections::tunnel`
+- M21's `Models` API
+
+The relay Worker wasn't touched, so the Cloudflare account is unchanged.
+
+**Commits:**
+- `7ddf1fb` design: the quick tunnel on demand (the relay is a mailbox,
+  not a proxy), one-time links in the URL fragment, the session with CSRF
+  and confirm, the page map, the read models and operations per section,
+  polling, what's never shown, eval hermeticity, failure modes.
+- `823b96c` part 1:
+  - `Router::stop` ends one lane's turn. The deadline guard became a
+    per-lane turn guard whose stop also drops the call in flight.
+  - `Health` keeps the heartbeat's last result and the startup notice's
+    text.
+  - An interceptor's empty reply takes a message without answering it.
+- `7c1c153` part 2: the core.
+  - The 127.0.0.1-only server, the host allow-list, security headers.
+  - One-time links (file-backed, SHA-256 on disk, 0600) becoming session
+    cookies, CSRF and Origin on every POST.
+  - `/dashboard` as the first door (owner only, the link only to the
+    private chat), the quick tunnel that closes when idle, `/dashboard off`
+    across processes, `ferrule dashboard`, the page shell.
+- `f7d4b9d` part 3: the sections.
+  - `/api/*` for all eight sections, and the page's JS for them.
+  - `models::catalog`: OpenRouter's list, providers' `/models`, presets,
+    an hourly cache with an offline fallback, the tool filter, `:free`,
+    recommendations with a monthly estimate, add-as-default after a real
+    test, `fill-prices` that never overwrites a hand-set price.
+  - `TasksAdmin` (audited pause/resume/run now/delete) behind `ferrule
+    tasks` and the page.
+  - `ferrule model catalog|recommend|fill-prices`, the unpriced-model
+    warning in `doctor`.
+  - Unit tests, and `tests/dashboard.rs`: 7 integration tests on the real
+    binary.
+- part 4: log lines hide URL paths (the secret-scan test caught an MCP
+  URL's path in a reqwest error); logs and extensions no longer poll
+  (`every: 0` was read as 15 s); the docs, this entry, the roadmap.
+
+**Checks (final, after merging `main`):** fmt clean; clippy `-D warnings`
+clean; `cargo test --workspace` 692 passed, 0 failed, 2 ignored. Checked
+on Linux. The macOS and Windows runs are this PR's CI.
+
+**Eval (mock, `ferrule eval run evals/starter --variant ab`, all 20
+tasks):**
+- engineered 20/20, naive 11/20, +45 pts
+- 150 calls, 951.5k input + 6.2k output tokens, $0.98 ($0.53 / $0.45)
+- 13 compactions / 11 truncations; 4 failed checks fixed
+
+That is identical to the run before M22. The eval's data dir had no
+`gateway/dashboard.json` and no `private/dashboard/` afterwards.
+
+**Size:** the page is 33.9 KB of embedded HTML/CSS/JS (`app.js` 30.4 KB).
+There's no build step and no library.
+
+**Defaults for Max to confirm:**
+- `remote = "tunnel"`: `/dashboard` opens a quick tunnel when
+  `cloudflared` is installed. `"off"` gives a local link and `ssh -L`.
+- A link lives 10 min and works once. A session lasts 12 h at most and
+  ends after 30 idle minutes. The tunnel closes after 30 minutes with no
+  session and no unused link.
+- The reference catalog is OpenRouter's public list, fetched only when a
+  page or command asks, at most hourly. `[models] catalog_url = ""` turns
+  it off.
+- The recommended list (`crates/ferrule-cli/src/models/recommended.toml`, three tiers: value,
+  strongest, free) is my pick as of today. Max should look at it.
+- The catalog hides tool-less models by default. `:free` is flagged, not
+  hidden.
+
+**Open edges:**
+- Sessions are in memory, so a gateway restart logs everyone out (by
+  design). Unused links survive until they expire.
+- A quick tunnel has no SLA. The page says so and `/dashboard` opens a new
+  one.
+- No "evaluate a candidate" button (out of scope; it needs the eval
+  harness in the gateway).
+- Extensions are read-only: no enable/disable operation exists for
+  configured MCP servers.
+
+**Unverified:**
+- A real phone through a real quick tunnel. The tunnel path is M20's
+  tested `tunnel::open`, and every test here ran on loopback.
+- The live OpenRouter `/models` (tests use a recorded fixture). This
+  container's TLS-intercepting proxy is in the way.
+- RTL rendering was checked by construction (`dir="auto"` on every text
+  that comes from outside), not on a device.
+- macOS and Windows until this PR's CI run.

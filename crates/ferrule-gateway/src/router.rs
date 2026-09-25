@@ -66,6 +66,8 @@ struct Lane {
     channel: String,
     chat_id: String,
     state: Arc<Mutex<LaneState>>,
+    /// Ends this lane's running turn (M22: the dashboard's "stop this turn").
+    guard: Arc<TurnGuard>,
 }
 
 /// What a lane is doing, for `/status`, the busy notice and the watchdog
@@ -297,7 +299,7 @@ impl Router {
             }
         }
         let state = Arc::new(Mutex::new(LaneState::default()));
-        let tx = self.spawn_lane(session_id, &msg.channel, state.clone())?;
+        let (tx, guard) = self.spawn_lane(session_id, &msg.channel, state.clone())?;
         lanes.insert(
             session_id.to_string(),
             Lane {
@@ -305,6 +307,7 @@ impl Router {
                 channel: msg.channel.clone(),
                 chat_id: msg.chat_id.clone(),
                 state: state.clone(),
+                guard,
             },
         );
         Ok((tx, state))
@@ -316,6 +319,22 @@ impl Router {
     /// execution isn't). False when there was no lane.
     pub fn retire(&self, session_id: &str) -> bool {
         self.lanes.lock().unwrap().remove(session_id).is_some()
+    }
+
+    /// Ends `session_id`'s running turn the way the kill switch ends every
+    /// run (the model or tool call in flight is dropped), and only that
+    /// one: its queue and the other lanes go on. `by` is said in the
+    /// turn's final message. False when the lane has no turn running.
+    pub fn stop(&self, session_id: &str, by: &str) -> bool {
+        let lanes = self.lanes.lock().unwrap();
+        let Some(lane) = lanes.get(session_id) else {
+            return false;
+        };
+        if lane.state.lock().unwrap().busy_since.is_none() {
+            return false;
+        }
+        lane.guard.stop(by);
+        true
     }
 
     /// Every session with a lane, busy or idle (M21: a new default
@@ -376,7 +395,7 @@ impl Router {
         session_id: &str,
         channel_name: &str,
         state: Arc<Mutex<LaneState>>,
-    ) -> Result<mpsc::Sender<LaneJob>, GatewayError> {
+    ) -> Result<(mpsc::Sender<LaneJob>, Arc<TurnGuard>), GatewayError> {
         let transcript = Transcript::create(&self.sessions_dir, session_id)?;
         let history = transcript.read_messages().unwrap_or_default();
         let mut agent = (self.agent_factory)(session_id, transcript)?;
@@ -386,22 +405,20 @@ impl Router {
         for m in history.into_iter().filter(|m| m.role != Role::System) {
             agent.messages.push(m);
         }
-        // The turn's deadline sits in front of whatever guard the factory
-        // gave the agent (M19's), so it ends a turn the way `/stop` does.
-        let deadline = self.max_turn.map(|limit| {
-            let d = Arc::new(TurnDeadline::new(agent.guard(), limit));
-            agent.set_guard(d.clone());
-            d
-        });
+        // The turn's guard (its deadline, and a stop for this lane alone)
+        // sits in front of whatever guard the factory gave the agent
+        // (M19's), so it ends a turn the way `/stop` does.
+        let guard = Arc::new(TurnGuard::new(agent.guard(), self.max_turn));
+        agent.set_guard(guard.clone());
         let channel = self.channels.get(channel_name).cloned();
         let (tx, rx) = mpsc::channel(self.lane_queue_capacity);
         let watch = LaneWatch {
             state,
             changed: self.changed.clone(),
-            deadline,
+            guard: guard.clone(),
         };
         tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
-        Ok(tx)
+        Ok((tx, guard))
     }
 }
 
@@ -435,13 +452,9 @@ async fn run_lane(
             watch.state.clone(),
             watch.changed.clone(),
         ));
-        if let Some(d) = &watch.deadline {
-            d.arm();
-        }
+        watch.guard.arm();
         let run_result = agent.run(&inbound.text, etx).await;
-        if let Some(d) = &watch.deadline {
-            d.disarm();
-        }
+        watch.guard.disarm();
         // Whatever still holds a sender (a sub-agent) now finds it closed
         // rather than feeding the next turn's state.
         drain.abort();
@@ -483,7 +496,7 @@ async fn run_lane(
 struct LaneWatch {
     state: Arc<Mutex<LaneState>>,
     changed: Arc<Notify>,
-    deadline: Option<Arc<TurnDeadline>>,
+    guard: Arc<TurnGuard>,
 }
 
 impl LaneWatch {
@@ -589,42 +602,69 @@ pub fn tool_activity(name: &str, args: &serde_json::Value) -> String {
     format!("tool `{name}` ({})", crate::health::clip(&detail, 60))
 }
 
-/// M19b's `max_turn_minutes`: a guard in front of the agent's own that
-/// halts the turn once it's past its deadline, the way the kill switch
-/// does (the running model or tool call is dropped).
-struct TurnDeadline {
+/// A guard in front of the agent's own that halts the turn the way the
+/// kill switch does (the running model or tool call is dropped): once it's
+/// past M19b's `max_turn_minutes`, or when [`Router::stop`] asks (M22).
+/// Both are per turn: `arm` starts a turn clean.
+struct TurnGuard {
     inner: Option<Arc<dyn Guard>>,
-    limit: Duration,
+    limit: Option<Duration>,
     deadline: Mutex<Option<tokio::time::Instant>>,
+    /// The final message, once the turn was asked to stop.
+    stopped: Mutex<Option<String>>,
+    stop_now: Notify,
 }
 
-impl TurnDeadline {
-    fn new(inner: Option<Arc<dyn Guard>>, limit: Duration) -> Self {
+impl TurnGuard {
+    fn new(inner: Option<Arc<dyn Guard>>, limit: Option<Duration>) -> Self {
         Self {
             inner,
             limit,
             deadline: Mutex::new(None),
+            stopped: Mutex::new(None),
+            stop_now: Notify::new(),
         }
     }
 
     fn arm(&self) {
-        *self.deadline.lock().unwrap() = Some(tokio::time::Instant::now() + self.limit);
+        *self.stopped.lock().unwrap() = None;
+        *self.deadline.lock().unwrap() = self.limit.map(|l| tokio::time::Instant::now() + l);
     }
 
     fn disarm(&self) {
         *self.deadline.lock().unwrap() = None;
     }
 
+    fn stop(&self, by: &str) {
+        *self.stopped.lock().unwrap() = Some(format!(
+            "Stopped from {by}: I ended this turn. Nothing after the last step was done; send a new message to continue."
+        ));
+        self.stop_now.notify_waiters();
+    }
+
     fn message(&self) -> String {
         format!(
             "Stopped: this turn ran for {} (max_turn_minutes), so I ended it to free the chat. Nothing after the last step was done; send a new message to continue.",
-            crate::health::human(self.limit)
+            crate::health::human(self.limit.unwrap_or_default())
         )
+    }
+
+    /// Resolves with the stop's message once [`Self::stop`] is called.
+    async fn stop_asked(&self) -> String {
+        loop {
+            let notified = self.stop_now.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(why) = self.stopped.lock().unwrap().clone() {
+                return why;
+            }
+            notified.await;
+        }
     }
 }
 
 #[async_trait::async_trait]
-impl Guard for TurnDeadline {
+impl Guard for TurnGuard {
     fn begin(&self) {
         if let Some(g) = &self.inner {
             g.begin();
@@ -633,6 +673,9 @@ impl Guard for TurnDeadline {
 
     fn before_model_call(&self) -> Option<String> {
         if let Some(why) = self.inner.as_ref().and_then(|g| g.before_model_call()) {
+            return Some(why);
+        }
+        if let Some(why) = self.stopped.lock().unwrap().clone() {
             return Some(why);
         }
         let deadline = *self.deadline.lock().unwrap();
@@ -656,15 +699,16 @@ impl Guard for TurnDeadline {
                 None => std::future::pending().await,
             }
         };
-        match &self.inner {
-            Some(g) => tokio::select! {
-                why = g.halted() => why,
-                _ = expired => self.message(),
-            },
-            None => {
-                expired.await;
-                self.message()
+        let inner = async {
+            match &self.inner {
+                Some(g) => g.halted().await,
+                None => std::future::pending().await,
             }
+        };
+        tokio::select! {
+            why = inner => why,
+            _ = expired => self.message(),
+            why = self.stop_asked() => why,
         }
     }
 }
@@ -1133,6 +1177,43 @@ mod tests {
         // The deadline is per turn: the next one isn't born expired.
         assert_eq!(texts[1], "echo: after");
         wait_until(|| router.snapshot().is_empty()).await;
+    }
+
+    #[tokio::test]
+    async fn stop_ends_one_lanes_turn_and_the_next_one_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let factory: AgentFactory = Arc::new(|_sid, transcript| {
+            Ok(Agent::new(
+                Arc::new(HangingProvider),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
+        });
+        let router = Router::new(dir.path(), factory, channels);
+        router.dispatch(inbound("chat-1", "hang")).await.unwrap();
+        router.dispatch(inbound("chat-1", "after")).await.unwrap();
+        wait_until(|| router.snapshot().iter().any(|l| l.busy_for.is_some())).await;
+        let sid = router.snapshot()[0].session_id.clone();
+        assert!(!router.stop("no-such-session", "the dashboard"));
+        assert!(router.stop(&sid, "the dashboard"));
+        wait_until(|| recorder.texts().len() == 2).await;
+        let texts = recorder.texts();
+        assert!(
+            texts[0].starts_with("Stopped from the dashboard: I ended this turn."),
+            "{texts:?}"
+        );
+        // The stop is per turn: the next one isn't born stopped.
+        assert_eq!(texts[1], "echo: after");
+        wait_until(|| router.snapshot().iter().all(|l| l.busy_for.is_none())).await;
+        // An idle lane has nothing to stop.
+        assert!(!router.stop(&sid, "the dashboard"));
     }
 
     #[tokio::test]

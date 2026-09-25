@@ -40,6 +40,7 @@ pub struct ModelRow {
     pub profile: String,
     pub context_window: usize,
     pub pricing: Option<ProviderPricing>,
+    pub price_source: Option<String>,
     /// Skipped for this long yet, after an outage.
     pub down_secs: Option<u64>,
     pub down_reason: Option<String>,
@@ -145,6 +146,7 @@ impl Models {
                     profile: e.profile.clone(),
                     context_window: e.harness().context_window,
                     pricing: e.pricing,
+                    price_source: e.price_source.clone(),
                     down_secs: down.map(|d| (d.until - now).as_secs()),
                     down_reason: down.map(|d| d.reason.clone()),
                     aliases: e.aliases.clone(),
@@ -461,7 +463,7 @@ impl Models {
     /// Read-modify-write the config as it is now, under its lock, and
     /// refuse an edit that leaves it unparsable or breaks a reference that
     /// worked before.
-    fn edit_config<T>(
+    pub(crate) fn edit_config<T>(
         &self,
         edit: impl FnOnce(&mut Target, &Catalog) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {

@@ -140,6 +140,11 @@ impl RecentLog {
             .map(|(at, level, msg)| format!("{} {level} {msg}", clock(*at)))
             .collect()
     }
+
+    /// Every entry kept, oldest first: when, the level, the message.
+    pub fn entries(&self) -> Vec<(SystemTime, String, String)> {
+        self.entries.lock().unwrap().iter().cloned().collect()
+    }
 }
 
 /// `[health]`, as the gateway uses it (docs/m19b-reliability.md).
@@ -215,6 +220,10 @@ pub struct Health {
     systemd: Option<SystemdWatchdog>,
     /// More reasons for a degraded heartbeat.
     probes: Vec<Probe>,
+    /// The last heartbeat: when, and the error if it didn't get through.
+    last_beat: Mutex<Option<(SystemTime, Option<String>)>>,
+    /// What the startup notice said, kept after it's sent (M22).
+    last_start: Mutex<Option<String>>,
 }
 
 pub const STATUS_FILE: &str = "status.txt";
@@ -283,6 +292,8 @@ impl Health {
             startup: Mutex::new(None),
             systemd: None,
             probes: Vec::new(),
+            last_beat: Mutex::new(None),
+            last_start: Mutex::new(None),
         }
     }
 
@@ -360,6 +371,7 @@ impl Health {
 
     /// Sets the message the gateway sends once it runs.
     pub fn with_startup_notice(self, notice: Option<Notice>) -> Self {
+        *self.last_start.lock().unwrap() = notice.as_ref().map(|n| n.text.clone());
         *self.startup.lock().unwrap() = notice;
         self
     }
@@ -419,6 +431,28 @@ impl Health {
 
     pub fn redactor(&self) -> &Redactor {
         &self.redactor
+    }
+
+    /// When the process started.
+    pub fn started(&self) -> SystemTime {
+        self.started
+    }
+
+    /// The startup notice's text (the restart notice after an unclean
+    /// exit, or "back up"), redacted; `None` for a quiet clean start.
+    pub fn last_start(&self) -> Option<String> {
+        let text = self.last_start.lock().unwrap().clone()?;
+        Some(self.redactor.redact(&text))
+    }
+
+    /// The heartbeat got through (`None`) or failed (why), just now.
+    pub(crate) fn beat(&self, error: Option<String>) {
+        *self.last_beat.lock().unwrap() = Some((SystemTime::now(), error));
+    }
+
+    /// The last heartbeat: when, and its error if it failed. Never the URL.
+    pub fn last_heartbeat(&self) -> Option<(SystemTime, Option<String>)> {
+        self.last_beat.lock().unwrap().clone()
     }
 
     pub fn uptime(&self) -> Duration {

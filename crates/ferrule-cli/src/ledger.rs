@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 /// USD per million tokens. Only built when all three prices are configured —
 /// a partial set would silently undercount.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ProviderPricing {
     pub input: f64,
     pub cached_input: f64,

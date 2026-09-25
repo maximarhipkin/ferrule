@@ -3,6 +3,7 @@ mod browser;
 mod config;
 mod config_follow;
 mod connections;
+mod dashboard;
 mod doctor;
 mod eval;
 mod filewrite;
@@ -20,6 +21,7 @@ mod secrets;
 mod self_extend;
 mod service;
 mod setup;
+mod tasks_admin;
 mod trust;
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -137,6 +139,13 @@ enum Cmd {
     /// What the running gateway is doing: turns, spend, schedule, channels
     /// and recent errors (the same report `/status` answers in a chat)
     Status,
+    /// The dashboard: a one-time login link to the running gateway's page
+    /// (or the page served from here when none runs), revoke every session
+    /// (docs/dashboard.md)
+    Dashboard {
+        #[command(subcommand)]
+        op: Option<dashboard::cli::DashCmd>,
+    },
     /// Models: list the connected ones, set the default, test one, add,
     /// remove, alias, pin a chat, set the fallback order (docs/models.md)
     Model {
@@ -544,6 +553,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::Dashboard { op } => dashboard::cli::cmd(op).await?,
         Cmd::Model { op } => models::cmd(op).await?,
         Cmd::Tasks { op } => {
             tasks_cmd(op).await?;
@@ -1560,9 +1570,46 @@ async fn run_gateway(
         dunce::canonicalize(&workspace).unwrap_or(workspace),
     );
     let lanes = Arc::downgrade(&router);
+    // M22: the page on 127.0.0.1, and `/dashboard` before every other door.
+    let dash = if cfg.dashboard.enabled {
+        let dash = dashboard::Dashboard::new(
+            cfg.dashboard.clone(),
+            dashboard::auth::Links::at(dashboard::auth::Links::default_path()?),
+            dashboard::Ctx {
+                live: Some(dashboard::api::Live {
+                    router: lanes.clone(),
+                    health: health.clone(),
+                    channels: adapters.clone(),
+                    fixed: provider.clone(),
+                    retire: retirer(lanes.clone()),
+                }),
+                ..dashboard::Ctx::from_config(&cfg)
+            },
+        );
+        match dash.bind(cfg.dashboard.port).await {
+            Ok(port) => {
+                dashboard::cli::write_marker(port);
+                tracing::info!(port, "dashboard on 127.0.0.1");
+                Some(dash)
+            }
+            Err(e) => {
+                tracing::warn!("dashboard: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut gateway = Gateway::new(router)
         .with_health(health.clone())
-        .with_redactor(Arc::new(health::redactor(&cfg)))
+        .with_redactor(Arc::new(health::redactor(&cfg)));
+    if let Some(dash) = &dash {
+        gateway = gateway.with_interceptor(Arc::new(dashboard::door::DashboardDoor {
+            dash: dash.clone(),
+            hub: hub.clone(),
+        }));
+    }
+    let mut gateway = gateway
         .with_interceptor(Arc::new(trust::OwnerDoor {
             hub: hub.clone(),
             plan: Some(plan),
@@ -1571,23 +1618,7 @@ async fn run_gateway(
             models: models::shared()?,
             hub,
             fixed: provider,
-            retire: Arc::new(move |session: Option<&str>| {
-                let Some(router) = lanes.upgrade() else {
-                    return;
-                };
-                match session {
-                    Some(s) => {
-                        router.retire(s);
-                    }
-                    None => {
-                        for s in router.sessions() {
-                            if !s.starts_with("scheduler__") {
-                                router.retire(&s);
-                            }
-                        }
-                    }
-                }
-            }),
+            retire: retirer(lanes.clone()),
         }));
     if let Some(conns) = connections::shared(&cfg) {
         gateway = gateway.with_interceptor(Arc::new(connections::ConnectionsDoor {
@@ -1614,6 +1645,10 @@ async fn run_gateway(
     // it's stopped explicitly rather than left dangling.
     scheduler_handle.abort();
     health.shutdown();
+    if dash.is_some() {
+        dashboard::cli::remove_marker();
+    }
+    drop(dash);
     result?;
     Ok(())
 }
@@ -1753,28 +1788,13 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
             }
         }
         TasksCmd::Pause { id } => {
-            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
-            if store.set_enabled(&id, false)? {
-                println!("paused {id}");
-            } else {
-                println!("no such task: {id}");
-            }
+            println!("{}", tasks_admin::TasksAdmin::open()?.pause(&id, "cli")?)
         }
         TasksCmd::Resume { id } => {
-            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
-            if store.set_enabled(&id, true)? {
-                println!("resumed {id}");
-            } else {
-                println!("no such task: {id}");
-            }
+            println!("{}", tasks_admin::TasksAdmin::open()?.resume(&id, "cli")?)
         }
         TasksCmd::Delete { id } => {
-            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
-            if store.delete(&id)? {
-                println!("deleted {id}");
-            } else {
-                println!("no such task: {id}");
-            }
+            println!("{}", tasks_admin::TasksAdmin::open()?.delete(&id, "cli")?)
         }
         TasksCmd::Runs { id, limit } => {
             let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
@@ -1869,6 +1889,28 @@ async fn tasks_run_now(
         }
     }
     Ok(())
+}
+
+/// After a model change: retire one lane, or with `None` every chat's
+/// (never a scheduled task's), so the next turn builds on the new model.
+fn retirer(lanes: std::sync::Weak<Router>) -> models::Retire {
+    Arc::new(move |session: Option<&str>| {
+        let Some(router) = lanes.upgrade() else {
+            return;
+        };
+        match session {
+            Some(s) => {
+                router.retire(s);
+            }
+            None => {
+                for s in router.sessions() {
+                    if !s.starts_with("scheduler__") {
+                        router.retire(&s);
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skills::SkillSet {

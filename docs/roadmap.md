@@ -457,7 +457,7 @@ tool result, the audit log, `/status` or an error.
 
 ### M19c — live-bot fixes
 
-**Status.** Built (`docs/m19c-live-fixes.md`; PR open; ships as 0.2.1).
+**Status.** Built and merged (`docs/m19c-live-fixes.md`; PR #15; ships as 0.2.1).
 Found on a live bot that stayed silent. Every reason it doesn't answer is
 now told to the owner in Telegram, or shown by `/status`, `ferrule
 status` and `ferrule doctor`:
@@ -475,6 +475,30 @@ status` and `ferrule doctor`:
 **Done means.** An owner whose bot doesn't answer finds the reason in the
 chat, or by going /status → `ferrule status` → `ferrule doctor` → the
 journal, without reading code.
+
+### M22 — the dashboard
+
+**Status.** Built and merged (`docs/m22-dashboard.md`, user guide
+`docs/dashboard.md`; PR #16).
+- One page on 127.0.0.1: health first (with a failing default's fix on
+  top), connections, models with an OpenRouter catalog and
+  recommendations, usage from the ledger, tasks, logs, extensions and
+  sub-agents.
+- The owner sends `/dashboard`, gets a one-use 10-minute link, and a
+  cloudflared quick tunnel opens on demand. `/dashboard off` revokes it
+  all.
+- Session cookies, CSRF, Origin checks and a host allow-list. Destructive
+  operations ask to confirm.
+- It works when the model doesn't: nothing on it calls the model, and
+  `/dashboard` is answered by the gateway itself.
+- `ferrule model catalog|recommend|fill-prices`; `doctor` warns on
+  unpriced models.
+- Eval stays hermetic. Checked on Linux; the Cloudflare account is
+  unchanged.
+
+**Done means.** From a phone, with every model down, the owner opens the
+page, sees the outage on top, picks a catalog model as the default, and
+the next message works.
 
 ## Other open tracks
 

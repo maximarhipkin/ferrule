@@ -48,3 +48,12 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The M20 mocks (an OAuth + MCP provider, the relay), shared with
+# ferrule-connections' own tests through `#[path]`.
+bytes = "1"
+http = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+ring = "0.17"
+url = "2"

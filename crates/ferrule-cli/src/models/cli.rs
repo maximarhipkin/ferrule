@@ -45,11 +45,44 @@ pub enum ModelCmd {
         #[arg(long, conflicts_with = "references")]
         off: bool,
     },
+    /// The models your providers offer, with prices per 1M tokens (M22):
+    /// each provider's list and OpenRouter's, refetched at most hourly
+    Catalog {
+        /// Words the id or name must contain
+        #[arg(long)]
+        search: Option<String>,
+        /// Only models that can call tools (ferrule's agents need them)
+        #[arg(long)]
+        tools: bool,
+        /// Sort: in (default), out, context or name
+        #[arg(long, default_value = "in")]
+        sort: String,
+        /// Fetch now, even if the cached list is recent
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// A short curated list by tier, checked against OpenRouter's live list,
+    /// with what each would cost a month at your usage
+    Recommend {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Prices from the catalogs for every connected model without them
+    /// (hand-set prices are never touched)
+    FillPrices,
 }
 
 pub async fn cmd(op: ModelCmd) -> anyhow::Result<()> {
     let models = shared()?;
-    if !matches!(op, ModelCmd::List { .. } | ModelCmd::Test { .. }) {
+    if !matches!(
+        op,
+        ModelCmd::List { .. }
+            | ModelCmd::Test { .. }
+            | ModelCmd::Catalog { .. }
+            | ModelCmd::Recommend { .. }
+    ) {
         let (cfg, _) = Config::load()?;
         models.attach_hub(crate::trust::hub(&cfg)?);
     }
@@ -100,6 +133,41 @@ pub async fn cmd(op: ModelCmd) -> anyhow::Result<()> {
         }
         ModelCmd::Fallback { references, off } => {
             models.set_fallback(if off { &[] } else { &references }, by)?
+        }
+        ModelCmd::Catalog {
+            search,
+            tools,
+            sort,
+            refresh,
+            json,
+        } => {
+            let (_, listings) = catalog::listings(refresh).await?;
+            let q = catalog::Query {
+                search,
+                all: !tools,
+                sort,
+            };
+            let f = catalog::filter(&listings, &models.catalog(), &q);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&f)?);
+            } else {
+                print!("{}", catalog::render(&f));
+            }
+            return Ok(());
+        }
+        ModelCmd::Recommend { json } => {
+            let r = catalog::recommended(&models, false).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                print!("{}", catalog::render_recommended(&r));
+            }
+            return Ok(());
+        }
+        ModelCmd::FillPrices => {
+            let (_, listings) = catalog::listings(false).await?;
+            println!("{}", models.fill_prices(&listings, by)?.said);
+            return Ok(());
         }
     };
     println!("{}", done.said);
