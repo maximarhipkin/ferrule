@@ -560,6 +560,7 @@ dependencies = [
  "dirs",
  "dunce",
  "ferrule-agents",
+ "ferrule-connections",
  "ferrule-core",
  "ferrule-eval",
  "ferrule-extensions",

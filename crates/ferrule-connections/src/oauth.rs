@@ -184,7 +184,7 @@ pub async fn client(
     service: &Service,
     endpoints: &Endpoints,
     redirect: &str,
-    secrets: &dyn Fn(&str) -> Option<String>,
+    secrets: &(dyn Fn(&str) -> Option<String> + Send + Sync),
 ) -> Result<Client> {
     if service.client == ClientKind::Owner {
         let env = service

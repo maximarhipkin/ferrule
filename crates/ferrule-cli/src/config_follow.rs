@@ -60,7 +60,7 @@ pub fn spawn(manager: &Arc<ExtensionManager>, cfg: &Config, path: &Path, trusted
 /// A secret's value as a newly started process would see it: the
 /// environment, then the secrets file, read directly (`set_var` isn't
 /// thread-safe, so the file can't be loaded into the env again).
-fn secret_value(name: &str) -> Option<String> {
+pub(crate) fn secret_value(name: &str) -> Option<String> {
     if let Some(v) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
         return Some(v);
     }

@@ -10,6 +10,55 @@ pub struct ChannelCapabilities {
     pub reactions: bool,
     pub edits: bool,
     pub attachments: bool,
+    /// Buttons under a message (M20: "Connect Notion"). Without them a
+    /// button is sent as a line of text.
+    pub buttons: bool,
+}
+
+/// A button under a message: a link to open, or a command sent back into
+/// the chat as if typed (it's no more trusted than typed text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Button {
+    pub text: String,
+    pub action: ButtonAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ButtonAction {
+    Url(String),
+    Command(String),
+}
+
+/// Buttons as lines of text, for a channel without them.
+pub fn buttons_as_text(text: &str, buttons: &[Button]) -> String {
+    let mut out = text.to_string();
+    for b in buttons {
+        match &b.action {
+            ButtonAction::Url(url) => out.push_str(&format!("\n• {}: {url}", b.text)),
+            ButtonAction::Command(cmd) => out.push_str(&format!("\n• {}: send {cmd}", b.text)),
+        }
+    }
+    out
+}
+
+/// Sends `msg` with `buttons` where the channel has them, as text where it
+/// doesn't (or where they were refused).
+pub async fn send_with_buttons(
+    channel: &dyn Channel,
+    mut msg: OutboundMessage,
+    buttons: &[Button],
+) -> Result<(), GatewayError> {
+    if buttons.is_empty() {
+        return channel.send(msg).await;
+    }
+    if channel.capabilities().buttons {
+        match channel.send_buttons(msg.clone(), buttons).await {
+            Ok(()) => return Ok(()),
+            Err(e) => tracing::warn!(error = %e, "buttons were refused; sending them as text"),
+        }
+    }
+    msg.text = buttons_as_text(&msg.text, buttons);
+    channel.send(msg).await
 }
 
 /// A messaging surface: Telegram, a local stdin/loopback adapter, eventually
@@ -38,6 +87,16 @@ pub trait Channel: Send + Sync {
     /// may be invoked concurrently for different chats but never twice at
     /// once for the same chat.
     async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError>;
+
+    /// Optional: send with buttons, one per row. Use [`send_with_buttons`],
+    /// which falls back to text.
+    async fn send_buttons(
+        &self,
+        _msg: OutboundMessage,
+        _buttons: &[Button],
+    ) -> Result<(), GatewayError> {
+        Err(GatewayError::Unsupported("buttons"))
+    }
 
     /// Optional: react to an inbound message (e.g. an emoji ack). Default
     /// is "not supported" rather than a silent no-op, so callers can tell

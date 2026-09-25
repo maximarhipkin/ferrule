@@ -955,6 +955,49 @@ async fn a_sub_agent_of_an_unattended_run_is_unattended_too() {
     assert!(matches!(v, ferrule_core::Verdict::Refuse(t) if t.contains("nobody can approve it")));
 }
 
+/// M20: a connected service's tools that can change things ask first;
+/// the ones marked read-only, and other servers' tools, don't.
+#[tokio::test]
+async fn a_connected_services_write_tool_needs_the_owners_yes() {
+    let w = World::new(caps());
+    w.hub.set_connected(vec!["notion".into()]);
+    let guard = TrustGuard::root(w.hub.clone(), "scheduler__t", unattended());
+    let args = json!({"title": "x"});
+    let ask = |tool: &'static str, changes: bool| {
+        let guard = &guard;
+        let args = &args;
+        async move {
+            ferrule_core::Guard::before_tool_call(
+                guard,
+                ferrule_core::GuardedCall {
+                    tool,
+                    args,
+                    changes_files: changes,
+                },
+            )
+            .await
+        }
+    };
+    let v = ask("mcp__notion__create_page", true).await;
+    assert!(
+        matches!(&v, ferrule_core::Verdict::Refuse(t) if t.contains("`mcp__notion__create_page` is a change through a connected service")),
+        "{v:?}"
+    );
+    assert!(matches!(
+        ask("mcp__notion__search", false).await,
+        ferrule_core::Verdict::Allow
+    ));
+    assert!(matches!(
+        ask("mcp__local__write", true).await,
+        ferrule_core::Verdict::Allow
+    ));
+    w.hub.set_connected(vec![]);
+    assert!(matches!(
+        ask("mcp__notion__create_page", true).await,
+        ferrule_core::Verdict::Allow
+    ));
+}
+
 // ---- plan mode -------------------------------------------------------
 
 #[tokio::test]

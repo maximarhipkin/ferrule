@@ -1,4 +1,4 @@
-use crate::channel::Channel;
+use crate::channel::{send_with_buttons, Button, Channel};
 use crate::error::GatewayError;
 use crate::health::{human, is_command, Health, Redactor};
 use crate::message::{InboundMessage, OutboundMessage};
@@ -35,6 +35,12 @@ pub struct Gateway {
 #[async_trait::async_trait]
 pub trait Interceptor: Send + Sync {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String>;
+
+    /// The same, with buttons under the reply (M20). What the gateway
+    /// calls; by default `intercept` without buttons.
+    async fn intercept_with_buttons(&self, msg: &InboundMessage) -> Option<(String, Vec<Button>)> {
+        self.intercept(msg).await.map(|text| (text, Vec::new()))
+    }
 }
 
 impl Gateway {
@@ -190,8 +196,8 @@ impl Gateway {
             }
         }
         for i in &self.interceptors {
-            if let Some(reply) = i.intercept(&msg).await {
-                self.reply_directly(&msg, reply).await;
+            if let Some((reply, buttons)) = i.intercept_with_buttons(&msg).await {
+                self.reply_with_buttons(&msg, reply, &buttons).await;
                 return;
             }
         }
@@ -256,6 +262,10 @@ impl Gateway {
     }
 
     async fn reply_directly(&self, msg: &InboundMessage, text: String) {
+        self.reply_with_buttons(msg, text, &[]).await
+    }
+
+    async fn reply_with_buttons(&self, msg: &InboundMessage, text: String, buttons: &[Button]) {
         let Some(channel) = self.channel(&msg.channel) else {
             tracing::error!(channel = %msg.channel, "no channel to send an intercepted reply on");
             return;
@@ -267,7 +277,7 @@ impl Gateway {
             reply_to: Some(msg.message_id.clone()),
             attachments: vec![],
         };
-        if let Err(e) = channel.send(out).await {
+        if let Err(e) = send_with_buttons(channel.as_ref(), out, buttons).await {
             tracing::error!(error = %e, "failed to send an intercepted reply");
         }
     }
@@ -578,6 +588,54 @@ mod tests {
         assert_eq!(sent[0].chat_id, "c1");
         assert_eq!(sent[1].text, "echo: hello");
         assert!(sent.iter().all(|m| !m.text.contains("/stop")));
+    }
+
+    struct Offer;
+    #[async_trait]
+    impl Interceptor for Offer {
+        async fn intercept(&self, _msg: &InboundMessage) -> Option<String> {
+            None
+        }
+        async fn intercept_with_buttons(
+            &self,
+            msg: &InboundMessage,
+        ) -> Option<(String, Vec<Button>)> {
+            (msg.text == "/connect").then(|| {
+                (
+                    "Connect Notion?".to_string(),
+                    vec![Button {
+                        text: "Connect".into(),
+                        action: crate::channel::ButtonAction::Url("https://r.example/a".into()),
+                    }],
+                )
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn buttons_become_text_on_a_channel_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripted = Arc::new(ScriptedChannel {
+            script: vec![msg("c1", "/connect")],
+            sent: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("scripted".into(), scripted.clone());
+        let factory: crate::router::AgentFactory =
+            Arc::new(|_sid, _t| panic!("an intercepted message runs no turn"));
+        let router = Arc::new(Router::new(dir.path(), factory, channels));
+        let mut gateway = Gateway::new(router).with_interceptor(Arc::new(Offer));
+        gateway.add_channel(scripted.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+        let sent = scripted.sent.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0].text,
+            "Connect Notion?\n• Connect: https://r.example/a"
+        );
     }
 
     /// Logs reactions and replies, in order, into a log a provider shares.

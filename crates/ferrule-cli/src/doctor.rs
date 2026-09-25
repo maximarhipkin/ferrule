@@ -129,9 +129,15 @@ pub async fn run(offline: bool) -> Result<bool> {
     trust_check(&mut r, &cfg, telegram_on);
     service_check(&mut r, &path, telegram_on)?;
     health_check(&mut r, &cfg, telegram_on);
+    connections_check(&mut r, &cfg);
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
     Ok(r.finish())
+}
+
+/// M20: what's connected and whether logins have a relay to come back by.
+fn connections_check(r: &mut Report, cfg: &config::Config) {
+    r.ok("connect", crate::connections::doctor_line(cfg));
 }
 
 /// M18: hooks run as the owner, outside the sandbox; say which will, and

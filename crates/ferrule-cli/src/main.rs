@@ -2,6 +2,7 @@ mod agents;
 mod browser;
 mod config;
 mod config_follow;
+mod connections;
 mod doctor;
 mod eval;
 mod health;
@@ -167,6 +168,12 @@ enum Cmd {
     Mcp {
         #[command(subcommand)]
         op: mcp_add::McpCmd,
+    },
+    /// Connect external services (Notion, GitHub, Gmail, …): list, add,
+    /// remove, and the relay logins come back through (docs/m20-connections.md)
+    Connections {
+        #[command(subcommand)]
+        op: connections::ConnectionsCmd,
     },
     /// Evaluate the harness: run a task suite, as ferrule and as a naive
     /// baseline, and report pass rates, tokens and cost (docs/eval.md)
@@ -492,6 +499,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Hooks { op } => hooks_cli::run(op)?,
         Cmd::Extensions { op } => self_extend::run(op).await?,
         Cmd::Mcp { op } => mcp_add::run(op).await?,
+        Cmd::Connections { op } => connections::run(op).await?,
         Cmd::Sandbox {
             probe_net: true, ..
         } => probe_net(),
@@ -586,7 +594,7 @@ fn mcp_servers(cfg: &config::Config) -> Vec<McpServerConfig> {
         Ok(None) => {}
         Err(e) => eprintln!("ferrule: the browser is off: {e:#}"),
     }
-    servers
+    connections::with_connections(cfg, servers)
 }
 
 /// Spawn every configured MCP server once, under the process's extension
@@ -728,6 +736,12 @@ fn build_agent_from(
     };
     if !planning {
         mcp_tools.attach(&mut registry, cfg.skills.enabled, reach);
+        // M20: only the root asks for a connection; nothing here connects.
+        if child.is_none() {
+            for tool in connections::tools(&cfg, &tree) {
+                registry.register(tool);
+            }
+        }
     }
     if planning {
         // `write_todos` and `log_diary` write under `.ferrule/` without
@@ -1436,6 +1450,7 @@ async fn run_gateway(
         })
     };
 
+    connections::attach(&cfg, telegram.clone(), &router);
     let plan = plan::telegram(
         router.clone(),
         hub.clone(),
@@ -1449,6 +1464,12 @@ async fn run_gateway(
             hub,
             plan: Some(plan),
         }));
+    if let Some(conns) = connections::shared(&cfg) {
+        gateway = gateway.with_interceptor(Arc::new(connections::ConnectionsDoor {
+            conns,
+            owner: trust::owner_chat(&cfg),
+        }));
+    }
     for channel in adapters {
         gateway.add_channel(channel);
     }
