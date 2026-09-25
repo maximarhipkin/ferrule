@@ -203,10 +203,9 @@ impl Gateway {
         }
         self.acknowledge(&msg).await;
         if let Some(lane) = self.router.claim_busy_notice(&msg, self.busy_notice_after) {
-            let text = format!(
-                "Busy with {} for {}; your message is queued — /stop to cancel it.",
-                self.redactor.redact(&lane.activity),
-                human(lane.busy_for.unwrap_or_default())
+            let text = busy_text(
+                &self.redactor.redact(&lane.activity),
+                lane.busy_for.unwrap_or_default(),
             );
             if let Some(channel) = self.channel(&msg.channel) {
                 let out = OutboundMessage {
@@ -414,6 +413,17 @@ async fn watchdog(
                 }
             });
         }
+    }
+}
+
+/// The notice a message queued behind a busy turn gets.
+fn busy_text(activity: &str, busy_for: Duration) -> String {
+    let busy_for = human(busy_for);
+    if activity.starts_with("waiting") {
+        // The model is being retried (M19c): say what's waited for.
+        format!("Busy for {busy_for}, {activity}; your message is queued — /stop to cancel it.")
+    } else {
+        format!("Busy with {activity} for {busy_for}; your message is queued — /stop to cancel it.")
     }
 }
 
@@ -852,6 +862,17 @@ mod tests {
         release.add_permits(1);
         wait_for_log(&log, 5).await;
         assert_eq!(log.lock().unwrap()[4], "send to 1: echo: first");
+    }
+
+    #[test]
+    fn a_queued_message_hears_about_a_rate_limit_wait() {
+        assert_eq!(
+            busy_text(
+                "waiting out the model's rate limit, retry 2 in 25 s",
+                Duration::from_secs(40)
+            ),
+            "Busy for 40 s, waiting out the model's rate limit, retry 2 in 25 s; your message is queued — /stop to cancel it."
+        );
     }
 
     #[tokio::test]

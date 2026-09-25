@@ -271,8 +271,10 @@ async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client,
         };
         if offline {
             r.ok("provider", format!("{label} · {from}, not checked"));
+            free_model(r, &label, &p.model);
             continue;
         }
+        free_model(r, &label, &p.model);
         match probe::models(http, &p.base_url, &value, p.profile == "anthropic").await {
             Ok(models) if models.is_empty() || models.contains(&p.model) => {
                 r.ok("provider", format!("{label} · {from} works"));
@@ -298,6 +300,21 @@ async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client,
             Err(e) => r.warn("provider", format!("{label}: couldn't check the key: {e}")),
         }
     }
+}
+
+/// M19c: an OpenRouter `:free` model id is the usual reason a bot "runs
+/// but doesn't answer".
+fn free_model(r: &mut Report, label: &str, model: &str) {
+    let Some(paid) = model.strip_suffix(":free") else {
+        return;
+    };
+    r.warn(
+        "provider",
+        format!("{label}: a `:free` model draws on OpenRouter's shared free pool — it's rate-limited (HTTP 429) at busy times and often has no endpoint that supports tools (HTTP 404), which ferrule needs"),
+    );
+    r.hint(format!(
+        "use the paid id `{paid}`, or set `[models] fallback` so another model answers when this one can't"
+    ));
 }
 
 /// M21: the models beyond each provider's own (a key for each), the
@@ -326,6 +343,20 @@ async fn models_check(r: &mut Report, ping: bool) {
                 }
             ),
         );
+    }
+    for m in view.models.iter().filter(|m| !m.primary) {
+        if let Some(paid) = m.reference.strip_suffix(":free") {
+            r.warn(
+                "models",
+                format!(
+                    "{}: a `:free` model is rate-limited at busy times and often can't use tools",
+                    m.reference
+                ),
+            );
+            r.hint(format!(
+                "use `{paid}` instead, or keep it out of the default and fallback"
+            ));
+        }
     }
     for m in view.models.iter().filter(|m| !m.primary && !m.key_present) {
         let text = format!("{}: no key (${} isn't set)", m.reference, m.key_env);
@@ -387,12 +418,17 @@ async fn telegram(
             Ok(bot) => {
                 r.ok("telegram", format!("@{bot} · {allowed}"));
                 match tg.webhook().await {
-                    Ok(Some(_)) => {
-                        r.fail(
+                    Ok(Some(url)) => {
+                        // Only the host: a webhook's path is often its secret.
+                        let host = reqwest::Url::parse(&url)
+                            .ok()
+                            .and_then(|u| u.host_str().map(str::to_string))
+                            .unwrap_or_else(|| "somewhere".into());
+                        r.warn(
                             "telegram",
-                            "the bot has a webhook set, so the gateway receives nothing",
+                            format!("the bot has a webhook set (to {host}), so Telegram sends its messages there, not to the gateway"),
                         );
-                        r.hint("`ferrule setup` → Telegram offers to remove it");
+                        r.hint("the gateway removes it when it starts, keeping waiting messages; or `ferrule setup` → Telegram removes it now");
                     }
                     Ok(None) => {}
                     Err(e) => r.warn("telegram", format!("couldn't check for a webhook: {e}")),
@@ -757,6 +793,12 @@ fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Resul
             r.hint(format!("see why: {}", service::logs_hint()));
         }
     }
+    if let service::Status::Installed { running: true, .. } = service::status() {
+        r.note("service", format!("its logs: {}", service::logs_hint()));
+    }
+    if telegram_on {
+        gateways_check(r);
+    }
     let installed = matches!(service::status(), service::Status::Installed { .. });
     if installed && service::scope() == service::Scope::User && service::is_root() {
         r.warn(
@@ -799,6 +841,31 @@ fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Resul
         }
     }
     Ok(())
+}
+
+/// M19c: two gateways polling one bot token take turns getting its
+/// messages, and Telegram answers each with 409 Conflict.
+fn gateways_check(r: &mut Report) {
+    let pids = crate::health::running_gateways();
+    let list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match pids.len() {
+        0 => r.note("gateway", "none running on this machine"),
+        1 => r.ok(
+            "gateway",
+            format!("one running on this machine (pid {list})"),
+        ),
+        n => {
+            r.warn(
+                "gateway",
+                format!("{n} running on this machine (pids {list}): with one bot token they take turns getting its messages, and Telegram refuses each of them some (409 Conflict)"),
+            );
+            r.hint("keep one: stop the other (Ctrl-C in its terminal, or `kill <pid>`); `ferrule status` shows which one this data directory's is");
+        }
+    }
 }
 
 /// Is `ferrule` on PATH, and is it this binary?

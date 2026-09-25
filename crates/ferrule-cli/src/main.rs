@@ -345,9 +345,49 @@ enum ConfigCmd {
     Init,
 }
 
+/// ferrule's own crates, for the gateway's default log filter.
+const OWN_CRATES: &[&str] = &[
+    "ferrule",
+    "ferrule_agents",
+    "ferrule_core",
+    "ferrule_eval",
+    "ferrule_extensions",
+    "ferrule_gateway",
+    "ferrule_hooks",
+    "ferrule_learn",
+    "ferrule_mcp",
+    "ferrule_memory",
+    "ferrule_providers",
+    "ferrule_proxy",
+    "ferrule_sandbox",
+    "ferrule_skills",
+    "ferrule_tools",
+    "ferrule_trust",
+];
+
+/// `RUST_LOG` when it's set. Otherwise the gateway — a daemon whose
+/// journal is how its owner finds out why it's quiet — logs warnings from
+/// everything and info from ferrule itself (M19c); a command in a terminal
+/// keeps to errors, so its output stays readable.
+fn log_filter(daemon: bool) -> tracing_subscriber::EnvFilter {
+    use tracing_subscriber::EnvFilter;
+    if std::env::var_os(EnvFilter::DEFAULT_ENV).is_some() {
+        return EnvFilter::from_default_env();
+    }
+    if !daemon {
+        return EnvFilter::new("error");
+    }
+    let mut directives = String::from("warn");
+    for krate in OWN_CRATES {
+        directives.push_str(&format!(",{krate}=info"));
+    }
+    EnvFilter::new(directives)
+}
+
 /// Sync on purpose: `--config` and the secrets file go into the environment
 /// before the runtime starts any thread, since `set_var` isn't thread-safe.
 fn main() -> Result<()> {
+    let cli = Cli::parse();
     // Printed as RUST_LOG says; warnings and errors are also kept for
     // the gateway's `/status` (M19b).
     use tracing_subscriber::prelude::*;
@@ -355,7 +395,9 @@ fn main() -> Result<()> {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
-                .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+                // No color codes in a journal or a log file (M19c).
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+                .with_filter(log_filter(matches!(cli.cmd, Cmd::Gateway { .. }))),
         )
         .with(
             health::RingLayer(ferrule_gateway::RecentLog::global())
@@ -363,7 +405,6 @@ fn main() -> Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
     if let Some(path) = &cli.config {
         std::env::set_var("FERRULE_CONFIG", std::path::absolute(path)?);
     }
@@ -1368,7 +1409,11 @@ fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channe
         })?;
         let telegram: Arc<dyn Channel> = Arc::new(
             TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone())
-                .with_allowed_chats(cfg.gateway.telegram_allowed_chats.clone()),
+                .with_allowed_chats(cfg.gateway.telegram_allowed_chats.clone())
+                .with_owner(trust::owner_chat(cfg))
+                .with_conflict_after(Duration::from_secs(
+                    cfg.health.telegram_conflict_secs.max(1),
+                )),
         );
         named_channels.insert(telegram.name().to_string(), telegram);
     }

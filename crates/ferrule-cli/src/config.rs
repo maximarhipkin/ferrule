@@ -232,6 +232,10 @@ pub struct HealthConfig {
     /// machine. Empty = no heartbeat.
     pub heartbeat_url: String,
     pub heartbeat_secs: u64,
+    /// Telegram refusing `getUpdates` with 409 Conflict (another program
+    /// polling with the token, or a webhook) this long gets one message to
+    /// the owner, and as long without one after gets "recovered" (M19c).
+    pub telegram_conflict_secs: u64,
 }
 
 impl Default for HealthConfig {
@@ -243,6 +247,7 @@ impl Default for HealthConfig {
             notify_on_start: false,
             heartbeat_url: String::new(),
             heartbeat_secs: 60,
+            telegram_conflict_secs: 60,
         }
     }
 }
@@ -508,6 +513,9 @@ profile = "openai"
 #                            # healthchecks.io check that alerts when it stops.
 #                            # The reason never holds messages or secrets.
 # heartbeat_secs = 60
+# telegram_conflict_secs = 60 # Telegram's 409 Conflict (another program polling
+#                            # with the token, or a webhook) this long: one
+#                            # message to the owner, and one when it clears.
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).

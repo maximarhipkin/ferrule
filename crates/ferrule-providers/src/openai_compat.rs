@@ -242,7 +242,9 @@ impl Provider for OpenAiCompatProvider {
             .json(&payload)
             .send()
             .await;
-        let resp = match sent {
+        // `without_url()`: the URL isn't secret here, but some gateways put
+        // a key in it, and these errors end up in logs and chats.
+        let resp = match sent.map_err(|e| e.without_url()) {
             Ok(resp) => resp,
             // No connection or no answer in time: the next try may get one.
             Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
@@ -263,7 +265,10 @@ impl Provider for OpenAiCompatProvider {
         // Text first: a proxy's 502 is an HTML page, and it's still a 502.
         let text = resp.text().await.map_err(|e| {
             transient(
-                format!("reading the response (HTTP {status}) failed: {e}"),
+                format!(
+                    "reading the response (HTTP {status}) failed: {}",
+                    e.without_url()
+                ),
                 None,
             )
         })?;
@@ -438,6 +443,46 @@ mod tests {
             matches!(&err, CoreError::Provider(m) if m.contains("context too long")),
             "{err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn openrouters_own_errors_come_out_in_plain_words() {
+        let err = error_for(
+            "404 Not Found",
+            "content-type: application/json\r\n",
+            r#"{"error":{"message":"No endpoints found that support tool use. To learn more about provider routing, visit: https://openrouter.ai/docs/provider-routing","code":404}}"#,
+        )
+        .await;
+        let words = err.plain_words().unwrap_or_default();
+        assert!(
+            words.starts_with("this model has no endpoint on OpenRouter that supports tools"),
+            "{err:?}"
+        );
+
+        let err = error_for(
+            "429 Too Many Requests",
+            "content-type: application/json\r\n",
+            r#"{"error":{"message":"Rate limit exceeded: free-models-per-min. ","code":429,"metadata":{"headers":{"X-RateLimit-Limit":"20","X-RateLimit-Remaining":"0","X-RateLimit-Reset":"1758790860000"}}}}"#,
+        )
+        .await;
+        assert!(err.is_transient(), "{err:?}");
+        let words = err.plain_words().unwrap_or_default();
+        assert!(words.contains("shared pool for free models"), "{err:?}");
+
+        // An upstream provider's 429, passed on inside a 200.
+        let err = error_for(
+            "200 OK",
+            "",
+            r#"{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"qwen/qwen3.8-27b:free is temporarily rate-limited upstream. Please retry shortly.","provider_name":"Chutes"}}}"#,
+        )
+        .await;
+        assert!(err.is_transient(), "{err:?}");
+        let words = err.plain_words().unwrap_or_default();
+        assert!(
+            words.starts_with("the model provider is rate-limiting us"),
+            "{err:?}"
+        );
+        assert!(words.contains("shared pool"), "{err:?}");
     }
 
     #[tokio::test]

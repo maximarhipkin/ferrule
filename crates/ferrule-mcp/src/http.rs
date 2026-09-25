@@ -296,7 +296,9 @@ fn scrubbed(e: McpError, raw: &str) -> McpError {
 
 fn http_error(e: reqwest::Error) -> McpError {
     // reqwest hides the cause (a TLS failure, a refused connection) a
-    // level down; that is the part worth reading.
+    // level down; that is the part worth reading. The URL isn't: it can
+    // carry a token, and this text reaches logs and the model.
+    let e = e.without_url();
     let mut text = e.to_string();
     let mut source = std::error::Error::source(&e);
     while let Some(cause) = source {
