@@ -597,3 +597,46 @@ OPENAI_API_KEY=…    cargo test -p ferrule-providers --test live -- --ignored r
 - Server-side fallback (`fallbacks: "default"`), and the thinking-binding
   beta header.
 - M25's router itself.
+
+## As built
+
+Where the build departs from the sections above, or settles something
+they left open:
+
+- **Responses `max_output_tokens`** (§6) is sent always, floored at 16 000
+  like Anthropic's `max_tokens`, unless `effort = "none"`. Reasoning
+  models spend output tokens thinking, and a small cap came back empty.
+- **Reasoning items without `encrypted_content`** (§6, §10) are dropped,
+  not replayed. With `store: false` such an item can't be resolved by id,
+  so replaying it is a guaranteed 400. The call carries only the message
+  and function calls, as the Chat driver would.
+- **Native blocks** are kept on a message only when it carries thinking or
+  reasoning. A plain tool turn replays from the neutral fields, which is
+  the same request.
+- **A thinking 400 or a rejected reasoning item** retries the call once
+  without any replayed blocks, then fails as a 400.
+- **`content_filter`** (Responses' `incomplete_details`) maps to the refusal
+  class, the same as Anthropic's `refusal`: never retried, never fallen
+  back.
+- **Malformed tool-call arguments** become `{}`. The tool then reports its
+  own missing-argument error to the model, which is how the Chat driver
+  behaves.
+- **`ProviderPricing.cache_write`** (§5) is an `Option<f64>`, not an `f64`.
+  `None` means "the input price", which is what every non-Anthropic
+  provider charges. On the anthropic api it defaults to 1.25× input. The
+  eval's `Pricing` got the same optional field.
+- **`fill-prices`** takes a listed write price only for providers on the
+  anthropic api, and doesn't write it down when it equals the 1.25×
+  default. OpenRouter's `input_cache_write` is read into the catalog.
+- **`api`** is provider-level only. `thinking`, `effort` and `max_tokens`
+  can be set per model and override the provider's.
+- **Setup** writes `api = "anthropic"` into the Anthropic preset,
+  explicitly, so the file says which driver it uses. `model add` inherits
+  the provider's api. The presets still carry no prices.
+- **Doctor** labels each provider `name · model · <api> api (set|inferred)`.
+  `ferrule model list --json` and the dashboard's models section carry the
+  same `driver` string.
+- **Live tests** (`crates/ferrule-providers/tests/live.rs`) default to
+  `claude-sonnet-5` with adaptive thinking and `gpt-5-mini` with effort
+  `low`. They're `#[ignore]` and skip, passing, without a key. This
+  container has no provider keys, so neither has run against a real API.
