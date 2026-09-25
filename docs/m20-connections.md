@@ -256,7 +256,7 @@ account with `ferrule connections relay deploy`.
 | request | who calls it | does |
 |---|---|---|
 | `GET /health` | ferrule | `{"ok":true,"relay":"ferrule-relay","v":1}` |
-| `POST /poll` + `Authorization: Bearer <relay key>`, body `{"secret":"<b64url 32 bytes>"}` | ferrule | opens the slot `id = b64url(SHA-256(secret))` if new (open 15 min); returns its value **and deletes it** (200), or 204 while empty, 404 once expired |
+| `POST /poll` + `Authorization: Bearer <relay key>`, body `{"secret":"<b64url 32 bytes>"}` | ferrule | opens the slot `id = b64url(SHA-256(secret))` if new (open 15 min); returns its value **and deletes it** (200), 204 while empty, 410 once read (a value-free "used" mark stays until the slot's window ends, so a replayed callback gets 409). An expired slot is gone; polling it opens a fresh, empty one |
 | `GET /cb?state=<id>&code=…` (or `error=…`) | the vendor's redirect, in the owner's browser | writes `{code, error, error_description, iss}` into an **open** slot `id = state`: first write wins, ≤ 4 KiB; answers a static page ("done, go back to Telegram"), never echoing the code |
 | `GET /key` | the owner's browser | the static API-key form (§6) |
 | `POST /drop/<id>` | the key form | writes the encrypted key into an open slot: first write wins, ≤ 8 KiB |
