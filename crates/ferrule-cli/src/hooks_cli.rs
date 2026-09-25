@@ -12,7 +12,7 @@ use crate::config;
 use anyhow::{anyhow, bail, Result};
 use clap::Subcommand;
 use ferrule_core::HookSet;
-use ferrule_hooks::{HooksConfig, TrustStore};
+use ferrule_hooks::HooksConfig;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -118,38 +118,23 @@ pub fn run(op: HooksCmd) -> Result<()> {
             if !matches!(line.trim(), "y" | "Y" | "yes") {
                 bail!("not trusted");
             }
-            let store = TrustStore::in_data_dir(&data);
-            let n = store.trust(&workspace).map_err(|e| anyhow!(e))?;
-            // What was trusted must be what was shown.
-            if store.trusted(&workspace) != Some(ferrule_hooks::trust::fingerprint(text.as_bytes()))
-            {
-                store.untrust(&workspace).map_err(|e| anyhow!(e))?;
-                bail!(
-                    "{} changed while you were reading it; not trusted",
-                    file.display()
-                );
-            }
-            println!(
-                "trusted {n} hook{} in {}; editing the file needs trusting it again",
-                if n == 1 { "" } else { "s" },
-                file.display()
-            );
-            if let Ok((cfg, path)) = config::Config::load() {
-                if !settings(&cfg, &path)?.project {
-                    println!("they won't run until `[hooks] project = true` is in your config");
-                }
-            }
+            // The shared operation (M24): pinned to the text shown, audited.
+            let (path, hub) = match config::Config::load() {
+                Ok((cfg, path)) => (path, crate::trust::hub(&cfg).ok()),
+                Err(_) => (config::config_path()?.unwrap_or_default(), None),
+            };
+            let op = crate::settings_admin::Settings::new(path, Some(data), hub, Some(workspace));
+            let sha = ferrule_hooks::trust::fingerprint(text.as_bytes());
+            println!("{}", op.hooks_trust(&sha, "cli")?.said);
         }
         HooksCmd::Untrust { workspace } => {
             let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
-            if TrustStore::in_data_dir(&data)
-                .untrust(&workspace)
-                .map_err(|e| anyhow!(e))?
-            {
-                println!("{}'s hooks won't run any more", workspace.display());
-            } else {
-                println!("{} wasn't trusted", workspace.display());
-            }
+            let (path, hub) = match config::Config::load() {
+                Ok((cfg, path)) => (path, crate::trust::hub(&cfg).ok()),
+                Err(_) => (config::config_path()?.unwrap_or_default(), None),
+            };
+            let op = crate::settings_admin::Settings::new(path, Some(data), hub, Some(workspace));
+            println!("{}", op.hooks_untrust("cli")?.said);
         }
     }
     Ok(())

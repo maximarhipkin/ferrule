@@ -50,6 +50,8 @@ pub struct Ctx {
     pub config_path: Option<PathBuf>,
     /// Where project skills are found.
     pub workspace: Option<PathBuf>,
+    /// The candidate eval running from the page (M24), one at a time.
+    pub evals: Arc<crate::model_eval::Jobs>,
 }
 
 impl Ctx {
@@ -63,13 +65,15 @@ impl Ctx {
             models: crate::models::shared().ok(),
             connections: crate::connections::shared(cfg),
             owner_chat: crate::trust::owner_chat(cfg),
-            tasks: data
-                .as_ref()
-                .map(|d| crate::tasks_admin::TasksAdmin::new(d.join("tasks.db"), hub.clone())),
+            tasks: data.as_ref().map(|d| {
+                crate::tasks_admin::TasksAdmin::new(d.join("tasks.db"), hub.clone())
+                    .with_config(crate::config::config_path().ok().flatten())
+            }),
             hub,
             data,
             config_path: crate::config::config_path().ok().flatten(),
             workspace: std::env::current_dir().ok(),
+            evals: Arc::default(),
         }
     }
 
@@ -88,6 +92,7 @@ impl Ctx {
             data: None,
             config_path: None,
             workspace: None,
+            evals: Arc::default(),
         }
     }
 }
@@ -129,7 +134,8 @@ fn minutes(n: u64) -> Duration {
 
 impl Dashboard {
     pub fn new(settings: DashboardConfig, links: Links, ctx: Ctx) -> Arc<Self> {
-        let sessions = Sessions::new(
+        let sessions = Sessions::beside(
+            &links,
             minutes(settings.idle_minutes),
             minutes(settings.session_hours.max(1) * 60),
         );
@@ -156,13 +162,23 @@ impl Dashboard {
     }
 
     /// Listens on `127.0.0.1:<port>` (never any other address) and serves
-    /// until dropped; also closes the tunnel once it's idle.
+    /// until dropped; also closes the tunnel once it's idle. With port 0,
+    /// the port it used last time comes first, so a saved `ssh -L` still
+    /// reaches it after a restart.
     pub async fn bind(self: &Arc<Self>, port: u16) -> Result<u16> {
-        let listener = TcpListener::bind(("127.0.0.1", port))
-            .await
-            .with_context(|| format!("listening on 127.0.0.1:{port}"))?;
+        let last = (port == 0).then(|| self.sessions.last_port()).flatten();
+        let listener = match last {
+            Some(last) => match TcpListener::bind(("127.0.0.1", last)).await {
+                Ok(l) => l,
+                Err(_) => TcpListener::bind(("127.0.0.1", 0)).await?,
+            },
+            None => TcpListener::bind(("127.0.0.1", port))
+                .await
+                .with_context(|| format!("listening on 127.0.0.1:{port}"))?,
+        };
         let port = listener.local_addr()?.port();
         self.port.store(port, Ordering::Relaxed);
+        self.sessions.remember_port(port);
         let weak = Arc::downgrade(self);
         let serve = tokio::spawn(async move {
             loop {
@@ -204,7 +220,8 @@ impl Dashboard {
         let Some(t) = slot.as_mut() else { return };
         let idle = self.last_used.lock().unwrap().elapsed() >= minutes(self.settings.idle_minutes);
         let dead = !t.alive();
-        if dead || (idle && self.links.pending() == 0 && self.sessions.live() == 0) {
+        let live = self.sessions.live(self.links.revoked_ms());
+        if dead || (idle && self.links.pending() == 0 && live == 0) {
             if dead {
                 tracing::warn!("the dashboard's quick tunnel went away");
             } else {
@@ -274,10 +291,45 @@ impl Dashboard {
     /// `/dashboard off`: every link and session stops working and the
     /// tunnel closes.
     pub async fn off(&self) -> Result<()> {
-        self.sessions.clear();
+        let cleared = self.sessions.clear();
         *self.tunnel.lock().await = None;
         *self.tunnel_host.lock().unwrap() = None;
-        self.links.revoke()
+        self.links.revoke()?;
+        cleared
+    }
+
+    /// At start (docs/m24-dashboard-2.md §1): a tunnel session that was
+    /// live when the last process stopped can't be used again, since the
+    /// next tunnel has a new name. Those go, and when one did, and a
+    /// tunnel can be opened, and none was sent in the last 10 minutes: a
+    /// new tunnel and the owner's message with its one-time link.
+    pub async fn relink_after_restart(&self) -> Option<String> {
+        let gone = match self
+            .sessions
+            .retire_tunnel_sessions(self.links.revoked_ms(), Duration::from_secs(600))
+        {
+            Ok(g) => g?,
+            Err(e) => {
+                tracing::warn!("dashboard sessions: {e:#}");
+                return None;
+            }
+        };
+        if self.settings.remote != "tunnel" || self.ctx.cloudflared.is_none() {
+            tracing::info!(
+                "{gone} dashboard tunnel session(s) ended with the restart; no tunnel to reopen"
+            );
+            return None;
+        }
+        match self.remote_link().await {
+            Ok(link) => Some(format!(
+                "The gateway restarted, so the dashboard has a new address.\n{}",
+                door::link_text(self, &link, true)
+            )),
+            Err(e) => {
+                tracing::warn!("dashboard: reopening the tunnel after the restart: {e:#}");
+                None
+            }
+        }
     }
 
     /// Loopback with our port, the open tunnel's host, and the hosts links
@@ -299,7 +351,11 @@ impl Dashboard {
             return true;
         }
         self.links.hosts().iter().any(|h| h == host)
-            || self.sessions.hosts().iter().any(|h| h == host)
+            || self
+                .sessions
+                .hosts(self.links.revoked_ms())
+                .iter()
+                .any(|h| h == host)
     }
 
     fn is_loopback(&self, host: &str) -> bool {
@@ -406,7 +462,13 @@ impl Dashboard {
         };
         match used {
             Some(u) if u.host.as_deref().is_none_or(|h| h == host) => {
-                let (cookie, csrf) = self.sessions.open(host);
+                let (cookie, csrf) = match self.sessions.open(host, self.links.revoked_ms()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("dashboard sessions: {e:#}");
+                        return refuse(503, "the session store can't be written; try again");
+                    }
+                };
                 self.touch();
                 let secure = !self.is_loopback(host);
                 Response::json(200, &json!({ "csrf": csrf })).with_header(
@@ -619,6 +681,23 @@ mod tests {
             .handle(req("GET", "/api/session", &[("cookie", &cookie)], ""))
             .await;
         assert_eq!(r.status, 401);
+    }
+
+    #[tokio::test]
+    async fn a_restart_ends_tunnel_sessions_and_keeps_local_ones() {
+        let (_d, d) = dash();
+        let (cookie, _) = login(&d).await;
+        d.sessions
+            .open("a-b.trycloudflare.com", d.links.revoked_ms())
+            .unwrap();
+        assert_eq!(d.sessions.live(d.links.revoked_ms()), 2);
+        // No cloudflared here: nothing to reopen, so no message.
+        assert_eq!(d.relink_after_restart().await, None);
+        assert_eq!(d.sessions.live(d.links.revoked_ms()), 1);
+        let r = d
+            .handle(req("GET", "/api/session", &[("cookie", &cookie)], ""))
+            .await;
+        assert_eq!(r.status, 200);
     }
 
     #[tokio::test]

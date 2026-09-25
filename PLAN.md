@@ -440,6 +440,24 @@ that convention yet — ask before introducing one).
       1.25× input by default on the anthropic api). `CoreError::class()`
       gives M25 its failure classes.
     - **Decisions for Max and open edges:** see the M23 session-log entry.
+  - **M24 the dashboard's leftovers**: **built, PR open** (2026-09-25,
+    branch `m24-dashboard-2`). Design and as-built notes are in
+    `docs/m24-dashboard-2.md`; the user guide is `docs/dashboard.md`.
+    - The login survives a restart: sessions are stored as hashes in
+      `private/dashboard/sessions.json`, the CSRF token is derived, and
+      local sessions are bound to loopback. A live tunnel session gets a
+      new link after a restart.
+    - Evaluate a candidate from the page or with `ferrule model eval`: an
+      estimate first, a confirm, the owner's caps and kill switch, run in
+      the background with Cancel, the result next to the default's.
+    - Edit from the page, with the same audited ops on Telegram (`/caps`,
+      `/mcp`, `/skills`) and the CLI: caps, MCP disable/enable/remove,
+      skills, hooks trust pinned to the SHA-256 with a diff, a task's
+      schedule and model.
+    - `scripts/dashboard-smoke.sh|.ps1`, and an RTL test (`dir="auto"`,
+      Hebrew unchanged through the API).
+    - **Decisions for Max and open edges:** see the M24 session-log
+      entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): parallel read-only tool calls, provider streaming
@@ -3533,3 +3551,83 @@ latency per call) are.
   breakpoints and the arithmetic).
 - A Responses-compatible host other than api.openai.com.
 - macOS and Windows until this PR's CI run.
+
+### 2026-09-25 — M24 the dashboard's leftovers (Devi, Opus 5.5)
+
+The design is `docs/m24-dashboard-2.md`. Its **As built** section lists where
+the build departs from it. The user guide is `docs/dashboard.md`. The work
+is on branch `m24-dashboard-2`, cut from `main` at `59e0d96` (v0.3.0), with
+a PR to `main` (not merged). `crates/ferrule-providers`, the eval starter
+suite, its graders and the mock model, the README and the assets were not
+touched.
+
+**Commits:**
+- `0d64e55` design.
+- `23d7847` part 1: the login survives a restart. Sessions are in
+  `<data>/private/dashboard/sessions.json` (0600, hashes only, `last_ms`
+  written at most once a minute), and the CSRF token is derived from the
+  cookie. Local sessions are bound to loopback, and `port = 0` tries the
+  last port first. `ferrule dashboard revoke` is an alias of `off`. A
+  tunnel session that was live at shutdown gets a new tunnel and link
+  (at most one per 10 minutes).
+- `b424602` part 2: evaluate a candidate. `ferrule model eval <model>
+  [--suite smoke|starter] [--yes]` and the page's Evaluate show an
+  estimate (catalog prices × `typical.json`, re-measured by a test), then
+  confirm. The run obeys the kill switch and the day's caps, with its
+  ledger rows stamped `eval:<run>`. It runs on its own thread and runtime
+  with progress and Cancel, is stored like `ferrule eval`, and is shown
+  beside the default's last result.
+- `6ab5f8a` part 3: edit from the page. `settings_admin` and
+  `tasks_admin` are shared by the page, Telegram (`/caps`, `/mcp`,
+  `/skills`, `/hooks`) and the CLI (`trust caps --set`, `mcp
+  disable|enable`, `skills disable|enable`, `tasks schedule`, `tasks
+  model`). Every change is locked, validated and audited. Raising a cap,
+  disabling or removing an MCP server, and trusting hooks ask first. Hooks
+  trust is pinned to the SHA-256 the owner saw, with a diff. Caps are live
+  in the hub, and skills and MCP follow without a restart.
+- `07281fa` part 4: `scripts/dashboard-smoke.sh` and `.ps1` (a shared
+  stdlib driver, `scripts/dashboard_smoke.py`), and the RTL test. That
+  test found the running turn's activity line without `dir="auto"`.
+
+**Checks (after merging `main` with M23):** fmt clean; clippy `-D
+warnings` clean; `cargo test --workspace` 782 passed, 0 failed, 4 ignored
+(746 before the merge). The merge needed one fix: `ferrule model eval`'s
+estimate now passes M23's cache-write price through (0 tokens written,
+since the mock writes no cache). One run hit a known flake,
+`a_browser_that_hangs_is_given_up_on` (ETXTBSY, the fake Chrome was
+exec'd while a parallel test was still writing it). That file is
+unchanged from `main`, and the test passed 3 out of 3 re-runs. Checked on
+Linux. The macOS and Windows runs are this PR's CI.
+
+**Smoke script, run here:** 7 PASS, 1 SKIP (tunnel: no `cloudflared`), 1
+FAIL (catalog). The catalog fails only in this container: its HTTPS proxy
+re-signs traffic with a CA that reqwest's built-in roots (rustls +
+webpki-roots) don't trust. On a normal network it's one GET to OpenRouter.
+
+**Eval (mock, `ferrule eval run evals/starter --variant ab`, all 20
+tasks):**
+- engineered 20/20, naive 11/20, +45 pts
+- 150 calls, 951.5k input + 6.2k output tokens, $0.98 ($0.53 / $0.45)
+- 13 compactions / 11 truncations; 4 failed checks fixed
+
+That is identical to the run before M24, both before and after merging
+`main`. The eval's data dir had no
+`gateway/dashboard.json`, and `private/` was empty.
+
+**Decisions taken alone, for Max to confirm:**
+- A tunnel session can't survive a restart (the new tunnel has a new
+  name). The owner is sent a new link only if one was live, at most one
+  every 10 minutes.
+- Lowering a cap needs no confirm; raising one or setting it to 0 (no
+  cap) does.
+- Agent-installed MCP servers (M13) can be removed from the page but not
+  disabled, because their lock file's "Suspended" means "the scan flagged
+  it".
+- A task's model is stored as typed, so an alias keeps following its
+  target.
+- Hooks trust stays off Telegram; `/hooks` points to the page and the
+  CLI.
+
+**Not verified live:** the cloudflared tunnel (not installed here), the
+live OpenRouter catalog (see above), a real phone, and a real Telegram
+bot. Each of these is behind a mock or the smoke script.

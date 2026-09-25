@@ -195,7 +195,7 @@ pub fn remove(path: &Path, name: &str) -> Result<()> {
     write_private(path, &text)
 }
 
-fn create_private_dir(dir: &Path) -> Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     #[cfg(unix)]
     {
@@ -205,7 +205,7 @@ fn create_private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_private(path: &Path, text: &str) -> Result<()> {
+pub(crate) fn write_private(path: &Path, text: &str) -> Result<()> {
     use std::io::Write;
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
     let mut options = std::fs::OpenOptions::new();

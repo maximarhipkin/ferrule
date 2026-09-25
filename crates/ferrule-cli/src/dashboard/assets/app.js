@@ -95,6 +95,23 @@
     return b;
   }
 
+  // A button that asks for one value first (window.prompt), then POSTs.
+  function ask(label, path, question, now, body) {
+    const b = el("button", { text: label });
+    b.onclick = () => {
+      const v = window.prompt(question, now);
+      if (v === null || v.trim() === "" || v.trim() === now) return;
+      act(path, body(v), b);
+    };
+    return b;
+  }
+
+  // "0 9 * * * Asia/Jerusalem" → ["0 9 * * *", "Asia/Jerusalem"].
+  function splitTz(v) {
+    const w = v.trim().split(/\s+/);
+    return w.length > 5 ? [w.slice(0, 5).join(" "), w.slice(5).join(" ")] : [w.join(" "), null];
+  }
+
   function ago(unix) {
     if (unix === null || unix === undefined) return "never";
     const s = Math.round(Date.now() / 1000 - unix);
@@ -165,7 +182,7 @@
       const turns = (h.turns || []).map((t) => [
         el("div", {}, t.place, " ", t.stuck ? tag("stuck", "bad") : null),
         text(t.text),
-        el("span", {}, t.busy_secs === null ? "queued" : secs(t.busy_secs), t.activity ? el("div", { class: "muted", text: t.activity }) : null),
+        el("span", {}, t.busy_secs === null ? "queued" : secs(t.busy_secs), t.activity ? el("div", { class: "muted msg", dir: "auto", text: t.activity }) : null),
         t.busy_secs === null ? "" : btn("Stop", "turn/stop", { session: t.session }, "danger"),
       ]);
       const kill = h.kill || {};
@@ -204,6 +221,24 @@
     ]));
   }
 
+  // The caps as inputs; raising one (or turning it off) comes back with
+  // a confirm. 0 = no cap.
+  async function capsEditor(box) {
+    const x = await api("/api/settings");
+    const inputs = x.caps.map((c) => el("input", { type: "number", min: "0", step: c.unit === "usd" ? "0.01" : "1", value: String(c.value), "data-key": c.key }));
+    const save = el("button", { class: "primary", text: "Save" });
+    save.onclick = () => {
+      const changed = {};
+      inputs.forEach((i, n) => { if (Number(i.value) !== x.caps[n].value) changed[i.dataset.key] = Number(i.value); });
+      if (Object.keys(changed).length) act("settings/caps", { caps: changed }, save).then((r) => { if (r) capsEditor(box); });
+    };
+    box.replaceChildren(el("summary", { text: "Edit caps" }),
+      kv(x.caps.map((c, n) => [c.key.replace(/^max_/, "").replace(/_/g, " ") + (c.unit === "usd" ? " ($)" : ""), inputs[n]])),
+      el("p", { class: "muted", text: "0 = no cap. Raising a cap asks first; a running gateway uses the new ones at once." }),
+      save);
+    box.open = true;
+  }
+
   sections.models = {
     every: 10,
     mount(root) {
@@ -213,11 +248,16 @@
       this.sort = el("select", {}, ["in", "out", "context", "name"].map((s) => el("option", { value: s, text: "sort: " + s })));
       this.list = el("div");
       this.rec = el("div");
+      this.evalBox = el("div");
+      this.suite = el("select", {}, el("option", { value: "smoke", text: "eval: smoke subset (4 tasks)" }), el("option", { value: "starter", text: "eval: whole starter suite (20)" }));
       const go = () => this.catalog(false);
       this.search.addEventListener("change", go);
       this.tools.onchange = go;
       this.sort.onchange = go;
       root.append(this.box,
+        el("h3", { text: "Evaluate a candidate" }),
+        el("p", { class: "muted", text: "Runs ferrule's starter suite on a model, after its estimated cost and a confirm, under your caps. Pick the tasks here, then Evaluate on a row." }),
+        el("div", { class: "row" }, this.suite), this.evalBox,
         el("h3", { text: "Recommended" }), this.rec,
         el("h3", { text: "Catalog" }),
         el("div", { class: "row" }, this.search, this.tools, this.sort,
@@ -227,7 +267,36 @@
       this.catalog(false);
       this.recommend();
     },
+    // The estimate is the confirm's question; the run's progress polls in.
+    evalButton(model, provider) {
+      const b = el("button", { text: "Evaluate" });
+      b.onclick = () => act("eval/start", { model, provider, suite: this.suite.value }, b).then(() => this.loadEval());
+      return b;
+    },
+    async loadEval() {
+      try {
+        const j = (await api("/api/eval")).job;
+        if (!j) { this.evalBox.replaceChildren(el("p", { class: "muted", text: "No eval has run from here yet; `ferrule eval report` prints the saved ones." })); return; }
+        const f = j.finished;
+        const line = (x) => x.passed + "/" + x.planned + " pass · " + num(x.tokens) + " tokens · " + usd(x.usd);
+        this.evalBox.replaceChildren(el("div", { class: "card" },
+          kv([
+            ["model", j.model],
+            ["tasks", j.subset === "starter" ? "the whole starter suite" : "the smoke subset"],
+            ["progress", j.done + " of " + j.planned + " done" + (j.current ? " · now " + j.current : "") + (j.running ? "" : " · finished")],
+            f ? ["result", el("span", {}, line(f.summary), f.summary.stopped ? el("div", { class: "warn msg", dir: "auto", text: "stopped: " + f.summary.stopped }) : null)] : null,
+            f ? ["the default", f.baseline ? f.baseline.reference + ": " + line(f.baseline) + " (run " + f.baseline.run_id + ")" : "no saved run on these tasks to compare with"] : null,
+            f ? ["saved as", "run " + f.summary.run_id] : null,
+            j.error ? ["error", el("span", { class: "bad msg", dir: "auto", text: j.error })] : null,
+          ]),
+          j.running ? el("div", { class: "row" }, btn("Cancel", "eval/cancel", {}, "danger")) : null,
+          j.lines.length ? el("pre", { class: "msg", dir: "auto", text: j.lines.slice(-12).join("\n") }) : null));
+      } catch (e) {
+        this.evalBox.replaceChildren(el("p", { class: "bad", text: e.message }));
+      }
+    },
     async load() {
+      this.loadEval();
       const m = await api("/api/models");
       const v = m.view;
       const names = v.models.map((r) => r.reference);
@@ -256,6 +325,7 @@
           el("div", { class: "row" },
             r.default ? null : btn("Default", "models/default", { model: r.reference }),
             btn("Test", "models/test", { model: r.reference }),
+            this.evalButton(r.reference),
             btn("Remove", "models/remove", { model: r.reference }, "danger")),
         ])),
         el("h3", { text: "Pins" }),
@@ -281,10 +351,12 @@
         })());
     },
     addButtons(row) {
-      if (!row.provider) return el("span", { class: "muted", text: "price reference" });
-      if (row.connected) return tag("connected", "ok");
+      const ev = this.evalButton(row.id, row.provider || undefined);
+      if (!row.provider) return el("div", { class: "row" }, el("span", { class: "muted", text: "price reference" }), ev);
+      if (row.connected) return el("div", { class: "row" }, tag("connected", "ok"), ev);
       const body = (as) => ({ provider: row.provider, id: row.id, as });
       return el("div", { class: "row" },
+        ev,
         btn("Add", "catalog/add", body("model")),
         btn("Default", "catalog/add", body("default"), "primary"),
         btn("Fallback", "catalog/add", body("fallback")));
@@ -373,7 +445,9 @@
       const pick = el("select", {}, [["1", "today"], ["7", "7 days"], ["30", "30 days"]].map(([v, t]) => el("option", { value: v, text: t })));
       pick.value = this.days;
       pick.onchange = () => { this.days = pick.value; this.load(); };
-      root.append(el("div", { class: "row" }, el("h2", { text: "Usage" }), pick), this.box);
+      // Outside the box the poll redraws, so a half-typed cap survives it.
+      const edit = el("details", { class: "card", ontoggle: (e) => { if (e.target.open) capsEditor(e.target); } }, el("summary", { text: "Edit caps" }));
+      root.append(el("div", { class: "row" }, el("h2", { text: "Usage" }), pick), this.box, edit);
     },
     async load() {
       const u = await api("/api/usage?days=" + this.days);
@@ -422,6 +496,13 @@
           el("div", { class: "row" },
             t.enabled ? btn("Pause", "tasks/pause", { id: t.id }) : btn("Resume", "tasks/resume", { id: t.id }),
             btn("Run now", "tasks/run", { id: t.id }),
+            ask("Schedule", "tasks/schedule", t.kind === "cron" ? "Cron schedule (5 fields), then optionally a space and an IANA timezone:" : "When (RFC 3339):",
+              t.kind === "cron" ? t.schedule + " " + t.timezone : t.schedule, (v) => {
+                const [schedule, timezone] = t.kind === "cron" ? splitTz(v) : [v.trim(), null];
+                return { id: t.id, schedule, timezone };
+              }),
+            ask("Model", "tasks/model", "The model it runs on (provider/model, a provider or an alias), or \"default\":",
+              t.model || "default", (v) => ({ id: t.id, model: v.trim() })),
             t.builtin ? null : btn("Delete", "tasks/delete", { id: t.id }, "danger"))))
           : el("p", { class: "muted", text: "No tasks." }));
     },
@@ -459,18 +540,38 @@
     every: 0,
     mount(root) { this.box = el("div"); root.append(this.box); },
     async load() {
-      const x = await api("/api/extensions");
+      const x = await api("/api/settings");
+      const w = x.workspace_hooks;
       this.box.replaceChildren(
         el("h2", { text: "Extensions" }),
-        el("p", { class: "muted", text: "Read-only: they change in the config." }),
         el("h3", { text: "MCP servers" }),
-        x.mcp.length ? table(["name", "runs"], x.mcp.map((m) => [m.name, m.runs])) : el("p", { class: "muted", text: "None." }),
+        x.mcp.length ? table(["name", "runs", ""], x.mcp.map((m) => [
+          el("span", {}, m.name, " ", tag(m.origin), m.disabled ? tag("off", "warn") : null), m.runs,
+          el("div", { class: "row" },
+            m.origin === "configured" ? (m.disabled ? btn("Enable", "mcp/enable", { name: m.name }) : btn("Disable", "mcp/disable", { name: m.name })) : null,
+            btn("Remove", "mcp/remove", { name: m.name }, "danger"))])) : el("p", { class: "muted", text: "None." }),
         el("h3", { text: "Skills" }),
         !x.skills_enabled ? el("p", { class: "muted", text: "Skills are off." })
-          : x.skills.length ? table(["skill", "", "what"], x.skills.map((s) => [s.name, tag(s.scope), text(s.description)])) : el("p", { class: "muted", text: "None found." }),
-        x.skills_disabled.length ? el("p", { class: "muted", text: "Disabled: " + x.skills_disabled.join(", ") }) : null,
+          : x.skills.length ? table(["skill", "", "what", ""], x.skills.map((s) => [s.name, tag(s.scope), text(s.description),
+            s.disabled ? btn("Enable", "skills/enable", { name: s.name }) : btn("Disable", "skills/disable", { name: s.name })])) : el("p", { class: "muted", text: "None found." }),
+        x.skills_disabled.length ? el("p", { class: "muted" }, "Disabled: ", x.skills_disabled.map((n, i) => [i ? ", " : "", n, " ", btn("Enable", "skills/enable", { name: n })])) : null,
         el("h3", { text: "Hooks" }),
-        x.hooks.length ? table(["event", "matcher", "command"], x.hooks.map((h) => [h.event, h.matcher || "*", el("code", { text: h.command })])) : el("p", { class: "muted", text: "None." }));
+        x.hooks.length ? table(["event", "matcher", "command"], x.hooks.map((h) => [h.event, h.matcher || "*", el("code", { text: h.command })])) : el("p", { class: "muted", text: "None in the config." }),
+        w ? el("div", { class: "card" + (w.trusted ? "" : " alert") },
+          el("div", { class: "row" }, el("strong", { text: "Workspace hooks" }), el("code", { text: w.file }), w.trusted ? tag("trusted", "ok") : tag(w.trusted_sha ? "changed since trusted" : "not trusted", "warn")),
+          kv([
+            ["SHA-256", el("code", { text: w.sha })],
+            w.trusted_sha && !w.trusted ? ["trusted", el("code", { text: w.trusted_sha })] : null,
+            w.project ? null : ["note", "They won't run until [hooks] project = true is in the config."],
+          ]),
+          w.parse_error ? el("p", { class: "bad", text: w.parse_error }) : null,
+          w.hooks.length ? table(["event", "matcher", "command"], w.hooks.map((h) => [h.event, h.matcher || "*", el("code", { text: h.command })])) : null,
+          w.diff ? [el("h4", { text: "What changed since it was trusted" }), el("pre", {}, w.diff.map((d) => el("div", { class: d.op === "+" ? "ok" : d.op === "-" ? "bad" : "muted", text: d.op + " " + d.line })))]
+            : el("details", {}, el("summary", { text: "The file" }), el("pre", { class: "msg", dir: "auto", text: w.text })),
+          el("div", { class: "row" },
+            w.trusted || w.parse_error ? null : btn("Trust this version", "hooks/trust", { sha: w.sha }, "primary"),
+            w.trusted_sha ? btn("Untrust", "hooks/untrust", {}, "danger") : null))
+          : null);
     },
   };
 
