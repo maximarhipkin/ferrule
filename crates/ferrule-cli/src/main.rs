@@ -1073,6 +1073,9 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
                 } => {
                     println!("\x1b[33m[provider failed, retry {attempt}/{max_attempts} in {:.1}s: {error}]\x1b[0m", delay_ms as f64 / 1000.0)
                 }
+                AgentEvent::ModelFallback { from, to, error } => {
+                    println!("\x1b[33m[{from} isn't answering ({error}); {to} takes over]\x1b[0m")
+                }
                 AgentEvent::Stuck { note } => println!("\x1b[33m{note}\x1b[0m"),
                 // A hook's error is the owner's to see, not the model's.
                 AgentEvent::HookFinished {
