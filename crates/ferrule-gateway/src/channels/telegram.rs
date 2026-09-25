@@ -1702,7 +1702,17 @@ mod tests {
         let (tx, _rx) = mpsc::channel(8);
         let run = channel.clone();
         let handle = tokio::spawn(async move { run.run(tx).await });
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Windows takes about 2 s to refuse a connection to a closed port.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while !lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("poll failed"))
+        {
+            assert!(std::time::Instant::now() < deadline, "no poll failed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         handle.abort();
         let out = OutboundMessage {
             channel: "telegram".into(),
