@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-connections"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "M20 connections: the agent asks, the owner approves, ferrule holds the token — OAuth (PKCE, DCR), the relay, API keys through an encrypted form, the catalog"
 

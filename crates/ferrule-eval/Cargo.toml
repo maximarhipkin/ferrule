@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-eval"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "ferrule eval: task suites, fixtures, graders, the naive/engineered A/B and its reports"
 

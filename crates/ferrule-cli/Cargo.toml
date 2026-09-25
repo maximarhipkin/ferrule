@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "ferrule binary: run, chat, memory, config"
 
