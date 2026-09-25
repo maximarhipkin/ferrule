@@ -182,7 +182,7 @@
       const turns = (h.turns || []).map((t) => [
         el("div", {}, t.place, " ", t.stuck ? tag("stuck", "bad") : null),
         text(t.text),
-        el("span", {}, t.busy_secs === null ? "queued" : secs(t.busy_secs), t.activity ? el("div", { class: "muted", text: t.activity }) : null),
+        el("span", {}, t.busy_secs === null ? "queued" : secs(t.busy_secs), t.activity ? el("div", { class: "muted msg", dir: "auto", text: t.activity }) : null),
         t.busy_secs === null ? "" : btn("Stop", "turn/stop", { session: t.session }, "danger"),
       ]);
       const kill = h.kill || {};

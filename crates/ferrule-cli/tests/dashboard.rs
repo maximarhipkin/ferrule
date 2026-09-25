@@ -1869,3 +1869,119 @@ fn the_cli_runs_the_same_edits_and_raising_a_cap_needs_yes_without_a_terminal() 
         assert!(audit.contains(event), "{event}: {audit}");
     }
 }
+
+/// Hebrew in, Hebrew out: user content reaches the page unchanged, and
+/// every element the page puts it in carries `dir="auto"`, so a
+/// right-to-left message reads right to left inside the left-to-right page.
+#[test]
+fn hebrew_arrives_unchanged_and_the_page_sets_its_direction() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let extra = format!("{}\n[health]\nwatchdog_after_secs = 1\n", telegram(&tg));
+    let dir = home(&two(&a, &b, "", &extra));
+    let home = dir.path();
+    let name = "סיכום בוקר";
+    let said = "HANG שלום, מה שלומך היום?";
+    let out = ferrule(
+        home,
+        &[
+            "tasks",
+            "add",
+            name,
+            "--kind",
+            "cron",
+            "--schedule",
+            "0 9 * * *",
+            "--channel",
+            "telegram",
+            "--chat-id",
+            "42",
+            "--prompt",
+            "תסכם לי את החדשות",
+        ],
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    let _gw = gateway(home, &[]);
+    let (_, page) = sign_in(&tg, 0);
+
+    let tasks = page.read("tasks");
+    assert_eq!(tasks["tasks"][0]["name"], name, "{tasks:#}");
+    tg.say(-100, said);
+    let health = page.until("health", |h| {
+        h["turns"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|t| t["text"] == said))
+    });
+    assert!(
+        health["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["text"] == said),
+        "{health:#}"
+    );
+    // The watchdog's notice quotes the message.
+    let health = page.until("health", |h| problems(h).iter().any(|p| p.contains(said)));
+    assert!(problems(&health).iter().any(|p| p.contains("Stuck on")));
+    // The audit log keeps the task's name, and a Hebrew filter finds it.
+    let (s, v) = page.post("tasks/pause", json!({"id": tasks["tasks"][0]["id"]}));
+    assert_eq!(s, 200, "{v}");
+    let logs =
+        page.read("logs?kind=audit&q=%D7%A1%D7%99%D7%9B%D7%95%D7%9D+%D7%91%D7%95%D7%A7%D7%A8");
+    assert_eq!(logs["total"], 1, "{logs:#}");
+    assert!(
+        logs["rows"][0]["text"].as_str().unwrap().contains(name),
+        "{logs:#}"
+    );
+
+    // Every user-content field the page renders sits in a `dir="auto"`
+    // element: `text(...)` makes one, or the element says so itself.
+    let (s, js) = page.get_raw("/app.js");
+    assert_eq!(s, 200);
+    assert!(js.contains(r#"const text = (t) => el("span", { class: "msg", dir: "auto""#));
+    for field in [
+        "t.text",
+        "t.activity",
+        "t.name || t.id",
+        "x.detail",
+        "x.text",
+        "p.what",
+        "s.description",
+        "w.text",
+        "j.error",
+        "j.lines",
+        "hb.last_error",
+        "h.watchdog.why",
+        "f.summary.stopped",
+        "r.down_reason",
+    ] {
+        // Each place the field becomes an element's text: `text(field)`,
+        // or an `el(...)` whose attributes set both `text:` and the direction.
+        let mut rendered = 0;
+        for l in js.lines() {
+            for (at, _) in l.match_indices(field) {
+                if l[..at].ends_with("text(") {
+                    rendered += 1;
+                    continue;
+                }
+                let Some(e) = l[..at].rfind("el(") else {
+                    continue;
+                };
+                let attrs = &l[e..at];
+                if attrs.contains("text:") && !attrs.contains('}') {
+                    rendered += 1;
+                    assert!(
+                        attrs.contains(r#"dir: "auto""#),
+                        "{field} without dir=\"auto\": {l}"
+                    );
+                }
+            }
+        }
+        assert!(rendered > 0, "app.js no longer renders {field}");
+    }
+    let (_, html) = page.get_raw("/");
+    assert!(
+        html.contains("charset=\"utf-8\"") || html.contains("charset=utf-8"),
+        "{html}"
+    );
+}

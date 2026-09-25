@@ -94,6 +94,11 @@ Telegram `/model` shows at the next poll.
 Disconnect, delete, remove and the kill switch ask for a confirmation
 first, and so do raising a cap, disabling an MCP server and trusting hooks.
 
+User content (message previews, task names, log lines, skill
+descriptions, the hooks file) sits in elements marked `dir="auto"`, so
+Hebrew or Arabic reads right to left inside the left-to-right page, and
+the log filter takes Hebrew as it is.
+
 ## What it never shows
 
 Keys, tokens, the relay key, secrets-file values, the heartbeat URL's
@@ -224,3 +229,26 @@ suite = "/path/to/ferrule/evals/starter"
 - Sessions are HttpOnly, SameSite=Strict cookies bound to their host.
   Every change needs a CSRF header, a JSON body and a matching Origin.
   Unknown hosts are refused, which stops DNS rebinding.
+
+## Smoke test
+
+`scripts/dashboard-smoke.sh` (or `scripts/dashboard-smoke.ps1` on
+Windows) walks the whole path in about 2 minutes, without an API key or a
+bot token and without touching your own config or data:
+
+```sh
+scripts/dashboard-smoke.sh                        # builds a release binary first
+FERRULE_BIN=~/.cargo/bin/ferrule scripts/dashboard-smoke.sh   # or uses yours
+```
+
+It starts the starter suite's mock model and a fake Telegram, runs
+`ferrule gateway` on a temp config, and sends `/dashboard` from the
+owner's chat. With the link it signs in, loads the page and
+`/api/health`, and checks that the API refuses a request without the
+cookie. It then fetches the live OpenRouter catalog once and closes with
+`/dashboard off`, checking that the session is revoked. If `cloudflared` is
+installed, the config asks for a quick tunnel and the page and login go
+through `trycloudflare.com`; if not, that step prints SKIP. Each step
+prints PASS, FAIL or SKIP, and the script exits non-zero on any FAIL.
+It needs Python 3 (standard library only); the driver is
+`scripts/dashboard_smoke.py`.
