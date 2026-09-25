@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-782-8a929a" alt="782 workspace tests">
+  <img src="https://img.shields.io/badge/tests-819-8a929a" alt="819 workspace tests">
 </p>
 
 <p align="center">
@@ -174,7 +174,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | | |
 |---|---|
 | **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
-| **Providers & models** | Three drivers: native Anthropic Messages (prompt caching, optional extended thinking), OpenAI Responses (the Codex models, reasoning effort) and OpenAI-compatible Chat for OpenAI, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on outage, and the ledger records the model that actually answered, cache reads and writes included ([`docs/models.md`](docs/models.md), [`docs/m23-drivers.md`](docs/m23-drivers.md)). |
+| **Providers & models** | Three drivers: native Anthropic Messages (prompt caching, optional extended thinking), OpenAI Responses (the Codex models, reasoning effort) and OpenAI-compatible Chat for OpenAI, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on outage, and the ledger records the model that actually answered, cache reads and writes included. Optional routing: start every turn on a cheap model and move up to a stronger one only on a failure (a failed check, broken tool calls, going in circles, `/model strong`), with a daily cap on the strong spend ([`docs/models.md`](docs/models.md), [`docs/m23-drivers.md`](docs/m23-drivers.md), [`docs/routing.md`](docs/routing.md)). |
 | **Connections** | The agent connects Jira and Confluence, Gmail, Drive, Notion, Linear, Attio and GitHub by itself. It asks, you tap one Telegram button, and the OAuth code (always PKCE) comes back through your own small Cloudflare Worker relay, a `cloudflared` quick tunnel or a pasted URL, so no inbound port. Tokens are sealed on disk, refreshed per request and never shown to the model. Read-only by default; writes ask you first ([`docs/m20-connections.md`](docs/m20-connections.md)). |
 | **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. |
 | **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. `ferrule mcp add` tests and scans a server, then adds it to the running daemon without a restart. |
@@ -514,7 +514,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 782 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 819 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -585,12 +585,13 @@ and a dated entry for every session.
       fallback across drivers mid-conversation
 - [x] M24: the dashboard's leftovers — a login that survives a restart,
       "evaluate a candidate", editing from the page, a 2-minute smoke script
+- [x] M25: routing Phase 1 — start cheap, escalate on failure signals,
+      `ferrule eval --variant routing` to compare cheap, routed and strong
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M25 routing
-(start cheap, escalate on failure), M26 isolation (a native Windows
+Every open track, in order (Max, 25.09: "do everything"): M26 isolation (a native Windows
 sandbox, sandboxed reads), M27 speed (parallel tool calls, streaming,
 cache-stable prompts), M28 `web_search` and keyword-triggered skills, M29
 edit mechanics and a tree-sitter repo map, M30 vector recall, M31 Discord
@@ -600,10 +601,8 @@ importers).
 M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
 [`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md).
-Designed, waiting on a decision: multi-provider routing Phase 1
-([research](docs/research-routing-and-local-models.md)), Codex
-Responses-API and Claude drivers, sandboxing file reads, a native Windows
-sandbox (AppContainer or a restricted token), code-extension plugins.
+Designed and now queued above: sandboxing file reads and a native Windows
+sandbox (M26), code-extension plugins (M32).
 
 **Planned**
 
