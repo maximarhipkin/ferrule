@@ -697,12 +697,14 @@ async fn provider_step(t: &mut Target, http: &reqwest::Client, guided: bool) -> 
     let several = crate::models::Catalog::from_config(&cfg).entries.len() > 1;
     if several {
         labels.push("Default model".into());
+        labels.push("Routing: start cheap, escalate when needed".into());
     }
     let pick = Select::new("Which provider?", labels).raw_prompt()?.index;
     match names.get(pick) {
         Some(name) => edit_provider(t, http, name).await,
         None if pick == names.len() => add_provider(t, http).await,
-        None => default_model_step(t),
+        None if pick == names.len() + 1 => default_model_step(t),
+        None => routing_step(t),
     }
 }
 
@@ -806,6 +808,116 @@ fn default_model_step(t: &mut Target) -> Result<()> {
     put(table(t.root(), &["models"])?, "default", pick.as_str());
     t.save()?;
     ok(format!("the default is {pick} now"));
+    Ok(())
+}
+
+/// M25: a cheap tier every turn starts on and a strong one it moves up to
+/// when it fails; the suggested pair is where the cursor starts.
+fn routing_step(t: &mut Target) -> Result<()> {
+    let cat = crate::models::Catalog::from_config(&t.config()?);
+    if cat.routing.enabled {
+        info(format!(
+            "Routing is on: {}.",
+            cat.routing.names().join(" → ")
+        ));
+        let pick = Select::new(
+            "Routing",
+            vec![
+                "Pick the cheap and strong models again",
+                "Turn routing off",
+                "Leave it",
+            ],
+        )
+        .raw_prompt()?
+        .index;
+        match pick {
+            0 => {}
+            1 => {
+                put(table(t.root(), &["routing"])?, "enabled", false);
+                t.save()?;
+                ok("routing is off: turns run on the default model");
+                return Ok(());
+            }
+            _ => return Ok(()),
+        }
+    } else {
+        info(
+            "Every turn starts on a cheap model and moves up to a strong one only when it fails: \
+             a call error, invalid tool calls, a failed check or Stop hook, no progress. \
+             The next turn starts cheap again.",
+        );
+    }
+    let sg = crate::models::routing_admin::suggest(&cat, &[], None);
+    let refs: Vec<String> = cat.entries.iter().map(|e| e.reference()).collect();
+    let labels: Vec<String> = cat
+        .entries
+        .iter()
+        .map(|e| match e.pricing {
+            Some(p) => format!(
+                "{} · ${}/${} per M in/out",
+                e.reference(),
+                p.input,
+                p.output
+            ),
+            None => format!("{} · price unknown", e.reference()),
+        })
+        .collect();
+    let at = |p: &Option<crate::models::routing_admin::Pick>, among: &[String]| {
+        p.as_ref()
+            .and_then(|p| among.iter().position(|r| *r == p.reference))
+    };
+    let cheap = Select::new("Cheap tier: every turn starts here", labels.clone())
+        .with_starting_cursor(at(&sg.cheap, &refs).unwrap_or(0))
+        .raw_prompt()?
+        .index;
+    let rest: Vec<usize> = (0..refs.len()).filter(|&i| i != cheap).collect();
+    let rest_refs: Vec<String> = rest.iter().map(|&i| refs[i].clone()).collect();
+    let strong = Select::new(
+        "Strong tier: a turn moves here when the cheap one fails",
+        rest.iter().map(|&i| labels[i].clone()).collect(),
+    )
+    .with_starting_cursor(at(&sg.strong, &rest_refs).unwrap_or(rest.len() - 1))
+    .raw_prompt()?
+    .index;
+    let cap = Text::new("Daily cap on spend above the cheap tier, in dollars (empty: none)")
+        .with_validator(|v: &str| -> Result<Validation, CustomUserError> {
+            let v = v.trim();
+            Ok(match v.parse::<f64>() {
+                _ if v.is_empty() => Validation::Valid,
+                Ok(c) if c.is_finite() && c > 0.0 => Validation::Valid,
+                _ => Validation::Invalid("dollars a day, like 2.5".into()),
+            })
+        })
+        .prompt()?;
+    let cap = cap.trim().parse::<f64>().ok();
+    let tiers = [refs[cheap].clone(), rest_refs[strong].clone()];
+    write_routing(t.root(), &tiers, cap)?;
+    t.save()?;
+    ok(format!(
+        "routing is on: {} → {}{}",
+        tiers[0],
+        tiers[1],
+        cap.map(|c| format!(" · at most ${c:.2} a day above the cheap tier"))
+            .unwrap_or_default()
+    ));
+    Ok(())
+}
+
+/// `[routing]` on over `tiers`, cheap first; the cap is set or removed.
+fn write_routing(root: &mut dyn TableLike, tiers: &[String], cap: Option<f64>) -> Result<()> {
+    let r = table(root, &["routing"])?;
+    put(r, "enabled", true);
+    put(
+        r,
+        "tiers",
+        toml_edit::Array::from_iter(tiers.iter().map(String::as_str)),
+    );
+    match cap {
+        Some(c) => put(r, "strong_daily_usd", c),
+        None => {
+            r.remove("strong_daily_usd");
+        }
+    }
     Ok(())
 }
 
@@ -2080,6 +2192,34 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), PRESETS.len());
         assert!(names.contains(&"gemini"));
+    }
+
+    #[test]
+    fn routing_is_written_on_and_back_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = target(dir.path(), "");
+        for preset in ["openai", "groq"] {
+            let p = PRESETS.iter().find(|p| p.name == preset).unwrap();
+            write_provider(t.root(), &NewProvider::from_preset(p)).unwrap();
+        }
+        put(t.root(), "default_provider", "openai");
+        let tiers = [
+            "groq/llama-3.3-70b-versatile".to_string(),
+            "openai/gpt-5.2".to_string(),
+        ];
+        write_routing(t.root(), &tiers, Some(2.5)).unwrap();
+        t.save().unwrap();
+        let cfg = t.config().unwrap();
+        assert!(cfg.routing.enabled);
+        assert_eq!(cfg.routing.tiers, tiers.to_vec());
+        assert_eq!(cfg.routing.strong_daily_usd, Some(2.5));
+        write_routing(t.root(), &tiers, None).unwrap();
+        put(table(t.root(), &["routing"]).unwrap(), "enabled", false);
+        t.save().unwrap();
+        let cfg = t.config().unwrap();
+        assert!(!cfg.routing.enabled);
+        assert_eq!(cfg.routing.strong_daily_usd, None);
+        assert_eq!(cfg.routing.tiers.len(), 2);
     }
 
     #[test]

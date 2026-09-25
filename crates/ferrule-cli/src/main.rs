@@ -1460,6 +1460,9 @@ async fn gateway_factory(
     // `ferrule tasks model` reaches a lane that's already running.
     let tasks = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     models::shared()?.set_task_models(Arc::new(move |id| tasks.model_of(id).ok().flatten()));
+    // A change from the page or Telegram before the first turn is audited
+    // too; building an agent attaches the same hub again.
+    models::shared()?.attach_hub(trust::hub(cfg)?);
     let sup = agents::supervisor(
         cfg,
         provider.clone(),

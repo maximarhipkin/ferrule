@@ -398,7 +398,6 @@ impl Models {
 
     /// `/model strong`: the chat's next turn starts on the top tier. Why
     /// not, when the chat isn't routed.
-    #[allow(dead_code)] // M25 part 3 wires it to /model and the dashboard
     pub fn force_strong(&self, channel: &str, chat: &str) -> Result<String, String> {
         let scope = Scope {
             session: format!("{channel}__{chat}"),
@@ -413,7 +412,7 @@ impl Models {
         if floor.is_none() {
             return Err(if r.on() {
                 format!(
-                    "This chat is pinned to {}, which isn't routed; `/model unpin` puts it back on the tiers.",
+                    "This chat is pinned to {}, which isn't routed; `/model use default` puts it back on the tiers.",
                     entry.reference()
                 )
             } else {
@@ -440,8 +439,9 @@ impl Models {
             .insert(session.to_string());
     }
 
-    /// Today's spend above tier 0, for the views.
-    #[allow(dead_code)] // M25 part 3 wires it to /model and the dashboard
+    /// Today's spend above tier 0 (the views read it from
+    /// [`super::routing_admin::RoutingView`]).
+    #[cfg(test)]
     pub fn strong_spend_today(&self) -> f64 {
         let mut st = self.state.lock().unwrap();
         self.refresh(&mut st);
@@ -480,7 +480,7 @@ impl Models {
 
 /// Today's (UTC) spend above tier 0: counted from the ledger the first
 /// time each day, then added to as calls answer.
-fn spent(st: &mut State, r: &Routing) -> f64 {
+pub(super) fn spent(st: &mut State, r: &Routing) -> f64 {
     let today = Utc::now().date_naive();
     if let Some((day, usd)) = st.routing.spend {
         if day == today {

@@ -23,6 +23,8 @@ pub struct ModelsView {
     /// Plain sentences: a default that's gone, a pin to a removed model, a
     /// config that no longer parses.
     pub problems: Vec<String>,
+    /// M25: `[routing]`.
+    pub routing: super::routing_admin::RoutingView,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,7 +193,9 @@ impl Models {
             .collect();
         // RFC 3339 in UTC sorts as text.
         last_served.sort_by(|a, b| b.at.cmp(&a.at));
+        let routing = super::routing_admin::view_of(&mut st, &cat.routing);
         ModelsView {
+            routing,
             models,
             default,
             default_set: cat.default.clone().unwrap_or_default(),
@@ -238,9 +242,16 @@ impl Models {
             "model.pin",
             serde_json::json!({ "chat": pin_key(channel, chat), "from": from, "to": to, "by": by }),
         );
-        Ok(self.done(format!(
-            "{channel} chat {chat} now runs on {}, from its next message.",
+        let on = if super::routing::is_tier_ref(&to) && cat.routing.on() {
+            format!(
+                "the tier `{to}` ({}), moving up from there when a turn fails",
+                e.reference()
+            )
+        } else {
             e.reference()
+        };
+        Ok(self.done(format!(
+            "{channel} chat {chat} now runs on {on}, from its next message."
         )))
     }
 
@@ -457,7 +468,7 @@ impl Models {
         test_entry(&e).await
     }
 
-    fn done(&self, said: String) -> Done {
+    pub(super) fn done(&self, said: String) -> Done {
         Done {
             said,
             view: self.view(),
@@ -511,7 +522,7 @@ impl Models {
 
 /// What to write for `word`: an alias stays an alias (it follows the
 /// alias), anything else becomes `provider/model`.
-fn stored(cat: &Catalog, word: &str, e: &Entry) -> String {
+pub(super) fn stored(cat: &Catalog, word: &str, e: &Entry) -> String {
     // An alias or a tier ref (M25) is kept as written: it follows its
     // model.
     if cat.aliases.contains_key(word.trim()) || super::routing::is_tier_ref(word) {
@@ -555,6 +566,8 @@ fn broken_refs(cat: &Catalog) -> Vec<String> {
             out.push(format!("fallback `{f}`: {e}"));
         }
     }
+    // M25: a tier that stops resolving turns routing off.
+    out.extend(cat.routing.problems.iter().cloned());
     for a in cat.aliases.keys() {
         if let Err(e) = cat.resolve(a) {
             out.push(e);

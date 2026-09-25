@@ -1283,3 +1283,95 @@ enabled = true
     assert!(!home.join("data/gateway/dashboard.json").exists());
     assert!(!home.join("data/private/dashboard").exists());
 }
+
+#[test]
+fn routing_set_on_the_page_routes_telegram_turns_and_is_audited() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let dir = home(&two(&a, &b, "", &telegram(&tg)));
+    let home = dir.path();
+    let _gw = gateway(home, &[]);
+    let (n, page) = sign_in(&tg, 0);
+    let r = page.read("routing");
+    assert_eq!(r["routing"]["on"], false, "{r:#}");
+    assert_eq!(r["days"], 7);
+
+    // Without the CSRF token, nothing changes.
+    let o = origin(page.port);
+    let (s, _, _) = http(
+        page.port,
+        "POST",
+        "/api/routing/set",
+        &[
+            ("cookie", &page.cookie),
+            ("origin", &o),
+            ("content-type", "application/json"),
+        ],
+        r#"{"tiers":["a/a-two","b/b-large"]}"#,
+    );
+    assert_eq!(s, 403);
+    assert_eq!(page.read("routing")["routing"]["on"], false);
+
+    // Bad tiers are refused and nothing is written.
+    let (s, v) = page.post("routing/set", json!({"tiers": ["a/a-two"]}));
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = page.post("routing/set", json!({"tiers": ["a/a-two", "a/a-two"]}));
+    assert_eq!(s, 400, "{v}");
+    let (s, v) = page.post("routing/set", json!({"tiers": ["a/a-two", "tier:strong"]}));
+    assert_eq!(s, 400, "{v}");
+
+    let (s, v) = page.post(
+        "routing/set",
+        json!({"tiers": ["a/a-two", "b/b-large"], "strong_daily_usd": 3.0}),
+    );
+    assert_eq!(s, 200, "{v}");
+    assert!(v["said"].as_str().unwrap().contains("Routing is on"), "{v}");
+    let r = page.read("routing");
+    assert_eq!(r["routing"]["on"], true, "{r:#}");
+    assert_eq!(r["routing"]["strong_daily_usd"], 3.0);
+    let names: Vec<&str> = r["routing"]["tiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["reference"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["a/a-two", "b/b-large"]);
+    let config = std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    assert!(config.contains("[routing]"), "{config}");
+
+    // A turn starts on the cheap tier; `/model strong` lifts the next one
+    // only; `/model tiers` lists them.
+    tg.say(42, "hello");
+    let (n, _) = tg.wait_for(42, "A:a-two", n);
+    tg.say(42, "/model tiers");
+    let (n, tiers) = tg.wait_for(42, "b/b-large", n);
+    assert!(tiers.contains("a/a-two"), "{tiers}");
+    tg.say(42, "/model strong");
+    let (n, _) = tg.wait_for(42, "strong tier", n);
+    tg.say(42, "hard one");
+    let (n, _) = tg.wait_for(42, "B:b-large", n);
+    tg.say(42, "easy again");
+    let (n, _) = tg.wait_for(42, "A:a-two", n);
+    tg.say(42, "/status");
+    let (n, status) = tg.wait_for(42, "ferrule ", n);
+    assert!(status.contains("routing: a/a-two"), "{status}");
+
+    // The ledger's tiers and the owner's escalation show on the page.
+    let r = page.until("routing", |r| {
+        r["stats"]["tiers"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|t| t["tier"] == "b/b-large"))
+    });
+    assert!(r["stats"]["escalations"].as_u64().unwrap() >= 1, "{r:#}");
+    assert!(r["stats"]["days"].to_string().contains("owner"), "{r:#}");
+
+    let (s, v) = page.post("routing/unset", json!({}));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(page.read("routing")["routing"]["on"], false);
+    tg.say(42, "/model strong");
+    tg.wait_for(42, "Routing is off", n);
+    let audit = std::fs::read_to_string(home.join("data/trust/audit.jsonl")).unwrap();
+    for want in ["routing.set", "routing.unset", "\"dashboard\""] {
+        assert!(audit.contains(want), "{want}: {audit}");
+    }
+}

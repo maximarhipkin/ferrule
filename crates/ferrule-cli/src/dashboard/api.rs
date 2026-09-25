@@ -9,6 +9,7 @@ use super::http::Request;
 use super::Ctx;
 use crate::config::Config;
 use crate::models::catalog;
+use crate::models::routing_admin;
 use crate::models::Retire;
 use chrono::{DateTime, Utc};
 use ferrule_core::LedgerRecord;
@@ -87,6 +88,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "health" => ok(health(ctx)),
             "connections" => connections(ctx),
             "models" => models(ctx),
+            "routing" => routing(ctx, req),
             "catalog" => catalog_list(ctx, req).await,
             "recommend" => recommend(ctx).await,
             "usage" => usage(ctx, req),
@@ -102,6 +104,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "kill/on" | "kill/off" => kill(ctx, path == "kill/on", body),
         "models/default" | "models/pin" | "models/unpin" | "models/fallback" | "models/add"
         | "models/remove" | "models/test" => model_op(ctx, path, body).await,
+        "routing/set" | "routing/unset" => routing_op(ctx, path, body),
         "catalog/add" => catalog_add(ctx, body).await,
         "catalog/fill-prices" => fill_prices(ctx).await,
         "connections/connect" | "connections/disconnect" => connection_op(ctx, path, body).await,
@@ -581,6 +584,72 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     };
     match done {
         Ok(d) => ok(json!({ "ok": true, "said": d.said, "view": d.view })),
+        Err(e) => bad(400, format!("{e:#}")),
+    }
+}
+
+// ---- Routing (M25) ------------------------------------------------------
+
+/// `[routing]`, the escalations a day and their reasons and the spend per
+/// tier over the last `days` (1, 7 or 30), and a pair to route over from
+/// the connected models' prices.
+fn routing(ctx: &Ctx, req: &Request) -> Answer {
+    let Some(m) = &ctx.models else {
+        return missing("the models");
+    };
+    let days: i64 = match req.query.get("days").map(String::as_str) {
+        Some("1") => 1,
+        Some("30") => 30,
+        _ => 7,
+    };
+    let since = Utc::now() - chrono::Duration::days(days);
+    let stats = ctx
+        .data
+        .as_ref()
+        .and_then(|d| crate::ledger::read_records(&d.join("ledger.jsonl"), Some(since)).ok())
+        .map(|(rows, _)| routing_admin::stats(&rows))
+        .unwrap_or_default();
+    ok(json!({
+        "routing": m.view().routing,
+        "days": days,
+        "stats": stats,
+        "suggestion": routing_admin::suggest(&m.catalog(), &[], None),
+    }))
+}
+
+fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
+    let Some(m) = &ctx.models else {
+        return missing("the models");
+    };
+    let done = if path == "routing/unset" {
+        m.unset_routing(BY)
+    } else {
+        let Some(tiers) = body.get("tiers").and_then(Value::as_array) else {
+            return bad(400, "`tiers` is missing: the models, cheap first");
+        };
+        let tiers: Vec<String> = tiers
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        let de_escalate = body.get("de_escalate").and_then(Value::as_bool);
+        // Absent: unchanged; null or 0: no cap.
+        let cap = match body.get("strong_daily_usd") {
+            None => None,
+            Some(Value::Null) => Some(None),
+            Some(v) => match v.as_f64() {
+                Some(0.0) => Some(None),
+                Some(c) => Some(Some(c)),
+                None => return bad(400, "`strong_daily_usd` is dollars a day, or null"),
+            },
+        };
+        m.set_routing(&tiers, de_escalate, cap, BY)
+    };
+    match done {
+        Ok(d) => {
+            retire(ctx, None);
+            ok(json!({ "ok": true, "said": d.said, "view": d.view }))
+        }
         Err(e) => bad(400, format!("{e:#}")),
     }
 }

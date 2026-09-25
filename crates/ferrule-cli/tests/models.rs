@@ -154,6 +154,8 @@ fn serve(label: &str, mut stream: TcpStream, log: &Mutex<Vec<Value>>, status: &A
         (
             if code == 401 {
                 "401 Unauthorized"
+            } else if code == 400 {
+                "400 Bad Request"
             } else {
                 "503 Service Unavailable"
             },
@@ -805,4 +807,195 @@ fn the_eval_ignores_the_owners_default_pins_and_fallback_unless_a_model_is_picke
     let plan = dry(&["--provider", "b"]);
     assert!(plan.contains("b-large via b,"), "{plan}");
     assert_eq!(a.calls() + b.calls(), 0);
+}
+
+/// M25: `[models]` without the network, and `b/b-mid` to route over.
+fn routable(a: &Server, b: &Server, extra: &str) -> String {
+    two(a, b, &format!("\n[providers.b.models.\"b-mid\"]\n{extra}")).replace(
+        "[models.aliases]",
+        "[models]\ncatalog_url = \"\"\n\n[models.aliases]",
+    )
+}
+
+fn audit_events(home: &Path, event: &str) -> Vec<Value> {
+    std::fs::read_to_string(home.join("data/trust/audit.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .filter(|v| v["event"] == event)
+        .collect()
+}
+
+#[test]
+fn model_route_sets_checks_shows_and_turns_off_routing_and_audits_it() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let dir = home(&routable(&a, &b, ""));
+    let home = dir.path();
+
+    // Refused, and nothing written.
+    for (args, why) in [
+        (
+            vec!["model", "route", "set", "a/a-two", "nowhere/x"],
+            "nowhere",
+        ),
+        (vec!["model", "route", "set", "a/a-two", "a/a-two"], "twice"),
+        (
+            vec!["model", "route", "set", "a/a-two", "tier:strong"],
+            "tier",
+        ),
+        (
+            vec!["model", "route", "set", "a/a-two", "b/b-mid", "--cap", "0"],
+            "cap",
+        ),
+    ] {
+        let out = ferrule(home, &args);
+        assert!(!out.status.success(), "{args:?}: {}", describe(&out));
+        assert!(
+            plain(&out.stderr).contains(why),
+            "{args:?}: {}",
+            describe(&out)
+        );
+    }
+    let out = ferrule(home, &["model", "route", "set", "a/a-two"]);
+    assert!(!out.status.success(), "one tier: {}", describe(&out));
+    let config = std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    assert!(!config.contains("[routing]"), "{config}");
+    assert!(audit_events(home, "routing.set").is_empty());
+
+    let out = ferrule(
+        home,
+        &["model", "route", "set", "a/a-two", "b/b-mid", "--cap", "2"],
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    let said = plain(&out.stdout);
+    assert!(
+        said.contains("Routing is on") && said.contains("$2.00"),
+        "{said}"
+    );
+    let config = std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    assert!(
+        config.contains("[routing]") && config.contains("strong_daily_usd = 2"),
+        "{config}"
+    );
+    let set = audit_events(home, "routing.set");
+    assert_eq!(set.len(), 1, "{set:?}");
+    assert_eq!(set[0]["detail"]["by"], "cli");
+    assert_eq!(set[0]["detail"]["from"]["enabled"], false);
+    assert_eq!(
+        set[0]["detail"]["to"]["tiers"],
+        json!(["a/a-two", "b/b-mid"])
+    );
+    assert_eq!(set[0]["detail"]["to"]["strong_daily_usd"], 2.0);
+
+    let out = ferrule(home, &["model", "route", "--json"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["routing"]["on"], true, "{v:#}");
+    assert_eq!(v["routing"]["tiers"][1]["reference"], "b/b-mid");
+    assert_eq!(v["last_7_days"]["escalations"], 0);
+    let out = ferrule(home, &["model", "route"]);
+    let text = plain(&out.stdout);
+    assert!(
+        text.contains("Routing: on") && text.contains("b/b-mid"),
+        "{text}"
+    );
+    let out = ferrule(home, &["model", "list"]);
+    assert!(
+        plain(&out.stdout).contains("Routing: on"),
+        "{}",
+        describe(&out)
+    );
+
+    // A tier's model can't be removed from under it.
+    let out = ferrule(home, &["model", "remove", "b/b-mid"]);
+    assert!(!out.status.success(), "{}", describe(&out));
+    assert!(plain(&out.stderr).contains("tier"), "{}", describe(&out));
+
+    // `--no-cap` and `--sticky`.
+    let out = ferrule(
+        home,
+        &[
+            "model", "route", "set", "a/a-two", "b/b-mid", "--no-cap", "--sticky",
+        ],
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    let config = std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    assert!(
+        !config.contains("strong_daily_usd") && config.contains("de_escalate = false"),
+        "{config}"
+    );
+
+    let out = ferrule(home, &["model", "route", "off"]);
+    assert!(
+        plain(&out.stdout).contains("Routing is off"),
+        "{}",
+        describe(&out)
+    );
+    let out = ferrule(home, &["model", "route", "off"]);
+    assert!(
+        plain(&out.stdout).contains("off already"),
+        "{}",
+        describe(&out)
+    );
+    assert_eq!(audit_events(home, "routing.unset").len(), 1);
+    // The tiers stay written; a `tier:` ref still names its model.
+    let config = std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    assert!(
+        config.contains("enabled = false") && config.contains("b/b-mid"),
+        "{config}"
+    );
+}
+
+#[test]
+fn a_bad_request_on_the_cheap_tier_moves_the_turn_up_and_the_next_turn_starts_cheap() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    // A request the cheap model refuses; retrying it there won't help.
+    a.fail_with(400);
+    let tg = FakeTelegram::start();
+    let dir = home(&routable(
+        &a,
+        &b,
+        &format!(
+            "\n[routing]\nenabled = true\ntiers = [\"a/a-two\", \"b/b-mid\"]\n{}",
+            telegram(&tg)
+        ),
+    ));
+    let home = dir.path();
+    let _gw = gateway(home);
+
+    tg.say(42, "hello");
+    let (n, _) = tg.wait_for(42, "B:b-mid", 0);
+    let rows = ledger(home);
+    let up = rows
+        .iter()
+        .find(|r| r["route"]["tier"] == "b/b-mid")
+        .unwrap_or_else(|| panic!("no row on the strong tier: {rows:#?}"));
+    assert!(
+        up["route"]["escalated"]
+            .as_str()
+            .unwrap()
+            .starts_with("call_failed"),
+        "{up:#}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r["route"]["tier"] == "a/a-two" && r["outcome"] != "ok"),
+        "{rows:#?}"
+    );
+    let esc = audit_events(home, "routing.escalate");
+    assert_eq!(esc[0]["detail"]["to"], "b/b-mid", "{esc:?}");
+
+    // Back on its feet, the cheap tier answers the next turn.
+    a.fail_with(200);
+    tg.say(42, "again");
+    let (n, _) = tg.wait_for(42, "A:a-two", n);
+
+    // A chat pinned to a tier starts there.
+    tg.say_from(-100, 42, "/model tier:strong");
+    let (n, said) = tg.wait_for(-100, "b/b-mid", n);
+    assert!(!said.starts_with("Nothing changed"), "{said}");
+    tg.say(-100, "group question");
+    let (n, _) = tg.wait_for(-100, "B:b-mid", n);
+    tg.say(42, "private question");
+    tg.wait_for(42, "A:a-two", n);
 }

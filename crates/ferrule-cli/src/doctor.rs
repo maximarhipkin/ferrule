@@ -373,11 +373,12 @@ async fn models_check(r: &mut Report, ping: bool) {
     for p in view
         .problems
         .iter()
-        .filter(|p| in_use && !p.starts_with("no key:"))
+        .filter(|p| in_use && !p.starts_with("no key:") && !view.routing.problems.contains(p))
     {
         r.fail("models", p);
         r.hint("`ferrule model list` shows what's connected; `ferrule model default <ref>` fixes the default");
     }
+    routing_check(r, &view.routing);
     let unpriced = crate::models::catalog::unpriced(&models.catalog());
     for u in &unpriced {
         r.warn("models", u);
@@ -395,6 +396,39 @@ async fn models_check(r: &mut Report, ping: bool) {
         } else {
             r.warn("models", format!("{}: {}", out.reference, out.said));
         }
+    }
+}
+
+/// M25: routing on or off, and what would stop a turn from climbing.
+fn routing_check(r: &mut Report, v: &crate::models::routing_admin::RoutingView) {
+    if !v.enabled {
+        return;
+    }
+    if v.on {
+        let names: Vec<&str> = v.tiers.iter().map(|t| t.name.as_str()).collect();
+        let cap = match v.strong_daily_usd {
+            Some(cap) => format!(
+                " · ${:.2} of ${cap:.2} above the cheap tier today",
+                v.strong_spent_today
+            ),
+            None => String::new(),
+        };
+        r.ok("routing", format!("on · {}{cap}", names.join(" → ")));
+    }
+    for p in &v.problems {
+        r.fail("routing", p);
+    }
+    if !v.problems.is_empty() {
+        r.hint("`ferrule model route` shows the tiers; `ferrule model route set <cheap> <strong>` fixes them, `ferrule model route off` turns routing off");
+    }
+    for t in v.tiers.iter().filter(|t| !t.key_present) {
+        r.warn(
+            "routing",
+            format!(
+                "tier {} ({}): no key (${} isn't set), so a turn can't climb to it",
+                t.name, t.reference, t.key_env
+            ),
+        );
     }
 }
 

@@ -24,7 +24,9 @@ const USAGE: &str = "Usage:\n\
 /model use <ref>: this chat's model; /model use default clears it\n\
 /model fallback <ref> …: where turns go when a model is down; /model fallback off\n\
 /model test <ref>: one real call\n\
-A ref is provider/model, a provider, an alias or a model id.";
+/model strong: this chat's next turn on the strong tier (routing)\n\
+/model tier:strong: pin this chat to a tier; /model tiers shows them\n\
+A ref is provider/model, a provider, an alias, a model id or a tier (tier:cheap, tier:strong).";
 
 impl ModelDoor {
     /// The owner chat, or the owner writing in a group.
@@ -54,6 +56,27 @@ impl ModelDoor {
                 let mut text = render(&self.models.view(), Some(("telegram", chat)));
                 text.extend(fixed_note);
                 return text;
+            }
+            ("tiers", "") | ("route", "") => {
+                let text = super::routing_admin::render(&self.models.view().routing);
+                return if text.is_empty() {
+                    "Routing isn't set up: `ferrule model route` suggests a cheap/strong pair."
+                        .into()
+                } else {
+                    text.trim_start().to_string()
+                };
+            }
+            ("strong", "") => {
+                return self
+                    .models
+                    .force_strong("telegram", chat)
+                    .unwrap_or_else(|e| format!("Nothing changed: {e}"))
+            }
+            (tier, "") if super::routing::is_tier_ref(tier) => {
+                self.models.pin("telegram", chat, sub, &by).map(|d| {
+                    (self.retire)(Some(&session));
+                    d.said
+                })
             }
             ("default", w) if !w.is_empty() => self.models.set_default(w, &by).map(|d| {
                 (self.retire)(None);
@@ -146,6 +169,21 @@ pub fn status_lines(models: &Models) -> Vec<String> {
             s.reference,
             ago_text(ago)
         ));
+    }
+    let r = &view.routing;
+    if r.on {
+        let tiers: Vec<String> = r
+            .tiers
+            .iter()
+            .map(|t| format!("{} ({})", t.name, t.reference))
+            .collect();
+        out.push(format!("routing: {}", tiers.join(" → ")));
+        if let Some(cap) = r.strong_daily_usd {
+            out.push(format!(
+                "above the cheap tier today: ${:.2} of ${cap:.2}",
+                r.strong_spent_today
+            ));
+        }
     }
     out.extend(view.problems.iter().map(|p| format!("problem: {p}")));
     out
