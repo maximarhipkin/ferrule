@@ -1,0 +1,1033 @@
+//! M21: several models at once, a default, and a model per agent
+//! (docs/m21-models.md). The catalog of connected models is read from the
+//! config; every agent gets a [`RoutedProvider`] that picks its model per
+//! call from the agent's [`Scope`], so a change reaches a running lane at
+//! its next call.
+
+use crate::config::{Config, ProviderConfig};
+use crate::ledger::{Prices, ProviderPricing};
+use chrono::{DateTime, Utc};
+use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
+use ferrule_core::{CoreError, FailOver, HarnessProfile, Served};
+use ferrule_providers::OpenAiCompatProvider;
+use ferrule_trust::Hub;
+use serde::Serialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
+
+/// How long a model that stayed down after its retries is skipped for.
+pub const DOWN_FOR: Duration = Duration::from_secs(5 * 60);
+
+/// One connected model: a provider's own `model` (its primary) or one
+/// under `[providers.X.models]`, with the provider's fields filled in.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Entry {
+    pub provider: String,
+    pub model: String,
+    pub primary: bool,
+    pub base_url: String,
+    pub key_env: String,
+    pub profile: String,
+    pub context_window: Option<usize>,
+    pub pricing: Option<ProviderPricing>,
+    pub aliases: Vec<String>,
+}
+
+impl Entry {
+    /// `provider/model`.
+    pub fn reference(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+
+    /// The harness profile, with the model's own window if it has one.
+    pub fn harness(&self) -> HarnessProfile {
+        let mut p = HarnessProfile::by_name(&self.profile);
+        if let Some(w) = self.context_window {
+            p.context_window = w;
+        }
+        p
+    }
+
+    pub fn key(&self) -> Option<String> {
+        std::env::var(&self.key_env).ok()
+    }
+
+    /// Why a call can't be made: the key isn't in the env or the secrets
+    /// file.
+    pub fn no_key(&self) -> String {
+        format!(
+            "no key: `${}` isn't set ({}); run `ferrule setup`, or export it",
+            self.key_env,
+            self.reference()
+        )
+    }
+}
+
+/// Every connected model, the aliases, the default and the fallback list,
+/// as the config says now.
+#[derive(Debug, Clone, Default)]
+pub struct Catalog {
+    pub entries: Vec<Entry>,
+    pub aliases: BTreeMap<String, String>,
+    pub default: Option<String>,
+    pub default_provider: Option<String>,
+    pub fallback: Vec<String>,
+}
+
+impl Catalog {
+    pub fn from_config(cfg: &Config) -> Self {
+        let mut entries = Vec::new();
+        for (name, p) in &cfg.providers {
+            let own = p.models.get(&p.model).cloned().unwrap_or_default();
+            entries.push(entry(name, p, &p.model, true, &own));
+            for (model, mc) in &p.models {
+                if *model != p.model {
+                    entries.push(entry(name, p, model, false, mc));
+                }
+            }
+        }
+        let mut cat = Self {
+            entries,
+            aliases: cfg.models.aliases.clone(),
+            default: cfg.models.default.clone(),
+            default_provider: cfg.default_provider.clone(),
+            fallback: cfg.models.fallback.clone(),
+        };
+        let named: Vec<(String, String)> = cat
+            .aliases
+            .keys()
+            .filter_map(|a| Some((a.clone(), cat.resolve(a).ok()?.reference())))
+            .collect();
+        for (alias, target) in named {
+            if let Some(e) = cat.entries.iter_mut().find(|e| e.reference() == target) {
+                e.aliases.push(alias);
+            }
+        }
+        cat
+    }
+
+    /// The connected model `word` names (docs/m21-models.md §1): an alias,
+    /// then a provider (its primary), then `provider/model`, then a model
+    /// id only one provider has.
+    pub fn resolve(&self, word: &str) -> Result<&Entry, String> {
+        let word = word.trim();
+        if let Some(target) = self.aliases.get(word) {
+            return self
+                .resolve_plain(target)
+                .map_err(|e| format!("the alias `{word}` points at `{target}`, but {e}"));
+        }
+        self.resolve_plain(word)
+    }
+
+    fn resolve_plain(&self, word: &str) -> Result<&Entry, String> {
+        if word.is_empty() {
+            return Err("no model was named".into());
+        }
+        if let Some(e) = self
+            .entries
+            .iter()
+            .find(|e| e.primary && e.provider == word)
+        {
+            return Ok(e);
+        }
+        if let Some((p, m)) = word.split_once('/') {
+            if self.entries.iter().any(|e| e.provider == p) {
+                return self
+                    .entries
+                    .iter()
+                    .find(|e| e.provider == p && e.model == m)
+                    .ok_or_else(|| {
+                        let theirs: Vec<&str> = self
+                            .entries
+                            .iter()
+                            .filter(|e| e.provider == p)
+                            .map(|e| e.model.as_str())
+                            .collect();
+                        format!(
+                            "`{m}` isn't connected on `{p}` (connected there: {}); `ferrule model add {p}/{m}` connects it",
+                            theirs.join(", ")
+                        )
+                    });
+            }
+        }
+        let hits: Vec<&Entry> = self.entries.iter().filter(|e| e.model == word).collect();
+        match hits.as_slice() {
+            [one] => Ok(one),
+            [] => Err(format!(
+                "`{word}` isn't a connected model; `ferrule model list` shows them"
+            )),
+            many => Err(format!(
+                "`{word}` is connected on more than one provider ({}); say which",
+                many.iter()
+                    .map(|e| e.reference())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    /// `[models] default`, else `default_provider`'s primary, and a note
+    /// when the first names a model that isn't connected.
+    pub fn default_entry(&self) -> Result<(&Entry, Option<String>), String> {
+        let mut note = None;
+        if let Some(d) = &self.default {
+            match self.resolve(d) {
+                Ok(e) => return Ok((e, None)),
+                Err(e) => {
+                    note = Some(format!(
+                        "[models] default = \"{d}\": {e}; using default_provider instead"
+                    ))
+                }
+            }
+        }
+        match &self.default_provider {
+            Some(p) => self
+                .entries
+                .iter()
+                .find(|e| e.primary && e.provider == *p)
+                .map(|e| (e, note))
+                .ok_or_else(|| format!("provider `{p}` not in config")),
+            None => Err(
+                "no default model: run `ferrule model default <ref>`, or set default_provider"
+                    .into(),
+            ),
+        }
+    }
+
+    /// The price of a call that ran on `provider`'s `model`: the model's
+    /// own, else its provider's (a model the eval named by hand).
+    pub fn price(&self, provider: &str, model: &str) -> Option<ProviderPricing> {
+        self.entries
+            .iter()
+            .find(|e| e.provider == provider && e.model == model)
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|e| e.primary && e.provider == provider)
+            })
+            .and_then(|e| e.pricing)
+    }
+}
+
+fn entry(
+    name: &str,
+    p: &ProviderConfig,
+    model: &str,
+    primary: bool,
+    mc: &crate::config::ModelConfig,
+) -> Entry {
+    // Field by field, the model's own, else the provider's; and then all
+    // three prices or none (M19's rule).
+    let pricing = (|| {
+        Some(ProviderPricing {
+            input: mc.price_input_per_mtok.or(p.price_input_per_mtok)?,
+            cached_input: mc
+                .price_cached_input_per_mtok
+                .or(p.price_cached_input_per_mtok)?,
+            output: mc.price_output_per_mtok.or(p.price_output_per_mtok)?,
+        })
+    })();
+    Entry {
+        provider: name.to_string(),
+        model: model.to_string(),
+        primary,
+        base_url: p.base_url.clone(),
+        key_env: p.api_key_env.clone(),
+        profile: mc.profile.clone().unwrap_or_else(|| p.profile.clone()),
+        context_window: mc.context_window,
+        pricing,
+        aliases: Vec::new(),
+    }
+}
+
+/// Who an agent is, for picking its model: what was asked for it
+/// explicitly, and the task or chat it runs for (docs/m21-models.md §3).
+#[derive(Debug, Clone, Default)]
+pub struct Scope {
+    /// Its session: the key `/status` shows the last model under.
+    pub session: String,
+    /// A one-off (`--model`, `--provider`, `spawn_agent(model)`) or its
+    /// role's model: it runs on that or fails with the reason.
+    pub fixed: Option<Fixed>,
+    /// The scheduled task it runs for.
+    pub task: Option<String>,
+    /// The chat it answers, `(channel, chat)`.
+    pub chat: Option<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Fixed {
+    pub word: String,
+    /// Who asked, for the error: "--model", "role verifier".
+    pub by: String,
+}
+
+impl Scope {
+    /// A gateway session `<channel>__<chat>`, or a scheduler one: the chat
+    /// or the task. Any other id is a session of its own.
+    pub fn for_session(session: &str) -> Self {
+        let mut s = Self {
+            session: session.to_string(),
+            ..Self::default()
+        };
+        match session.split_once("__") {
+            Some((ch, task)) if ch == ferrule_gateway::SCHEDULER_PSEUDO_CHANNEL => {
+                s.task = Some(task.to_string())
+            }
+            Some((ch, chat)) => s.chat = Some((ch.to_string(), chat.to_string())),
+            None => {}
+        }
+        s
+    }
+
+    pub fn fixed(mut self, word: Option<String>, by: &str) -> Self {
+        if let Some(word) = word {
+            self.fixed = Some(Fixed {
+                word,
+                by: by.to_string(),
+            });
+        }
+        self
+    }
+}
+
+/// A task's model, looked up per call so `ferrule tasks model` reaches a
+/// running lane.
+pub type TaskModels = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+struct Down {
+    until: Instant,
+    reason: String,
+    told: bool,
+}
+
+#[derive(Default)]
+struct State {
+    catalog: Arc<Catalog>,
+    seen: Option<(SystemTime, u64)>,
+    broken: bool,
+    pins: BTreeMap<String, String>,
+    pins_seen: Option<(SystemTime, u64)>,
+    down: HashMap<String, Down>,
+    served: HashMap<String, (String, DateTime<Utc>)>,
+    clients: HashMap<(String, String, String, String), Arc<OpenAiCompatProvider>>,
+    warned: HashSet<String>,
+}
+
+/// The process's models: the catalog as the config file says now, the chat
+/// pins, outages and which model each session ran on last. One per
+/// process ([`shared`]); every lane's [`RoutedProvider`] shares it.
+pub struct Models {
+    path: PathBuf,
+    pins_path: Option<PathBuf>,
+    state: Mutex<State>,
+    hub: Mutex<Option<Arc<Hub>>>,
+    tasks: Mutex<Option<TaskModels>>,
+}
+
+static SHARED: OnceLock<Arc<Models>> = OnceLock::new();
+
+/// This process's models, from the config `Config::load` finds.
+pub fn shared() -> anyhow::Result<Arc<Models>> {
+    if let Some(m) = SHARED.get() {
+        return Ok(m.clone());
+    }
+    let (cfg, path) = Config::load()?;
+    let pins = crate::config::data_dir()
+        .ok()
+        .map(|d| d.join("models").join("pins.json"));
+    let m = Arc::new(Models::new(path, pins, &cfg));
+    Ok(SHARED.get_or_init(|| m).clone())
+}
+
+/// What a ledger row costs: the shared catalog's prices when there is one,
+/// else `cfg`'s.
+pub fn prices(cfg: &Config) -> Prices {
+    match shared() {
+        Ok(m) => Arc::new(move |p: &str, model: &str| m.catalog().price(p, model)),
+        Err(_) => {
+            let cat = Catalog::from_config(cfg);
+            Arc::new(move |p: &str, model: &str| cat.price(p, model))
+        }
+    }
+}
+
+impl Models {
+    /// `cfg` is what the file at `path` says now; `pins` is the pins file.
+    pub fn new(path: PathBuf, pins: Option<PathBuf>, cfg: &Config) -> Self {
+        let seen = stamp(&path);
+        let me = Self {
+            path,
+            pins_path: pins,
+            state: Mutex::new(State {
+                catalog: Arc::new(Catalog::from_config(cfg)),
+                seen,
+                ..State::default()
+            }),
+            hub: Mutex::new(None),
+            tasks: Mutex::new(None),
+        };
+        me.refresh_pins(&mut me.state.lock().unwrap());
+        me
+    }
+
+    /// Where model events are audited, and the owner told of an outage.
+    pub fn attach_hub(&self, hub: Arc<Hub>) {
+        *self.hub.lock().unwrap() = Some(hub);
+    }
+
+    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
+    pub fn set_task_models(&self, f: TaskModels) {
+        *self.tasks.lock().unwrap() = Some(f);
+    }
+
+    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
+    pub fn config_path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The catalog, re-read if the file changed since.
+    pub fn catalog(&self) -> Arc<Catalog> {
+        let mut st = self.state.lock().unwrap();
+        self.refresh(&mut st);
+        st.catalog.clone()
+    }
+
+    /// The model `scope` asks for, before outages are considered.
+    pub fn wanted(&self, scope: &Scope) -> Result<Entry, String> {
+        let mut st = self.state.lock().unwrap();
+        self.refresh(&mut st);
+        self.refresh_pins(&mut st);
+        self.pick(&mut st, scope)
+    }
+
+    fn pick(&self, st: &mut State, scope: &Scope) -> Result<Entry, String> {
+        let cat = st.catalog.clone();
+        if let Some(f) = &scope.fixed {
+            return cat
+                .resolve(&f.word)
+                .cloned()
+                .map_err(|e| format!("{} asks for `{}`, but {e}", f.by, f.word));
+        }
+        if let Some(task) = &scope.task {
+            let lookup = self.tasks.lock().unwrap().clone();
+            if let Some(word) = lookup.and_then(|f| f(task)) {
+                return cat
+                    .resolve(&word)
+                    .cloned()
+                    .map_err(|e| format!("scheduled task `{task}` runs on `{word}`, but {e}"));
+            }
+        }
+        if let Some((ch, chat)) = &scope.chat {
+            if let Some(word) = st.pins.get(&pin_key(ch, chat)).cloned() {
+                match cat.resolve(&word) {
+                    Ok(e) => return Ok(e.clone()),
+                    Err(e) => warn_once(
+                        st,
+                        &format!("pin {ch}:{chat}"),
+                        &format!(
+                            "{ch} chat {chat} is pinned to `{word}`, but {e}; it's on the default"
+                        ),
+                    ),
+                }
+            }
+        }
+        let (e, note) = cat.default_entry()?;
+        let e = e.clone();
+        if let Some(note) = note {
+            warn_once(st, "default", &note);
+        }
+        Ok(e)
+    }
+
+    /// The model this call goes to: the wanted one, or while that's down,
+    /// the first fallback that isn't.
+    pub fn route(&self, scope: &Scope) -> Result<Route, String> {
+        let mut st = self.state.lock().unwrap();
+        self.refresh(&mut st);
+        self.refresh_pins(&mut st);
+        let wanted = self.pick(&mut st, scope)?;
+        let mut entry = wanted.clone();
+        let mut instead_of = None;
+        if is_down(&st, &wanted.reference()) {
+            let cat = st.catalog.clone();
+            let next = cat
+                .fallback
+                .iter()
+                .filter_map(|f| cat.resolve(f).ok())
+                .find(|e| e.reference() != wanted.reference() && !is_down(&st, &e.reference()));
+            if let Some(next) = next {
+                entry = next.clone();
+                instead_of = Some(wanted.reference());
+            }
+        }
+        let key = entry.key().ok_or_else(|| entry.no_key())?;
+        let client = st
+            .clients
+            .entry((
+                entry.provider.clone(),
+                entry.base_url.clone(),
+                key.clone(),
+                entry.model.clone(),
+            ))
+            .or_insert_with(|| {
+                Arc::new(OpenAiCompatProvider::new(
+                    entry.provider.clone(),
+                    &entry.base_url,
+                    key,
+                    &entry.model,
+                ))
+            })
+            .clone();
+        Ok(Route {
+            entry,
+            client,
+            instead_of,
+        })
+    }
+
+    /// A call on `route` came back: an answer clears an outage mark on
+    /// that model, and the first answer from a fallback tells the owner.
+    fn served(&self, scope: &Scope, route: &Route, ok: bool) {
+        let reference = route.entry.reference();
+        let mut tell = None;
+        let mut up = false;
+        {
+            let mut st = self.state.lock().unwrap();
+            st.served
+                .insert(scope.session.clone(), (reference.clone(), Utc::now()));
+            if !ok {
+                return;
+            }
+            if st.down.remove(&reference).is_some() {
+                up = true;
+            }
+            if let Some(from) = &route.instead_of {
+                if let Some(d) = st.down.get_mut(from) {
+                    if !d.told {
+                        d.told = true;
+                        tell = Some(format!(
+                            "{from} isn't answering ({}), so {reference} answered instead. I'll try {from} again in {} minutes.",
+                            d.reason,
+                            DOWN_FOR.as_secs() / 60
+                        ));
+                    }
+                }
+            }
+        }
+        if up {
+            self.audit("model.up", serde_json::json!({ "model": reference }));
+        }
+        if let Some(text) = tell {
+            if let Some(hub) = self.hub.lock().unwrap().clone() {
+                hub.tell_owner(text);
+            }
+        }
+    }
+
+    /// `served` stayed down after its retries: mark it, and say which
+    /// model the next call goes to. Nothing without a fallback list, or
+    /// when there's nowhere else to go.
+    pub fn fail_over(&self, scope: &Scope, served: &Served, error: &CoreError) -> Option<FailOver> {
+        if !error.is_transient() || self.catalog().fallback.is_empty() {
+            return None;
+        }
+        let from = served.reference();
+        let reason = short_reason(error);
+        {
+            let mut st = self.state.lock().unwrap();
+            st.down.insert(
+                from.clone(),
+                Down {
+                    until: Instant::now() + DOWN_FOR,
+                    reason: reason.clone(),
+                    told: false,
+                },
+            );
+        }
+        self.audit(
+            "model.down",
+            serde_json::json!({ "model": from, "reason": reason }),
+        );
+        let next = self.route(scope).ok()?.entry.reference();
+        let st = self.state.lock().unwrap();
+        (next != from && !is_down(&st, &next)).then_some(FailOver { from, to: next })
+    }
+
+    /// The model `session` ran its last call on, and when.
+    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
+    pub fn last_served(&self, session: &str) -> Option<(String, DateTime<Utc>)> {
+        self.state.lock().unwrap().served.get(session).cloned()
+    }
+
+    /// Models marked down, with how long they're skipped for.
+    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
+    pub fn down(&self) -> Vec<(String, Duration, String)> {
+        let st = self.state.lock().unwrap();
+        let now = Instant::now();
+        st.down
+            .iter()
+            .filter(|(_, d)| d.until > now)
+            .map(|(r, d)| (r.clone(), d.until - now, d.reason.clone()))
+            .collect()
+    }
+
+    #[allow(dead_code)] // M21 part 3+: the CLI, /model and /status
+    pub fn pins(&self) -> BTreeMap<String, String> {
+        let mut st = self.state.lock().unwrap();
+        self.refresh_pins(&mut st);
+        st.pins.clone()
+    }
+
+    fn audit(&self, event: &str, detail: serde_json::Value) {
+        if let Some(hub) = self.hub.lock().unwrap().clone() {
+            hub.audit().record(Utc::now(), event, None, None, detail);
+        }
+    }
+
+    /// Re-reads the config when its modification time or length changed.
+    /// A file that no longer parses leaves the last good catalog, with one
+    /// warning until it parses again.
+    fn refresh(&self, st: &mut State) {
+        let now = stamp(&self.path);
+        if now.is_none() || now == st.seen {
+            return;
+        }
+        st.seen = now;
+        let parsed = std::fs::read_to_string(&self.path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| toml::from_str::<Config>(&t).map_err(|e| e.to_string()));
+        match parsed {
+            Ok(cfg) => {
+                st.catalog = Arc::new(Catalog::from_config(&cfg));
+                st.broken = false;
+            }
+            Err(e) if !st.broken => {
+                st.broken = true;
+                tracing::warn!(
+                    "models: {} doesn't parse anymore ({e}); keeping the models it had",
+                    self.path.display()
+                );
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn refresh_pins(&self, st: &mut State) {
+        let Some(path) = &self.pins_path else {
+            return;
+        };
+        let now = stamp(path);
+        if now == st.pins_seen {
+            return;
+        }
+        st.pins_seen = now;
+        st.pins = read_pins(path);
+    }
+}
+
+/// `channel:chat`, the key of a pin.
+pub fn pin_key(channel: &str, chat: &str) -> String {
+    format!("{channel}:{chat}")
+}
+
+/// The pins file: `{"telegram:42": "ref"}`. Missing or unreadable: none.
+pub fn read_pins(path: &Path) -> BTreeMap<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+            tracing::warn!("models: {} doesn't parse ({e}); no pins", path.display());
+            BTreeMap::new()
+        }),
+        Err(_) => BTreeMap::new(),
+    }
+}
+
+fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+fn is_down(st: &State, reference: &str) -> bool {
+    st.down
+        .get(reference)
+        .is_some_and(|d| d.until > Instant::now())
+}
+
+fn warn_once(st: &mut State, key: &str, text: &str) {
+    if st.warned.insert(format!("{key}\n{text}")) {
+        tracing::warn!("models: {text}");
+    }
+}
+
+/// "HTTP 503 after its retries", "no connection", or the start of the
+/// message.
+fn short_reason(error: &CoreError) -> String {
+    let msg = match error {
+        CoreError::Transient { message, .. } => message.as_str(),
+        _ => return error.to_string(),
+    };
+    if let Some(code) = msg
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|w| w.len() == 3 && matches!(w.as_bytes()[0], b'4' | b'5'))
+    {
+        if msg.contains("HTTP") || msg.contains("status") {
+            return format!("HTTP {code} after its retries");
+        }
+    }
+    if msg.starts_with("request failed") {
+        return "no connection, after its retries".into();
+    }
+    let short: String = msg.chars().take(80).collect();
+    format!("{short} after its retries")
+}
+
+/// Where one call goes.
+pub struct Route {
+    pub entry: Entry,
+    pub client: Arc<OpenAiCompatProvider>,
+    /// The model it stands in for, which is down.
+    pub instead_of: Option<String>,
+}
+
+/// An agent's provider: resolves its scope on every call, so a new default
+/// or pin reaches it without a rebuild, and falls over to the fallback
+/// list on an outage.
+pub struct RoutedProvider {
+    models: Arc<Models>,
+    scope: Scope,
+    /// The provider it was built on, for rows of calls that never ran.
+    name: String,
+}
+
+impl RoutedProvider {
+    pub fn new(models: Arc<Models>, scope: Scope, name: String) -> Self {
+        Self {
+            models,
+            scope,
+            name,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for RoutedProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        self.complete_routed(req).await.1
+    }
+
+    async fn complete_routed(
+        &self,
+        req: CompletionRequest,
+    ) -> (Option<Served>, Result<CompletionResponse, CoreError>) {
+        let route = match self.models.route(&self.scope) {
+            Ok(r) => r,
+            Err(e) => return (None, Err(CoreError::Provider(e))),
+        };
+        let served = Served {
+            provider: route.entry.provider.clone(),
+            model: route.entry.model.clone(),
+        };
+        let result = route.client.complete(req).await;
+        self.models.served(&self.scope, &route, result.is_ok());
+        (Some(served), result)
+    }
+
+    fn fail_over(&self, served: Option<&Served>, error: &CoreError) -> Option<FailOver> {
+        self.models.fail_over(&self.scope, served?, error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CONFIG: &str = r#"
+default_provider = "a"
+
+[models]
+fallback = ["b/b-large"]
+
+[models.aliases]
+fast = "b/b-small"
+
+[providers.a]
+base_url = "http://127.0.0.1:1/v1"
+api_key_env = "PATH"
+model = "a-one"
+profile = "openai"
+price_input_per_mtok = 1.0
+price_cached_input_per_mtok = 0.5
+price_output_per_mtok = 2.0
+
+[providers.a.models."a-two"]
+price_output_per_mtok = 8.0
+context_window = 1000
+
+[providers.b]
+base_url = "http://127.0.0.1:2/v1"
+api_key_env = "PATH"
+model = "b-large"
+
+[providers.b.models."b-small"]
+profile = "kimi"
+
+[providers.b.models."vendor/shared"]
+
+[providers.c]
+base_url = "http://127.0.0.1:3/v1"
+api_key_env = "FERRULE_M21_TEST_KEY_THAT_IS_NEVER_SET"
+model = "vendor/shared"
+"#;
+
+    fn cfg(text: &str) -> Config {
+        toml::from_str(text).unwrap()
+    }
+
+    fn models(text: &str) -> (tempfile::TempDir, Models) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferrule.toml");
+        std::fs::write(&path, text).unwrap();
+        let m = Models::new(path, Some(dir.path().join("pins.json")), &cfg(text));
+        (dir, m)
+    }
+
+    #[test]
+    fn a_word_resolves_alias_then_provider_then_ref_then_unique_id() {
+        let cat = Catalog::from_config(&cfg(CONFIG));
+        let r = |w: &str| cat.resolve(w).map(Entry::reference);
+        assert_eq!(r("a").unwrap(), "a/a-one");
+        assert_eq!(r("fast").unwrap(), "b/b-small");
+        assert_eq!(r("a/a-two").unwrap(), "a/a-two");
+        assert_eq!(r("a-two").unwrap(), "a/a-two");
+        // OpenRouter-style ids: only the first `/` splits.
+        assert_eq!(r("b/vendor/shared").unwrap(), "b/vendor/shared");
+        assert_eq!(r("c/vendor/shared").unwrap(), "c/vendor/shared");
+        let e = r("vendor/shared").unwrap_err();
+        assert!(
+            e.contains("b/vendor/shared") && e.contains("c/vendor/shared"),
+            "{e}"
+        );
+        let e = r("a/gpt-9").unwrap_err();
+        assert!(
+            e.contains("isn't connected on `a`") && e.contains("a-one, a-two"),
+            "{e}"
+        );
+        assert!(r("nope").unwrap_err().contains("isn't a connected model"));
+        assert!(r("").is_err());
+        assert_eq!(cat.resolve("b/b-small").unwrap().aliases, vec!["fast"]);
+    }
+
+    #[test]
+    fn a_model_takes_its_providers_fields_one_by_one() {
+        let cat = Catalog::from_config(&cfg(CONFIG));
+        let two = cat.resolve("a/a-two").unwrap();
+        assert_eq!(
+            two.pricing,
+            Some(ProviderPricing {
+                input: 1.0,
+                cached_input: 0.5,
+                output: 8.0
+            })
+        );
+        assert_eq!(two.profile, "openai");
+        assert_eq!(two.harness().context_window, 1000);
+        assert_eq!(cat.resolve("fast").unwrap().profile, "kimi");
+        assert_eq!(
+            cat.resolve("b").unwrap().pricing,
+            None,
+            "no prices, no cost"
+        );
+        // A row priced by the model that ran, else its provider's.
+        assert_eq!(cat.price("a", "a-two").unwrap().output, 8.0);
+        assert_eq!(cat.price("a", "hand-picked").unwrap().output, 2.0);
+        assert_eq!(cat.price("zz", "a-one"), None);
+    }
+
+    #[test]
+    fn an_old_config_is_one_model_per_provider() {
+        let old = r#"
+default_provider = "kimi"
+[providers.kimi]
+base_url = "https://api.moonshot.ai/v1"
+api_key_env = "PATH"
+model = "kimi-k2.6"
+profile = "kimi"
+"#;
+        let cat = Catalog::from_config(&cfg(old));
+        assert_eq!(cat.entries.len(), 1);
+        let (e, note) = cat.default_entry().unwrap();
+        assert_eq!((e.reference(), note), ("kimi/kimi-k2.6".into(), None));
+        let (h, kimi) = (e.harness(), HarnessProfile::by_name("kimi"));
+        assert_eq!((h.name, h.context_window), (kimi.name, kimi.context_window));
+        assert_eq!(e.base_url, "https://api.moonshot.ai/v1");
+    }
+
+    #[test]
+    fn the_default_falls_back_to_default_provider_with_a_note() {
+        let mut c = cfg(CONFIG);
+        c.models.default = Some("fast".into());
+        assert_eq!(
+            Catalog::from_config(&c)
+                .default_entry()
+                .unwrap()
+                .0
+                .reference(),
+            "b/b-small"
+        );
+        c.models.default = Some("gone/model".into());
+        let cat = Catalog::from_config(&c);
+        let (e, note) = cat.default_entry().unwrap();
+        assert_eq!(e.reference(), "a/a-one");
+        assert!(note.unwrap().contains("gone/model"));
+        c.default_provider = None;
+        let e = Catalog::from_config(&c).default_entry().unwrap_err();
+        assert!(e.contains("ferrule model default"), "{e}");
+    }
+
+    #[test]
+    fn precedence_is_fixed_then_task_then_pin_then_default() {
+        let (dir, m) = models(CONFIG);
+        let chat = Scope::for_session("telegram__42");
+        let other = Scope::for_session("telegram__7");
+        let task = Scope::for_session("scheduler__t1");
+        assert_eq!(chat.chat, Some(("telegram".into(), "42".into())));
+        assert_eq!(task.task.as_deref(), Some("t1"));
+        let want = |s: &Scope| m.wanted(s).map(|e| e.reference());
+
+        assert_eq!(want(&chat).unwrap(), "a/a-one");
+        std::fs::write(
+            dir.path().join("pins.json"),
+            r#"{"telegram:42": "fast", "scheduler:t1": "a/a-two"}"#,
+        )
+        .unwrap();
+        assert_eq!(want(&chat).unwrap(), "b/b-small", "the pin");
+        assert_eq!(want(&other).unwrap(), "a/a-one", "another chat stays");
+
+        m.set_task_models(Arc::new(|t: &str| (t == "t1").then(|| "b".to_string())));
+        assert_eq!(want(&task).unwrap(), "b/b-large", "the task's model");
+        let fixed = chat.clone().fixed(Some("a/a-two".into()), "role verifier");
+        assert_eq!(want(&fixed).unwrap(), "a/a-two", "a role or one-off wins");
+
+        // Asked for on purpose: a removed model is an error, not the default.
+        let e = want(&chat.clone().fixed(Some("x/y".into()), "role verifier")).unwrap_err();
+        assert!(e.starts_with("role verifier asks for `x/y`"), "{e}");
+        m.set_task_models(Arc::new(|_: &str| Some("gone".to_string())));
+        assert!(want(&task).unwrap_err().contains("scheduled task `t1`"));
+        // A pin to a removed model: the chat is on the default.
+        std::fs::write(dir.path().join("pins.json"), r#"{"telegram:42": "gone"}"#).unwrap();
+        assert_eq!(want(&chat).unwrap(), "a/a-one");
+    }
+
+    #[test]
+    fn a_hand_edit_is_read_at_the_next_call_and_a_broken_one_is_not() {
+        let (dir, m) = models(CONFIG);
+        let path = dir.path().join("ferrule.toml");
+        let s = Scope::default();
+        assert_eq!(m.wanted(&s).unwrap().reference(), "a/a-one");
+        std::fs::write(
+            &path,
+            format!("{CONFIG}\n# edited\n")
+                .replace("default_provider = \"a\"", "default_provider = \"b\""),
+        )
+        .unwrap();
+        assert_eq!(m.wanted(&s).unwrap().reference(), "b/b-large");
+        std::fs::write(&path, "this is [not toml").unwrap();
+        assert_eq!(
+            m.wanted(&s).unwrap().reference(),
+            "b/b-large",
+            "the last good one"
+        );
+    }
+
+    #[test]
+    fn an_outage_moves_calls_to_the_fallback_until_the_mark_clears() {
+        let (_dir, m) = models(CONFIG);
+        let s = Scope::for_session("telegram__42");
+        let a = Served {
+            provider: "a".into(),
+            model: "a-one".into(),
+        };
+        let outage = CoreError::Transient {
+            message: "HTTP 503 Service Unavailable: {}".into(),
+            retry_after: None,
+        };
+        assert_eq!(
+            m.fail_over(&s, &a, &CoreError::Provider("HTTP 401".into())),
+            None,
+            "a refused key isn't an outage"
+        );
+        assert!(m.down().is_empty());
+        let over = m.fail_over(&s, &a, &outage).unwrap();
+        assert_eq!(
+            (over.from.as_str(), over.to.as_str()),
+            ("a/a-one", "b/b-large")
+        );
+        let route = m.route(&s).unwrap();
+        assert_eq!(route.entry.reference(), "b/b-large");
+        assert_eq!(route.instead_of.as_deref(), Some("a/a-one"));
+        let down = m.down();
+        assert_eq!(down[0].0, "a/a-one");
+        assert_eq!(down[0].2, "HTTP 503 after its retries");
+
+        // The fallback failing too: nowhere left to go.
+        let b = Served {
+            provider: "b".into(),
+            model: "b-large".into(),
+        };
+        assert_eq!(m.fail_over(&s, &b, &outage), None);
+
+        // The primary answering again clears its mark.
+        m.state.lock().unwrap().down.clear();
+        m.fail_over(&s, &a, &outage).unwrap();
+        m.state
+            .lock()
+            .unwrap()
+            .down
+            .get_mut("a/a-one")
+            .unwrap()
+            .until = Instant::now();
+        let route = m.route(&s).unwrap();
+        assert_eq!(
+            route.entry.reference(),
+            "a/a-one",
+            "tried again after the mark"
+        );
+        m.served(&s, &route, true);
+        assert!(m.state.lock().unwrap().down.is_empty());
+        assert_eq!(m.last_served("telegram__42").unwrap().0, "a/a-one");
+    }
+
+    #[test]
+    fn no_fallback_list_means_no_fallback() {
+        let (_dir, m) = models(&CONFIG.replace("fallback = [\"b/b-large\"]", ""));
+        let a = Served {
+            provider: "a".into(),
+            model: "a-one".into(),
+        };
+        let outage = CoreError::Transient {
+            message: "connection refused".into(),
+            retry_after: None,
+        };
+        assert_eq!(m.fail_over(&Scope::default(), &a, &outage), None);
+        assert!(m.down().is_empty(), "nothing marked either");
+    }
+
+    #[test]
+    fn a_missing_key_is_said_plainly() {
+        let (_dir, m) = models(CONFIG);
+        let s = Scope::default().fixed(Some("c".into()), "--model");
+        let e = m.route(&s).err().unwrap();
+        assert!(
+            e.starts_with(
+                "no key: `$FERRULE_M21_TEST_KEY_THAT_IS_NEVER_SET` isn't set (c/vendor/shared)"
+            ),
+            "{e}"
+        );
+    }
+}

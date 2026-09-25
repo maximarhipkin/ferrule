@@ -11,6 +11,7 @@ mod ledger;
 mod mcp_add;
 mod mcp_config;
 mod memory_tools;
+mod models;
 mod plan;
 mod probe;
 mod secrets;
@@ -21,14 +22,13 @@ mod trust;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
-use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
+use ferrule_core::{Agent, AgentConfig, AgentEvent, ToolContext, Transcript};
 use ferrule_gateway::{
     Channel, Gateway, LocalChannel, NewTask, Router, RunOutcome, Scheduler, TaskKind, TaskStore,
     TelegramChannel,
 };
 use ferrule_mcp::McpServerConfig;
 use ferrule_memory::MemoryStore;
-use ferrule_providers::OpenAiCompatProvider;
 use ferrule_proxy::{Broker, BrokerConfig, Upstream};
 use ferrule_sandbox::{Egress, Mode, Sandbox};
 use ferrule_tools::standard_registry;
@@ -82,6 +82,10 @@ enum Cmd {
         prompt: String,
         #[arg(long)]
         provider: Option<String>,
+        /// This run's model: `provider/model`, a provider, an alias or a
+        /// model id (`ferrule model list`). Wins over the default and pins
+        #[arg(long, conflicts_with = "provider")]
+        model: Option<String>,
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
         #[arg(long, default_value_t = 60)]
@@ -98,6 +102,10 @@ enum Cmd {
     Chat {
         #[arg(long)]
         provider: Option<String>,
+        /// This run's model: `provider/model`, a provider, an alias or a
+        /// model id (`ferrule model list`). Wins over the default and pins
+        #[arg(long, conflicts_with = "provider")]
+        model: Option<String>,
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
     },
@@ -435,11 +443,14 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Run {
             prompt,
             provider,
+            model,
             workspace,
             max_iterations,
             show_reasoning,
             plan,
         } => {
+            // A ref: `--provider X` still means X's own model.
+            let provider = model.or(provider);
             if plan {
                 plan::run(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
             } else {
@@ -448,9 +459,10 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         }
         Cmd::Chat {
             provider,
+            model,
             workspace,
         } => {
-            chat(provider, workspace).await?;
+            chat(model.or(provider), workspace).await?;
         }
         Cmd::Gateway {
             provider,
@@ -544,8 +556,10 @@ async fn build_root(
     trust::seat(session_id, trust::terminal_route());
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
+    let scope =
+        models::Scope::for_session(session_id).fixed(provider_name.clone(), "the command line");
     let agent = build_agent_from(
-        provider_name.clone(),
+        scope,
         workspace.clone(),
         max_iterations,
         transcript,
@@ -564,9 +578,9 @@ async fn build_root(
 /// How the supervisor builds a child: like any agent, on its spec's
 /// workspace and session, narrowed to its role.
 fn child_builder(max_iterations: usize, mcp_tools: self_extend::Extensions) -> agents::Build {
-    Arc::new(move |provider, spec, tag| {
+    Arc::new(move |scope, spec, tag| {
         build_agent_from(
-            provider,
+            scope,
             spec.workspace.clone(),
             max_iterations,
             Some(spec.transcript.clone()),
@@ -646,7 +660,7 @@ fn mcp_dir_name(server_name: &str) -> String {
 /// for resumable sessions — can hand in the exact same transcript it just
 /// read history from, instead of this function creating a second one.
 fn build_agent_from(
-    provider_name: Option<String>,
+    scope: models::Scope,
     workspace: PathBuf,
     max_iterations: usize,
     transcript: Option<Transcript>,
@@ -655,14 +669,20 @@ fn build_agent_from(
     child: Option<&ferrule_agents::ChildSpec>,
 ) -> Result<Agent> {
     let (cfg, cfg_path) = config::Config::load()?;
-    let (name, pcfg, key) = cfg.resolve_provider(provider_name.as_deref())?;
-    let provider = Arc::new(OpenAiCompatProvider::new(
-        name,
-        &pcfg.base_url,
-        key,
-        &pcfg.model,
+    // M21: the model is picked per call from the agent's scope; the one
+    // it would run on now sets the harness profile, and a missing key is
+    // an error now rather than at the first call.
+    let models = models::shared()?;
+    let entry = models.wanted(&scope).map_err(|e| anyhow!(e))?;
+    if entry.key().is_none() {
+        bail!("{}", entry.no_key());
+    }
+    let profile = entry.harness();
+    let provider = Arc::new(models::RoutedProvider::new(
+        models.clone(),
+        scope,
+        entry.provider.clone(),
     ));
-    let profile = HarnessProfile::by_name(&pcfg.profile);
 
     let workspace = workspace.canonicalize().unwrap_or(workspace);
     let tool_ctx = ToolContext {
@@ -807,6 +827,7 @@ fn build_agent_from(
 
     // M19: the owner's caps, kill switch and approval gates, per run tree.
     let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
+    models.attach_hub(trust::hub(&cfg)?);
     let hooks_workspace = tool_ctx.workspace.clone();
     let mut agent = Agent::new(
         provider,
@@ -827,7 +848,7 @@ fn build_agent_from(
             ledger.sink,
             ledger.task_shape,
             ledger.origin,
-            pcfg.model.clone(),
+            entry.model.clone(),
         )
         .with_guard(guard);
     if let (Some(cmd), false) = (&cfg.agent.verify_command, planning) {
@@ -1347,8 +1368,10 @@ async fn gateway_factory(
         let (shape, origin) = ledger::classify_session(session_id);
         let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
         let fail = |e: String| ferrule_gateway::GatewayError::Channel(e);
+        let scope = models::Scope::for_session(session_id)
+            .fixed(provider.clone(), "the gateway's --provider");
         let agent = build_agent_from(
-            provider.clone(),
+            scope,
             workspace.clone(),
             max_iterations,
             Some(transcript),
