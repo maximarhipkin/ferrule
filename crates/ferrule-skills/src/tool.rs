@@ -38,7 +38,8 @@ pub fn tools(skills: Arc<SkillSet>) -> Vec<Arc<dyn Tool>> {
 pub struct SkillsHandle {
     current: Arc<RwLock<Arc<SkillSet>>>,
     roots: Arc<[SkillRoot]>,
-    disabled: Arc<[String]>,
+    /// The owner can change it while agents run (M24).
+    disabled: Arc<RwLock<Vec<String>>>,
 }
 
 impl SkillsHandle {
@@ -48,7 +49,7 @@ impl SkillsHandle {
         Self {
             current: Arc::new(RwLock::new(Arc::new(set))),
             roots: roots.into(),
-            disabled: disabled.into(),
+            disabled: Arc::new(RwLock::new(disabled)),
         }
     }
 
@@ -57,7 +58,7 @@ impl SkillsHandle {
         Self {
             current: Arc::new(RwLock::new(set)),
             roots: Arc::new([]),
-            disabled: Arc::new([]),
+            disabled: Arc::default(),
         }
     }
 
@@ -71,8 +72,23 @@ impl SkillsHandle {
         if self.roots.is_empty() {
             return;
         }
-        let set = discover(&self.roots, &self.disabled);
+        let disabled = self.disabled.read().unwrap().clone();
+        let set = discover(&self.roots, &disabled);
         *self.current.write().unwrap() = Arc::new(set);
+    }
+
+    /// The skills to leave out, rediscovering when they changed. `true`
+    /// when they did.
+    pub fn set_disabled(&self, disabled: Vec<String>) -> bool {
+        {
+            let mut now = self.disabled.write().unwrap();
+            if *now == disabled {
+                return false;
+            }
+            *now = disabled;
+        }
+        self.refresh();
+        true
     }
 }
 
@@ -515,5 +531,24 @@ mod tests {
         let out = render_activation(skill, &"y".repeat(SKILL_MAX_CHARS + 10));
         assert!(out.contains("skill body truncated"));
         assert!(out.ends_with(SKILL_CONTENT_CLOSE));
+    }
+
+    #[test]
+    fn a_skill_disabled_while_running_leaves_the_set_and_comes_back() {
+        let (dir, _) = fixture();
+        let roots = vec![SkillRoot {
+            dir: dir.path().to_path_buf(),
+            scope: Scope::User,
+        }];
+        let h = SkillsHandle::discovering(roots, vec![]);
+        let shared = h.clone();
+        assert!(h.get().get("pdf").is_some());
+        assert!(h.set_disabled(vec!["pdf".into()]));
+        assert!(shared.get().get("pdf").is_none(), "clones see it at once");
+        assert!(!h.set_disabled(vec!["pdf".into()]), "no change");
+        shared.refresh();
+        assert!(h.get().get("pdf").is_none(), "a refresh keeps it out");
+        assert!(h.set_disabled(vec![]));
+        assert!(h.get().get("pdf").is_some());
     }
 }

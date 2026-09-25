@@ -74,14 +74,17 @@ ferrule dashboard                 # a link, or the page served from here when no
     their source and date. It never overwrites a price you set by hand.
 - **Usage** (the ledger): 1, 7 or 30 days; cost and tokens per day as
   bars; per model, task and chat; cache hit rate, latency, error and
-  retry rates; the caps. The per-model table is the one `ferrule ledger`
-  prints.
+  retry rates; the caps, with **Edit caps**. The per-model table is the one
+  `ferrule ledger` prints.
 - **Tasks**: schedule, next run, model, last runs; **Pause**, **Resume**,
-  **Run now**, **Delete**.
+  **Run now**, **Schedule**, **Model**, **Delete**.
 - **Logs**: the audit log and the gateway's recent warnings and errors,
   filterable, paged and redacted. Never transcripts.
-- **Extensions** (MCP servers, skills, hooks) and **Agents** (running
-  sub-agents): read-only.
+- **Extensions**: MCP servers (**Disable**, **Enable**, **Remove**),
+  skills (**Disable**, **Enable**), the config's hooks, and this
+  workspace's `.ferrule/hooks.toml` with its SHA-256 and **Trust this
+  version** / **Untrust**. See [Editing from the page](#editing-from-the-page).
+- **Agents** (running sub-agents): read-only.
 
 The page polls only the section you're looking at (health every 3 s,
 usage every 30 s, logs and extensions only when you ask), and stops while
@@ -89,7 +92,7 @@ the tab is hidden. A hand edit of the config, a CLI change or a
 Telegram `/model` shows at the next poll.
 
 Disconnect, delete, remove and the kill switch ask for a confirmation
-first.
+first, and so do raising a cap, disabling an MCP server and trusting hooks.
 
 ## What it never shows
 
@@ -151,6 +154,43 @@ Ferrule checkout, looked up in this order: `[eval] suite`,
 `$FERRULE_EVAL_SUITE`, `./evals/starter`, then the checkout the binary was
 built from. It needs `python3` for the graders. An eval never starts the
 dashboard or a tunnel.
+
+## Editing from the page
+
+The page, Telegram and the CLI run the same operations. Each one takes the
+config lock, edits `ferrule.toml` in place (comments and order kept),
+checks that the result still loads, writes it atomically and records an
+audit entry with who did it (`dashboard`, `cli` or `telegram chat …`).
+A running gateway picks the change up at once.
+
+| What | Page | Telegram (owner) | CLI |
+|---|---|---|---|
+| Caps | Usage → Edit caps | `/caps`, `/caps usd_per_day 20` | `ferrule trust caps [--set KEY=VALUE…] [--yes]` |
+| MCP server on/off | Extensions | `/mcp`, `/mcp off <name>` | `ferrule mcp disable\|enable <name>` |
+| Remove an MCP server | Extensions | – | `ferrule mcp remove <name>` |
+| Skill on/off | Extensions | `/skills`, `/skills off <name>` | `ferrule skills disable\|enable <name>` |
+| Trust workspace hooks | Extensions | – (points to the page) | `ferrule hooks trust` / `untrust` |
+| A task's schedule | Tasks → Schedule | – | `ferrule tasks schedule <id> "<cron>" [--tz Zone]` |
+| A task's model | Tasks → Model | – | `ferrule tasks model <id> <ref>` |
+
+- **Caps.** 0 turns a cap off. Lowering one needs no confirmation.
+  Raising one or turning it off asks first: on the page, as `/caps … confirm`
+  in Telegram, and with `--yes` (or a `y` at a terminal) in the CLI. The
+  running hub enforces the new values from the next call.
+- **MCP.** Disabling writes the name to `[mcp] disabled`. The server stays
+  configured, and running agents stop it within seconds. A server the
+  agent installed can be removed but not disabled.
+- **Skills.** Disabling writes to `[skills] disabled`. The skill leaves the
+  catalog from the next turn, since chats start fresh agents.
+- **Hooks.** The page shows the file, its SHA-256 and, once a version has
+  been trusted, a line diff against it. **Trust** sends the hash you were
+  shown. If the file changed since then, it's refused and nothing is
+  trusted. Trust is pinned to that hash: any later edit to the file needs
+  trusting again. The trusted text is kept (0600) under
+  `<data>/private/hooks-trusted/` for the next diff.
+- **Tasks.** A schedule is checked before it's saved, and the next run
+  moves at once. The built-in `ferrule-learn` task's schedule also goes
+  to `[learning] schedule`/`timezone`, since that's what a restart reads.
 
 ## Settings
 

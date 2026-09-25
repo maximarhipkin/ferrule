@@ -36,6 +36,11 @@ pub enum McpCmd {
         #[arg(long)]
         purge: bool,
     },
+    /// Turn a configured server off (`[mcp] disabled`); running agents
+    /// stop it within seconds. It stays in the config
+    Disable { name: String },
+    /// Turn a disabled server back on
+    Enable { name: String },
 }
 
 #[derive(Args, Default)]
@@ -94,6 +99,13 @@ pub struct AddArgs {
     pub no_doctor: bool,
 }
 
+/// `ferrule mcp disable|enable`, through the shared settings operation (M24).
+fn mcp_toggle(name: &str, off: bool) -> Result<()> {
+    let s = crate::settings_admin::Settings::open(None)?;
+    println!("{}", s.mcp_set_disabled(name, off, "cli")?.said);
+    Ok(())
+}
+
 pub async fn run(op: McpCmd) -> Result<()> {
     match op {
         McpCmd::Add(args) => add(*args).await.map(|_| ()),
@@ -110,6 +122,8 @@ pub async fn run(op: McpCmd) -> Result<()> {
             }
             self_extend::run(self_extend::ExtCmd::Remove { name, purge }).await
         }
+        McpCmd::Disable { name } => mcp_toggle(&name, true),
+        McpCmd::Enable { name } => mcp_toggle(&name, false),
     }
 }
 

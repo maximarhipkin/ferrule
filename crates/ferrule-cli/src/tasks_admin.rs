@@ -2,6 +2,7 @@
 //! run now, each audited in the trust audit log. `ferrule tasks` and the
 //! dashboard both go through here (docs/m22-dashboard.md).
 
+use crate::setup::{put, table, Target};
 use anyhow::{anyhow, bail, Result};
 use ferrule_gateway::{Task, TaskKind, TaskStore, BUILTIN_CHANNEL};
 use ferrule_trust::Hub;
@@ -41,21 +42,35 @@ pub struct RunRow {
 pub struct TasksAdmin {
     path: PathBuf,
     hub: Option<Arc<Hub>>,
+    /// The config a built-in task's schedule is kept in (M24).
+    config: Option<PathBuf>,
 }
 
 impl TasksAdmin {
     /// `path`: `<data>/tasks.db`; `hub`: where changes are audited.
     pub fn new(path: PathBuf, hub: Option<Arc<Hub>>) -> Self {
-        Self { path, hub }
+        Self {
+            path,
+            hub,
+            config: None,
+        }
+    }
+
+    /// Where a built-in task's schedule is written, so it survives the
+    /// next start (`[learning] schedule` and `timezone`).
+    pub fn with_config(mut self, config: Option<PathBuf>) -> Self {
+        self.config = config;
+        self
     }
 
     /// This machine's tasks, audited through the process's hub.
     pub fn open() -> Result<Self> {
-        let (cfg, _) = crate::config::Config::load()?;
+        let (cfg, path) = crate::config::Config::load()?;
         Ok(Self::new(
             crate::config::data_dir()?.join("tasks.db"),
             crate::trust::hub(&cfg).ok(),
-        ))
+        )
+        .with_config(Some(path)))
     }
 
     fn store(&self) -> Result<TaskStore> {
@@ -106,14 +121,16 @@ impl TasksAdmin {
     }
 
     fn audit(&self, event: &str, t: &Task, by: &str) {
+        self.record(
+            event,
+            serde_json::json!({ "task": t.id, "name": t.name, "by": by }),
+        );
+    }
+
+    fn record(&self, event: &str, detail: serde_json::Value) {
         if let Some(hub) = &self.hub {
-            hub.audit().record(
-                chrono::Utc::now(),
-                event,
-                None,
-                None,
-                serde_json::json!({ "task": t.id, "name": t.name, "by": by }),
-            );
+            hub.audit()
+                .record(chrono::Utc::now(), event, None, None, detail);
         }
     }
 
@@ -169,6 +186,95 @@ impl TasksAdmin {
     }
 }
 
+impl TasksAdmin {
+    /// A new schedule (a cron line for a cron task, a time for a one-off)
+    /// and, with `timezone`, a new zone. Checked by the parser `ferrule
+    /// tasks add` uses; the next run is recomputed. A built-in task's
+    /// schedule is also written to `[learning]`, which it's reset from at
+    /// every start.
+    pub fn set_schedule(
+        &self,
+        id: &str,
+        schedule: &str,
+        timezone: Option<&str>,
+        by: &str,
+    ) -> Result<String> {
+        let store = self.store()?;
+        let t = self.task(&store, id)?;
+        let schedule = schedule.trim();
+        let tz = timezone.map(str::trim).filter(|z| !z.is_empty());
+        let tz = tz.unwrap_or(&t.timezone).to_string();
+        let next = ferrule_gateway::initial_next_run_at(t.kind, schedule, &tz, chrono::Utc::now())
+            .map_err(|e| anyhow!("{schedule} ({tz}): {e}"))?;
+        if t.channel == BUILTIN_CHANNEL {
+            if t.name != crate::learn::TASK_NAME {
+                bail!("{} is built in and its schedule can't be changed", t.name);
+            }
+            let Some(path) = &self.config else {
+                bail!(
+                    "{} is built in; change `[learning] schedule` in the config",
+                    t.name
+                );
+            };
+            edit_config(path, |t| {
+                let learning = table(t.root(), &["learning"])?;
+                put(learning, "schedule", schedule);
+                put(learning, "timezone", tz.as_str());
+                Ok(())
+            })?;
+        }
+        store.update_schedule(id, schedule, &tz, next)?;
+        self.record(
+            "task.schedule",
+            serde_json::json!({
+                "task": t.id, "name": t.name,
+                "from": t.schedule, "to": schedule,
+                "from_timezone": t.timezone, "timezone": tz,
+                "by": by,
+            }),
+        );
+        let when = next
+            .and_then(|n| chrono::DateTime::from_timestamp(n, 0))
+            .map(|n| n.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| "never".into());
+        Ok(format!(
+            "{} now runs on `{schedule}` ({tz}); next run {when}.",
+            t.name
+        ))
+    }
+
+    /// The model a task runs on; `None` for the default. The caller has
+    /// checked that the model is connected.
+    pub fn set_model(&self, id: &str, model: Option<&str>, by: &str) -> Result<String> {
+        let store = self.store()?;
+        let t = self.task(&store, id)?;
+        store.set_model(id, model)?;
+        self.record(
+            "model.task",
+            serde_json::json!({ "task": id, "from": t.model, "to": model, "by": by }),
+        );
+        Ok(match model {
+            Some(m) => format!("{} now runs on {m}.", t.name),
+            None => format!("{} now runs on the default.", t.name),
+        })
+    }
+}
+
+/// Read-modify-write the config under its lock; refuse (writing nothing)
+/// an edit that wouldn't parse as a config.
+pub(crate) fn edit_config<T>(
+    path: &std::path::Path,
+    edit: impl FnOnce(&mut Target) -> Result<T>,
+) -> Result<T> {
+    let _lock = crate::filewrite::Lock::take(path)?;
+    let mut t = Target::load(path.to_path_buf())?;
+    let out = edit(&mut t)?;
+    t.config()
+        .map_err(|e| anyhow!("that change would break the config, so it wasn't saved: {e}"))?;
+    t.save()?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +322,65 @@ mod tests {
         admin.delete(&id, "test").unwrap();
         assert!(admin.view(5).unwrap().is_empty());
         assert!(admin.pause(&id, "test").is_err(), "gone");
+    }
+
+    #[test]
+    fn a_schedule_edit_is_checked_and_moves_the_next_run() {
+        let (_d, admin, id) = setup();
+        assert!(admin.set_schedule(&id, "not a cron", None, "t").is_err());
+        assert!(admin
+            .set_schedule(&id, "0 8 * * *", Some("Mars/Base"), "t")
+            .is_err());
+        let v = admin.view(5).unwrap();
+        assert_eq!(v[0].schedule, "0 9 * * *", "a refused edit writes nothing");
+        let said = admin
+            .set_schedule(&id, "30 7 * * 1", Some("Asia/Jerusalem"), "t")
+            .unwrap();
+        assert!(said.contains("30 7 * * 1"), "{said}");
+        let v = admin.view(5).unwrap();
+        assert_eq!(v[0].schedule, "30 7 * * 1");
+        assert_eq!(v[0].timezone, "Asia/Jerusalem");
+        assert_ne!(v[0].next_run_at, Some(4_000_000_000));
+        admin.set_model(&id, Some("fast"), "t").unwrap();
+        assert_eq!(admin.view(5).unwrap()[0].model.as_deref(), Some("fast"));
+        admin.set_model(&id, None, "t").unwrap();
+        assert_eq!(admin.view(5).unwrap()[0].model, None);
+        assert!(admin.set_model("nope", None, "t").is_err());
+    }
+
+    #[test]
+    fn the_learning_task_s_schedule_goes_to_the_config_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.db");
+        let config = dir.path().join("ferrule.toml");
+        std::fs::write(&config, "# mine\n[learning]\nenabled = true\n").unwrap();
+        let store = TaskStore::open(&path).unwrap();
+        let t = store
+            .add(
+                NewTask {
+                    name: crate::learn::TASK_NAME.into(),
+                    kind: TaskKind::Cron,
+                    schedule: "0 3 * * *".into(),
+                    timezone: "UTC".into(),
+                    channel: BUILTIN_CHANNEL.into(),
+                    chat_id: String::new(),
+                    prompt: String::new(),
+                    gate: None,
+                    model: None,
+                },
+                "t-1".into(),
+                0,
+                None,
+            )
+            .unwrap();
+        let bare = TasksAdmin::new(path.clone(), None);
+        assert!(bare.set_schedule(&t.id, "0 4 * * *", None, "t").is_err());
+        let admin = TasksAdmin::new(path, None).with_config(Some(config.clone()));
+        admin.set_schedule(&t.id, "0 4 * * *", None, "t").unwrap();
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert!(text.contains("# mine"), "{text}");
+        let cfg: crate::config::Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.learning.schedule, "0 4 * * *");
+        assert_eq!(admin.view(5).unwrap()[0].schedule, "0 4 * * *");
     }
 }

@@ -21,6 +21,8 @@ mod probe;
 mod secrets;
 mod self_extend;
 mod service;
+mod settings_admin;
+mod settings_door;
 mod setup;
 mod tasks_admin;
 mod trust;
@@ -174,10 +176,13 @@ enum Cmd {
         #[command(subcommand)]
         op: AgentsCmd,
     },
-    /// List the Agent Skills (SKILL.md) an agent in this workspace would load
+    /// List the Agent Skills (SKILL.md) an agent in this workspace would
+    /// load, or turn one off and on (`[skills] disabled`)
     Skills {
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
+        #[command(subcommand)]
+        op: Option<SkillsCmd>,
     },
     /// Lifecycle hooks: list them and their recent runs, trust or untrust
     /// a workspace's .ferrule/hooks.toml
@@ -261,6 +266,15 @@ enum AgentsCmd {
 }
 
 #[derive(Subcommand)]
+enum SkillsCmd {
+    /// Stop offering a skill to the agent; running agents drop it within
+    /// seconds
+    Disable { name: String },
+    /// Offer a disabled skill again
+    Enable { name: String },
+}
+
+#[derive(Subcommand)]
 enum TasksCmd {
     /// Add a new scheduled task
     Add {
@@ -297,6 +311,15 @@ enum TasksCmd {
     /// Set the model a task runs on, or put it back on the default:
     /// `ferrule tasks model <id> fast`, `ferrule tasks model <id> default`
     Model { id: String, reference: String },
+    /// Change a task's schedule: a 5-field cron expression for a cron task,
+    /// an RFC 3339 timestamp for a one-shot
+    Schedule {
+        id: String,
+        schedule: String,
+        /// IANA timezone (cron tasks); the task keeps its own without one
+        #[arg(long)]
+        tz: Option<String>,
+    },
     /// Pause a task — it stays configured but never fires until resumed
     Pause { id: String },
     /// Resume a paused task
@@ -578,8 +601,22 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         } => trust::stop_cmd(reason, clear, status)?,
         Cmd::Trust { op } => trust::cmd(op)?,
         Cmd::Plan { op } => plan::cmd(op).await?,
-        Cmd::Skills { workspace } => {
+        Cmd::Skills {
+            workspace,
+            op: None,
+        } => {
             skills_cmd(workspace);
+        }
+        Cmd::Skills {
+            workspace,
+            op: Some(op),
+        } => {
+            let s = settings_admin::Settings::open(Some(workspace))?;
+            let (name, off) = match op {
+                SkillsCmd::Disable { name } => (name, true),
+                SkillsCmd::Enable { name } => (name, false),
+            };
+            println!("{}", s.skill_set_disabled(&name, off, "cli")?.said);
         }
         Cmd::Hooks { op } => hooks_cli::run(op)?,
         Cmd::Extensions { op } => self_extend::run(op).await?,
@@ -674,8 +711,14 @@ fn child_builder(max_iterations: usize, mcp_tools: self_extend::Extensions) -> a
 
 /// `[[mcp.servers]]`, plus the browser's when `[browser]` is on and can
 /// run here. When it can't, the agent starts without it and says why.
-fn mcp_servers(cfg: &config::Config) -> Vec<McpServerConfig> {
-    let mut servers = cfg.mcp.servers.clone();
+pub(crate) fn mcp_servers(cfg: &config::Config) -> Vec<McpServerConfig> {
+    let mut servers: Vec<McpServerConfig> = cfg
+        .mcp
+        .servers
+        .iter()
+        .filter(|s| !cfg.mcp.disabled.contains(&s.name))
+        .cloned()
+        .collect();
     match browser::server(cfg) {
         Ok(Some(server)) => servers.push(server),
         Ok(None) => {}
@@ -1564,12 +1607,8 @@ async fn run_gateway(
     };
 
     connections::attach(&cfg, telegram.clone(), &router);
-    let plan = plan::telegram(
-        router.clone(),
-        hub.clone(),
-        telegram,
-        dunce::canonicalize(&workspace).unwrap_or(workspace),
-    );
+    let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
+    let plan = plan::telegram(router.clone(), hub.clone(), telegram, workspace.clone());
     let lanes = Arc::downgrade(&router);
     // M22: the page on 127.0.0.1, and `/dashboard` before every other door.
     let dash = if cfg.dashboard.enabled {
@@ -1620,6 +1659,16 @@ async fn run_gateway(
         .with_interceptor(Arc::new(trust::OwnerDoor {
             hub: hub.clone(),
             plan: Some(plan),
+        }))
+        .with_interceptor(Arc::new(settings_door::SettingsDoor {
+            settings: settings_admin::Settings::new(
+                config::config_path()?.unwrap_or_default(),
+                config::data_dir().ok(),
+                Some(hub.clone()),
+                Some(workspace),
+            ),
+            hub: hub.clone(),
+            retire: retirer(lanes.clone()),
         }))
         .with_interceptor(Arc::new(models::ModelDoor {
             models: models::shared()?,
@@ -1771,28 +1820,21 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
             }
         }
         TasksCmd::Model { id, reference } => {
-            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
             let word = (reference != "default").then_some(reference);
             if let Some(w) = &word {
                 models::shared()?
                     .resolve(w)
                     .map_err(|why| anyhow!("{w}: {why}"))?;
             }
-            if !store.set_model(&id, word.as_deref())? {
-                bail!("no such task: {id}");
-            }
-            let (cfg, _) = config::Config::load()?;
-            trust::hub(&cfg)?.audit().record(
-                chrono::Utc::now(),
-                "model.task",
-                None,
-                None,
-                serde_json::json!({ "task": id, "to": word, "by": "cli" }),
+            let admin = tasks_admin::TasksAdmin::open()?;
+            println!("{}", admin.set_model(&id, word.as_deref(), "cli")?);
+        }
+        TasksCmd::Schedule { id, schedule, tz } => {
+            let admin = tasks_admin::TasksAdmin::open()?;
+            println!(
+                "{}",
+                admin.set_schedule(&id, &schedule, tz.as_deref(), "cli")?
             );
-            match word {
-                Some(w) => println!("task {id} now runs on {w}"),
-                None => println!("task {id} now runs on the default"),
-            }
         }
         TasksCmd::Pause { id } => {
             println!("{}", tasks_admin::TasksAdmin::open()?.pause(&id, "cli")?)

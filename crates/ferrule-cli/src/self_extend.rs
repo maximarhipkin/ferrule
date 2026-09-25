@@ -159,6 +159,7 @@ pub async fn start(
     let layout = Layout::new(config::data_dir()?);
     let workspace = dunce::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     let skills = skills_handle(&cfg.skills, &workspace, &layout);
+    let _ = LIVE_SKILLS.set(skills.clone());
     let manager = ExtensionManager::new(ManagerConfig {
         allow: allow_list(&cfg.extensions, &path),
         layout,
@@ -174,6 +175,14 @@ pub async fn start(
         manager,
         enabled: cfg.extensions.enabled,
     })
+}
+
+/// The process's skills, once `start` has built them.
+static LIVE_SKILLS: std::sync::OnceLock<SkillsHandle> = std::sync::OnceLock::new();
+
+/// The running agents' skill set, to turn a skill off or on at once (M24).
+pub(crate) fn live_skills() -> Option<&'static SkillsHandle> {
+    LIVE_SKILLS.get()
 }
 
 fn skills_handle(cfg: &config::SkillsConfig, workspace: &Path, layout: &Layout) -> SkillsHandle {
@@ -253,7 +262,7 @@ pub enum ExtCmd {
 }
 
 /// A manager for one owner command: no configured servers, no sync loop.
-fn owner_manager(workspace: &Path) -> Result<Arc<ExtensionManager>> {
+pub(crate) fn owner_manager(workspace: &Path) -> Result<Arc<ExtensionManager>> {
     let (cfg, path) = config::Config::load()?;
     let workspace = dunce::canonicalize(workspace)
         .map_err(|e| anyhow!("workspace {}: {e}", workspace.display()))?;
@@ -280,7 +289,12 @@ pub fn list(servers_only: bool) -> Result<()> {
     let (cfg, _) = config::Config::load()?;
     for s in &cfg.mcp.servers {
         let what = s.url.as_deref().unwrap_or(&s.command);
-        println!("server {} [configured] {what}", s.name);
+        let off = if cfg.mcp.disabled.contains(&s.name) {
+            " — disabled (`ferrule mcp enable`)"
+        } else {
+            ""
+        };
+        println!("server {} [configured] {what}{off}", s.name);
     }
     let listed = m.list()?;
     for l in listed

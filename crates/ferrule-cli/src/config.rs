@@ -141,6 +141,10 @@ pub struct McpConfig {
     /// fails to start is logged and skipped — it never stops the agent.
     #[serde(default, rename = "servers")]
     pub servers: Vec<ferrule_mcp::McpServerConfig>,
+    /// Configured servers the owner turned off (M24): they stay in the
+    /// config but aren't started.
+    #[serde(default)]
+    pub disabled: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

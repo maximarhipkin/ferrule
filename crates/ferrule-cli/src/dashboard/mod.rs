@@ -65,9 +65,10 @@ impl Ctx {
             models: crate::models::shared().ok(),
             connections: crate::connections::shared(cfg),
             owner_chat: crate::trust::owner_chat(cfg),
-            tasks: data
-                .as_ref()
-                .map(|d| crate::tasks_admin::TasksAdmin::new(d.join("tasks.db"), hub.clone())),
+            tasks: data.as_ref().map(|d| {
+                crate::tasks_admin::TasksAdmin::new(d.join("tasks.db"), hub.clone())
+                    .with_config(crate::config::config_path().ok().flatten())
+            }),
             hub,
             data,
             config_path: crate::config::config_path().ok().flatten(),
