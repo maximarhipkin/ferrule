@@ -63,6 +63,13 @@ pub enum AgentEvent {
         delay_ms: u64,
         error: String,
     },
+    /// A model kept failing transiently after its retries; the turn goes
+    /// on on the next model in the owner's fallback list (M21).
+    ModelFallback {
+        from: String,
+        to: String,
+        error: String,
+    },
     /// The run was going in circles; the model has been told to change course.
     Stuck {
         note: String,

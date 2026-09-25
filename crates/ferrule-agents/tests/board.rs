@@ -297,6 +297,7 @@ async fn work_flows_down_only_and_a_closed_agent_gives_back_its_task() {
             name: None,
             role: Role::Worker,
             worktree: true,
+            model: None,
         },
     );
     let c = rig.sup.store().children(&a).unwrap().pop().unwrap().id;

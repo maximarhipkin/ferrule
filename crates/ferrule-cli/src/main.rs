@@ -4,6 +4,7 @@ mod config;
 mod config_follow;
 mod doctor;
 mod eval;
+mod filewrite;
 mod health;
 mod hooks_cli;
 mod learn;
@@ -11,6 +12,7 @@ mod ledger;
 mod mcp_add;
 mod mcp_config;
 mod memory_tools;
+mod models;
 mod plan;
 mod probe;
 mod secrets;
@@ -21,14 +23,13 @@ mod trust;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
-use ferrule_core::{Agent, AgentConfig, AgentEvent, HarnessProfile, ToolContext, Transcript};
+use ferrule_core::{Agent, AgentConfig, AgentEvent, ToolContext, Transcript};
 use ferrule_gateway::{
     Channel, Gateway, LocalChannel, NewTask, Router, RunOutcome, Scheduler, TaskKind, TaskStore,
     TelegramChannel,
 };
 use ferrule_mcp::McpServerConfig;
 use ferrule_memory::MemoryStore;
-use ferrule_providers::OpenAiCompatProvider;
 use ferrule_proxy::{Broker, BrokerConfig, Upstream};
 use ferrule_sandbox::{Egress, Mode, Sandbox};
 use ferrule_tools::standard_registry;
@@ -76,12 +77,19 @@ enum Cmd {
         /// Skip the checks that call provider and Telegram APIs
         #[arg(long)]
         offline: bool,
+        /// Also make one real call to every connected model (costs a few tokens each)
+        #[arg(long, conflicts_with = "offline")]
+        ping_models: bool,
     },
     /// Run a one-shot task
     Run {
         prompt: String,
         #[arg(long)]
         provider: Option<String>,
+        /// This run's model: `provider/model`, a provider, an alias or a
+        /// model id (`ferrule model list`). Wins over the default and pins
+        #[arg(long, conflicts_with = "provider")]
+        model: Option<String>,
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
         #[arg(long, default_value_t = 60)]
@@ -98,6 +106,10 @@ enum Cmd {
     Chat {
         #[arg(long)]
         provider: Option<String>,
+        /// This run's model: `provider/model`, a provider, an alias or a
+        /// model id (`ferrule model list`). Wins over the default and pins
+        #[arg(long, conflicts_with = "provider")]
+        model: Option<String>,
         #[arg(long, default_value = ".")]
         workspace: PathBuf,
     },
@@ -124,6 +136,12 @@ enum Cmd {
     /// What the running gateway is doing: turns, spend, schedule, channels
     /// and recent errors (the same report `/status` answers in a chat)
     Status,
+    /// Models: list the connected ones, set the default, test one, add,
+    /// remove, alias, pin a chat, set the fallback order (docs/models.md)
+    Model {
+        #[command(subcommand)]
+        op: models::ModelCmd,
+    },
     /// Scheduled task management (cron / one-shot agent turns)
     Tasks {
         #[command(subcommand)]
@@ -252,9 +270,16 @@ enum TasksCmd {
         /// `scheduler::gate` module doc for the full contract.
         #[arg(long)]
         gate: Option<String>,
+        /// The model it runs on: `provider/model`, a provider or an alias
+        /// (`ferrule model list`); the default without one
+        #[arg(long)]
+        model: Option<String>,
     },
     /// List all tasks
     List,
+    /// Set the model a task runs on, or put it back on the default:
+    /// `ferrule tasks model <id> fast`, `ferrule tasks model <id> default`
+    Model { id: String, reference: String },
     /// Pause a task — it stays configured but never fires until resumed
     Pause { id: String },
     /// Resume a paused task
@@ -377,8 +402,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             }
             done?
         }
-        Cmd::Doctor { offline } => {
-            if !doctor::run(offline).await? {
+        Cmd::Doctor {
+            offline,
+            ping_models,
+        } => {
+            if !doctor::run(offline, ping_models).await? {
                 std::process::exit(1);
             }
         }
@@ -435,11 +463,14 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Run {
             prompt,
             provider,
+            model,
             workspace,
             max_iterations,
             show_reasoning,
             plan,
         } => {
+            // A ref: `--provider X` still means X's own model.
+            let provider = model.or(provider);
             if plan {
                 plan::run(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
             } else {
@@ -448,9 +479,10 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         }
         Cmd::Chat {
             provider,
+            model,
             workspace,
         } => {
-            chat(provider, workspace).await?;
+            chat(model.or(provider), workspace).await?;
         }
         Cmd::Gateway {
             provider,
@@ -464,6 +496,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::Model { op } => models::cmd(op).await?,
         Cmd::Tasks { op } => {
             tasks_cmd(op).await?;
         }
@@ -544,8 +577,10 @@ async fn build_root(
     trust::seat(session_id, trust::terminal_route());
     let sessions_dir = config::data_dir()?.join("sessions");
     let transcript = Transcript::create(&sessions_dir, session_id).ok();
+    let scope =
+        models::Scope::for_session(session_id).fixed(provider_name.clone(), "the command line");
     let agent = build_agent_from(
-        provider_name.clone(),
+        scope,
         workspace.clone(),
         max_iterations,
         transcript,
@@ -564,9 +599,9 @@ async fn build_root(
 /// How the supervisor builds a child: like any agent, on its spec's
 /// workspace and session, narrowed to its role.
 fn child_builder(max_iterations: usize, mcp_tools: self_extend::Extensions) -> agents::Build {
-    Arc::new(move |provider, spec, tag| {
+    Arc::new(move |scope, spec, tag| {
         build_agent_from(
-            provider,
+            scope,
             spec.workspace.clone(),
             max_iterations,
             Some(spec.transcript.clone()),
@@ -646,7 +681,7 @@ fn mcp_dir_name(server_name: &str) -> String {
 /// for resumable sessions — can hand in the exact same transcript it just
 /// read history from, instead of this function creating a second one.
 fn build_agent_from(
-    provider_name: Option<String>,
+    scope: models::Scope,
     workspace: PathBuf,
     max_iterations: usize,
     transcript: Option<Transcript>,
@@ -655,14 +690,20 @@ fn build_agent_from(
     child: Option<&ferrule_agents::ChildSpec>,
 ) -> Result<Agent> {
     let (cfg, cfg_path) = config::Config::load()?;
-    let (name, pcfg, key) = cfg.resolve_provider(provider_name.as_deref())?;
-    let provider = Arc::new(OpenAiCompatProvider::new(
-        name,
-        &pcfg.base_url,
-        key,
-        &pcfg.model,
+    // M21: the model is picked per call from the agent's scope; the one
+    // it would run on now sets the harness profile, and a missing key is
+    // an error now rather than at the first call.
+    let models = models::shared()?;
+    let entry = models.wanted(&scope).map_err(|e| anyhow!(e))?;
+    if entry.key().is_none() {
+        bail!("{}", entry.no_key());
+    }
+    let profile = entry.harness();
+    let provider = Arc::new(models::RoutedProvider::new(
+        models.clone(),
+        scope,
+        entry.provider.clone(),
     ));
-    let profile = HarnessProfile::by_name(&pcfg.profile);
 
     let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let tool_ctx = ToolContext {
@@ -807,6 +848,7 @@ fn build_agent_from(
 
     // M19: the owner's caps, kill switch and approval gates, per run tree.
     let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
+    models.attach_hub(trust::hub(&cfg)?);
     let hooks_workspace = tool_ctx.workspace.clone();
     let mut agent = Agent::new(
         provider,
@@ -827,7 +869,7 @@ fn build_agent_from(
             ledger.sink,
             ledger.task_shape,
             ledger.origin,
-            pcfg.model.clone(),
+            entry.model.clone(),
         )
         .with_guard(guard);
     if let (Some(cmd), false) = (&cfg.agent.verify_command, planning) {
@@ -1072,6 +1114,9 @@ fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
                     error,
                 } => {
                     println!("\x1b[33m[provider failed, retry {attempt}/{max_attempts} in {:.1}s: {error}]\x1b[0m", delay_ms as f64 / 1000.0)
+                }
+                AgentEvent::ModelFallback { from, to, error } => {
+                    println!("\x1b[33m[{from} isn't answering ({error}); {to} takes over]\x1b[0m")
                 }
                 AgentEvent::Stuck { note } => println!("\x1b[33m{note}\x1b[0m"),
                 // A hook's error is the owner's to see, not the model's.
@@ -1333,6 +1378,10 @@ async fn gateway_factory(
     let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     let ledger_sink = ledger::build_sink(cfg);
+    // M21: a scheduled task's own model, read per call from tasks.db so
+    // `ferrule tasks model` reaches a lane that's already running.
+    let tasks = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+    models::shared()?.set_task_models(Arc::new(move |id| tasks.model_of(id).ok().flatten()));
     let sup = agents::supervisor(
         cfg,
         provider.clone(),
@@ -1344,8 +1393,10 @@ async fn gateway_factory(
         let (shape, origin) = ledger::classify_session(session_id);
         let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
         let fail = |e: String| ferrule_gateway::GatewayError::Channel(e);
+        let scope = models::Scope::for_session(session_id)
+            .fixed(provider.clone(), "the gateway's --provider");
         let agent = build_agent_from(
-            provider.clone(),
+            scope,
             workspace.clone(),
             max_iterations,
             Some(transcript),
@@ -1426,7 +1477,13 @@ async fn run_gateway(
             .map(|t| Arc::new(trust::ChannelNotifier(t)) as Arc<dyn ferrule_trust::Notifier>),
     );
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
-    let scheduler = Arc::new(learn::register(&cfg, scheduler, &workspace, provider, true));
+    let scheduler = Arc::new(learn::register(
+        &cfg,
+        scheduler,
+        &workspace,
+        provider.clone(),
+        true,
+    ));
     let scheduler_handle = {
         let scheduler = scheduler.clone();
         tokio::spawn(async move {
@@ -1442,12 +1499,35 @@ async fn run_gateway(
         telegram,
         dunce::canonicalize(&workspace).unwrap_or(workspace),
     );
+    let lanes = Arc::downgrade(&router);
     let mut gateway = Gateway::new(router)
         .with_health(health.clone())
         .with_redactor(Arc::new(health::redactor(&cfg)))
         .with_interceptor(Arc::new(trust::OwnerDoor {
-            hub,
+            hub: hub.clone(),
             plan: Some(plan),
+        }))
+        .with_interceptor(Arc::new(models::ModelDoor {
+            models: models::shared()?,
+            hub,
+            fixed: provider,
+            retire: Arc::new(move |session: Option<&str>| {
+                let Some(router) = lanes.upgrade() else {
+                    return;
+                };
+                match session {
+                    Some(s) => {
+                        router.retire(s);
+                    }
+                    None => {
+                        for s in router.sessions() {
+                            if !s.starts_with("scheduler__") {
+                                router.retire(&s);
+                            }
+                        }
+                    }
+                }
+            }),
         }));
     for channel in adapters {
         gateway.add_channel(channel);
@@ -1521,8 +1601,14 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
             chat_id,
             prompt,
             gate,
+            model,
         } => {
             let kind = parse_task_kind(&kind)?;
+            if let Some(word) = &model {
+                models::shared()?
+                    .resolve(word)
+                    .map_err(|why| anyhow!("--model {word}: {why}"))?;
+            }
             let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
             let now = chrono::Utc::now();
             let next_run_at =
@@ -1538,12 +1624,16 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
                     chat_id,
                     prompt,
                     gate,
+                    model,
                 },
                 id,
                 now.timestamp(),
                 next_run_at,
             )?;
             println!("added task {} ({})", task.id, task.name);
+            if let Some(m) = &task.model {
+                println!("model: {m}");
+            }
             match task.next_run_at {
                 Some(t) => println!("next run: {}", fmt_ts(t)),
                 None => println!("next run: never (no schedule computed)"),
@@ -1557,7 +1647,7 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
             }
             for t in tasks {
                 println!(
-                    "{}  {:<24}  {:<5}  {:<24}  {:<7}  next={}",
+                    "{}  {:<24}  {:<5}  {:<24}  {:<7}  next={}  model={}",
                     t.id,
                     t.name,
                     if t.kind == TaskKind::Cron {
@@ -1568,7 +1658,32 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
                     t.schedule,
                     if t.enabled { "enabled" } else { "paused" },
                     t.next_run_at.map(fmt_ts).unwrap_or_else(|| "-".into()),
+                    t.model.as_deref().unwrap_or("default"),
                 );
+            }
+        }
+        TasksCmd::Model { id, reference } => {
+            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
+            let word = (reference != "default").then_some(reference);
+            if let Some(w) = &word {
+                models::shared()?
+                    .resolve(w)
+                    .map_err(|why| anyhow!("{w}: {why}"))?;
+            }
+            if !store.set_model(&id, word.as_deref())? {
+                bail!("no such task: {id}");
+            }
+            let (cfg, _) = config::Config::load()?;
+            trust::hub(&cfg)?.audit().record(
+                chrono::Utc::now(),
+                "model.task",
+                None,
+                None,
+                serde_json::json!({ "task": id, "to": word, "by": "cli" }),
+            );
+            match word {
+                Some(w) => println!("task {id} now runs on {w}"),
+                None => println!("task {id} now runs on the default"),
             }
         }
         TasksCmd::Pause { id } => {

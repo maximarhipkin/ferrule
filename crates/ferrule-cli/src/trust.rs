@@ -168,15 +168,10 @@ pub fn equip(
             None,
         ),
     };
-    let pricing: HashMap<String, ledger::ProviderPricing> = cfg
-        .providers
-        .iter()
-        .filter_map(|(name, p)| {
-            ledger::ProviderPricing::from_config(p).map(|pr| (name.clone(), pr))
-        })
-        .collect();
+    // Priced by the model that ran (M21), so a fallback counts at its own.
+    let prices = crate::models::prices(cfg);
     let price: ferrule_trust::Pricer =
-        Arc::new(move |r: &LedgerRecord| pricing.get(&r.provider).map(|p| p.cost_usd(r)));
+        Arc::new(move |r: &LedgerRecord| prices(&r.provider, &r.model).map(|p| p.cost_usd(r)));
     let sink = Arc::new(TrustSink::new(inner, hub.clone(), tree, Some(price)));
     let root = TrustGuard::root(hub, tree, route_for(tree)).planning(is_planning(tree));
     let guard = if child { root.child() } else { root };

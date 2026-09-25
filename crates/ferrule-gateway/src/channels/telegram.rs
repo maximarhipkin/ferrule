@@ -225,11 +225,17 @@ impl TelegramChannel {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
+        let sender_id = message
+            .get("from")
+            .and_then(|f| f.get("id"))
+            .and_then(|v| v.as_i64())
+            .map(|id| id.to_string());
         let ts = message.get("date").and_then(|d| d.as_i64()).unwrap_or(0);
         Some(InboundMessage {
             channel: "telegram".into(),
             chat_id,
             sender,
+            sender_id,
             message_id,
             text,
             attachments: vec![],
@@ -537,6 +543,7 @@ mod tests {
             channel: "telegram".into(),
             chat_id: chat.into(),
             sender: "x".into(),
+            sender_id: None,
             message_id: "1".into(),
             text: "hi".into(),
             attachments: vec![],

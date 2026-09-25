@@ -323,6 +323,7 @@ where
         channel: PLAN_CHANNEL.into(),
         chat_id: pid.clone(),
         sender: chat.to_string(),
+        sender_id: None,
         message_id: String::new(),
         text,
         attachments: vec![],

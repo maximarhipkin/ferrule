@@ -70,6 +70,9 @@ pub struct AgentRow {
     pub tokens: u64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The model it was asked to run on (M21: `spawn_agent`'s `model`, a
+    /// connected model's ref); `None` runs it on its role's or its root's.
+    pub model: Option<String>,
 }
 
 pub struct AgentStore {
@@ -83,7 +86,7 @@ pub struct AgentStore {
 
 const AGENT_COLUMNS: &str =
     "id, tree, parent, depth, name, role, task, session, workspace, worktree, branch, \
-     base, status, result, tokens, created_at, updated_at";
+     base, status, result, tokens, created_at, updated_at, model";
 
 impl AgentStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AgentsError> {
@@ -161,6 +164,13 @@ impl AgentStore {
                  PRIMARY KEY (task, after)
              );",
         )?;
+        // M21: a child's model, added to a database made before it.
+        let has_model = conn
+            .prepare("SELECT 1 FROM pragma_table_info('agents') WHERE name = 'model'")?
+            .exists([])?;
+        if !has_model {
+            conn.execute_batch("ALTER TABLE agents ADD COLUMN model TEXT")?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             owners_dir,
@@ -232,7 +242,7 @@ impl AgentStore {
     pub fn insert(&self, a: &AgentRow) -> Result<(), AgentsError> {
         self.conn.lock().unwrap().execute(
             &format!(
-                "INSERT INTO agents ({AGENT_COLUMNS}, owner) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"
+                "INSERT INTO agents ({AGENT_COLUMNS}, owner) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
             ),
             params![
                 a.id,
@@ -252,6 +262,7 @@ impl AgentStore {
                 a.tokens as i64,
                 a.created_at,
                 a.updated_at,
+                a.model,
                 self.owner_id(),
             ],
         )?;
@@ -469,6 +480,7 @@ fn row_to_agent(r: &Row) -> rusqlite::Result<AgentRow> {
         tokens: r.get::<_, i64>(14)? as u64,
         created_at: r.get(15)?,
         updated_at: r.get(16)?,
+        model: r.get(17)?,
     })
 }
 
@@ -495,6 +507,7 @@ mod tests {
             tokens: 0,
             created_at: 0,
             updated_at: 0,
+            model: None,
         }
     }
 

@@ -498,25 +498,53 @@ impl Agent {
         iteration: usize,
         call_kind: &str,
     ) -> Result<CompletionResponse, CoreError> {
-        let first = Instant::now();
+        let mut first = Instant::now();
         let mut attempt = 1;
+        // A provider marks each failed model down, so this ends anyway;
+        // the cap guards against one that doesn't.
+        let mut fallbacks = 0;
         loop {
             let start = Instant::now();
-            let result = self.provider.complete(req.clone()).await;
+            let (served, result) = self.provider.complete_routed(req.clone()).await;
             let latency_ms = start.elapsed().as_millis() as u64;
             let retry_in = match &result {
                 Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
                 Ok(_) => None,
+            };
+            // Out of retries on an outage: the next model in the owner's
+            // fallback list, if the provider has one, from a fresh start.
+            let fell_over = match (&result, retry_in) {
+                (Err(e @ CoreError::Transient { .. }), None) if fallbacks < 8 => {
+                    self.provider.fail_over(served.as_ref(), e)
+                }
+                _ => None,
             };
             self.record_completion(
                 iteration,
                 call_kind,
                 latency_ms,
                 &result,
-                retry_in.is_some(),
+                retry_in.is_some() || fell_over.is_some(),
+                served.as_ref(),
             );
             if let (Some(budget), Ok(resp)) = (&self.budget, &result) {
                 budget.charge(&resp.usage);
+            }
+            if let (Some(to), Err(e)) = (fell_over, &result) {
+                warn!(from = %to.from, to = %to.to, "model failing, falling back: {e}");
+                self.emit(
+                    tx,
+                    AgentEvent::ModelFallback {
+                        from: to.from,
+                        to: to.to,
+                        error: e.to_string(),
+                    },
+                )
+                .await;
+                first = Instant::now();
+                attempt = 1;
+                fallbacks += 1;
+                continue;
             }
             let (Some(delay), Err(e)) = (retry_in, &result) else {
                 return result;
@@ -548,6 +576,7 @@ impl Agent {
         latency_ms: u64,
         result: &Result<CompletionResponse, CoreError>,
         retried: bool,
+        served: Option<&crate::provider::Served>,
     ) {
         let Some(ledger) = &self.ledger else { return };
         let (
@@ -586,8 +615,12 @@ impl Agent {
             session_id: self.session_id(),
             task_shape: ledger.task_shape.clone(),
             origin: ledger.origin.clone(),
-            provider: self.provider.name().to_string(),
-            model: ledger.model.clone(),
+            provider: served
+                .map(|s| s.provider.clone())
+                .unwrap_or_else(|| self.provider.name().to_string()),
+            model: served
+                .map(|s| s.model.clone())
+                .unwrap_or_else(|| ledger.model.clone()),
             iteration,
             call_kind: call_kind.to_string(),
             input_tokens,
@@ -2228,6 +2261,168 @@ mod tests {
             .map(|r| r.outcome.clone())
             .collect();
         assert_eq!(outcomes, ["retried", "retried", "error"]);
+    }
+
+    /// Two models: `a/one` fails with `error` on every call until it's
+    /// marked down, then `b/two` answers. `fail_over` switches once.
+    struct Routing {
+        down: Mutex<bool>,
+        error: fn() -> CoreError,
+        asked: Mutex<u32>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Routing {
+        fn name(&self) -> &str {
+            "routing"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            self.complete_routed(req).await.1
+        }
+        async fn complete_routed(
+            &self,
+            _req: CompletionRequest,
+        ) -> (
+            Option<crate::provider::Served>,
+            Result<CompletionResponse, CoreError>,
+        ) {
+            let served = |p: &str, m: &str| crate::provider::Served {
+                provider: p.into(),
+                model: m.into(),
+            };
+            if *self.down.lock().unwrap() {
+                let ok = CompletionResponse {
+                    message: say("from two"),
+                    usage: Usage::default(),
+                };
+                return (Some(served("b", "two")), Ok(ok));
+            }
+            (Some(served("a", "one")), Err((self.error)()))
+        }
+        fn fail_over(
+            &self,
+            served: Option<&crate::provider::Served>,
+            _error: &CoreError,
+        ) -> Option<crate::provider::FailOver> {
+            *self.asked.lock().unwrap() += 1;
+            let mut down = self.down.lock().unwrap();
+            if *down {
+                return None;
+            }
+            *down = true;
+            Some(crate::provider::FailOver {
+                from: served.unwrap().reference(),
+                to: "b/two".into(),
+            })
+        }
+    }
+
+    fn routing_agent(error: fn() -> CoreError, sink: Arc<RecordingSink>) -> (Agent, Arc<Routing>) {
+        let provider = Arc::new(Routing {
+            down: Mutex::new(false),
+            error,
+            asked: Mutex::new(0),
+        });
+        let config = AgentConfig {
+            retry: fast_retry(3),
+            ..Default::default()
+        };
+        let agent = Agent::new(
+            provider.clone(),
+            ToolRegistry::new(),
+            HarnessProfile::generic(),
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_ledger(sink, "run", None, "configured");
+        (agent, provider)
+    }
+
+    #[tokio::test]
+    async fn an_outage_after_the_retries_falls_over_and_rows_name_the_model_that_ran() {
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
+        let (mut agent, provider) = routing_agent(
+            || CoreError::Transient {
+                message: "HTTP 503".into(),
+                retry_after: None,
+            },
+            sink.clone(),
+        );
+        let (tx, mut rx) = events();
+        assert_eq!(agent.run("hi", tx).await.unwrap(), "from two");
+        let rows: Vec<(String, String, String)> = sink
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| (r.provider.clone(), r.model.clone(), r.outcome.clone()))
+            .collect();
+        let row = |p: &str, m: &str, o: &str| (p.to_string(), m.to_string(), o.to_string());
+        assert_eq!(
+            rows,
+            [
+                row("a", "one", "retried"),
+                row("a", "one", "retried"),
+                row("a", "one", "retried"),
+                row("b", "two", "ok"),
+            ]
+        );
+        assert_eq!(*provider.asked.lock().unwrap(), 1);
+        let fallbacks: Vec<(String, String)> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                AgentEvent::ModelFallback { from, to, error } => {
+                    assert!(error.contains("503"), "{error}");
+                    Some((from, to))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fallbacks, [("a/one".to_string(), "b/two".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_key_is_not_an_outage() {
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
+        let (mut agent, provider) = routing_agent(
+            || CoreError::Provider("HTTP 401: invalid api key".into()),
+            sink.clone(),
+        );
+        let (tx, _rx) = events();
+        let err = agent.run("hi", tx).await.unwrap_err();
+        assert!(err.to_string().contains("401"), "{err}");
+        assert_eq!(
+            *provider.asked.lock().unwrap(),
+            0,
+            "never asked to fall over"
+        );
+        let rows = sink.records.lock().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].provider.as_str(), rows[0].model.as_str()),
+            ("a", "one")
+        );
+        assert_eq!(rows[0].outcome, "error");
+    }
+
+    #[tokio::test]
+    async fn without_routing_rows_keep_the_configured_model() {
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
+        let mut agent = flaky_agent(0, 3, sink.clone());
+        let (tx, _rx) = events();
+        agent.run("hi", tx).await.unwrap();
+        let rows = sink.records.lock().unwrap();
+        assert_eq!(
+            (rows[0].provider.as_str(), rows[0].model.as_str()),
+            ("flaky", "m")
+        );
     }
 
     #[test]
