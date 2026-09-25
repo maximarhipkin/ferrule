@@ -31,7 +31,9 @@ pub struct Gateway {
 
 /// Looks at every inbound message before the router does (M19: the owner's
 /// `/stop`, `/resume`, `/plan` and approval replies). `Some(reply)` takes
-/// the message: the reply goes back to its chat and no agent turn runs.
+/// the message: the reply goes back to its chat and no agent turn runs;
+/// an empty one (M22: `/dashboard` from a chat that isn't the owner's)
+/// takes it without an answer.
 #[async_trait::async_trait]
 pub trait Interceptor: Send + Sync {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String>;
@@ -197,7 +199,10 @@ impl Gateway {
         }
         for i in &self.interceptors {
             if let Some((reply, buttons)) = i.intercept_with_buttons(&msg).await {
-                self.reply_with_buttons(&msg, reply, &buttons).await;
+                // An empty reply takes the message without answering it.
+                if !reply.is_empty() || !buttons.is_empty() {
+                    self.reply_with_buttons(&msg, reply, &buttons).await;
+                }
                 return;
             }
         }
@@ -362,6 +367,7 @@ async fn heartbeat(
             Ok(r) => Err(format!("HTTP {}", r.status())),
             Err(e) => Err(e.without_url().to_string()),
         };
+        health.beat(result.clone().err().map(|e| health.redactor().redact(&e)));
         match result {
             Ok(()) if failing => {
                 tracing::info!("the heartbeat gets through again");
@@ -544,7 +550,11 @@ mod tests {
     #[async_trait]
     impl Interceptor for StopWord {
         async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-            (msg.text == "/stop").then(|| "stopped".to_string())
+            match msg.text.as_str() {
+                "/stop" => Some("stopped".to_string()),
+                "/quiet" => Some(String::new()),
+                _ => None,
+            }
         }
     }
 
@@ -552,7 +562,7 @@ mod tests {
     async fn an_intercepted_message_is_answered_without_an_agent_turn() {
         let dir = tempfile::tempdir().unwrap();
         let scripted = Arc::new(ScriptedChannel {
-            script: vec![msg("c1", "/stop"), msg("c1", "hello")],
+            script: vec![msg("c1", "/stop"), msg("c1", "/quiet"), msg("c1", "hello")],
             sent: std::sync::Mutex::new(Vec::new()),
         });
         let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
@@ -587,8 +597,11 @@ mod tests {
         let sent = scripted.sent.lock().unwrap();
         assert_eq!(sent[0].text, "stopped");
         assert_eq!(sent[0].chat_id, "c1");
+        // An empty reply took "/quiet" without an answer or a turn.
         assert_eq!(sent[1].text, "echo: hello");
         assert!(sent.iter().all(|m| !m.text.contains("/stop")));
+        assert!(sent.iter().all(|m| !m.text.contains("quiet")));
+        assert_eq!(turns.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     struct Offer;
