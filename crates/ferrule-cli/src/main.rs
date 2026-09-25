@@ -1460,7 +1460,13 @@ async fn run_gateway(
             .map(|t| Arc::new(trust::ChannelNotifier(t)) as Arc<dyn ferrule_trust::Notifier>),
     );
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
-    let scheduler = Arc::new(learn::register(&cfg, scheduler, &workspace, provider, true));
+    let scheduler = Arc::new(learn::register(
+        &cfg,
+        scheduler,
+        &workspace,
+        provider.clone(),
+        true,
+    ));
     let scheduler_handle = {
         let scheduler = scheduler.clone();
         tokio::spawn(async move {
@@ -1476,12 +1482,35 @@ async fn run_gateway(
         telegram,
         workspace.canonicalize().unwrap_or(workspace),
     );
+    let lanes = Arc::downgrade(&router);
     let mut gateway = Gateway::new(router)
         .with_health(health.clone())
         .with_redactor(Arc::new(health::redactor(&cfg)))
         .with_interceptor(Arc::new(trust::OwnerDoor {
-            hub,
+            hub: hub.clone(),
             plan: Some(plan),
+        }))
+        .with_interceptor(Arc::new(models::ModelDoor {
+            models: models::shared()?,
+            hub,
+            fixed: provider,
+            retire: Arc::new(move |session: Option<&str>| {
+                let Some(router) = lanes.upgrade() else {
+                    return;
+                };
+                match session {
+                    Some(s) => {
+                        router.retire(s);
+                    }
+                    None => {
+                        for s in router.sessions() {
+                            if !s.starts_with("scheduler__") {
+                                router.retire(&s);
+                            }
+                        }
+                    }
+                }
+            }),
         }));
     for channel in adapters {
         gateway.add_channel(channel);

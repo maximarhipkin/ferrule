@@ -471,6 +471,7 @@ mod tests {
             channel: "scripted".into(),
             chat_id: chat_id.into(),
             sender: "u".into(),
+            sender_id: None,
             message_id: "1".into(),
             text: text.into(),
             attachments: vec![],

@@ -275,6 +275,7 @@ impl Scheduler {
             channel: SCHEDULER_PSEUDO_CHANNEL.into(),
             chat_id: task.id.clone(),
             sender: "scheduler".into(),
+            sender_id: None,
             message_id: uuid::Uuid::new_v4().to_string(),
             text: prompt,
             attachments: vec![],

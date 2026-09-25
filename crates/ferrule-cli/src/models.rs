@@ -19,9 +19,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 mod admin;
 mod cli;
+mod door;
 pub use admin::*;
-#[allow(unused_imports)] // M21 part 4: `/model` shows it
 pub use cli::{cmd, render, ModelCmd};
+pub use door::{status_lines, ModelDoor};
 
 /// How long a model that stayed down after its retries is skipped for.
 pub const DOWN_FOR: Duration = Duration::from_secs(5 * 60);

@@ -96,6 +96,12 @@ pub fn build(
     if let Some(store) = store {
         health = health.with_section("schedule", Arc::new(move || schedule_lines(&store)));
     }
+    if let Ok(models) = crate::models::shared() {
+        health = health.with_section(
+            "models",
+            Arc::new(move || crate::models::status_lines(&models)),
+        );
+    }
     let notice = startup_notice(cfg, &health);
     Ok(health
         .with_startup_notice(notice)

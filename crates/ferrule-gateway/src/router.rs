@@ -304,6 +304,14 @@ impl Router {
         self.lanes.lock().unwrap().remove(session_id).is_some()
     }
 
+    /// Every session with a lane, busy or idle (M21: a new default
+    /// retires them all, so each chat's next agent gets its profile).
+    pub fn sessions(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.lanes.lock().unwrap().keys().cloned().collect();
+        out.sort();
+        out
+    }
+
     /// Whether `session_id` is a chat that [`Router::wake`] can run: it has
     /// a lane, and a person on the other end (a scheduled task has none).
     pub fn can_wake(&self, session_id: &str) -> bool {
@@ -331,6 +339,7 @@ impl Router {
             channel: lane.channel.clone(),
             chat_id: lane.chat_id.clone(),
             sender: "ferrule".into(),
+            sender_id: None,
             message_id: String::new(),
             text,
             attachments: vec![],
@@ -775,6 +784,7 @@ mod tests {
             channel: "test".into(),
             chat_id: chat_id.into(),
             sender: "user".into(),
+            sender_id: None,
             message_id: format!("m{}", N.fetch_add(1, Ordering::SeqCst)),
             text: text.into(),
             attachments: vec![],

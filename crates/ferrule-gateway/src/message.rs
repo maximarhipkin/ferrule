@@ -18,6 +18,10 @@ pub struct InboundMessage {
     pub channel: String,
     pub chat_id: String,
     pub sender: String,
+    /// The sender's id on the channel (Telegram's `from.id`), when it says:
+    /// an owner-only command in a group checks it (M21).
+    #[serde(default)]
+    pub sender_id: Option<String>,
     pub message_id: String,
     pub text: String,
     #[serde(default)]
