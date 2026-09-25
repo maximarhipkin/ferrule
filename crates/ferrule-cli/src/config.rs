@@ -39,6 +39,9 @@ pub struct ModelConfig {
     pub price_input_per_mtok: Option<f64>,
     pub price_cached_input_per_mtok: Option<f64>,
     pub price_output_per_mtok: Option<f64>,
+    /// Where the prices came from when ferrule wrote them (M22): "openrouter
+    /// catalog 2026-09-25". Unset: set by hand, and never overwritten.
+    pub price_source: Option<String>,
 }
 
 /// `[models]` (docs/m21-models.md): the default, the fallback list and
@@ -53,6 +56,10 @@ pub struct ModelsConfig {
     /// no fallback.
     pub fallback: Vec<String>,
     pub aliases: BTreeMap<String, String>,
+    /// M22: a public model list (OpenRouter's shape) the dashboard and
+    /// `ferrule model catalog` read prices from when no connected provider
+    /// is OpenRouter. Unset: OpenRouter's; "": none.
+    pub catalog_url: Option<String>,
 }
 
 fn default_profile() -> String {

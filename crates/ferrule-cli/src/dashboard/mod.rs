@@ -3,10 +3,13 @@
 //! quick tunnel for the phone and sends a one-time login link. Nothing here
 //! calls a model: the page must work when the model doesn't.
 
+pub mod api;
 pub mod auth;
 pub mod cli;
 pub mod door;
 pub mod http;
+#[cfg(test)]
+pub mod testing;
 
 use crate::config::{Config, DashboardConfig};
 use anyhow::{bail, Context, Result};
@@ -32,13 +35,59 @@ pub struct Ctx {
     pub redactor: Arc<Redactor>,
     /// `[connections] cloudflared`, resolved.
     pub cloudflared: Option<PathBuf>,
+    /// The running gateway's lanes and health; `None` in `ferrule
+    /// dashboard` on its own.
+    pub live: Option<api::Live>,
+    pub models: Option<Arc<crate::models::Models>>,
+    pub hub: Option<Arc<ferrule_trust::Hub>>,
+    pub connections: Option<Arc<ferrule_connections::Connections>>,
+    pub owner_chat: Option<i64>,
+    pub tasks: Option<crate::tasks_admin::TasksAdmin>,
+    /// `<data>`: the ledger, the agents and the catalog's cache.
+    pub data: Option<PathBuf>,
+    /// The config file, re-read for the extensions and the catalog's
+    /// sources.
+    pub config_path: Option<PathBuf>,
+    /// Where project skills are found.
+    pub workspace: Option<PathBuf>,
 }
 
 impl Ctx {
     pub fn from_config(cfg: &Config) -> Self {
+        let hub = crate::trust::hub(cfg).ok();
+        let data = crate::config::data_dir().ok();
         Self {
             redactor: Arc::new(crate::health::redactor(cfg)),
             cloudflared: cloudflared(cfg),
+            live: None,
+            models: crate::models::shared().ok(),
+            connections: crate::connections::shared(cfg),
+            owner_chat: crate::trust::owner_chat(cfg),
+            tasks: data
+                .as_ref()
+                .map(|d| crate::tasks_admin::TasksAdmin::new(d.join("tasks.db"), hub.clone())),
+            hub,
+            data,
+            config_path: crate::config::config_path().ok().flatten(),
+            workspace: std::env::current_dir().ok(),
+        }
+    }
+
+    /// Only the redactor: every section says it isn't available here.
+    #[cfg(test)]
+    pub fn bare(redactor: Arc<Redactor>) -> Self {
+        Self {
+            redactor,
+            cloudflared: None,
+            live: None,
+            models: None,
+            hub: None,
+            connections: None,
+            owner_chat: None,
+            tasks: None,
+            data: None,
+            config_path: None,
+            workspace: None,
         }
     }
 }
@@ -375,8 +424,7 @@ impl Dashboard {
     /// The sections' endpoints: `(status, body)`, or `None` for an unknown
     /// path.
     async fn api(&self, get: bool, req: &Request, body: &Value) -> Option<(u16, Value)> {
-        let _ = (get, req, body);
-        None
+        api::route(&self.ctx, get, req, body).await
     }
 }
 
@@ -417,10 +465,7 @@ mod tests {
         let d = Dashboard::new(
             DashboardConfig::default(),
             Links::at(dir.path().join("links.json")),
-            Ctx {
-                redactor: Arc::new(Redactor::new(["sk-SEEDED-SECRET".to_string()])),
-                cloudflared: None,
-            },
+            Ctx::bare(Arc::new(Redactor::new(["sk-SEEDED-SECRET".to_string()]))),
         );
         d.port.store(4321, Ordering::Relaxed);
         (dir, d)

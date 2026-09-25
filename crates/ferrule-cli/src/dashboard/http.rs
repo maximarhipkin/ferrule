@@ -16,7 +16,6 @@ pub struct Request {
     pub method: String,
     /// Without the query.
     pub path: String,
-    #[allow(dead_code)] // the sections' filters read it (part 3 on)
     pub query: BTreeMap<String, String>,
     /// Lower-case names.
     pub headers: BTreeMap<String, String>,

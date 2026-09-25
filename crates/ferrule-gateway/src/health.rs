@@ -140,6 +140,11 @@ impl RecentLog {
             .map(|(at, level, msg)| format!("{} {level} {msg}", clock(*at)))
             .collect()
     }
+
+    /// Every entry kept, oldest first: when, the level, the message.
+    pub fn entries(&self) -> Vec<(SystemTime, String, String)> {
+        self.entries.lock().unwrap().iter().cloned().collect()
+    }
 }
 
 /// `[health]`, as the gateway uses it (docs/m19b-reliability.md).

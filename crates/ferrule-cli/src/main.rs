@@ -21,6 +21,7 @@ mod secrets;
 mod self_extend;
 mod service;
 mod setup;
+mod tasks_admin;
 mod trust;
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -1529,7 +1530,16 @@ async fn run_gateway(
         let dash = dashboard::Dashboard::new(
             cfg.dashboard.clone(),
             dashboard::auth::Links::at(dashboard::auth::Links::default_path()?),
-            dashboard::Ctx::from_config(&cfg),
+            dashboard::Ctx {
+                live: Some(dashboard::api::Live {
+                    router: lanes.clone(),
+                    health: health.clone(),
+                    channels: adapters.clone(),
+                    fixed: provider.clone(),
+                    retire: retirer(lanes.clone()),
+                }),
+                ..dashboard::Ctx::from_config(&cfg)
+            },
         );
         match dash.bind(cfg.dashboard.port).await {
             Ok(port) => {
@@ -1563,23 +1573,7 @@ async fn run_gateway(
             models: models::shared()?,
             hub,
             fixed: provider,
-            retire: Arc::new(move |session: Option<&str>| {
-                let Some(router) = lanes.upgrade() else {
-                    return;
-                };
-                match session {
-                    Some(s) => {
-                        router.retire(s);
-                    }
-                    None => {
-                        for s in router.sessions() {
-                            if !s.starts_with("scheduler__") {
-                                router.retire(&s);
-                            }
-                        }
-                    }
-                }
-            }),
+            retire: retirer(lanes.clone()),
         }));
     if let Some(conns) = connections::shared(&cfg) {
         gateway = gateway.with_interceptor(Arc::new(connections::ConnectionsDoor {
@@ -1749,28 +1743,13 @@ async fn tasks_cmd(op: TasksCmd) -> Result<()> {
             }
         }
         TasksCmd::Pause { id } => {
-            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
-            if store.set_enabled(&id, false)? {
-                println!("paused {id}");
-            } else {
-                println!("no such task: {id}");
-            }
+            println!("{}", tasks_admin::TasksAdmin::open()?.pause(&id, "cli")?)
         }
         TasksCmd::Resume { id } => {
-            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
-            if store.set_enabled(&id, true)? {
-                println!("resumed {id}");
-            } else {
-                println!("no such task: {id}");
-            }
+            println!("{}", tasks_admin::TasksAdmin::open()?.resume(&id, "cli")?)
         }
         TasksCmd::Delete { id } => {
-            let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
-            if store.delete(&id)? {
-                println!("deleted {id}");
-            } else {
-                println!("no such task: {id}");
-            }
+            println!("{}", tasks_admin::TasksAdmin::open()?.delete(&id, "cli")?)
         }
         TasksCmd::Runs { id, limit } => {
             let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
@@ -1865,6 +1844,28 @@ async fn tasks_run_now(
         }
     }
     Ok(())
+}
+
+/// After a model change: retire one lane, or with `None` every chat's
+/// (never a scheduled task's), so the next turn builds on the new model.
+fn retirer(lanes: std::sync::Weak<Router>) -> models::Retire {
+    Arc::new(move |session: Option<&str>| {
+        let Some(router) = lanes.upgrade() else {
+            return;
+        };
+        match session {
+            Some(s) => {
+                router.retire(s);
+            }
+            None => {
+                for s in router.sessions() {
+                    if !s.starts_with("scheduler__") {
+                        router.retire(&s);
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skills::SkillSet {

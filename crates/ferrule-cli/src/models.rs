@@ -18,11 +18,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 mod admin;
+pub mod catalog;
 mod cli;
 mod door;
 pub use admin::*;
 pub use cli::{cmd, render, ModelCmd};
-pub use door::{status_lines, ModelDoor};
+pub use door::{status_lines, ModelDoor, Retire};
 
 /// How long a model that stayed down after its retries is skipped for.
 pub const DOWN_FOR: Duration = Duration::from_secs(5 * 60);
@@ -39,6 +40,8 @@ pub struct Entry {
     pub profile: String,
     pub context_window: Option<usize>,
     pub pricing: Option<ProviderPricing>,
+    /// The model's `price_source`: who wrote its prices, if not by hand.
+    pub price_source: Option<String>,
     pub aliases: Vec<String>,
 }
 
@@ -245,6 +248,7 @@ fn entry(
         profile: mc.profile.clone().unwrap_or_else(|| p.profile.clone()),
         context_window: mc.context_window,
         pricing,
+        price_source: mc.price_source.clone(),
         aliases: Vec::new(),
     }
 }
