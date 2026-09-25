@@ -3589,9 +3589,15 @@ touched.
   stdlib driver, `scripts/dashboard_smoke.py`), and the RTL test. That
   test found the running turn's activity line without `dir="auto"`.
 
-**Checks (before merging `main`):** fmt clean; clippy `-D warnings`
-clean; `cargo test --workspace` 746 passed, 0 failed, 2 ignored. Checked
-on Linux. The macOS and Windows runs are this PR's CI.
+**Checks (after merging `main` with M23):** fmt clean; clippy `-D
+warnings` clean; `cargo test --workspace` 782 passed, 0 failed, 4 ignored
+(746 before the merge). The merge needed one fix: `ferrule model eval`'s
+estimate now passes M23's cache-write price through (0 tokens written,
+since the mock writes no cache). One run hit a known flake,
+`a_browser_that_hangs_is_given_up_on` (ETXTBSY, the fake Chrome was
+exec'd while a parallel test was still writing it). That file is
+unchanged from `main`, and the test passed 3 out of 3 re-runs. Checked on
+Linux. The macOS and Windows runs are this PR's CI.
 
 **Smoke script, run here:** 7 PASS, 1 SKIP (tunnel: no `cloudflared`), 1
 FAIL (catalog). The catalog fails only in this container: its HTTPS proxy
@@ -3604,7 +3610,8 @@ tasks):**
 - 150 calls, 951.5k input + 6.2k output tokens, $0.98 ($0.53 / $0.45)
 - 13 compactions / 11 truncations; 4 failed checks fixed
 
-That is identical to the run before M24. The eval's data dir had no
+That is identical to the run before M24, both before and after merging
+`main`. The eval's data dir had no
 `gateway/dashboard.json`, and `private/` was empty.
 
 **Decisions taken alone, for Max to confirm:**

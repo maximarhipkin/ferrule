@@ -428,7 +428,8 @@ pub fn estimate(
     }
     let usd = c
         .pricing
-        .map(|p| pricing(&p).cost(total.input, total.cached_input, total.output));
+        // The mock writes no cache, so neither does the typical use.
+        .map(|p| pricing(&p).cost(total.input, total.cached_input, 0, total.output));
     let (budget, mut refused) = match budget(&hub.config().clone(), hub) {
         Ok(b) => (Some(b), None),
         Err(e) => (None, Some(e)),
@@ -467,6 +468,7 @@ fn pricing(p: &ProviderPricing) -> Pricing {
     Pricing {
         input: p.input,
         cached_input: p.cached_input,
+        cache_write: p.cache_write,
         output: p.output,
     }
 }
@@ -1076,6 +1078,7 @@ model = "openai/gpt-5.2-mini"
                 pricing: Some(ProviderPricing {
                     input,
                     cached_input: input / 10.0,
+                    cache_write: None,
                     output: input * 4.0,
                 }),
                 tools: Some(true),
