@@ -500,6 +500,26 @@ journal, without reading code.
 page, sees the outage on top, picks a catalog model as the default, and
 the next message works.
 
+### M24 — the dashboard's leftovers
+
+**Status.** Built, PR open (`docs/m24-dashboard-2.md`, user guide
+`docs/dashboard.md`).
+- The login survives a gateway restart: sessions are stored hashed, the
+  CSRF token is derived, and a live tunnel session gets a new link.
+- Evaluate a candidate model from the page or with `ferrule model eval`:
+  an estimate, a confirm, under the owner's caps and kill switch, with
+  the result beside the default's.
+- Edit from the page: caps (confirm on raise), MCP, skills, hooks trust
+  pinned to the file's hash with a diff, and a task's schedule and model.
+  The same audited operations serve Telegram and the CLI.
+- `scripts/dashboard-smoke.sh|.ps1` walks the whole path in about 2
+  minutes, and an RTL test keeps Hebrew readable.
+
+**Done means.** After a restart the phone is still logged in (or has a
+new link), the owner tries a cheaper model on the real suite before
+switching, and changes caps, extensions, hooks trust and tasks without
+editing the config by hand.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

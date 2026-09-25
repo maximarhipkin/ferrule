@@ -390,4 +390,55 @@ unchanged.
 
 ## As built
 
-(Filled in at the end.)
+Parts 1 and 2 were built as designed. Parts 3 and 4 depart from it here:
+
+- **Skills disable takes effect at once, not "the next turn".** The skill
+  set is built when a lane starts, not per turn. A disable goes to
+  `[skills] disabled`, and the config follower updates the process's
+  live list (`LIVE_SKILLS`). The page and `/skills` then retire every
+  chat lane (`Router::retire`: dropped once its queue drains), so the next
+  message starts on the new set. A turn already running keeps its
+  skills until it ends. From the CLI, a running gateway picks it up
+  through the follower, and its lanes see it when they're next rebuilt.
+- **A built-in task's schedule is saved in the config.** `ferrule-learn`
+  is re-created from `[learning]` at every start, so an edit to its row
+  alone would be lost. `tasks/schedule` on a built-in writes
+  `[learning] schedule` and `timezone`, then updates the row.
+- **The task operations live in `tasks_admin.rs`**, next to M22's
+  pause/resume/run/delete, and not in `settings_admin.rs`. They're audited
+  and locked the same way.
+- **A task's model is stored as typed** (`fast`, `openrouter/x`), not
+  resolved to a provider/model pair, so an alias keeps following its
+  target. It's checked with the same resolver as `/model` before it's
+  saved.
+- **`GET /api/settings` is the read model**, and `GET /api/extensions` is
+  kept as an alias for it. The Extensions section reads the new one. The
+  hooks text goes out through the global redactor like every response,
+  and the secret-scan test covers it with a hooks file holding a secret.
+- **The hub's `config()` returns an owned copy.** The caps can now
+  change while the gateway runs (`Hub::set_caps`), so they sit behind a
+  lock, and a caller gets a snapshot instead of a borrow.
+- **`/hooks` on Telegram** only points to the page and `ferrule hooks
+  trust`, as designed. The command exists so a guess doesn't fall through
+  to the model.
+- **The caps editor** is a `details` element under Usage, outside the box
+  that polls every 30 s, so a poll doesn't wipe a half-typed value.
+- **A real bug found by the integration test:** `set_caps` wrote the
+  key as given (`usd_per_day`), and the config check refused it. Keys are
+  now normalized (`max_usd_per_day`) before the write.
+- **The smoke script** is two thin wrappers (`.sh`, `.ps1`) around one
+  stdlib driver, `scripts/dashboard_smoke.py`, so bash and PowerShell
+  can't drift apart. A tunnel link signs in only on its own host, so with
+  `cloudflared` the page, the login and `/dashboard off`'s revocation are
+  checked through the tunnel. Without it, they're checked on 127.0.0.1.
+  Beyond the design, the login step checks that the API refuses a request
+  without the cookie, and the last step checks that the session is
+  revoked after `/dashboard off`.
+- **The RTL test** uses a Hebrew task name and a Hebrew message. The page
+  never shows chat names: a turn's place is `telegram chat <id>`. The
+  Hebrew comes back unchanged from `/api/tasks`, from `/api/health` (the
+  running turn and the watchdog's notice), and from the audit log through
+  a Hebrew filter. It then reads the served `app.js` and checks that every
+  place a user-content field becomes an element's text carries
+  `dir="auto"`. That found one element missing it, the running turn's
+  activity line.
