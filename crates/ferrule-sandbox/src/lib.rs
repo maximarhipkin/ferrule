@@ -410,7 +410,7 @@ impl Sandbox {
         }
         let mut roots: Vec<PathBuf> = Vec::new();
         for path in wanted {
-            match path.canonicalize() {
+            match dunce::canonicalize(&path) {
                 Ok(p) if !roots.contains(&p) => roots.push(p),
                 Ok(_) => {}
                 Err(e) => {
@@ -425,7 +425,7 @@ impl Sandbox {
     pub fn hidden_paths(&self) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = Vec::new();
         for path in &self.policy.hidden {
-            if let Ok(p) = path.canonicalize() {
+            if let Ok(p) = dunce::canonicalize(path) {
                 if !out.contains(&p) {
                     out.push(p);
                 }
@@ -649,7 +649,7 @@ mod tests {
             extra_env: Vec::new(),
             ..Sandbox::off()
         };
-        let ws_c = ws.path().canonicalize().unwrap();
+        let ws_c = dunce::canonicalize(ws.path()).unwrap();
         assert_eq!(
             sb.writable_roots(ws.path()),
             vec![ws_c.clone(), ws_c.join("out")]
@@ -675,7 +675,7 @@ mod tests {
             ..Sandbox::off()
         };
         let helper = base.for_helper(state.path(), &["extra".into()]);
-        let c = |p: &Path| p.canonicalize().unwrap();
+        let c = |p: &Path| dunce::canonicalize(p).unwrap();
         assert_eq!(
             helper.writable_roots(ws.path()),
             vec![c(ws.path()), c(state.path()), c(&ws.path().join("extra"))]
@@ -727,7 +727,7 @@ mod tests {
     fn a_child_gets_its_git_dir_or_goes_read_only() {
         let ws = tempfile::tempdir().unwrap();
         let git = tempfile::tempdir().unwrap();
-        let c = |p: &Path| p.canonicalize().unwrap();
+        let c = |p: &Path| dunce::canonicalize(p).unwrap();
         let base = Sandbox {
             policy: policy(Mode::WorkspaceWrite),
             ..Sandbox::off()

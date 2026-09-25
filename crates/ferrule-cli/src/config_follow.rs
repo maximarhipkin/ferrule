@@ -86,7 +86,7 @@ impl Follower {
         broker: Option<&'static Broker>,
         lookup: Lookup,
     ) -> Self {
-        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut f = Self {
             manager: Arc::downgrade(manager),
             seen: stamp(&path),
@@ -269,7 +269,7 @@ for line in sys.stdin:
     #[tokio::test]
     async fn a_trusted_config_is_followed_and_an_untrusted_one_is_not() {
         let dir = tempfile::tempdir().unwrap();
-        let dir = dir.path().canonicalize().unwrap();
+        let dir = dunce::canonicalize(dir.path()).unwrap();
         let script = dir.join("s.py");
         std::fs::write(&script, SERVER).unwrap();
         let path = dir.join("config.toml");

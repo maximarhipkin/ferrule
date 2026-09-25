@@ -28,7 +28,7 @@ fn git(cwd: Option<&Path>, args: &[&str]) -> Result<String> {
     .env_remove("GIT_WORK_TREE")
     .stdin(Stdio::null());
     if let Some(cwd) = cwd {
-        cmd.current_dir(cwd);
+        cmd.current_dir(dunce::simplified(cwd));
     }
     let out = cmd
         .output()
@@ -60,7 +60,8 @@ pub fn is_full_sha(s: &str) -> bool {
 /// the remote's HEAD) to a commit and check it out detached. Returns the
 /// full SHA.
 pub fn fetch_pinned(url: &str, rev: Option<&str>, dest: &Path) -> Result<String> {
-    let dest_s = dest.to_string_lossy();
+    // git can't create a work tree at a Windows `\\?\` verbatim path.
+    let dest_s = dunce::simplified(dest).to_string_lossy();
     git(
         None,
         &[

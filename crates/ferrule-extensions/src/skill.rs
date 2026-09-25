@@ -26,7 +26,7 @@ pub struct SkillCandidate {
 /// The skill directory `path` names inside `checkout` (the root when
 /// `None`), which must hold a `SKILL.md` and stay inside the checkout.
 pub fn skill_dir_in(checkout: &Path, path: Option<&str>) -> Result<PathBuf> {
-    let root = checkout.canonicalize()?;
+    let root = dunce::canonicalize(checkout)?;
     let rel = path.unwrap_or("").trim_matches('/');
     let bad = || {
         refused(format!(
@@ -37,7 +37,7 @@ pub fn skill_dir_in(checkout: &Path, path: Option<&str>) -> Result<PathBuf> {
     if Path::new(rel).is_absolute() {
         return Err(bad());
     }
-    let dir = root.join(rel).canonicalize().map_err(|_| bad())?;
+    let dir = dunce::canonicalize(root.join(rel)).map_err(|_| bad())?;
     if !dir.starts_with(&root) || !dir.join("SKILL.md").is_file() {
         return Err(bad());
     }
@@ -78,7 +78,9 @@ pub fn inspect(dir: &Path) -> Result<SkillCandidate> {
             continue;
         }
         let t = fs::read_to_string(&file).unwrap_or_default();
-        findings.extend(scan::scan_skill_file(&name, &rel.to_string_lossy(), &t));
+        // `/` on every OS: the owner reads it next to SKILL.md's own links.
+        let rel: Vec<_> = rel.iter().map(|c| c.to_string_lossy()).collect();
+        findings.extend(scan::scan_skill_file(&name, &rel.join("/"), &t));
     }
     Ok(SkillCandidate {
         name,

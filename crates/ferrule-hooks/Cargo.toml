@@ -5,6 +5,7 @@ edition = "2021"
 description = "Lifecycle hooks: command hooks, [hooks] config, workspace trust, the audit log"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
 tokio = { workspace = true }

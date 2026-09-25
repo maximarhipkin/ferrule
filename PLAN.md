@@ -2726,3 +2726,103 @@ flagged server as active. The suspension is now recorded before the
 unload. The test is unchanged, because its "status is already Suspended once the tools are
 gone" assertion is exactly the ordering guard. Stress run of the test
 binary, 10 in parallel × 8: 3/80 failures before the fix, 0/80 after.
+
+### 2026-09-25 — batch CI pass: M11–M19 on macOS and Windows (Devi, Opus 5.5)
+
+Branch `ci-fix-3os`, cut from main at 0d091af, PR #11 (not merged). This is the 3-OS pass
+M12–M19 deferred. On 0d091af, CI (run 36070309686) was red on macOS, Windows and
+the ubuntu e2e step. **Last completed green run: 36071977256 on 092873a (also green: PR run 36072883759 on 32cd8e6), green on ubuntu-24.04
+(555 passed, e2e included), macos-14 (552 passed) and windows-latest (521 passed); 2
+ignored on each, both pre-existing.** The counts differ because of `#[cfg(unix)]` gates
+that already existed. This pass adds no `cfg` gate (one `cfg!(windows)` condition, below), and no test was ignored or loosened.
+
+**Failures and fixes:**
+- **Windows `\\?\` paths.** `std::fs::canonicalize` gives verbatim paths on Windows.
+  They reached git (a clone couldn't create its work tree), python (graders got
+  `C:\\?\\D:\\…`), cmd.exe and the owner's screen. Every `canonicalize` in the workspace
+  now goes through `dunce::canonicalize`, which is std's on every other OS, so a
+  one-sided swap can't break the comparisons between paths. `git.rs` also simplifies
+  a clone destination and cwd it's handed. Kept on std: `doctor.rs`, which compares two
+  std-canonical paths and shows neither, and the Linux-only sandbox code.
+- **Skill scan findings named `references\guide.md` on Windows.** They now use `/` on
+  every OS, because the owner reads them next to SKILL.md's own links.
+- **macOS: the always-blocking Stop hook test saw 1 payload instead of 4.** The test
+  hook named its files with `date +%s%N`, and BSD date has no `%N`, so four runs in the
+  same second wrote one file. The hook did run four times. The test hook now names
+  them by count; the assertion is unchanged.
+- **e2e `setup_wizard.py`** didn't know the wizard's MCP prompt, or the browser prompt
+  that shows only when Chrome and agent-browser are present. It knows both now.
+- **Uncovered once `\\?\` was gone:** `git_commands_must_live_in_the_checkout`
+  expected `root/bin/run` with `/` joined in. It matched on Windows only because
+  `PathBuf::push` normalises separators after a verbatim prefix. Also, rename-api's
+  reference `solve.sh` compared a Python `glob` result to `shop/__init__.py`, and glob
+  gives `shop\__init__.py` on Windows. Neither the task, the grader nor the mock changed.
+- **Windows: `lock::tests::concurrent_writers_lose_nothing` failed in a later run**
+  (workflow_dispatch 36072885411 on 32cd8e6, `Access is denied`; PR #11's run on the same
+  sha had passed). The test was right; the bug was real. Windows answers
+  "access denied" for a moment in two places other systems don't. One is creating the
+  extensions lock's `.lk` file while the last holder's delete is still pending (the
+  delete-pending status maps to ERROR_ACCESS_DENIED). The other is renaming over
+  `extensions.lock.json` while something has it open (an antivirus or indexer scan). A
+  daemon and the owner's CLI updating at once could lose an update with an I/O error.
+  Both now wait it out like a held lock, within the lock's 5 s wait. On other OSes a
+  permission error is still an error at once, which makes this `cfg!(windows)` the one
+  platform condition this pass adds. The learning loop's own lock
+  (`ferrule-learn/src/files.rs`) refuses rather than waits, so there the same case
+  would read as "another pass is running", once. It is left as is.
+  **Not yet proven in CI:** both runs on the fix's commit ba5c48e (pull_request
+  36100515458, workflow_dispatch 36100513382) never started a job. GitHub refused them
+  because "recent account payments have failed or your spending limit needs to be
+  increased". So the fix has passed locally on Linux only. It still needs a PR run and
+  at least two dispatch runs on Windows once Actions billing is fixed.
+
+**Now verified by run 36071977256** (the named behaviour's tests passed on that OS):
+- M12: owner locks (`File::try_lock`, the startup sweep); worktree git calls and paths,
+  including removing a worktree on Windows; snapshot copying; `\\?\` in the workspace
+  and git-common-dir checks (via dunce); the e2e test's environment isolation on both.
+- M13: spawning `git` with `GIT_CONFIG_GLOBAL=NUL`; atomic renames of the lock and queue
+  files; the `.lk` lock and its stale takeover; `inside()` and `skill_dir_in` with
+  canonical paths; `replace_dir` over an existing directory; the `python3` MCP fixture
+  on Windows. The list_changed test that was flaky passed on all three.
+- M14: the starter suite's `python3` graders, checks, solve scripts and mock model, run
+  through the platform shell on all three, with every reference solution passing; git
+  fixtures; macOS `/private/var` and Windows `\\?\` temp paths; workspace cleanup; the
+  CLI tests' environment isolation.
+- M15: transcript paths and reading them back; `secure_delete` and the "no trace" test on
+  APFS and NTFS; the pre-M15 fixture migration (the binary fixture survived checkout);
+  `tests/memory.rs` on each OS.
+- M16: the gate's scratch copy (`copy_workspace`) and its cleanup under `%TEMP%` and
+  `/var/folders`; the lock file and atomic renames; the schedule's timezone; `tests/learn.rs`.
+- M17: config following and the trusted-config `canonicalize` comparison; atomic
+  rename over the config; `python3` in the tests and fixtures; the live probe
+  (`tests/mcp_add.rs`) on each OS.
+- M18: macOS entirely (`tests/hooks.rs` and the hook tests in `tests/trust.rs` run
+  there: `sh -c`, exit codes, `killpg`, payload piping, trust and audit files, the
+  canonical workspace key). On Windows, only the trust-file unit tests.
+- M19: the stop file's atomic write; midnight in the zone (`chrono-tz`) with the day cap
+  surviving a restart; `tests/trust.rs` and the gateway tests with their fake model and
+  Bot API servers on each OS. The four hook-ordering tests are unix-only.
+
+**Still unverified, because CI can't reach it:**
+- Telegram itself (the tests use a fake Bot API).
+- The systemd and launchd service install (`service.rs`); there is no Windows service.
+- A real sandbox backend under an agent run. Seatbelt's self-test runs on macOS, but
+  no test runs the agent, an eval, a verifier child, the planning sandbox or an MCP
+  probe under Seatbelt. Windows has no sandbox.
+- Windows hooks: the shell choice (`sh -c`/Git Bash vs `cmd /C`/PowerShell),
+  PowerShell's exit 2 and `taskkill /T /F` of a timed-out tree. `tests/hooks.rs` and the
+  hook tests in `tests/trust.rs` are `#[cfg(unix)]`, so these stay open.
+- Windows process-tree kills in general: the shell tool's timeout and drop tests are
+  `#[cfg(unix)]`, so the shell tool's, the probe's and the MCP server's kills and M19's
+  halt of a running command are untested there.
+- TTY detection and the inline approver on Windows consoles (CI has no TTY).
+- Symlinks and junctions on Windows (the symlink tests are `#[cfg(unix)]`).
+- 0600/0700 permissions on Windows, which are a no-op there.
+- `npx`/`uvx` resolution via `PATHEXT`, since no test runs a registry server.
+- HFS+/FAT mtime granularity (CI is APFS/NTFS).
+- The CA bundle as Node/Python read it on macOS and Windows.
+- `OLLAMA_CONTEXT_LENGTH` for the Ollama app.
+- The e2e wizard and hidden-keys scripts, which are Linux-only in CI.
+
+**Checks:** fmt clean; clippy `-D warnings` clean; `cargo test --workspace` passes locally;
+mock eval: engineered 20/20, naive 11/20, $0.98. It matches the M19 numbers.

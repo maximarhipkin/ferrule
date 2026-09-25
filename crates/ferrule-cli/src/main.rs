@@ -483,7 +483,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         } if !exec.is_empty() => {
             let (cfg, _) = config::Config::load()?;
             let status = shared_sandbox(&cfg)?
-                .command(&exec[0], &exec[1..], &workspace.canonicalize()?)?
+                .command(&exec[0], &exec[1..], &dunce::canonicalize(workspace)?)?
                 .status()?;
             std::process::exit(status.code().unwrap_or(1));
         }
@@ -509,7 +509,7 @@ async fn build_root(
 ) -> Result<(Agent, Option<Arc<ferrule_agents::Supervisor>>)> {
     let (cfg, _) = config::Config::load()?;
     let sandbox = shared_sandbox(&cfg)?;
-    let workspace = workspace.canonicalize().unwrap_or(workspace);
+    let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     // M19 plan mode starts no MCP server: one can do anything.
     let servers = if trust::is_planning(session_id) {
         Vec::new()
@@ -645,7 +645,7 @@ fn build_agent_from(
     ));
     let profile = HarnessProfile::by_name(&pcfg.profile);
 
-    let workspace = workspace.canonicalize().unwrap_or(workspace);
+    let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let tool_ctx = ToolContext {
         workspace,
         max_output_chars: 30_000,
@@ -887,7 +887,7 @@ fn warn_data_in_workspace(sandbox: &Sandbox, workspace: &Path) {
 /// sandbox — the one case where commands lose write access to the
 /// workspace root. Seatbelt denies by rule and has no such limit.
 fn data_in_workspace(sandbox: &Sandbox, workspace: &Path) -> Option<PathBuf> {
-    let data = config::data_dir().ok()?.canonicalize().ok()?;
+    let data = dunce::canonicalize(config::data_dir().ok()?).ok()?;
     (cfg!(target_os = "linux") && sandbox.is_active() && data.starts_with(workspace))
         .then_some(data)
 }
@@ -1311,7 +1311,7 @@ async fn gateway_factory(
     Option<Arc<ferrule_agents::Supervisor>>,
 )> {
     let sandbox = shared_sandbox(cfg)?;
-    let workspace = workspace.canonicalize().unwrap_or(workspace);
+    let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     let ledger_sink = ledger::build_sink(cfg);
     let sup = agents::supervisor(
@@ -1415,7 +1415,7 @@ async fn run_gateway(
         router.clone(),
         hub.clone(),
         telegram,
-        workspace.canonicalize().unwrap_or(workspace),
+        dunce::canonicalize(&workspace).unwrap_or(workspace),
     );
     let mut gateway = Gateway::new(router).with_interceptor(Arc::new(trust::OwnerDoor {
         hub,
@@ -1659,7 +1659,7 @@ fn skills_cmd(workspace: PathBuf) {
     if !cfg.enabled {
         println!("skills are off ([skills] enabled = false) — agents load none of these");
     }
-    let workspace = workspace.canonicalize().unwrap_or(workspace);
+    let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let set = discover_skills(&cfg, &workspace);
     println!(
         "{} skill(s), {} offered to the model{}",
@@ -1714,7 +1714,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
             hidden: hidden_paths(),
             ..Default::default()
         });
-    let workspace = workspace.canonicalize()?;
+    let workspace = dunce::canonicalize(workspace)?;
     let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
     let broker = match &cfg {
         Some(cfg) => shared_broker(cfg)?,
@@ -1876,7 +1876,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     let target = candidates
         .into_iter()
         .flatten()
-        .filter_map(|dir| dir.canonicalize().ok())
+        .filter_map(|dir| dunce::canonicalize(dir).ok())
         .find(|dir| {
             let probe = dir.join(&probe_name);
             let writable =

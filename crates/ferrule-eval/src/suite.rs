@@ -148,7 +148,7 @@ impl Suite {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        let dir = dir.canonicalize().unwrap_or(dir);
+        let dir = dunce::canonicalize(&dir).unwrap_or(dir);
         let parsed: SuiteFile =
             toml::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
         let h = parsed.suite;
@@ -333,7 +333,7 @@ rubric = "- it's done"
 "#,
         );
         let s = Suite::load(dir.path()).unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
         assert_eq!(s.kind, SuiteKind::Regression);
         assert_eq!(s.tasks.len(), 2);
         let one = &s.tasks[0];

@@ -5,6 +5,7 @@ edition = "2021"
 description = "ferrule eval: task suites, fixtures, graders, the naive/engineered A/B and its reports"
 
 [dependencies]
+dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 ferrule-tools = { path = "../ferrule-tools" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }

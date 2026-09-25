@@ -183,7 +183,17 @@ impl LockStore {
         tmp.write_all(serde_json::to_string_pretty(&lock)?.as_bytes())?;
         tmp.write_all(b"\n")?;
         tmp.as_file().sync_all()?;
-        tmp.persist(&self.path).map_err(|e| e.error)?;
+        let start = Instant::now();
+        loop {
+            match tmp.persist(&self.path) {
+                Ok(_) => break,
+                Err(e) if transient(&e.error) && start.elapsed() < WAIT => {
+                    tmp = e.file;
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(e) => return Err(e.error.into()),
+            }
+        }
         Ok(out)
     }
 
@@ -192,6 +202,15 @@ impl LockStore {
         p.push(".lk");
         p.into()
     }
+}
+
+/// Windows answers "access denied" for a moment where other systems
+/// don't: creating the `.lk` file while the last holder's delete is still
+/// pending, or renaming over the lock while something (an antivirus or
+/// indexer scan) has it open. Both are waited out like a held lock.
+/// Elsewhere it is a real permission error.
+fn transient(e: &std::io::Error) -> bool {
+    cfg!(windows) && e.kind() == ErrorKind::PermissionDenied
 }
 
 struct Guard(PathBuf);
@@ -209,7 +228,7 @@ impl Guard {
                     let _ = writeln!(f, "{}", std::process::id());
                     return Ok(Self(path));
                 }
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                Err(e) if e.kind() == ErrorKind::AlreadyExists || transient(&e) => {
                     let age = fs::metadata(&path)
                         .and_then(|m| m.modified())
                         .ok()

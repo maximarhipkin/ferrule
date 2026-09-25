@@ -411,7 +411,7 @@ fn an_untrusted_workspace_hook_does_not_run_and_the_owner_is_told_until_trusted(
     assert!(texts(&out).1.contains("asks the owner at a terminal"));
     // The owner trusts it (as `hooks trust` does after the prompt).
     let n = ferrule_hooks::TrustStore::in_data_dir(&home.join("data"))
-        .trust(&work.canonicalize().unwrap())
+        .trust(&dunce::canonicalize(&work).unwrap())
         .unwrap();
     assert_eq!(n, 1);
     let (_, err) = run_ok(home, &["run", "go"]);
@@ -492,7 +492,7 @@ fn a_stop_hook_that_always_blocks_cannot_loop_forever() {
     let dir = home_with(
         &url,
         r#"[[hooks.Stop]]
-command = "cat > {out}/stop-$(date +%s%N).json; echo 'write the changelog first' >&2; exit 2"
+command = "cat > {out}/stop-$(ls {out} | wc -l | tr -d ' ').json; echo 'write the changelog first' >&2; exit 2"
 "#,
     );
     let home = dir.path();
