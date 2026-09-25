@@ -359,6 +359,22 @@ that convention yet — ask before introducing one).
     once. The served model is in the ledger, caps, the audit log and
     `/status`. `ferrule doctor --ping-models`, `ferrule eval --model`.
     **Decisions for Max and open edges:** see the M21 session-log entry.
+  - **M19c — live-bot fixes**: **built** (2026-09-25, parts 1–3 on branch
+    `m19c-live-fixes`, PR to main open, not merged, to ship as 0.2.1; see
+    the M19c session-log entry). Design, as-built notes, the owner's
+    "doesn't answer" checklist and the exact messages:
+    `docs/m19c-live-fixes.md`.
+    - Log default `warn,<ferrule crates>=info`, with `without_url()` on
+      every HTTP error.
+    - 409 episodes are told once after `[health] telegram_conflict_secs`
+      (60), with recovery, and exposed through `Channel::problem()`.
+    - A webhook is deleted at start, keeping pending updates.
+    - Captions and non-text messages; ignored chats warned hourly.
+    - `CoreError::plain_words()` and `after_attempts()`, and the lane's
+      rate-limit countdown.
+    - Doctor's webhook, second-gateway (`health::running_gateways`) and
+      `:free` checks; the logs command in doctor and status.
+    **Decisions for Max:** see the M19c session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): parallel read-only tool calls, provider streaming
@@ -3046,3 +3062,73 @@ audit.
 - macOS and Windows: the locked write and its rename retry, and the
   `tests/models.rs` binaries (fake servers, gateway kill).
 - setup's new steps in a real pty on anything but Linux.
+
+### 2026-09-25 — M19c live-bot fixes: the owner never guesses why the bot doesn't answer (Devi, Opus 5.5)
+
+A live bot stayed silent, and the owner had no way to learn why. M19c makes
+every reason reach the owner in Telegram, or show in `/status`, `ferrule
+status` and `ferrule doctor`. The design, the as-built notes, the owner's
+checklist and the exact messages are in `docs/m19c-live-fixes.md`. The
+branch is `m19c-live-fixes`, cut from `bbd4c58` (main at 0.2.0 with M21).
+The PR to `main` is open and not merged. It is to ship as 0.2.1; the version
+isn't bumped. Everything ran against a fake Bot API and mock models.
+
+**Commits:**
+- `f904c30` design.
+- `0744ee7` part 1, the Telegram adapter and the log default:
+  - the default log filter;
+  - `without_url()` on the provider and MCP HTTP errors;
+  - the webhook is deleted at start, and when a 409 names it;
+  - 409 episodes, with `[health] telegram_conflict_secs` and
+    `Channel::problem()`;
+  - captions and non-text messages;
+  - ignored chats warned once an hour.
+- `548dcaf` part 2, provider failures:
+  - `CoreError::plain_words()` and `after_attempts()`;
+  - the lane's rate-limit countdown in `/status` and the busy notice;
+  - OpenRouter's real 404/429 bodies through the adapter.
+- part 3, doctor and status:
+  - doctor's webhook, second-gateway and `:free` checks;
+  - the logs command in doctor and `ferrule status`;
+  - no color codes when stderr isn't a terminal;
+  - `tests/live_fixes.rs` (8 end-to-end tests through the real binary);
+  - the docs.
+
+**Checks (part 3, before merging main):**
+- fmt is clean, and so is clippy with `-D warnings`.
+- `cargo test --workspace`: 635 passed, 0 failed, 2 ignored, in two full
+  runs in a row.
+- One earlier full run saw M21's
+  `a_sub_agent_runs_on_a_named_connected_model_and_still_counts_toward_its_trees_budget`
+  (`tests/models.rs`) fail once under load, and pass in the next three runs.
+  It isn't touched here. Watch it in CI.
+
+**Eval** (mock, `ferrule eval run evals/starter --variant ab`, all 20 tasks):
+- pass rate: engineered 20/20, naive 11/20, +45 pts;
+- usage: 150 calls, 951.5k input + 6.2k output tokens;
+- cost: $0.98 ($0.53 / $0.45).
+
+**Decisions for Max to confirm:**
+- 409 threshold: 60 s (`[health] telegram_conflict_secs`). The same length
+  of clean polling ends the episode.
+- A webhook on the bot is deleted automatically at start, pending updates
+  kept. The owner is told its host, never its path.
+- Log default: `warn` from everything and `info` from ferrule's crates for
+  the gateway. Other commands keep errors only.
+- An ignored chat still gets the "This bot is private…" reply. The log warns
+  once an hour per chat.
+- A 404 with no tool endpoint isn't retried or failed over, because another
+  try on the same model can't help.
+- Doctor counts gateways on this machine only. A gateway on another machine
+  shows up only as the 409.
+
+**Open edges:**
+- Voice transcription: what it would take is in the design doc.
+- Photos for vision models.
+- On Windows, doctor sees a second gateway only through the running marker.
+
+**Unverified:**
+- The logs command against a real systemd user unit.
+- A real OpenRouter account and a real bot.
+- macOS's `ps` scan and the end-to-end tests on macOS and Windows, until CI
+  runs.

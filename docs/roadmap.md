@@ -433,6 +433,27 @@ the phone, pins a chat and a task to the other, and a sub-agent runs on a
 third; each call's model shows in the ledger, and an outage moves the turn
 to the fallback with one message.
 
+### M19c — live-bot fixes
+
+**Status.** Built (`docs/m19c-live-fixes.md`; PR open; ships as 0.2.1).
+Found on a live bot that stayed silent. Every reason it doesn't answer is
+now told to the owner in Telegram, or shown by `/status`, `ferrule
+status` and `ferrule doctor`:
+- The gateway logs warn plus info from ferrule, with no token in any line.
+- A 409 lasting a minute is told once, naming both causes, and its end too.
+- A webhook on the bot is removed at start, keeping waiting messages.
+- A caption becomes the text; a voice message, photo or file gets a plain
+  reply.
+- An ignored chat is warned once an hour.
+- OpenRouter's no-tool-endpoint 404 and free-pool 429 come out in plain
+  words, and a rate-limit wait counts down.
+- Doctor warns about a webhook, a second gateway and a `:free` model, and
+  prints where the service logs are.
+
+**Done means.** An owner whose bot doesn't answer finds the reason in the
+chat, or by going /status → `ferrule status` → `ferrule doctor` → the
+journal, without reading code.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

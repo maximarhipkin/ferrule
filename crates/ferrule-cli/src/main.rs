@@ -388,6 +388,8 @@ fn main() -> Result<()> {
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
+                // No color codes in a journal or a log file (M19c).
+                .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
                 .with_filter(log_filter(matches!(cli.cmd, Cmd::Gateway { .. }))),
         )
         .with(

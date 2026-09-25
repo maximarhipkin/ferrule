@@ -5,11 +5,13 @@
 
 use crate::config::{self, Config};
 use anyhow::Result;
-use ferrule_gateway::health::{human, restart_notice, stamp, STATUS_FILE};
+use ferrule_gateway::health::{
+    human, restart_notice, stamp, RunningMarker, MARKER_STALE, RUNNING_FILE, STATUS_FILE,
+};
 use ferrule_gateway::{
     Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, TaskStore,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tracing::field::{Field, Visit};
@@ -200,6 +202,15 @@ const STALE_STATUS: Duration = Duration::from_secs(30);
 /// `ferrule status`: the running gateway's report, from the file it
 /// keeps. False when no gateway is running.
 pub fn status_cmd() -> Result<bool> {
+    let running = status_report()?;
+    // M19c: where to look next, for an installed service.
+    if let crate::service::Status::Installed { .. } = crate::service::status() {
+        println!("\nthe service's logs: {}", crate::service::logs_hint());
+    }
+    Ok(running)
+}
+
+fn status_report() -> Result<bool> {
     let path = dir()?.join(STATUS_FILE);
     let Ok(report) = std::fs::read_to_string(&path) else {
         println!(
@@ -246,6 +257,94 @@ fn report_pid(report: &str) -> Option<u32> {
         .trim()
         .parse()
         .ok()
+}
+
+/// The gateways running on this machine, by pid, this process left out
+/// (M19c): the one whose running marker on this data directory is fresh,
+/// and every `ferrule gateway` in the process list (Linux and macOS).
+pub fn running_gateways() -> Vec<u32> {
+    let mut pids = gateway_processes();
+    pids.extend(marker_pid());
+    pids.retain(|p| *p != std::process::id());
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+/// The pid in a fresh running marker, if it's alive.
+fn marker_pid() -> Option<u32> {
+    let path = dir().ok()?.join(RUNNING_FILE);
+    let age = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|m| SystemTime::now().duration_since(m).ok())
+        .unwrap_or_default();
+    let marker: RunningMarker = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+    (age < MARKER_STALE && pid_alive(marker.pid) != Some(false)).then_some(marker.pid)
+}
+
+fn gateway_processes() -> Vec<u32> {
+    #[allow(unused_mut)]
+    let mut out = Vec::new();
+    #[cfg(target_os = "linux")]
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse().ok()) else {
+            continue;
+        };
+        let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<String> = raw
+            .split(|b| *b == 0)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+        if is_gateway(&args) {
+            out.push(pid);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(ps) = std::process::Command::new("ps")
+        .args(["-axo", "pid=,args="])
+        .output()
+    {
+        for line in String::from_utf8_lossy(&ps.stdout).lines() {
+            let mut words = line.split_whitespace();
+            let Some(pid) = words.next().and_then(|p| p.parse().ok()) else {
+                continue;
+            };
+            if is_gateway(&words.map(str::to_string).collect::<Vec<_>>()) {
+                out.push(pid);
+            }
+        }
+    }
+    out
+}
+
+/// A command line running `ferrule gateway`.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn is_gateway(args: &[String]) -> bool {
+    let Some((program, rest)) = args.split_first() else {
+        return false;
+    };
+    let name = Path::new(program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if !matches!(name, "ferrule" | "ferrule.exe") {
+        return false;
+    }
+    let mut rest = rest.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            // The one global flag with a value: `ferrule --config x gateway`.
+            "--config" => {
+                rest.next();
+            }
+            a if a.starts_with('-') => {}
+            a => return a == "gateway",
+        }
+    }
+    false
 }
 
 /// Whether a process with this pid exists; `None` where we can't tell.
@@ -307,6 +406,20 @@ mod tests {
             lines[1].ends_with("ERROR send failed error=boom"),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn a_gateway_is_told_by_its_command_line() {
+        let args = |line: &str| line.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert!(is_gateway(&args("/home/max/.local/bin/ferrule gateway")));
+        assert!(is_gateway(&args("ferrule gateway --provider openrouter")));
+        assert!(is_gateway(&args("ferrule --config my.toml gateway")));
+        assert!(is_gateway(&args("ferrule --config=my.toml gateway")));
+        assert!(!is_gateway(&args("ferrule --config gateway status")));
+        assert!(!is_gateway(&args("ferrule doctor")));
+        assert!(!is_gateway(&args("ferrule status gateway")));
+        assert!(!is_gateway(&args("vim ferrule gateway")));
+        assert!(!is_gateway(&[]));
     }
 
     #[test]

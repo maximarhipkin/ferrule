@@ -20,6 +20,36 @@ The goal: **the owner never has to guess.** Every reason the bot doesn't
 answer is told to the owner in Telegram in plain words, or shown by
 `/status`, `ferrule status` and `ferrule doctor`.
 
+## The bot doesn't answer: a checklist
+
+Check these in order. Each step shows more than the one before.
+
+1. **`/status` in Telegram**, from any allowed chat. If it answers, the
+   gateway is up and polling. Look at what the chat's turn is doing (a
+   tool, "waiting out the model's rate limit, retry 2 in 25 s"), the
+   telegram line (a `409 Conflict since …` under it means another program
+   is getting the bot's messages) and the recent warnings (an ignored chat
+   is named there with its id). No answer at all means the gateway isn't
+   getting messages: go to step 2.
+2. **`ferrule status`** on the machine. It prints the same report from the
+   file the gateway keeps, says so if no gateway is running or if the report
+   is stale (a wedged process), and prints where the service's logs are.
+3. **`ferrule doctor`**. It checks the bot token (`getMe`), whether a webhook
+   is set on the bot (a webhook means Telegram sends the messages elsewhere),
+   how many gateways run on this machine (two on one token take turns, and
+   both get 409s), and whether the model is an OpenRouter `:free` one (shared
+   rate limits, often no tool support).
+4. **The journal**: `journalctl --user -u ferrule -f` for a user service
+   (`journalctl -u ferrule -f` for a system one, the log file on macOS;
+   doctor and `ferrule status` print the right command). With `RUST_LOG`
+   unset the gateway logs warnings from everything and info from ferrule,
+   and no line carries the bot token or a key.
+
+Most of these reach the owner's chat on their own. A lasting 409, a removed
+webhook, a message that isn't text, and a model that has no tool endpoint
+or is rate-limited each get a message in plain words. The exact messages
+are under "As built".
+
 ## Design
 
 ### 1. Logs
@@ -98,7 +128,7 @@ The retry loop already emits `AgentEvent::ProviderRetry { attempt,
 max_attempts, delay_ms, error }`; that is enough, so there is no new event.
 The final error carries how many attempts were made. While a lane sleeps
 out a 429 or a `Retry-After`, the busy notice and `/status` say "waiting
-out the model's rate limit, retry k of n in N s", counting down.
+out the model's rate limit, retry k in N s", counting down.
 
 ### 6. Doctor and status
 
@@ -133,3 +163,128 @@ it in the ledger, a size cap, and the transcript fed in as the text with a
 marker that it was heard, not typed. Photos would need the model's image
 input, which `ChannelCapabilities::attachments` and `Attachment` already
 anticipate but no channel fills yet.
+
+## As built
+
+Three parts: the Telegram adapter and the log default (part 1), provider
+failures (part 2), and doctor, status and the end-to-end tests (part 3).
+
+### What the owner sees in Telegram
+
+A webhook found at start (or named by a 409) and removed:
+
+> Your bot had a webhook set (to example.com), so Telegram was sending its
+> messages there instead of to me. I removed it so I can receive them;
+> messages already waiting at Telegram were kept. If another service needs
+> that webhook, it and ferrule can't share this bot token: give one of them
+> its own bot from @BotFather.
+
+A webhook that couldn't be removed:
+
+> Your bot has a webhook set (to example.com), so Telegram sends its
+> messages there instead of to me, and I couldn't remove it: {error}.
+> Remove it with `ferrule setup` → Telegram, or stop the service that set
+> it.
+
+409s lasting `[health] telegram_conflict_secs` (60 s), once per episode:
+
+> I'm not getting this bot's messages: Telegram has refused them to me for
+> 1 min (409 Conflict: "Conflict: terminated by other getUpdates request;
+> make sure that only one bot instance is running"). The cause: another
+> program is fetching this bot's messages with the same token — most likely
+> a second ferrule gateway (another machine, an old service, a terminal left
+> running) or another bot program. Less likely: a webhook set on the bot (I
+> remove one when I find it). Stop the other one and I'll pick up again by
+> myself. `ferrule doctor` on each machine shows whether a gateway runs
+> there.
+
+When the 409 names a webhook, the two causes swap: "a webhook is set on
+the bot, so Telegram sends its messages there (I tried to remove it and
+couldn't)", then "another program polling with this bot's token".
+
+When polling has been clean for as long again:
+
+> I'm getting this bot's messages again: the 409 Conflict cleared (it
+> lasted 3 min). Messages the other program fetched meanwhile went to it,
+> not to me.
+
+A message with no text (kind: voice message, video message, audio file,
+photo, GIF, video, sticker, file; one reply per album):
+
+> I got your voice message, but I can only read text for now, so I don't
+> know what's in it. Please type your message instead.
+
+A caption goes to the agent as the text, followed by: "[The photo attached
+to this message wasn't read: ferrule reads only text for now.]"
+
+A chat not in `telegram_allowed_chats` hears, as before M19c: "This bot is
+private. Your chat id is {chat} — add it to telegram_allowed_chats in the
+ferrule config, or run `ferrule setup`." The log gets one warning per chat
+per hour, and `/status` lists it under recent warnings.
+
+A model with no tool endpoint:
+
+> I couldn't reply: this model has no endpoint on OpenRouter that supports
+> tools, and ferrule needs tools. Pick another model (a `:free` one is often
+> the cause): /model here, or `ferrule model default`.
+>
+> The error: provider error: HTTP 404 Not Found: {"error":{"code":404,…}}
+
+A 429 on a free model, after the retries:
+
+> I couldn't reply: the model provider is rate-limiting us (HTTP 429). This
+> is OpenRouter's shared pool for free models, which everyone on a `:free`
+> model draws from. I tried 4 times before giving up. Try again in a few
+> minutes, or use the paid model id (without `:free`) or set `[models]
+> fallback` so another model answers when this one is busy.
+>
+> The error: provider temporarily unavailable: HTTP 429 Too Many Requests: … (tried 4 times)
+
+A paid model's 429 leaves out the sentence about the free pool. The raw
+error is clipped to 400 characters.
+
+While the wait runs, a message sent to the busy chat hears "Busy for 12 s,
+waiting out the model's rate limit, retry 2 in 18 s; your message is queued
+— /stop to cancel it.", and `/status` shows the same activity line counting
+down.
+
+### Doctor and status
+
+- `ferrule doctor`'s live Telegram check calls `getMe` and
+  `getWebhookInfo`. A webhook is a warning naming its host, never its path,
+  with the fix.
+- It warns when two or more ferrule gateways run on this machine, naming
+  their pids. It finds them from the process list (`/proc` on Linux, `ps`
+  on macOS), plus the pid in a fresh running marker. On Windows only the
+  marker counts.
+- It warns about a primary, fallback or other configured model ending in
+  `:free`.
+- For an installed service, doctor and `ferrule status` print the command
+  for its logs.
+- The gateway writes log lines without color codes when stderr isn't a
+  terminal, so the journal stays readable.
+
+### Tests
+
+`crates/ferrule-cli/tests/live_fixes.rs` runs the real `ferrule` binary
+against a mock Bot API and a mock model that answers with OpenRouter's real
+404 and 429 bodies. It covers:
+
+- the 409 episode told once, shown by `/status` and `ferrule status`, and
+  its end;
+- the webhook removed at start, and doctor's webhook warning;
+- voice, album and caption messages;
+- an ignored chat in `ferrule status`;
+- both provider errors reaching the chat, with the countdown in `/status`;
+- no log line carrying the token or a color code;
+- doctor's two-gateways warning (Linux and macOS).
+
+Unit tests cover each piece in its crate.
+
+### Not verified
+
+- The logs command against a real systemd user unit: the tests have no
+  systemd.
+- A real OpenRouter account and a real Telegram bot: only their recorded
+  bodies are used.
+- The macOS `ps` scan runs only in CI.
