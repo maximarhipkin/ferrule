@@ -600,7 +600,7 @@ const PRESETS: &[Preset] = &[
         key_url: "https://console.groq.com/keys",
     },
     Preset {
-        label: "Anthropic (Claude, through its OpenAI-compatible endpoint)",
+        label: "Anthropic (Claude, native Messages API)",
         name: "anthropic",
         base_url: "https://api.anthropic.com/v1",
         key_env: "ANTHROPIC_API_KEY",
@@ -753,9 +753,9 @@ async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
 }
 
 const ANTHROPIC_NOTE: &str =
-    "Ferrule reaches Claude through Anthropic's OpenAI-compatible endpoint. \
-     That works for chat and tools, but loses prompt caching (every turn pays full input price), \
-     extended-thinking output and PDF input. A native Anthropic driver is planned.";
+    "Ferrule talks to Claude through Anthropic's own Messages API (`api = \"anthropic\"`): \
+     prompt caching is on, so a long conversation's repeated prefix is billed at the cached rate. \
+     Extended thinking is off unless you set `thinking` on the provider or model.";
 
 /// `name` as the default: `default_provider`, and a `[models] default`
 /// that would override it goes.
@@ -1054,6 +1054,11 @@ fn write_provider(root: &mut dyn TableLike, np: &NewProvider) -> Result<()> {
     put(p, "api_key_env", np.key_env.as_str());
     put(p, "model", np.model.as_str());
     put(p, "profile", np.profile.as_str());
+    // M23: a native driver is written down, so the file says what runs.
+    let api = ferrule_providers::infer_api(&np.base_url);
+    if api != ferrule_providers::Api::Chat {
+        put(p, "api", api.to_string().as_str());
+    }
     Ok(())
 }
 
@@ -2012,6 +2017,7 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferrule_providers::Api;
 
     fn target(dir: &Path, text: &str) -> Target {
         let path = dir.join("sub/config.toml");
@@ -2020,6 +2026,21 @@ mod tests {
             std::fs::write(&path, text).unwrap();
         }
         Target::load(path).unwrap()
+    }
+
+    #[test]
+    fn the_anthropic_preset_writes_the_native_driver_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = target(dir.path(), "");
+        for preset in ["anthropic", "openai"] {
+            let p = PRESETS.iter().find(|p| p.name == preset).unwrap();
+            write_provider(t.root(), &NewProvider::from_preset(p)).unwrap();
+        }
+        t.save().unwrap();
+        let cfg = t.config().unwrap();
+        assert_eq!(cfg.providers["anthropic"].api, Some(Api::Anthropic));
+        assert_eq!(cfg.providers["openai"].api, None);
+        assert_eq!(cfg.providers["openai"].api(), Api::Chat);
     }
 
     #[test]

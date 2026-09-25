@@ -246,10 +246,13 @@ async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client,
     for name in names {
         let p = &cfg.providers[name];
         let is_default = Some(name.as_str()) == default;
+        // M23: which driver talks to it, and whether the config says so.
         let label = format!(
-            "{name}{} · {}",
+            "{name}{} · {} · {} api ({})",
             if is_default { " (default)" } else { "" },
-            p.model
+            p.model,
+            p.api(),
+            if p.api.is_some() { "set" } else { "inferred" }
         );
         let broken = |r: &mut Report, text: String| {
             if is_default {

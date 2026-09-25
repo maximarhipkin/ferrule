@@ -38,6 +38,8 @@ pub struct ModelRow {
     pub key_env: String,
     pub key_present: bool,
     pub profile: String,
+    /// M23: `anthropic (inferred)`, `chat (set)`.
+    pub driver: String,
     pub context_window: usize,
     pub pricing: Option<ProviderPricing>,
     pub price_source: Option<String>,
@@ -144,6 +146,7 @@ impl Models {
                     key_present,
                     key_env: e.key_env.clone(),
                     profile: e.profile.clone(),
+                    driver: e.driver(),
                     context_window: e.harness().context_window,
                     pricing: e.pricing,
                     price_source: e.price_source.clone(),
@@ -577,7 +580,7 @@ pub async fn test_entry_with(e: &Entry, key: Option<String>) -> TestOutcome {
     let Some(key) = key.filter(|k| !k.is_empty()) else {
         return fail(e.no_key());
     };
-    let client = OpenAiCompatProvider::new(e.provider.clone(), &e.base_url, key, &e.model);
+    let client = e.client(key);
     let req = CompletionRequest {
         messages: vec![Message::user("Reply with the single word OK.")],
         tools: vec![],

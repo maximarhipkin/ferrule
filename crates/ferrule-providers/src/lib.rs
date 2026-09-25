@@ -78,6 +78,19 @@ pub fn infer_api(base_url: &str) -> Api {
     }
 }
 
+impl serde::Serialize for Api {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Api {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Api::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Anthropic's `thinking` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Thinking {
@@ -114,6 +127,32 @@ impl std::fmt::Display for Thinking {
             Thinking::Adaptive => f.write_str("adaptive"),
             Thinking::Disabled => f.write_str("disabled"),
             Thinking::Budget(n) => write!(f, "{n}"),
+        }
+    }
+}
+
+/// `thinking = "adaptive"`, `"disabled"`, or a budget: `thinking = 8000`.
+impl<'de> serde::Deserialize<'de> for Thinking {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Word {
+            Tokens(u64),
+            Text(String),
+        }
+        let text = match Word::deserialize(d)? {
+            Word::Tokens(n) => n.to_string(),
+            Word::Text(t) => t,
+        };
+        Thinking::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
+impl serde::Serialize for Thinking {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Thinking::Budget(n) => s.serialize_u32(*n),
+            other => s.serialize_str(&other.to_string()),
         }
     }
 }
@@ -184,5 +223,31 @@ mod tests {
         assert_eq!(Thinking::parse("8000"), Ok(Thinking::Budget(8000)));
         assert!(Thinking::parse("100").is_err());
         assert!(Thinking::parse("lots").is_err());
+    }
+
+    #[test]
+    fn config_words_deserialize() {
+        #[derive(serde::Deserialize)]
+        struct C {
+            api: Api,
+            thinking: Thinking,
+        }
+        let c: C =
+            serde_json::from_value(serde_json::json!({"api": "anthropic", "thinking": 8000}))
+                .unwrap();
+        assert_eq!(
+            (c.api, c.thinking),
+            (Api::Anthropic, Thinking::Budget(8000))
+        );
+        let c: C =
+            serde_json::from_value(serde_json::json!({"api": "chat", "thinking": "adaptive"}))
+                .unwrap();
+        assert_eq!((c.api, c.thinking), (Api::Chat, Thinking::Adaptive));
+        let e =
+            serde_json::from_value::<C>(serde_json::json!({"api": "messages", "thinking": "off"}))
+                .err()
+                .unwrap()
+                .to_string();
+        assert!(e.contains("\"responses\""), "{e}");
     }
 }

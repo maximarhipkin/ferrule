@@ -387,6 +387,7 @@ fn the_dry_run_lists_every_run_and_a_worst_case_against_the_caps() {
             input: 1.0,
             cached_input: 0.1,
             output: 5.0,
+            cache_write: None,
         }),
         caps: Caps {
             max_usd: Some(5.0),

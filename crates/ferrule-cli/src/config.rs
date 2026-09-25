@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
+use ferrule_providers::{Api, DriverOptions, Thinking};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -22,6 +23,25 @@ pub struct ProviderConfig {
     pub price_cached_input_per_mtok: Option<f64>,
     #[serde(default)]
     pub price_output_per_mtok: Option<f64>,
+    /// M23: what a cache write costs. Unset: 1.25 × input on an
+    /// `anthropic` provider (the 5-minute write price), input elsewhere.
+    #[serde(default)]
+    pub price_cache_write_per_mtok: Option<f64>,
+    /// M23: the wire API, `chat` | `anthropic` | `responses`. Unset:
+    /// `anthropic` for api.anthropic.com, `chat` for everything else.
+    #[serde(default)]
+    pub api: Option<Api>,
+    /// M23, `anthropic` only: `"adaptive"`, `"disabled"` or a budget in
+    /// tokens. Unset: the model's default, and no field is sent.
+    #[serde(default)]
+    pub thinking: Option<Thinking>,
+    /// M23: `output_config.effort` (anthropic) or `reasoning.effort`
+    /// (responses). Unset: the model's default.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// M23: the output cap when a call doesn't set one (native drivers).
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     /// More models on the same endpoint and key (M21), besides `model`:
     /// `[providers.X.models."id"]`, each field falling back to the
     /// provider's.
@@ -39,6 +59,11 @@ pub struct ModelConfig {
     pub price_input_per_mtok: Option<f64>,
     pub price_cached_input_per_mtok: Option<f64>,
     pub price_output_per_mtok: Option<f64>,
+    pub price_cache_write_per_mtok: Option<f64>,
+    /// M23: the driver settings, over the provider's.
+    pub thinking: Option<Thinking>,
+    pub effort: Option<String>,
+    pub max_tokens: Option<u32>,
     /// Where the prices came from when ferrule wrote them (M22): "openrouter
     /// catalog 2026-09-25". Unset: set by hand, and never overwritten.
     pub price_source: Option<String>,
@@ -60,6 +85,43 @@ pub struct ModelsConfig {
     /// `ferrule model catalog` read prices from when no connected provider
     /// is OpenRouter. Unset: OpenRouter's; "": none.
     pub catalog_url: Option<String>,
+}
+
+impl ProviderConfig {
+    /// The wire API: as written, else inferred from `base_url`.
+    pub fn api(&self) -> Api {
+        self.api
+            .unwrap_or_else(|| ferrule_providers::infer_api(&self.base_url))
+    }
+
+    /// The driver settings for `model`: its own, else the provider's.
+    pub fn driver_options(&self, model: &str) -> DriverOptions {
+        let mc = self.models.get(model);
+        DriverOptions {
+            thinking: mc.and_then(|m| m.thinking).or(self.thinking),
+            effort: mc
+                .and_then(|m| m.effort.clone())
+                .or_else(|| self.effort.clone()),
+            max_tokens: mc.and_then(|m| m.max_tokens).or(self.max_tokens),
+        }
+    }
+
+    /// A driver for `model` on this provider.
+    pub fn client(
+        &self,
+        name: &str,
+        key: impl Into<String>,
+        model: &str,
+    ) -> std::sync::Arc<dyn ferrule_core::provider::Provider> {
+        ferrule_providers::build(
+            self.api(),
+            name,
+            &self.base_url,
+            key,
+            model,
+            self.driver_options(model),
+        )
+    }
 }
 
 fn default_profile() -> String {
