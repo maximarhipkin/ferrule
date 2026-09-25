@@ -8,6 +8,7 @@
 use super::http::Request;
 use super::Ctx;
 use crate::config::Config;
+use crate::model_eval;
 use crate::models::catalog;
 use crate::models::routing_admin;
 use crate::models::Retire;
@@ -94,8 +95,9 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "usage" => usage(ctx, req),
             "tasks" => tasks(ctx),
             "logs" => logs(ctx, req),
-            "extensions" => extensions(ctx),
+            "extensions" | "settings" => settings_view(ctx),
             "agents" => agents(ctx),
+            "eval" => ok(ctx.evals.view()),
             _ => None,
         };
     }
@@ -109,6 +111,11 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "catalog/fill-prices" => fill_prices(ctx).await,
         "connections/connect" | "connections/disconnect" => connection_op(ctx, path, body).await,
         "tasks/pause" | "tasks/resume" | "tasks/run" | "tasks/delete" => task_op(ctx, path, body),
+        "tasks/schedule" | "tasks/model" => task_edit(ctx, path, body),
+        "settings/caps" | "mcp/disable" | "mcp/enable" | "mcp/remove" | "skills/disable"
+        | "skills/enable" | "hooks/trust" | "hooks/untrust" => settings_op(ctx, path, body).await,
+        "eval/estimate" | "eval/start" => eval_op(ctx, path == "eval/start", body).await,
+        "eval/cancel" => eval_cancel(ctx, body),
         _ => None,
     }
 }
@@ -231,7 +238,7 @@ pub fn health(ctx: &Ctx) -> Value {
 }
 
 /// `https://hc-ping.com/<uuid>` → `hc-ping.com`.
-fn url_host(url: &str) -> String {
+pub(crate) fn url_host(url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
     host.rsplit('@').next().unwrap_or("").to_string()
@@ -287,7 +294,7 @@ fn spend(hub: &ferrule_trust::Hub, problems: &mut Vec<Value>) -> Value {
         if s.is_some_and(|s| s >= 1.0) {
             problems.push(json!({
                 "what": format!("Today's cap {name} is used up: runs stop until tomorrow."),
-                "fix": "Raise it in [trust] of the config, or wait for the day to turn.",
+                "fix": "Raise it under Edit caps below (or /caps in Telegram), or wait for the day to turn.",
                 "section": "usage",
             }));
         }
@@ -760,6 +767,80 @@ async fn fill_prices(ctx: &Ctx) -> Answer {
     }
 }
 
+// ---- Evaluating a candidate (M24 §2) -------------------------------------
+
+/// The estimate, and on `start` (after the confirm) the run in the
+/// background: `{model, provider?, suite: smoke|starter}`.
+async fn eval_op(ctx: &Ctx, start: bool, body: &Value) -> Answer {
+    let (Some(hub), Some(data)) = (&ctx.hub, &ctx.data) else {
+        return missing("the trust hub");
+    };
+    let Some(cfg) = config(ctx) else {
+        return missing("the config");
+    };
+    let model = need!(arg(body, "model"));
+    let word = match body.get("provider").and_then(Value::as_str).map(str::trim) {
+        Some(p) if !p.is_empty() && !model.starts_with(&format!("{p}/")) => format!("{p}/{model}"),
+        _ => model.to_string(),
+    };
+    let subset = match model_eval::Subset::parse(
+        body.get("suite").and_then(Value::as_str).unwrap_or("smoke"),
+    ) {
+        Ok(s) => s,
+        Err(e) => return bad(400, format!("{e:#}")),
+    };
+    let mut c = match model_eval::candidate(&cfg, &word, None) {
+        Ok(c) => c,
+        Err(e) => return bad(400, format!("{e:#}")),
+    };
+    if c.pricing.is_none() {
+        if let Some((_, listings)) = listings(ctx, false).await {
+            if let Ok(priced) = model_eval::candidate(&cfg, &word, Some(&listings)) {
+                c = priced;
+            }
+        }
+    }
+    let e = match model_eval::estimate(&cfg, hub, data, c, subset) {
+        Ok(e) => e,
+        Err(e) => return bad(400, format!("{e:#}")),
+    };
+    if !start {
+        return ok(json!({ "estimate": e, "running": ctx.evals.running() }));
+    }
+    if let Some(why) = &e.refused {
+        return bad(400, format!("It can't run now: {why}"));
+    }
+    if ctx.evals.running() {
+        return bad(400, "An eval is already running: wait for it, or cancel it");
+    }
+    need!(confirmed(body, format!("{}Run it?", e.text)));
+    let setup = model_eval::Setup {
+        cfg,
+        data: data.clone(),
+        hub: hub.clone(),
+        estimate: e,
+        by: BY.into(),
+    };
+    match ctx.evals.start(setup) {
+        Ok(()) => ok(
+            json!({ "ok": true, "said": "Started: its progress is below.", "eval": ctx.evals.view() }),
+        ),
+        Err(_) => bad(400, "An eval is already running: wait for it, or cancel it"),
+    }
+}
+
+fn eval_cancel(ctx: &Ctx, body: &Value) -> Answer {
+    if !ctx.evals.running() {
+        return bad(400, "No eval is running.");
+    }
+    need!(confirmed(
+        body,
+        "Cancel the eval? The task running now stops at its next model call; what finished is kept.".into()
+    ));
+    ctx.evals.cancel();
+    ok(json!({ "ok": true, "said": "Cancelling: it stops at the next model call." }))
+}
+
 // ---- Usage --------------------------------------------------------------
 
 #[derive(Default, Clone, Copy)]
@@ -942,6 +1023,38 @@ fn task_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     }
 }
 
+/// A task's schedule (and zone), or its model (`default`: back to the
+/// default).
+fn task_edit(ctx: &Ctx, path: &str, body: &Value) -> Answer {
+    let Some(t) = &ctx.tasks else {
+        return missing("the tasks");
+    };
+    let id = need!(arg(body, "id"));
+    let done = if path == "tasks/schedule" {
+        let schedule = need!(arg(body, "schedule"));
+        let tz = body.get("timezone").and_then(Value::as_str);
+        t.set_schedule(id, schedule, tz, BY)
+    } else {
+        let word = need!(arg(body, "model"));
+        let model = if word == "default" {
+            None
+        } else {
+            let Some(m) = &ctx.models else {
+                return missing("the models");
+            };
+            match m.resolve(word) {
+                Ok(_) => Some(word),
+                Err(why) => return bad(400, format!("{word}: {why}")),
+            }
+        };
+        t.set_model(id, model, BY)
+    };
+    match done {
+        Ok(said) => ok(json!({ "ok": true, "said": said })),
+        Err(e) => bad(400, format!("{e:#}")),
+    }
+}
+
 // ---- Logs ---------------------------------------------------------------
 
 const PAGE: usize = 50;
@@ -1012,62 +1125,97 @@ fn logs(ctx: &Ctx, req: &Request) -> Answer {
 
 // ---- Extensions and agents ---------------------------------------------
 
-/// MCP servers (a command's name or a URL's host, never its env or
-/// headers), skills and hooks. Read-only: they change in the config.
-fn extensions(ctx: &Ctx) -> Answer {
-    let Some(cfg) = config(ctx) else {
+/// The shared settings operations (M24) over this gateway's config,
+/// data dir, hub and workspace.
+fn settings(ctx: &Ctx) -> Option<crate::settings_admin::Settings> {
+    Some(crate::settings_admin::Settings::new(
+        ctx.config_path.clone()?,
+        ctx.data.clone(),
+        ctx.hub.clone(),
+        ctx.workspace.clone(),
+    ))
+}
+
+/// The caps, MCP servers, skills and hooks (M24: each editable). Names,
+/// hosts and file names only: never a server's args, env, headers or URL
+/// path.
+fn settings_view(ctx: &Ctx) -> Answer {
+    let Some(s) = settings(ctx) else {
         return missing("the config");
     };
-    let mcp: Vec<Value> = cfg
-        .mcp
-        .servers
-        .iter()
-        .map(|s| {
-            let target = match &s.url {
-                Some(u) => format!("{} (remote)", url_host(u)),
-                None => std::path::Path::new(&s.command)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            };
-            json!({ "name": s.name, "runs": target })
-        })
-        .collect();
-    let skills: Vec<Value> = if cfg.skills.enabled {
-        let ws = ctx.workspace.clone().unwrap_or_default();
-        crate::discover_skills(&cfg.skills, &ws)
-            .skills
-            .iter()
-            .map(|s| {
-                json!({
-                    "name": s.name,
-                    "description": clip(&s.description, 160),
-                    "scope": format!("{:?}", s.scope).to_lowercase(),
-                })
-            })
-            .collect()
-    } else {
-        Vec::new()
+    match s.view() {
+        Ok(v) => ok(json!(v)),
+        Err(e) => bad(500, format!("{e:#}")),
+    }
+}
+
+async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
+    let Some(s) = settings(ctx) else {
+        return missing("the config");
     };
-    let hooks: Vec<Value> = cfg
-        .hooks
-        .entries()
-        .iter()
-        .map(|(event, h)| {
-            json!({
-                "event": event.name(),
-                "matcher": h.matcher,
-                "command": clip(&h.command, 80),
-            })
-        })
-        .collect();
-    ok(json!({
-        "mcp": mcp,
-        "skills": skills,
-        "skills_enabled": cfg.skills.enabled,
-        "skills_disabled": cfg.skills.disabled,
-        "hooks": hooks,
-    }))
+    let done = match path {
+        "settings/caps" => {
+            let Some(caps) = body.get("caps").and_then(Value::as_object) else {
+                return bad(400, "`caps` is missing");
+            };
+            let mut changes = Vec::new();
+            for (key, v) in caps {
+                let Some(v) = v.as_f64() else {
+                    return bad(400, format!("{key} must be a number"));
+                };
+                changes.push((key.clone(), v));
+            }
+            match s.caps_question(&changes) {
+                Ok(Some(q)) => need!(confirmed(body, q)),
+                Ok(None) => {}
+                Err(e) => return bad(400, format!("{e:#}")),
+            }
+            s.set_caps(&changes, BY)
+        }
+        "mcp/disable" | "mcp/enable" => {
+            let name = need!(arg(body, "name"));
+            let off = path == "mcp/disable";
+            if off {
+                need!(confirmed(
+                    body,
+                    format!("Turn off `{name}`? Running agents lose its tools within seconds.")
+                ));
+            }
+            s.mcp_set_disabled(name, off, BY)
+        }
+        "mcp/remove" => {
+            let name = need!(arg(body, "name"));
+            need!(confirmed(
+                body,
+                format!("Remove `{name}`? Adding it back means `ferrule mcp add` again.")
+            ));
+            s.mcp_remove(name, BY).await
+        }
+        "skills/disable" | "skills/enable" => {
+            let name = need!(arg(body, "name"));
+            let d = s.skill_set_disabled(name, path == "skills/disable", BY);
+            if d.is_ok() {
+                // The skill catalog is in the prompt: chats get a new one.
+                retire(ctx, None);
+            }
+            d
+        }
+        "hooks/trust" => {
+            let sha = need!(arg(body, "sha"));
+            need!(confirmed(
+                body,
+                "These hooks run as you, outside the sandbox, whenever an agent works here. \
+                 Trust the file with exactly this hash?"
+                    .to_string()
+            ));
+            s.hooks_trust(sha, BY)
+        }
+        _ => s.hooks_untrust(BY),
+    };
+    match done {
+        Ok(d) => ok(json!({ "ok": true, "said": d.said, "view": d.view })),
+        Err(e) => bad(400, format!("{e:#}")),
+    }
 }
 
 /// Sub-agents that aren't closed. Read-only.

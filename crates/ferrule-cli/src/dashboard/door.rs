@@ -64,7 +64,7 @@ impl ferrule_gateway::Interceptor for DashboardDoor {
                         .into()
                 }
                 Err(e) => format!(
-                    "Sessions and the tunnel are closed, but the links file didn't write: {e:#}"
+                    "The tunnel is closed, but the links or sessions file didn't write: {e:#}"
                 ),
             });
         }

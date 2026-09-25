@@ -18,6 +18,7 @@ pub enum DashCmd {
         remote: bool,
     },
     /// Revoke every login link and session, in every process
+    #[command(alias = "revoke")]
     Off,
 }
 
@@ -68,6 +69,14 @@ pub async fn cmd(op: Option<DashCmd>) -> Result<()> {
     match op {
         Some(DashCmd::Off) => {
             links.revoke()?;
+            // The file too, so no later start loads a session (the
+            // revocation time alone already refuses them).
+            super::auth::Sessions::beside(
+                &links,
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+            )
+            .clear()?;
             println!("Every dashboard link and session is revoked.");
             if gateway_port().is_some() {
                 println!("The gateway closes its tunnel once it's idle; `/dashboard off` in Telegram closes it now.");

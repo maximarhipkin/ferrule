@@ -70,7 +70,8 @@ struct RunState {
 }
 
 pub struct Hub {
-    cfg: TrustConfig,
+    /// The caps can change while the process runs (M24's page and CLI).
+    cfg: RwLock<TrustConfig>,
     tz: Tz,
     clock: Arc<dyn Clock>,
     meter: Meter,
@@ -105,7 +106,7 @@ impl Hub {
             audit: Audit::new(data.join("trust").join("audit.jsonl")),
             stop: KillSwitch::new(data.join("trust").join("stop")),
             owner: RwLock::new(cfg.owner_chat),
-            cfg,
+            cfg: RwLock::new(cfg),
             tz,
             clock,
             notifier: RwLock::new(None),
@@ -138,8 +139,31 @@ impl Hub {
         self
     }
 
-    pub fn config(&self) -> &TrustConfig {
-        &self.cfg
+    /// The settings as they are now.
+    pub fn config(&self) -> TrustConfig {
+        self.cfg.read().unwrap().clone()
+    }
+
+    /// New caps, live from the next check (M24). Only the six caps and
+    /// `warn_at` change; the zone, the owner and the gates keep what the
+    /// process started with. Refused, changing nothing, when they don't
+    /// validate. `true` when a value changed.
+    pub fn set_caps(&self, new: &TrustConfig) -> Result<bool, String> {
+        let mut cfg = self.cfg.write().unwrap();
+        let next = TrustConfig {
+            max_tokens_per_run: new.max_tokens_per_run,
+            max_usd_per_run: new.max_usd_per_run,
+            max_tokens_per_day: new.max_tokens_per_day,
+            max_usd_per_day: new.max_usd_per_day,
+            max_tokens_per_task: new.max_tokens_per_task,
+            max_usd_per_task: new.max_usd_per_task,
+            warn_at: new.warn_at,
+            ..cfg.clone()
+        };
+        next.validate()?;
+        let changed = *cfg != next;
+        *cfg = next;
+        Ok(changed)
     }
 
     pub fn bound_hosts(&self) -> &[HostPattern] {
@@ -241,7 +265,7 @@ impl Hub {
         let run_id = self.run_id(tree);
         let today = match self.today(task) {
             Ok(t) => Some(t),
-            Err(e) if self.cfg.needs_ledger() => {
+            Err(e) if self.config().needs_ledger() => {
                 let msg = format!(
                     "Stopped: {e}, so the day caps can't be checked. Nothing else was sent to the model."
                 );
@@ -334,7 +358,7 @@ impl Hub {
         today: Option<(Spend, Spend)>,
         task: Option<&str>,
     ) -> (Vec<Over>, Vec<Over>) {
-        let c = &self.cfg;
+        let c = &self.config();
         let mut caps = vec![
             (
                 "max_tokens_per_run",
@@ -459,7 +483,7 @@ impl Hub {
     }
 
     fn warn_text(&self, o: &Over, task: Option<&str>) -> String {
-        let share = (self.cfg.warn_at * 100.0).round();
+        let share = (self.config().warn_at * 100.0).round();
         let unit = match o.unit {
             Unit::Tokens => "token",
             Unit::Usd => "dollar",

@@ -72,6 +72,18 @@ pub enum ModelCmd {
     /// Prices from the catalogs for every connected model without them
     /// (hand-set prices are never touched)
     FillPrices,
+    /// Run the starter suite (or its smoke subset) on a model you're
+    /// considering, after showing what it should cost, under your caps
+    /// (M24): `ferrule model eval openrouter/qwen/qwen3-coder`
+    Eval {
+        reference: String,
+        /// smoke (4 tasks, the default) or starter (all 20)
+        #[arg(long, default_value = "smoke")]
+        suite: String,
+        /// Don't ask before spending
+        #[arg(long)]
+        yes: bool,
+    },
     /// Routing (M25): turns start on a cheap model and move up to a
     /// stronger one when they fail. Alone: the tiers, the last 7 days'
     /// escalations and spend per tier, and a suggested pair with prices
@@ -105,6 +117,14 @@ pub enum RouteCmd {
 }
 
 pub async fn cmd(op: ModelCmd) -> anyhow::Result<()> {
+    if let ModelCmd::Eval {
+        reference,
+        suite,
+        yes,
+    } = &op
+    {
+        return crate::model_eval::cli(reference, suite, *yes).await;
+    }
     let models = shared()?;
     if !matches!(
         op,
@@ -241,6 +261,7 @@ pub async fn cmd(op: ModelCmd) -> anyhow::Result<()> {
             println!("{}", models.fill_prices(&listings, by)?.said);
             return Ok(());
         }
+        ModelCmd::Eval { .. } => unreachable!("handled above"),
     };
     println!("{}", done.said);
     Ok(())

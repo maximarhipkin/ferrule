@@ -492,6 +492,64 @@ fn an_eval_run_sends_no_receipts_pings_heartbeats_or_notices() {
     assert!(!gw.join("status.txt").exists());
 }
 
+/// M24's estimate (`src/model_eval/typical.json`) is the mock's use on
+/// each task: a harness change that moves it fails here, to be measured
+/// again (docs/m24-dashboard-2.md §2). The smoke tasks only, one of each
+/// kind, to keep this quick; paths differ by OS, hence the slack.
+#[test]
+fn the_eval_estimate_still_matches_the_mocks_use() {
+    if !have_python() {
+        return;
+    }
+    let typical: serde_json::Value =
+        serde_json::from_str(include_str!("../src/model_eval/typical.json")).unwrap();
+    let mock = Mock::start();
+    let dir = home(&mock.url);
+    let out = ferrule(
+        dir.path(),
+        &[
+            "eval",
+            "run",
+            suite().to_str().unwrap(),
+            "--tag",
+            "smoke",
+            "--variant",
+            "engineered",
+        ],
+    );
+    drop(mock);
+    let (stdout, stderr) = texts(&out);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    let saved = walk(&dir.path().join("data/eval"))
+        .into_iter()
+        .map(|d| d.join("run.json"))
+        .find(|p| p.is_file())
+        .expect("the run was saved");
+    let run: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(saved).unwrap()).unwrap();
+    let results = run["results"].as_array().unwrap();
+    assert_eq!(results.len(), 4, "{run:#}");
+    let near = |got: u64, want: u64| got.abs_diff(want) <= want / 5 + 200;
+    for r in results {
+        let task = r["task"].as_str().unwrap();
+        let want = &typical["tasks"][task];
+        let t = &r["totals"];
+        let (i, o) = (
+            t["input_tokens"].as_u64().unwrap(),
+            t["output_tokens"].as_u64().unwrap(),
+        );
+        let (wi, wo) = (
+            want["input"].as_u64().unwrap(),
+            want["output"].as_u64().unwrap(),
+        );
+        assert!(
+            near(i, wi) && near(o, wo),
+            "{task}: the mock used {i} in / {o} out, typical.json says {wi} / {wo}: measure it again"
+        );
+        assert_eq!(t["calls"], want["calls"], "{task}");
+    }
+}
+
 /// `home` plus a second provider, `weak`, at a tenth of the price.
 fn routing_home(strong: &str, weak: &str, tiers: bool) -> tempfile::TempDir {
     let home = home(strong);

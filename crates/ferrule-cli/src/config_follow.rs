@@ -143,6 +143,19 @@ impl Follower {
             }
         };
         self.apply_secrets(&manager, &cfg);
+        // M24: skills turned off or on, and new caps, without a restart.
+        if let Some(skills) = manager.skills() {
+            if skills.set_disabled(cfg.skills.disabled.clone()) {
+                tracing::info!("config changed: disabled skills {:?}", cfg.skills.disabled);
+            }
+        }
+        if let Some(hub) = crate::trust::existing_hub() {
+            match hub.set_caps(&cfg.trust) {
+                Ok(true) => tracing::info!("config changed: [trust] caps"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!("[trust] isn't valid, keeping the caps: {e}"),
+            }
+        }
         for change in manager.set_configured(crate::mcp_servers(&cfg)).await {
             tracing::info!("config changed: mcp server {change}");
         }

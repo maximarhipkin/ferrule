@@ -261,6 +261,57 @@ pub enum TrustCmd {
         #[arg(long)]
         since: Option<String>,
     },
+    /// Show the caps, or set some: `--set max_usd_per_day=10` (0 turns one
+    /// off). Raising a cap or turning one off asks first
+    Caps {
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        set: Vec<String>,
+        /// Don't ask before raising a cap
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+/// `ferrule trust caps`: the caps, or new ones through the shared settings
+/// operation (M24).
+fn caps_cmd(set: &[String], yes: bool) -> Result<()> {
+    use crate::settings_admin::{show, Settings};
+    let s = Settings::open(None)?;
+    if set.is_empty() {
+        for c in s.view()?.caps {
+            println!("{:<20} {}", c.key, show(c.key, c.value));
+        }
+        return Ok(());
+    }
+    let mut changes = Vec::new();
+    for kv in set {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| anyhow!("`{kv}`: expected KEY=VALUE"))?;
+        let v: f64 = v
+            .trim()
+            .trim_start_matches('$')
+            .parse()
+            .map_err(|_| anyhow!("`{kv}`: {v} isn't a number"))?;
+        changes.push((k.trim().to_string(), v));
+    }
+    if let Some(q) = s.caps_question(&changes)? {
+        if !yes {
+            if !std::io::stdin().is_terminal() {
+                anyhow::bail!("{q} Run it again with --yes.");
+            }
+            print!("{q} [y/N] ");
+            std::io::stdout().flush()?;
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            if !matches!(line.trim(), "y" | "Y" | "yes") {
+                anyhow::bail!("nothing changed");
+            }
+        }
+    }
+    println!("{}", s.set_caps(&changes, "cli")?.said);
+    println!("a running gateway picks them up within seconds");
+    Ok(())
 }
 
 /// `ferrule stop`: every run in every ferrule process halts at its next
@@ -293,6 +344,9 @@ pub fn stop_cmd(reason: Option<String>, clear: bool, status: bool) -> Result<()>
 }
 
 pub fn cmd(op: TrustCmd) -> Result<()> {
+    if let TrustCmd::Caps { set, yes } = op {
+        return caps_cmd(&set, yes);
+    }
     let (cfg, _) = config::Config::load()?;
     let hub = hub(&cfg)?;
     match op {
@@ -301,6 +355,7 @@ pub fn cmd(op: TrustCmd) -> Result<()> {
                 println!("{line}");
             }
         }
+        TrustCmd::Caps { .. } => unreachable!("handled above"),
         TrustCmd::Audit { since } => {
             let since = since
                 .map(|s| ledger::parse_since(&s, chrono::Utc::now()))
