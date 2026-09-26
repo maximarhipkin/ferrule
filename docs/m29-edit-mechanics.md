@@ -421,9 +421,13 @@ The commit is made with `git add -A -- <agent paths>` and then
 - Settings: `-c user.name/-c user.email` for the committer, `--author` from
   the config, and `-c commit.gpgsign=false` (no pinentry in an unattended
   run).
-- The subject is the request's first line (≤ 72 chars). The body holds the
-  first lines of the answer and a `Ferrule-Auto-Commit: <session>` trailer.
-  `undo` keys on that trailer.
+- The subject is `[agent] ` and the request's first line (clipped at 72
+  chars). The body holds the answer's first 8 lines, a line saying why the
+  run stopped short if it did, and a `Ferrule-Auto-Commit: <session>`
+  trailer. `undo` keys on that trailer.
+- Paths go to git as `:(top,literal)<path>`: root-relative, never a glob.
+- A commit git refuses (a hook, a lock) is followed by `git reset -q --
+  <agent paths>`, so the index is back as the run found it.
 
 ### Git runs in the sandbox, and the repo's hooks apply
 
@@ -453,8 +457,13 @@ session is built, so moving it mid-session breaks every path in the
 transcript. Unattended runs also want their result where the owner looks
 for it. M12 already gives children isolated worktrees.
 
-A detached HEAD in `"current"` mode, or an unborn repo, or a merge or
-rebase in progress: no commit, and the note says why.
+A detached HEAD in `"current"` mode, or a merge, rebase, cherry-pick or
+revert in progress: no commit, and the note says why. Outside a work tree
+or before the first commit there's no snapshot, so no commit and no note.
+A workspace that is a subdirectory of a repo works only where the sandbox
+lets git write the repo's `.git`; otherwise the note carries git's error.
+Sub-agents never commit: they work in their own worktrees, and the root's
+run commits what lands in its workspace.
 
 ### Never pushes
 
@@ -473,10 +482,10 @@ checks that its refs are unchanged after commits and undos.
 Then:
 
 1. Move the branch back with a compare-and-swap:
-   `update-ref HEAD HEAD~1 <sha>`.
-2. Restore each of the commit's files from the parent into the index and
-   the working tree.
-3. Delete the files the commit added.
+   `update-ref HEAD <parent> <sha>`.
+2. Restore each file the commit modified or deleted from the parent into
+   the index and the working tree (`checkout <parent> -- …`).
+3. Remove the files the commit added (`rm -f -- …`).
 
 Edits the owner made elsewhere are untouched. Otherwise it refuses and
 names the reason and the file. Repeated undos walk back successive agent

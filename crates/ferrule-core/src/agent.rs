@@ -2,7 +2,7 @@ use crate::error::CoreError;
 use crate::event::AgentEvent;
 use crate::guard::{unless_halted, Guard, GuardedCall, Verdict as GuardVerdict};
 use crate::history::{result_ref, SEARCH_HISTORY};
-use crate::hooks::{Budget, Inbox, SessionRecall, StopFlag, TurnContext};
+use crate::hooks::{Budget, Inbox, RunEnd, RunObserver, SessionRecall, StopFlag, TurnContext};
 use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch};
 use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
 use crate::message::{Message, ToolCall, Usage};
@@ -280,6 +280,7 @@ pub struct Agent {
     /// block it added.
     turn_context: Option<Arc<dyn TurnContext>>,
     turn_context_last: Option<String>,
+    run_observers: Vec<Arc<dyn RunObserver>>,
     /// What the current run was asked to do: kept verbatim through
     /// compaction, since it's what says when the work is done.
     goal: Option<String>,
@@ -328,6 +329,7 @@ impl Agent {
             memory_due: false,
             turn_context: None,
             turn_context_last: None,
+            run_observers: Vec::new(),
             goal: None,
             messages: Vec::new(),
             usage: Usage::default(),
@@ -445,6 +447,12 @@ impl Agent {
     /// [`TurnContext`].
     pub fn with_turn_context(mut self, context: Arc<dyn TurnContext>) -> Self {
         self.turn_context = Some(context);
+        self
+    }
+
+    /// Adds a [`RunObserver`], called around every run.
+    pub fn with_run_observer(mut self, observer: Arc<dyn RunObserver>) -> Self {
+        self.run_observers.push(observer);
         self
     }
 
@@ -838,9 +846,32 @@ impl Agent {
         self.run_started = Instant::now();
         self.shown
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        let result = self.run_inner(goal, tx).await;
+        let observers = self.run_observers.clone();
+        let session_id = self.session_id();
+        for o in &observers {
+            o.begin(&session_id).await;
+        }
+        let result = self.run_inner(goal, tx.clone()).await;
         if let Some(inbox) = &inbox {
             inbox.end();
+        }
+        for o in &observers {
+            let end = RunEnd {
+                session_id: &session_id,
+                goal,
+                answer: result.as_deref().ok(),
+                incomplete: self.incomplete.as_deref(),
+            };
+            if let Some(text) = o.end(&end).await {
+                self.emit(
+                    &tx,
+                    AgentEvent::Notice {
+                        source: o.name().to_string(),
+                        text,
+                    },
+                )
+                .await;
+            }
         }
         result
     }
@@ -3544,6 +3575,56 @@ mod tests {
             bodies(&seen[0]).last().map(String::as_str),
             Some("User:first")
         );
+    }
+
+    /// Records what it was told (M29: the seam auto-commit uses).
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl RunObserver for Recorder {
+        fn name(&self) -> &str {
+            "recorder"
+        }
+        async fn begin(&self, _session_id: &str) {
+            self.0.lock().unwrap().push("begin".into());
+        }
+        async fn end(&self, run: &RunEnd<'_>) -> Option<String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("end {} -> {:?}", run.goal, run.answer));
+            Some(format!("noted {}", run.goal))
+        }
+    }
+
+    /// Every run is wrapped: begin before the model is called, end with
+    /// the answer, and the note goes out as a Notice after the run.
+    #[tokio::test]
+    async fn run_observers_wrap_every_run() {
+        let rec = Arc::new(Recorder::default());
+        let (agent, _) = seeing_agent(vec![echo("a"), say("done"), say("again")], |_| {});
+        let mut agent = agent.with_run_observer(rec.clone());
+        let (tx, mut rx) = events();
+        agent.run("go", tx.clone()).await.unwrap();
+        agent.run("more", tx).await.unwrap();
+        assert_eq!(
+            *rec.0.lock().unwrap(),
+            [
+                "begin",
+                "end go -> Some(\"done\")",
+                "begin",
+                "end more -> Some(\"again\")"
+            ]
+        );
+        let notices: Vec<_> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                AgentEvent::Notice { source, text } => Some(format!("{source}: {text}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices, ["recorder: noted go", "recorder: noted more"]);
     }
 
     #[tokio::test]

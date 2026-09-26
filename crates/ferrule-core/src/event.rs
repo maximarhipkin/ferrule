@@ -114,4 +114,10 @@ pub enum AgentEvent {
     Error {
         message: String,
     },
+    /// Something a [`crate::RunObserver`] did after the run (M29: an
+    /// auto-commit), for the owner, not the model.
+    Notice {
+        source: String,
+        text: String,
+    },
 }

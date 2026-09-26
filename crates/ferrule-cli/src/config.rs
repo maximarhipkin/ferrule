@@ -233,6 +233,22 @@ pub struct AgentSettings {
     /// How long one linter run may take.
     #[serde(default = "default_lint_timeout_secs")]
     pub lint_timeout_secs: u64,
+    /// M29: end each run that changed files in one git commit of exactly
+    /// the files the agent changed (never the owner's dirty work). Off by
+    /// default; `ferrule undo` / `/undo` take the latest one back.
+    #[serde(default)]
+    pub auto_commit: bool,
+    /// `new`: commit on a `ferrule/auto-…` branch made at the first commit;
+    /// `current`: on the branch HEAD is on.
+    #[serde(default)]
+    pub auto_commit_branch: crate::autocommit::BranchMode,
+    /// `Name <email>`, the author and committer of agent commits.
+    #[serde(default = "default_auto_commit_author")]
+    pub auto_commit_author: String,
+}
+
+fn default_auto_commit_author() -> String {
+    crate::autocommit::DEFAULT_AUTHOR.into()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -258,6 +274,9 @@ impl Default for AgentSettings {
             repo_map_tokens: default_repo_map_tokens(),
             lint: LintMode::Auto,
             lint_timeout_secs: default_lint_timeout_secs(),
+            auto_commit: false,
+            auto_commit_branch: Default::default(),
+            auto_commit_author: default_auto_commit_author(),
         }
     }
 }
@@ -641,6 +660,9 @@ profile = "openai"
 # repo_map_tokens = 1024          # repo map budget in a code repo (tokens); 0 = no map
 # lint = "auto"                   # after an edit, run the project's linter (rustfmt/ruff/gofmt/eslint/tsc) if installed and configured; "off"
 # lint_timeout_secs = 10
+# auto_commit = false            # commit each run's own files (never yours) to git; `ferrule undo` reverts
+# auto_commit_branch = "new"      # "new": a ferrule/auto-* branch; "current": the branch you're on
+# auto_commit_author = "ferrule <ferrule@localhost>"
 
 # [gateway]
 # local = true                              # enable the stdin/stdout channel

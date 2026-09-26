@@ -1,4 +1,5 @@
 mod agents;
+mod autocommit;
 mod browser;
 mod config;
 mod config_follow;
@@ -227,6 +228,12 @@ enum Cmd {
         /// Only say whether it's on
         #[arg(long, conflicts_with = "reason")]
         status: bool,
+    },
+    /// Take back the latest agent commit (`[agent] auto_commit`), if none
+    /// of its files changed since (docs/editing.md)
+    Undo {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
     },
     /// Spending caps, approvals and the kill switch (docs/m19-trust-cost.md)
     Trust {
@@ -612,6 +619,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             }
         },
         Cmd::Eval { op } => eval::cmd(op).await?,
+        Cmd::Undo { workspace } => {
+            let (cfg, _) = config::Config::load()?;
+            let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
+            println!("{}", autocommit::undo(&workspace, shared_sandbox(&cfg)?)?);
+        }
         Cmd::Stop {
             reason,
             clear,
@@ -1027,6 +1039,7 @@ fn build_agent_from(
         )
         .with_guard(guard);
     let lint_sandbox = sandbox.clone();
+    let commit_sandbox = sandbox.clone();
     if let (Some(cmd), false) = (&cfg.agent.verify_command, planning) {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(
@@ -1052,6 +1065,17 @@ fn build_agent_from(
             );
         }
         agent.add_hooks(hooks);
+    }
+    // M29: one commit of the run's own files per run, in the sandbox. A
+    // sub-agent works in its own worktree; its root commits for the tree.
+    if cfg.agent.auto_commit && child.is_none() && !planning {
+        let commit = autocommit::AutoCommit::new(
+            &hooks_workspace,
+            commit_sandbox,
+            &cfg.agent.auto_commit_author,
+            cfg.agent.auto_commit_branch,
+        )?;
+        agent = agent.with_run_observer(Arc::new(autocommit::AutoCommitObserver::new(commit)));
     }
     Ok(agent)
 }
@@ -1372,6 +1396,9 @@ fn spawn_renderer_with(show_reasoning: bool, streamed: bool) -> mpsc::Sender<Age
                     println!("\x1b[33m[stopped: {reason}]\x1b[0m")
                 }
                 AgentEvent::Error { message } => eprintln!("\x1b[31merror: {message}\x1b[0m"),
+                AgentEvent::Notice { source, text } => {
+                    eprintln!("\x1b[90m[{source}] {text}\x1b[0m")
+                }
                 _ => {}
             }
         }
@@ -1523,6 +1550,7 @@ async fn close_tree(sup: &ferrule_agents::Supervisor, root: &str) {
 
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
+    let undo_dir = dunce::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
     let (mut agent, sup) = build_root(provider, workspace, 60, &session_id, "chat").await?;
     // M27: the answer prints as the model writes it.
     let streamed = config::Config::load()
@@ -1555,6 +1583,17 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
         }
         let prompt = line.trim();
         if prompt.is_empty() {
+            continue;
+        }
+        // M29: take back the latest agent commit, without a model call.
+        if prompt == "/undo" {
+            let undone = config::Config::load()
+                .and_then(|(cfg, _)| shared_sandbox(&cfg))
+                .and_then(|sandbox| autocommit::undo(&undo_dir, sandbox));
+            match undone {
+                Ok(said) => println!("\x1b[90m[undo] {said}\x1b[0m"),
+                Err(e) => eprintln!("\x1b[33m[undo] {e}\x1b[0m"),
+            }
             continue;
         }
         let tx = spawn_renderer_with(false, streamed.is_some());
