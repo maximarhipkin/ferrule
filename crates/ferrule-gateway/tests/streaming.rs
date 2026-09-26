@@ -349,7 +349,10 @@ async fn a_long_reply_rolls_over_before_4096_and_the_final_edit_sets_every_part(
 #[tokio::test]
 async fn a_preamble_is_replaced_by_the_answer_and_its_extra_parts_become_an_ellipsis() {
     let bot = Bot::start(Edits::Ok);
-    let preamble: Vec<String> = (0..60)
+    // 80 lines of 90 characters: two messages, and the preview passes
+    // 4000 characters about half a second before the preamble ends, so a
+    // slow runner still gets an edit in after the rollover.
+    let preamble: Vec<String> = (0..80)
         .map(|i| format!("{i:03} {}\n", "y".repeat(85)))
         .collect();
     let script = vec![(preamble, true), (vec!["All done.".into()], false)];
