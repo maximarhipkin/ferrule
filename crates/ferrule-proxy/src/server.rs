@@ -9,6 +9,7 @@
 //! anyone on the path would see the real value.
 
 use crate::ca::Ca;
+use crate::egress::{Denial, EgressPolicy, Source, Verdict};
 use crate::hosts::HostPattern;
 use crate::subst::{Scrubbed, Swaps};
 use crate::upstream::{self, Upstream};
@@ -27,15 +28,23 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use rustls::ClientConfig;
 use rustls_pki_types::ServerName;
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::debug;
 
 pub(crate) type ProxyBody = BoxBody<Bytes, hyper::Error>;
+
+/// Set on every response the egress policy produced, so a client can tell
+/// a refusal from the site's own 403.
+pub const EGRESS_HEADER: &str = "x-ferrule-egress";
+const REPORT_EVERY: Duration = Duration::from_secs(10);
 
 pub(crate) struct Secret {
     pub hosts: Vec<HostPattern>,
@@ -45,9 +54,21 @@ pub(crate) struct Secret {
     pub in_url: bool,
 }
 
+pub(crate) type DenyHook = Arc<dyn Fn(&Denial) + Send + Sync>;
+
 pub(crate) struct Shared {
-    /// Decoded `Proxy-Authorization` credentials a request must carry.
+    /// Decoded `Proxy-Authorization` credentials a request must carry:
+    /// `ferrule:<token>` for commands, `ferrule-tool:<token>` for ferrule's
+    /// own clients.
     pub expected_auth: Vec<u8>,
+    pub tool_auth: Vec<u8>,
+    /// `None`: no policy at all (the pre-M33 proxy, secrets only).
+    pub egress: Option<EgressPolicy>,
+    pub deny_hook: std::sync::RwLock<Option<DenyHook>>,
+    pub denials: AtomicU64,
+    /// When each (source, host, reason) was last reported, so a retry loop
+    /// doesn't flood the ledger. Enforcement isn't rate-limited.
+    pub reported: std::sync::Mutex<HashMap<(Source, String, &'static str), Instant>>,
     pub ca: Ca,
     /// Grows through `Broker::bind`; a tunnel takes its swaps when it opens.
     pub secrets: std::sync::RwLock<Vec<Secret>>,
@@ -57,6 +78,76 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// Counts a denial and hands it to the hook, at most once per 10 s for
+    /// the same source, host and reason.
+    fn report(&self, denial: &Denial) {
+        self.denials.fetch_add(1, Ordering::Relaxed);
+        tracing::info!(
+            "egress denied: {} {} {}:{} ({})",
+            denial.source,
+            denial.method,
+            denial.host,
+            denial.port,
+            denial.reason.as_str()
+        );
+        let key = (denial.source, denial.host.clone(), denial.reason.as_str());
+        {
+            let mut seen = self.reported.lock().unwrap();
+            let now = Instant::now();
+            if seen
+                .get(&key)
+                .is_some_and(|t| now.duration_since(*t) < REPORT_EVERY)
+            {
+                return;
+            }
+            if seen.len() > 1024 {
+                seen.retain(|_, t| now.duration_since(*t) < REPORT_EVERY);
+            }
+            seen.insert(key, now);
+        }
+        let hook = self.deny_hook.read().unwrap().clone();
+        if let Some(hook) = hook {
+            hook(denial);
+        }
+    }
+
+    /// Which client this is, from its proxy credentials.
+    fn source(&self, headers: &HeaderMap) -> Option<Source> {
+        let got = credentials(headers)?;
+        if constant_time_eq(&got, &self.expected_auth) {
+            Some(Source::Command)
+        } else if constant_time_eq(&got, &self.tool_auth) {
+            Some(Source::Tool)
+        } else {
+            None
+        }
+    }
+
+    /// Runs the policy on one request. `Ok(None)`: no policy, or the
+    /// upstream proxy connects; `Ok(Some(addrs))`: connect to exactly these.
+    async fn vet(
+        &self,
+        source: Source,
+        method: &str,
+        host: &str,
+        port: u16,
+        upstream: Option<&Upstream>,
+    ) -> Result<Option<Vec<SocketAddr>>, Result<Denial, String>> {
+        let Some(policy) = &self.egress else {
+            return Ok(None);
+        };
+        let via = upstream.is_some_and(|u| !u.bypasses(host));
+        match policy.vet(source, method, host, port, via).await {
+            Verdict::Addrs(a) => Ok(Some(a)),
+            Verdict::Upstream => Ok(None),
+            Verdict::Deny(d) => {
+                self.report(&d);
+                Err(Ok(d))
+            }
+            Verdict::Unresolved(e) => Err(Err(e)),
+        }
+    }
+
     /// Every secret bound to `host`, or `None` when the tunnel stays blind.
     fn swaps_for(&self, host: &str) -> Option<Arc<Swaps>> {
         let pairs: Vec<_> = self
@@ -99,7 +190,7 @@ async fn handle(
     mut req: Request<Incoming>,
     shared: Arc<Shared>,
 ) -> Result<Response<ProxyBody>, Infallible> {
-    if !authorized(req.headers(), &shared.expected_auth) {
+    let Some(source) = shared.source(req.headers()) else {
         let mut resp = text(
             StatusCode::PROXY_AUTHENTICATION_REQUIRED,
             "ferrule proxy: credentials required\n",
@@ -109,9 +200,9 @@ async fn handle(
             HeaderValue::from_static("Basic realm=\"ferrule\""),
         );
         return Ok(resp);
-    }
+    };
     if req.method() != Method::CONNECT {
-        return Ok(plain_http(req, shared).await);
+        return Ok(plain_http(req, shared, source).await);
     }
     let Some((host, port)) = connect_target(req.uri()) else {
         return Ok(text(
@@ -119,9 +210,23 @@ async fn handle(
             "ferrule proxy: CONNECT needs host:port\n",
         ));
     };
+    let addrs = match shared
+        .vet(source, "CONNECT", &host, port, shared.upstream.as_ref())
+        .await
+    {
+        Ok(addrs) => addrs,
+        Err(Ok(denial)) => return Ok(deny_tunnel(req, host, denial, shared)),
+        Err(Err(e)) => {
+            return Ok(text(
+                StatusCode::BAD_GATEWAY,
+                &format!("ferrule proxy: {e}\n"),
+            ))
+        }
+    };
     // Connect before answering, so a dead host is a 502 the client can
     // report rather than a tunnel that closes on the first byte.
-    let tcp = match upstream::connect(shared.upstream.as_ref(), &host, port).await {
+    let tcp = match upstream::connect(shared.upstream.as_ref(), &host, port, addrs.as_deref()).await
+    {
         Ok(tcp) => tcp,
         Err(e) => {
             return Ok(text(
@@ -139,7 +244,7 @@ async fn handle(
         };
         let result = match swaps {
             None => blind(client, tcp).await,
-            Some(swaps) => mitm(client, tcp, host.clone(), port, swaps, shared).await,
+            Some(swaps) => mitm(client, tcp, host.clone(), port, addrs, swaps, shared).await,
         };
         if let Err(e) = result {
             debug!("tunnel to {host}:{port} ended: {e:#}");
@@ -153,11 +258,55 @@ async fn blind(mut client: TokioIo<hyper::upgrade::Upgraded>, mut tcp: TcpStream
     Ok(())
 }
 
+/// Answers a refused CONNECT inside the tunnel: TLS with the proxy's CA,
+/// then a 403 that says why on every request. A 403 to the CONNECT itself
+/// gets reduced to "tunnel failed" by most clients, so the model would
+/// never read the reason.
+fn deny_tunnel(
+    mut req: Request<Incoming>,
+    host: String,
+    denial: Denial,
+    shared: Arc<Shared>,
+) -> Response<ProxyBody> {
+    let on_upgrade = hyper::upgrade::on(&mut req);
+    let msg = denial.message("https");
+    tokio::spawn(async move {
+        let client = match on_upgrade.await {
+            Ok(u) => TokioIo::new(u),
+            Err(e) => return debug!("CONNECT {host} upgrade failed: {e}"),
+        };
+        let Ok(cfg) = shared.ca.server_config(&host) else {
+            return;
+        };
+        let Ok(tls) = TlsAcceptor::from(cfg).accept(client).await else {
+            return debug!("denied tunnel to {host}: the client didn't finish TLS");
+        };
+        let svc = service_fn(move |_req: Request<Incoming>| {
+            let msg = msg.clone();
+            async move { Ok::<_, Infallible>(denied(&msg)) }
+        });
+        let _ = http1::Builder::new()
+            .keep_alive(false)
+            .serve_connection(TokioIo::new(tls), svc)
+            .await;
+    });
+    Response::new(empty())
+}
+
+/// The 403 for a refused request.
+fn denied(msg: &str) -> Response<ProxyBody> {
+    let mut resp = text(StatusCode::FORBIDDEN, msg);
+    resp.headers_mut()
+        .insert(EGRESS_HEADER, HeaderValue::from_static("denied"));
+    resp
+}
+
 async fn mitm(
     client: TokioIo<hyper::upgrade::Upgraded>,
     tcp: TcpStream,
     host: String,
     port: u16,
+    addrs: Option<Vec<SocketAddr>>,
     swaps: Arc<Swaps>,
     shared: Arc<Shared>,
 ) -> Result<()> {
@@ -169,6 +318,7 @@ async fn mitm(
     let origin = Arc::new(Origin {
         host,
         port,
+        addrs,
         shared,
         first: std::sync::Mutex::new(Some(tcp)),
         sender: Mutex::new(None),
@@ -185,6 +335,9 @@ async fn mitm(
 struct Origin {
     host: String,
     port: u16,
+    /// What the egress policy checked; redials go here, not to a fresh
+    /// lookup that a rebinding DNS server could answer differently.
+    addrs: Option<Vec<SocketAddr>>,
     shared: Arc<Shared>,
     /// The socket opened before the CONNECT was answered, used by the first dial.
     first: std::sync::Mutex<Option<TcpStream>>,
@@ -196,7 +349,15 @@ impl Origin {
         let first = self.first.lock().unwrap().take();
         let tcp = match first {
             Some(tcp) => tcp,
-            None => upstream::connect(self.shared.upstream.as_ref(), &self.host, self.port).await?,
+            None => {
+                upstream::connect(
+                    self.shared.upstream.as_ref(),
+                    &self.host,
+                    self.port,
+                    self.addrs.as_deref(),
+                )
+                .await?
+            }
         };
         let name = ServerName::try_from(self.host.clone())?;
         let tls = TlsConnector::from(self.shared.tls_client.clone())
@@ -329,7 +490,11 @@ async fn forward(
 }
 
 /// One absolute-form `http://` request, forwarded on a fresh connection.
-async fn plain_http(req: Request<Incoming>, shared: Arc<Shared>) -> Response<ProxyBody> {
+async fn plain_http(
+    req: Request<Incoming>,
+    shared: Arc<Shared>,
+    source: Source,
+) -> Response<ProxyBody> {
     let (mut parts, body) = req.into_parts();
     let authority = match (parts.uri.scheme_str(), parts.uri.authority()) {
         (Some(scheme), Some(a)) if scheme.eq_ignore_ascii_case("http") => a.clone(),
@@ -346,6 +511,15 @@ async fn plain_http(req: Request<Incoming>, shared: Arc<Shared>) -> Response<Pro
         .trim_end_matches(']')
         .to_ascii_lowercase();
     let port = authority.port_u16().unwrap_or(80);
+    let method = parts.method.to_string();
+    let addrs = match shared
+        .vet(source, &method, &host, port, shared.http_upstream.as_ref())
+        .await
+    {
+        Ok(addrs) => addrs,
+        Err(Ok(denial)) => return denied(&denial.message("http")),
+        Err(Err(e)) => return text(StatusCode::BAD_GATEWAY, &format!("ferrule proxy: {e}\n")),
+    };
     let swaps = shared.swaps_for(&host);
     if swaps.is_some() && !is_loopback(&host) {
         return text(
@@ -385,11 +559,13 @@ async fn plain_http(req: Request<Incoming>, shared: Arc<Shared>) -> Response<Pro
         }
     }
 
-    let (tcp, via) = match upstream::connect_http(shared.http_upstream.as_ref(), &host, port).await
-    {
-        Ok(c) => c,
-        Err(e) => return text(StatusCode::BAD_GATEWAY, &format!("ferrule proxy: {e:#}\n")),
-    };
+    let (tcp, via) =
+        match upstream::connect_http(shared.http_upstream.as_ref(), &host, port, addrs.as_deref())
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => return text(StatusCode::BAD_GATEWAY, &format!("ferrule proxy: {e:#}\n")),
+        };
     let target = match via {
         Some(up) => {
             if let Some(v) = up.auth().and_then(|a| HeaderValue::from_str(a).ok()) {
@@ -499,17 +675,18 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
-fn authorized(headers: &HeaderMap, expected: &[u8]) -> bool {
-    let Some(v) = headers.get(header::PROXY_AUTHORIZATION) else {
-        return false;
-    };
-    let v = v.as_bytes();
+/// The decoded `Proxy-Authorization: Basic` credentials.
+fn credentials(headers: &HeaderMap) -> Option<Vec<u8>> {
+    let v = headers.get(header::PROXY_AUTHORIZATION)?.as_bytes();
     if v.len() < 6 || !v[..6].eq_ignore_ascii_case(b"basic ") {
-        return false;
+        return None;
     }
-    STANDARD
-        .decode(v[6..].trim_ascii())
-        .is_ok_and(|got| constant_time_eq(&got, expected))
+    STANDARD.decode(v[6..].trim_ascii()).ok()
+}
+
+#[cfg(test)]
+fn authorized(headers: &HeaderMap, expected: &[u8]) -> bool {
+    credentials(headers).is_some_and(|got| constant_time_eq(&got, expected))
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

@@ -135,6 +135,15 @@ pub fn build(
             .with_section("workspace", Arc::new(crate::remote::status_lines))
             .with_probe(Arc::new(crate::remote::probe));
     }
+    if let Ok(Some(url)) = cfg.telemetry.traces_url() {
+        health = health.with_section(
+            "telemetry",
+            Arc::new(move || {
+                vec![crate::telemetry::status_line()
+                    .unwrap_or_else(|| format!("{url} — nothing to export yet"))]
+            }),
+        );
+    }
     let notice = startup_notice(cfg, &health);
     Ok(health
         .with_startup_notice(notice)

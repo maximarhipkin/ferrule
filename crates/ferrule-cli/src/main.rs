@@ -6,11 +6,13 @@ mod config_follow;
 mod connections;
 mod dashboard;
 mod doctor;
+mod egress;
 mod embedding;
 mod eval;
 mod filewrite;
 mod health;
 mod hooks_cli;
+mod import;
 mod learn;
 mod ledger;
 mod local;
@@ -30,6 +32,7 @@ mod settings_admin;
 mod settings_door;
 mod setup;
 mod tasks_admin;
+mod telemetry;
 mod trust;
 mod web_search;
 
@@ -217,6 +220,12 @@ enum Cmd {
     Ssh {
         #[command(subcommand)]
         op: remote::SshCmd,
+    },
+    /// Bring memories, skills, channel allowlists and providers over from
+    /// OpenClaw or Hermes Agent. A dry run unless --apply
+    Import {
+        #[command(subcommand)]
+        from: import::ImportCmd,
     },
     /// WASM tool plugins: add one (hash-checked, scanned, its capabilities
     /// shown before yes), list, remove (docs/plugins.md)
@@ -531,7 +540,7 @@ fn main() -> Result<()> {
     // build, so the runtime runs on a thread with Linux's 8 MiB everywhere.
     // Its workers too: they poll the gateway's turns, and on Windows those
     // outgrew tokio's 2 MiB once the Discord and Slack channels came in (M31).
-    std::thread::Builder::new()
+    let done = std::thread::Builder::new()
         .name("ferrule-main".into())
         .stack_size(8 << 20)
         .spawn(move || {
@@ -542,7 +551,10 @@ fn main() -> Result<()> {
                 .block_on(dispatch(cli.cmd))
         })?
         .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    // The last spans of a chat, a gateway or a task run (M33).
+    telemetry::shutdown();
+    done
 }
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
@@ -712,6 +724,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         }
         Cmd::Hooks { op } => hooks_cli::run(op)?,
         Cmd::Extensions { op } => self_extend::run(op).await?,
+        Cmd::Import { from } => import::command(from).await?,
         Cmd::Mcp { op } => mcp_add::run(op).await?,
         Cmd::Plugins { op } => plugins_cli::run(op).await?,
         Cmd::Ssh { op } => remote::run(op).await?,
@@ -1322,36 +1335,43 @@ fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
         eprintln!("ferrule: {w}");
     }
     if let Some(broker) = broker {
-        let ca_cert_pem = std::fs::read_to_string(broker.ca_cert_path())
-            .with_context(|| format!("reading {}", broker.ca_cert_path().display()))?;
         sandbox = sandbox
             .with_env(broker.child_env())
-            .with_egress(Some(Egress {
-                proxy_url: broker.proxy_url(),
-                ca_cert_pem,
-            }));
+            .with_egress(Some(tool_egress(broker)?));
     }
     Ok(SANDBOX.get_or_init(|| Arc::new(sandbox)).clone())
 }
 
-/// The credential proxy behind `[secrets]`, started once per process on the
-/// current runtime and kept for its lifetime. `None` without `[secrets]`, or
-/// when none of them is set.
+/// What ferrule's own clients acting for the model (`web_fetch`, search,
+/// MCP over HTTP, the embedder) go through: the proxy as the `tool` source,
+/// for which loopback is private (M33).
+pub(crate) fn tool_egress(broker: &Broker) -> Result<Egress> {
+    let ca_cert_pem = std::fs::read_to_string(broker.ca_cert_path())
+        .with_context(|| format!("reading {}", broker.ca_cert_path().display()))?;
+    Ok(Egress {
+        proxy_url: broker.tool_proxy_url(),
+        ca_cert_pem,
+    })
+}
+
+/// The credential proxy, started once per process on the current runtime
+/// and kept for its lifetime. Since M33 it always runs, for `[egress]`'s
+/// sake as well as `[secrets]`'; a refusal is written to the ledger and the
+/// trust audit.
 fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
     static BROKER: OnceLock<Option<Broker>> = OnceLock::new();
     if let Some(broker) = BROKER.get() {
         return Ok(broker.as_ref());
     }
-    let broker = if cfg.secrets.is_empty() {
-        None
-    } else {
-        Broker::start(broker_config(cfg)?, |name| std::env::var(name).ok())?
-    };
+    let broker = Broker::start(broker_config(cfg)?, |name| std::env::var(name).ok())?;
+    if let Some(b) = &broker {
+        egress::report_denials(b, ledger::build_sink(cfg));
+    }
     // A racing caller's broker is dropped (and stopped) here; both get the winner.
     Ok(BROKER.get_or_init(|| broker).as_ref())
 }
 
-/// The proxy's settings for `cfg`'s `[secrets]`.
+/// The proxy's settings for `cfg`'s `[secrets]` and `[egress]`.
 fn broker_config(cfg: &config::Config) -> Result<BrokerConfig> {
     Ok(BrokerConfig {
         secrets: cfg
@@ -1363,6 +1383,7 @@ fn broker_config(cfg: &config::Config) -> Result<BrokerConfig> {
         upstream: Upstream::from_env()?,
         http_upstream: Upstream::from_env_http()?,
         ca_bundle: None,
+        egress: Some(egress::policy(cfg)?),
     })
 }
 
@@ -1644,6 +1665,8 @@ pub(crate) async fn run_root(
 /// Prints a root run's answer, and exits 2 when it stopped short, 1 when
 /// it failed.
 pub(crate) fn finish_run(answer: Result<RootRun, String>) -> Result<()> {
+    // `process::exit` below skips main's own flush.
+    telemetry::shutdown();
     match answer {
         Ok(run) => {
             match &run.incomplete {
@@ -2358,6 +2381,7 @@ async fn tasks_run_now(
         }
         Err(e) => {
             eprintln!("run failed: {e}");
+            telemetry::shutdown();
             std::process::exit(1);
         }
     }
@@ -2518,6 +2542,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
             "network   {}",
             if policy.network { "allowed" } else { "blocked" }
         );
+        println!("sockets   {}", sandbox.unix_status(&workspace));
         println!(
             "writable  {}",
             if roots.is_empty() {
@@ -2888,6 +2913,11 @@ fn ledger_cmd(since: Option<String>) -> Result<()> {
         let speed = ledger::render_speed(&records);
         if !speed.is_empty() {
             println!("\n{speed}");
+        }
+        let (refused, top) = egress::recent_denials(&records, since.unwrap_or_default());
+        if refused > 0 {
+            let hosts: Vec<String> = top.iter().map(|(h, n)| format!("{h} ×{n}")).collect();
+            println!("\negress refused: {refused} ({})", hosts.join(", "));
         }
     }
     if malformed > 0 {

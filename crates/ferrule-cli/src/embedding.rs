@@ -393,16 +393,10 @@ async fn for_cli(cfg: &Config) -> Result<Option<Embedding>> {
 }
 
 /// The credential proxy, and the egress through it, for a command run
-/// outside a session: without `[secrets]`, a direct connection.
+/// outside a session.
 fn cli_egress(cfg: &Config) -> Result<(Option<&'static Broker>, Option<Egress>)> {
     let broker = crate::shared_broker(cfg)?;
-    let egress = match broker {
-        Some(b) => Some(Egress {
-            proxy_url: b.proxy_url(),
-            ca_cert_pem: std::fs::read_to_string(b.ca_cert_path())?,
-        }),
-        None => None,
-    };
+    let egress = broker.map(crate::tool_egress).transpose()?;
     Ok((broker, egress))
 }
 

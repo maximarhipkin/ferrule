@@ -3,7 +3,9 @@ use crate::event::AgentEvent;
 use crate::guard::{unless_halted, Guard, GuardedCall, Verdict as GuardVerdict};
 use crate::history::{result_ref, SEARCH_HISTORY};
 use crate::hooks::{Budget, Inbox, RunEnd, RunObserver, SessionRecall, StopFlag, TurnContext};
-use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch};
+use crate::ledger::{
+    LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch, TraceEvent, TraceLevel,
+};
 use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
 use crate::message::{Message, ToolCall, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
@@ -16,7 +18,7 @@ use crate::triggers::{PromptTriggers, TriggerLoad};
 use crate::verify::Verifier;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -209,6 +211,8 @@ struct Ran {
     ok: bool,
     reached: bool,
     elapsed: Duration,
+    /// When it finished, for the trace (M33).
+    finished: SystemTime,
 }
 
 impl Ran {
@@ -218,6 +222,7 @@ impl Ran {
             ok: false,
             reached: false,
             elapsed: Duration::ZERO,
+            finished: SystemTime::now(),
         }
     }
 
@@ -231,6 +236,7 @@ impl Ran {
             ok,
             reached: true,
             elapsed,
+            finished: SystemTime::now(),
         }
     }
 }
@@ -293,6 +299,9 @@ pub struct Agent {
     pub incomplete: Option<String>,
     /// M27 timings waiting for the next ledger row.
     speed: Arc<std::sync::Mutex<SpeedStats>>,
+    /// What the ledger sink wants traced this run (M33), asked at its
+    /// start.
+    trace: TraceLevel,
     /// Where the answer streams while it's written (M27), if anywhere.
     reply_stream: Option<DeltaSink>,
     /// When the current run started, and whether its first visible text
@@ -322,6 +331,7 @@ impl Agent {
             tool_ctx,
             transcript,
             ledger: None,
+            trace: TraceLevel::Off,
             hooks: HookSet::default(),
             started: false,
             budget: None,
@@ -505,6 +515,35 @@ impl Agent {
 
     fn est_context_tokens(&self) -> usize {
         self.messages.iter().map(|m| m.est_tokens()).sum()
+    }
+
+    /// The ledger, when its sink wants trace events this run.
+    fn traced(&self) -> Option<&LedgerContext> {
+        self.ledger
+            .as_ref()
+            .filter(|_| self.trace != TraceLevel::Off)
+    }
+
+    fn trace_tool(
+        &self,
+        call: &ToolCall,
+        ok: bool,
+        elapsed: Duration,
+        finished: SystemTime,
+        raw: &str,
+    ) {
+        let Some(ledger) = self.traced() else { return };
+        let content = self.trace == TraceLevel::Content;
+        ledger.sink.trace(TraceEvent::ToolCall {
+            session_id: self.session_id(),
+            id: call.id.clone(),
+            name: call.name.clone(),
+            ok,
+            started: finished.checked_sub(elapsed).unwrap_or(finished),
+            elapsed,
+            arguments: content.then(|| call.arguments.to_string()),
+            result: content.then(|| raw.to_string()),
+        });
     }
 
     fn session_id(&self) -> String {
@@ -747,6 +786,16 @@ impl Agent {
         route: Option<crate::routing::RouteTag>,
     ) {
         let Some(ledger) = &self.ledger else { return };
+        if let (TraceLevel::Content, Ok(resp)) = (self.trace, result) {
+            let mut text = resp.message.content.clone().unwrap_or_default();
+            for call in &resp.message.tool_calls {
+                text.push_str(&format!("\n[tool call: {}]", call.name));
+            }
+            ledger.sink.trace(TraceEvent::CallContent {
+                session_id: self.session_id(),
+                text,
+            });
+        }
         let (
             input_tokens,
             cached_input_tokens,
@@ -865,7 +914,28 @@ impl Agent {
         for o in &observers {
             o.begin(&session_id).await;
         }
+        self.trace = self
+            .ledger
+            .as_ref()
+            .map_or(TraceLevel::Off, |l| l.sink.trace_level());
+        if let Some(ledger) = self.traced() {
+            ledger.sink.trace(TraceEvent::TurnStarted {
+                session_id: session_id.clone(),
+                task_shape: ledger.task_shape.clone(),
+                origin: ledger.origin.clone(),
+                at: SystemTime::now(),
+                goal: (self.trace == TraceLevel::Content).then(|| goal.to_string()),
+            });
+        }
         let result = self.run_inner(goal, tx.clone()).await;
+        if let Some(ledger) = self.traced() {
+            ledger.sink.trace(TraceEvent::TurnFinished {
+                session_id: session_id.clone(),
+                at: SystemTime::now(),
+                ok: result.is_ok(),
+                incomplete: self.incomplete.clone(),
+            });
+        }
         if let Some(inbox) = &inbox {
             inbox.end();
         }
@@ -1202,8 +1272,13 @@ impl Agent {
                     seg.iter().zip(gated.into_iter().zip(ran)).enumerate()
                 {
                     let Ran {
-                        raw, ok, reached, ..
+                        raw,
+                        ok,
+                        reached,
+                        elapsed,
+                        finished,
                     } = done.expect("every call has a result when not interrupted");
+                    self.trace_tool(call, ok, elapsed, finished, &raw);
                     let Gated { mut input, pre, .. } = passed;
                     if !ok {
                         warn!(tool = %call.name, "tool call failed");
@@ -1544,6 +1619,7 @@ impl Agent {
                         ok: false,
                         reached: true,
                         elapsed: Duration::ZERO,
+                        finished: SystemTime::now(),
                     });
                 }
             };

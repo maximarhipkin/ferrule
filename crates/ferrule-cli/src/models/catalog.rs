@@ -593,7 +593,7 @@ impl Usage {
         let mut u = Usage::default();
         let mut first: Option<DateTime<Utc>> = None;
         for r in records {
-            if r.eval.is_some() || r.call_kind == "eval_result" {
+            if r.eval.is_some() || r.is_bookkeeping() {
                 continue;
             }
             let Ok(at) = DateTime::parse_from_rfc3339(&r.timestamp) else {

@@ -630,6 +630,39 @@ that convention yet — ask before introducing one).
       until there's a license) and two committed, reproducible examples:
       `unit-convert` and `github-repo`.
     - **Decisions for Max and open edges:** see the M32 session-log entry.
+
+  - **M33 ops**: **built** (2026-09-26, branch `m33-ops`, PR to main
+    open, not merged). Design and as-built notes in `docs/m33-ops.md`;
+    user guides `docs/egress.md`, `docs/otel.md`, `docs/migrate.md`.
+    - Egress policy in the credential proxy (`[egress]`): public hosts
+      allowed, private ranges and cloud metadata blocked, `allow`/`deny`
+      host patterns, IPs and CIDRs, `default = "deny"` for an allowlist.
+      Resolve once and connect to the checked address (no DNS
+      rebinding); configured endpoints (providers, MCP, search, the
+      collector) are implicit exceptions. `web_fetch`, `web_search`, MCP
+      over HTTP and plugins always go through it; shell commands only
+      when secrets or rules exist (advisory). A refusal is a 403 the model
+      can read, a ledger row, an audit event, a doctor line and a
+      dashboard count.
+    - Unix-socket allowlist (`[sandbox] unix_sockets`): closes the
+      `docker.sock` escape. Linux: a seccomp user-notification supervisor
+      that checks the real inode and connects it itself (no TOCTOU), plus
+      sockets the command made (by `SO_PEERCRED`). macOS: Seatbelt path
+      rules. Windows: not covered. Where `pidfd_getfd` is refused (Docker's
+      default profile) it says "not enforced"; `require = true` fails.
+    - `ferrule-otel`: OTLP/HTTP JSON traces from the ledger seam, a
+      hand-rolled encoder with no new third-party crates. Session → turn →
+      chat / execute_tool spans with GenAI semconv, sub-agents under the
+      spawning turn; content off by default and scrubbed when on; bounded
+      queue, 512/2 s batches, backoff, 3 s shutdown flush; counters in
+      doctor and `/status`.
+    - `ferrule import openclaw|hermes`: memories (deduped, re-runs
+      supersede, secret-looking entries held back), skills (the M13 review,
+      confirmed one by one), allowlists (a union), providers, and keys by
+      name only (`--bind-secrets` copies values). Dry run by default,
+      idempotent; own JSON5 and YAML-subset readers. `ferrule setup`
+      offers it when it finds either tool.
+    - **Decisions for Max and open edges:** see the M33 session-log entry.
   - **M34 SSH workspaces and local-model first run**: **built**
     (2026-09-26, branch `m34-ssh-local`, PR to main open, not merged).
     Design and as-built notes are in `docs/m34-ssh-local.md`; the user
@@ -661,7 +694,7 @@ that convention yet — ask before introducing one).
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
     `edit_file` SEARCH/REPLACE, a repo map, local-model first-run polish,
-    migration importers, channels Discord → Slack → WhatsApp, the stuck
+    channels Discord → Slack → WhatsApp, the stuck
     detector's two missing signatures, gateway lane idle eviction, ledger
     rotation.
 
@@ -4221,6 +4254,62 @@ this PR's CI run.
 billed). The committed example binaries can go stale against the SDK,
 and the ignored rebuild test is what notices. There is no TinyGo or
 AssemblyScript example.
+
+### 2026-09-26 — M33 ops: egress policy, OTel export, importers (Devi, Opus 5.5)
+
+**Scope.** Items 16–18 of `docs/research-number-one-harness-strategy.md` §4,
+built from `docs/m33-ops.md` on branch `m33-ops` in four commits: the
+design, the egress policy with the Unix-socket allowlist, OTel export, and
+`ferrule import`, then the user guides `docs/egress.md`, `docs/otel.md` and
+`docs/migrate.md`. The SSH backend is M34; the shell's exec path is
+untouched. `ferrule_tools::egress::client_builder` keeps its signature, so
+M32's plugins inherit the policy. No new third-party dependency in the
+release binary (`tempfile` is dev-only), so no `release.yml` run.
+
+**Decisions for Max:**
+- The default policy stays "allow public" and blocks only private ranges
+  and cloud metadata; an allowlist is opt-in (`default = "deny"`, or
+  setup's "package hosts only").
+- Shell commands get the proxy only when secrets are live or `[egress]`
+  has rules, so an upgrade doesn't reroute `pip install`. For commands
+  the proxy stays advisory; a binding `enforce` mode is a follow-up.
+- Loopback is private for the model's tools (`web_fetch` SSRF) but open
+  to shell commands (their own dev server).
+- Unresolvable names behind a corporate upstream proxy are allowed and
+  logged, not blocked.
+- Denials over CONNECT are answered inside the tunnel with ferrule's CA,
+  so the model reads the reason; `web_fetch` now also prefixes other
+  non-2xx pages with `HTTP <status>` (a small behaviour change).
+- X11 isn't in the default socket allowlist (keystroke injection).
+- OTel is a hand-rolled OTLP/JSON encoder, not the `opentelemetry` crates
+  (25–60 crates, breaking minors). No gRPC/protobuf, no metrics or logs.
+- The importers bring their own JSON5 and YAML-subset readers rather than
+  `json5` + `serde_yaml`. Skills need a terminal, one confirmation each;
+  there's no auto-approve flag. Memories that look like they carry a
+  secret are held back, even at the cost of some false positives.
+- Per-agent egress policies were left out (the sandbox is process-wide).
+
+**Unverified live:**
+- the Linux Unix-socket supervisor can't run in this container (Docker's
+  seccomp profile refuses `pidfd_getfd`); its test is mandatory on the
+  Linux CI runner;
+- the macOS Seatbelt socket rules were checked only by the macos-14 CI
+  runner (listed: ok; unlisted and symlink: `EPERM`), never by hand;
+- no real OTel collector and no real OpenClaw or Hermes install; the live
+  tests are `#[ignore]`d and the guides give the commands.
+
+**Eval.** `eval run evals/starter --variant ab` against the mock model:
+engineered 20/20, naive 11/20, $0.98.
+
+**CI fixes.** The e2e wizard answers the new Network policy question.
+`hidden_keys.py` checked that `proxy/keys/ca.key` doesn't exist, but the
+default egress policy now starts the proxy without secrets, so ferrule's
+own CA is there. It now checks for the model's planted content instead.
+
+**Open edges:** `enforce` mode for shell egress; per-agent policies;
+egress denials as span events; `ferrule telemetry replay`; importing MCP
+server definitions, scheduled jobs and OpenClaw's SQLite pairing
+approvals; Unix sockets on Windows.
 
 ### 2026-09-26 — M34 SSH workspaces and local-model first run (Devi, Opus 5.5)
 

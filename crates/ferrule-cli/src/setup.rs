@@ -76,6 +76,12 @@ pub(crate) fn has_terminal() -> bool {
 
 /// The first run: every part in order.
 async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
+    if !crate::import::detected().is_empty() {
+        heading("Import");
+        if settle(crate::import::setup_step(t, true).await)?.quit() {
+            return Ok(false);
+        }
+    }
     heading("Model provider");
     if settle(provider_step(t, http, true).await)?.quit() {
         return Ok(false);
@@ -106,6 +112,10 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     }
     heading("Sandbox");
     if settle(sandbox_step(t, true))?.quit() {
+        return Ok(false);
+    }
+    heading("Network policy");
+    if settle(network_step(t, true))?.quit() {
         return Ok(false);
     }
     heading("Browser");
@@ -143,8 +153,10 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Web search           {}", web_search_summary(&cfg)),
             format!("Memory recall        {}", memory_summary(&cfg)),
             format!("Sandbox              {}", sandbox_summary(&cfg)),
+            format!("Network policy       {}", network_summary(&cfg)),
             format!("Browser              {}", browser_summary(&cfg)),
             format!("MCP servers          {}", mcp_summary(&cfg)),
+            format!("Import               {}", crate::import::setup_summary()),
             format!("Remote workspace     {}", remote::summary(&cfg)),
             format!("Background service   {}", service_summary(&service)),
             "Done".to_string(),
@@ -168,10 +180,12 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             5 => web_search_step(t, false),
             6 => memory_step(t, false).await,
             7 => sandbox_step(t, false),
-            8 => browser_step(t),
-            9 => crate::mcp_add::setup_step(t, false).await,
-            10 => remote::step(t).await,
-            11 => service_step(t, false),
+            8 => network_step(t, false),
+            9 => browser_step(t),
+            10 => crate::mcp_add::setup_step(t, false).await,
+            11 => crate::import::setup_step(t, false).await,
+            12 => remote::step(t).await,
+            13 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -519,6 +533,26 @@ fn sandbox_summary(cfg: &config::Config) -> String {
     format!("{} · {network}", mode_name(cfg.sandbox.mode))
 }
 
+fn network_summary(cfg: &config::Config) -> String {
+    let e = &cfg.egress;
+    let open = if e.default == "deny" {
+        format!(
+            "{} allowed, the rest refused",
+            plural(e.allow.len(), "host", "hosts")
+        )
+    } else if e.deny.is_empty() {
+        "public hosts".to_string()
+    } else {
+        format!("public hosts but {}", plural(e.deny.len(), "rule", "rules"))
+    };
+    let private = if e.private == "allow" {
+        "private ranges open"
+    } else {
+        "private ranges blocked"
+    };
+    format!("{open} · {private}")
+}
+
 fn browser_summary(cfg: &config::Config) -> String {
     match (cfg.browser.enabled, cfg.browser.chrome_sandbox) {
         (false, _) => "off".into(),
@@ -593,14 +627,14 @@ pub(crate) fn no_shape(_: &str) -> Option<&'static str> {
 
 // ── Model provider ─────────────────────────────────────────────────────
 
-struct Preset {
+pub(crate) struct Preset {
     label: &'static str,
-    name: &'static str,
-    base_url: &'static str,
-    key_env: &'static str,
-    profile: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) base_url: &'static str,
+    pub(crate) key_env: &'static str,
+    pub(crate) profile: &'static str,
     /// Empty: pick from the provider's list.
-    model: &'static str,
+    pub(crate) model: &'static str,
     /// Where to get a key. Empty: none needed (a local server).
     key_url: &'static str,
 }
@@ -679,6 +713,11 @@ const PRESETS: &[Preset] = &[
         key_url: "",
     },
 ];
+
+/// The preset called `name`.
+pub(crate) fn preset(name: &str) -> Option<&'static Preset> {
+    PRESETS.iter().find(|p| p.name == name)
+}
 
 /// A provider being added or changed.
 struct NewProvider {
@@ -2185,6 +2224,110 @@ fn sandbox_step(t: &mut Target, guided: bool) -> Result<()> {
     Ok(())
 }
 
+// ── Network policy ─────────────────────────────────────────────────────
+
+/// Hosts a coding agent reaches to fetch code and packages: the "package
+/// hosts only" starting policy (docs/egress.md).
+pub(crate) const PACKAGE_HOSTS: &[&str] = &[
+    "github.com",
+    "*.github.com",
+    "*.githubusercontent.com",
+    "gitlab.com",
+    "registry.npmjs.org",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "crates.io",
+    "*.crates.io",
+    "proxy.golang.org",
+    "sum.golang.org",
+    "rubygems.org",
+    "repo.maven.apache.org",
+];
+
+/// M33: `[egress]`, the hosts ferrule's tools and (when proxied) commands
+/// may reach. Model servers, MCP servers and the search backend named in
+/// the config are let through either way.
+fn network_step(t: &mut Target, guided: bool) -> Result<()> {
+    let cfg = t.config()?;
+    info("web_fetch, web_search, MCP servers and plugins reach the network through ferrule's proxy; so do shell commands once there are rules.");
+    info("Private addresses (your LAN, loopback, the cloud metadata address) are blocked by default; the servers your config names stay reachable.");
+    let presets = [
+        "open                public hosts, private ranges blocked (recommended)",
+        "package hosts only  GitHub, GitLab and the package registries; the rest refused",
+        "keep                leave [egress] as it is (edit it by hand, docs/egress.md)",
+    ];
+    let cursor = if cfg.egress.default == "deny" { 1 } else { 0 };
+    if guided
+        && Confirm::new("Use the recommended one? Public hosts, nothing on your LAN")
+            .with_default(true)
+            .prompt()?
+    {
+        write_egress(t.root(), false, &cfg.egress.private_allow)?;
+        return t.save();
+    }
+    let pick = Select::new("Network policy", presets.to_vec())
+        .with_starting_cursor(cursor)
+        .raw_prompt()?
+        .index;
+    if pick == 2 {
+        return Ok(());
+    }
+    let lan = Confirm::new(
+        "Should tools reach anything on your LAN or this machine (a NAS, a local service)?",
+    )
+    .with_default(!cfg.egress.private_allow.is_empty())
+    .prompt()?;
+    let private_allow = if lan {
+        ask_lan_hosts(&cfg.egress.private_allow)?
+    } else {
+        Vec::new()
+    };
+    write_egress(t.root(), pick == 1, &private_allow)?;
+    t.save()?;
+    ok(format!("network policy: {}", network_summary(&t.config()?)));
+    Ok(())
+}
+
+fn ask_lan_hosts(current: &[String]) -> Result<Vec<String>> {
+    let answer = Text::new("Private hosts or ranges tools may reach, comma-separated")
+        .with_initial_value(&current.join(", "))
+        .with_help_message("like nas.local, 192.168.1.0/24")
+        .prompt()?;
+    Ok(split_hosts(&answer))
+}
+
+/// `[egress]` for a starting policy: open (public hosts) or package hosts
+/// only, with `private_allow`. Deny rules the owner wrote stay.
+fn write_egress(
+    root: &mut dyn TableLike,
+    packages_only: bool,
+    private_allow: &[String],
+) -> Result<()> {
+    let egress = table(root, &["egress"])?;
+    if packages_only {
+        put(egress, "default", "deny");
+        put(
+            egress,
+            "allow",
+            toml_edit::Array::from_iter(PACKAGE_HOSTS.iter().copied()),
+        );
+    } else {
+        egress.remove("default");
+        egress.remove("allow");
+    }
+    egress.remove("private");
+    if private_allow.is_empty() {
+        egress.remove("private_allow");
+    } else {
+        put(
+            egress,
+            "private_allow",
+            toml_edit::Array::from_iter(private_allow.iter().map(String::as_str)),
+        );
+    }
+    Ok(())
+}
+
 // ── Browser ────────────────────────────────────────────────────────────
 
 /// Offer the browser when there's a Chrome and agent-browser to drive it,
@@ -2616,6 +2759,40 @@ mod tests {
         // ...and a non-table in the way is an error, not a panic.
         let mut doc: DocumentMut = "gateway = 3\n".parse().unwrap();
         assert!(table(doc.as_table_mut(), &["gateway", "x"]).is_err());
+    }
+
+    #[test]
+    fn the_network_presets_write_a_policy_that_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = target(dir.path(), "[egress]\ndeny = [\"*.example.net\"]\n");
+        write_egress(
+            t.root(),
+            true,
+            &["nas.local".into(), "192.168.1.0/24".into()],
+        )
+        .unwrap();
+        t.save().unwrap();
+        let cfg = t.config().unwrap();
+        assert_eq!(cfg.egress.default, "deny");
+        assert_eq!(cfg.egress.allow.len(), PACKAGE_HOSTS.len());
+        assert_eq!(cfg.egress.deny, ["*.example.net"]);
+        let policy = cfg.egress.policy().unwrap();
+        assert!(policy.has_rules());
+        assert!(
+            network_summary(&cfg).starts_with("13 hosts allowed"),
+            "{}",
+            network_summary(&cfg)
+        );
+
+        write_egress(t.root(), false, &[]).unwrap();
+        t.save().unwrap();
+        let cfg = t.config().unwrap();
+        assert_eq!(cfg.egress.default, "allow");
+        assert!(cfg.egress.allow.is_empty() && cfg.egress.private_allow.is_empty());
+        assert_eq!(
+            network_summary(&cfg),
+            "public hosts but 1 rule · private ranges blocked"
+        );
     }
 
     #[test]

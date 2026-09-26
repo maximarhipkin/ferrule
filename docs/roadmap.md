@@ -690,6 +690,26 @@ exactly what it may touch, and the agent uses it in the same session. A
 plugin that loops, bloats or asks for an undeclared host fails as a tool
 error, and a plugin never holds a real key.
 
+### M33 — ops: egress policy, OTel export, importers
+
+**Status.** Built (`docs/m33-ops.md`; user guides `docs/egress.md`,
+`docs/otel.md`, `docs/migrate.md`). PR to `main` open, not merged.
+- An egress policy in the credential proxy: public hosts by default,
+  private ranges and cloud metadata blocked, allow/deny lists, no DNS
+  rebinding, a refusal the model can read and the owner can audit.
+- A Unix-socket allowlist that closes the `docker.sock` escape (Linux
+  seccomp supervisor, macOS Seatbelt).
+- OTel traces (OTLP/HTTP JSON) from the ledger seam, GenAI semconv,
+  content off by default and scrubbed when on, never blocking the agent.
+- `ferrule import openclaw|hermes`: memories, skills, allowlists,
+  providers, keys by name; dry run first, idempotent, offered by setup.
+
+**Done means.** A page that tells the model to fetch the metadata
+address gets a clear refusal; `curl --unix-socket /var/run/docker.sock`
+fails in the sandbox; a turn shows up as a trace in Jaeger; and an
+OpenClaw or Hermes user runs one command to bring their memories and
+allowlists over, twice, with nothing changing the second time.
+
 ### M34 — SSH workspaces and local-model first run
 
 **Status.** Built (`docs/m34-ssh-local.md`; user guides `docs/ssh.md` and
@@ -742,4 +762,5 @@ Ollama either works or says exactly which window or template to fix.
   commits), local-model first-run polish, migration importers from
   OpenClaw/Hermes, channels in the order Discord → Slack → WhatsApp, a
   read-only dashboard, an SSH execution backend, an egress domain policy in
-  the proxy, and OTel export from the ledger.
+  the proxy, and OTel export from the ledger. (Importers, egress and OTel
+  shipped as M33.)

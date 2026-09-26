@@ -99,6 +99,7 @@ async fn setup() -> Setup {
         upstream: None,
         http_upstream: None,
         ca_bundle: Some(base),
+        egress: None,
     };
     let lookup = |name: &str| match name {
         "TOKEN" => Some(TOKEN.to_string()),
@@ -416,6 +417,7 @@ async fn plain_http_goes_through_the_upstream_http_proxy() {
             Upstream::parse(&format!("http://u:p@127.0.0.1:{up_port}"), "localhost").unwrap(),
         ),
         ca_bundle: None,
+        egress: None,
     };
     let broker = Broker::start(cfg, |_| Some(SHORT.to_string()))
         .unwrap()
@@ -474,6 +476,7 @@ async fn curl_through_the_real_network() {
         upstream: Upstream::from_env().unwrap(),
         http_upstream: Upstream::from_env_http().unwrap(),
         ca_bundle: None,
+        egress: None,
     };
     let broker = Broker::start(cfg, |_| Some("passwd".to_string()))
         .unwrap()

@@ -34,10 +34,14 @@ pub mod launch;
 mod linux;
 pub mod seatbelt;
 mod shell;
+#[cfg(target_os = "linux")]
+mod supervisor;
+pub mod unix;
 #[cfg(windows)]
 mod windows;
 
 pub use shell::{Shell, ShellKind, SHELL_VAR};
+pub use unix::{default_unix_sockets, UnixSockets};
 /// For tests: whether this process can open `pid` to read its memory.
 #[cfg(windows)]
 #[doc(hidden)]
@@ -112,6 +116,15 @@ pub struct Policy {
     /// Deny the usual credential dirs and browser profiles
     /// ([`default_read_denies`]).
     pub deny_default_reads: bool,
+    /// Unix sockets commands may connect to, on top of the defaults
+    /// ([`default_unix_sockets`]): a path, a directory (trailing `/`), `~/…`,
+    /// `$VAR`, or on Linux an abstract name (`@name`, `@prefix*`). `"*"`
+    /// allows every socket. Sockets under a writable dir are allowed when
+    /// the command itself listens on them. Linux and macOS (docs/egress.md).
+    pub unix_sockets: Vec<String>,
+    /// Include [`default_unix_sockets`] (the SSH and GPG agents, name
+    /// service, journald, local databases).
+    pub unix_sockets_default: bool,
     /// Windows: most processes a command tree may run at once (the job's
     /// limit). 0 means no limit.
     pub process_limit: u32,
@@ -139,6 +152,8 @@ impl Default for Policy {
             deny_read: Vec::new(),
             allow_read: Vec::new(),
             deny_default_reads: true,
+            unix_sockets: Vec::new(),
+            unix_sockets_default: true,
             process_limit: 256,
             memory_mb: None,
             state_dir: None,
@@ -246,6 +261,20 @@ impl Sandbox {
                 ..Self::off()
             };
             sandbox.probe()?;
+            // Windows says "not covered" there; that's doctor's to report.
+            let unix = match backend {
+                Backend::Landlock { .. } => sandbox.unix_enforcement(),
+                _ => Ok(()),
+            };
+            if let Err(why) = unix {
+                if policy.require {
+                    return Err(format!(
+                        "the Unix-socket allowlist can't be enforced: {why} \
+                         (`unix_sockets = [\"*\"]` under [sandbox] runs without it)"
+                    ));
+                }
+                tracing::warn!("sandbox: Unix sockets are NOT restricted: {why}");
+            }
             Ok(sandbox)
         });
         match attempt {
@@ -437,7 +466,14 @@ impl Sandbox {
                 let profile = if self.hide_only {
                     seatbelt::open_profile(&hidden)
                 } else {
-                    seatbelt::profile(self.policy.network, self.desktop, &roots, &hidden)
+                    let unix = self.unix_sockets(workspace);
+                    seatbelt::profile(
+                        self.policy.network,
+                        self.desktop,
+                        &roots,
+                        &hidden,
+                        unix.as_ref(),
+                    )
                 };
                 seatbelt::command(profile, program, args)
             }
@@ -473,9 +509,79 @@ impl Sandbox {
         cmd.envs(self.extra_env.iter().map(|(k, v)| (k, v)));
         #[cfg(target_os = "linux")]
         if let Backend::Landlock { abi } = self.backend {
-            linux::apply(&mut cmd, abi, self.policy.network, &roots, &hidden)?;
+            let unix = match self.unix_enforcement() {
+                Ok(()) => self.unix_sockets(workspace).map(std::sync::Arc::new),
+                Err(_) => None,
+            };
+            linux::apply(&mut cmd, abi, self.policy.network, &roots, &hidden, unix)?;
         }
         Ok(cmd)
+    }
+
+    /// The Unix sockets a command started in `workspace` may connect to, or
+    /// `None` when none are restricted here: `unix_sockets = ["*"]`, no
+    /// confining backend (Windows included), a hide-only sandbox, or the
+    /// browser helper (a desktop app, not something the model steers to a
+    /// socket).
+    pub fn unix_sockets(&self, workspace: &Path) -> Option<UnixSockets> {
+        if !self.restricts_unix() {
+            return None;
+        }
+        let mut entries = self.policy.unix_sockets.clone();
+        if self.policy.unix_sockets_default {
+            entries.extend(default_unix_sockets());
+        }
+        let mut own = self.writable_roots(workspace);
+        if cfg!(target_os = "macos") {
+            // No peer check under Seatbelt, so only dirs nothing else
+            // shares: not `/tmp`, where the owner's tmux server lives.
+            own.retain(|d| !d.starts_with("/private/tmp") && !d.starts_with("/private/var/tmp"));
+        }
+        UnixSockets::resolve(&entries, &own, workspace)
+    }
+
+    fn restricts_unix(&self) -> bool {
+        matches!(self.backend, Backend::Landlock { .. } | Backend::Seatbelt)
+            && !self.hide_only
+            && !self.desktop
+            && !self.policy.unix_sockets.iter().any(|e| e.trim() == "*")
+    }
+
+    /// Whether the allowlist can be enforced: on Linux, the supervisor's
+    /// one-off probe; elsewhere, `Ok` (Seatbelt rules need nothing extra) or
+    /// why not.
+    pub fn unix_enforcement(&self) -> Result<(), String> {
+        match self.backend {
+            #[cfg(target_os = "linux")]
+            Backend::Landlock { abi } if self.restricts_unix() => supervisor::probe(abi),
+            Backend::Windows => {
+                Err("not covered on Windows (named pipes aren't paths here)".into())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// One line for doctor and `ferrule sandbox`.
+    pub fn unix_status(&self, workspace: &Path) -> String {
+        if self.backend == Backend::None {
+            return "not enforced (no sandbox)".into();
+        }
+        if let Err(why) = self.unix_enforcement() {
+            return format!("not enforced ({why})");
+        }
+        if self.hide_only {
+            return "any (unconfined helper)".into();
+        }
+        if self.backend == Backend::Seatbelt && !self.policy.network {
+            return "none (network off)".into();
+        }
+        match self.unix_sockets(workspace) {
+            Some(u) => format!(
+                "allowlist ({} entries, plus sockets the command makes itself)",
+                u.len() - u.own_dirs.len()
+            ),
+            None => "any (unix_sockets = [\"*\"])".into(),
+        }
     }
 
     /// Canonical directories (or files) the sandboxed command may write,

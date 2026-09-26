@@ -112,7 +112,7 @@ mod tests {
             },
             Lesson {
                 id: None,
-                text: "Answer in Hebrew in the sasa groups.".into(),
+                text: "Answer in Hebrew in the support groups.".into(),
             },
         ]
     }
@@ -151,7 +151,7 @@ mod tests {
                 "run cargo fmt before finishing a rust change",
                 "repeats pb-1",
             ),
-            ("Answer in Hebrew in the sasa groups!", "owner"),
+            ("Answer in Hebrew in the support groups!", "owner"),
         ] {
             let err = check(text, &l, None).unwrap_err();
             assert!(err.contains(why), "{text}: {err}");
