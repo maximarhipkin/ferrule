@@ -608,7 +608,10 @@ pub fn launch(spec: &Spec, program: &Path, args: &[OsString]) -> Result<i32, Str
     if let Err(e) = harden_self() {
         tracing::debug!("sandbox launcher: {e}");
     }
-    let token = own_token(TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY)?;
+    // The restricted token's handle gets this handle's rights, and setting
+    // its default DACL needs TOKEN_ADJUST_DEFAULT.
+    let token =
+        own_token(TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT)?;
     let id = identity(token.0)?;
 
     if id.au_enabled {
