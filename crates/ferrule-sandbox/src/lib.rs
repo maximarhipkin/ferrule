@@ -37,7 +37,7 @@ mod shell;
 #[cfg(windows)]
 mod windows;
 
-pub use shell::{Shell, ShellKind};
+pub use shell::{Shell, ShellKind, SHELL_VAR};
 /// For tests: whether this process can open `pid` to read its memory.
 #[cfg(windows)]
 #[doc(hidden)]

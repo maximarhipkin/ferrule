@@ -3763,6 +3763,12 @@ after merging main (M25 included).
   backend it stays fully open, as before.
 - No separate §2.3 probe test: the real tier-1 tests settle whether the
   conditional ACE holds.
+- Git Bash can't run under the write-restricted token: MSYS ACLs its
+  own pipes and shared memory to the user SID. It degrades to
+  unsandboxed with the warning, as the brief says, and doctor suggests
+  `FERRULE_SHELL=powershell`, which runs commands sandboxed. There is no
+  automatic switch, because it would silently change the syntax the model
+  writes.
 
 **Unverified:**
 - All of Windows until this PR's CI run (nothing Windows runs in the build
@@ -3777,5 +3783,7 @@ after merging main (M25 included).
 - The Landlock hide-only limit: no new entries directly beside a denied
   path, such as at the top of `~`.
 - The Low-integrity fallback, if the conditional ACE fails somewhere.
+- Git Bash under hide-only, so its reads stay confined even though its
+  writes can't be.
 - The README's Sandbox section still says reads are open (README
   untouched by rule).

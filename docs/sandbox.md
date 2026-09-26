@@ -9,7 +9,7 @@ The design and its as-built notes are in
 
 | | Linux | macOS | Windows |
 |---|---|---|---|
-| Backend | Landlock (+ seccomp for `network = false`) | Seatbelt (`sandbox-exec`) | restricted token in a job object |
+| Backend | Landlock (+ seccomp for `network = false`) | Seatbelt (`sandbox-exec`) | restricted token in a job object (PowerShell; Git Bash degrades) |
 | Writes | workspace, temp, `writable_roots` | same | same |
 | Denied reads | all of them | all of them | ferrule's secrets and `deny_read`; the default credential dirs only in the file tools |
 | `network = false` | enforced | enforced | **not enforced** (needs admin) |
@@ -153,8 +153,12 @@ On Linux and macOS these keys are accepted and ignored.
 
 Ferrule proves the backend works by running the shell under it once at
 startup. If that fails, commands run **unsandboxed** with a warning in
-the log, and doctor names the reason. On Windows it names the shell that
-couldn't start. `require = true` makes ferrule refuse to start instead.
+the log, and doctor names the reason. `require = true` makes ferrule
+refuse to start instead.
+
+On Windows this is the usual case with Git Bash, which can't run under the
+restricted token. Set `FERRULE_SHELL=powershell` to run commands sandboxed
+in PowerShell ([windows-sandbox.md](windows-sandbox.md), Shells).
 
 ## Not covered
 

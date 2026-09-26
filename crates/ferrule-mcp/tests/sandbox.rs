@@ -45,6 +45,11 @@ fn sandbox(mode: Mode) -> Option<Arc<Sandbox>> {
 }
 
 fn sandbox_with(policy: Policy) -> Option<Arc<Sandbox>> {
+    // Windows: the start-up probe runs the commands' shell, and Git Bash
+    // can't hold the token (docs/windows-sandbox.md). The server is python.
+    if cfg!(windows) {
+        std::env::set_var(ferrule_sandbox::SHELL_VAR, "powershell");
+    }
     let sandbox = Sandbox::new(policy).unwrap();
     if !sandbox.is_active() {
         eprintln!("skipped: {}", sandbox.degraded().unwrap_or("no sandbox"));

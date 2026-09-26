@@ -514,10 +514,19 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> Backend
         };
         r.warn("sandbox", format!("shell commands run unsandboxed: {why}"));
         if cfg!(windows) && cfg.sandbox.mode != Mode::Off {
-            r.hint(format!(
-                "{} couldn't run under the restricted token; docs/windows-sandbox.md",
-                ferrule_sandbox::Shell::get().name
-            ));
+            let shell = ferrule_sandbox::Shell::get();
+            r.hint(match shell.kind {
+                ferrule_sandbox::ShellKind::Posix => format!(
+                    "{} can't run under the restricted token; set {}=powershell to run \
+                     commands sandboxed in PowerShell (docs/windows-sandbox.md)",
+                    shell.name,
+                    ferrule_sandbox::SHELL_VAR
+                ),
+                ferrule_sandbox::ShellKind::PowerShell => format!(
+                    "{} couldn't run under the restricted token; docs/windows-sandbox.md",
+                    shell.name
+                ),
+            });
         }
         return Backend::None;
     }

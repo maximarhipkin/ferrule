@@ -330,6 +330,25 @@ design above:
   use** (`Shell::get()`, with `exit 0`) instead of `/bin/sh`. A shell that
   can't start under the token therefore degrades the sandbox with the
   existing warning, and doctor names it.
+- **Git Bash can't hold tier 1** (§2.6's risk, confirmed by CI). MSYS
+  ACLs its signal pipe and its per-user shared memory to the user's SID,
+  and under `WRITE_RESTRICTED` a write also needs a restricting SID.
+  Bash dies with `couldn't create signal pipe, Win32 error 5` or
+  `CreateFileMapping S-1-5-21-…, Win32 error 5`. Adding the user SID to
+  the restricting list would re-open every write, so Git Bash degrades
+  as §2.6 says.
+  - The new `FERRULE_SHELL=powershell|bash` picks the shell; unset still
+    prefers Git Bash.
+  - Doctor's degrade hint suggests the switch.
+  - The tier-1 tests run in PowerShell. `tests/windows_git_bash.rs`
+    checks in its own process that Git Bash is either confined or
+    reported degraded, never half-applied.
+  - CI's Windows self-test sets `FERRULE_SHELL=powershell`.
+  - An automatic switch to PowerShell was rejected: the brief says to
+    degrade, and a silent change of shell also changes the syntax the
+    model must write.
+- **The restricted token's handle** needs `TOKEN_ADJUST_DEFAULT` on the
+  source token so its default DACL can be set (found by CI).
 - **`harden_self()` is a no-op** when ferrule's own token lacks an enabled
   Authenticated Users. Otherwise the condition would lock ferrule out of
   itself, as for a service account.
@@ -381,3 +400,5 @@ design above:
 - The Landlock carve limit for new entries beside a denied path.
 - The Low-integrity fallback, if the conditional ACE turns out not to
   hold somewhere.
+- Git Bash under hide-only (no `WRITE_RESTRICTED`, so MSYS should start):
+  reads still confined when its writes can't be.

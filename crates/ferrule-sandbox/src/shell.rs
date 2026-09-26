@@ -2,11 +2,16 @@
 //!
 //! Unix has `sh`. Windows has nothing models know as well, so there it's
 //! Git for Windows' bash when it's installed — the same `sh` syntax — and
-//! PowerShell otherwise.
+//! PowerShell otherwise. [`SHELL_VAR`] picks one: Git Bash can't run under
+//! the Windows sandbox's token, PowerShell can.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+
+/// `powershell` or `bash`: which shell commands run in on Windows, instead
+/// of Git Bash when it's installed. Ignored elsewhere.
+pub const SHELL_VAR: &str = "FERRULE_SHELL";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellKind {
@@ -39,7 +44,12 @@ impl Shell {
                 name: "sh",
             };
         }
-        if let Some(bash) = git_bash() {
+        let choice = std::env::var(SHELL_VAR).unwrap_or_default();
+        let bash = match wanted(&choice) {
+            Some(ShellKind::PowerShell) => None,
+            _ => git_bash(),
+        };
+        if let Some(bash) = bash {
             return Shell {
                 program: bash,
                 kind: ShellKind::Posix,
@@ -95,6 +105,16 @@ impl Shell {
                 self.name
             )),
         }
+    }
+}
+
+/// What [`SHELL_VAR`] asks for; `None` for unset or unknown (the default:
+/// Git Bash if it's there).
+fn wanted(choice: &str) -> Option<ShellKind> {
+    match choice.trim().to_ascii_lowercase().as_str() {
+        "powershell" | "pwsh" => Some(ShellKind::PowerShell),
+        "bash" | "git-bash" => Some(ShellKind::Posix),
+        _ => None,
     }
 }
 
@@ -156,6 +176,15 @@ mod tests {
         assert_eq!(encode("echo 'שלום'"), "ZQBjAGgAbwAgACcA6QXcBdUF3QUnAA==");
         assert_eq!(encode("abcd"), "YQBiAGMAZAA=");
         assert_eq!(encode(""), "");
+    }
+
+    #[test]
+    fn the_shell_choice_is_read_loosely() {
+        assert_eq!(wanted("PowerShell"), Some(ShellKind::PowerShell));
+        assert_eq!(wanted(" pwsh "), Some(ShellKind::PowerShell));
+        assert_eq!(wanted("git-bash"), Some(ShellKind::Posix));
+        assert_eq!(wanted(""), None);
+        assert_eq!(wanted("zsh"), None);
     }
 
     #[test]

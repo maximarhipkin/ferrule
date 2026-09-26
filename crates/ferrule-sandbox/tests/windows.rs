@@ -1,7 +1,7 @@
-//! The Windows tier-1 backend against real processes, for both shells a
-//! command can run in: Git Bash and Windows PowerShell. Needs no admin;
-//! runs on the windows-latest CI runner. A shell that isn't installed is
-//! skipped with a note.
+//! The Windows tier-1 backend against real processes, in the shell it
+//! holds: Windows PowerShell (and cmd for the process limit). Git Bash
+//! can't run under the token; `windows_git_bash.rs` checks that it degrades
+//! cleanly. Needs no admin; runs on the windows-latest CI runner.
 
 #![cfg(windows)]
 
@@ -11,26 +11,11 @@ use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 fn shells() -> Vec<Shell> {
-    let mut out = Vec::new();
-    let bash = ["ProgramFiles", "ProgramW6432"]
-        .into_iter()
-        .filter_map(std::env::var_os)
-        .map(|d| PathBuf::from(d).join("Git").join("bin").join("bash.exe"))
-        .find(|p| p.is_file());
-    match bash {
-        Some(program) => out.push(Shell {
-            program,
-            kind: ShellKind::Posix,
-            name: "Git Bash",
-        }),
-        None => eprintln!("skipping Git Bash: not installed"),
-    }
-    out.push(Shell {
+    vec![Shell {
         program: "powershell.exe".into(),
         kind: ShellKind::PowerShell,
         name: "Windows PowerShell",
-    });
-    out
+    }]
 }
 
 /// Capability SIDs kept with the build, not in the runner's profile.
@@ -50,6 +35,9 @@ fn sandbox(policy: Policy) -> Sandbox {
         ferrule_sandbox::launch::LAUNCHER_VAR,
         env!("CARGO_BIN_EXE_ferrule-sandbox-launch"),
     );
+    // The start-up probe runs the shell commands will use; on the runner
+    // that would be Git Bash.
+    std::env::set_var(ferrule_sandbox::SHELL_VAR, "powershell");
     let sb = Sandbox::new(policy).expect("the Windows backend should start");
     assert_eq!(sb.backend(), Backend::Windows);
     sb

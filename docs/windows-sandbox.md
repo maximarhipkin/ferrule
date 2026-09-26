@@ -53,11 +53,33 @@ more, so it grants nothing.
 
 ## Shells
 
-Git Bash (`C:\Program Files\Git\bin\bash.exe`) and PowerShell are tested
-under the token in CI. At startup ferrule runs `exit 0` in the shell the
-`shell` tool will use. If that fails, commands run **unsandboxed** with a
-warning, and `ferrule doctor` names the shell and points here. Set
-`require = true` to refuse to start instead.
+**PowerShell runs under the token. Git Bash doesn't.** MSYS, the runtime
+under Git Bash, gives its own signal pipes and shared memory an ACL for
+your user's SID alone. A write-restricted token can only write where one
+of its restricting SIDs is also granted, so bash fails to start
+(`couldn't create signal pipe, Win32 error 5`). Adding your user's SID
+to the token would re-open every write, so that isn't the fix.
+
+The shell tool uses Git Bash when it's installed, because models know
+`sh` syntax best. At startup ferrule runs `exit 0` under the token in
+that shell. When the shell fails:
+
+- commands run **unsandboxed**, with a warning in the log;
+- `ferrule doctor` names the shell and suggests the fix;
+- with `require = true`, ferrule refuses to start instead.
+
+To run commands sandboxed, pick PowerShell:
+
+```powershell
+setx FERRULE_SHELL powershell   # then restart ferrule (or its service)
+```
+
+`FERRULE_SHELL=bash` forces Git Bash, and unset means auto. The model
+is told which shell it has, and with PowerShell it writes PowerShell
+syntax.
+
+MCP servers aren't affected. They run their own program (python, node…)
+under the token, not a shell.
 
 ## What it doesn't do
 
