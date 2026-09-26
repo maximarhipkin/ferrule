@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-1120-8a929a" alt="1120 workspace tests">
+  <img src="https://img.shields.io/badge/tests-1181-8a929a" alt="1181 workspace tests">
 </p>
 
 <p align="center">
@@ -193,7 +193,9 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
 | **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, secret env vars are stripped, and reads of ferrule's secrets, credential dirs and your `deny_read` paths are denied. On Windows: a restricted token in a job object, no admin rights; commands need PowerShell there, since Git Bash can't start under the token ([below](#windows), [`docs/sandbox.md`](docs/sandbox.md)). |
 | **Credential gateway** | Commands get a placeholder token. A local proxy swaps in the real one only for the hosts you allow. |
+| **Egress policy** | Private networks, loopback and cloud metadata addresses are blocked for the model's tools by default, checked after DNS so rebinding can't get around it. Add `allow`/`deny` lists (hosts, wildcards, CIDRs), or `default = "deny"` for an allowlist. A refusal is a readable 403 for the model, and a ledger row and an audit event for you. A unix-socket allowlist closes the `docker.sock` escape from the sandbox on Linux and macOS ([`docs/egress.md`](docs/egress.md)). |
 | **Ledger** | Every model call is logged: tokens, cache hits, latency, errors, cost, time to first token and first reply, and parallel batch time. `ferrule ledger` shows the cache-hit %. |
+| **OpenTelemetry** | Optional OTLP/HTTP traces to Jaeger, Honeycomb, Grafana and the like: session, turn, model-call and tool-call spans with the GenAI attributes (model, tokens, cost). Off by default, no prompt or output text unless you opt in, and a bounded queue that never slows the agent ([`docs/otel.md`](docs/otel.md)). |
 | **Trust & cost** | Token and dollar caps per run, per day and per scheduled task, with an 80% warning; a kill switch (`ferrule stop`, `/stop`, `/resume`); approvals for destructive actions; plan mode ([`docs/m19-trust-cost.md`](docs/m19-trust-cost.md)). |
 | **Hooks** | Ten lifecycle events (SessionStart, PreToolUse, PostToolUse, Stop, PreCompact and more) with Claude Code's JSON payload and exit-code contract ([`docs/m18-hooks.md`](docs/m18-hooks.md)). |
 | **Eval** | `ferrule eval run`: task suites through the real agent loop, graded by commands and LLM rubrics, with a naive-vs-engineered A/B on the same model ([`docs/eval.md`](docs/eval.md)). |
@@ -312,6 +314,11 @@ ferrule run "list the files here and summarise the project"
 ferrule chat                         # interactive, Ctrl-D to exit
 ferrule sandbox                      # what the shell sandbox allows here, tested live
 ```
+
+Coming from OpenClaw or Hermes? `ferrule import openclaw` (or `hermes`)
+brings over memories, skills (each one confirmed), channel allowlists and
+providers. It's a dry run until `--apply`, and a second run changes
+nothing ([`docs/migrate.md`](docs/migrate.md)).
 
 The workspace is the directory the agent works in: its file tools stay
 inside it, and sandboxed commands can write only there. Keep it apart from
@@ -539,14 +546,15 @@ crates/
   ferrule-plugin-sdk the Rust SDK for writing a plugin
   ferrule-codemap    tree-sitter repo map and code search
   ferrule-sandbox    OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt)
-  ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing
+  ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing, egress policy
+  ferrule-otel       OpenTelemetry export: OTLP/HTTP JSON spans
   ferrule-cli        the `ferrule` binary
 ```
 
 ## Development
 
 ```bash
-cargo test --workspace                     # 1120 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 1181 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -637,13 +645,15 @@ and a dated entry for every session.
 - [x] M32: WASM tool plugins — capabilities denied unless granted,
       network only through the credential proxy, installed through the
       M13 approval flow
+- [x] M33: ops — an egress domain policy with an SSRF guard, a
+      unix-socket allowlist, OpenTelemetry export, and importers from
+      OpenClaw and Hermes
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M33 ops
-(egress policy, OTel, importers), M34 an SSH execution backend and
-local-model first-run polish.
+The last track of that queue (Max, 25.09: "do everything"): M34, an SSH
+execution backend and local-model first-run polish.
 
 M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
@@ -653,8 +663,7 @@ strategy synthesis:
 
 - [ ] WhatsApp (options in [`docs/m31-channels.md`](docs/m31-channels.md))
 - [ ] The strategy backlog: local-model
-      polish, migration importers, an SSH backend, egress
-      domain policy, OTel export
+      polish and an SSH backend (M34)
       ([strategy](docs/research-number-one-harness-strategy.md))
 
 The full gap analysis vs OpenClaw, Hermes and NanoClaw — and the backlog
@@ -686,5 +695,8 @@ day-to-day state is tracked in [`PLAN.md`](PLAN.md).
   [`m19b-reliability.md`](docs/m19b-reliability.md),
   [`m20-connections.md`](docs/m20-connections.md),
   [`models.md`](docs/models.md) and [`m21-models.md`](docs/m21-models.md)
+- [`docs/egress.md`](docs/egress.md), [`docs/otel.md`](docs/otel.md),
+  [`docs/migrate.md`](docs/migrate.md): the egress policy, OpenTelemetry
+  export, and importing from OpenClaw or Hermes
 - [`docs/roadmap.md`](docs/roadmap.md): every milestone's design and status
 - [`PLAN.md`](PLAN.md): current state and session log

@@ -141,7 +141,7 @@ changes lessons tagged [pb-N], one line at a time.
 
 - [pb-1] Before finishing a Rust change, run `cargo fmt --all` — the check rejects unformatted code.
 - [pb-2] Reports go to reports/<date>.md, never to the workspace root.
-- Always answer in Hebrew in the sasa groups.
+- Always answer in Hebrew in the support groups.
 ```
 
 - A lesson is a line starting with `- `. `[pb-N]` marks a lesson the pass
