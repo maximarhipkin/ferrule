@@ -2,6 +2,9 @@
 
 use serde::Deserialize;
 
+/// The channels an owner chat can be on, in the default primary order.
+pub const OWNER_CHANNELS: [&str; 3] = ["telegram", "discord", "slack"];
+
 /// The owner's caps and gates. Every cap is off at 0.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -20,6 +23,16 @@ pub struct TrustConfig {
     /// The Telegram chat for approvals and warnings. Unset: the first
     /// private chat in `[gateway] telegram_allowed_chats`.
     pub owner_chat: Option<i64>,
+    /// M31: the owner's Discord user id (their DMs with the bot). Unset:
+    /// the first of `[gateway] discord_allowed_users`.
+    pub discord_owner: Option<String>,
+    /// M31: the owner's Slack member id (`U…`). Unset: the first of
+    /// `[gateway] slack_allowed_users`.
+    pub slack_owner: Option<String>,
+    /// M31: which owner chat gets approvals and warnings: `telegram`,
+    /// `discord` or `slack`. Unset: Telegram, else Discord, else Slack,
+    /// among the channels that run and have an owner.
+    pub owner_channel: Option<String>,
     pub approval_timeout_secs: u64,
     pub plan_timeout_secs: u64,
     /// The approval gates on destructive shell commands.
@@ -38,6 +51,9 @@ impl Default for TrustConfig {
             warn_at: 0.8,
             timezone: "UTC".into(),
             owner_chat: None,
+            discord_owner: None,
+            slack_owner: None,
+            owner_channel: None,
             approval_timeout_secs: 600,
             plan_timeout_secs: 3600,
             gates: true,
@@ -91,6 +107,14 @@ impl TrustConfig {
                 return Err(format!("[trust] {key} = {v} must be 0 (off) or more"));
             }
         }
+        if let Some(c) = &self.owner_channel {
+            if !OWNER_CHANNELS.contains(&c.as_str()) {
+                return Err(format!(
+                    "[trust] owner_channel = \"{c}\" must be one of {}",
+                    OWNER_CHANNELS.join(", ")
+                ));
+            }
+        }
         if self.approval_timeout_secs == 0 || self.plan_timeout_secs == 0 {
             return Err(
                 "[trust] approval_timeout_secs and plan_timeout_secs must be more than 0".into(),
@@ -98,4 +122,22 @@ impl TrustConfig {
         }
         Ok(())
     }
+}
+
+/// The owner chats, primary first: `owner_channel`'s, then the rest in
+/// [`OWNER_CHANNELS`] order (M31).
+pub fn order_owners(
+    chats: Vec<crate::chat::ChatRef>,
+    primary: Option<&str>,
+) -> Vec<crate::chat::ChatRef> {
+    let rank = |c: &crate::chat::ChatRef| {
+        let at = OWNER_CHANNELS
+            .iter()
+            .position(|n| *n == c.channel)
+            .unwrap_or(OWNER_CHANNELS.len());
+        (Some(c.channel.as_str()) != primary, at)
+    };
+    let mut chats = chats;
+    chats.sort_by_key(|c| rank(c));
+    chats
 }
