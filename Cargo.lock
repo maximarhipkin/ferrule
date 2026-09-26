@@ -824,9 +824,11 @@ dependencies = [
  "dunce",
  "ferrule-core",
  "ferrule-mcp",
+ "ferrule-plugins",
  "ferrule-sandbox",
  "ferrule-skills",
  "ferrule-tools",
+ "reqwest",
  "ring",
  "serde",
  "serde_json",
@@ -835,6 +837,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wat",
 ]
 
 [[package]]

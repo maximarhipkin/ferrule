@@ -39,6 +39,11 @@ impl Layout {
         self.root().join("skills")
     }
 
+    /// Installed plugins (M32): `<name>/plugin.json` and its `.wasm`.
+    pub fn plugins_dir(&self) -> PathBuf {
+        self.root().join("plugins")
+    }
+
     /// Suspended skills are moved here, out of discovery.
     pub fn suspended_skills_dir(&self) -> PathBuf {
         self.root().join("suspended")

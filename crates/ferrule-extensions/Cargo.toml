@@ -11,6 +11,10 @@ ferrule-mcp = { path = "../ferrule-mcp" }
 ferrule-skills = { path = "../ferrule-skills" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
 ferrule-tools = { path = "../ferrule-tools" }
+# M32. The interpreter is the binary's `plugins` feature; without it
+# manifests still parse, and loading says the build has no plugin support.
+ferrule-plugins = { path = "../ferrule-plugins", default-features = false }
+reqwest = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -23,3 +27,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 ring = "0.17"
 
 [dev-dependencies]
+# The tests load real plugins: turn the interpreter on for them.
+ferrule-plugins = { path = "../ferrule-plugins" }
+wat = "1"

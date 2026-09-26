@@ -24,7 +24,7 @@ use std::sync::Arc;
 #[serde(default)]
 pub struct ExtensionsConfig {
     /// Offer the model `mcp_add`, `skill_install`, `skill_keep` and the
-    /// rest. Off by default: six more tool definitions on every request,
+    /// rest. Off by default: eight more tool definitions on every request,
     /// and widening its own powers is something the owner turns on.
     pub enabled: bool,
     /// Sources installable without asking (`npm:@scope/*`,
@@ -69,7 +69,7 @@ fn allow_list(ext: &ExtensionsConfig, path: &Path) -> AllowList {
 /// Who an agent is, as far as extensions go (where M12 meets M13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reach {
-    /// The top-level agent: every installed tool, plus the model's six
+    /// The top-level agent: every installed tool, plus the model's eight
     /// extension tools when `[extensions] enabled`.
     Root,
     /// A sub-agent: installed tools only — just the ones that change
@@ -526,10 +526,12 @@ mod tests {
             manager,
             enabled: true,
         };
-        let six = [
+        let eight = [
             "extensions_list",
             "mcp_add",
             "mcp_remove",
+            "plugin_add",
+            "plugin_remove",
             "skill_install",
             "skill_keep",
             "skill_remove",
@@ -537,13 +539,13 @@ mod tests {
 
         let mut root = ToolRegistry::new();
         ext.attach(&mut root, true, Reach::Root);
-        assert_eq!(names(&root), six);
+        assert_eq!(names(&root), eight);
 
         for reading_only in [false, true] {
             let mut child = ToolRegistry::new();
             ext.attach(&mut child, true, Reach::Child { reading_only });
             let n = names(&child);
-            assert!(six.iter().all(|t| !n.iter().any(|x| x == t)), "{n:?}");
+            assert!(eight.iter().all(|t| !n.iter().any(|x| x == t)), "{n:?}");
             assert!(!child.contains("mcp_add") && !child.contains("skill_keep"));
         }
     }

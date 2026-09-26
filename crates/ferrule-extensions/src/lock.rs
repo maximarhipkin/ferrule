@@ -9,6 +9,7 @@
 
 use crate::error::{ExtError, Result};
 use crate::scan::Finding;
+use ferrule_plugins::Capabilities;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -110,6 +111,35 @@ pub struct SkillEntry {
     pub waivers: Vec<Waiver>,
 }
 
+/// M32: an installed WASM plugin. Its files live in
+/// `extensions/plugins/<name>/` and are re-hashed before every load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginEntry {
+    pub source: String,
+    /// The commit for git, the `.wasm`'s SHA-256 for a URL; none for a
+    /// local directory (the hash below pins it).
+    #[serde(default)]
+    pub pin: Option<String>,
+    pub version: String,
+    pub wasm_sha256: String,
+    /// `Manifest::digest` of the installed `plugin.json`.
+    pub manifest_sha256: String,
+    /// What the owner granted (or what needed no grant). A manifest asking
+    /// for more suspends the plugin.
+    #[serde(default)]
+    pub capabilities: Capabilities,
+    /// The approved surface: model-facing tool name → digest.
+    #[serde(default)]
+    pub tools: BTreeMap<String, String>,
+    pub origin: Origin,
+    pub installed_at: String,
+    pub status: Status,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub waivers: Vec<Waiver>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockFile {
     pub version: u32,
@@ -117,6 +147,10 @@ pub struct LockFile {
     pub servers: BTreeMap<String, ServerEntry>,
     #[serde(default)]
     pub skills: BTreeMap<String, SkillEntry>,
+    /// M32. Absent in older files, and left out while empty, so the lock
+    /// version stays 1.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, PluginEntry>,
 }
 
 impl Default for LockFile {
@@ -125,6 +159,7 @@ impl Default for LockFile {
             version: LOCK_VERSION,
             servers: BTreeMap::new(),
             skills: BTreeMap::new(),
+            plugins: BTreeMap::new(),
         }
     }
 }
