@@ -168,6 +168,8 @@ const SHELL: &str = r#"ferrule_main() {
   sh -c "$ferrule_cmd" </dev/null 3<&- &
   wait "$!"; ferrule_rc=$?
   kill "$ferrule_wd" 2>/dev/null
+  # Reaped quietly: bash 3.2 (macOS's sh) would print "Terminated" into the command's stderr.
+  wait "$ferrule_wd" 2>/dev/null
   return "$ferrule_rc"
 }"#;
 
