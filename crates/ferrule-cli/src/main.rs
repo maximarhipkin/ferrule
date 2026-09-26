@@ -21,6 +21,7 @@ mod models;
 mod plan;
 mod plugins_cli;
 mod probe;
+mod remote;
 mod secrets;
 mod self_extend;
 mod service;
@@ -101,8 +102,11 @@ enum Cmd {
         /// model id (`ferrule model list`). Wins over the default and pins
         #[arg(long, conflicts_with = "provider")]
         model: Option<String>,
-        #[arg(long, default_value = ".")]
-        workspace: PathBuf,
+        /// A directory, or a remote workspace: `ssh:<name>` (an [ssh.<name>]
+        /// block) or `ssh://[user@]host[:port]/path`. Default: the config's
+        /// `workspace`, else `.`
+        #[arg(long)]
+        workspace: Option<String>,
         #[arg(long, default_value_t = 60)]
         max_iterations: usize,
         /// Show model reasoning in the event stream
@@ -121,8 +125,11 @@ enum Cmd {
         /// model id (`ferrule model list`). Wins over the default and pins
         #[arg(long, conflicts_with = "provider")]
         model: Option<String>,
-        #[arg(long, default_value = ".")]
-        workspace: PathBuf,
+        /// A directory, or a remote workspace: `ssh:<name>` (an [ssh.<name>]
+        /// block) or `ssh://[user@]host[:port]/path`. Default: the config's
+        /// `workspace`, else `.`
+        #[arg(long)]
+        workspace: Option<String>,
     },
     /// Agent memory operations
     Memory {
@@ -139,8 +146,11 @@ enum Cmd {
     Gateway {
         #[arg(long)]
         provider: Option<String>,
-        #[arg(long, default_value = ".")]
-        workspace: PathBuf,
+        /// A directory, or a remote workspace: `ssh:<name>` (an [ssh.<name>]
+        /// block) or `ssh://[user@]host[:port]/path`. Default: the config's
+        /// `workspace`, else `.`
+        #[arg(long)]
+        workspace: Option<String>,
         #[arg(long, default_value_t = 60)]
         max_iterations: usize,
     },
@@ -200,6 +210,12 @@ enum Cmd {
     Extensions {
         #[command(subcommand)]
         op: self_extend::ExtCmd,
+    },
+    /// Remote workspaces over SSH: list them, trust a host's key, test
+    /// one (docs/ssh.md)
+    Ssh {
+        #[command(subcommand)]
+        op: remote::SshCmd,
     },
     /// WASM tool plugins: add one (hash-checked, scanned, its capabilities
     /// shown before yes), list, remove (docs/plugins.md)
@@ -619,6 +635,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         } => {
             // A ref: `--provider X` still means X's own model.
             let provider = model.or(provider);
+            let workspace = remote::workspace(workspace, false).await?;
             if plan {
                 plan::run(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
             } else {
@@ -630,6 +647,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             model,
             workspace,
         } => {
+            let workspace = remote::workspace(workspace, false).await?;
             chat(model.or(provider), workspace).await?;
         }
         Cmd::Gateway {
@@ -637,6 +655,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             workspace,
             max_iterations,
         } => {
+            let workspace = remote::workspace(workspace, true).await?;
             run_gateway(provider, workspace, max_iterations).await?;
         }
         Cmd::Status => {
@@ -694,6 +713,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Extensions { op } => self_extend::run(op).await?,
         Cmd::Mcp { op } => mcp_add::run(op).await?,
         Cmd::Plugins { op } => plugins_cli::run(op).await?,
+        Cmd::Ssh { op } => remote::run(op).await?,
         Cmd::Connections { op } => connections::run(op).await?,
         Cmd::Sandbox {
             probe_net: true, ..
@@ -921,9 +941,23 @@ fn build_agent_from(
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
+    // M34: a remote workspace's shell and file tools replace the local
+    // ones. ferrule's sandbox doesn't reach there, so whatever would hold
+    // the shell to reading (plan mode, `read-only`, a read-only child)
+    // removes it instead.
+    let remote = remote::current();
+    if let Some(r) = remote {
+        ferrule_ssh::register(&mut registry, &r.link);
+        if planning || read_only || sandbox.policy().mode == Mode::ReadOnly {
+            registry.remove("shell");
+        }
+    }
     // M29: `code_search` and the repo map, only in something that looks
-    // like a code repo (a home dir gets neither schema nor map).
-    let repo_map = ferrule_codemap::looks_like_code_repo(&tool_ctx.workspace, &hidden).then(|| {
+    // like a code repo (a home dir gets neither schema nor map), and not
+    // for a remote workspace: they index local files.
+    let indexable =
+        remote.is_none() && ferrule_codemap::looks_like_code_repo(&tool_ctx.workspace, &hidden);
+    let repo_map = indexable.then(|| {
         let cache = config::data_dir().ok().map(|d| d.join("repomap"));
         let map = Arc::new(ferrule_codemap::CodeMap::new(
             &tool_ctx.workspace,
@@ -1004,11 +1038,14 @@ fn build_agent_from(
         }
     }
 
+    let workspace_line = match remote {
+        Some(r) => remote::prompt_note(&r.link, &cfg),
+        None => format!("Workspace: {}.", tool_ctx.workspace.display()),
+    };
     let mut system = format!(
-        "You are an autonomous agent running inside ferrule. Workspace: {}. \
+        "You are an autonomous agent running inside ferrule. {workspace_line} \
          Use tools to act on the world; verify with evidence; persist important facts with the remember tool when asked. \
          For multi-step work, maintain your task list with write_todos and log decisions with log_diary. {}",
-        tool_ctx.workspace.display(),
         profile.system_directive
     );
 
@@ -1029,7 +1066,11 @@ fn build_agent_from(
     }
 
     // Context baseline: living documentation written for agents (AGENTS.md et al).
-    if let Some((name, content)) = ferrule_core::load_context_baseline(&tool_ctx.workspace) {
+    let baseline = match remote {
+        Some(r) => r.baseline.clone(),
+        None => ferrule_core::load_context_baseline(&tool_ctx.workspace),
+    };
+    if let Some((name, content)) = baseline {
         system.push_str(&format!(
             "\n\n[Workspace context baseline: {name}]\n{content}"
         ));
@@ -1120,11 +1161,18 @@ fn build_agent_from(
     let commit_sandbox = sandbox.clone();
     if let (Some(cmd), false) = (&cfg.agent.verify_command, planning) {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
-        agent = agent.with_verifier(Arc::new(CommandVerifier::new(
-            cmd.clone(),
-            sandbox,
-            timeout,
-        )));
+        agent = match remote {
+            Some(r) => agent.with_verifier(Arc::new(ferrule_ssh::RemoteVerifier {
+                link: r.link.clone(),
+                command: cmd.clone(),
+                timeout,
+            })),
+            None => agent.with_verifier(Arc::new(CommandVerifier::new(
+                cmd.clone(),
+                sandbox,
+                timeout,
+            ))),
+        };
     }
     // M18: a sub-agent's hooks are its root's, added by the supervisor.
     // A planning run fires none: hooks run as the owner, outside the
@@ -1133,7 +1181,7 @@ fn build_agent_from(
         let mut hooks = hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?;
         // M29: the project's linter after each edit, built in (so a
         // sub-agent inherits it with the rest), in the sandbox.
-        if cfg.agent.lint == config::LintMode::Auto {
+        if cfg.agent.lint == config::LintMode::Auto && remote.is_none() {
             hooks.add(
                 ferrule_hooks::LintHook::new(
                     lint_sandbox,
@@ -1146,7 +1194,7 @@ fn build_agent_from(
     }
     // M29: one commit of the run's own files per run, in the sandbox. A
     // sub-agent works in its own worktree; its root commits for the tree.
-    if cfg.agent.auto_commit && child.is_none() && !planning {
+    if cfg.agent.auto_commit && child.is_none() && !planning && remote.is_none() {
         let commit = autocommit::AutoCommit::new(
             &hooks_workspace,
             commit_sandbox,

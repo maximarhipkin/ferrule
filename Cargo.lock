@@ -746,6 +746,7 @@ dependencies = [
  "ferrule-proxy",
  "ferrule-sandbox",
  "ferrule-skills",
+ "ferrule-ssh",
  "ferrule-tools",
  "ferrule-trust",
  "futures-util",

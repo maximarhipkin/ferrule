@@ -8,6 +8,7 @@
 //! comments and layout.
 
 mod channels;
+mod remote;
 
 use crate::{browser, config, probe, secrets, service};
 use anyhow::{anyhow, bail, Context, Result};
@@ -143,6 +144,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Sandbox              {}", sandbox_summary(&cfg)),
             format!("Browser              {}", browser_summary(&cfg)),
             format!("MCP servers          {}", mcp_summary(&cfg)),
+            format!("Remote workspace     {}", remote::summary(&cfg)),
             format!("Background service   {}", service_summary(&service)),
             "Done".to_string(),
         ];
@@ -167,7 +169,8 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             7 => sandbox_step(t, false),
             8 => browser_step(t),
             9 => crate::mcp_add::setup_step(t, false).await,
-            10 => service_step(t, false),
+            10 => remote::step(t).await,
+            11 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {

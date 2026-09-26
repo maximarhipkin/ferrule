@@ -167,6 +167,7 @@ struct Health {
     connected: bool,
     since: Option<Instant>,
     last_error: Option<String>,
+    last_failure: Option<Failure>,
     reconnects: u32,
     forward_note: Option<String>,
 }
@@ -356,6 +357,16 @@ impl Link {
         self.health.lock().unwrap().last_error.clone()
     }
 
+    /// Why the link last failed to connect, while it is down.
+    pub fn last_failure(&self) -> Option<Failure> {
+        self.health.lock().unwrap().last_failure.clone()
+    }
+
+    /// Why commands run without the credential proxy, when they do.
+    pub fn forward_note(&self) -> Option<String> {
+        self.health.lock().unwrap().forward_note.clone()
+    }
+
     /// The master's pid (tests kill it to drop the link).
     #[cfg(unix)]
     pub async fn master_pid(&self) -> Option<u32> {
@@ -425,6 +436,7 @@ impl Link {
         let mut h = self.health.lock().unwrap();
         h.connected = false;
         h.last_error = Some(f.kind().to_string());
+        h.last_failure = Some(f.clone());
         msg
     }
 
@@ -435,6 +447,7 @@ impl Link {
             h.since = Some(Instant::now());
         }
         h.last_error = None;
+        h.last_failure = None;
     }
 
     fn poison_check(&self) -> Result<(), String> {

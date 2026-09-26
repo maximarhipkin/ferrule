@@ -224,6 +224,47 @@ pub async fn is_known(target: &Target, known_as: &str, files: &[PathBuf]) -> boo
     false
 }
 
+/// The keys `files` already hold for `known_as`, as `(file, key type,
+/// base64 blob)`: what a scan is compared with.
+pub async fn known_keys(
+    target: &Target,
+    known_as: &str,
+    files: &[PathBuf],
+) -> Vec<(PathBuf, String, String)> {
+    let mut out = Vec::new();
+    for f in files.iter().filter(|f| f.is_file()) {
+        let mut c = tokio::process::Command::new(sibling(target, "ssh-keygen"));
+        c.arg("-F").arg(known_as).arg("-f").arg(f);
+        let Ok(o) = output(c, None, "ssh-keygen -F").await else {
+            continue;
+        };
+        for line in String::from_utf8_lossy(&o.stdout).lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut words = line.split_whitespace();
+            // A `@cert-authority`/`@revoked` marker comes first.
+            let first = words.next().unwrap_or_default();
+            let names = if first.starts_with('@') {
+                words.next()
+            } else {
+                Some(first)
+            };
+            if let (Some(_), Some(kind), Some(blob)) = (names, words.next(), words.next()) {
+                out.push((f.clone(), kind.to_string(), blob.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Whether a scanned key is one of the known ones.
+pub fn same_key(scanned: &HostKey, kind: &str, blob: &str) -> bool {
+    let mut w = scanned.line.split_whitespace().skip(1);
+    w.next() == Some(kind) && w.next() == Some(blob)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

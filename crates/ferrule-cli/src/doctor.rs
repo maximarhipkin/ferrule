@@ -141,9 +141,62 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     health_check(&mut r, &cfg, chat_on);
     connections_check(&mut r, &cfg);
     editing_check(&mut r, &cfg);
+    ssh_check(&mut r, &cfg, offline).await;
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
     Ok(r.finish())
+}
+
+/// M34: every remote workspace ([ssh.<name>], and an `ssh://` default):
+/// host key, login, the shell, the directory, the proxy's forward. Offline,
+/// only the config is read.
+async fn ssh_check(r: &mut Report, cfg: &config::Config, offline: bool) {
+    let mut specs: Vec<String> = cfg.ssh.keys().map(|n| format!("ssh:{n}")).collect();
+    if let Some(w) = cfg.workspace.as_deref() {
+        if ferrule_ssh::is_remote(w) && !specs.iter().any(|s| s == w) {
+            specs.push(w.to_string());
+        }
+    }
+    if specs.is_empty() {
+        return;
+    }
+    for spec in specs {
+        let t = match ferrule_ssh::Target::parse(&spec, &cfg.ssh) {
+            Ok(t) => t,
+            Err(e) => {
+                r.fail("ssh", format!("{spec}: {e}"));
+                continue;
+            }
+        };
+        if offline {
+            r.note(
+                "ssh",
+                format!("{}: {} (offline: not contacted)", t.label, t.describe()),
+            );
+            continue;
+        }
+        match crate::remote::check(&t, cfg).await {
+            Ok(lines) => {
+                for c in lines {
+                    // The boundary is said once, below.
+                    if c.text == crate::remote::BOUNDARY {
+                        continue;
+                    }
+                    match c.mark {
+                        crate::remote::Mark::Ok => r.ok("ssh", &c.text),
+                        crate::remote::Mark::Note => r.note("ssh", &c.text),
+                        crate::remote::Mark::Warn => r.warn("ssh", &c.text),
+                        crate::remote::Mark::Fail => r.fail("ssh", &c.text),
+                    }
+                    if let Some(h) = &c.hint {
+                        r.hint(h);
+                    }
+                }
+            }
+            Err(e) => r.fail("ssh", format!("{}: {e}", t.label)),
+        }
+    }
+    r.note("ssh", crate::remote::BOUNDARY);
 }
 
 /// M29: the edit tools, the repo map and the grammars this build has.

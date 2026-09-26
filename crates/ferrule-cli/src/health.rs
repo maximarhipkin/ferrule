@@ -124,6 +124,12 @@ pub fn build(
             Arc::new(move || crate::connections::status_lines(&conns)),
         );
     }
+    // M34: the remote workspace's link, from its last state (no round trip).
+    if crate::remote::current().is_some() {
+        health = health
+            .with_section("workspace", Arc::new(crate::remote::status_lines))
+            .with_probe(Arc::new(crate::remote::probe));
+    }
     let notice = startup_notice(cfg, &health);
     Ok(health
         .with_startup_notice(notice)

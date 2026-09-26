@@ -28,6 +28,7 @@ ferrule-tools = { path = "../ferrule-tools" }
 ferrule-mcp = { path = "../ferrule-mcp" }
 ferrule-skills = { path = "../ferrule-skills" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
+ferrule-ssh = { path = "../ferrule-ssh" }
 ferrule-proxy = { path = "../ferrule-proxy" }
 ferrule-memory = { path = "../ferrule-memory" }
 ferrule-embed = { path = "../ferrule-embed", default-features = false }
