@@ -1,0 +1,18 @@
+[Repo map: ranked outline of this repository — definitions with line numbers; replaces any earlier map. Use code_search/read_file for detail.]
+src/price.rs
+     2│pub struct Money {
+     7│pub fn new(cents: i64) -> Self {
+    12│pub fn apply_discount(total: Money, percent: i64) -> Money {
+    16│pub enum Currency {
+    21│macro_rules! money {
+src/cart.rs
+     5│pub struct Cart {
+     9│pub struct Item {
+    14│pub trait Checkout {
+    15│fn checkout_total(&self) -> Money;
+    19│pub fn add_item(&mut self, name: &str, price: Money) {
+    27│fn checkout_total(&self) -> Money {
+src/lib.rs
+     1│pub mod cart;
+     2│pub mod price;
+     6│pub const MAX_ITEMS: usize = 100;

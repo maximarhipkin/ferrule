@@ -2,7 +2,7 @@ use crate::error::CoreError;
 use crate::event::AgentEvent;
 use crate::guard::{unless_halted, Guard, GuardedCall, Verdict as GuardVerdict};
 use crate::history::{result_ref, SEARCH_HISTORY};
-use crate::hooks::{Budget, Inbox, SessionRecall, StopFlag};
+use crate::hooks::{Budget, Inbox, RunEnd, RunObserver, SessionRecall, StopFlag, TurnContext};
 use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch};
 use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
 use crate::message::{Message, ToolCall, Usage};
@@ -277,6 +277,11 @@ pub struct Agent {
     memory: Option<String>,
     /// The recalled block still has to go in after this run's goal.
     memory_due: bool,
+    /// Asked at the start of every run (M29: the repo map), and the last
+    /// block it added.
+    turn_context: Option<Arc<dyn TurnContext>>,
+    turn_context_last: Option<String>,
+    run_observers: Vec<Arc<dyn RunObserver>>,
     /// What the current run was asked to do: kept verbatim through
     /// compaction, since it's what says when the work is done.
     goal: Option<String>,
@@ -327,6 +332,9 @@ impl Agent {
             recalled: false,
             memory: None,
             memory_due: false,
+            turn_context: None,
+            turn_context_last: None,
+            run_observers: Vec::new(),
             goal: None,
             messages: Vec::new(),
             usage: Usage::default(),
@@ -446,6 +454,19 @@ impl Agent {
 
     pub fn with_session_recall(mut self, recall: Arc<dyn SessionRecall>) -> Self {
         self.session_recall = Some(recall);
+        self
+    }
+
+    /// Ask `context` for a block at the start of every run; see
+    /// [`TurnContext`].
+    pub fn with_turn_context(mut self, context: Arc<dyn TurnContext>) -> Self {
+        self.turn_context = Some(context);
+        self
+    }
+
+    /// Adds a [`RunObserver`], called around every run.
+    pub fn with_run_observer(mut self, observer: Arc<dyn RunObserver>) -> Self {
+        self.run_observers.push(observer);
         self
     }
 
@@ -839,9 +860,32 @@ impl Agent {
         self.run_started = Instant::now();
         self.shown
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        let result = self.run_inner(goal, tx).await;
+        let observers = self.run_observers.clone();
+        let session_id = self.session_id();
+        for o in &observers {
+            o.begin(&session_id).await;
+        }
+        let result = self.run_inner(goal, tx.clone()).await;
         if let Some(inbox) = &inbox {
             inbox.end();
+        }
+        for o in &observers {
+            let end = RunEnd {
+                session_id: &session_id,
+                goal,
+                answer: result.as_deref().ok(),
+                incomplete: self.incomplete.as_deref(),
+            };
+            if let Some(text) = o.end(&end).await {
+                self.emit(
+                    &tx,
+                    AgentEvent::Notice {
+                        source: o.name().to_string(),
+                        text,
+                    },
+                )
+                .await;
+            }
         }
         result
     }
@@ -923,6 +967,7 @@ impl Agent {
                 self.push(Message::user(memory));
             }
         }
+        self.add_turn_context(goal).await;
         for (event, note) in [
             (HookEvent::SessionStart, session_note),
             (HookEvent::UserPromptSubmit, submitted.context),
@@ -1610,6 +1655,32 @@ impl Agent {
         };
         self.memory = recall.recall(&query).await.filter(|b| !b.trim().is_empty());
         self.memory_due = self.memory.is_some();
+    }
+
+    /// The [`TurnContext`] block for this run, if it says something new:
+    /// the same block as last time adds nothing while that one is still in
+    /// the history (compaction or truncation may have dropped it).
+    async fn add_turn_context(&mut self, goal: &str) {
+        let Some(source) = self.turn_context.clone() else {
+            return;
+        };
+        let Some(block) = source
+            .context(goal, &self.messages)
+            .await
+            .filter(|b| !b.trim().is_empty())
+        else {
+            return;
+        };
+        let present = |text: &str| {
+            self.messages
+                .iter()
+                .any(|m| m.role == crate::message::Role::User && m.content.as_deref() == Some(text))
+        };
+        if self.turn_context_last.as_deref() == Some(block.as_str()) && present(&block) {
+            return;
+        }
+        self.turn_context_last = Some(block.clone());
+        self.push(Message::user(block));
     }
 
     /// M28: the skills `goal` triggers, each as a user message after it —
@@ -3490,6 +3561,147 @@ mod tests {
             None,
         );
         (agent, provider)
+    }
+
+    /// Answers whatever block it's currently set to (M29: the repo map).
+    struct SetContext(Mutex<Option<String>>);
+
+    #[async_trait::async_trait]
+    impl TurnContext for SetContext {
+        async fn context(&self, _goal: &str, _history: &[Message]) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    fn bodies(msgs: &[Message]) -> Vec<String> {
+        msgs.iter()
+            .map(|m| format!("{:?}:{}", m.role, m.content.clone().unwrap_or_default()))
+            .collect()
+    }
+
+    /// M29: a turn in which the block didn't change adds no bytes, so the
+    /// whole previous request is a prefix of the next one (M27's cache);
+    /// a changed block is appended after the goal, never edited in place.
+    #[tokio::test]
+    async fn turn_context_is_added_only_when_it_changes() {
+        let (agent, provider) = seeing_agent(vec![say("one"), say("two"), say("three")], |_| {});
+        let map = Arc::new(SetContext(Mutex::new(Some("[map v1]".into()))));
+        let mut agent = agent.with_turn_context(map.clone());
+        let (tx, _rx) = events();
+        agent.run("first", tx.clone()).await.unwrap();
+        agent.run("second", tx.clone()).await.unwrap();
+        *map.0.lock().unwrap() = Some("[map v2]".into());
+        agent.run("third", tx).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let (a, b, c) = (bodies(&seen[0]), bodies(&seen[1]), bodies(&seen[2]));
+        assert_eq!(
+            a[a.len() - 2..],
+            ["User:first".to_string(), "User:[map v1]".into()]
+        );
+        assert_eq!(
+            b[..a.len()],
+            a[..],
+            "the first request is a prefix of the second"
+        );
+        assert_eq!(
+            b[a.len()..],
+            ["Assistant:one".to_string(), "User:second".into()]
+        );
+        assert_eq!(c[..b.len()], b[..]);
+        assert_eq!(
+            c[b.len()..],
+            [
+                "Assistant:two".to_string(),
+                "User:third".into(),
+                "User:[map v2]".into()
+            ]
+        );
+    }
+
+    /// Once the block has left the history (compaction, truncation, a
+    /// fresh history), the same answer goes in again.
+    #[tokio::test]
+    async fn turn_context_comes_back_when_the_history_lost_it() {
+        let (agent, provider) = seeing_agent(vec![say("one"), say("two")], |_| {});
+        let map = Arc::new(SetContext(Mutex::new(Some("[map]".into()))));
+        let mut agent = agent.with_turn_context(map);
+        let (tx, _rx) = events();
+        agent.run("first", tx.clone()).await.unwrap();
+        agent
+            .messages
+            .retain(|m| m.content.as_deref() != Some("[map]"));
+        agent.run("second", tx).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            bodies(&seen[1]).last().map(String::as_str),
+            Some("User:[map]")
+        );
+    }
+
+    /// No answer, or a blank one, adds nothing.
+    #[tokio::test]
+    async fn an_empty_turn_context_adds_nothing() {
+        let (agent, provider) = seeing_agent(vec![say("one")], |_| {});
+        let mut agent =
+            agent.with_turn_context(Arc::new(SetContext(Mutex::new(Some(" \n".into())))));
+        let (tx, _rx) = events();
+        agent.run("first", tx).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(
+            bodies(&seen[0]).last().map(String::as_str),
+            Some("User:first")
+        );
+    }
+
+    /// Records what it was told (M29: the seam auto-commit uses).
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl RunObserver for Recorder {
+        fn name(&self) -> &str {
+            "recorder"
+        }
+        async fn begin(&self, _session_id: &str) {
+            self.0.lock().unwrap().push("begin".into());
+        }
+        async fn end(&self, run: &RunEnd<'_>) -> Option<String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("end {} -> {:?}", run.goal, run.answer));
+            Some(format!("noted {}", run.goal))
+        }
+    }
+
+    /// Every run is wrapped: begin before the model is called, end with
+    /// the answer, and the note goes out as a Notice after the run.
+    #[tokio::test]
+    async fn run_observers_wrap_every_run() {
+        let rec = Arc::new(Recorder::default());
+        let (agent, _) = seeing_agent(vec![echo("a"), say("done"), say("again")], |_| {});
+        let mut agent = agent.with_run_observer(rec.clone());
+        let (tx, mut rx) = events();
+        agent.run("go", tx.clone()).await.unwrap();
+        agent.run("more", tx).await.unwrap();
+        assert_eq!(
+            *rec.0.lock().unwrap(),
+            [
+                "begin",
+                "end go -> Some(\"done\")",
+                "begin",
+                "end more -> Some(\"again\")"
+            ]
+        );
+        let notices: Vec<_> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                AgentEvent::Notice { source, text } => Some(format!("{source}: {text}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices, ["recorder: noted go", "recorder: noted more"]);
     }
 
     #[tokio::test]

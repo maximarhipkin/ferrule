@@ -1,0 +1,14 @@
+[Repo map: ranked outline of this repository — definitions with line numbers; replaces any earlier map. Use code_search/read_file for detail.]
+src/shop/Price.java
+     3│public final class Price {
+     4│public static Money applyDiscount(Money total, long percent) {
+     9│record Money(long cents) {}
+    11│enum Currency { SHEKEL, EURO }
+src/shop/Checkout.java
+     3│public interface Checkout {
+     4│Money checkoutTotal();
+src/shop/Cart.java
+     6│public class Cart implements Checkout {
+     9│public Cart() {}
+    11│public void addItem(Money price) {
+    16│public Money checkoutTotal() {

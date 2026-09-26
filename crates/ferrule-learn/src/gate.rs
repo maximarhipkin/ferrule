@@ -121,6 +121,7 @@ impl WorkspaceGate {
             check: Some(check),
             transcript,
             playbook: r.playbook_block,
+            edit_tools: Default::default(),
         })
         .with_ledger(
             r.sink.clone(),

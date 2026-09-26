@@ -21,4 +21,4 @@ pub use runner::{
 };
 pub use sink::{Caps, Pricing, Totals};
 pub use suite::{Suite, SuiteKind, Task};
-pub use variant::{MemoryTools, Variant};
+pub use variant::{EditTools, MemoryTools, Variant};

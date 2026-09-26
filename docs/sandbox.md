@@ -34,8 +34,8 @@ checks that ferrule's own process can't be opened from inside.
 
 Commands can read what your user can, except for one deny list. The
 same list is enforced by the OS sandbox and by the in-process file tools
-(`read_file`, `write_file`, `list_dir`), so the model gets refused either
-way. The list has three parts:
+(`read_file`, `write_file`, `edit_file`, `list_dir`; see `docs/editing.md`),
+so the model gets refused either way. The list has three parts:
 
 1. **Ferrule's secrets.** These are always denied and can't be opened
    from the config: `<data>/private` (the saved keys, the connections

@@ -8,13 +8,34 @@ use ferrule_core::{
 };
 use ferrule_sandbox::{Mode, Sandbox};
 use ferrule_tools::{
-    standard_registry, CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WebFetchTool,
-    WriteFileTool,
+    standard_registry, CommandVerifier, EditFileTool, ListDirTool, ReadFileTool, ShellTool,
+    WebFetchTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// M29 `--edit-tools`: which file-writing tools every variant is offered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EditTools {
+    /// `write_file` and `edit_file`, as ferrule ships.
+    #[default]
+    Both,
+    /// `write_file` only, as before M29.
+    WriteOnly,
+}
+
+impl EditTools {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "both" => Some(Self::Both),
+            "write-only" => Some(Self::WriteOnly),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -105,6 +126,8 @@ pub struct Build<'a> {
     /// The eval runner passes one only when a suite opts in; the learning
     /// pass's gate passes the candidate playbook.
     pub playbook: Option<&'a str>,
+    /// M29: `write_file` alone, or with `edit_file`.
+    pub edit_tools: EditTools,
 }
 
 /// The base of ferrule's own system prompt, kept in step with the CLI's
@@ -140,9 +163,14 @@ pub fn build(b: Build<'_>) -> Agent {
     let hidden = b.sandbox.read_deny_list(b.workspace);
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(ListDirTool::hiding(hidden)));
+    registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
+    registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
+    if b.edit_tools == EditTools::WriteOnly {
+        registry.remove("edit_file");
+    }
     if b.sandbox.policy().mode == Mode::ReadOnly {
         registry.remove("write_file");
+        registry.remove("edit_file");
     }
 
     let mut profile = b.profile.clone();
@@ -150,6 +178,7 @@ pub fn build(b: Build<'_>) -> Agent {
         max_iterations: b.max_iterations,
         ..Default::default()
     };
+    let mut repo_map = None;
     let system = match b.variant {
         Variant::Naive => {
             profile.retain_reasoning = false;
@@ -195,6 +224,17 @@ pub fn build(b: Build<'_>) -> Agent {
                     registry.register(tool);
                 }
             }
+            // M29: as in the CLI, only in a code repo; the tag cache in
+            // the run's state dir.
+            if ferrule_codemap::looks_like_code_repo(b.workspace, &hidden) {
+                let map = Arc::new(ferrule_codemap::CodeMap::new(
+                    b.workspace,
+                    hidden.clone(),
+                    Some(&b.state.join("repomap")),
+                ));
+                registry.register(Arc::new(ferrule_codemap::CodeSearchTool::new(map.clone())));
+                repo_map = Some(map);
+            }
             // M15: what compaction shortens or drops stays reachable.
             if let Some(t) = &b.transcript {
                 registry.register(Arc::new(ferrule_core::SearchHistoryTool::new(t)));
@@ -212,6 +252,12 @@ pub fn build(b: Build<'_>) -> Agent {
         b.transcript,
     )
     .with_system_prompt(system);
+    if let Some(map) = repo_map {
+        agent = agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(
+            map,
+            ferrule_codemap::DEFAULT_MAP_TOKENS,
+        )));
+    }
     if let (true, Some(cmd)) = (b.variant.engineered(), b.check) {
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(
             cmd,

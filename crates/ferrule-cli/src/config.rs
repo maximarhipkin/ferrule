@@ -217,6 +217,51 @@ pub struct AgentSettings {
     /// edit a sent message (Telegram) and in `ferrule chat`.
     #[serde(default = "default_stream")]
     pub stream: bool,
+    /// M29: offer `edit_file` (SEARCH/REPLACE). `write_file` stays either
+    /// way; false is for a provider that misbehaves with the tool.
+    #[serde(default = "default_true")]
+    pub edit_file: bool,
+    /// M29: the repo map's budget in tokens (chars / 4), in a workspace
+    /// that looks like a code repo. 0 turns the map off; `code_search`
+    /// stays.
+    #[serde(default = "default_repo_map_tokens")]
+    pub repo_map_tokens: usize,
+    /// M29: after `edit_file`/`write_file`, run the project's own linter
+    /// on the file and append what it reports. `auto`: when it's
+    /// installed and the project has its config file; `off`: never.
+    #[serde(default)]
+    pub lint: LintMode,
+    /// How long one linter run may take.
+    #[serde(default = "default_lint_timeout_secs")]
+    pub lint_timeout_secs: u64,
+    /// M29: end each run that changed files in one git commit of exactly
+    /// the files the agent changed (never the owner's dirty work). Off by
+    /// default; `ferrule undo` / `/undo` take the latest one back.
+    #[serde(default)]
+    pub auto_commit: bool,
+    /// `new`: commit on a `ferrule/auto-…` branch made at the first commit;
+    /// `current`: on the branch HEAD is on.
+    #[serde(default)]
+    pub auto_commit_branch: crate::autocommit::BranchMode,
+    /// `Name <email>`, the author and committer of agent commits.
+    #[serde(default = "default_auto_commit_author")]
+    pub auto_commit_author: String,
+}
+
+fn default_auto_commit_author() -> String {
+    crate::autocommit::DEFAULT_AUTHOR.into()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LintMode {
+    #[default]
+    Auto,
+    Off,
+}
+
+fn default_lint_timeout_secs() -> u64 {
+    10
 }
 
 impl Default for AgentSettings {
@@ -226,8 +271,23 @@ impl Default for AgentSettings {
             verify_timeout_secs: default_verify_timeout_secs(),
             parallel_tools: default_parallel_tools(),
             stream: default_stream(),
+            edit_file: true,
+            repo_map_tokens: default_repo_map_tokens(),
+            lint: LintMode::Auto,
+            lint_timeout_secs: default_lint_timeout_secs(),
+            auto_commit: false,
+            auto_commit_branch: Default::default(),
+            auto_commit_author: default_auto_commit_author(),
         }
     }
+}
+
+fn default_repo_map_tokens() -> usize {
+    ferrule_codemap::DEFAULT_MAP_TOKENS
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_stream() -> bool {
@@ -735,6 +795,13 @@ profile = "openai"
 # verify_timeout_secs = 600
 # parallel_tools = 4              # read-only tool calls from one response run at once; 1 = one by one
 # stream = true                   # replies grow as the model writes (Telegram, `ferrule chat`)
+# edit_file = true                # offer edit_file (SEARCH/REPLACE); write_file stays either way
+# repo_map_tokens = 1024          # repo map budget in a code repo (tokens); 0 = no map
+# lint = "auto"                   # after an edit, run the project's linter (rustfmt/ruff/gofmt/eslint/tsc) if installed and configured; "off"
+# lint_timeout_secs = 10
+# auto_commit = false            # commit each run's own files (never yours) to git; `ferrule undo` reverts
+# auto_commit_branch = "new"      # "new": a ferrule/auto-* branch; "current": the branch you're on
+# auto_commit_author = "ferrule <ferrule@localhost>"
 
 # [gateway]
 # local = true                              # enable the stdin/stdout channel

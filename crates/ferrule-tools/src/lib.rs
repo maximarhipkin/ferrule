@@ -2,6 +2,7 @@
 //! verbose tool output is the number one source of context bloat.
 
 pub mod diary;
+pub mod edit;
 pub mod egress;
 pub mod fs_tools;
 pub mod search;
@@ -9,6 +10,7 @@ pub mod shell;
 pub mod web;
 
 pub use diary::{DiaryTool, WriteTodosTool};
+pub use edit::EditFileTool;
 pub use fs_tools::{ListDirTool, ReadFileTool, WriteFileTool};
 pub use search::{SearchProvider, SearchSettings, WebSearchTool};
 pub use shell::{CommandVerifier, ShellTool};
@@ -22,6 +24,7 @@ pub fn standard_registry() -> ToolRegistry {
     let mut reg = ToolRegistry::new();
     reg.register(Arc::new(ReadFileTool::default()));
     reg.register(Arc::new(WriteFileTool::default()));
+    reg.register(Arc::new(EditFileTool::default()));
     reg.register(Arc::new(ListDirTool::default()));
     reg.register(Arc::new(ShellTool::default()));
     reg.register(Arc::new(WebFetchTool::default()));

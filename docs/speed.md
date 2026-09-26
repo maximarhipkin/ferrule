@@ -7,9 +7,9 @@ reasons for each decision, is `docs/m27-speed.md`.
 ## Reads run at the same time
 
 When the model asks for several tool calls in one response, the ones that
-only read (`read_file`, `list_dir`, `web_fetch`, `recall`, `search_history`,
-MCP tools the server marks `readOnlyHint`) run together. Anything that
-writes (`write_file`, `shell`, spawning an agent, other MCP tools) runs on
+only read (`read_file`, `list_dir`, `code_search`, `web_fetch`, `recall`,
+`search_history`, MCP tools the server marks `readOnlyHint`) run together. Anything that
+writes (`write_file`, `edit_file`, `shell`, spawning an agent, other MCP tools) runs on
 its own, in order, so `read a, read b, write a, read a` still reads the old
 `a` twice and the new `a` once. Approvals are still asked one at a time,
 before anything runs. Results go back to the model in the order it asked.

@@ -14,6 +14,8 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
+# edit_file's diff
+similar = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

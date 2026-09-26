@@ -536,6 +536,28 @@ that convention yet — ask before introducing one).
     - Fixes: "failed checks fixed" counts only passing task runs;
       sandboxed commands get `HTTP_PROXY`/`http_proxy`.
     - **Decisions for Max and open edges:** see the M28 session-log entry.
+  - **M29 edit mechanics**: **built** (2026-09-26, branch
+    `m29-edit-mechanics`, PR to main open, not merged). Design in
+    `docs/m29-edit-mechanics.md`; user guide `docs/editing.md`.
+    - `edit_file`: SEARCH/REPLACE hunks, all or nothing, exact plus two
+      whitespace rungs (never fuzzy on content), errors that show the
+      closest region, CRLF/UTF-16/BOM/Latin-1 preserved, atomic write.
+      `write_file` stays in every profile (now atomic too); the advice is
+      in the tool descriptions. `[agent] edit_file`.
+    - New crate `ferrule-codemap`: tree-sitter tags (Rust, Python,
+      TS/JS, Go, Java, one feature each), an Aider-style PageRank repo map
+      injected through a `TurnContext` seam only when it changes (the
+      prefix stays cached), a per-file tag cache, and `code_search`. Only
+      in a workspace that looks like a code repo. `[agent] repo_map_tokens`.
+    - Per-edit lint as a built-in M18 PostToolUse hook: rustfmt, ruff,
+      gofmt, eslint, tsc, each only when installed and configured by the
+      project; in the sandbox, with a timeout. `[agent] lint`.
+    - Optional auto-commit (`[agent] auto_commit`, off): a `RunObserver`
+      seam around `Agent::run` commits exactly the agent's files on a
+      `ferrule/auto-*` branch (or the current one), in the sandbox, never
+      pushing; `ferrule undo` and `/undo` take it back.
+    - `ferrule eval run … --edit-tools both|write-only`.
+    - **Decisions for Max and open edges:** see the M29 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -3914,3 +3936,65 @@ until this PR's CI run.
 **Open edges:** `web_fetch` output isn't fenced or escaped, so a page can
 forge a `<skill_content>` block and suppress (not cause) a trigger;
 scheduled prompts can't trigger by design; no native provider search.
+
+### 2026-09-26 — M29 edit mechanics (Devi, Opus 5.5)
+
+**Scope.** Built `docs/m29-edit-mechanics.md` on branch
+`m29-edit-mechanics` in five commits: `edit_file`, the repo map and
+`code_search`, per-edit lint, optional auto-commit with undo, and the
+eval's `--edit-tools` flag. User guide: `docs/editing.md`.
+
+**What it does.** `edit_file` applies SEARCH/REPLACE hunks all or nothing:
+exact, then trailing-whitespace-insensitive, then a uniform indentation
+offset, and never fuzzy on content. A miss shows the closest region with
+line numbers; line endings, BOMs, UTF-16 and non-UTF-8 bytes round-trip;
+the write is atomic, and so is `write_file`'s now. The new
+`ferrule-codemap` crate parses Rust, Python, TS/JS, Go and Java with
+tree-sitter, ranks definitions Aider-style (PageRank personalised by what
+the conversation mentions) into a map of `repo_map_tokens` (1024), and
+serves `code_search`. Both appear only in a workspace that looks like a
+code repo. `LintHook` is a built-in PostToolUse hook that runs the
+project's own linter after an edit. `[agent] auto_commit` commits exactly
+the files a run made dirty, and `ferrule undo` / `/undo` revert the
+latest agent commit.
+
+**Measured (mock, real binary).** `eval run evals/starter --variant ab`:
+engineered 20/20, naive 11/20; 150 calls, 951.5k input + 6.2k output
+tokens, $0.98 ($0.53 / $0.45), identical with `--edit-tools write-only`.
+The mock never calls `edit_file` and prices only messages. A real provider
+pays ~227 more input tokens per call for the schemas (`edit_file` ~205,
+`write_file`'s longer description ~22), ~34k over the A/B.
+`cargo test --workspace`: 969 passed (after merging M28's `main`).
+
+**Decisions for Max:**
+- `write_file` stays in every profile. The edit advice is in the tool
+  descriptions, so the system prompt's bytes (M27's pinned prefix) don't
+  change.
+- The repo map is a user message appended only when it changes, not part
+  of the system prompt (which would lose the prompt cache on every edit).
+  It isn't refreshed inside a run's tool loop; `code_search` always is.
+- JavaScript is parsed with the TSX grammar, and C# is left out: its
+  grammar is several MB.
+- Lint defaults to `auto`: a linter runs only where the project has its
+  config file, so the model isn't pushed to restyle code.
+- Auto-commit is off by default and uses a new `ferrule/auto-*` branch
+  unless `auto_commit_branch = "current"`. Files dirty at the run's start
+  are never committed. Git runs in the sandbox, and the repo's own hooks
+  apply. Sub-agents never commit.
+- `--edit-tools` is shown on stderr only. The saved run doesn't record it,
+  since that would touch the report code M28 is changing.
+
+**Unverified:**
+- No real model has been offered `edit_file` yet. The command and its
+  expected cost (~$1–3 with gpt-5-mini) are in `docs/editing.md`.
+- The real linters' output: the tests run stand-in scripts named
+  rustfmt, ruff, gofmt, eslint and tsc.
+
+**Release.** All five targets built on the branch's `release.yml` run
+(actions run 36224246208). The grammars add 5.35 MB (+28%) to the stripped
+binary, and `--no-default-features` drops them.
+
+**Open edges:** the saved eval history doesn't record `--edit-tools`; the
+map isn't refreshed mid-run; a workspace that is a subdirectory of a repo
+auto-commits only where the sandbox lets git write the parent's `.git`;
+no C#.

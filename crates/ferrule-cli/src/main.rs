@@ -1,4 +1,5 @@
 mod agents;
+mod autocommit;
 mod browser;
 mod config;
 mod config_follow;
@@ -41,7 +42,8 @@ use ferrule_proxy::{Broker, BrokerConfig, Upstream};
 use ferrule_sandbox::{Backend, Egress, Mode, Sandbox};
 use ferrule_tools::standard_registry;
 use ferrule_tools::{
-    CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WebFetchTool, WriteFileTool,
+    CommandVerifier, EditFileTool, ListDirTool, ReadFileTool, ShellTool, WebFetchTool,
+    WriteFileTool,
 };
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -227,6 +229,12 @@ enum Cmd {
         /// Only say whether it's on
         #[arg(long, conflicts_with = "reason")]
         status: bool,
+    },
+    /// Take back the latest agent commit (`[agent] auto_commit`), if none
+    /// of its files changed since (docs/editing.md)
+    Undo {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
     },
     /// Spending caps, approvals and the kill switch (docs/m19-trust-cost.md)
     Trust {
@@ -612,6 +620,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             }
         },
         Cmd::Eval { op } => eval::cmd(op).await?,
+        Cmd::Undo { workspace } => {
+            let (cfg, _) = config::Config::load()?;
+            let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
+            println!("{}", autocommit::undo(&workspace, shared_sandbox(&cfg)?)?);
+        }
         Cmd::Stop {
             reason,
             clear,
@@ -864,10 +877,27 @@ fn build_agent_from(
     let hidden = sandbox.read_deny_list(&tool_ctx.workspace);
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(ListDirTool::hiding(hidden)));
+    registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
+    registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
+    // M29: `code_search` and the repo map, only in something that looks
+    // like a code repo (a home dir gets neither schema nor map).
+    let repo_map = ferrule_codemap::looks_like_code_repo(&tool_ctx.workspace, &hidden).then(|| {
+        let cache = config::data_dir().ok().map(|d| d.join("repomap"));
+        let map = Arc::new(ferrule_codemap::CodeMap::new(
+            &tool_ctx.workspace,
+            hidden.clone(),
+            cache.as_deref(),
+        ));
+        registry.register(Arc::new(ferrule_codemap::CodeSearchTool::new(map.clone())));
+        map
+    });
     warn_data_in_workspace(&sandbox, &tool_ctx.workspace);
+    if !cfg.agent.edit_file {
+        registry.remove("edit_file");
+    }
     if sandbox.policy().mode == Mode::ReadOnly || read_only {
         registry.remove("write_file");
+        registry.remove("edit_file");
     }
     // M15: the root corrects and deletes memories, a writing child only
     // adds, a read-only child only recalls (docs/m15-memory.md §8).
@@ -905,7 +935,7 @@ fn build_agent_from(
     if planning {
         // `write_todos` and `log_diary` write under `.ferrule/` without
         // saying they change files.
-        for name in ["write_file", "write_todos", "log_diary"] {
+        for name in ["write_file", "edit_file", "write_todos", "log_diary"] {
             registry.remove(name);
         }
         for d in registry.definitions() {
@@ -1019,6 +1049,10 @@ fn build_agent_from(
     .with_system_prompt(system)
     // The memory block is picked on the first run, from the session's goal.
     .with_session_recall(Arc::new(memory_tools::GoalRecall { db: memory_db }));
+    if let (Some(map), tokens @ 1..) = (repo_map, cfg.agent.repo_map_tokens) {
+        agent =
+            agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(map, tokens)));
+    }
     agent = agent
         .with_ledger(
             ledger.sink,
@@ -1027,6 +1061,8 @@ fn build_agent_from(
             entry.model.clone(),
         )
         .with_guard(guard);
+    let lint_sandbox = sandbox.clone();
+    let commit_sandbox = sandbox.clone();
     if let (Some(cmd), false) = (&cfg.agent.verify_command, planning) {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(
@@ -1039,7 +1075,30 @@ fn build_agent_from(
     // A planning run fires none: hooks run as the owner, outside the
     // read-only sandbox plan mode promises (docs/m19-trust-cost.md §13).
     if child.is_none() && !planning {
-        agent.add_hooks(hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?);
+        let mut hooks = hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?;
+        // M29: the project's linter after each edit, built in (so a
+        // sub-agent inherits it with the rest), in the sandbox.
+        if cfg.agent.lint == config::LintMode::Auto {
+            hooks.add(
+                ferrule_hooks::LintHook::new(
+                    lint_sandbox,
+                    Duration::from_secs(cfg.agent.lint_timeout_secs.max(1)),
+                )
+                .into_hook(),
+            );
+        }
+        agent.add_hooks(hooks);
+    }
+    // M29: one commit of the run's own files per run, in the sandbox. A
+    // sub-agent works in its own worktree; its root commits for the tree.
+    if cfg.agent.auto_commit && child.is_none() && !planning {
+        let commit = autocommit::AutoCommit::new(
+            &hooks_workspace,
+            commit_sandbox,
+            &cfg.agent.auto_commit_author,
+            cfg.agent.auto_commit_branch,
+        )?;
+        agent = agent.with_run_observer(Arc::new(autocommit::AutoCommitObserver::new(commit)));
     }
     if let Some(triggers) = prompt_triggers {
         agent = agent.with_prompt_triggers(triggers);
@@ -1366,6 +1425,9 @@ fn spawn_renderer_with(show_reasoning: bool, streamed: bool) -> mpsc::Sender<Age
                     println!("\x1b[33m[stopped: {reason}]\x1b[0m")
                 }
                 AgentEvent::Error { message } => eprintln!("\x1b[31merror: {message}\x1b[0m"),
+                AgentEvent::Notice { source, text } => {
+                    eprintln!("\x1b[90m[{source}] {text}\x1b[0m")
+                }
                 _ => {}
             }
         }
@@ -1517,6 +1579,7 @@ async fn close_tree(sup: &ferrule_agents::Supervisor, root: &str) {
 
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
+    let undo_dir = dunce::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
     let (mut agent, sup) = build_root(provider, workspace, 60, &session_id, "chat").await?;
     // M27: the answer prints as the model writes it.
     let streamed = config::Config::load()
@@ -1549,6 +1612,17 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
         }
         let prompt = line.trim();
         if prompt.is_empty() {
+            continue;
+        }
+        // M29: take back the latest agent commit, without a model call.
+        if prompt == "/undo" {
+            let undone = config::Config::load()
+                .and_then(|(cfg, _)| shared_sandbox(&cfg))
+                .and_then(|sandbox| autocommit::undo(&undo_dir, sandbox));
+            match undone {
+                Ok(said) => println!("\x1b[90m[undo] {said}\x1b[0m"),
+                Err(e) => eprintln!("\x1b[33m[undo] {e}\x1b[0m"),
+            }
             continue;
         }
         let tx = spawn_renderer_with(false, streamed.is_some());

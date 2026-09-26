@@ -1,0 +1,15 @@
+[Repo map: ranked outline of this repository — definitions with line numbers; replaces any earlier map. Use code_search/read_file for detail.]
+shop/price.go
+     3│const MaxPercent = 100
+     5│type Money struct {
+     9│type Percent = int64
+    11│func NewMoney(cents int64) Money {
+    16│func ApplyDiscount(total Money, percent Percent) Money {
+shop/cart.go
+     3│type Cart struct {
+     7│type Checkout interface {
+     8│CheckoutTotal() Money
+    11│func (c *Cart) AddItem(price Money) {
+    15│func (c *Cart) CheckoutTotal() Money {
+shop/main_test.go
+     5│func TestCheckout(t *testing.T) {

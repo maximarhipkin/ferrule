@@ -182,6 +182,8 @@ pub struct Options {
     /// dir).
     pub work_root: Option<PathBuf>,
     pub progress: Option<Progress>,
+    /// M29: offer `edit_file` alongside `write_file`, or `write_file` only.
+    pub edit_tools: variant::EditTools,
 }
 
 impl Default for Options {
@@ -196,6 +198,7 @@ impl Default for Options {
             keep: false,
             work_root: None,
             progress: None,
+            edit_tools: variant::EditTools::Both,
         }
     }
 }
@@ -359,6 +362,7 @@ pub async fn run_suite(suite: &Suite, env: &Env, opts: &Options) -> Result<Suite
                     label: &label,
                     transcripts: transcripts.as_deref(),
                     keep: opts.keep,
+                    edit_tools: opts.edit_tools,
                 })
                 .await;
                 say(&format!(
@@ -435,6 +439,7 @@ struct RunOne<'a> {
     label: &'a str,
     transcripts: Option<&'a std::path::Path>,
     keep: bool,
+    edit_tools: variant::EditTools,
 }
 
 #[derive(Default)]
@@ -516,6 +521,7 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
             .owner_playbook
             .then_some(p.env.playbook.as_deref())
             .flatten(),
+        edit_tools: p.edit_tools,
     });
     let mut sink = p.sink.clone() as Arc<dyn LedgerSink>;
     let mut owner_stop = None;
