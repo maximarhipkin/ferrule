@@ -764,6 +764,24 @@ pub struct Probe {
     pub team: String,
     /// Whether the app token may open a Socket Mode connection.
     pub socket: Result<(), String>,
+    /// The bot token's scopes, from `auth.test`'s `x-oauth-scopes` header
+    /// (`None` when Slack didn't send it).
+    pub scopes: Option<Vec<String>>,
+}
+
+impl Probe {
+    /// The scopes in [`BOT_SCOPES`] the bot token lacks; empty when they're
+    /// all there or Slack didn't say.
+    pub fn missing_scopes(&self) -> Vec<&'static str> {
+        match &self.scopes {
+            Some(have) => BOT_SCOPES
+                .iter()
+                .copied()
+                .filter(|s| !have.iter().any(|h| h == s))
+                .collect(),
+            None => vec![],
+        }
+    }
 }
 
 /// `auth.test` with the bot token and `apps.connections.open` with the app
@@ -779,11 +797,29 @@ pub async fn probe(api: &str, bot_token: &str, app_token: &str) -> Result<Probe,
         .await
         .map(|_| ())
         .map_err(|e| explain(e.to_string(), Token::App));
+    // Only a header carries the scopes, so ask once more, plainly.
+    let scopes = ch
+        .client
+        .post(format!("{}/auth.test", ch.api))
+        .bearer_auth(bot_token)
+        .send()
+        .await
+        .ok()
+        .and_then(|r| {
+            let v = r.headers().get("x-oauth-scopes")?.to_str().ok()?;
+            Some(
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            )
+        });
     Ok(Probe {
         bot_name: me["user"].as_str().unwrap_or("").to_string(),
         bot_id: me["user_id"].as_str().unwrap_or("").to_string(),
         team: me["team"].as_str().unwrap_or("").to_string(),
         socket,
+        scopes,
     })
 }
 

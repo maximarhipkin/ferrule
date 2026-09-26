@@ -40,6 +40,11 @@ plan_timeout_secs = 3600        # how long a Telegram plan waits for "yes"
 gates = true
 ```
 
+Since M31 the owner can also be on Discord or Slack: `discord_owner`,
+`slack_owner` and `owner_channel` pick who gets the approvals (with Allow /
+Refuse buttons there) and the warnings. See [m31-channels.md](m31-channels.md)
+§4, [discord.md](discord.md) and [slack.md](slack.md).
+
 ## 1. The seam in the agent loop
 
 `ferrule-core` gets one new file, `guard.rs`, with one trait:

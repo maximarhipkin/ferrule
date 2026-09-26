@@ -41,6 +41,11 @@ stream = true            # everywhere it's possible
 telegram_stream = false  # but not on Telegram (unset: follow [agent] stream)
 ```
 
+Discord and Slack stream the same way, with `discord_stream` and
+`slack_stream` (M31). Discord rolls over at 2000 characters; Slack edits at
+most every 1.5 s and rolls over at 3900. See [discord.md](discord.md) and
+[slack.md](slack.md).
+
 Scheduled tasks, `ferrule run`, `ferrule eval` and channels that can't edit
 a sent message get the whole reply at the end, as before. All three model
 APIs stream (`api = "chat"`, `"anthropic"`, `"responses"`). A

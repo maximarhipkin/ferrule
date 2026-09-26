@@ -183,7 +183,7 @@ therefore `/status` to the doors and to `is_command`.
 **Pairing (setup).** Telegram's setup watches `getUpdates` and asks "let
 this chat use the bot?". For Discord and Slack, setup does the analogue
 with a **one-time code**:
-1. `ferrule setup` shows a code (`ferrule-4827`) and runs the adapter itself
+1. `ferrule setup` shows a six-digit code (`482731`) and runs the adapter itself
    for up to two minutes, with an empty allowlist and that code.
 2. The first DM whose text is exactly the code is admitted once and
    answered "Paired. …". Its author's id is saved to `*_allowed_users`.
@@ -472,8 +472,9 @@ This works exactly as for the Telegram token:
 - **The watchdog and heartbeat** see a channel with no frame for
   `poll_stale_secs` (300) as stale and say so, as for Telegram today.
 - **Dashboard**: the channels card already lists name, last ok poll and
-  stale. M31 adds `problem`, one line in `api.rs` and in the page's table
-  cell.
+  stale. M31 adds `problem` to each channel in `api.rs`, and puts a dead
+  channel in the existing problems list, so the page shows it without a
+  change to `app.js` (a table column there is a follow-up).
 - **`ferrule doctor`** makes only reads:
   - Discord:
     - `GET /users/@me`: the token, and the bot's name;

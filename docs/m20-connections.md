@@ -13,7 +13,9 @@ agent Jira or Gmail means SSH, a token pasted into `secrets.env`, and
 1. the agent notices it needs a service (or the owner asks for it) and
    finds it in a built-in **catalog** of official remote MCP servers;
 2. the owner's Telegram chat gets **one "Connect X" button**, with what the
-   agent will be able to do;
+   agent will be able to do (since M31, the owner's Discord or Slack chat
+   when that's the primary owner: [discord.md](discord.md),
+   [slack.md](slack.md));
 3. the owner taps it, logs in at the vendor and approves;
 4. ferrule catches the OAuth callback **without any inbound port**, stores
    the token encrypted, and refreshes it itself;

@@ -610,6 +610,27 @@ async fn doctors_probe_reads_only() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_probe_names_the_scopes_the_bot_token_lacks() {
+    let s = Slack::start();
+    let p = sl::probe(&s.api, BOT_TOKEN, APP_TOKEN).await.unwrap();
+    assert!(p.missing_scopes().is_empty(), "no header, nothing claimed");
+    for _ in 0..2 {
+        s.once(
+            "auth.test",
+            Response::json(json!({
+                "ok": true, "user_id": BOT, "user": "ferrule", "team": "Mock Team",
+            }))
+            .with_header("x-oauth-scopes", "chat:write,im:history, im:read,commands"),
+        );
+    }
+    let p = sl::probe(&s.api, BOT_TOKEN, APP_TOKEN).await.unwrap();
+    assert_eq!(
+        p.missing_scopes(),
+        ["app_mentions:read", "im:write", "reactions:write"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn setup_pairs_the_first_dm_with_the_code_and_tells_nobody_else_anything() {
     let s = Slack::start();
     let ch = SlackChannel::with_api(BOT_TOKEN, APP_TOKEN, &s.api).with_pairing("ferrule-4827");

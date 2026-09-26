@@ -639,6 +639,23 @@ owner says its keyword, and never because a web page did.
 often as `write-only` for fewer tokens per pass, and an unattended run's
 changes arrive as one reviewable, undoable commit.
 
+### M31 — Discord and Slack
+
+**Status.** Built (`docs/m31-channels.md`; user guides `docs/discord.md`
+and `docs/slack.md`). PR to `main` open, not merged.
+- Discord (Gateway v10) and Slack (Socket Mode) adapters, both outbound
+  only, run by the same daemon as Telegram.
+- Per-channel allowlists, mention-only shared channels, pairing by a
+  one-time code in `ferrule setup`; strangers never reach the model.
+- The owner can live on any channel; approvals get buttons on Discord and
+  Slack.
+- A dead socket shows in `/status`, `ferrule status`, the watchdog, the
+  dashboard and `ferrule doctor`, and stops only its own channel.
+
+**Done means.** A real bot on each answers its owner, refuses a stranger,
+and survives a dropped socket. WhatsApp comes next (options in the design,
+§9).
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

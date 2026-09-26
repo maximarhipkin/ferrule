@@ -658,6 +658,14 @@ async fn slack(r: &mut Report, cfg: &config::Config, offline: bool) -> bool {
         match slack::probe(&g.slack_api_url, &bot, &app).await {
             Ok(p) => {
                 r.ok("slack", format!("{} in {} · {allowed}", p.bot_name, p.team));
+                let missing = p.missing_scopes();
+                if !missing.is_empty() {
+                    r.warn(
+                        "slack",
+                        format!("the bot token lacks {}", missing.join(", ")),
+                    );
+                    r.hint("api.slack.com → your app → OAuth & Permissions → add them, then reinstall (docs/slack.md)");
+                }
                 if let Err(why) = p.socket {
                     r.fail("slack", why);
                     r.hint("api.slack.com → your app → Socket Mode on, and an app-level token with connections:write");
