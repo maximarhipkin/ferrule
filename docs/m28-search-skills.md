@@ -284,7 +284,7 @@ Case-insensitive, Unicode-aware, whole words:
    - The phrase "ship it" matches "ship it" and "SHIP, it" (punctuation
      separates), but not "ship this".
    - Hebrew proclitics: when a trigger word starts with a Hebrew letter,
-     a message word also matches if it is 1–3 letters from ו ה ב ל מ ש כ
+     a message word also matches if it is 1–4 letters from ו ה ב ל מ ש כ
      followed by the trigger word:
      - `שחרור` matches `השחרור`, `ושחרור`, `בשחרור`, `לשחרור` and
        `וכשהשחרור`;
@@ -309,7 +309,8 @@ pub trait PromptTriggers: Send + Sync {
     /// `loaded`, vetted and rendered, within the turn's limits.
     fn triggered(&self, prompt: &str, loaded: &[String]) -> Vec<Triggered>;
 }
-pub struct Triggered { pub name: String, pub matched: String, pub text: String }
+pub struct Triggered { pub name: String, pub matched: String, pub load: TriggerLoad }
+pub enum TriggerLoad { Loaded(String), TooLarge, Refused(String) }
 ```
 
 - `Agent::with_prompt_triggers(Arc<dyn PromptTriggers>)` attaches it.

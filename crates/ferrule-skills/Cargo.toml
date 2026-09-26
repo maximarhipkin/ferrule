@@ -12,6 +12,8 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
 tokio = { workspace = true }
+# NFD for trigger matching (M28); already in the tree through `url`/`idna`.
+icu_normalizer = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

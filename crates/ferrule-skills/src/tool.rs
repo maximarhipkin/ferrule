@@ -6,6 +6,7 @@
 //! typically live outside it.
 
 use crate::discover::{discover, Skill, SkillRoot, SkillSet};
+use crate::triggers::{SkillTriggers, TriggerOptions};
 use ferrule_core::agent::{SKILL_CONTENT_CLOSE, SKILL_CONTENT_OPEN};
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput, ToolSource};
@@ -107,13 +108,21 @@ impl LiveSkillTools {
         Self {
             activate: Arc::new(ActivateSkillTool {
                 skills: skills.clone(),
-                active: Mutex::new(HashSet::new()),
+                active: Arc::default(),
             }),
             read: Arc::new(ReadSkillFileTool {
                 skills: skills.clone(),
             }),
             skills,
         }
+    }
+}
+
+impl LiveSkillTools {
+    /// Keyword triggers over the same set (M28). What they load counts as
+    /// activated for this agent's `activate_skill`.
+    pub fn triggers(&self, opts: TriggerOptions) -> SkillTriggers {
+        SkillTriggers::new(self.skills.clone(), self.activate.active.clone(), opts)
     }
 }
 
@@ -151,8 +160,8 @@ fn lookup(skills: &SkillsHandle, tool: &str, args: &Value) -> Result<Skill, Core
 pub struct ActivateSkillTool {
     skills: SkillsHandle,
     /// Names already loaded by this agent. One tool instance per agent, so
-    /// this is per session.
-    active: Mutex<HashSet<String>>,
+    /// this is per session. Triggers add to it too.
+    active: Arc<Mutex<HashSet<String>>>,
 }
 
 #[async_trait::async_trait]

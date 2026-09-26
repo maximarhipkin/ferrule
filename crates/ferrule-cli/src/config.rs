@@ -315,6 +315,16 @@ pub struct SkillsConfig {
     pub paths: Vec<PathBuf>,
     /// Skill names to ignore wherever they're found.
     pub disabled: Vec<String>,
+    /// M28: skills load when a person's message names one of their
+    /// `triggers:` (docs/skills.md).
+    pub triggers: bool,
+    /// Most skills one message loads that way.
+    pub max_triggered: usize,
+    /// Their combined size, in tokens (4 characters each).
+    pub trigger_budget_tokens: usize,
+    /// Whether the workspace's own skills may trigger. Off: a cloned repo
+    /// mustn't make its skills load on common words.
+    pub project_triggers: bool,
 }
 
 impl Default for SkillsConfig {
@@ -324,6 +334,10 @@ impl Default for SkillsConfig {
             project: true,
             paths: Vec::new(),
             disabled: Vec::new(),
+            triggers: true,
+            max_triggered: 2,
+            trigger_budget_tokens: 4000,
+            project_triggers: false,
         }
     }
 }
@@ -763,6 +777,10 @@ profile = "openai"
 # project = true             # then `paths`, ~/.config/ferrule/skills,
 # paths = []                 # ~/.agents/skills, ~/.claude/skills. First name wins.
 # disabled = []              # skill names to ignore. `ferrule skills` lists them all.
+# triggers = true            # load a skill when your message names its `triggers:`
+# max_triggered = 2          # skills one message loads that way
+# trigger_budget_tokens = 4000   # their combined size
+# project_triggers = false   # let the workspace's skills trigger too
 
 # [web_search]              # The web_search tool (docs/web-search.md). Off until a
 # provider = "brave"         # provider is set: brave, tavily, exa or searxng.

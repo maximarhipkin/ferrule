@@ -14,6 +14,9 @@ use std::collections::BTreeMap;
 pub struct Frontmatter {
     /// Top-level scalar keys. Nested maps are recorded as `""`.
     pub fields: BTreeMap<String, String>,
+    /// Keys holding a block list (`- a` lines, indented or not), for
+    /// [`Frontmatter::list`]. Their `fields` value is `""`.
+    lists: BTreeMap<String, Vec<String>>,
     /// Markdown after the closing `---`, trimmed.
     pub body: String,
 }
@@ -26,6 +29,53 @@ impl Frontmatter {
     pub fn flag(&self, key: &str) -> bool {
         matches!(self.get(key), Some("true" | "True" | "TRUE" | "yes"))
     }
+
+    /// A list-valued key, written as a flow list (`[a, "b c"]`), a block
+    /// list or a comma-separated string. Entries are unquoted and trimmed;
+    /// empty ones are left out. `None` when the key is absent.
+    pub fn list(&self, key: &str) -> Option<Vec<String>> {
+        if let Some(items) = self.lists.get(key) {
+            return Some(items.clone());
+        }
+        let raw = self.get(key)?.trim();
+        let inner = raw
+            .strip_prefix('[')
+            .and_then(|r| r.strip_suffix(']'))
+            .unwrap_or(raw);
+        Some(
+            split_commas(inner)
+                .iter()
+                .map(|item| unquote(item.trim()))
+                .filter(|item| !item.is_empty())
+                .collect(),
+        )
+    }
+}
+
+/// Split on commas outside quotes.
+fn split_commas(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut start, mut quote) = (0, None);
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, ',') => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
+fn unquote(item: &str) -> String {
+    if item.len() >= 2 && (item.starts_with('"') || item.starts_with('\'')) {
+        return quoted(item, &[]);
+    }
+    strip_comment(item).to_string()
 }
 
 /// Split a SKILL.md into frontmatter fields and body. `Err` only when there
@@ -46,6 +96,7 @@ pub fn parse(text: &str) -> Result<Frontmatter, String> {
 
     let block = &lines[1..close];
     let mut fields = BTreeMap::new();
+    let mut lists = BTreeMap::new();
     let mut i = 0;
     while i < block.len() {
         let line = block[i];
@@ -53,19 +104,42 @@ pub fn parse(text: &str) -> Result<Frontmatter, String> {
         let Some((key, rest)) = top_level_key(line) else {
             continue; // comment, blank, stray indentation: ignore
         };
-        // Everything indented below this key belongs to it.
+        // Everything indented below this key belongs to it, and so do
+        // unindented `- item` lines under an empty value.
         let start = i;
-        while i < block.len() && (block[i].trim().is_empty() || block[i].starts_with([' ', '\t'])) {
+        let list_ok = rest.trim().is_empty();
+        while i < block.len()
+            && (block[i].trim().is_empty()
+                || block[i].starts_with([' ', '\t'])
+                || (list_ok && is_item(block[i])))
+        {
             i += 1;
         }
         let cont = &block[start..i];
+        let items: Vec<String> = cont
+            .iter()
+            .filter(|l| is_item(l.trim_start()))
+            .map(|l| unquote(l.trim_start()[1..].trim()))
+            .filter(|item| !item.is_empty())
+            .collect();
+        if list_ok && !items.is_empty() {
+            lists.insert(key.to_string(), items);
+        }
         fields.insert(key.to_string(), scalar(rest.trim(), cont));
     }
     if fields.is_empty() {
         return Err("frontmatter has no readable `key: value` lines".into());
     }
     let body = lines[close + 1..].join("\n").trim().to_string();
-    Ok(Frontmatter { fields, body })
+    Ok(Frontmatter {
+        fields,
+        lists,
+        body,
+    })
+}
+
+fn is_item(line: &str) -> bool {
+    line == "-" || line.starts_with("- ")
 }
 
 fn top_level_key(line: &str) -> Option<(&str, &str)> {
@@ -287,6 +361,28 @@ mod tests {
         let fm = parse("\u{feff}---\r\nname: x\r\ndescription: d\r\n---\r\nbody\r\n").unwrap();
         assert_eq!(fm.get("description"), Some("d"));
         assert_eq!(fm.body, "body");
+    }
+
+    #[test]
+    fn lists_flow_block_and_comma_string() {
+        let fm = parse(
+            "---\nname: x\nflow: [ship it, release, \"cut, a release\", 'it''s', שחרור]\n\
+             indented:\n  - one\n  - \"two words\"  \nflush:\n- a\n- b # note\ncommas: a, b ,, c\n\
+             empty: []\ndescription: d\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fm.list("flow").unwrap(),
+            ["ship it", "release", "cut, a release", "it's", "שחרור"]
+        );
+        assert_eq!(fm.list("indented").unwrap(), ["one", "two words"]);
+        assert_eq!(fm.list("flush").unwrap(), ["a", "b"]);
+        assert_eq!(fm.list("commas").unwrap(), ["a", "b", "c"]);
+        assert_eq!(fm.list("empty").unwrap(), Vec::<String>::new());
+        assert!(fm.list("missing").is_none());
+        // The keys after a flush list are still read.
+        assert_eq!(fm.get("description"), Some("d"));
+        assert_eq!(fm.list("name").unwrap(), ["x"]);
     }
 
     #[test]

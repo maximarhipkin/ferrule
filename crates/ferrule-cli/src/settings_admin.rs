@@ -73,6 +73,8 @@ pub struct SkillRow {
     pub description: String,
     pub scope: String,
     pub disabled: bool,
+    /// Its `triggers:` (M28).
+    pub triggers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -213,6 +215,7 @@ impl Settings {
                 disabled: cfg.skills.disabled.contains(&s.name),
                 description: clip(&s.description, 160),
                 scope: format!("{:?}", s.scope).to_lowercase(),
+                triggers: s.triggers,
                 name: s.name,
             })
             .collect();
