@@ -1,4 +1,4 @@
-//! `/model` in Telegram (docs/m21-models.md §4), owner only, and the
+//! `/model` in a chat (docs/m21-models.md §4), owner only, and the
 //! models section of `/status`.
 
 use super::*;
@@ -31,17 +31,13 @@ A ref is provider/model, a provider, an alias, a model id or a tier (tier:cheap,
 impl ModelDoor {
     /// The owner chat, or the owner writing in a group.
     fn is_owner(&self, msg: &InboundMessage) -> bool {
-        let Some(owner) = self.hub.owner() else {
-            return false;
-        };
-        msg.chat_id.parse::<i64>().ok() == Some(owner)
-            || msg.sender_id.as_deref().and_then(|s| s.parse::<i64>().ok()) == Some(owner)
+        crate::trust::owner_in(&self.hub, msg).is_some()
     }
 
     async fn answer(&self, msg: &InboundMessage, rest: &str) -> String {
-        let chat = msg.chat_id.as_str();
-        let by = format!("telegram chat {chat}");
-        let session = format!("telegram__{chat}");
+        let (channel, chat) = (msg.channel.as_str(), msg.chat_id.as_str());
+        let by = format!("{channel} chat {chat}");
+        let session = ferrule_gateway::session::session_id(channel, chat);
         let (sub, arg) = match rest.split_once(char::is_whitespace) {
             Some((s, a)) => (s, a.trim()),
             None => (rest, ""),
@@ -53,7 +49,7 @@ impl ModelDoor {
         });
         let result = match (sub.to_lowercase().as_str(), arg) {
             ("", _) | ("list", _) => {
-                let mut text = render(&self.models.view(), Some(("telegram", chat)));
+                let mut text = render(&self.models.view(), Some((channel, chat)));
                 text.extend(fixed_note);
                 return text;
             }
@@ -69,11 +65,11 @@ impl ModelDoor {
             ("strong", "") => {
                 return self
                     .models
-                    .force_strong("telegram", chat)
+                    .force_strong(channel, chat)
                     .unwrap_or_else(|e| format!("Nothing changed: {e}"))
             }
             (tier, "") if super::routing::is_tier_ref(tier) => {
-                self.models.pin("telegram", chat, sub, &by).map(|d| {
+                self.models.pin(channel, chat, sub, &by).map(|d| {
                     (self.retire)(Some(&session));
                     d.said
                 })
@@ -82,11 +78,11 @@ impl ModelDoor {
                 (self.retire)(None);
                 d.said + &fixed_note.unwrap_or_default()
             }),
-            ("use", "default") => self.models.unpin("telegram", chat, &by).map(|d| {
+            ("use", "default") => self.models.unpin(channel, chat, &by).map(|d| {
                 (self.retire)(Some(&session));
                 d.said
             }),
-            ("use", w) if !w.is_empty() => self.models.pin("telegram", chat, w, &by).map(|d| {
+            ("use", w) if !w.is_empty() => self.models.pin(channel, chat, w, &by).map(|d| {
                 (self.retire)(Some(&session));
                 d.said + &fixed_note.unwrap_or_default()
             }),
@@ -108,7 +104,7 @@ impl ModelDoor {
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for ModelDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-        if msg.channel != "telegram" {
+        if !crate::trust::is_chat_channel(&msg.channel) {
             return None;
         }
         let t = msg.text.trim();

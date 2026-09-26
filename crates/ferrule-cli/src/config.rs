@@ -321,10 +321,50 @@ pub struct GatewayConfig {
     /// M27: whether Telegram replies stream; unset follows `[agent] stream`.
     #[serde(default)]
     pub telegram_stream: Option<bool>,
+    /// M31: env var holding the Discord bot token. Unset = Discord off.
+    pub discord_token_env: Option<String>,
+    /// Discord's REST API, for tests; the Gateway URL comes from it.
+    #[serde(default = "default_discord_api_url")]
+    pub discord_api_url: String,
+    /// Discord user ids whose DMs reach the agent. Empty = nobody: a DM is
+    /// told its sender's id once, so it can be added here.
+    #[serde(default)]
+    pub discord_allowed_users: Vec<String>,
+    /// Discord channel ids (and their threads) where anyone who mentions
+    /// the bot, or replies to it, reaches the agent.
+    #[serde(default)]
+    pub discord_allowed_channels: Vec<String>,
+    #[serde(default)]
+    pub discord_stream: Option<bool>,
+    /// M31: env var holding the Slack bot token (`xoxb-`). Slack runs when
+    /// both it and the app token are set.
+    pub slack_bot_token_env: Option<String>,
+    /// Env var holding the Slack app-level token (`xapp-`), for Socket Mode.
+    pub slack_app_token_env: Option<String>,
+    /// Slack's Web API, for tests.
+    #[serde(default = "default_slack_api_url")]
+    pub slack_api_url: String,
+    /// Slack member ids (`U…`) whose DMs reach the agent.
+    #[serde(default)]
+    pub slack_allowed_users: Vec<String>,
+    /// Slack channel ids (`C…`) where an @mention reaches the agent; it
+    /// answers in a thread.
+    #[serde(default)]
+    pub slack_allowed_channels: Vec<String>,
+    #[serde(default)]
+    pub slack_stream: Option<bool>,
 }
 
 fn default_telegram_base_url() -> String {
     "https://api.telegram.org".into()
+}
+
+fn default_discord_api_url() -> String {
+    ferrule_gateway::channels::discord::API_URL.into()
+}
+
+fn default_slack_api_url() -> String {
+    ferrule_gateway::channels::slack::API_URL.into()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -810,6 +850,15 @@ profile = "openai"
 #                                           # nobody (it replies with the chat id)
 # telegram_base_url = "https://api.telegram.org"
 # telegram_stream = true                    # unset = follow [agent] stream
+# discord_token_env = "DISCORD_BOT_TOKEN"    # unset = Discord disabled (docs/discord.md)
+# discord_allowed_users = []                # user ids whose DMs it answers
+# discord_allowed_channels = []             # channels where an @mention reaches it
+# discord_stream = true
+# slack_bot_token_env = "SLACK_BOT_TOKEN"    # xoxb-; Slack needs both tokens
+# slack_app_token_env = "SLACK_APP_TOKEN"    # xapp-, for Socket Mode (docs/slack.md)
+# slack_allowed_users = []                  # member ids (U…) whose DMs it answers
+# slack_allowed_channels = []               # channels where an @mention reaches it
+# slack_stream = true
 
 # [scheduler]
 # tick_interval_secs = 30   # how often to check for due tasks
@@ -907,6 +956,8 @@ profile = "openai"
 #                            # APIs that take the key in the URL need an opt-in:
 #                            # hosts often keep URLs where the model can read them.
 # TELEGRAM_BOT_TOKEN = { hosts = ["api.telegram.org"], in_url = true }
+# DISCORD_BOT_TOKEN = ["discord.com"]
+# SLACK_BOT_TOKEN = ["slack.com"]
 
 # [browser]                 # A real headless Chrome for pages that need
 # enabled = false            # JavaScript, a login or clicks, driven by
@@ -942,13 +993,19 @@ profile = "openai"
 # timezone = "UTC"           # Where a day starts (an IANA zone).
 # owner_chat = 123456789     # Approvals and warnings; unset: the first private
 #                            # chat in [gateway] telegram_allowed_chats.
+#                            # discord_owner = "<user id>", slack_owner = "U…":
+#                            # the owner on those; unset: the first allowed user.
+#                            # owner_channel = "discord": whose chat gets the
+#                            # approvals and warnings; unset: Telegram, else
+#                            # Discord, else Slack.
 # approval_timeout_secs = 600 # No answer refuses the command.
 # plan_timeout_secs = 3600
 # gates = true               # Ask before rm -rf, force pushes, DELETE to a bound host.
 #
 # [health]                   # M19b (docs/m19b-reliability.md): the gateway is
 #                            # never silently deaf. /status answers from any chat.
-# poll_stale_secs = 300      # Telegram with no ok poll this long counts as stale.
+# poll_stale_secs = 300      # a chat channel with no ok poll (Telegram) or
+#                            # socket frame (Discord, Slack) this long is stale.
 # watchdog_after_secs = 600  # a turn with no progress this long: one message to
 #                            # the owner ("stuck on … — /stop to cancel"). 0 = off.
 # max_turn_minutes = 60      # a turn this long is ended like /stop. 0 = no limit.

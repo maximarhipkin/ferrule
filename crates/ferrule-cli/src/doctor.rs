@@ -123,6 +123,10 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     providers(&mut r, &cfg, &http, offline).await;
     models_check(&mut r, ping_models).await;
     let telegram_on = telegram(&mut r, &cfg, &http, offline).await;
+    let discord_on = discord(&mut r, &cfg, offline).await;
+    let slack_on = slack(&mut r, &cfg, offline).await;
+    // Any chat channel makes this a gateway that should be running.
+    let chat_on = telegram_on || discord_on || slack_on;
     let backend = sandbox(&mut r, &cfg, &secrets_path);
     let confined = backend != Backend::None;
     mcp(&mut r, &cfg, backend);
@@ -130,9 +134,9 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     web_search_check(&mut r, &cfg, &http, offline).await;
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
-    trust_check(&mut r, &cfg, telegram_on);
-    service_check(&mut r, &path, telegram_on)?;
-    health_check(&mut r, &cfg, telegram_on);
+    trust_check(&mut r, &cfg, chat_on);
+    service_check(&mut r, &path, chat_on)?;
+    health_check(&mut r, &cfg, chat_on);
     connections_check(&mut r, &cfg);
     editing_check(&mut r, &cfg);
     binary(&mut r);
@@ -552,6 +556,126 @@ async fn telegram(
     true
 }
 
+/// "3 users, 1 channel allowed".
+fn allowed_count(users: usize, channels: usize) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    format!(
+        "{users} user{} and {channels} channel{} allowed",
+        plural(users),
+        plural(channels)
+    )
+}
+
+/// Returns whether Discord is configured. Reads only: the bot, its gateway
+/// limits and its application, never a change.
+async fn discord(r: &mut Report, cfg: &config::Config, offline: bool) -> bool {
+    let g = &cfg.gateway;
+    let Some(env) = &g.discord_token_env else {
+        r.note("discord", "off");
+        return false;
+    };
+    let Some(token) = key(env) else {
+        r.fail("discord", format!("no bot token (${env} isn't set)"));
+        r.hint("`ferrule setup` → Discord, or docs/discord.md");
+        return true;
+    };
+    let allowed = allowed_count(
+        g.discord_allowed_users.len(),
+        g.discord_allowed_channels.len(),
+    );
+    if offline {
+        r.ok("discord", format!("token set, not checked · {allowed}"));
+    } else {
+        match ferrule_gateway::channels::discord::probe(&g.discord_api_url, &token).await {
+            Ok(p) => {
+                r.ok("discord", format!("{} · {allowed}", p.bot_name));
+                if p.content_intent == Some(false) && !g.discord_allowed_channels.is_empty() {
+                    r.warn(
+                        "discord",
+                        "the Message Content intent is off, so @mentions in channels arrive without their text",
+                    );
+                    r.hint("developer portal → your app → Bot → Privileged Gateway Intents → Message Content");
+                }
+                if let Some((left, total)) = p.identify {
+                    if left == 0 {
+                        r.warn(
+                            "discord",
+                            format!("no gateway logins left today (0 of {total}); the bot connects again when Discord resets it"),
+                        );
+                    }
+                }
+            }
+            Err(why) if why.contains("rejected") => {
+                r.fail("discord", why);
+                r.hint("`ferrule setup` → Discord → Replace the bot token");
+            }
+            Err(e) => r.warn("discord", format!("couldn't reach Discord: {e}")),
+        }
+    }
+    if g.discord_allowed_users.is_empty() && cfg.trust.discord_owner.is_none() {
+        r.warn("discord", "no user is allowed, so its DMs reach no one");
+        r.hint("`ferrule setup` → Discord pairs you with a code");
+    }
+    true
+}
+
+/// Returns whether Slack is configured. Reads only: `auth.test`, and
+/// whether the app token may open Socket Mode.
+async fn slack(r: &mut Report, cfg: &config::Config, offline: bool) -> bool {
+    use ferrule_gateway::channels::slack;
+    let g = &cfg.gateway;
+    let (bot_env, app_env) = match (&g.slack_bot_token_env, &g.slack_app_token_env) {
+        (None, None) => {
+            r.note("slack", "off");
+            return false;
+        }
+        (Some(b), Some(a)) => (b, a),
+        _ => {
+            r.fail(
+                "slack",
+                "Slack needs both slack_bot_token_env (xoxb-) and slack_app_token_env (xapp-)",
+            );
+            r.hint("`ferrule setup` → Slack, or docs/slack.md");
+            return true;
+        }
+    };
+    let (Some(bot), Some(app)) = (key(bot_env), key(app_env)) else {
+        r.fail(
+            "slack",
+            format!("a token isn't set (${bot_env} and ${app_env} are both needed)"),
+        );
+        r.hint("`ferrule setup` → Slack");
+        return true;
+    };
+    if let Err(why) = slack::check_tokens(&bot, &app) {
+        r.fail("slack", why);
+        return true;
+    }
+    let allowed = allowed_count(g.slack_allowed_users.len(), g.slack_allowed_channels.len());
+    if offline {
+        r.ok("slack", format!("tokens set, not checked · {allowed}"));
+    } else {
+        match slack::probe(&g.slack_api_url, &bot, &app).await {
+            Ok(p) => {
+                r.ok("slack", format!("{} in {} · {allowed}", p.bot_name, p.team));
+                if let Err(why) = p.socket {
+                    r.fail("slack", why);
+                    r.hint("api.slack.com → your app → Socket Mode on, and an app-level token with connections:write");
+                }
+            }
+            Err(why) => {
+                r.fail("slack", why);
+                r.hint("`ferrule setup` → Slack → Replace the tokens");
+            }
+        }
+    }
+    if g.slack_allowed_users.is_empty() && cfg.trust.slack_owner.is_none() {
+        r.warn("slack", "no user is allowed, so its DMs reach no one");
+        r.hint("`ferrule setup` → Slack pairs you with a code");
+    }
+    true
+}
+
 /// The backend commands run confined by, `None` if they don't.
 fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> Backend {
     let sandbox = match Sandbox::new(crate::sandbox_policy(cfg)) {
@@ -797,7 +921,7 @@ fn agents_check(r: &mut Report, cfg: &config::Config, confined: bool) {
 /// Whether ferrule's own HTTPS — `web_fetch`, MCP servers by URL — and
 /// commands' go through the credential proxy, or straight out.
 /// M19: the kill switch, the caps and today's spend, and who approves.
-fn trust_check(r: &mut Report, cfg: &config::Config, telegram_on: bool) {
+fn trust_check(r: &mut Report, cfg: &config::Config, chat_on: bool) {
     let hub = match crate::trust::hub(cfg) {
         Ok(h) => h,
         Err(e) => {
@@ -855,14 +979,22 @@ fn trust_check(r: &mut Report, cfg: &config::Config, telegram_on: bool) {
         ),
     );
     if c.gates {
-        match hub.owner() {
-            Some(chat) if telegram_on => r.ok(
+        match hub.primary() {
+            Some(chat) if chat_on => r.ok(
                 "trust",
-                format!("approvals go to Telegram chat {chat} (and the terminal)"),
+                format!(
+                    "approvals go to {} chat {} (and the terminal)",
+                    chat.channel_title(),
+                    chat.chat
+                ),
             ),
             Some(chat) => r.note(
                 "trust",
-                format!("owner chat {chat}, but Telegram is off: only the terminal approves"),
+                format!(
+                    "owner chat {}, but {} is off: only the terminal approves",
+                    chat.chat,
+                    chat.channel_title()
+                ),
             ),
             None => r.note(
                 "trust",

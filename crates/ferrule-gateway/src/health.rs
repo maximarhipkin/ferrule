@@ -15,7 +15,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// Replaces secrets with `[redacted]` in anything the owner is shown:
 /// `/status`, the status file, the heartbeat, the running marker. Knows
-/// the configured secret values, and the shape of a Telegram bot token.
+/// the configured secret values, and the shapes of a Telegram bot token, a
+/// Discord bot token and Slack's `xox…-`/`xapp-` tokens.
 #[derive(Debug, Clone, Default)]
 pub struct Redactor {
     secrets: Vec<String>,
@@ -39,8 +40,91 @@ impl Redactor {
                 out = out.replace(s.as_str(), "[redacted]");
             }
         }
-        redact_bot_tokens(&out)
+        redact_discord_tokens(&redact_slack_tokens(&redact_bot_tokens(&out)))
     }
+}
+
+fn token_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_' || c == b'-'
+}
+
+/// Replaces each `[start, end)` span with `[redacted]`.
+fn cut(text: &str, spans: &[(usize, usize)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for &(a, b) in spans {
+        out.push_str(&text[copied..a]);
+        out.push_str("[redacted]");
+        copied = b;
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+/// `xoxb-…`, `xoxp-…`, `xapp-…` and the other Slack token prefixes, with
+/// 10+ token characters after them.
+fn redact_slack_tokens(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut spans = vec![];
+    let mut i = 0;
+    while i < b.len() {
+        let starts = (i == 0 || !token_char(b[i - 1]))
+            && (b[i..].starts_with(b"xapp-")
+                || (b[i..].starts_with(b"xox")
+                    && b.len() > i + 4
+                    && b[i + 3].is_ascii_lowercase()
+                    && b[i + 4] == b'-'));
+        if starts {
+            // Every prefix is five bytes: `xapp-`, `xoxb-`, `xoxp-`, …
+            let body = i + 5;
+            let mut k = body;
+            while k < b.len() && token_char(b[k]) {
+                k += 1;
+            }
+            if k - body >= 10 {
+                spans.push((i, k));
+                i = k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    cut(text, &spans)
+}
+
+/// A Discord bot token: three base64url parts joined by dots, the first
+/// (the bot's id) 20+ characters, the second 6+, the last 27+.
+fn redact_discord_tokens(text: &str) -> String {
+    let b = text.as_bytes();
+    let run = |from: usize| {
+        let mut k = from;
+        while k < b.len() && token_char(b[k]) {
+            k += 1;
+        }
+        k
+    };
+    let mut spans = vec![];
+    let mut i = 0;
+    while i < b.len() {
+        if !token_char(b[i]) || (i > 0 && (token_char(b[i - 1]) || b[i - 1] == b'.')) {
+            i += 1;
+            continue;
+        }
+        let a = run(i);
+        if a - i >= 20 && b.get(a) == Some(&b'.') {
+            let m = run(a + 1);
+            if m - a > 6 && b.get(m) == Some(&b'.') {
+                let z = run(m + 1);
+                if z - m > 27 {
+                    spans.push((i, z));
+                    i = z;
+                    continue;
+                }
+            }
+        }
+        i = a.max(i + 1);
+    }
+    cut(text, &spans)
 }
 
 /// `123456789:AAH…` (a bot id, a colon, 30+ token characters).
@@ -728,6 +812,21 @@ fn clock(at: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redaction_hides_discord_and_slack_token_shapes() {
+        let r = Redactor::new(Vec::<String>::new());
+        let discord = format!("{}.{}.{}", "M".repeat(24), "G".repeat(6), "z".repeat(38));
+        let text = format!(
+            "bot {discord} and xoxb-1111-2222-abcdefghijkl, xapp-1-A111-3333-abcdefghij; \
+             keep xoxb-short, example.com.au and v1.2.3"
+        );
+        let out = r.redact(&text);
+        assert_eq!(
+            out,
+            "bot [redacted] and [redacted], [redacted]; keep xoxb-short, example.com.au and v1.2.3"
+        );
+    }
 
     #[test]
     fn redaction_hides_configured_values_and_bot_tokens() {
