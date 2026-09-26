@@ -576,3 +576,46 @@ evidence is the library's capability flag plus the probe the user runs.
 - A persistent russh session for Windows, which has no ControlMaster.
 - Streaming shell output, for local and remote alike.
 - Native Ollama `/api/chat` with per-request `num_ctx`.
+
+## As built
+
+Built on branch `m34-ssh-local` in seven commits. Where the build departs
+from the design above:
+
+- **The master holds the forward.** On Unix the `-R` forward to the
+  credential proxy is set up once, on the ControlMaster connection, not
+  on each command. The master's remote session is `cat` reading
+  ferrule's end of a pipe, not `-N`: however ferrule dies, the pipe
+  closes and the master goes with it. On Windows each command is its own
+  connection and carries its own `-R`.
+- **`ssh_config`** is passed as `ssh -F`, which *replaces*
+  `~/.ssh/config` rather than adding to it. The config comment and
+  [ssh.md](ssh.md) say so.
+- **The `/status` line** is the link's own state rather than a
+  latency: `workspace: ferrule@app.example.com:/srv/app — connected
+  (multiplexed) for 312s, 1 reconnect(s)`, `— not connected: <why>`, or
+  `— STOPPED: the host key changed`. The dashboard shows the same line
+  and lists a down link as a problem, with its fix.
+- **The local-model `/status` lines compare against the planned window**
+  (the configured `context_window`, else the profile's; 128 000 for
+  `generic`), not a fixed 32 768: `local: qwen3-coder:30b window 4096 <
+  128000 planned (…)`. Only the default model is watched. The dashboard
+  lists the same lines as problems.
+- **`fitted()`** is applied where the runtime builds a harness for a
+  model (the catalog entry, `model_eval`, routing). The eval's own
+  `windowed()` path is untouched, so its numbers can't move.
+- **Setup's detection** runs in "Add a provider". "Change the model" on
+  an existing local provider doesn't re-run the probe or the window
+  check; doctor does.
+- **Ollama after the probe.** Setup and doctor re-read `/api/ps` after
+  the tool call, since the call is what loads the model.
+- **CI.** The Linux job installs `openssh-server` if needed and sets
+  `FERRULE_REQUIRE_SSHD=1`. macOS runs the sshd tests when its
+  `/usr/sbin/sshd` starts unprivileged and skips them otherwise; Windows
+  runs only the tests that need no sshd.
+- **Known-good models** are the Ollama library's `tools`-tagged models
+  (2026-09-26), not measured here: the build machine has no GPU.
+
+Everything else (the transport, the failure classes, host-key trust, the
+marker protocol, the watchdog, the remote deny list, the floors and the
+probe's three outcomes) is as designed.

@@ -28,6 +28,10 @@ The easiest way is `ferrule setup` → Model provider:
 - A provider's menu has **Add another model on it** (same key, optional
   alias) and **Test it**.
 - **Default model** appears once more than one model is connected.
+- **A server running here** (Ollama, llama.cpp, LM Studio or vLLM) is
+  found and offered first. Setup checks that the model can call tools and
+  that the server's window is as big as ferrule plans for, and offers the
+  fix when it isn't ([local-models.md](local-models.md)).
 
 Setup makes one real call after each change and says plainly if it failed
 (the key was refused, the model isn't known, the endpoint can't be
@@ -227,6 +231,9 @@ connected, it also lists them with the default and fallback, warns about a
 model whose key is missing, and fails when the default or a fallback names
 something that isn't connected. `ferrule doctor --ping-models` also makes
 one real call to every connected model. It costs a few tokens each.
+For a local server it also compares the server's real window with the one
+ferrule plans for, and `--ping-models` tells a model that can't call tools
+from a broken chat template ([local-models.md](local-models.md)).
 
 ## Eval
 

@@ -160,6 +160,14 @@ On Windows this is the usual case with Git Bash, which can't run under the
 restricted token. Set `FERRULE_SHELL=powershell` to run commands sandboxed
 in PowerShell ([windows-sandbox.md](windows-sandbox.md), Shells).
 
+## Remote workspaces
+
+With a remote workspace ([ssh.md](ssh.md)) the shell and file tools run
+on another machine over SSH, and none of this sandbox applies there: the
+remote account is the boundary. Use a dedicated low-privilege user.
+Plan mode and `read-only` remove the remote shell rather than trusting
+it to only read.
+
 ## Not covered
 
 - The system-service path (`ferrule service install` as root with
