@@ -59,6 +59,10 @@ already sent. Cache writes cost 1.25× the input price unless you set
 `api.anthropic.com` moves to the native driver by itself. To keep the old
 OpenAI-compatible route, write `api = "chat"`.
 
+All three drivers stream a reply as the model writes it where that shows
+(Telegram, `ferrule chat`); how, the switches, and what keeps the prompt
+cache hitting are in `docs/speed.md`.
+
 **OpenAI Responses** keeps no state on OpenAI's side (`store: false`).
 Reasoning comes back encrypted and is sent back unchanged on the next call
 of the same turn. It works against `api.openai.com` and hosts that
@@ -207,7 +211,9 @@ never used.
 
 - The **ledger** has the provider and model that actually served each call,
   failed attempts included. `ferrule ledger` groups by them. Caps price
-  each call by its own model's prices, fallbacks included.
+  each call by its own model's prices, fallbacks included. Under the table
+  it adds the cache hit, time to first token and first reply, and parallel
+  tool batches (`docs/speed.md`).
 - The **audit log** (`<data>/trust/audit.jsonl`) has every change:
   `model.default`, `model.pin`, `model.unpin`, `model.fallback`, `model.add`,
   `model.remove`, `model.alias`, `model.task`, and `model.down`/`model.up`.

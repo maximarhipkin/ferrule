@@ -594,6 +594,8 @@ profile = "openai"
 # [agent]
 # verify_command = "cargo test"   # ferrule runs it before a run that changed files ends
 # verify_timeout_secs = 600
+# parallel_tools = 4              # read-only tool calls from one response run at once; 1 = one by one
+# stream = true                   # replies grow as the model writes (Telegram, `ferrule chat`)
 
 # [gateway]
 # local = true                              # enable the stdin/stdout channel
@@ -601,6 +603,7 @@ profile = "openai"
 # telegram_allowed_chats = []               # chat ids the bot answers; empty =
 #                                           # nobody (it replies with the chat id)
 # telegram_base_url = "https://api.telegram.org"
+# telegram_stream = true                    # unset = follow [agent] stream
 
 # [scheduler]
 # tick_interval_secs = 30   # how often to check for due tasks

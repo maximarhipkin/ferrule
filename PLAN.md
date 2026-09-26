@@ -478,10 +478,28 @@ that convention yet — ask before introducing one).
       cheap only vs routed vs strong only; `evals/routing/weak_mock.py`
       shows it with no model.
     - **Decisions for Max and open edges:** see the M25 session-log entry.
+  - **M27 speed**: **built** (2026-09-26, branch `m27-speed`, PR to main
+    open, not merged). Design and as-built notes are in
+    `docs/m27-speed.md`; the user guide is `docs/speed.md`.
+    - Read-only tool calls of one response run in parallel segments
+      (`Tool::read_only()`, `[agent] parallel_tools`, default 4); writes
+      are barriers, approvals and hooks stay serial, results keep the
+      model's order; a stdio MCP server takes one call at a time.
+    - `CompletionRequest.stream: Option<DeltaSink>`: all three drivers
+      stream only when given a sink, else byte-for-byte as before. The
+      agent resets the stream at each call and retry.
+    - Telegram replies grow by edits (`StreamingReply` in the gateway,
+      `Channel::post`, `GatewayError::RateLimited`); `ferrule chat` prints
+      as it comes. `[agent] stream`, `[gateway] telegram_stream`.
+    - Recalled memory is a user message after the goal, so the system
+      prompt is the same across sessions; the Anthropic previous-turn
+      breakpoint is one per wire message; a test pins the prefix bytes.
+    - Ledger rows carry an optional `speed` (first token, first reply, tool
+      batch); `ferrule ledger` prints cache hit and speed under the table.
+    - **Decisions for Max and open edges:** see the M27 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
-    strategy doc (§4): parallel read-only tool calls, provider streaming
-    + Telegram progressive edits, `web_search`, keyword-triggered skills,
+    strategy doc (§4): `web_search`, keyword-triggered skills,
     `edit_file` SEARCH/REPLACE, a repo map, local-model first-run polish,
     migration importers, channels Discord → Slack → WhatsApp, the stuck
     detector's two missing signatures, gateway lane idle eviction, ledger
@@ -3705,3 +3723,64 @@ checks): cheap 16/20 $0.05, routed 20/20 $0.06 with 4 escalations (all
 **Open edges:** a verifier sub-agent's verdict isn't a signal (free
 text); the report's "failed checks fixed" line sums failed checks whether
 or not the task then passed (pre-existing, visible on the cheap arm).
+
+### 2026-09-26 — M27 speed (Devi, Opus 5.5)
+
+**Scope.** Built `docs/m27-speed.md` on branch `m27-speed` in five
+commits: parallel read-only tool calls, streaming in the three drivers,
+progressive replies on Telegram and in `ferrule chat`, a cache-stable
+prompt prefix, and the measurement in `ferrule ledger`. User guide:
+`docs/speed.md`.
+
+**What it does.** Read-only tool calls in one response run together (up
+to `[agent] parallel_tools`, default 4); writes run alone, in order, and
+results go back in the order asked. The chat, anthropic and responses
+drivers stream when the caller passes a sink; a server that ignores
+`stream` still works. Telegram shows a reply once there's a line (or after
+1 s), edits it about once a second, splits before 4096, honours 429
+`retry_after` and falls back to a new message when an edit fails. A
+pre-tool "let me look…" is replaced (`Delta::Reset`). The switches are
+`[agent] stream` and `[gateway] telegram_stream`. The prefix is stable:
+recalled memory is now a user message right after the goal, not part of
+the system prompt, and the Anthropic driver's third breakpoint sits on
+the previous turn's last wire message. Rows record `speed:
+{first_token_ms, first_visible_ms, tool_batch}`, and `ferrule ledger`
+prints the cache hit, the first-token and first-reply p50s, and parallel
+batch wall time against the summed time.
+
+**Measured (mock, real binary).** `eval run evals/starter --variant ab`:
+engineered 20/20, naive 11/20; 150 calls, 951.5k input + 6.2k output
+tokens, $0.98 ($0.53 / $0.45). Unchanged to the token: the eval doesn't
+stream, its tasks make one call per response, and the starter suite loads
+neither session recall nor the memory tools, whose `remember` description
+changed. `cargo test --workspace`: 853 passed.
+
+**Decisions for Max:**
+- Memory goes after the goal, not before it as the design first said: the
+  goal stays the first user message (sessions, `/goal`, compaction and the
+  title key off it). Compaction carries the memory verbatim; truncate mode
+  drops it with the old turns.
+- `first_visible_ms` is measured at the agent (first non-empty text delta
+  when a reply stream exists), not at the channel. Telegram shows it at
+  most about a second later.
+- `tool_batch` is recorded only for 2+ calls in a response; the ledger's
+  line counts only batches that actually ran in parallel.
+- Anthropic breakpoint 3 was placed per user message, so with a hook note
+  or memory after the goal it landed on the new turn instead of the old
+  one. It's now one mark per wire message, with a test.
+- The `remember` tool says facts "are recalled at its start" instead of
+  "added to its system prompt".
+- A stdio MCP server gets one call at a time.
+
+**Unverified:**
+- Real Telegram (edits, 429s, the 4096 split); the gateway tests use a
+  scripted channel.
+- Real provider streaming and a real cache hit. The drivers are tested
+  against scripted SSE, and the prefix against the request bytes.
+- macOS and Windows until this PR's CI run.
+
+**Open edges:** Telegram's non-streamed `send` still doesn't split replies
+over 4096; in `ferrule chat` the streamed text can interleave with tool
+event lines; memory is lost under truncate mode; `sendMessageDraft`, a
+1-hour cache TTL and formatting mid-stream are left for later
+(`docs/roadmap.md`).

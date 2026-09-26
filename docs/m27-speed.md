@@ -1,6 +1,6 @@
 # M27 — speed: parallel reads, streaming replies, a cache-stable prefix
 
-**Status:** design, 2026-09-26. User guide: [`speed.md`](speed.md).
+**Status:** built, 2026-09-26 (five commits on `m27-speed`; where the build departed from the first draft, the text below says what was built and why). User guide: [`speed.md`](speed.md).
 
 Three gaps the research called the most *felt* (`research-number-one-harness-strategy.md` §5):
 - the loop runs a response's tool calls one after another, even when they only read;
@@ -72,7 +72,7 @@ Tool calls have never had ledger rows; the ledger is one row per provider call. 
 
 ### Plumbing
 
-- `CompletionRequest` gets `stream: Option<DeltaSink>`. A `DeltaSink` is an `Arc<dyn Fn(Delta)>` with a hand-written `Debug`, and `Delta` is `Text(String)` or `Progress`, the latter covering reasoning and tool-argument bytes.
+- `CompletionRequest` gets `stream: Option<DeltaSink>`. A `DeltaSink` is an `Arc<dyn Fn(Delta)>` with a hand-written `Debug`, and `Delta` is `Text(String)`, `Progress` (reasoning and tool-argument bytes) or `Reset` (throw away what this reply has shown so far).
 - A driver streams **only** when a sink is present. Without one, the request body and the parsing are byte-for-byte today's. That keeps the eval, the tasks, `ferrule run`, compaction and sub-agents exactly as they were.
 - Routing and fallback wrappers pass the request through, so the sink rides along for free.
 
@@ -83,6 +83,7 @@ Each driver reassembles the stream into the JSON its non-streaming parser alread
 - **Chat Completions** sends `stream: true, stream_options: {include_usage: true}`.
   - It accumulates `delta.content`, `delta.reasoning_content`/`reasoning`, and `delta.tool_calls[]` by `index`. The id and name come from the first fragment, and `arguments` are concatenated and parsed once.
   - It keeps the last `finish_reason`, and takes usage from the final chunk.
+  - A stream that closes without `[DONE]` but after a `finish_reason` counts as complete: some compatible servers never send `[DONE]`. Without either it is "stream ended early".
   - A 400 on the streaming request is retried once without streaming, for a compatible server that rejects `stream_options`.
 - **Anthropic Messages** sends `stream: true`.
   - `content_block_start`/`_delta`/`_stop` rebuild each block: `text_delta`, `input_json_delta` (concatenated, parsed at `_stop`), `thinking_delta` and `signature_delta`.
@@ -110,12 +111,13 @@ Usage comes from the provider's own final event, never from counting deltas. A s
 
 ### Where the deltas go
 
-`Agent::set_reply_stream(Option<ReplyStream>)` attaches a sink for the whole run. The agent passes it on `turn` and `status` calls only, never on compaction or learning calls. It sends a `Reset` at each call and each attempt. A tool-calling response's preamble ("let me look…") is therefore visible while it streams and replaced by the next call's text. The final answer is always the last call's text, as today.
+`Agent::set_reply_stream(Option<DeltaSink>)` attaches a sink for the whole run. The agent passes it on `turn` and `status` calls only, never on compaction or learning calls. It sends a `Reset` at each call and each attempt. A tool-calling response's preamble ("let me look…") is therefore visible while it streams and replaced by the next call's text. The final answer is always the last call's text, as today.
 
 **The gateway.** A lane whose channel can edit, with streaming on, builds a `StreamingReply` for the turn: a task fed by an unbounded channel from the sink.
 
 - **First message** after 1 s or 60 chars of text, whichever comes first. A quick answer never streams and goes out through today's `send`.
 - **Edits** at most one per second per chat. The lane is the chat, so one lane has one editor. Deltas in between only update the buffer.
+- **Posting:** `Channel` gains `post`, a `send` that returns the new message's id. Its default is `send` with no id, and a channel that gives no id ends the preview (the answer still goes out). Telegram implements it from `result.message_id`.
 - **429:** the Telegram adapter now returns `GatewayError::RateLimited { retry_after }` for `sendMessage` and `editMessageText`. The streamer sends nothing more to that chat until it passes.
 - **Rollover:** past 4000 chars (Telegram's cap is 4096; the margin covers the UTF-16 counting), the current message is edited to its final chunk and a new message continues. The chunks break at a newline or space when one is within the last 20 %.
 - **The final edit** carries the complete final text, cut into the same chunks: an edit per existing message, a send per extra one. Messages left over from a longer preview are edited to `…`.
@@ -130,7 +132,8 @@ The watchdog counts a streamed delta as progress.
 **Switches.**
 - `[agent] stream = true` (default) turns streaming on or off everywhere, and `[gateway] telegram_stream` overrides it for Telegram.
 - Channels that can't edit, scheduled tasks (their pseudo-channel has no adapter), `ferrule run` and the eval get today's final text.
-- `ferrule chat` prints deltas as they come and, on a reset, starts a fresh line.
+- `ferrule chat` prints deltas as they come and, on a reset, starts a fresh line. It follows `[agent] stream` too; when the streamed text already is the answer, the answer isn't printed a second time.
+- The gateway wires it with `Router::with_streaming(channels, StreamPacing)`; a router built without it streams nothing, which is what every existing test and embedder gets.
 
 ## 3. A cache-stable prefix
 
@@ -146,16 +149,17 @@ Audit of what goes into a request today:
 | hook notes, inbox, check failures, nudges | already user messages after the goal | none |
 | time, diary, todos | not in the prompt at all | none |
 
-**The one move.** The recall block is picked from the goal, so it differs per session. It also used to change the system prompt after the first request of every lane rebuild (a gateway restart), which invalidates the whole cache. It now goes into a user message, `[ferrule memory]\n…`, placed right before the goal of the run that recalls it.
+**The one move.** The recall block is picked from the goal, so it differs per session. It also used to change the system prompt after the first request of every lane rebuild (a gateway restart), which invalidates the whole cache. It now goes into its own user message, the block as recall returns it (it already starts `[Long-term memory]`), placed **right after** the goal of the run that recalls it, where hook notes go.
 
 - The system prompt is then byte-identical for every session with the same config, skills and playbook.
-- Recall's own query skips messages with that marker when it picks the session's first user message.
+- After the goal, not before it (the first draft said before): the goal stays the session's first user message, which recall's own query, the transcript's session title, the eval's mock model and the M15 tests all key on. No marker to skip is needed.
 - The message is written to the transcript, so a rebuilt lane replays it as history, a stable part of the prefix.
+- Compaction carries it forward verbatim, as it does the goal. In the system prompt no compaction reached it; a summary shouldn't blur it now. `overflow = "truncate"` drops it with the rest of the front, as it drops the goal.
 
 **Anthropic breakpoints, re-checked:**
 1. The last system block, or the last tool if there's no system. Now truly stable across sessions, so this is where the gain lands.
 2. The end of the request, unchanged.
-3. The previous user block. On the one run that recalls, the previous user block is the new memory message, which the previous request never had, so this breakpoint writes instead of reading on that request only. Breakpoint 1 still reads, and it is the large part. On every later turn it's back to M23's behaviour: it covers the previous turn's prefix after that turn's thinking was dropped.
+3. The previous user block, meant to sit where the previous turn's first request ended, so it still reads after that turn's thinking is dropped. **A bug the re-check found:** it was placed per user *message*, but the memory and hook notes are user messages that join the goal in one wire message, so on the next turn "the previous user block" was the *new* goal and the breakpoint wrote instead of reading. It is now one mark per wire message, at its last block: exactly where the previous turn's end-of-request breakpoint was. A driver test pins it.
 
 **What legitimately breaks the prefix** (documented in `speed.md`):
 - MCP `tools/list_changed` and an MCP hot-add or suspend change the tool list;
@@ -168,8 +172,8 @@ All are rare and deliberate.
 
 **Tests.**
 - Byte identity: the serialized system, tools and message prefix of request *n* are identical to request *n+1* across a tool round-trip and across two turns, recall and hooks included.
-- A golden request for a run with routing, streaming and parallelism all off: exactly the old request, apart from the recall move.
-- Each driver's payload without a sink has no `stream` key and is unchanged.
+- A golden request for a run with routing, streaming and parallelism all off: M25's `routing_off.json` golden runs such a session (single calls, no sink, no recall) and passes unchanged.
+- Each driver's payload without a sink has no `stream` key and is unchanged (Part 2's driver tests).
 
 **Cache-hit ratio.** `ferrule ledger` prints the overall cache hit (cached input over input, `eval_result` rows excluded) under the table. The dashboard's ledger summary API gains a `cache_hit_pct`.
 
@@ -178,14 +182,21 @@ All are rare and deliberate.
 The ledger stays one row per provider call; no new `call_kind`, because every consumer counts non-`eval_result` rows as calls. One optional field, `speed`, is written only when it has something in it:
 
 - `first_token_ms`: on a streamed call's row, from the request to its first delta.
-- `first_visible_ms`: once per turn, from `Agent::run` to the first thing the person could read. It is the streamer's first delivered message when there is one. Otherwise it is the end of the answer call, since the send follows at once; its latency isn't counted.
-  - Stamped on the first row written after the mark exists, or on the final answer's row.
-  - A turn that halts before either has none.
-- `tool_batch {calls, parallel, wall_ms, sum_ms}`: the previous response's tool calls, stamped on the next provider-call row of the run.
+- `first_visible_ms`: once per turn, from `Agent::run` to the first non-empty text delta the agent handed its reply stream. **Measured at the agent, not at the channel** (the draft wanted the streamer's first delivered message): core can't see Telegram's send, and the gateway has no ledger. The chat shows it at most `first_after` (1 s) later, or at once past 60 chars. A turn without a reply stream records none: its time to reply is its calls' latencies, already in the rows.
+  - Stamped on the first row written after the mark exists.
+- `tool_batch {calls, parallel, wall_ms, sum_ms}`: the previous response's tool calls when there were two or more (a lone call's wall time is its own), stamped on the next provider-call row of the run.
   - `parallel` is how many ran in a parallel segment.
   - A run that ends right after its tools (a halt) loses its last batch's line; the tools still ran.
 
-`ferrule ledger` adds a **Speed** block under the table (p50 time to first token and first visible reply, parallel batches' wall vs sum, cache hit). It prints nothing extra when there's no data.
+`ferrule ledger` adds up to three lines under the table, each only when the rows have it:
+
+```
+cache hit: 63.2% of input tokens
+speed: first token p50 420ms (n=31) · first reply p50 1.3s (n=12)
+parallel batches: 9, 1.8s wall vs 5.1s summed
+```
+
+Only batches that actually ran something in parallel count in the last line.
 
 ## 5. The eval must not move
 
