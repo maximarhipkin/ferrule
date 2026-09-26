@@ -13,7 +13,7 @@ use ferrule_extensions::scan::report_for_owner;
 use ferrule_extensions::{AllowList, ExtensionManager, Layout, ManagerConfig, Probe};
 use ferrule_mcp::McpServerConfig;
 use ferrule_proxy::Broker;
-use ferrule_sandbox::{Egress, Sandbox};
+use ferrule_sandbox::Sandbox;
 use inquire::{Confirm, Select, Text};
 use std::collections::{BTreeMap, HashMap};
 use std::io::IsTerminal;
@@ -365,25 +365,16 @@ fn probe_sandbox(
         .iter()
         .map(|s| (s.name.as_str(), s.value.as_str()))
         .collect();
-    let broker = if cfg.secrets.is_empty() {
-        None
-    } else {
-        Broker::start(crate::broker_config(cfg)?, |name| {
-            values
-                .get(name)
-                .map(|v| v.to_string())
-                .or_else(|| std::env::var(name).ok())
-        })?
-    };
+    let broker = Broker::start(crate::broker_config(cfg)?, |name| {
+        values
+            .get(name)
+            .map(|v| v.to_string())
+            .or_else(|| std::env::var(name).ok())
+    })?;
     if let Some(broker) = &broker {
-        let ca_cert_pem = std::fs::read_to_string(broker.ca_cert_path())
-            .with_context(|| format!("reading {}", broker.ca_cert_path().display()))?;
         sandbox = sandbox
             .with_env(broker.child_env())
-            .with_egress(Some(Egress {
-                proxy_url: broker.proxy_url(),
-                ca_cert_pem,
-            }));
+            .with_egress(Some(crate::tool_egress(broker)?));
     }
     Ok((Arc::new(sandbox), broker))
 }

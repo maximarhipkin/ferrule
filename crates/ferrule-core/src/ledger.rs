@@ -145,9 +145,19 @@ fn default_call_kind() -> String {
     "turn".into()
 }
 
+/// `call_kind` of the row the credential proxy's egress policy writes for a
+/// refused request (M33). Not a provider call.
+pub const EGRESS_DENIED_KIND: &str = "egress_denied";
+
 impl LedgerRecord {
     pub fn is_error(&self) -> bool {
         self.outcome != "ok"
+    }
+
+    /// A row that records something other than a provider call (`ferrule
+    /// eval`'s verdict, an egress refusal): cost and call counts skip it.
+    pub fn is_bookkeeping(&self) -> bool {
+        self.call_kind == "eval_result" || self.call_kind == EGRESS_DENIED_KIND
     }
 }
 

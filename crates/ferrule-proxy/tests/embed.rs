@@ -82,6 +82,7 @@ fn proxy(origin_ca: &str) -> Setup {
         upstream: None,
         http_upstream: None,
         ca_bundle: Some(base),
+        egress: None,
     };
     let broker = Broker::start(cfg, |n| (n == "EMBED_KEY").then(|| KEY.to_string()))
         .unwrap()

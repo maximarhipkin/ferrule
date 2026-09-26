@@ -122,14 +122,7 @@ pub(crate) fn keyed(broker: Option<&Broker>, var: &str) -> Result<Option<(String
     let Some(info) = broker.secrets().into_iter().find(|s| s.name == var) else {
         return Ok(None);
     };
-    let ca_cert_pem = std::fs::read_to_string(broker.ca_cert_path())?;
-    Ok(Some((
-        info.placeholder,
-        Egress {
-            proxy_url: broker.proxy_url(),
-            ca_cert_pem,
-        },
-    )))
+    Ok(Some((info.placeholder, crate::tool_egress(broker)?)))
 }
 
 fn warn_once(msg: &str) {

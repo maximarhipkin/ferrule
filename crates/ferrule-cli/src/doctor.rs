@@ -733,6 +733,16 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> Backend
         "sandbox",
         format!("{} · {mode} · {network}", sandbox.backend()),
     );
+    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let unix = sandbox.unix_status(&workspace);
+    if sandbox.backend() == Backend::Windows {
+        r.note("sandbox", format!("Unix sockets: {unix}"));
+    } else if unix.starts_with("not enforced") {
+        r.warn("sandbox", format!("Unix sockets: {unix}"));
+        r.hint("a command can reach any local socket, docker.sock included (docs/egress.md)");
+    } else {
+        r.ok("sandbox", format!("Unix sockets: {unix}"));
+    }
     if sandbox.backend() == Backend::Windows {
         if !cfg.sandbox.network {
             r.warn(
@@ -1014,37 +1024,76 @@ fn trust_check(r: &mut Report, cfg: &config::Config, chat_on: bool) {
 }
 
 fn proxy(r: &mut Report, cfg: &config::Config) {
-    if cfg.secrets.is_empty() {
-        r.note(
-            "proxy",
-            "off (no [secrets]): web_fetch and MCP servers by URL connect directly",
-        );
-        return;
-    }
     let set = cfg
         .secrets
         .keys()
         .filter(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
         .count();
-    if set == 0 {
+    if !cfg.secrets.is_empty() && set == 0 {
         let names: Vec<&str> = cfg.secrets.keys().map(String::as_str).collect();
         r.warn(
             "proxy",
             format!(
-                "off: none of {} is set, so web_fetch and MCP servers by URL connect directly",
+                "none of {} is set, so no request gets a key",
                 names.join(", ")
             ),
         );
         r.hint("`ferrule setup` → Tool credentials, or export them");
-        return;
+    } else if set > 0 {
+        r.ok(
+            "proxy",
+            format!(
+                "on for {set} secret{}: web_fetch, MCP servers and commands go through it",
+                if set == 1 { "" } else { "s" }
+            ),
+        );
     }
+    egress_check(r, cfg);
+}
+
+/// M33: the egress policy the proxy enforces, and what it refused lately.
+fn egress_check(r: &mut Report, cfg: &config::Config) {
+    let policy = match crate::egress::policy(cfg) {
+        Ok(p) => p,
+        Err(e) => {
+            r.fail("egress", format!("{e:#}"));
+            return;
+        }
+    };
+    let commands = if policy.has_rules() || set_secrets(cfg) {
+        "web_fetch, web_search, MCP and shell commands"
+    } else {
+        "web_fetch, web_search and MCP (commands: no rules, left direct)"
+    };
     r.ok(
-        "proxy",
-        format!(
-            "on for {set} secret{}: web_fetch, MCP servers and commands go through it",
-            if set == 1 { "" } else { "s" }
-        ),
+        "egress",
+        format!("{} · applies to {commands}", policy.describe().join(" · ")),
     );
+    let since = chrono::Utc::now() - chrono::Duration::hours(24);
+    let records = crate::ledger::ledger_path()
+        .ok()
+        .and_then(|p| crate::ledger::read_records(&p, Some(since)).ok())
+        .map(|(rows, _)| rows)
+        .unwrap_or_default();
+    let (n, top) = crate::egress::recent_denials(&records, since);
+    if n > 0 {
+        let hosts: Vec<String> = top.iter().map(|(h, c)| format!("{h} ×{c}")).collect();
+        r.note(
+            "egress",
+            format!(
+                "{n} request{} refused in 24 h: {}",
+                if n == 1 { "" } else { "s" },
+                hosts.join(", ")
+            ),
+        );
+        r.hint("`ferrule trust audit --since 24h` lists each; docs/egress.md says how to open one");
+    }
+}
+
+fn set_secrets(cfg: &config::Config) -> bool {
+    cfg.secrets
+        .keys()
+        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
 }
 
 /// M28: `[web_search]` without a paid call: the key is set and bound to the

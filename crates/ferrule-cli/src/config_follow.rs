@@ -10,7 +10,6 @@ use crate::config::Config;
 use ferrule_extensions::manager::SYNC_EVERY;
 use ferrule_extensions::ExtensionManager;
 use ferrule_proxy::{Broker, SecretRule};
-use ferrule_sandbox::Egress;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
@@ -195,6 +194,7 @@ impl Follower {
                     // One per process at most, kept for its lifetime like the first.
                     Ok(Some(b)) => {
                         tracing::info!("config changed: credential proxy started for [secrets]");
+                        crate::egress::report_denials(&b, crate::ledger::build_sink(cfg));
                         self.broker = Some(Box::leak(Box::new(b)));
                     }
                     Ok(None) => {}
@@ -204,23 +204,17 @@ impl Follower {
         }
         self.secrets = wanted;
         if let Some(broker) = self.broker {
-            match std::fs::read_to_string(broker.ca_cert_path()) {
-                Ok(ca_cert_pem) => {
+            match crate::tool_egress(broker) {
+                Ok(egress) => {
                     let sandbox = manager
                         .sandbox()
                         .as_ref()
                         .clone()
                         .with_env(broker.child_env())
-                        .with_egress(Some(Egress {
-                            proxy_url: broker.proxy_url(),
-                            ca_cert_pem,
-                        }));
+                        .with_egress(Some(egress));
                     manager.set_sandbox(Arc::new(sandbox));
                 }
-                Err(e) => tracing::warn!(
-                    "reading {}: {e}; new servers won't have the new secrets",
-                    broker.ca_cert_path().display()
-                ),
+                Err(e) => tracing::warn!("{e:#}; new servers won't have the new secrets"),
             }
         }
     }

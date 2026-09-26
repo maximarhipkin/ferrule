@@ -503,6 +503,63 @@ pub struct Config {
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// M33: where ferrule's requests, and commands' through the proxy, may
+    /// go (docs/egress.md).
+    #[serde(default)]
+    pub egress: EgressConfig,
+}
+
+/// `[egress]` (docs/egress.md).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EgressConfig {
+    /// `allow` (public hosts go) or `deny` (only `allow` goes).
+    pub default: String,
+    /// Host patterns (`*.example.com`), IPs or CIDRs, `:port` optional.
+    pub allow: Vec<String>,
+    /// Always wins, over `allow` and configured endpoints alike.
+    pub deny: Vec<String>,
+    /// `block` (loopback for ferrule's own requests, the LAN, link-local,
+    /// cloud metadata) or `allow`.
+    pub private: String,
+    /// Private hosts, IPs or CIDRs reachable anyway. The metadata address
+    /// needs its exact IP here.
+    pub private_allow: Vec<String>,
+}
+
+impl Default for EgressConfig {
+    fn default() -> Self {
+        Self {
+            default: "allow".into(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            private: "block".into(),
+            private_allow: Vec::new(),
+        }
+    }
+}
+
+impl EgressConfig {
+    /// The policy as written, before ferrule adds its configured endpoints.
+    pub fn policy(&self) -> Result<ferrule_proxy::EgressPolicy> {
+        let default_deny = match self.default.as_str() {
+            "allow" => false,
+            "deny" => true,
+            other => bail!("[egress] default = \"{other}\": use \"allow\" or \"deny\""),
+        };
+        let block_private = match self.private.as_str() {
+            "block" => true,
+            "allow" => false,
+            other => bail!("[egress] private = \"{other}\": use \"block\" or \"allow\""),
+        };
+        ferrule_proxy::EgressPolicy::new(
+            default_deny,
+            &self.allow,
+            &self.deny,
+            block_private,
+            &self.private_allow,
+        )
+    }
 }
 
 /// `[memory]` (docs/memory.md).
@@ -1248,6 +1305,7 @@ impl Config {
     /// host in `[secrets]` unless the owner bound them there already.
     pub fn finish(mut self) -> Result<Self> {
         self.memory.hybrid()?;
+        self.egress.policy()?;
         if let EmbedderChoice::Endpoint(e) = self.memory.choice(&self.providers)? {
             if let Some(var) = e.key_env {
                 self.secrets

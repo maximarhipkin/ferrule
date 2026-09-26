@@ -8,6 +8,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use percent_encoding::percent_decode_str;
 use std::fmt;
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
@@ -122,17 +123,23 @@ impl Upstream {
 }
 
 /// Open a TCP stream to `host:port`, through `upstream` unless it's bypassed.
+/// `addrs`: the addresses the egress policy checked, connected to instead of
+/// resolving `host` again.
 pub(crate) async fn connect(
     upstream: Option<&Upstream>,
     host: &str,
     port: u16,
+    addrs: Option<&[SocketAddr]>,
 ) -> Result<TcpStream> {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
-        match upstream.filter(|u| !u.bypasses(host)) {
-            None => TcpStream::connect((host, port))
+        match (upstream.filter(|u| !u.bypasses(host)), addrs) {
+            (None, Some(addrs)) => TcpStream::connect(addrs)
                 .await
                 .with_context(|| format!("connecting to {host}:{port}")),
-            Some(up) => tunnel(up, host, port).await,
+            (None, None) => TcpStream::connect((host, port))
+                .await
+                .with_context(|| format!("connecting to {host}:{port}")),
+            (Some(up), _) => tunnel(up, host, port).await,
         }
     })
     .await
@@ -146,13 +153,21 @@ pub(crate) async fn connect_http<'u>(
     upstream: Option<&'u Upstream>,
     host: &str,
     port: u16,
+    addrs: Option<&[SocketAddr]>,
 ) -> Result<(TcpStream, Option<&'u Upstream>)> {
     let via = upstream.filter(|u| !u.bypasses(host));
-    let (addr, what) = match via {
-        Some(up) => ((up.host.as_str(), up.port), format!("upstream proxy {up}")),
-        None => ((host, port), format!("{host}:{port}")),
+    let what = match via {
+        Some(up) => format!("upstream proxy {up}"),
+        None => format!("{host}:{port}"),
     };
-    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
+    let dial = async {
+        match (via, addrs) {
+            (Some(up), _) => TcpStream::connect((up.host.as_str(), up.port)).await,
+            (None, Some(addrs)) => TcpStream::connect(addrs).await,
+            (None, None) => TcpStream::connect((host, port)).await,
+        }
+    };
+    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, dial)
         .await
         .with_context(|| format!("connecting to {what}: timed out"))?
         .with_context(|| format!("connecting to {what}"))?;
@@ -301,7 +316,9 @@ mod tests {
     async fn connect_goes_through_the_upstream_with_credentials() {
         let (port, task) = fake_proxy("200 Connection established").await;
         let up = Upstream::parse(&format!("http://u:p@127.0.0.1:{port}"), "").unwrap();
-        let mut s = connect(Some(&up), "api.example.com", 443).await.unwrap();
+        let mut s = connect(Some(&up), "api.example.com", 443, None)
+            .await
+            .unwrap();
         let mut first = [0u8; 5];
         s.read_exact(&mut first).await.unwrap();
         assert_eq!(
@@ -320,7 +337,7 @@ mod tests {
     async fn a_refused_connect_is_an_error_and_no_proxy_goes_direct() {
         let (port, _task) = fake_proxy("407 Proxy Authentication Required").await;
         let up = Upstream::parse(&format!("http://127.0.0.1:{port}"), "").unwrap();
-        let err = connect(Some(&up), "api.example.com", 443)
+        let err = connect(Some(&up), "api.example.com", 443, None)
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("407"), "{err:#}");
@@ -328,6 +345,8 @@ mod tests {
         let direct = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let direct_port = direct.local_addr().unwrap().port();
         let up = Upstream::parse("http://127.0.0.1:1", "127.0.0.1").unwrap();
-        connect(Some(&up), "127.0.0.1", direct_port).await.unwrap();
+        connect(Some(&up), "127.0.0.1", direct_port, None)
+            .await
+            .unwrap();
     }
 }

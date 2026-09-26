@@ -3,10 +3,10 @@
 //! Everything that allocates or can fail interestingly — opening the rule
 //! paths, building the ruleset, assembling the BPF program — happens in the
 //! parent. The `pre_exec` hook, which runs between fork and exec where only
-//! async-signal-safe calls are allowed, makes exactly three syscalls:
+//! async-signal-safe calls are allowed, only makes raw syscalls:
 //! `PR_SET_NO_NEW_PRIVS` (required by both mechanisms without
-//! CAP_SYS_ADMIN), the optional seccomp filter, and
-//! `landlock_restrict_self`.
+//! CAP_SYS_ADMIN), the optional seccomp filter (and, with the Unix-socket
+//! allowlist, sending its listener to ferrule), and `landlock_restrict_self`.
 //!
 //! libc doesn't carry the Landlock ABI, so the syscall numbers, structs and
 //! access bits are spelled out from `include/uapi/linux/landlock.h`.
@@ -18,6 +18,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+
+use crate::unix::UnixSockets;
 
 // Same numbers on every architecture: Landlock postdates the syscall table split.
 const SYS_LANDLOCK_CREATE_RULESET: libc::c_long = 444;
@@ -250,26 +253,30 @@ fn annotate(err: io::Error, what: &str) -> io::Error {
 }
 
 /// Arrange for `cmd` to confine itself to `writable`, keep out of `hidden`
-/// (plus, when `network` is false, no sockets but Unix ones) right before
-/// it execs.
+/// (plus, when `network` is false, no sockets but Unix ones, and with
+/// `unix` only the Unix sockets it allows — see [`crate::supervisor`])
+/// right before it execs.
 pub fn apply(
     cmd: &mut Command,
     abi: u32,
     network: bool,
     writable: &[PathBuf],
     hidden: &[PathBuf],
+    unix: Option<Arc<UnixSockets>>,
 ) -> io::Result<()> {
     let ruleset = ruleset(abi, writable, hidden)?;
-    let filter = match (network, seccomp::deny_network()) {
-        (true, _) => None,
-        (false, Some(f)) => Some(f),
-        (false, None) => {
-            return Err(io::Error::new(
+    let supervised = unix.is_some();
+    let filter = if network && !supervised {
+        None
+    } else {
+        Some(seccomp::filter(!network, supervised).ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::Unsupported,
                 "no seccomp filter for this architecture",
-            ))
-        }
+            )
+        })?)
     };
+    let handoff = unix.map(crate::supervisor::start).transpose()?;
     // SAFETY: the hook only makes raw syscalls on data prepared above — no
     // allocation, no locks — which is what a post-fork child may do.
     unsafe {
@@ -289,7 +296,24 @@ pub fn apply(
                     len: filter.len() as u16,
                     filter: filter.as_ptr() as *mut libc::sock_filter,
                 };
-                if libc::prctl(
+                if let Some(handoff) = &handoff {
+                    // The listener for the connect notifications, to ferrule.
+                    let listener = libc::syscall(
+                        libc::SYS_seccomp,
+                        libc::SECCOMP_SET_MODE_FILTER,
+                        libc::SECCOMP_FILTER_FLAG_NEW_LISTENER,
+                        &prog as *const libc::sock_fprog,
+                    );
+                    if listener < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    let sent = crate::supervisor::send_listener(
+                        handoff.as_raw_fd(),
+                        listener as libc::c_int,
+                    );
+                    libc::close(listener as libc::c_int);
+                    sent?;
+                } else if libc::prctl(
                     libc::PR_SET_SECCOMP,
                     libc::SECCOMP_MODE_FILTER as libc::c_ulong,
                     &prog as *const libc::sock_fprog,
@@ -309,18 +333,24 @@ pub fn apply(
 
 pub const SECCOMP_SUPPORTED: bool = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 
-/// The network filter: kill on a foreign syscall ABI, refuse `socket()` for
-/// every domain but AF_UNIX (local IPC keeps working), and refuse
-/// `io_uring_setup`, whose rings can open sockets without a `socket()` call.
+/// The filter: kill on a foreign syscall ABI; with the network off, refuse
+/// `socket()` for every domain but AF_UNIX (local IPC keeps working); with
+/// the Unix-socket allowlist, hand every `connect()` to the supervisor; and
+/// either way refuse `io_uring_setup`, whose rings can open and connect
+/// sockets without those calls.
 mod seccomp {
     #[cfg(target_arch = "x86_64")]
     pub(super) const ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
     #[cfg(target_arch = "x86_64")]
     pub(super) const SYS_SOCKET: u32 = 41;
+    #[cfg(target_arch = "x86_64")]
+    pub(super) const SYS_CONNECT: u32 = 42;
     #[cfg(target_arch = "aarch64")]
     pub(super) const ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
     #[cfg(target_arch = "aarch64")]
     pub(super) const SYS_SOCKET: u32 = 198;
+    #[cfg(target_arch = "aarch64")]
+    pub(super) const SYS_CONNECT: u32 = 203;
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     pub(super) const SYS_IO_URING_SETUP: u32 = 425;
 
@@ -346,7 +376,7 @@ mod seccomp {
     }
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    pub fn deny_network() -> Option<Vec<libc::sock_filter>> {
+    pub fn filter(deny_network: bool, notify_connect: bool) -> Option<Vec<libc::sock_filter>> {
         use libc::{BPF_ABS, BPF_JEQ, BPF_JGE, BPF_K, BPF_LD, BPF_RET, BPF_W};
         let load = |off| stmt(BPF_LD | BPF_W | BPF_ABS, off);
         let mut p = vec![
@@ -356,17 +386,32 @@ mod seccomp {
             load(OFF_NR),
         ];
         p[1].jt = 1; // arch matches: skip the kill
-        let x32 = cfg!(target_arch = "x86_64").then(|| {
+                     // Jumps to fix up once the return blocks' positions are known.
+        enum To {
+            Allow,
+            Deny,
+            Notify,
+            Next,
+        }
+        let mut fix: Vec<(usize, To, To)> = Vec::new();
+        if cfg!(target_arch = "x86_64") {
             p.push(jump(BPF_JGE, X32_BIT));
-            p.len() - 1
-        });
-        let socket = p.len();
-        p.push(jump(BPF_JEQ, SYS_SOCKET));
-        p.push(load(OFF_ARG0));
-        let domain = p.len();
-        p.push(jump(BPF_JEQ, libc::AF_UNIX as u32));
-        let uring = p.len();
+            fix.push((p.len() - 1, To::Deny, To::Next));
+        }
+        if deny_network {
+            p.push(jump(BPF_JEQ, SYS_SOCKET));
+            let at = p.len() - 1;
+            p.push(load(OFF_ARG0));
+            p.push(jump(BPF_JEQ, libc::AF_UNIX as u32));
+            fix.push((p.len() - 1, To::Allow, To::Deny));
+            p[at].jf = 2; // not socket(): past the domain check, A still holds nr
+        }
         p.push(jump(BPF_JEQ, SYS_IO_URING_SETUP));
+        fix.push((p.len() - 1, To::Deny, To::Next));
+        if notify_connect {
+            p.push(jump(BPF_JEQ, SYS_CONNECT));
+            fix.push((p.len() - 1, To::Notify, To::Next));
+        }
         let allow = p.len();
         p.push(stmt(BPF_RET | BPF_K, libc::SECCOMP_RET_ALLOW));
         let deny = p.len();
@@ -374,22 +419,25 @@ mod seccomp {
             BPF_RET | BPF_K,
             libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
         ));
+        let notify = p.len();
+        p.push(stmt(BPF_RET | BPF_K, libc::SECCOMP_RET_USER_NOTIF));
 
         // Jump offsets count instructions after the jump itself.
-        let to = |from: usize, target: usize| (target - from - 1) as u8;
-        if let Some(i) = x32 {
-            p[i].jt = to(i, deny);
+        for (i, t, f) in fix {
+            let to = |target: To| match target {
+                To::Allow => (allow - i - 1) as u8,
+                To::Deny => (deny - i - 1) as u8,
+                To::Notify => (notify - i - 1) as u8,
+                To::Next => 0,
+            };
+            p[i].jt = to(t);
+            p[i].jf = to(f);
         }
-        p[socket].jf = to(socket, uring); // not socket(): A still holds nr
-        p[domain].jt = to(domain, allow);
-        p[domain].jf = to(domain, deny);
-        p[uring].jt = to(uring, deny);
-        p[uring].jf = to(uring, allow);
         Some(p)
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    pub fn deny_network() -> Option<Vec<libc::sock_filter>> {
+    pub fn filter(_deny_network: bool, _notify_connect: bool) -> Option<Vec<libc::sock_filter>> {
         None
     }
 }
@@ -431,40 +479,58 @@ mod tests {
 
     #[test]
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    fn network_filter_decisions() {
-        let prog = seccomp::deny_network().unwrap();
+    fn filter_decisions() {
         let arch = seccomp::ARCH;
+        let allow = libc::SECCOMP_RET_ALLOW;
         let deny = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
-        let socket = seccomp::SYS_SOCKET;
-        assert_eq!(
-            run(&prog, arch, socket, libc::AF_UNIX as u32),
-            libc::SECCOMP_RET_ALLOW
-        );
-        assert_eq!(run(&prog, arch, socket, libc::AF_INET as u32), deny);
-        assert_eq!(run(&prog, arch, socket, libc::AF_INET6 as u32), deny);
-        assert_eq!(run(&prog, arch, socket, libc::AF_NETLINK as u32), deny);
-        assert_eq!(run(&prog, arch, seccomp::SYS_IO_URING_SETUP, 0), deny);
-        assert_eq!(
-            run(&prog, arch, 0, 0),
-            libc::SECCOMP_RET_ALLOW,
-            "read(2) passes"
-        );
-        assert_eq!(
-            run(&prog, arch, 1, libc::AF_INET as u32),
-            libc::SECCOMP_RET_ALLOW,
-            "only socket() looks at arg0"
-        );
-        assert_eq!(
-            run(&prog, 0x4000_0003, socket, libc::AF_UNIX as u32),
-            libc::SECCOMP_RET_KILL_PROCESS,
-            "foreign arch"
-        );
-        if cfg!(target_arch = "x86_64") {
+        let notify = libc::SECCOMP_RET_USER_NOTIF;
+        let (socket, connect) = (seccomp::SYS_SOCKET, seccomp::SYS_CONNECT);
+        let unix = libc::AF_UNIX as u32;
+        let inet = libc::AF_INET as u32;
+        for (net_off, supervised) in [(true, false), (true, true), (false, true)] {
+            let prog = seccomp::filter(net_off, supervised).unwrap();
+            let case = format!("network off {net_off}, supervised {supervised}");
+            let blocked = if net_off { deny } else { allow };
+            assert_eq!(run(&prog, arch, socket, unix), allow, "{case}");
+            assert_eq!(run(&prog, arch, socket, inet), blocked, "{case}");
             assert_eq!(
-                run(&prog, arch, seccomp::X32_BIT | 41, libc::AF_UNIX as u32),
-                deny,
-                "x32 ABI"
+                run(&prog, arch, socket, libc::AF_INET6 as u32),
+                blocked,
+                "{case}"
             );
+            assert_eq!(
+                run(&prog, arch, socket, libc::AF_NETLINK as u32),
+                blocked,
+                "{case}"
+            );
+            assert_eq!(
+                run(&prog, arch, seccomp::SYS_IO_URING_SETUP, 0),
+                deny,
+                "{case}"
+            );
+            assert_eq!(
+                run(&prog, arch, connect, unix),
+                if supervised { notify } else { allow },
+                "{case}"
+            );
+            assert_eq!(run(&prog, arch, 0, 0), allow, "read(2) passes: {case}");
+            assert_eq!(
+                run(&prog, arch, 1, inet),
+                allow,
+                "only socket() looks at arg0: {case}"
+            );
+            assert_eq!(
+                run(&prog, 0x4000_0003, socket, unix),
+                libc::SECCOMP_RET_KILL_PROCESS,
+                "foreign arch: {case}"
+            );
+            if cfg!(target_arch = "x86_64") {
+                assert_eq!(
+                    run(&prog, arch, seccomp::X32_BIT | 42, unix),
+                    deny,
+                    "x32 ABI: {case}"
+                );
+            }
         }
     }
 

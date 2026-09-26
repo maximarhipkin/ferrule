@@ -221,10 +221,12 @@ This is the owner's network policy, not a network error; retrying won't help.
 If this host is needed, ask the owner to add it to [egress] private_allow (see docs/egress.md).
 ```
 
-`web_fetch` now checks the status line. It reports any non-2xx as a failed
-call, and prefers the proxy's text when `x-ferrule-egress` is set. It used
-to turn a 404 page into "successful" text. The same check applies to 4xx and
-5xx pages generally, and it's a small behaviour change noted in the PR.
+`web_fetch` now checks the response. A refusal (`x-ferrule-egress: denied`)
+is a failed call carrying the proxy's text. It used
+to turn a 404 page into "successful" text; now any other non-2xx page keeps
+its text but starts with `HTTP <status>`, a small behaviour change noted in
+the PR. An MCP server reached by URL gets the proxy's full text too, rather
+than the 300-character excerpt of an error body.
 
 **To the owner:**
 - a **ledger row**: `call_kind = "egress_denied"`, `provider = "egress"`,
@@ -233,8 +235,8 @@ to turn a 404 page into "successful" text. The same check applies to 4xx and
   path or query, which can carry data);
 - a **trust audit event** `egress_denied` with the same detail.
 
-`BrokerConfig` gains `on_deny: Option<Arc<dyn Fn(&Denial) + Send + Sync>>`,
-and the CLI wires it to both. Ledger readers that sum cost or count calls
+`Broker::on_deny(hook)` takes an `Fn(&Denial) + Send + Sync`, and the CLI
+wires it to both. Ledger readers that sum cost or count calls
 already skip `eval_result`, and they now skip `egress_denied` too, so the
 dashboard and `/cost` don't count a denial as a model call. The dashboard's
 overview gets a "blocked egress (24 h)" count with the last few hosts. It's
@@ -273,6 +275,9 @@ So neither Landlock nor namespaces can do it.
    socketpair (`SCM_RIGHTS`). Then it closes its copy before `exec`, so the
    sandboxed program never holds its own listener.
 3. A supervisor thread in ferrule receives each notification:
+   - The notification carries the calling *thread's* id. `pidfd_open`
+     refuses a non-leader thread before 6.9, so the thread group comes
+     from `/proc/<tid>/status`. Memory and cwd are read per thread.
    - It **takes a copy of the child's socket** with `pidfd_getfd`.
    - It reads the sockaddr from `/proc/<pid>/mem`.
    - It re-checks `SECCOMP_IOCTL_NOTIF_ID_VALID`, so the pid wasn't
@@ -301,12 +306,33 @@ So neither Landlock nor namespaces can do it.
    connect can take 30 s. It runs until the listener hangs up, which
    happens when the last process holding the filter exits.
 
-**The default allowlist** applies when `[sandbox] unix_sockets` isn't set.
-It is `$SSH_AUTH_SOCK` (git over ssh), gpg-agent's sockets, the NSS
-helpers (nscd, `/run/systemd/resolve/`, `/run/systemd/userdb/`), the
-PostgreSQL and MySQL socket dirs, `/tmp/.X11-unix/`, and everything inside
-the command's writable roots and temp dirs. The command could create sockets
-there anyway, so they only reach servers it started.
+**The default allowlist** (`unix_sockets_default = true`) is
+`$SSH_AUTH_SOCK` (git over ssh), gpg-agent's sockets (`~/.gnupg/`,
+`$GNUPGHOME/`, `/run/user/<uid>/gnupg/`), the NSS helpers (nscd,
+`/run/systemd/resolve/`, `/run/systemd/userdb/`), journald and `/dev/log`,
+and the PostgreSQL and MySQL socket dirs. macOS: mDNSResponder, syslog,
+launchd's per-user dirs, `/private/tmp/mysql.sock` and
+`/private/tmp/.s.PGSQL.*`.
+
+**X11 is not on it** (as built, a change from the first draft): an X
+connection can inject keystrokes into any other window, a terminal
+included, which is an escape. `unix_sockets = ["/tmp/.X11-unix/"]` puts it
+back.
+
+**The command's own sockets.** Sockets in the writable roots and temp dirs
+are *not* allowed wholesale, because `/tmp` also holds the owner's tmux
+server, an editor's server socket and VS Code's IPC, each a way to run
+anything. A socket there is allowed when **the process listening on it
+belongs to the command**. The supervisor opens a throwaway connection of its
+own, reads the listener's pid with `SO_PEERCRED`, and walks `/proc/<pid>/stat`
+up to the command's root pid or its process group. Linux only: Seatbelt can't
+ask who's listening, so on macOS the workspace (not `/private/tmp`) is
+allowed by path. Details:
+- a datagram socket there has no listener to ask, so it is refused unless
+  listed;
+- a socket with more than one hard link is only allowed by its exact path,
+  so a hard link to `docker.sock` inside an allowed directory doesn't ride
+  in on the directory rule.
 
 **Not on it:** docker, podman, containerd, `/run/systemd/private`, the
 system and session D-Bus. Owners add sockets with `unix_sockets =
@@ -317,21 +343,32 @@ and `unix_sockets_default = false` drops the defaults.
 as `/dev/log`). None of the escape sockets are datagram sockets. Documented.
 
 **When it can't run:**
-- If the supervisor can't be set up (no `pidfd_getfd`: kernel < 5.6, or a
-  container seccomp profile that blocks it), `detect()` records "unix
-  sockets: not enforced (<why>)".
+- If the supervisor can't be set up, the Unix-socket status reads "not
+  enforced (<why>)". Causes: no `pidfd_getfd` (kernel < 5.6), or a
+  container seccomp profile that blocks it. **Docker's default profile
+  refuses `pidfd_getfd` without `CAP_SYS_PTRACE`.** That's the case in the
+  container this was built in, so the live path was verified on the CI
+  runners, not locally.
 - `ferrule doctor` and `ferrule sandbox` warn, and commands run without the
-  allowlist rather than failing, unless `require = true`.
-- The probe runs once per process: it spawns `true` under the filter and
-  checks that the notify path round-trips.
+  allowlist rather than failing, unless `require = true`. Under `require`,
+  `Sandbox::new` fails, and the message names `unix_sockets = ["*"]` as the
+  way out.
+- The probe runs once per process. It spawns `/bin/sh` under the filter,
+  and before exec it connects to one listed and one unlisted socket: the
+  first must succeed, the second must get `EACCES`.
+- On CI (`GITHUB_ACTIONS` set) the Linux enforcement test fails instead of
+  skipping, so a broken supervisor can't pass as "not supported here".
 
 **macOS (Seatbelt):**
 - `network = false` already denies all `network-outbound`, unix sockets
   included, so that case was never open.
 - With the network on, the profile now adds
-  `(deny network-outbound (remote unix-socket))` followed by
-  `(allow network-outbound (remote unix-socket (path-literal …)))` / `(subpath …)`
-  per allowlist entry, plus the paths as `-D` parameters.
+  `(deny network-outbound (subpath "/"))`. A path filter on a network
+  operation only matches `AF_UNIX` destinations, so IP traffic is
+  untouched. It is followed by `(allow network-outbound (literal (param …)))`
+  or `(subpath (param …))` per allowlist entry, with the paths passed as
+  `-D` parameters. (This syntax was not verified on a Mac; the macOS CI
+  enforcement test is the check.)
 - Seatbelt matches real paths, so entries are canonicalized first.
 - `/private/var/run/mDNSResponder` is always allowed, or DNS stops working.
 
@@ -352,8 +389,14 @@ doctor says so.
   - whether shell commands get the proxy (secrets or rules) or not
     (advisory);
   - the last 24 h of denials read from the ledger (count and top hosts).
-- **The `sandbox` line** now says
-  `unix sockets: allowlist (N entries) | not enforced (<why>)`.
+- **The `sandbox` section** gets a `Unix sockets:` line, which is one of:
+  - `allowlist (N entries, plus sockets the command makes itself)`;
+  - `not enforced (<why>)`, a warning;
+  - `none (network off)` (macOS);
+  - `any (unix_sockets = ["*"])`.
+
+  On Windows it's a note, "not covered on Windows". `ferrule sandbox`
+  prints the same line as `sockets`.
 - **`ferrule setup`** gets an "Network policy" step after Sandbox. It offers
   three starting points and writes `[egress]` through `Target`, like every
   other step:

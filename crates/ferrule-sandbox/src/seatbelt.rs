@@ -11,6 +11,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::unix::UnixSockets;
+
 /// Never resolved through PATH: a planted `sandbox-exec` would get to decide
 /// what the sandbox is.
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
@@ -45,6 +47,7 @@ pub fn profile(
     desktop: bool,
     writable: &[PathBuf],
     hidden: &[PathBuf],
+    unix: Option<&UnixSockets>,
 ) -> (String, Vec<(String, PathBuf)>) {
     let mut sections = vec![
         BASE.to_string(),
@@ -74,6 +77,9 @@ pub fn profile(
             "(allow network-outbound)\n(allow network-inbound)\n(allow network-bind)".to_string(),
         );
         sections.push(NETWORK.to_string());
+        if let Some(unix) = unix {
+            params.extend(unix_rules(unix, &mut sections));
+        }
     }
     // Only safe because reads are unrestricted anyway (see prefs.sbpl).
     sections.push(PREFS.to_string());
@@ -89,6 +95,36 @@ pub fn profile(
     // root the hidden path sits in.
     params.extend(deny_hidden(hidden, &mut sections));
     (sections.join("\n"), params)
+}
+
+/// With the network on, Unix sockets only from the allowlist
+/// (docs/egress.md): every socket path refused, then the allowed ones let
+/// back in (later rules win). With it off, the base profile refuses them
+/// all already. DNS goes through `mDNSResponder`, so that one always stays.
+fn unix_rules(unix: &UnixSockets, sections: &mut Vec<String>) -> Vec<(String, PathBuf)> {
+    let mut params = Vec::new();
+    let mut rules = vec![
+        "; ferrule: Unix sockets from the allowlist only".to_string(),
+        "(deny network-outbound (subpath \"/\"))".to_string(),
+        "(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))".to_string(),
+    ];
+    let dirs = unix.dirs.iter().chain(&unix.own_dirs);
+    for (i, path) in unix.files.iter().enumerate() {
+        let key = format!("UNIX_SOCKET_{i}");
+        rules.push(format!(
+            "(allow network-outbound (literal (param \"{key}\")))"
+        ));
+        params.push((key, path.clone()));
+    }
+    for (i, path) in dirs.enumerate() {
+        let key = format!("UNIX_DIR_{i}");
+        rules.push(format!(
+            "(allow network-outbound (subpath (param \"{key}\")))"
+        ));
+        params.push((key, path.clone()));
+    }
+    sections.push(rules.join("\n"));
+    params
 }
 
 /// A profile that allows everything but `hidden`: for a helper its config
@@ -182,7 +218,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("f");
         std::fs::write(&file, "").unwrap();
-        let (p, params) = profile(false, false, &[dir.path().to_path_buf(), file.clone()], &[]);
+        let (p, params) = profile(
+            false,
+            false,
+            &[dir.path().to_path_buf(), file.clone()],
+            &[],
+            None,
+        );
         assert!(p.starts_with("(version 1)"), "version must lead");
         assert!(p.contains("(deny default)"));
         assert!(p.contains("(subpath (param \"WRITABLE_ROOT_0\"))"));
@@ -199,7 +241,7 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert!(balanced(&p));
 
-        let (with_net, _) = profile(true, false, &[], &[]);
+        let (with_net, _) = profile(true, false, &[], &[], None);
         assert!(with_net.contains("(allow network-outbound)"));
         assert!(
             with_net.contains("com.apple.trustd.agent"),
@@ -222,6 +264,7 @@ mod tests {
             true,
             &[dir.path().to_path_buf()],
             std::slice::from_ref(&secret),
+            None,
         );
         let deny = "(deny file-read* file-write* (subpath (param \"HIDDEN_0\")))";
         let at = p.find(deny).expect("deny rule present");
@@ -238,9 +281,40 @@ mod tests {
     }
 
     #[test]
+    fn unix_sockets_are_refused_then_let_back_in_from_the_allowlist() {
+        let unix = UnixSockets {
+            files: vec![PathBuf::from("/Users/me/.ssh/agent.sock")],
+            dirs: vec![PathBuf::from("/Users/me/.gnupg")],
+            own_dirs: vec![PathBuf::from("/Users/me/work")],
+            abstract_names: Vec::new(),
+        };
+        let (p, params) = profile(true, false, &[], &[], Some(&unix));
+        let deny = p.find("(deny network-outbound (subpath \"/\"))").unwrap();
+        assert!(
+            deny > p.find("(allow network-outbound)").unwrap(),
+            "later rules win"
+        );
+        for allow in [
+            "(allow network-outbound (literal \"/private/var/run/mDNSResponder\"))",
+            "(allow network-outbound (literal (param \"UNIX_SOCKET_0\")))",
+            "(allow network-outbound (subpath (param \"UNIX_DIR_0\")))",
+            "(allow network-outbound (subpath (param \"UNIX_DIR_1\")))",
+        ] {
+            assert!(p.find(allow).unwrap() > deny, "{allow}");
+        }
+        assert_eq!(params.len(), 3);
+        assert!(balanced(&p));
+        let (off, _) = profile(false, false, &[], &[], Some(&unix));
+        assert!(
+            !off.contains("network-outbound"),
+            "network off refuses them all already"
+        );
+    }
+
+    #[test]
     fn command_uses_the_absolute_sandbox_exec() {
         let cmd = command(
-            profile(true, false, &[PathBuf::from("/private/tmp")], &[]),
+            profile(true, false, &[PathBuf::from("/private/tmp")], &[], None),
             "sh",
             ["-c", "true"],
         );
