@@ -2458,6 +2458,10 @@ fn ledger_cmd(since: Option<String>) -> Result<()> {
         );
     } else {
         println!("{}", ledger::render_table(&ledger::aggregate(&records)));
+        let speed = ledger::render_speed(&records);
+        if !speed.is_empty() {
+            println!("\n{speed}");
+        }
     }
     if malformed > 0 {
         eprintln!("skipped {malformed} malformed line(s)");
