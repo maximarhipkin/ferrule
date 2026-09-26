@@ -1472,7 +1472,7 @@ mod tests {
         let s = MemoryStore::in_memory().unwrap();
         let a = s
             .insert(
-                "Max deploys sasa-front on Vercel",
+                "Dana deploys the shop on Vercel",
                 &["import:hermes", "from:MEMORY.md"],
                 &[],
             )
@@ -1484,26 +1484,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            s.known("max deploys  sasa-front on vercel.").unwrap(),
+            s.known("dana deploys  the shop on vercel.").unwrap(),
             Some(a.id)
         );
-        assert_eq!(s.known("Max deploys on Netlify").unwrap(), None);
+        assert_eq!(s.known("Dana deploys on Netlify").unwrap(), None);
         let tagged = s.live_tagged(&["import:hermes", "from:MEMORY.md"]).unwrap();
         assert_eq!(tagged.len(), 1);
         assert_eq!(tagged[0].id, a.id);
         assert!(s.live_tagged(&["import:openclaw"]).unwrap().is_empty());
-        s.supersede(a.id, "Max deploys sasa-front on Netlify", &[])
+        s.supersede(a.id, "Dana deploys the shop on Netlify", &[])
             .unwrap();
         let tagged = s.live_tagged(&["import:hermes", "from:MEMORY.md"]).unwrap();
         assert_eq!(tagged.len(), 1, "only the live head");
         assert_ne!(tagged[0].id, a.id);
         assert!(resembles(
-            "Max deploys sasa-front on Vercel",
-            "Max deploys sasa-front on Netlify"
+            "Dana deploys the shop on Vercel",
+            "Dana deploys the shop on Netlify"
         ));
         assert!(!same_fact(
-            "Max deploys sasa-front on Vercel",
-            "Max deploys sasa-front on Netlify"
+            "Dana deploys the shop on Vercel",
+            "Dana deploys the shop on Netlify"
         ));
     }
 }
