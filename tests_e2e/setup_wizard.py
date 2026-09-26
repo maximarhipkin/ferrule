@@ -150,6 +150,7 @@ step(c, "Use the recommended one", "y\r")
 i = c.expect([r"sandbox works here . [^\r]+", "commands will run unsandboxed"])
 check("sandbox reported", True)
 print("  sandbox:", c.match.group(0))
+step(c, "Public hosts, nothing on your LAN", "y\r")
 # The browser is offered only when this machine has Chrome and agent-browser.
 if c.expect([r"Let the agent use [^\r]+\?", "No Chrome or Chromium found|isn't ready"]) == 0:
     time.sleep(0.15)
@@ -177,6 +178,7 @@ check("telegram token env", cfg["gateway"].get("telegram_token_env") == "TELEGRA
 check("allowed chats", cfg["gateway"].get("telegram_allowed_chats") == [42])
 check("secret hosts", cfg.get("secrets", {}).get("MY_TOKEN") == ["api.example.com", "*.example.com"], str(cfg.get("secrets")))
 check("no embedder", "memory" not in cfg, str(cfg.get("memory")))
+check("no egress rules", "egress" not in cfg, str(cfg.get("egress")))
 check("sandbox", cfg.get("sandbox") == {"mode": "workspace-write", "network": True}, str(cfg.get("sandbox")))
 sec = open(secrets_file).read()
 check("secrets file keys", all(k in sec for k in ["LOCAL_API_KEY=", "TELEGRAM_BOT_TOKEN=", "MY_TOKEN="]), sec.replace("\n", " | ")[:0])

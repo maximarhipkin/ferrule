@@ -4274,6 +4274,11 @@ release binary (`tempfile` is dev-only), so no `release.yml` run.
 **Eval.** `eval run evals/starter --variant ab` against the mock model:
 engineered 20/20, naive 11/20, $0.98.
 
+**CI fixes.** The e2e wizard answers the new Network policy question.
+`hidden_keys.py` checked that `proxy/keys/ca.key` doesn't exist, but the
+default egress policy now starts the proxy without secrets, so ferrule's
+own CA is there. It now checks for the model's planted content instead.
+
 **Open edges:** `enforce` mode for shell egress; per-agent policies;
 egress denials as span events; `ferrule telemetry replay`; importing MCP
 server definitions, scheduled jobs and OpenClaw's SQLite pairing
