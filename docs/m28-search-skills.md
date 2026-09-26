@@ -480,4 +480,54 @@ Tests:
 
 ## As built
 
-(Filled in after the build.)
+Built on branch `m28-search-skills` in four commits: the fixes (§3),
+`web_search` (§1), its post-M27-merge follow-up, and triggers (§2). User
+guides: `docs/web-search.md`, and `docs/skills.md`, the first standalone
+skills doc.
+
+**`web_search`**, as designed, plus:
+
+- It stays available in plan mode, like `web_fetch` (`changes_files` is
+  false), and after the M27 merge it is `read_only`, so a batch of
+  searches runs in parallel.
+- Parallel searches made the cap racy: each checks the ledger before any
+  is recorded. A search that passed the gate now holds a place under
+  `max_searches_per_day` until its row is written. If its turn is stopped
+  first, the place lapses after two minutes.
+- A search with no `price_per_search_usd` is recorded at $0. Every sent
+  search is a row, answered or not; a failed one isn't charged.
+- The gate checks the kill switch and the dollar caps as well as the
+  search cap. An unreadable ledger refuses.
+- `ferrule doctor` probes reachability without a key, so it never pays
+  for a search. `&` is not escaped in results: only `<` and `>` can open
+  a tag.
+
+**Triggers**, as designed, with these differences:
+
+- `Triggered` carries `load: TriggerLoad` (`Loaded(block)`, `TooLarge`,
+  `Refused(why)`) instead of `text`, so the agent writes the note, the
+  event and the transcript line for each case itself.
+- Hebrew proclitics go up to **4** letters, not 3: `וכשהשחרור` is
+  ו+כ+ש+ה.
+- Accent folding uses Unicode NFD (`icu_normalizer`, already in the
+  tree through `url`), so precomposed and decomposed text match alike.
+- A `TooLarge` skill counts toward `max_triggered`; a refused one doesn't.
+- Vetting (`vet_trigger`) re-runs the install scan and, for
+  agent-installed skills, the lock's status and digest checks. It
+  doesn't re-apply the install-time name rules: the skill is already on
+  disk under a name discovery accepted.
+- A skill a trigger loaded is also marked active for `activate_skill`,
+  which then answers "already active" instead of loading it twice.
+- Only the root agent triggers. Sub-agents get no trigger set, whatever
+  their prompt says.
+- The gateway's `LaneJob.person` is true for `dispatch` and `offer`,
+  false for `wake` and `dispatch_and_wait` (the scheduler).
+
+**Fixes.** Against the mock, "failed checks fixed" reads 4 engineered and
+0 naive both before and after §3.1: every engineered task run with a
+failed check went on to pass. The starter A/B is unchanged: 20/20
+engineered, 11/20 naive, $0.98.
+
+**Not verified live:** real Brave, Tavily, Exa and SearXNG calls (the
+tests use TLS mocks; the live tests are `#[ignore]`), and triggers on a
+real Telegram chat.
