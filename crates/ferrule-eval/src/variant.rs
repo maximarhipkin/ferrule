@@ -141,7 +141,7 @@ pub fn build(b: Build<'_>) -> Agent {
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(ListDirTool::hiding(hidden)));
+    registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
     if b.sandbox.policy().mode == Mode::ReadOnly {
         registry.remove("write_file");
         registry.remove("edit_file");
@@ -152,6 +152,7 @@ pub fn build(b: Build<'_>) -> Agent {
         max_iterations: b.max_iterations,
         ..Default::default()
     };
+    let mut repo_map = None;
     let system = match b.variant {
         Variant::Naive => {
             profile.retain_reasoning = false;
@@ -197,6 +198,17 @@ pub fn build(b: Build<'_>) -> Agent {
                     registry.register(tool);
                 }
             }
+            // M29: as in the CLI, only in a code repo; the tag cache in
+            // the run's state dir.
+            if ferrule_codemap::looks_like_code_repo(b.workspace, &hidden) {
+                let map = Arc::new(ferrule_codemap::CodeMap::new(
+                    b.workspace,
+                    hidden.clone(),
+                    Some(&b.state.join("repomap")),
+                ));
+                registry.register(Arc::new(ferrule_codemap::CodeSearchTool::new(map.clone())));
+                repo_map = Some(map);
+            }
             // M15: what compaction shortens or drops stays reachable.
             if let Some(t) = &b.transcript {
                 registry.register(Arc::new(ferrule_core::SearchHistoryTool::new(t)));
@@ -214,6 +226,12 @@ pub fn build(b: Build<'_>) -> Agent {
         b.transcript,
     )
     .with_system_prompt(system);
+    if let Some(map) = repo_map {
+        agent = agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(
+            map,
+            ferrule_codemap::DEFAULT_MAP_TOKENS,
+        )));
+    }
     if let (true, Some(cmd)) = (b.variant.engineered(), b.check) {
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(
             cmd,

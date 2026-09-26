@@ -1,0 +1,17 @@
+[Repo map: ranked outline of this repository — definitions with line numbers; replaces any earlier map. Use code_search/read_file for detail.]
+src/price.ts
+     1│export class Money {
+     2│constructor(public cents: number) {}
+     5│export type Percent = number;
+     7│export enum Currency {
+    12│export const MAX_PERCENT = 100;
+    14│export function applyDiscount(total: Money, percent: Percent): Money {
+src/cart.ts
+     3│export interface Checkout {
+     4│checkoutTotal(): Money;
+     7│export class Cart implements Checkout {
+    10│addItem(price: Money): void {
+    16│checkoutTotal(): Money {
+src/view.jsx
+     3│export const CartView = ({ cart }) => {
+     7│function Summary({ total }) {

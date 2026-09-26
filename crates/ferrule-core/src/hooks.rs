@@ -56,3 +56,17 @@ impl StopFlag {
 pub trait SessionRecall: Send + Sync {
     async fn recall(&self, goal: &str) -> Option<String>;
 }
+
+/// Context that is asked for at the start of every run (M29: the repo map).
+/// The answer goes in as a user message after the goal and any recalled
+/// memory, never into the system prompt (M27: the cached prefix). The
+/// agent keeps the last block it added: an equal answer adds nothing while
+/// that block is still in the history, so a turn in which nothing changed
+/// adds no bytes. A changed block is appended; history is never edited.
+/// `None` (or an empty block) adds nothing, and a source that fails should
+/// answer `None`, not fail the run.
+#[async_trait::async_trait]
+pub trait TurnContext: Send + Sync {
+    /// `history` is the conversation so far, this run's goal included.
+    async fn context(&self, goal: &str, history: &[crate::message::Message]) -> Option<String>;
+}

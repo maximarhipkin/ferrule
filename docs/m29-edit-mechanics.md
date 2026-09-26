@@ -49,7 +49,7 @@ For each hunk, the rungs are tried in order. The first rung that finds
 |---|---|---|
 | 1. exact | nothing | verbatim |
 | 2. trailing whitespace | spaces/tabs (and a stray `\r`) at line ends | verbatim, replacing the matched whole lines |
-| 3. indentation | a **uniform** leading-indent offset: every non-blank SEARCH line, minus SEARCH's common indent, plus one file prefix P, equals the file line | REPLACE with its common indent swapped for P |
+| 3. indentation | a **uniform** leading-indent offset: every non-blank SEARCH line, minus SEARCH's common indent, plus one file prefix P, equals the file line | each REPLACE line with SEARCH's common indent swapped for P (a line with less indent than that gets P plus its trimmed text) |
 
 - Exactly one match: the hunk applies.
 - More than one match: the hunk fails as *ambiguous*. There is no drop to a
@@ -199,7 +199,7 @@ Size is measured on the release artifacts (§7).
 For each file:
 
 - **Definitions**: name, kind and 1-based line. Kinds: function, method,
-  class, struct, enum, trait, interface, type, module, const.
+  class, struct, enum, trait, interface, type, module, const, macro.
 - **Referenced identifiers**: calls, type uses, and imports' leaf names.
 
 The map is **top-level symbols**: items and their methods. Locals are
@@ -219,18 +219,21 @@ references and file B defines, there is an edge A→B with weight
 
 PageRank runs with damping 0.85 and 30 iterations. The personalisation
 vector is uniform, except that files mentioned in the conversation (path or
-unique basename) weigh 100/N. Each file's rank is split over its outgoing
+unique basename) weigh 100× the others (then normalised). A file with no
+outgoing edges spreads its rank over every file, as usual. Each file's rank is split over its outgoing
 edges onto (file, identifier) definitions, and definitions are ranked by
 that. Ties break by path and then line, so equal input gives equal output,
 byte for byte.
 
 "The conversation" means the current request plus the text of the last 20
-messages.
+messages. Tool results are left out (one `list_dir` would mention every
+file), and so are earlier maps (or the map would feed on itself); tool
+calls' arguments count.
 
 ### Rendering and budget
 
 ```
-[Repo map: ranked outline of this repository — definitions with line numbers. Use code_search/read_file for detail.]
+[Repo map: ranked outline of this repository — definitions with line numbers; replaces any earlier map. Use code_search/read_file for detail.]
 src/agent.rs
   42│pub struct Agent
   810│pub async fn run(&mut self, goal: &str, …)
@@ -249,7 +252,8 @@ to 1024, and 0 turns the map off.
 The workspace must look like a code repo: a VCS dir (`.git`, `.hg`, `.jj`)
 **or** a manifest (`Cargo.toml`, `package.json`, `pyproject.toml`,
 `setup.py`, `go.mod`, `pom.xml`, `build.gradle(.kts)`), **and** at least 3
-parseable source files. A home dir or a folder of CSVs gets no map and no
+source files (by extension, whether or not this build has the grammar;
+without it `code_search` is text search). A home dir or a folder of CSVs gets no map and no
 `code_search` schema.
 
 The walk:
@@ -278,6 +282,10 @@ away on every edit. So:
   history, so everything before it still caches. The header says it
   supersedes earlier maps. Compaction summarises old maps like anything
   else.
+- The price: every turn that changes the map adds up to the budget (1k
+  tokens by default) of new, uncached input, and the stale maps stay in
+  the history until compaction. That is still cheaper than a system-prompt
+  map, which re-writes the whole cached prefix on every change.
 
 The alternatives were weaker:
 
@@ -297,6 +305,9 @@ current, and the next turn gets the new map.
 - A refresh stats every file. Unchanged `(size, mtime)` reuses the tags. A
   changed stat re-reads and re-hashes the file, and only a changed hash
   re-parses it.
+- A file modified in the last 2 seconds is re-hashed even when its stat
+  matches (git's "racy" rule): a same-size edit inside one mtime tick
+  would otherwise look unchanged.
 - Writes go through a temp file and a rename. A corrupt or old-format
   cache is discarded, never trusted.
 - The data dir is ferrule's own, outside the tools' reach

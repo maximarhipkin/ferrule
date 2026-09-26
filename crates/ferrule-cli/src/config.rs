@@ -220,6 +220,11 @@ pub struct AgentSettings {
     /// way; false is for a provider that misbehaves with the tool.
     #[serde(default = "default_true")]
     pub edit_file: bool,
+    /// M29: the repo map's budget in tokens (chars / 4), in a workspace
+    /// that looks like a code repo. 0 turns the map off; `code_search`
+    /// stays.
+    #[serde(default = "default_repo_map_tokens")]
+    pub repo_map_tokens: usize,
 }
 
 impl Default for AgentSettings {
@@ -230,8 +235,13 @@ impl Default for AgentSettings {
             parallel_tools: default_parallel_tools(),
             stream: default_stream(),
             edit_file: true,
+            repo_map_tokens: default_repo_map_tokens(),
         }
     }
+}
+
+fn default_repo_map_tokens() -> usize {
+    ferrule_codemap::DEFAULT_MAP_TOKENS
 }
 
 fn default_true() -> bool {
@@ -606,6 +616,7 @@ profile = "openai"
 # parallel_tools = 4              # read-only tool calls from one response run at once; 1 = one by one
 # stream = true                   # replies grow as the model writes (Telegram, `ferrule chat`)
 # edit_file = true                # offer edit_file (SEARCH/REPLACE); write_file stays either way
+# repo_map_tokens = 1024          # repo map budget in a code repo (tokens); 0 = no map
 
 # [gateway]
 # local = true                              # enable the stdin/stdout channel

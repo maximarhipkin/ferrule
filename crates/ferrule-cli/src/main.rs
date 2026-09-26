@@ -865,7 +865,19 @@ fn build_agent_from(
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(ListDirTool::hiding(hidden)));
+    registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
+    // M29: `code_search` and the repo map, only in something that looks
+    // like a code repo (a home dir gets neither schema nor map).
+    let repo_map = ferrule_codemap::looks_like_code_repo(&tool_ctx.workspace, &hidden).then(|| {
+        let cache = config::data_dir().ok().map(|d| d.join("repomap"));
+        let map = Arc::new(ferrule_codemap::CodeMap::new(
+            &tool_ctx.workspace,
+            hidden.clone(),
+            cache.as_deref(),
+        ));
+        registry.register(Arc::new(ferrule_codemap::CodeSearchTool::new(map.clone())));
+        map
+    });
     warn_data_in_workspace(&sandbox, &tool_ctx.workspace);
     if !cfg.agent.edit_file {
         registry.remove("edit_file");
@@ -1002,6 +1014,10 @@ fn build_agent_from(
     .with_system_prompt(system)
     // The memory block is picked on the first run, from the session's goal.
     .with_session_recall(Arc::new(memory_tools::GoalRecall { db: memory_db }));
+    if let (Some(map), tokens @ 1..) = (repo_map, cfg.agent.repo_map_tokens) {
+        agent =
+            agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(map, tokens)));
+    }
     agent = agent
         .with_ledger(
             ledger.sink,

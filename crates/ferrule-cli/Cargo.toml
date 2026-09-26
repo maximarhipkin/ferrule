@@ -8,6 +8,12 @@ description = "ferrule binary: run, chat, memory, config"
 name = "ferrule"
 path = "src/main.rs"
 
+[features]
+# M29: the repo map's tree-sitter grammars. Without them `code_search` is a
+# text search and there is no map.
+default = ["grammars"]
+grammars = ["ferrule-codemap/default"]
+
 [dependencies]
 dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
@@ -26,6 +32,7 @@ ferrule-hooks = { path = "../ferrule-hooks" }
 ferrule-learn = { path = "../ferrule-learn" }
 ferrule-trust = { path = "../ferrule-trust" }
 ferrule-connections = { path = "../ferrule-connections" }
+ferrule-codemap = { path = "../ferrule-codemap", default-features = false }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
