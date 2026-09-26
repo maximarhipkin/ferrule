@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-1075-8a929a" alt="1075 workspace tests">
+  <img src="https://img.shields.io/badge/tests-1120-8a929a" alt="1120 workspace tests">
 </p>
 
 <p align="center">
@@ -184,6 +184,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Browser** | agent-browser's MCP server on your installed Chrome, in the sandbox and behind the proxy ([`docs/browser.md`](docs/browser.md)). |
 | **Sub-agents** | `spawn_agent` / `wait` / `resume` / `close`: planner, worker and verifier roles with isolated contexts, a worktree per child, roles on their own providers, tree limits and a shared budget ([`docs/agents.md`](docs/agents.md)). |
 | **Self-extension** | The agent installs vetted skills and MCP servers for itself: a poisoning scan, version pinning and an allow-list ([`docs/m13-self-extension.md`](docs/m13-self-extension.md)). |
+| **Plugins** | WASM tool plugins: small sandboxed tools, the same sandbox on every OS, nothing to install. A plugin reaches only what it was granted — workspace directories, HTTPS to its declared domains through the credential proxy, secrets as placeholders only — and you approve its capabilities at install; widening them asks again. `ferrule plugins add / list / remove`, a Rust SDK in `crates/ferrule-plugin-sdk` and examples in `examples/plugins/` ([`docs/plugins.md`](docs/plugins.md)). |
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. Add `triggers: [ship it, release]` and the skill loads when your message says so, Hebrew included; only what a person types counts, never a web page or tool output ([`docs/skills.md`](docs/skills.md)). |
 | **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall, plus optional meaning-based recall (a local multilingual model or any OpenAI-compatible `/v1/embeddings` endpoint) merged with it ([`docs/memory.md`](docs/memory.md)). `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
 | **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons, kept only when the task passes twice with the lesson in the prompt ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md)). |
@@ -531,9 +532,11 @@ crates/
   ferrule-tools      fs / shell / web_fetch / diary / memory tools, proxied egress
   ferrule-memory     SQLite + FTS5 memory with time decay
   ferrule-embed      embedders: local model2vec, OpenAI-compatible /v1/embeddings
-  ferrule-gateway    daemon: channels (Telegram, local), session router, scheduler
+  ferrule-gateway    daemon: channels (Telegram, Discord, Slack, local), session router, scheduler
   ferrule-mcp        MCP client: sandboxed stdio servers, Streamable HTTP servers
   ferrule-skills     Agent Skills discovery and loading
+  ferrule-plugins    WASM tool plugins: wasmi runtime, capabilities, limits
+  ferrule-plugin-sdk the Rust SDK for writing a plugin
   ferrule-codemap    tree-sitter repo map and code search
   ferrule-sandbox    OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt)
   ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing
@@ -543,7 +546,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 1075 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 1120 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -631,22 +634,23 @@ and a dated entry for every session.
       merged with BM25, off by default
 - [x] M31: Discord (Gateway WebSocket) and Slack (Socket Mode) channels,
       streamed replies and button approvals, in the same daemon
+- [x] M32: WASM tool plugins — capabilities denied unless granted,
+      network only through the credential proxy, installed through the
+      M13 approval flow
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M32 WASM
-plugins, M33 ops (egress policy, OTel, importers), M34 an SSH
-execution backend and local-model first-run polish.
+Every open track, in order (Max, 25.09: "do everything"): M33 ops
+(egress policy, OTel, importers), M34 an SSH execution backend and
+local-model first-run polish.
 
 M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
 [`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md).
-Designed and now queued above: code-extension plugins (M32).
 
 **Planned**
 
-- [ ] WASM tool plugins
 - [ ] WhatsApp (options in [`docs/m31-channels.md`](docs/m31-channels.md))
 - [ ] The strategy backlog: local-model
       polish, migration importers, an SSH backend, egress
