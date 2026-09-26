@@ -1,0 +1,567 @@
+{
+ "about": "M30 recall benchmark: 80 facts (60 English, 20 Hebrew) and 48 queries. Each query expects one fact. Categories: keyword, paraphrase, synonym, crosslingual (Hebrew↔English), typo, distractor (a wrong fact shares the query's words).",
+ "memories": [
+  {
+   "id": "deploy",
+   "text": "Production deploys go to fly.io in the ams region"
+  },
+  {
+   "id": "staging-port",
+   "text": "The staging server listens on port 8443"
+  },
+  {
+   "id": "db-backup",
+   "text": "Postgres backups run nightly at 02:00 to an S3 bucket named ferrule-backups"
+  },
+  {
+   "id": "tea",
+   "text": "Omer drinks green tea, never coffee after 4pm"
+  },
+  {
+   "id": "peanut",
+   "text": "Omer's daughter is allergic to peanuts"
+  },
+  {
+   "id": "dentist",
+   "text": "Dentist appointment every six months with Dr. Levi in Holon"
+  },
+  {
+   "id": "car",
+   "text": "The car is a 2019 Mazda 3, license plate 12-345-67"
+  },
+  {
+   "id": "insurance",
+   "text": "Car insurance renews every March with Harel"
+  },
+  {
+   "id": "wifi",
+   "text": "The home wifi network is called Orion-5G"
+  },
+  {
+   "id": "editor",
+   "text": "Omer uses Neovim with the LazyVim config"
+  },
+  {
+   "id": "lang",
+   "text": "Omer prefers Rust for systems work and TypeScript for web front ends"
+  },
+  {
+   "id": "commit-style",
+   "text": "Commit messages should be in the imperative mood and under 72 characters"
+  },
+  {
+   "id": "tz",
+   "text": "Omer lives in Israel, timezone Asia/Jerusalem"
+  },
+  {
+   "id": "gym",
+   "text": "Omer goes to the gym on Sunday, Tuesday and Thursday mornings"
+  },
+  {
+   "id": "flight",
+   "text": "Omer is flying to Berlin on October 14 for a conference"
+  },
+  {
+   "id": "mom-bday",
+   "text": "Omer's mother's birthday is on May 3"
+  },
+  {
+   "id": "bank",
+   "text": "The business bank account is at Bank Leumi, branch 802"
+  },
+  {
+   "id": "accountant",
+   "text": "The accountant, Dana, needs receipts by the 10th of each month"
+  },
+  {
+   "id": "vat",
+   "text": "VAT reports are filed every two months"
+  },
+  {
+   "id": "laptop",
+   "text": "Omer's laptop is a ThinkPad X1 Carbon with 32 GB of memory"
+  },
+  {
+   "id": "monitor",
+   "text": "The desk monitor is a 27-inch Dell with USB-C"
+  },
+  {
+   "id": "ci",
+   "text": "CI runs on GitHub Actions for Linux, macOS and Windows"
+  },
+  {
+   "id": "release",
+   "text": "Release binaries are built for five targets including musl and Windows MSVC"
+  },
+  {
+   "id": "key-rotation",
+   "text": "API keys are rotated every 90 days"
+  },
+  {
+   "id": "oncall",
+   "text": "Nobody is on call on weekends; alerts wait until Sunday"
+  },
+  {
+   "id": "meeting",
+   "text": "The weekly team sync is on Monday at 10:00"
+  },
+  {
+   "id": "vacation",
+   "text": "Omer is on vacation from August 1 to August 10"
+  },
+  {
+   "id": "plants",
+   "text": "The balcony plants need watering every two days in summer"
+  },
+  {
+   "id": "cat",
+   "text": "The cat is named Pixel and eats wet food twice a day"
+  },
+  {
+   "id": "vet",
+   "text": "Pixel's vaccinations are due in January"
+  },
+  {
+   "id": "rent",
+   "text": "Rent of 6,200 shekels is paid on the first of the month"
+  },
+  {
+   "id": "electric",
+   "text": "The electricity bill comes every two months from the Israel Electric Corporation"
+  },
+  {
+   "id": "water",
+   "text": "The water meter number is 4471-220"
+  },
+  {
+   "id": "mortgage",
+   "text": "The mortgage is with Mizrahi Tefahot, fixed rate until 2031"
+  },
+  {
+   "id": "school",
+   "text": "The kids' school day ends at 13:30 on Fridays"
+  },
+  {
+   "id": "pickup",
+   "text": "Omer picks up the kids from school on Wednesdays"
+  },
+  {
+   "id": "sushi",
+   "text": "Favorite restaurant is a sushi place called Onami in Tel Aviv"
+  },
+  {
+   "id": "vegetarian",
+   "text": "Omer's partner is vegetarian"
+  },
+  {
+   "id": "running",
+   "text": "Omer is training for a 10 km race in December"
+  },
+  {
+   "id": "doctor",
+   "text": "Family doctor is Dr. Cohen at the Clalit clinic on Herzl Street"
+  },
+  {
+   "id": "passport",
+   "text": "Omer's passport expires in June 2027"
+  },
+  {
+   "id": "licence",
+   "text": "The driving licence must be renewed in 2028"
+  },
+  {
+   "id": "printer",
+   "text": "The office printer is an HP LaserJet that only works over USB"
+  },
+  {
+   "id": "nas",
+   "text": "Photos are backed up to a Synology NAS in the storage room"
+  },
+  {
+   "id": "domain",
+   "text": "The domain ferrule.dev is registered at Cloudflare and renews in April"
+  },
+  {
+   "id": "email",
+   "text": "Work email goes through Google Workspace"
+  },
+  {
+   "id": "phone",
+   "text": "Omer's phone is a Pixel 8"
+  },
+  {
+   "id": "music",
+   "text": "Omer listens to jazz while coding"
+  },
+  {
+   "id": "book",
+   "text": "Currently reading 'Designing Data-Intensive Applications'"
+  },
+  {
+   "id": "japanese",
+   "text": "Omer is learning Japanese on Duolingo"
+  },
+  {
+   "id": "coffee-machine",
+   "text": "The coffee machine in the office needs descaling every month"
+  },
+  {
+   "id": "parking",
+   "text": "Office parking is in the underground lot, spot 14"
+  },
+  {
+   "id": "slack",
+   "text": "The team chats in Slack; the main channel is #eng"
+  },
+  {
+   "id": "standup",
+   "text": "Daily standup is async, written in Slack by 10:00"
+  },
+  {
+   "id": "review",
+   "text": "Pull requests need one approving review before merge"
+  },
+  {
+   "id": "tests",
+   "text": "Run the full test suite before every push"
+  },
+  {
+   "id": "secrets",
+   "text": "Secrets must never be committed to the public repository"
+  },
+  {
+   "id": "budget",
+   "text": "The monthly cloud budget is 300 dollars"
+  },
+  {
+   "id": "penicillin",
+   "text": "Omer is allergic to penicillin"
+  },
+  {
+   "id": "blood",
+   "text": "Omer's blood type is A positive"
+  },
+  {
+   "id": "he-garbage",
+   "text": "פינוי האשפה ברחוב בימי שני וחמישי"
+  },
+  {
+   "id": "he-neighbor",
+   "text": "השכן מדירה 12 שומר מפתח רזרבי לדירה"
+  },
+  {
+   "id": "he-grandma",
+   "text": "סבתא גרה באילת, מבקרים אותה פעם בחודש"
+  },
+  {
+   "id": "he-swim",
+   "text": "הילדים בחוג שחייה ביום שלישי אחר הצהריים"
+  },
+  {
+   "id": "he-arnona",
+   "text": "הארנונה משולמת בהוראת קבע לעירייה"
+  },
+  {
+   "id": "he-gas",
+   "text": "בלון הגז מוחלף אצל אמישראגז, מספר לקוח 88213"
+  },
+  {
+   "id": "he-plumber",
+   "text": "האינסטלטור יוסי, טלפון 052-1234567"
+  },
+  {
+   "id": "he-shabbat",
+   "text": "ארוחת שישי אצל ההורים של עומר"
+  },
+  {
+   "id": "he-reserve",
+   "text": "עומר במילואים שבוע בנובמבר"
+  },
+  {
+   "id": "he-car-service",
+   "text": "טיפול לרכב כל 15,000 ק״מ במוסך בחולון"
+  },
+  {
+   "id": "he-kindergarten",
+   "text": "הגן נסגר בשעה 16:00"
+  },
+  {
+   "id": "he-son-bday",
+   "text": "יום ההולדת של הבן ב-12 ביולי"
+  },
+  {
+   "id": "he-health-fund",
+   "text": "קופת החולים של המשפחה היא כללית"
+  },
+  {
+   "id": "he-pool",
+   "text": "המנוי לבריכה העירונית בתוקף עד סוף דצמבר"
+  },
+  {
+   "id": "he-sugar",
+   "text": "עומר מנסה להפחית סוכר"
+  },
+  {
+   "id": "he-lease",
+   "text": "חוזה השכירות מסתיים ביולי 2027"
+  },
+  {
+   "id": "he-electrician",
+   "text": "החשמלאי מגיע ביום ראשון לתקן את לוח החשמל"
+  },
+  {
+   "id": "he-internet",
+   "text": "ספקית האינטרנט היא בזק, סיב אופטי 1000 מגה"
+  },
+  {
+   "id": "he-dog",
+   "text": "עומר מטייל עם הכלב של השכנים בבקרים"
+  },
+  {
+   "id": "he-bottles",
+   "text": "את הבקבוקים מחזירים למכונה בסופר"
+  }
+ ],
+ "queries": [
+  {
+   "category": "keyword",
+   "query": "staging port",
+   "expect": "staging-port"
+  },
+  {
+   "category": "keyword",
+   "query": "Bank Leumi branch",
+   "expect": "bank"
+  },
+  {
+   "category": "keyword",
+   "query": "Synology NAS",
+   "expect": "nas"
+  },
+  {
+   "category": "keyword",
+   "query": "passport expires",
+   "expect": "passport"
+  },
+  {
+   "category": "keyword",
+   "query": "Onami sushi",
+   "expect": "sushi"
+  },
+  {
+   "category": "keyword",
+   "query": "penicillin",
+   "expect": "penicillin"
+  },
+  {
+   "category": "keyword",
+   "query": "Pixel vaccinations",
+   "expect": "vet"
+  },
+  {
+   "category": "keyword",
+   "query": "ferrule.dev domain",
+   "expect": "domain"
+  },
+  {
+   "category": "paraphrase",
+   "query": "where does production get shipped to",
+   "expect": "deploy"
+  },
+  {
+   "category": "paraphrase",
+   "query": "what does Omer drink in the afternoon",
+   "expect": "tea"
+  },
+  {
+   "category": "paraphrase",
+   "query": "when is the next checkup for teeth",
+   "expect": "dentist"
+  },
+  {
+   "category": "paraphrase",
+   "query": "how often do we replace credentials for services",
+   "expect": "key-rotation"
+  },
+  {
+   "category": "paraphrase",
+   "query": "what happens to pages on saturday",
+   "expect": "oncall"
+  },
+  {
+   "category": "paraphrase",
+   "query": "what is the cap on hosting spend",
+   "expect": "budget"
+  },
+  {
+   "category": "paraphrase",
+   "query": "which computer does Omer code on",
+   "expect": "laptop"
+  },
+  {
+   "category": "paraphrase",
+   "query": "how many approvals does a PR need before it can land",
+   "expect": "review"
+  },
+  {
+   "category": "paraphrase",
+   "query": "who does the bookkeeping and when is paperwork due",
+   "expect": "accountant"
+  },
+  {
+   "category": "paraphrase",
+   "query": "which weekday do I collect the children",
+   "expect": "pickup"
+  },
+  {
+   "category": "synonym",
+   "query": "feline feeding schedule",
+   "expect": "cat"
+  },
+  {
+   "category": "synonym",
+   "query": "automobile policy renewal",
+   "expect": "insurance"
+  },
+  {
+   "category": "synonym",
+   "query": "home loan interest",
+   "expect": "mortgage"
+  },
+  {
+   "category": "synonym",
+   "query": "wireless network name",
+   "expect": "wifi"
+  },
+  {
+   "category": "synonym",
+   "query": "text editor setup",
+   "expect": "editor"
+  },
+  {
+   "category": "synonym",
+   "query": "physician",
+   "expect": "doctor"
+  },
+  {
+   "category": "synonym",
+   "query": "10k run",
+   "expect": "running"
+  },
+  {
+   "category": "synonym",
+   "query": "dietary restrictions of Omer's partner",
+   "expect": "vegetarian"
+  },
+  {
+   "category": "crosslingual",
+   "query": "באיזה אזור זמן עומר גר",
+   "expect": "tz"
+  },
+  {
+   "category": "crosslingual",
+   "query": "מתי יום ההולדת של אמא של עומר",
+   "expect": "mom-bday"
+  },
+  {
+   "category": "crosslingual",
+   "query": "למה הבת של עומר אלרגית",
+   "expect": "peanut"
+  },
+  {
+   "category": "crosslingual",
+   "query": "מתי הטיסה לברלין",
+   "expect": "flight"
+  },
+  {
+   "category": "crosslingual",
+   "query": "כמה עולה שכר הדירה",
+   "expect": "rent"
+  },
+  {
+   "category": "crosslingual",
+   "query": "when is garbage collection",
+   "expect": "he-garbage"
+  },
+  {
+   "category": "crosslingual",
+   "query": "who has the spare key",
+   "expect": "he-neighbor"
+  },
+  {
+   "category": "crosslingual",
+   "query": "plumber phone number",
+   "expect": "he-plumber"
+  },
+  {
+   "category": "crosslingual",
+   "query": "internet provider",
+   "expect": "he-internet"
+  },
+  {
+   "category": "crosslingual",
+   "query": "when does the rental contract end",
+   "expect": "he-lease"
+  },
+  {
+   "category": "typo",
+   "query": "stagng prot",
+   "expect": "staging-port"
+  },
+  {
+   "category": "typo",
+   "query": "mortage bank",
+   "expect": "mortgage"
+  },
+  {
+   "category": "typo",
+   "query": "vacaton dates",
+   "expect": "vacation"
+  },
+  {
+   "category": "typo",
+   "query": "insurence renewal",
+   "expect": "insurance"
+  },
+  {
+   "category": "typo",
+   "query": "accountent receipts",
+   "expect": "accountant"
+  },
+  {
+   "category": "typo",
+   "query": "passprot expiry",
+   "expect": "passport"
+  },
+  {
+   "category": "distractor",
+   "query": "what is Omer allergic to besides peanuts",
+   "expect": "penicillin"
+  },
+  {
+   "category": "distractor",
+   "query": "model of Omer's Pixel phone",
+   "expect": "phone"
+  },
+  {
+   "category": "distractor",
+   "query": "when is the weekly team meeting",
+   "expect": "meeting"
+  },
+  {
+   "category": "distractor",
+   "query": "database backup schedule",
+   "expect": "db-backup"
+  },
+  {
+   "category": "distractor",
+   "query": "Friday school hours",
+   "expect": "school"
+  },
+  {
+   "category": "distractor",
+   "query": "which Slack channel does the team chat in",
+   "expect": "slack"
+  }
+ ]
+}

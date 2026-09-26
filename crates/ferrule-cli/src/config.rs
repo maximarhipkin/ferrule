@@ -460,6 +460,174 @@ pub struct Config {
     /// M28: the `web_search` tool, off unless a provider is set.
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    /// M30: how recall finds facts; keyword only unless an embedder is set.
+    #[serde(default)]
+    pub memory: MemoryConfig,
+}
+
+/// `[memory]` (docs/memory.md).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MemoryConfig {
+    /// `off` (keyword recall, as before M30), `local` (the downloaded
+    /// model2vec model) or `openai` (any `/v1/embeddings` endpoint).
+    pub embedder: String,
+    /// `weighted` or `rrf`.
+    pub merge: String,
+    /// The cosine's share of a weighted merge, 0 to 1.
+    pub vector_weight: f64,
+    /// Rows less similar than this to the query aren't vector matches.
+    pub min_similarity: f32,
+    /// `openai`: borrow a `[providers.X]`'s `base_url` and `api_key_env`.
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    pub model: Option<String>,
+    /// The vectors' length; known for OpenAI's own models.
+    pub dimensions: Option<usize>,
+    pub price_input_per_mtok: Option<f64>,
+    /// `ferrule memory reindex`'s pace against the endpoint; 0: no limit.
+    pub max_requests_per_minute: u32,
+    pub timeout_secs: u64,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            embedder: "off".into(),
+            merge: "weighted".into(),
+            vector_weight: 0.7,
+            min_similarity: 0.3,
+            provider: None,
+            base_url: None,
+            api_key_env: None,
+            model: None,
+            dimensions: None,
+            price_input_per_mtok: None,
+            max_requests_per_minute: 60,
+            timeout_secs: 5,
+        }
+    }
+}
+
+/// `[memory]`'s embedder, checked.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EmbedderChoice {
+    Off,
+    Local,
+    Endpoint(EndpointSettings),
+}
+
+/// `embedder = "openai"`: everything but the key's placeholder.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EndpointSettings {
+    pub base_url: String,
+    pub host: String,
+    pub model: String,
+    pub dim: usize,
+    pub send_dimensions: bool,
+    pub key_env: Option<String>,
+    pub price_input_per_mtok: Option<f64>,
+    pub max_requests_per_minute: u32,
+    pub timeout: std::time::Duration,
+}
+
+/// The vector length of OpenAI's own embedding models.
+fn known_dim(model: &str) -> Option<usize> {
+    match model {
+        "text-embedding-3-small" | "text-embedding-ada-002" => Some(1536),
+        "text-embedding-3-large" => Some(3072),
+        _ => None,
+    }
+}
+
+impl MemoryConfig {
+    pub fn hybrid(&self) -> Result<ferrule_memory::Hybrid> {
+        if !(0.0..=1.0).contains(&self.vector_weight) {
+            bail!("[memory] vector_weight must be 0 to 1");
+        }
+        if !(0.0..=1.0).contains(&self.min_similarity) {
+            bail!("[memory] min_similarity must be 0 to 1");
+        }
+        let merge = match self.merge.as_str() {
+            "weighted" => ferrule_memory::Merge::Weighted {
+                vector_weight: self.vector_weight,
+            },
+            "rrf" => ferrule_memory::Merge::Rrf { k: 60.0 },
+            other => bail!("[memory] merge = \"{other}\": expected weighted or rrf"),
+        };
+        Ok(ferrule_memory::Hybrid {
+            merge,
+            min_similarity: self.min_similarity,
+        })
+    }
+
+    /// The checked embedder; `providers` is for `provider = "X"`.
+    pub fn choice(&self, providers: &HashMap<String, ProviderConfig>) -> Result<EmbedderChoice> {
+        self.hybrid()?;
+        match self.embedder.as_str() {
+            "off" | "" => return Ok(EmbedderChoice::Off),
+            "local" => return Ok(EmbedderChoice::Local),
+            "openai" => {}
+            other => bail!("[memory] embedder = \"{other}\": expected off, local or openai"),
+        }
+        let borrowed =
+            match &self.provider {
+                None => None,
+                Some(name) => Some(providers.get(name).ok_or_else(|| {
+                    anyhow!("[memory] provider = \"{name}\" isn't in [providers]")
+                })?),
+            };
+        let Some(base_url) = self
+            .base_url
+            .clone()
+            .or_else(|| borrowed.map(|p| p.base_url.clone()))
+        else {
+            bail!("[memory] embedder = \"openai\" needs `base_url` (or `provider`)");
+        };
+        let host = match url::Url::parse(&base_url) {
+            Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().is_some() => u
+                .host_str()
+                .unwrap_or_default()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_string(),
+            _ => bail!("[memory] base_url = \"{base_url}\" isn't an http(s) URL"),
+        };
+        let Some(model) = self.model.clone().filter(|m| !m.is_empty()) else {
+            bail!("[memory] embedder = \"openai\" needs `model`, e.g. \"text-embedding-3-small\"");
+        };
+        let Some(dim) = self.dimensions.or_else(|| known_dim(&model)) else {
+            bail!("[memory] model = \"{model}\" needs `dimensions`, the length of its vectors");
+        };
+        if dim == 0 {
+            bail!("[memory] dimensions must be at least 1");
+        }
+        if self
+            .price_input_per_mtok
+            .is_some_and(|p| !(p >= 0.0 && p.is_finite()))
+        {
+            bail!("[memory] price_input_per_mtok can't be negative");
+        }
+        let key_env = self
+            .api_key_env
+            .clone()
+            .or_else(|| borrowed.map(|p| p.api_key_env.clone()))
+            .filter(|k| !k.is_empty());
+        Ok(EmbedderChoice::Endpoint(EndpointSettings {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            host,
+            // Only OpenAI's text-embedding-3 models take `dimensions`, and
+            // only when it's asked for; other servers reject the field.
+            send_dimensions: self.dimensions.is_some() && model.starts_with("text-embedding-3"),
+            model,
+            dim,
+            key_env,
+            price_input_per_mtok: self.price_input_per_mtok,
+            max_requests_per_minute: self.max_requests_per_minute,
+            timeout: std::time::Duration::from_secs(self.timeout_secs.max(1)),
+        }))
+    }
 }
 
 /// `[web_search]` (docs/web-search.md).
@@ -861,6 +1029,22 @@ profile = "openai"
 # price_per_search_usd = 0.005  # counts toward [trust]'s dollar caps
 # max_searches_per_day = 0   # 0: no cap. Every search is a ledger row.
 
+# [memory]                  # Long-term memory recall (docs/memory.md). Keyword
+# embedder = "local"         # search only until an embedder is set: "local" (a
+#                            # 531 MB multilingual model, `ferrule memory model
+#                            # download`; no key, nothing leaves the machine) or
+#                            # "openai" (any /v1/embeddings endpoint, below).
+# merge = "weighted"         # or "rrf"; weighted won the benchmark
+# vector_weight = 0.7        # the similarity's share of a weighted merge
+# min_similarity = 0.3       # less similar facts match by keyword only
+# provider = "openai"        # embedder = "openai": borrow a [providers.X]'s
+# base_url = "https://api.openai.com/v1"  # base_url and api_key_env, or set
+# api_key_env = "OPENAI_API_KEY"  # them. The key goes through the proxy.
+# model = "text-embedding-3-small"
+# dimensions = 512           # required for models other than OpenAI's own
+# price_input_per_mtok = 0.02  # every request is a ledger row
+# max_requests_per_minute = 60  # `ferrule memory reindex`'s pace
+
 # [extensions]              # Self-extension: the agent installs MCP servers and
 # enabled = false            # skills mid-run (mcp_add, skill_install, skill_keep…).
 # allow = []                 # Installable without asking, exact pins only, e.g.
@@ -1003,9 +1187,17 @@ impl Config {
     }
 
     /// Checks what parsing can't, and fills in what other settings imply:
-    /// `[web_search]`'s key, bound to its endpoint's host in `[secrets]`
-    /// unless the owner bound it there already.
+    /// `[web_search]`'s and `[memory]`'s keys, bound to their endpoint's
+    /// host in `[secrets]` unless the owner bound them there already.
     pub fn finish(mut self) -> Result<Self> {
+        self.memory.hybrid()?;
+        if let EmbedderChoice::Endpoint(e) = self.memory.choice(&self.providers)? {
+            if let Some(var) = e.key_env {
+                self.secrets
+                    .entry(var)
+                    .or_insert_with(|| SecretSpec::Hosts(vec![e.host]));
+            }
+        }
         if let Some(settings) = self.web_search.settings()? {
             if let (Some(var), Some(host)) = (
                 settings.key_env.clone(),
@@ -1080,6 +1272,109 @@ mod tests {
         assert_eq!(s.key_env.as_deref(), Some("BRAVE_API_KEY"));
         let rule = ferrule_proxy::SecretRule::from(&cfg.secrets["BRAVE_API_KEY"]);
         assert_eq!(rule.hosts, ["api.search.brave.com"]);
+    }
+
+    #[test]
+    fn example_memory_block_parses_uncommented() {
+        let start = EXAMPLE_CONFIG.find("# [memory]").unwrap();
+        let end = start + EXAMPLE_CONFIG[start..].find("\n\n").unwrap();
+        let uncommented: String = EXAMPLE_CONFIG[start..end]
+            .lines()
+            .map(|l| format!("{}\n", l.strip_prefix("# ").unwrap_or(l)))
+            .collect();
+        let providers = "[providers.openai]\nbase_url = \"https://api.openai.com/v1\"\n\
+                         api_key_env = \"OPENAI_API_KEY\"\nmodel = \"gpt-5\"\n";
+        let cfg: Config = toml::from_str(&format!("{providers}{uncommented}")).unwrap();
+        let cfg = cfg.finish().unwrap();
+        assert!(matches!(
+            cfg.memory.choice(&cfg.providers).unwrap(),
+            EmbedderChoice::Local
+        ));
+        // The local model binds no key.
+        assert!(cfg.secrets.is_empty());
+        assert_eq!(
+            cfg.memory.hybrid().unwrap(),
+            ferrule_memory::Hybrid::default()
+        );
+
+        let endpoint = uncommented.replace("embedder = \"local\"", "embedder = \"openai\"");
+        let cfg: Config = toml::from_str(&format!("{providers}{endpoint}")).unwrap();
+        let cfg = cfg.finish().unwrap();
+        let EmbedderChoice::Endpoint(e) = cfg.memory.choice(&cfg.providers).unwrap() else {
+            panic!("not an endpoint");
+        };
+        assert_eq!(e.base_url, "https://api.openai.com/v1");
+        assert_eq!(
+            (e.model.as_str(), e.dim, e.send_dimensions),
+            ("text-embedding-3-small", 512, true)
+        );
+        assert_eq!(e.key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(e.price_input_per_mtok, Some(0.02));
+        let rule = ferrule_proxy::SecretRule::from(&cfg.secrets["OPENAI_API_KEY"]);
+        assert_eq!(rule.hosts, ["api.openai.com"]);
+    }
+
+    #[test]
+    fn memory_is_keyword_only_by_default_and_checked_when_on() {
+        let off: Config = toml::from_str("").unwrap();
+        let off = off.finish().unwrap();
+        assert!(matches!(
+            off.memory.choice(&off.providers).unwrap(),
+            EmbedderChoice::Off
+        ));
+        let bad = |t: &str| {
+            let c: Config = toml::from_str(t).unwrap();
+            c.finish().unwrap_err().to_string()
+        };
+        let endpoint = "[memory]\nembedder = \"openai\"\n";
+        assert!(bad("[memory]\nembedder = \"bert\"").contains("expected off, local or openai"));
+        assert!(bad("[memory]\nmerge = \"max\"").contains("merge"));
+        assert!(bad("[memory]\nvector_weight = 1.5").contains("vector_weight"));
+        assert!(bad("[memory]\nmin_similarity = -0.1").contains("min_similarity"));
+        assert!(bad(endpoint).contains("base_url"));
+        assert!(bad(&format!("{endpoint}provider = \"nope\"")).contains("isn't in [providers]"));
+        assert!(bad(&format!("{endpoint}base_url = \"ftp://x\"")).contains("http(s)"));
+        assert!(bad(&format!("{endpoint}base_url = \"http://127.0.0.1:1\"")).contains("model"));
+        assert!(bad(&format!(
+            "{endpoint}base_url = \"http://127.0.0.1:1\"\nmodel = \"nomic-embed-text\""
+        ))
+        .contains("dimensions"));
+        assert!(bad(&format!(
+            "{endpoint}base_url = \"http://127.0.0.1:1\"\nmodel = \"m\"\ndimensions = 0"
+        ))
+        .contains("at least 1"));
+        assert!(bad(&format!(
+            "{endpoint}base_url = \"http://h\"\nmodel = \"text-embedding-3-small\"\nprice_input_per_mtok = -1.0"
+        ))
+        .contains("negative"));
+
+        // A local server with no key, a model that isn't OpenAI's: no
+        // `dimensions` sent, nothing bound.
+        let c: Config = toml::from_str(&format!(
+            "{endpoint}base_url = \"http://127.0.0.1:11434/v1/\"\nmodel = \"nomic-embed-text\"\ndimensions = 768"
+        ))
+        .unwrap();
+        let c = c.finish().unwrap();
+        let EmbedderChoice::Endpoint(e) = c.memory.choice(&c.providers).unwrap() else {
+            panic!("not an endpoint");
+        };
+        assert_eq!(e.base_url, "http://127.0.0.1:11434/v1");
+        assert_eq!((e.dim, e.send_dimensions, e.key_env), (768, false, None));
+        assert!(c.secrets.is_empty());
+        // An owner's own binding wins.
+        let c: Config = toml::from_str(&format!(
+            "[secrets]\nK = [\"proxy.example\"]\n{endpoint}base_url = \"https://api.openai.com/v1\"\n\
+             model = \"text-embedding-3-large\"\napi_key_env = \"K\""
+        ))
+        .unwrap();
+        let c = c.finish().unwrap();
+        let rule = ferrule_proxy::SecretRule::from(&c.secrets["K"]);
+        assert_eq!(rule.hosts, ["proxy.example"]);
+        let EmbedderChoice::Endpoint(e) = c.memory.choice(&c.providers).unwrap() else {
+            panic!("not an endpoint");
+        };
+        assert_eq!((e.dim, e.send_dimensions), (3072, false));
+        assert!(toml::from_str::<Config>("[memory]\nembeder = \"local\"").is_err());
     }
 
     #[test]

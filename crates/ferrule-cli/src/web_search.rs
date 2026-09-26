@@ -115,7 +115,7 @@ pub fn tool(
 }
 
 /// The key's placeholder, and the proxy to send it through.
-fn keyed(broker: Option<&Broker>, var: &str) -> Result<Option<(String, Egress)>> {
+pub(crate) fn keyed(broker: Option<&Broker>, var: &str) -> Result<Option<(String, Egress)>> {
     let Some(broker) = broker else {
         return Ok(None);
     };

@@ -558,6 +558,30 @@ that convention yet — ask before introducing one).
       pushing; `ferrule undo` and `/undo` take it back.
     - `ferrule eval run … --edit-tools both|write-only`.
     - **Decisions for Max and open edges:** see the M29 session-log entry.
+  - **M30 vector recall**: **built** (2026-09-26, branch
+    `m30-vector-recall`, PR to main open, not merged). Design and as-built
+    notes are in `docs/m30-vector-recall.md`; the user guide is
+    `docs/memory.md`.
+    - `ferrule-embed`: an `Embedder` trait with a fake, an OpenAI-compatible
+      `/v1/embeddings` backend (key via the credential proxy, a ledger row
+      per request) and a local model2vec backend
+      (`potion-multilingual-128M`, pure Rust, no key). The local backend
+      reads matrix rows from disk and is behind the default-on
+      `local-embed` feature.
+    - The weights are never shipped. `ferrule setup` / `ferrule memory
+      model download` fetch them only on a yes, at a pinned revision and
+      SHA-256.
+    - Memory rows carry a vector plus its model id (with dim); models are
+      never mixed; `user_version` stays 1. Recall merges BM25 with cosine
+      (weighted 0.7, floor 0.3; RRF optional), keeping decay, supersede,
+      `forget` and the budget.
+    - Any embedder failure gives exactly BM25, silently. `ferrule memory
+      reindex` is resumable and paced; doctor shows the state.
+    - Benchmark: 80 facts, 48 queries. All-query MRR goes .358 → .684,
+      paraphrase r@1 .2 → .6, cross-lingual r@5 0 → .3. Default
+      `embedder = "off"`: turning it on is an opt-in download or a paid
+      endpoint.
+    - **Decisions for Max and open edges:** see the M30 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -3998,3 +4022,42 @@ binary, and `--no-default-features` drops them.
 map isn't refreshed mid-run; a workspace that is a subdirectory of a repo
 auto-commits only where the sandbox lets git write the parent's `.git`;
 no C#.
+
+### 2026-09-26 — M30 vector recall (Devi, Opus 5.5)
+
+**Scope.** Built `docs/m30-vector-recall.md` on branch
+`m30-vector-recall`, in five commits: design, `ferrule-embed`, vectors
+and hybrid recall in `ferrule-memory`, the recall benchmark, and the CLI
+wiring (config, tools, session recall, reindex, model download, doctor,
+setup). The user guide is `docs/memory.md`.
+
+**Decisions for Max:**
+- Our own ~150-line model2vec embedder on `tokenizers` (pure Rust, no
+  ONNX or candle); the matrix is read row by row, not loaded.
+- `[memory] embedder` defaults to `"off"`; setup recommends local.
+- The default merge is weighted 0.7 with a 0.3 cosine floor. The sweep
+  favoured a lower floor and weight 0.9 slightly, but that adds more
+  unrelated facts per prompt on a small fixture.
+- The embedding price comes only from `[memory] price_input_per_mtok`
+  (never borrowed from the chat provider); an unset price is an unpriced
+  row.
+- The near-duplicate hint fires at cosine ≥ 0.8 (checked on the real
+  model).
+- The goal isn't embedded for an empty store.
+- The benchmark persona is a made-up "Omer", so no real details sit in
+  the public repo.
+
+**Checks.** 1009 tests after merging main (M29), 11 ignored. The starter
+eval against the mock through the real binary, with no embedder
+configured, is unchanged: engineered 20/20, naive 11/20, $0.98. Binary
+growth is +2.71 MB, all of it the default-on `local-embed` feature (as-built
+notes in the design doc).
+
+**Unverified:** a real paid `/v1/embeddings` provider (mocked through the
+real proxy); `ferrule setup`'s download on a live terminal; macOS and
+Windows until this PR's CI run.
+
+**Open edges:** the kill switch and caps aren't checked before an
+embedding request (rows still count afterwards); the CLI reindex/search
+rows bypass `trust::equip`'s sink; cross-lingual recall is 3 in 10 at r@5;
+brute-force cosine past ~50k rows.

@@ -1,0 +1,25 @@
+[package]
+name = "ferrule-embed"
+version = "0.3.0"
+edition = "2021"
+description = "Text embedders for memory recall: a local static model (no key, no network after one verified download) and any OpenAI-compatible /v1/embeddings endpoint"
+
+[features]
+default = ["local"]
+# The in-process model2vec backend. Pure Rust: `tokenizers` without
+# oniguruma (C) or esaxx (C++).
+local = ["dep:tokenizers"]
+
+[dependencies]
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+ring = "0.17"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"], optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

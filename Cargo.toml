@@ -10,6 +10,7 @@ members = [
     "crates/ferrule-sandbox",
     "crates/ferrule-proxy",
     "crates/ferrule-memory",
+    "crates/ferrule-embed",
     "crates/ferrule-cli",
     "crates/ferrule-agents",
     "crates/ferrule-extensions",

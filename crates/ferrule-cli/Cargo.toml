@@ -9,10 +9,13 @@ name = "ferrule"
 path = "src/main.rs"
 
 [features]
+default = ["grammars", "local-embed"]
 # M29: the repo map's tree-sitter grammars. Without them `code_search` is a
 # text search and there is no map.
-default = ["grammars"]
 grammars = ["ferrule-codemap/default"]
+# M30: the in-process embedding model (`[memory] embedder = "local"`).
+# Without it, `local` falls back to keyword recall and doctor says so.
+local-embed = ["ferrule-embed/local"]
 
 [dependencies]
 dunce = { workspace = true }
@@ -24,6 +27,7 @@ ferrule-skills = { path = "../ferrule-skills" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
 ferrule-proxy = { path = "../ferrule-proxy" }
 ferrule-memory = { path = "../ferrule-memory" }
+ferrule-embed = { path = "../ferrule-embed", default-features = false }
 ferrule-gateway = { path = "../ferrule-gateway" }
 ferrule-agents = { path = "../ferrule-agents" }
 ferrule-extensions = { path = "../ferrule-extensions" }

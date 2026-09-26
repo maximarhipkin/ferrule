@@ -6,9 +6,11 @@
 //! shell out to `ferrule memory add`. These give it the writes it needs
 //! there, each narrowed by [`MemoryAccess`] (`docs/m15-memory.md` §8).
 
+use crate::embedding::{self, Embedding};
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use ferrule_core::SessionRecall;
+use ferrule_embed::Purpose;
 use ferrule_memory::{Decision, Inserted, MemoryStore};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -44,16 +46,34 @@ pub fn tools(db: PathBuf) -> Vec<Arc<dyn Tool>> {
 }
 
 pub fn tools_for(db: PathBuf, access: MemoryAccess) -> Vec<Arc<dyn Tool>> {
+    tools_with(db, access, None)
+}
+
+/// With an embedder, `remember`/`update_memory` store a vector with each
+/// fact and `recall` merges it with keyword search (M30). Without one they
+/// are exactly the keyword tools.
+pub fn tools_with(
+    db: PathBuf,
+    access: MemoryAccess,
+    embedding: Option<Arc<Embedding>>,
+) -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     if access != MemoryAccess::Read {
         tools.push(Arc::new(RememberTool {
             db: db.clone(),
             access,
+            embedding: embedding.clone(),
         }));
     }
-    tools.push(Arc::new(RecallTool { db: db.clone() }));
+    tools.push(Arc::new(RecallTool {
+        db: db.clone(),
+        embedding: embedding.clone(),
+    }));
     if access == MemoryAccess::Full {
-        tools.push(Arc::new(UpdateMemoryTool { db: db.clone() }));
+        tools.push(Arc::new(UpdateMemoryTool {
+            db: db.clone(),
+            embedding,
+        }));
         tools.push(Arc::new(ForgetTool { db }));
     }
     tools
@@ -63,7 +83,65 @@ pub fn tools_for(db: PathBuf, access: MemoryAccess) -> Vec<Arc<dyn Tool>> {
 /// then the newest, under `[Long-term memory]` (§4). A store that can't be
 /// opened just means no block.
 pub struct GoalRecall {
-    pub db: PathBuf,
+    db: PathBuf,
+    embedding: Option<Arc<Embedding>>,
+}
+
+impl GoalRecall {
+    pub fn new(db: PathBuf) -> Self {
+        Self {
+            db,
+            embedding: None,
+        }
+    }
+
+    /// Match the goal by meaning too, and afterwards embed a batch of the
+    /// facts that have no vector yet, in the background.
+    pub fn with_embedding(mut self, embedding: Option<Arc<Embedding>>) -> Self {
+        self.embedding = embedding;
+        self
+    }
+}
+
+/// Cosine at or above which a new fact's vector marks an existing live
+/// fact as a likely duplicate worth showing (a paraphrase, or the same
+/// fact in another language), on top of the keyword check.
+const NEAR_DUPLICATE: f32 = 0.8;
+
+/// Stores the vector of the fact a write produced and adds live facts
+/// whose vectors are near it to `ins.similar`.
+fn attach_vector(
+    store: &MemoryStore,
+    ins: &mut Inserted,
+    content: &str,
+    model: &str,
+    vector: &[f32],
+) -> Result<(), ferrule_memory::MemoryError> {
+    if ins.decision == Decision::Noop {
+        return Ok(());
+    }
+    store.set_embedding(ins.id, content, model, vector)?;
+    let mut exclude = vec![ins.id];
+    exclude.extend(&ins.replaced);
+    exclude.extend(ins.similar.iter().map(|m| m.id));
+    let near = store.similar_by_vector(
+        ferrule_memory::QueryVector { model, vector },
+        NEAR_DUPLICATE,
+        &exclude,
+        3,
+    )?;
+    ins.similar.extend(near);
+    Ok(())
+}
+
+/// The vector for a fact about to be written, or `None` (keyword only).
+async fn document_vector(
+    embedding: &Option<Arc<Embedding>>,
+    content: &str,
+) -> Option<(String, Vec<f32>)> {
+    let e = embedding.as_ref()?;
+    let v = e.try_one(content, Purpose::Document).await?;
+    Some((e.model().to_string(), v))
 }
 
 /// Same budget as the static block it replaced.
@@ -72,14 +150,50 @@ const RECALL_BUDGET_CHARS: usize = 2_000;
 #[async_trait::async_trait]
 impl SessionRecall for GoalRecall {
     async fn recall(&self, goal: &str) -> Option<String> {
+        let Some(emb) = &self.embedding else {
+            let db = self.db.clone();
+            let goal = goal.to_string();
+            let block = tokio::task::spawn_blocking(move || {
+                MemoryStore::open(&db).and_then(|s| s.assemble_for_goal(&goal, RECALL_BUDGET_CHARS))
+            })
+            .await
+            .ok()?
+            .ok()?;
+            return (!block.is_empty()).then(|| format!("[Long-term memory]\n{block}"));
+        };
+        // An empty store needs no vector (and a paid endpoint no call).
         let db = self.db.clone();
-        let goal = goal.to_string();
-        let block = tokio::task::spawn_blocking(move || {
-            MemoryStore::open(&db).and_then(|s| s.assemble_for_goal(&goal, RECALL_BUDGET_CHARS))
+        let model = emb.model().to_string();
+        let counts = tokio::task::spawn_blocking(move || {
+            MemoryStore::open(&db).and_then(|s| s.embedding_counts(&model))
         })
         .await
         .ok()?
         .ok()?;
+        if counts.live == 0 {
+            return None;
+        }
+        let vector = emb.try_one(goal, Purpose::Query).await;
+        let embedded = vector.is_some();
+        let db = self.db.clone();
+        let goal = goal.to_string();
+        let hybrid = emb.hybrid;
+        let model = emb.model().to_string();
+        let block = tokio::task::spawn_blocking(move || {
+            let qv = vector.as_deref().map(|v| ferrule_memory::QueryVector {
+                model: &model,
+                vector: v,
+            });
+            MemoryStore::open(&db)
+                .and_then(|s| s.assemble_for_goal_hybrid(&goal, qv, RECALL_BUDGET_CHARS, &hybrid))
+        })
+        .await
+        .ok()?
+        .ok()?;
+        if embedded && counts.live_embedded < counts.live {
+            let (emb, db) = (emb.clone(), self.db.clone());
+            tokio::spawn(async move { emb.catch_up(&db).await });
+        }
         (!block.is_empty()).then(|| format!("[Long-term memory]\n{block}"))
     }
 }
@@ -164,6 +278,7 @@ fn report(ins: &Inserted, can_correct: bool) -> String {
 pub struct RememberTool {
     db: PathBuf,
     access: MemoryAccess,
+    embedding: Option<Arc<Embedding>>,
 }
 
 #[async_trait::async_trait]
@@ -218,9 +333,14 @@ impl Tool for RememberTool {
             ));
         }
         let can_correct = self.access == MemoryAccess::Full;
+        let vector = document_vector(&self.embedding, &content).await;
         let ins = with_store("remember", &self.db, move |store| {
             let tags: Vec<&str> = tags.iter().map(String::as_str).collect();
-            store.insert(&content, &tags, &replaces)
+            let mut ins = store.insert(&content, &tags, &replaces)?;
+            if let Some((model, v)) = vector {
+                attach_vector(store, &mut ins, &content, &model, &v)?;
+            }
+            Ok(ins)
         })
         .await?;
         Ok(ToolOutput::ok(report(&ins, can_correct)))
@@ -229,6 +349,7 @@ impl Tool for RememberTool {
 
 pub struct UpdateMemoryTool {
     db: PathBuf,
+    embedding: Option<Arc<Embedding>>,
 }
 
 #[async_trait::async_trait]
@@ -260,9 +381,14 @@ impl Tool for UpdateMemoryTool {
         let id = id_arg(&args["id"]).ok_or_else(|| failed("update_memory", "missing id"))?;
         let content = content_arg("update_memory", &args)?;
         let tags = tags_arg(&args);
+        let vector = document_vector(&self.embedding, &content).await;
         let ins = with_store("update_memory", &self.db, move |store| {
             let tags: Vec<&str> = tags.iter().map(String::as_str).collect();
-            store.supersede(id, &content, &tags)
+            let mut ins = store.supersede(id, &content, &tags)?;
+            if let Some((model, v)) = vector {
+                attach_vector(store, &mut ins, &content, &model, &v)?;
+            }
+            Ok(ins)
         })
         .await?;
         Ok(ToolOutput::ok(report(&ins, true)))
@@ -309,6 +435,7 @@ impl Tool for ForgetTool {
 
 pub struct RecallTool {
     db: PathBuf,
+    embedding: Option<Arc<Embedding>>,
 }
 
 #[async_trait::async_trait]
@@ -323,8 +450,13 @@ impl Tool for RecallTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "recall".into(),
-            description: "Search long-term memory (keyword search, recent facts rank higher)."
-                .into(),
+            // Unchanged without an embedder: the eval's tokens depend on it.
+            description: if self.embedding.is_some() {
+                "Search long-term memory by meaning and keywords (recent facts rank higher)."
+            } else {
+                "Search long-term memory (keyword search, recent facts rank higher)."
+            }
+            .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -339,8 +471,23 @@ impl Tool for RecallTool {
     async fn call(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
         let query = args["query"].as_str().unwrap_or("").to_string();
         let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
-        let found =
-            with_store("recall", &self.db, move |store| store.recall(&query, limit)).await?;
+        let vector = match &self.embedding {
+            Some(e) => e
+                .try_one(&query, Purpose::Query)
+                .await
+                .map(|v| (e.model().to_string(), v, e.hybrid)),
+            None => None,
+        };
+        let found = with_store("recall", &self.db, move |store| match &vector {
+            Some((model, v, hybrid)) => store.recall_hybrid(
+                &query,
+                Some(embedding::query_vector(model, v)),
+                limit,
+                hybrid,
+            ),
+            None => store.recall(&query, limit),
+        })
+        .await?;
         if found.is_empty() {
             return Ok(ToolOutput::ok("no matching memories"));
         }
@@ -508,7 +655,7 @@ mod tests {
     async fn goal_recall_heads_the_block() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("memory.db");
-        let hook = GoalRecall { db: db.clone() };
+        let hook = GoalRecall::new(db.clone());
         assert_eq!(hook.recall("anything").await, None);
         MemoryStore::open(&db)
             .unwrap()
@@ -521,6 +668,160 @@ mod tests {
         assert_eq!(
             block,
             "[Long-term memory]\n- #1 the staging database listens on port 5781"
+        );
+    }
+
+    fn fake() -> (ferrule_embed::FakeEmbedder, Arc<Embedding>) {
+        let fake = ferrule_embed::FakeEmbedder::new("t", 256);
+        let emb = Embedding::new(Arc::new(fake.clone()), ferrule_memory::Hybrid::default());
+        (fake, Arc::new(emb))
+    }
+
+    #[tokio::test]
+    async fn with_an_embedder_writes_store_vectors_and_recall_finds_a_misspelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("memory.db");
+        let (fake, emb) = fake();
+        let ctx = ToolContext {
+            workspace: dir.path().to_path_buf(),
+            max_output_chars: 1_000,
+        };
+        let full = tools_with(db.clone(), MemoryAccess::Full, Some(emb.clone()));
+        by_name(&full, "remember")
+            .call(
+                json!({"content": "the staging database listens on port 5781"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let store = MemoryStore::open(&db).unwrap();
+        assert_eq!(
+            store.embedding_counts(emb.model()).unwrap().live_embedded,
+            1
+        );
+
+        // Keyword search alone misses it; the vector finds it.
+        let keyword = tools(db.clone());
+        let out = by_name(&keyword, "recall")
+            .call(json!({"query": "stagng databse"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "no matching memories");
+        let recall = by_name(&full, "recall");
+        assert!(recall.definition().description.contains("by meaning"));
+        assert!(!by_name(&keyword, "recall")
+            .definition()
+            .description
+            .contains("meaning"));
+        let out = recall
+            .call(json!({"query": "stagng databse"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "#1 the staging database listens on port 5781");
+
+        // A correction gets its own vector.
+        by_name(&full, "update_memory")
+            .call(
+                json!({"id": 1, "content": "the staging database listens on port 6000"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let c = store.embedding_counts(emb.model()).unwrap();
+        assert_eq!((c.live, c.live_embedded), (1, 1));
+
+        // The embedder goes down: keyword recall, no error.
+        fake.set_failing(true);
+        let out = recall
+            .call(json!({"query": "staging database"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "#2 the staging database listens on port 6000");
+        let out = by_name(&full, "remember")
+            .call(json!({"content": "the deploy target is fly.io"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "remembered (#3)");
+        assert_eq!(store.embedding_counts(emb.model()).unwrap().stale, 1);
+    }
+
+    #[tokio::test]
+    async fn a_near_duplicate_by_vector_is_shown_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("memory.db");
+        let (_, emb) = fake();
+        let ctx = ToolContext {
+            workspace: dir.path().to_path_buf(),
+            max_output_chars: 1_000,
+        };
+        let remember = by_name(
+            &tools_with(db.clone(), MemoryAccess::Full, Some(emb)),
+            "remember",
+        );
+        remember
+            .call(
+                json!({"content": "Deployments go to production every Thursday"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        // Too few shared words for the keyword check (2 of 10), but the
+        // fake's trigrams put it at cosine 0.84.
+        let out = remember
+            .call(
+                json!({"content": "Deploymentss go to productionn on Thursdayy"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .starts_with("remembered (#2). Similar live memories:\n#1 Deployments"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_recall_embeds_the_goal_then_catches_up_in_the_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("memory.db");
+        let (fake, emb) = fake();
+        let hook = GoalRecall::new(db.clone()).with_embedding(Some(emb.clone()));
+        assert_eq!(hook.recall("anything").await, None);
+        assert_eq!(fake.calls(), 0, "an empty store needs no vector");
+        let store = MemoryStore::open(&db).unwrap();
+        store
+            .remember("the staging database listens on port 5781", &[])
+            .unwrap();
+        store.remember("the deploy target is fly.io", &[]).unwrap();
+        // No vectors yet: the misspelt goal matches nothing, and the
+        // block is the newest facts.
+        let goal = "connect to the stagng databse";
+        let block = hook.recall(goal).await.unwrap();
+        assert!(
+            block.starts_with("[Long-term memory]\n- #2 the deploy target"),
+            "{block}"
+        );
+        // That recall embedded them in the background; now it matches.
+        let mut tries = 0;
+        while store.embedding_counts(emb.model()).unwrap().stale > 0 {
+            tries += 1;
+            assert!(tries < 200, "the catch-up never ran");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let block = hook.recall(goal).await.unwrap();
+        assert!(
+            block.starts_with("[Long-term memory]\n- #1 the staging database"),
+            "{block}"
+        );
+        // Down: the keyword block, exactly.
+        fake.set_failing(true);
+        assert_eq!(
+            hook.recall("connect to the staging database").await,
+            GoalRecall::new(db)
+                .recall("connect to the staging database")
+                .await
         );
     }
 }

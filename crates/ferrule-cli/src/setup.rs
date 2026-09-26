@@ -88,6 +88,10 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(web_search_step(t, true))?.quit() {
         return Ok(false);
     }
+    heading("Memory recall");
+    if settle(memory_step(t, true).await)?.quit() {
+        return Ok(false);
+    }
     heading("Sandbox");
     if settle(sandbox_step(t, true))?.quit() {
         return Ok(false);
@@ -119,6 +123,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Telegram             {}", telegram_summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Web search           {}", web_search_summary(&cfg)),
+            format!("Memory recall        {}", memory_summary(&cfg)),
             format!("Sandbox              {}", sandbox_summary(&cfg)),
             format!("Browser              {}", browser_summary(&cfg)),
             format!("MCP servers          {}", mcp_summary(&cfg)),
@@ -140,10 +145,11 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             1 => telegram_step(t, http, false).await,
             2 => credentials_step(t, http, false).await,
             3 => web_search_step(t, false),
-            4 => sandbox_step(t, false),
-            5 => browser_step(t),
-            6 => crate::mcp_add::setup_step(t, false).await,
-            7 => service_step(t, false),
+            4 => memory_step(t, false).await,
+            5 => sandbox_step(t, false),
+            6 => browser_step(t),
+            7 => crate::mcp_add::setup_step(t, false).await,
+            8 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -465,6 +471,17 @@ fn web_search_summary(cfg: &config::Config) -> String {
             _ => s.provider.name().to_string(),
         },
         _ => "off".into(),
+    }
+}
+
+fn memory_summary(cfg: &config::Config) -> String {
+    match cfg.memory.embedder.as_str() {
+        "local" => "keywords + local model".into(),
+        "openai" => format!(
+            "keywords + {}",
+            cfg.memory.model.as_deref().unwrap_or("endpoint")
+        ),
+        _ => "keywords".into(),
     }
 }
 
@@ -1831,6 +1848,106 @@ async fn edit_token(t: &mut Target, http: &reqwest::Client, name: &str) -> Resul
             t.save()?;
             t.forget_secret(name)?;
             ok(format!("removed {name}"));
+        }
+    }
+    Ok(())
+}
+
+// ── Memory recall ──────────────────────────────────────────────────────
+
+/// M30: keyword recall only, a local model (downloaded here, never
+/// silently), or an OpenAI-compatible embeddings endpoint of a configured
+/// provider.
+async fn memory_step(t: &mut Target, guided: bool) -> Result<()> {
+    use ferrule_embed::download::POTION_MULTILINGUAL;
+    let cfg = t.config()?;
+    let spec = POTION_MULTILINGUAL;
+    info("Long-term memory is recalled by keyword. An embedding model also finds facts by meaning: a paraphrase, a synonym, the same fact in Hebrew or English.");
+    if guided
+        && !Confirm::new("Recall memories by meaning too?")
+            .with_default(false)
+            .prompt()?
+    {
+        return Ok(());
+    }
+    let local = format!(
+        "A local model: no key, nothing leaves this machine ({} download)",
+        crate::embedding::mb(spec.total_size())
+    );
+    let mut labels = vec!["Keywords only".to_string(), local];
+    let providers: Vec<String> = cfg.providers.keys().cloned().collect();
+    for p in &providers {
+        labels.push(format!(
+            "The embeddings endpoint of provider `{p}` (paid per token)"
+        ));
+    }
+    let pick = Select::new("Recall with", labels).raw_prompt()?.index;
+    match pick {
+        0 => {
+            put(table(t.root(), &["memory"])?, "embedder", "off");
+            t.save()?;
+            ok("memory recall: keywords only");
+        }
+        1 => {
+            if !cfg!(feature = "local-embed") {
+                bail!("this ferrule was built without the local embedder");
+            }
+            let dir = spec.dir(&config::data_dir()?);
+            if ferrule_embed::download::presence(&spec, &dir)
+                != ferrule_embed::download::Presence::Present
+                && !Confirm::new(&format!(
+                    "Download {} ({}, pinned revision {}) to {}?",
+                    spec.repo,
+                    crate::embedding::mb(spec.total_size()),
+                    &spec.revision[..7],
+                    dir.display()
+                ))
+                .with_default(true)
+                .prompt()?
+            {
+                return Ok(());
+            }
+            interruptible(crate::embedding::fetch_model(&cfg)).await??;
+            put(table(t.root(), &["memory"])?, "embedder", "local");
+            t.save()?;
+            ok("memory recall: keywords + the local model (checksums match)");
+            info("Memories saved before now are found by keyword until `ferrule memory reindex`.");
+        }
+        n => {
+            let provider = &providers[n - 2];
+            let model = Text::new("Embedding model")
+                .with_initial_value(
+                    cfg.memory
+                        .model
+                        .as_deref()
+                        .unwrap_or("text-embedding-3-small"),
+                )
+                .prompt()?;
+            let model = model.trim().to_string();
+            let known = matches!(
+                model.as_str(),
+                "text-embedding-3-small" | "text-embedding-3-large" | "text-embedding-ada-002"
+            );
+            let dims = if known {
+                None
+            } else {
+                Some(inquire::CustomType::<u64>::new("Its vector size (dimensions)").prompt()?)
+            };
+            let tbl = table(t.root(), &["memory"])?;
+            put(tbl, "embedder", "openai");
+            put(tbl, "provider", provider.as_str());
+            put(tbl, "model", model.as_str());
+            match dims {
+                Some(d) => put(tbl, "dimensions", d as i64),
+                None => {
+                    tbl.remove("dimensions");
+                }
+            }
+            t.save()?;
+            ok(format!(
+                "memory recall: keywords + {model} via `{provider}`"
+            ));
+            info("Set price_input_per_mtok under [memory] to see its cost in the ledger. `ferrule memory reindex` embeds what's already saved.");
         }
     }
     Ok(())

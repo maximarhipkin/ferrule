@@ -6,6 +6,7 @@ mod config_follow;
 mod connections;
 mod dashboard;
 mod doctor;
+mod embedding;
 mod eval;
 mod filewrite;
 mod health;
@@ -364,16 +365,36 @@ enum MemoryCmd {
         #[arg(long)]
         tags: Option<String>,
     },
-    Search {
-        query: String,
+    /// Search by keyword, and by meaning when `[memory]` has an embedder
+    Search { query: String },
+    /// Embed the memories that have no vector from the configured
+    /// embedder yet. Resumable: stop it any time and run it again.
+    Reindex {
+        /// Memories per request
+        #[arg(long, default_value_t = 32)]
+        batch: usize,
+    },
+    /// The local embedding model
+    Model {
+        #[command(subcommand)]
+        op: MemoryModelCmd,
     },
     Recent {
         #[arg(long, default_value_t = 10)]
         n: usize,
     },
     /// Delete a memory for good, with its older versions
-    Forget {
-        id: i64,
+    Forget { id: i64 },
+}
+
+#[derive(Subcommand)]
+enum MemoryModelCmd {
+    /// Download the local embedding model (about 531 MB) to the data dir,
+    /// through the credential proxy, and check it
+    Download {
+        /// Don't ask first
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -536,6 +557,15 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 println!("wrote ferrule.toml — edit it, or run `ferrule setup` to fill it in interactively");
             }
         }
+        Cmd::Memory {
+            op:
+                MemoryCmd::Model {
+                    op: MemoryModelCmd::Download { yes },
+                },
+        } => embedding::download_cmd(yes).await?,
+        Cmd::Memory {
+            op: MemoryCmd::Reindex { batch },
+        } => embedding::reindex_cmd(batch).await?,
         Cmd::Memory { op } => {
             let store = MemoryStore::open(config::data_dir()?.join("memory.db"))?;
             match op {
@@ -548,7 +578,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                     println!("remembered (#{id})");
                 }
                 MemoryCmd::Search { query } => {
-                    for m in store.recall(&query, 10)? {
+                    for m in embedding::search(&store, &query, 10).await? {
                         println!("[{:.3}] #{} {}", m.score, m.id, m.content);
                     }
                 }
@@ -565,6 +595,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                     let ids: Vec<String> = deleted.iter().map(|d| format!("#{d}")).collect();
                     println!("forgot {}", ids.join(", "));
                 }
+                MemoryCmd::Reindex { .. } | MemoryCmd::Model { .. } => unreachable!(),
             }
         }
         Cmd::Run {
@@ -907,7 +938,24 @@ fn build_agent_from(
     } else {
         memory_tools::MemoryAccess::for_child(child)
     };
-    for tool in memory_tools::tools_for(memory_db.clone(), access) {
+    // M19: the owner's caps, kill switch and approval gates, per run tree.
+    let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
+    let session_id = transcript
+        .as_ref()
+        .and_then(|t| t.path().file_stem())
+        .map_or_else(|| "ephemeral".into(), |s| s.to_string_lossy().into_owned());
+    // M30: `[memory]`'s embedder, or keyword recall.
+    let embedding = embedding::build(
+        &cfg,
+        broker,
+        sandbox.egress().cloned(),
+        Some(embedding::LedgerTarget {
+            tag: &ledger,
+            session_id: session_id.clone(),
+        }),
+    )?
+    .map(Arc::new);
+    for tool in memory_tools::tools_with(memory_db.clone(), access, embedding.clone()) {
         registry.register(tool);
     }
     // Its own session's history, including what compaction dropped.
@@ -1014,14 +1062,8 @@ fn build_agent_from(
         system.push_str(&format!("\n\n{}", ferrule_trust::plan::PLAN_MODE_NOTE));
     }
 
-    // M19: the owner's caps, kill switch and approval gates, per run tree.
-    let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
     models.attach_hub(trust::hub(&cfg)?);
     // M28: read-only, so plan mode keeps it, like `web_fetch`.
-    let session_id = transcript
-        .as_ref()
-        .and_then(|t| t.path().file_stem())
-        .map_or_else(|| "ephemeral".into(), |s| s.to_string_lossy().into_owned());
     if let Some(tool) = web_search::tool(
         &cfg,
         broker,
@@ -1048,7 +1090,9 @@ fn build_agent_from(
     )
     .with_system_prompt(system)
     // The memory block is picked on the first run, from the session's goal.
-    .with_session_recall(Arc::new(memory_tools::GoalRecall { db: memory_db }));
+    .with_session_recall(Arc::new(
+        memory_tools::GoalRecall::new(memory_db).with_embedding(embedding),
+    ));
     if let (Some(map), tokens @ 1..) = (repo_map, cfg.agent.repo_map_tokens) {
         agent =
             agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(map, tokens)));
