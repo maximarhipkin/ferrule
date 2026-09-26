@@ -596,6 +596,10 @@ impl Tool for WebSearchTool {
         false
     }
 
+    fn read_only(&self) -> bool {
+        true
+    }
+
     fn definition(&self) -> ToolDefinition {
         let max = self.settings.max_results;
         ToolDefinition {

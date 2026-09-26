@@ -12,7 +12,23 @@ use ferrule_tools::search::SearchCall;
 use ferrule_tools::WebSearchTool;
 use ferrule_trust::meter::SEARCH_CALL_KIND;
 use ferrule_trust::Hub;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long a search that passed the gate counts against the cap before
+/// it's in the ledger.
+const IN_FLIGHT_FOR: Duration = Duration::from_secs(120);
+
+/// Takes a place under `cap` for one search, counting the `recorded` ones
+/// and those still `flying`; false when there's none left.
+fn reserve(flying: &mut Vec<Instant>, recorded: u64, cap: u64, now: Instant) -> bool {
+    flying.retain(|at| now.saturating_duration_since(*at) < IN_FLIGHT_FOR);
+    if recorded + flying.len() as u64 >= cap {
+        return false;
+    }
+    flying.push(now);
+    true
+}
 
 /// The tool, or `None` when `[web_search]` is off or its key can't be
 /// reached through the proxy (said once on stderr).
@@ -46,6 +62,12 @@ pub fn tool(
     let tz = cfg.trust.timezone.clone();
     let gate_hub = hub.clone();
     let gate_tree = tree.to_string();
+    // Searches passed but not yet in the ledger: M27 runs read-only calls
+    // side by side, and each must count against the cap. One a stopped
+    // turn dropped never reaches `record`, so a reservation lapses after
+    // `IN_FLIGHT_FOR` (a search times out long before).
+    let in_flight: Arc<Mutex<Vec<Instant>>> = Arc::default();
+    let gate_flight = in_flight.clone();
     let gate = Arc::new(move || {
         if let Some(stop) = gate_hub.check(&gate_tree, None, false) {
             return Err(stop);
@@ -58,7 +80,12 @@ pub fn tool(
         let (day, _) = gate_hub
             .today(None)
             .map_err(|e| format!("the daily search cap can't be checked: {e}"))?;
-        if day.searches >= cap {
+        if !reserve(
+            &mut gate_flight.lock().unwrap(),
+            day.searches,
+            cap,
+            Instant::now(),
+        ) {
             return Err(format!(
                 "the daily search cap of {cap} is reached ([web_search] max_searches_per_day); it resets at midnight {tz}"
             ));
@@ -75,6 +102,10 @@ pub fn tool(
             &call,
             price,
         ));
+        let mut flying = in_flight.lock().unwrap();
+        if !flying.is_empty() {
+            flying.remove(0);
+        }
     });
     Ok(Some(
         WebSearchTool::new(settings, egress)
@@ -141,6 +172,7 @@ pub fn search_record(
         eval: None,
         tree: None,
         route: None,
+        speed: None,
     }
 }
 
@@ -148,6 +180,20 @@ pub fn search_record(
 mod tests {
     use super::*;
     use ferrule_trust::Spend;
+
+    #[test]
+    fn searches_in_flight_count_against_the_cap_until_they_lapse() {
+        let now = Instant::now();
+        let mut flying = Vec::new();
+        assert!(reserve(&mut flying, 1, 3, now));
+        assert!(reserve(&mut flying, 1, 3, now));
+        assert!(!reserve(&mut flying, 1, 3, now), "1 recorded + 2 flying");
+        // Recorded: the ledger has it, the reservation goes.
+        flying.remove(0);
+        assert!(!reserve(&mut flying, 2, 3, now));
+        // A dropped search's reservation lapses.
+        assert!(reserve(&mut flying, 2, 3, now + IN_FLIGHT_FOR));
+    }
 
     #[test]
     fn a_search_row_counts_as_a_search_and_is_charged_only_when_it_answered() {
