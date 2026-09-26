@@ -471,10 +471,21 @@ fn main() -> Result<()> {
         }
     }
     secrets::load_into_env();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(dispatch(cli.cmd))
+    // The command's future is polled on this thread. Windows gives a main
+    // thread 1 MiB of stack where Linux gives 8, and an agent turn's
+    // future (streaming, a parallel tool batch) outgrew 1 MiB in a debug
+    // build, so the runtime runs on a thread with Linux's 8 MiB everywhere.
+    std::thread::Builder::new()
+        .name("ferrule-main".into())
+        .stack_size(8 << 20)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(dispatch(cli.cmd))
+        })?
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
