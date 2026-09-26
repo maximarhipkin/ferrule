@@ -1,6 +1,6 @@
 # M26: isolation (design)
 
-Status: in progress, 2026-09-25, branch `m26-isolation` (PR to main, not
+Status: built, 2026-09-25, branch `m26-isolation` (PR to main, not
 merged). Three gaps close here:
 
 1. Native Windows had no sandbox at all.
@@ -161,8 +161,7 @@ DACLs).
 
 A deny-read ACE for a capability SID does nothing under
 `WRITE_RESTRICTED`, because the restricting SIDs are never consulted for
-reads. The research doc assumed otherwise. M26 carries a CI probe to
-settle it, and it is deleted before merge. What works instead has to
+reads. The research doc assumed otherwise. What works instead has to
 key on something the *normal* access check sees and the sandbox token
 lacks:
 
@@ -304,4 +303,81 @@ end here. It is listed as not verified live.
 
 ## As built
 
-(Filled in at the end of the milestone.)
+Built in four parts on `m26-isolation`: the read policy, plain HTTP
+through the proxy, the Windows backend, and hide-only unconfined servers
+together with doctor and the self-test. Where the build differs from the
+design above:
+
+- **The config keys** are the ones in §1, plus `process_limit` (256,
+  0 = none) and `memory_mb` (unset = none). Both are Windows-only and are
+  ignored elsewhere.
+- **Windows writes also cover `%TEMP%` and `%TMP%`** when `tmp = true`,
+  because `/tmp` has no counterpart there.
+- **The restricting SIDs gain RESTRICTED (`S-1-5-12`).** The named-object
+  directories and a few registry keys grant it to restricted code. Without
+  it, MSYS and PowerShell can't create their named objects under a
+  `WRITE_RESTRICTED` token.
+- **What gets a protected DACL** is `Sandbox::owned_denies()`: `hidden`
+  plus `deny_read`. The default credential dirs are left alone, as §2.3
+  planned. Doctor and `ferrule sandbox` tag them "(file tools only)" on
+  Windows.
+- **No separate probe for §2.3.** The real tier-1 tests
+  (`saved_keys_and_denied_paths_are_unreadable`, under `sandbox`,
+  `for_helper` and `unconfined`) are the probe. If CI shows the
+  conditional ACE doesn't hold, they fail, and the Low-integrity fallback
+  becomes the fix. There is no probe test to delete.
+- **The start-up probe on Windows runs the shell the `shell` tool will
+  use** (`Shell::get()`, with `exit 0`) instead of `/bin/sh`. A shell that
+  can't start under the token therefore degrades the sandbox with the
+  existing warning, and doctor names it.
+- **`harden_self()` is a no-op** when ferrule's own token lacks an enabled
+  Authenticated Users. Otherwise the condition would lock ferrule out of
+  itself, as for a service account.
+- **Hide-only on Linux** grants `/` read and write, carved around the
+  deny list, with no seccomp. The carve has one limit: a *new* entry
+  directly inside a directory that contains a denied path can't be
+  created, for example at the top of `~` because `~/.ssh` is denied
+  there. Landlock grants rights on the directory's existing children, and
+  it has no rule for "new children except this one". Existing entries and
+  everything below them stay writable. This is documented in
+  `docs/sandbox.md` and listed as a follow-up.
+- **Hide-only on macOS** is a separate profile, `(allow default)` plus
+  the same deny rules, not the confined profile with extra allows.
+- **`Sandbox` gained** `hides_reads()` (the deny list is enforced, which
+  is also true for hide-only) and `is_hide_only()`. `is_active()` stays
+  false for hide-only, so everything that meant "confined" still does.
+- **Doctor**:
+  - it checks the saved keys on every OS (`cmd.exe /d /c type` on
+    Windows);
+  - on Windows it warns about `network = false` and the file-tools-only
+    defaults;
+  - it names the shell when Windows degrades;
+  - it warns per `sandbox = false` server with the gaps for the backend
+    it has.
+- **`ferrule sandbox`**:
+  - it prints the "no reads" list;
+  - it runs its write and read checks through `cmd.exe` on Windows;
+  - it checks ferrule's own process through a hidden
+    `--probe-process <pid>` re-exec;
+  - it skips the network check on Windows.
+
+  CI now runs the self-test on Windows too.
+- **The test MCP server** (`mock_mcp.py`) gained a `read` tool. With it,
+  the denied-read test runs from a real MCP child, sandboxed and
+  `sandbox = false`, on every OS.
+
+**Not verified live:**
+- Everything Windows until this PR's CI run: nothing Windows can run in
+  the build container (no Wine, no MSVC). Cross-clippy covers
+  `ferrule-sandbox` for `x86_64-pc-windows-gnu`.
+- macOS's hide-only profile until CI.
+- The system-service path, as §3.3 says.
+- Plain HTTP through the proxy to a real remote server. The tests use
+  in-process servers on 127.0.0.1.
+
+**Follow-ups:**
+- `HTTP_PROXY` for commands (§3.1).
+- Network enforcement on Windows (WFP, which needs admin: a tier 2).
+- The Landlock carve limit for new entries beside a denied path.
+- The Low-integrity fallback, if the conditional ACE turns out not to
+  hold somewhere.
