@@ -44,6 +44,7 @@ fn req(messages: Vec<Message>) -> CompletionRequest {
         tools: vec![tool("read_file"), tool("list_dir")],
         max_output_tokens: None,
         temperature: None,
+        stream: None,
     }
 }
 

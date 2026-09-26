@@ -33,7 +33,9 @@ pub use ledger::{EvalTag, LedgerContext, LedgerRecord, LedgerSink, SpeedStats, T
 pub use lifecycle::{HookEvent, HookSet};
 pub use message::{Message, NativeBlocks, Role, ToolCall, Usage};
 pub use profile::HarnessProfile;
-pub use provider::{CompletionRequest, CompletionResponse, FailOver, Provider, Served};
+pub use provider::{
+    CompletionRequest, CompletionResponse, Delta, DeltaSink, FailOver, Provider, Served,
+};
 pub use routing::{Escalation, Ladder, Policy, RouteTag, Signal, Tier, Tiered};
 pub use tool::{Tool, ToolContext, ToolOutput, ToolRegistry, ToolSource};
 pub use transcript::Transcript;

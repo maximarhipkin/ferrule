@@ -151,6 +151,7 @@ async fn ask(
         tools: vec![],
         max_output_tokens: Some(1024),
         temperature: Some(0.0),
+        stream: None,
     };
     let started = Instant::now();
     let res = env.provider.complete(req).await;

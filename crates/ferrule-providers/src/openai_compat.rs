@@ -1,7 +1,8 @@
 use crate::common::{self, truncate};
 use ferrule_core::error::CoreError;
+use ferrule_core::error::FailureClass;
 use ferrule_core::message::{Message, Role, ToolCall, Usage};
-use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
+use ferrule_core::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use ferrule_core::tool::ToolDefinition;
 use serde_json::{json, Value};
 
@@ -158,6 +159,24 @@ impl Provider for OpenAiCompatProvider {
     }
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let payload = self.payload(&req);
+        if let Some(sink) = &req.stream {
+            match self.stream(&payload, sink).await {
+                // A compatible server that won't stream, or won't take
+                // `stream_options`: once more, plainly.
+                Err(e) if e.class() == FailureClass::BadRequest => {
+                    tracing::debug!(provider = %self.name, "streaming refused ({e}), asking plainly");
+                }
+                done => return done,
+            }
+        }
+        let reply = common::send(self.post(&payload)).await?;
+        Self::read_reply(reply)
+    }
+}
+
+impl OpenAiCompatProvider {
+    fn payload(&self, req: &CompletionRequest) -> Value {
         let mut payload = json!({
             "model": self.model,
             "messages": req.messages.iter().map(|m| Self::to_wire(m, true)).collect::<Vec<_>>(),
@@ -172,19 +191,144 @@ impl Provider for OpenAiCompatProvider {
         if let Some(m) = req.max_output_tokens {
             payload["max_tokens"] = json!(m);
         }
+        payload
+    }
 
-        let reply = common::send(
-            self.client
-                .post(format!("{}/chat/completions", self.base_url))
-                .bearer_auth(&self.api_key)
-                .json(&payload),
-        )
-        .await?;
-        let body = reply.body;
-        if let Some(err) = body.get("error").filter(|e| !e.is_null()) {
+    fn post(&self, payload: &Value) -> reqwest::RequestBuilder {
+        self.client
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(payload)
+    }
+
+    fn read_reply(reply: common::Reply) -> Result<CompletionResponse, CoreError> {
+        if let Some(err) = reply.body.get("error").filter(|e| !e.is_null()) {
             return Err(common::error_in_body(err, reply.wait));
         }
-        Self::parse_response(&body)
+        Self::parse_response(&reply.body)
+    }
+
+    /// The streaming call: the chunks reassembled into the body a plain
+    /// call returns, then parsed by the same code.
+    async fn stream(
+        &self,
+        payload: &Value,
+        sink: &DeltaSink,
+    ) -> Result<CompletionResponse, CoreError> {
+        let mut payload = payload.clone();
+        payload["stream"] = json!(true);
+        payload["stream_options"] = json!({"include_usage": true});
+        let mut events = match common::open(self.post(&payload)).await? {
+            common::Opened::Json(reply) => return Self::read_reply(reply),
+            common::Opened::Events(events) => events,
+        };
+        let mut chat = ChatStream::default();
+        while let Some(event) = events.next().await? {
+            if event.data.trim() == "[DONE]" {
+                chat.done = true;
+                break;
+            }
+            chat.take(&event.json()?, sink)?;
+        }
+        // Some servers close after the last chunk without `[DONE]`; a
+        // finish reason says the reply was whole.
+        if !chat.done && chat.finish.is_none() {
+            return Err(common::ended_early(events.seen()));
+        }
+        if chat.usage.is_null() {
+            tracing::warn!(provider = %self.name, "the stream carried no usage: recording zeros");
+        }
+        Self::parse_response(&chat.body())
+    }
+}
+
+/// A Chat Completions stream as it comes in.
+#[derive(Default)]
+struct ChatStream {
+    text: String,
+    reasoning: String,
+    /// By the chunk's `index`: id, name, arguments so far.
+    calls: std::collections::BTreeMap<u64, (String, String, String)>,
+    finish: Option<String>,
+    usage: Value,
+    done: bool,
+}
+
+impl ChatStream {
+    fn take(&mut self, chunk: &Value, sink: &DeltaSink) -> Result<(), CoreError> {
+        if let Some(err) = chunk.get("error").filter(|e| !e.is_null()) {
+            return Err(common::error_in_body(err, None));
+        }
+        if let Some(usage) = chunk.get("usage").filter(|u| u.is_object()) {
+            self.usage = usage.clone();
+        }
+        let Some(choice) = chunk.get("choices").and_then(|c| c.get(0)) else {
+            return Ok(());
+        };
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            self.finish = Some(reason.to_string());
+        }
+        let delta = &choice["delta"];
+        if let Some(text) = delta.get("content").and_then(Value::as_str) {
+            if !text.is_empty() {
+                self.text.push_str(text);
+                sink.send(Delta::Text(text.to_string()));
+            }
+        }
+        let thought = ["reasoning_content", "reasoning"]
+            .iter()
+            .find_map(|k| delta.get(*k).and_then(Value::as_str));
+        if let Some(r) = thought {
+            self.reasoning.push_str(r);
+            sink.send(Delta::Progress);
+        }
+        for tc in delta
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let index = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
+            let call = self.calls.entry(index).or_default();
+            if let Some(id) = tc.get("id").and_then(Value::as_str) {
+                call.0 = id.to_string();
+            }
+            let f = &tc["function"];
+            if let Some(name) = f.get("name").and_then(Value::as_str) {
+                call.1.push_str(name);
+            }
+            if let Some(args) = f.get("arguments").and_then(Value::as_str) {
+                call.2.push_str(args);
+            }
+            sink.send(Delta::Progress);
+        }
+        Ok(())
+    }
+
+    /// The body a plain call would have returned.
+    fn body(self) -> Value {
+        let mut message = json!({
+            "role": "assistant",
+            "content": (!self.text.is_empty()).then_some(self.text),
+        });
+        if !self.reasoning.is_empty() {
+            message["reasoning_content"] = json!(self.reasoning);
+        }
+        if !self.calls.is_empty() {
+            message["tool_calls"] = json!(self
+                .calls
+                .into_values()
+                .map(|(id, name, args)| json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": if args.is_empty() { "{}".to_string() } else { args }},
+                }))
+                .collect::<Vec<_>>());
+        }
+        json!({
+            "choices": [{"message": message, "finish_reason": self.finish}],
+            "usage": self.usage,
+        })
     }
 }
 
@@ -248,6 +392,7 @@ mod tests {
             tools: vec![],
             max_output_tokens: None,
             temperature: None,
+            stream: None,
         }
     }
 
@@ -283,6 +428,7 @@ mod tests {
             }],
             max_output_tokens: None,
             temperature: None,
+            stream: None,
         };
         let resp = p.complete(req).await.unwrap();
         assert_eq!(resp.message.tool_calls.len(), 1);

@@ -10,7 +10,7 @@ use crate::common::{self, last_user, replayable};
 use crate::{DriverOptions, Thinking};
 use ferrule_core::error::CoreError;
 use ferrule_core::message::{Message, NativeBlocks, Role, ToolCall, Usage};
-use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
+use ferrule_core::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use ferrule_core::tool::ToolDefinition;
 use serde_json::{json, Value};
 use tracing::warn;
@@ -224,15 +224,28 @@ impl AnthropicProvider {
         }
     }
 
-    async fn post(&self, body: &Value) -> Result<Value, CoreError> {
-        let reply = common::send(
-            self.client
-                .post(format!("{}/messages", self.base_url))
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", VERSION)
-                .json(body),
-        )
-        .await?;
+    fn request(&self, body: &Value) -> reqwest::RequestBuilder {
+        self.client
+            .post(format!("{}/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", VERSION)
+            .json(body)
+    }
+
+    /// Send `body` and return the reply's message. With a sink, it asks
+    /// for a stream and rebuilds that message from the events.
+    async fn post(&self, body: &Value, sink: Option<&DeltaSink>) -> Result<Value, CoreError> {
+        let reply = match sink {
+            None => common::send(self.request(body)).await?,
+            Some(sink) => {
+                let mut body = body.clone();
+                body["stream"] = json!(true);
+                match common::open(self.request(&body)).await? {
+                    common::Opened::Json(reply) => reply,
+                    common::Opened::Events(events) => return read_stream(events, sink).await,
+                }
+            }
+        };
         if reply.body.get("type").and_then(Value::as_str) == Some("error") {
             return Err(common::error_in_body(&reply.body["error"], reply.wait));
         }
@@ -316,7 +329,8 @@ impl Provider for AnthropicProvider {
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let first = self.payload(&req, false);
-        let body = match self.post(&first.body).await {
+        let sink = req.stream.as_ref();
+        let body = match self.post(&first.body, sink).await {
             // Safety net: thinking bound to a prefix that moved under it.
             // Once, without our blocks; a second 400 is a plain BadRequest.
             Err(CoreError::Provider(m)) if first.loop_extras && thinking_rejected(&m) => {
@@ -325,12 +339,100 @@ impl Provider for AnthropicProvider {
                     "thinking blocks rejected, retrying once without them: {}",
                     m.chars().take(200).collect::<String>()
                 );
-                self.post(&self.payload(&req, true).body).await?
+                self.post(&self.payload(&req, true).body, sink).await?
             }
             other => other?,
         };
         self.parse_response(&body)
     }
+}
+
+/// A Messages stream rebuilt into the message a plain call returns:
+/// `message_start` gives the frame and the input usage, each block is
+/// rebuilt from its start and deltas, `message_delta` adds the stop reason
+/// and the final counts.
+async fn read_stream(mut events: common::Events, sink: &DeltaSink) -> Result<Value, CoreError> {
+    let mut message = json!({});
+    let mut blocks: Vec<Value> = Vec::new();
+    // Tool input JSON as it comes, by block index.
+    let mut inputs: Vec<String> = Vec::new();
+    while let Some(event) = events.next().await? {
+        let data = event.json()?;
+        let index = data.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+        match data.get("type").and_then(Value::as_str).unwrap_or("") {
+            "message_start" => message = data["message"].clone(),
+            "content_block_start" => {
+                if blocks.len() <= index {
+                    blocks.resize(index + 1, Value::Null);
+                    inputs.resize(index + 1, String::new());
+                }
+                blocks[index] = data["content_block"].clone();
+            }
+            "content_block_delta" => {
+                let Some(block) = blocks.get_mut(index) else {
+                    continue;
+                };
+                let delta = &data["delta"];
+                let piece = |k: &str| delta.get(k).and_then(Value::as_str).unwrap_or("");
+                match delta.get("type").and_then(Value::as_str).unwrap_or("") {
+                    "text_delta" => {
+                        append(block, "text", piece("text"));
+                        sink.send(Delta::Text(piece("text").to_string()));
+                    }
+                    "input_json_delta" => {
+                        inputs[index].push_str(piece("partial_json"));
+                        sink.send(Delta::Progress);
+                    }
+                    "thinking_delta" => {
+                        append(block, "thinking", piece("thinking"));
+                        sink.send(Delta::Progress);
+                    }
+                    "signature_delta" => append(block, "signature", piece("signature")),
+                    _ => {}
+                }
+            }
+            "content_block_stop" => {
+                let (Some(block), Some(input)) = (blocks.get_mut(index), inputs.get(index)) else {
+                    continue;
+                };
+                if block.get("type").and_then(Value::as_str) == Some("tool_use")
+                    && !input.is_empty()
+                {
+                    block["input"] = serde_json::from_str(input).unwrap_or_else(|_| {
+                        warn!("a streamed tool input that isn't JSON: {input:.200}");
+                        json!({})
+                    });
+                }
+            }
+            "message_delta" => {
+                if let Some(delta) = data["delta"].as_object() {
+                    for (k, v) in delta {
+                        message[k] = v.clone();
+                    }
+                }
+                if let Some(usage) = data["usage"].as_object() {
+                    for (k, v) in usage.iter().filter(|(_, v)| !v.is_null()) {
+                        message["usage"][k] = v.clone();
+                    }
+                }
+            }
+            "message_stop" => {
+                message["content"] = json!(blocks
+                    .into_iter()
+                    .filter(|b| !b.is_null())
+                    .collect::<Vec<_>>());
+                return Ok(message);
+            }
+            "error" => return Err(common::stream_error(&data["error"])),
+            _ => {} // ping, and whatever comes next
+        }
+    }
+    Err(common::ended_early(events.seen()))
+}
+
+fn append(block: &mut Value, key: &str, piece: &str) {
+    let now = block.get(key).and_then(Value::as_str).unwrap_or("");
+    block[key] = json!(format!("{now}{piece}"));
 }
 
 fn thinking_rejected(message: &str) -> bool {

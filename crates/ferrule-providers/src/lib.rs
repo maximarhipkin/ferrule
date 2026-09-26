@@ -12,6 +12,8 @@ pub mod anthropic;
 mod common;
 pub mod openai_compat;
 pub mod responses;
+#[cfg(test)]
+mod stream_tests;
 
 pub use anthropic::AnthropicProvider;
 pub use openai_compat::OpenAiCompatProvider;

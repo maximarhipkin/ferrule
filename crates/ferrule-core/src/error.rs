@@ -168,7 +168,10 @@ impl CoreError {
             }
             None if lower.contains("connect") || lower.contains("dns") => FailureClass::Connect,
             None if lower.contains("overloaded") => FailureClass::Overloaded,
-            None if lower.contains("rate limit") || lower.contains("\"code\":429") => {
+            None if lower.contains("rate limit")
+                || lower.contains("rate_limit")
+                || lower.contains("\"code\":429") =>
+            {
                 FailureClass::RateLimited
             }
             None if matches!(self, CoreError::Transient { .. }) => FailureClass::Server,

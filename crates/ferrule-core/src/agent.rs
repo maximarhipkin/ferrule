@@ -7,7 +7,7 @@ use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBat
 use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
 use crate::message::{Message, ToolCall, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
-use crate::provider::{CompletionRequest, CompletionResponse, Provider};
+use crate::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use crate::routing::Signal;
 use crate::stuck::{Step, Stuck};
 use crate::tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
@@ -280,7 +280,13 @@ pub struct Agent {
     /// not a result.
     pub incomplete: Option<String>,
     /// M27 timings waiting for the next ledger row.
-    speed: std::sync::Mutex<SpeedStats>,
+    speed: Arc<std::sync::Mutex<SpeedStats>>,
+    /// Where the answer streams while it's written (M27), if anywhere.
+    reply_stream: Option<DeltaSink>,
+    /// When the current run started, and whether its first visible text
+    /// has been timed yet.
+    run_started: Instant,
+    shown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Agent {
@@ -313,6 +319,9 @@ impl Agent {
             usage: Usage::default(),
             incomplete: None,
             speed: Default::default(),
+            reply_stream: None,
+            run_started: Instant::now(),
+            shown: Default::default(),
         }
     }
 
@@ -397,6 +406,14 @@ impl Agent {
     /// The owner's guard, if any.
     pub fn guard(&self) -> Option<Arc<dyn Guard>> {
         self.guard.clone()
+    }
+
+    /// Stream the answer into `sink` while the model writes it (M27): the
+    /// text of each `turn` and `status` call, a [`Delta::Reset`] before
+    /// each call and each retry. Compaction and other side calls never
+    /// stream. `None` turns it off.
+    pub fn set_reply_stream(&mut self, sink: Option<DeltaSink>) {
+        self.reply_stream = sink;
     }
 
     /// Replaces the guard (the gateway puts a turn deadline in front of
@@ -570,7 +587,12 @@ impl Agent {
         let mut fallbacks = 0;
         loop {
             let start = Instant::now();
-            let (served, result) = self.provider.complete_routed(req.clone()).await;
+            let mut req = req.clone();
+            if let (Some(sink), "turn" | "status") = (&self.reply_stream, call_kind) {
+                sink.send(Delta::Reset);
+                req.stream = Some(self.timed(sink.clone(), start));
+            }
+            let (served, result) = self.provider.complete_routed(req).await;
             let latency_ms = start.elapsed().as_millis() as u64;
             let retry_in = match &result {
                 Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
@@ -647,6 +669,27 @@ impl Agent {
             tokio::time::sleep(delay).await;
             attempt += 1;
         }
+    }
+
+    /// `sink`, timing the call's first streamed byte and the run's first
+    /// visible text into the next ledger row.
+    fn timed(&self, sink: DeltaSink, call_start: Instant) -> DeltaSink {
+        let speed = self.speed.clone();
+        let shown = self.shown.clone();
+        let run_start = self.run_started;
+        let ms = |since: Instant| since.elapsed().as_millis() as u64;
+        DeltaSink::new(move |delta| {
+            {
+                let mut s = speed.lock().unwrap();
+                s.first_token_ms.get_or_insert_with(|| ms(call_start));
+                if matches!(&delta, Delta::Text(t) if !t.is_empty())
+                    && !shown.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    s.first_visible_ms = Some(ms(run_start));
+                }
+            }
+            sink.send(delta)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -771,6 +814,9 @@ impl Agent {
             guard.begin();
         }
         self.provider.begin_turn();
+        self.run_started = Instant::now();
+        self.shown
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         let result = self.run_inner(goal, tx).await;
         if let Some(inbox) = &inbox {
             inbox.end();
@@ -1476,6 +1522,7 @@ impl Agent {
             tools: self.tools.definitions(),
             max_output_tokens: self.config.max_output_tokens,
             temperature: self.config.temperature,
+            stream: None,
         }
     }
 
@@ -1630,6 +1677,7 @@ impl Agent {
             tools: vec![],
             max_output_tokens: Some(4096),
             temperature: Some(0.0),
+            stream: None,
         };
         let summary = self
             .call_provider(tx, summary_req, iteration, "compaction")
