@@ -122,6 +122,22 @@ impl Sshd {
                 ),
             )
             .unwrap();
+            // OpenSSH 9.8+ refuses a source that keeps disconnecting before
+            // login, which every keyscan does; older sshd rejects the option.
+            let config = d.join("sshd_config");
+            let base = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(&config, format!("{base}PerSourcePenalties no\n")).unwrap();
+            let checked = Command::new(&prog)
+                .arg("-t")
+                .arg("-f")
+                .arg(&config)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if !checked.is_ok_and(|s| s.success()) {
+                std::fs::write(&config, base).unwrap();
+            }
             let mut c = Command::new(&prog);
             if let Ok(extra) = std::env::var("FERRULE_TEST_SSHD_ARGS") {
                 c.args(extra.split_whitespace());
