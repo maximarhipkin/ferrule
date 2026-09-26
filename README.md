@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-969-8a929a" alt="969 workspace tests">
+  <img src="https://img.shields.io/badge/tests-1009-8a929a" alt="1009 workspace tests">
 </p>
 
 <p align="center">
@@ -185,7 +185,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Sub-agents** | `spawn_agent` / `wait` / `resume` / `close`: planner, worker and verifier roles with isolated contexts, a worktree per child, roles on their own providers, tree limits and a shared budget ([`docs/agents.md`](docs/agents.md)). |
 | **Self-extension** | The agent installs vetted skills and MCP servers for itself: a poisoning scan, version pinning and an allow-list ([`docs/m13-self-extension.md`](docs/m13-self-extension.md)). |
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. Add `triggers: [ship it, release]` and the skill loads when your message says so, Hebrew included; only what a person types counts, never a web page or tool output ([`docs/skills.md`](docs/skills.md)). |
-| **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall. `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
+| **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall, plus optional meaning-based recall (a local multilingual model or any OpenAI-compatible `/v1/embeddings` endpoint) merged with it ([`docs/memory.md`](docs/memory.md)). `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
 | **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons, kept only when the task passes twice with the lesson in the prompt ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md)). |
 | **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Telegram replies grow as they're written, edited about once a second (`[gateway] telegram_stream`). Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
 | **Dashboard** | One page for the whole app: health first, connections, models with an OpenRouter catalog, prices and recommendations, usage, tasks, logs, extensions and sub-agents. Send `/dashboard` and get a one-use 10-minute link; a `cloudflared` quick tunnel opens on demand and `/dashboard off` revokes it all. Caps, MCP servers, skills, hooks and task schedules are edited from the page, a candidate model can be evaluated on the starter suite (cost shown first), and the login survives a restart. It never calls the model, so it works when every model is down ([`docs/dashboard.md`](docs/dashboard.md)). |
@@ -514,6 +514,7 @@ crates/
   ferrule-providers  OpenAI-compatible driver
   ferrule-tools      fs / shell / web_fetch / diary / memory tools, proxied egress
   ferrule-memory     SQLite + FTS5 memory with time decay
+  ferrule-embed      embedders: local model2vec, OpenAI-compatible /v1/embeddings
   ferrule-gateway    daemon: channels (Telegram, local), session router, scheduler
   ferrule-mcp        MCP client: sandboxed stdio servers, Streamable HTTP servers
   ferrule-skills     Agent Skills discovery and loading
@@ -526,7 +527,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 969 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 1009 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -610,12 +611,13 @@ and a dated entry for every session.
 - [x] M29: edit mechanics — `edit_file` SEARCH/REPLACE, a tree-sitter
       repo map and `code_search`, per-edit lint, optional auto-commit
       with undo
+- [x] M30: vector recall — local or `/v1/embeddings` embeddings
+      merged with BM25, off by default
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M30 vector
-recall, M31 Discord
+Every open track, in order (Max, 25.09: "do everything"): M31 Discord
 and Slack, M32 WASM plugins, M33 ops (SSH, egress policy, OTel,
 importers).
 
@@ -626,7 +628,6 @@ Designed and now queued above: code-extension plugins (M32).
 
 **Planned**
 
-- [ ] Vector recall (local embeddings) merged with BM25
 - [ ] WASM tool plugins
 - [ ] More channels (Discord, Slack, WhatsApp — in that order)
 - [ ] The strategy backlog: local-model

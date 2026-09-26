@@ -639,6 +639,22 @@ owner says its keyword, and never because a web page did.
 often as `write-only` for fewer tokens per pass, and an unattended run's
 changes arrive as one reviewable, undoable commit.
 
+### M30 — vector recall
+
+**Status.** Built (`docs/m30-vector-recall.md`; user guide
+`docs/memory.md`). PR to `main` open, not merged.
+- Memory recall by meaning as well as keywords: a local multilingual
+  model (a 531 MB opt-in download, no key) or any `/v1/embeddings`
+  endpoint through the credential proxy, merged with BM25.
+- Every M15 promise kept: time decay, supersede, `forget`, the token
+  budget, and exactly BM25 when the embedder is off or failing.
+- A benchmark (80 facts, 48 queries) decides the merge; hybrid ships
+  because it beats BM25 on paraphrase and Hebrew↔English.
+
+**Done means.** Asked "where do we ship production?", the agent recalls
+"the deploy target is render"; a Hebrew question finds an English fact
+some of the time; and with the embedder unset, nothing differs from M15.
+
 ### M31 — Discord and Slack
 
 **Status.** Built (`docs/m31-channels.md`; user guides `docs/discord.md`

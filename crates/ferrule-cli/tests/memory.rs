@@ -3,7 +3,9 @@
 //! corrected with `update_memory` in a second is what the third session
 //! recalls (a user message after the goal since M27); a read-only
 //! sub-agent gets `recall` and `search_history` but no tool that writes
-//! memory.
+//! memory. M30: with an embeddings endpoint configured, recall finds a
+//! misspelt fact without moving a byte of the stable prefix, and an
+//! endpoint that fails leaves keyword recall exactly as it was.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -130,11 +132,18 @@ fn serve(mut stream: TcpStream, log: &Mutex<Vec<Value>>, script: &Script) {
     let mut body = vec![0; length];
     reader.read_exact(&mut body).unwrap();
     let req: Value = serde_json::from_slice(&body).unwrap();
-    let out = script(&req).to_string();
+    let mut out = script(&req);
+    // A script asks for another status with a top-level "__status".
+    let status = out
+        .as_object_mut()
+        .and_then(|o| o.remove("__status"))
+        .and_then(|s| s.as_u64())
+        .unwrap_or(200);
+    let out = out.to_string();
     log.lock().unwrap().push(req);
     let _ = write!(
         stream,
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
+        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}",
         out.len()
     );
 }
@@ -214,6 +223,7 @@ fn ferrule(home: &Path, args: &[&str]) -> Output {
     ] {
         cmd.env_remove(var);
     }
+    cmd.env_remove("RUST_LOG");
     cmd.output().unwrap()
 }
 
@@ -354,4 +364,168 @@ fn a_read_only_child_can_recall_and_search_history_but_not_write_memory() {
     ] {
         assert!(root_tools.iter().any(|t| t == has), "{root_tools:?}");
     }
+}
+
+const DIM: usize = 64;
+
+/// A stand-in embedding model: hashed character trigrams, so a misspelt
+/// word still lands near the right one (what a real model does for
+/// meaning, this does for spelling).
+fn trigrams(text: &str) -> Vec<f32> {
+    let mut v = vec![0f32; DIM];
+    for word in text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+        if word.is_empty() {
+            continue;
+        }
+        let padded: Vec<char> = format!(" {word} ").chars().collect();
+        for t in padded.windows(3) {
+            let h = t
+                .iter()
+                .fold(2166136261u32, |h, c| (h ^ *c as u32).wrapping_mul(16777619));
+            v[h as usize % DIM] += 1.0;
+        }
+    }
+    v
+}
+
+fn is_embedding(req: &Value) -> bool {
+    req.get("input").is_some()
+}
+
+fn embeddings(req: &Value) -> Value {
+    let data: Vec<Value> = req["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(i, t)| json!({"embedding": trigrams(t.as_str().unwrap()), "index": i}))
+        .collect();
+    json!({"data": data, "usage": {"prompt_tokens": 7}})
+}
+
+/// `home_with`, plus a `[memory]` block using the same server's
+/// `/embeddings`: a keyless local endpoint.
+fn home_with_embeddings(url: &str) -> tempfile::TempDir {
+    let dir = home_with(url);
+    let config = dir.path().join("ferrule.toml");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str(&format!(
+        r#"
+[memory]
+embedder = "openai"
+base_url = "{url}"
+model = "trigram-test"
+dimensions = {DIM}
+"#
+    ));
+    std::fs::write(config, text).unwrap();
+    dir
+}
+
+const DEPLOY: &str = "The deploy target is render";
+const CAT: &str = "The office cat is called Pixel";
+
+#[test]
+fn recall_by_meaning_keeps_the_stable_prefix_byte_identical() {
+    let script: Script = Arc::new(|req: &Value| {
+        if is_embedding(req) {
+            return embeddings(req);
+        }
+        let last = last(req);
+        if last["role"] == "tool" {
+            return answer(&format!("DONE {}", text(&last)));
+        }
+        call("recall", json!({"query": "deploymnt targett"}))
+    });
+    let (url, seen) = model_server(script);
+    let dir = home_with_embeddings(&url);
+    let home = dir.path();
+
+    run_ok(home, &["memory", "add", DEPLOY]);
+    run_ok(home, &["memory", "add", CAT]);
+    let out = run_ok(home, &["memory", "reindex"]);
+    assert!(out.contains('2'), "{out}");
+    // Neither word is spelt right: keywords alone find nothing.
+    let out = run_ok(home, &["memory", "search", "deploymnt targett"]);
+    assert!(
+        out.lines().next().unwrap_or_default().contains(DEPLOY),
+        "{out}"
+    );
+
+    let out = run_ok(home, &["run", "T1: which deploymnt targett do we use?"]);
+    assert!(out.contains("DONE") && out.contains(DEPLOY), "{out}");
+    run_ok(home, &["run", "T2: what is the office catt called?"]);
+
+    let seen = seen.lock().unwrap();
+    let chats: Vec<&Value> = seen.iter().filter(|r| !is_embedding(r)).collect();
+    assert_eq!(chats.len(), 4, "two calls in each session");
+    // The goals were embedded as queries.
+    assert!(seen
+        .iter()
+        .filter(|r| is_embedding(r))
+        .any(|r| r["input"][0].as_str().unwrap().contains("deploymnt")));
+
+    // The recalled facts are in the volatile part: the system prompt and
+    // the tools are the same bytes in every request of every session.
+    for r in &chats[1..] {
+        assert_eq!(system(r), system(chats[0]));
+        assert_eq!(r["tools"].to_string(), chats[0]["tools"].to_string());
+    }
+    assert!(!system(chats[0]).contains("[Long-term memory]"));
+    // Within a turn, the request with the tool result extends the first.
+    for pair in chats.chunks(2) {
+        let (first, second) = (
+            pair[0]["messages"].as_array().unwrap(),
+            pair[1]["messages"].as_array().unwrap(),
+        );
+        assert_eq!(first[..], second[..first.len()]);
+    }
+
+    // By meaning (here, spelling) the deploy fact comes first, though the
+    // cat is the newer one.
+    let t1 = recalled(chats[0]);
+    let lines: Vec<&str> = t1.lines().collect();
+    assert!(lines[1].ends_with(DEPLOY), "{t1}");
+    let t2 = recalled(chats[2]);
+    assert!(t2.lines().nth(1).unwrap().ends_with(CAT), "{t2}");
+}
+
+#[test]
+fn a_failing_embeddings_endpoint_leaves_keyword_recall_as_it_was() {
+    let script: Script = Arc::new(|req: &Value| {
+        if is_embedding(req) {
+            return json!({"__status": 500, "error": {"message": "model overloaded"}});
+        }
+        answer("ANSWERED")
+    });
+    let (url, seen) = model_server(script);
+    let dir = home_with_embeddings(&url);
+    let home = dir.path();
+
+    run_ok(home, &["memory", "add", DEPLOY]);
+    run_ok(home, &["memory", "add", CAT]);
+    let out = ferrule(home, &["run", "which deploy target do we use?"]);
+    let (stdout, stderr) = (plain(&out.stdout), plain(&out.stderr));
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("ANSWERED"), "{stdout}");
+    for said in [&stdout, &stderr] {
+        assert!(!said.contains("embeddings"), "{said}");
+        assert!(!said.contains("overloaded"), "{said}");
+    }
+    let out = run_ok(home, &["memory", "search", "deploy"]);
+    assert!(out.contains(DEPLOY) && !out.contains(CAT), "{out}");
+
+    let seen = seen.lock().unwrap();
+    assert!(seen.iter().any(is_embedding), "the endpoint was tried");
+    let chat = seen.iter().find(|r| !is_embedding(r)).unwrap();
+    let block = recalled(chat);
+    assert!(block.lines().nth(1).unwrap().ends_with(DEPLOY), "{block}");
+    drop(seen);
+
+    // Asked for directly, the error is shown, with where to pick up.
+    let out = ferrule(home, &["memory", "reindex"]);
+    assert!(!out.status.success());
+    let stderr = plain(&out.stderr);
+    assert!(stderr.contains("HTTP 500"), "{stderr}");
+    assert!(stderr.contains("0 of 2"), "{stderr}");
 }
