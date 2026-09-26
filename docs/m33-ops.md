@@ -367,8 +367,9 @@ as `/dev/log`). None of the escape sockets are datagram sockets. Documented.
   operation only matches `AF_UNIX` destinations, so IP traffic is
   untouched. It is followed by `(allow network-outbound (literal (param …)))`
   or `(subpath (param …))` per allowlist entry, with the paths passed as
-  `-D` parameters. (This syntax was not verified on a Mac; the macOS CI
-  enforcement test is the check.)
+  `-D` parameters. (Checked on the macos-14 CI runner: a listed socket
+  connects, an unlisted one and a symlink to it get `EPERM`, and a socket
+  the command made connects.)
 - Seatbelt matches real paths, so entries are canonicalized first.
 - `/private/var/run/mDNSResponder` is always allowed, or DNS stops working.
 

@@ -12,7 +12,7 @@ as-built notes are in [m33-ops.md](m33-ops.md) §1. The sandbox itself is in
 | `web_fetch`, `web_search`, MCP over HTTP, plugins | enforced (the proxy) | enforced | enforced |
 | Shell commands that honour `HTTPS_PROXY` | enforced once there are rules or secrets | same | same |
 | Shell commands that ignore the proxy | **not stopped** (advisory) | same | same |
-| Unix-socket allowlist | enforced (seccomp user notification) | Seatbelt profile (**unverified on a real Mac**; the macOS CI test is the check) | not implemented |
+| Unix-socket allowlist | enforced (seccomp user notification) | Seatbelt profile (checked by the macOS CI test, not by hand) | not implemented |
 
 ## The default: public yes, private no
 
@@ -219,8 +219,9 @@ macOS, Seatbelt can't ask, so sockets under the workspace are allowed by path.
   are datagram sockets.
 - **macOS:** `network = false` already denies every socket. With the network
   on, the Seatbelt profile denies outbound connections to any path and allows
-  the listed ones. IP traffic is untouched. This profile hasn't been run on a
-  real Mac by hand; the macOS CI enforcement test is what checks it.
+  the listed ones. IP traffic is untouched. The macOS CI enforcement test runs it on
+  a real Mac (a listed socket connects, an unlisted one and a symlink to it
+  get `EPERM`); it hasn't been tried by hand.
 - **Windows:** not implemented. Docker Desktop listens on a named pipe, and
   the restricted token ferrule runs commands under can't open it (its DACL
   grants `docker-users`, which a restricted token holds deny-only), but that

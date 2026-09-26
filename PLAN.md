@@ -4190,8 +4190,8 @@ release binary (`tempfile` is dev-only), so no `release.yml` run.
 - the Linux Unix-socket supervisor can't run in this container (Docker's
   seccomp profile refuses `pidfd_getfd`); its test is mandatory on the
   Linux CI runner;
-- the macOS Seatbelt socket rules were never run on a real Mac by hand;
-  the macOS CI test is the check;
+- the macOS Seatbelt socket rules were checked only by the macos-14 CI
+  runner (listed: ok; unlisted and symlink: `EPERM`), never by hand;
 - no real OTel collector and no real OpenClaw or Hermes install; the live
   tests are `#[ignore]`d and the guides give the commands.
 
