@@ -4181,9 +4181,9 @@ The user guide is `docs/plugins.md`.
 - The example `.wasm` files are committed. They are built reproducibly,
   so CI never needs the wasm target.
 
-**Checks.** fmt, clippy `-D warnings` and the workspace tests pass. The
-starter eval must stay engineered 20/20, naive 11/20, $0.98; the run
-through the real binary is in the PR report.
+**Checks.** 1120 tests after merging main (M31), 15 ignored; fmt and
+clippy `-D warnings` are clean. The starter eval against the mock through
+the real binary is unchanged: engineered 20/20, naive 11/20, $0.98.
 
 **Unverified live:** a `url:` install from a real HTTPS host, and the
 `github-repo` example against the real GitHub (both are `#[ignore]`d or
