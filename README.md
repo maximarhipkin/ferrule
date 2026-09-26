@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-836-8a929a" alt="836 workspace tests">
+  <img src="https://img.shields.io/badge/tests-870-8a929a" alt="870 workspace tests">
 </p>
 
 <p align="center">
@@ -124,7 +124,8 @@ Ferrule is that engineered harness, for every model it drives:
   once, then stops the run. Every stop ends in a truthful status (what's
   done, what's left, what blocks it), never a bare error.
 - **A ledger for every call.** Tokens, cache hits, latency, errors and
-  cost, per provider call: `ferrule ledger --since 7d`.
+  cost, per provider call, plus time to first token and first reply:
+  `ferrule ledger --since 7d` (it prints the cache-hit %).
 
 The evidence and the design behind it:
 [`docs/research-report.md`](docs/research-report.md).
@@ -175,7 +176,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | | |
 |---|---|
 | **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
-| **Providers & models** | Three drivers: native Anthropic Messages (prompt caching, optional extended thinking), OpenAI Responses (the Codex models, reasoning effort) and OpenAI-compatible Chat for OpenAI, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on outage, and the ledger records the model that actually answered, cache reads and writes included. Optional routing: start every turn on a cheap model and move up to a stronger one only on a failure (a failed check, broken tool calls, going in circles, `/model strong`), with a daily cap on the strong spend ([`docs/models.md`](docs/models.md), [`docs/m23-drivers.md`](docs/m23-drivers.md), [`docs/routing.md`](docs/routing.md)). |
+| **Providers & models** | Three drivers: native Anthropic Messages (prompt caching, optional extended thinking), OpenAI Responses (the Codex models, reasoning effort) and OpenAI-compatible Chat for OpenAI, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on outage, and the ledger records the model that actually answered, cache reads and writes included. Optional routing: start every turn on a cheap model and move up to a stronger one only on a failure (a failed check, broken tool calls, going in circles, `/model strong`), with a daily cap on the strong spend. All three drivers stream, read-only tool calls run in parallel, and the prompt prefix stays byte-stable so the cache hits ([`docs/models.md`](docs/models.md), [`docs/m23-drivers.md`](docs/m23-drivers.md), [`docs/routing.md`](docs/routing.md), [`docs/speed.md`](docs/speed.md)). |
 | **Connections** | The agent connects Jira and Confluence, Gmail, Drive, Notion, Linear, Attio and GitHub by itself. It asks, you tap one Telegram button, and the OAuth code (always PKCE) comes back through your own small Cloudflare Worker relay, a `cloudflared` quick tunnel or a pasted URL, so no inbound port. Tokens are sealed on disk, refreshed per request and never shown to the model. Read-only by default; writes ask you first ([`docs/m20-connections.md`](docs/m20-connections.md)). |
 | **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. |
 | **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. `ferrule mcp add` tests and scans a server, then adds it to the running daemon without a restart. |
@@ -185,12 +186,12 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. |
 | **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall. `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
 | **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons, kept only when the task passes twice with the lesson in the prompt ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md)). |
-| **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
+| **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Telegram replies grow as they're written, edited about once a second (`[gateway] telegram_stream`). Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
 | **Dashboard** | One page for the whole app: health first, connections, models with an OpenRouter catalog, prices and recommendations, usage, tasks, logs, extensions and sub-agents. Send `/dashboard` and get a one-use 10-minute link; a `cloudflared` quick tunnel opens on demand and `/dashboard off` revokes it all. Caps, MCP servers, skills, hooks and task schedules are edited from the page, a candidate model can be evaluated on the starter suite (cost shown first), and the login survives a restart. It never calls the model, so it works when every model is down ([`docs/dashboard.md`](docs/dashboard.md)). |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
 | **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, secret env vars are stripped, and reads of ferrule's secrets, credential dirs and your `deny_read` paths are denied. On Windows: a restricted token in a job object, no admin rights; commands need PowerShell there, since Git Bash can't start under the token ([below](#windows), [`docs/sandbox.md`](docs/sandbox.md)). |
 | **Credential gateway** | Commands get a placeholder token. A local proxy swaps in the real one only for the hosts you allow. |
-| **Ledger** | Every model call is logged: tokens, cache hits, latency, errors, cost. |
+| **Ledger** | Every model call is logged: tokens, cache hits, latency, errors, cost, time to first token and first reply, and parallel batch time. `ferrule ledger` shows the cache-hit %. |
 | **Trust & cost** | Token and dollar caps per run, per day and per scheduled task, with an 80% warning; a kill switch (`ferrule stop`, `/stop`, `/resume`); approvals for destructive actions; plan mode ([`docs/m19-trust-cost.md`](docs/m19-trust-cost.md)). |
 | **Hooks** | Ten lifecycle events (SessionStart, PreToolUse, PostToolUse, Stop, PreCompact and more) with Claude Code's JSON payload and exit-code contract ([`docs/m18-hooks.md`](docs/m18-hooks.md)). |
 | **Eval** | `ferrule eval run`: task suites through the real agent loop, graded by commands and LLM rubrics, with a naive-vs-engineered A/B on the same model ([`docs/eval.md`](docs/eval.md)). |
@@ -523,7 +524,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 836 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 870 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -599,12 +600,14 @@ and a dated entry for every session.
 - [x] M26: isolation — a native Windows sandbox (restricted token + job
       object), sandboxed reads on every OS, plain-HTTP `web_fetch` through
       the proxy
+- [x] M27: speed — parallel read-only tool calls, streaming from every
+      driver with Telegram replies that grow as they're written, a
+      cache-stable prompt prefix
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M27 speed (parallel tool calls, streaming,
-cache-stable prompts), M28 `web_search` and keyword-triggered skills, M29
+Every open track, in order (Max, 25.09: "do everything"): M28 `web_search` and keyword-triggered skills, M29
 edit mechanics and a tree-sitter repo map, M30 vector recall, M31 Discord
 and Slack, M32 WASM plugins, M33 ops (SSH, egress policy, OTel,
 importers).
@@ -617,11 +620,10 @@ Designed and now queued above: code-extension plugins (M32).
 **Planned**
 
 - [ ] Vector recall (local embeddings) merged with BM25
-- [ ] Streaming SSE responses
 - [ ] WASM tool plugins
 - [ ] Tree-sitter semantic code search
 - [ ] More channels (Discord, Slack, WhatsApp — in that order)
-- [ ] The strategy backlog: parallel tool calls, `web_search`,
+- [ ] The strategy backlog: `web_search`,
       keyword-triggered skills, Aider-style edit mechanics, local-model
       polish, migration importers, an SSH backend, egress
       domain policy, OTel export
