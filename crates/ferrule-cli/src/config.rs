@@ -507,6 +507,148 @@ pub struct Config {
     /// go (docs/egress.md).
     #[serde(default)]
     pub egress: EgressConfig,
+    /// M33: the agent's work as OpenTelemetry traces, off unless an
+    /// endpoint is set (docs/otel.md).
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
+}
+
+/// `[telemetry]` (docs/otel.md).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelemetryConfig {
+    /// The collector's OTLP/HTTP base URL; `/v1/traces` is appended.
+    /// Unset: nothing is exported.
+    pub endpoint: Option<String>,
+    /// Sent with every export. A value names its secret as `${VAR}`, never
+    /// holds it.
+    pub headers: BTreeMap<String, String>,
+    /// Put prompts, replies and tool arguments and results on spans,
+    /// scrubbed of every known secret.
+    pub content: bool,
+    pub service_name: Option<String>,
+}
+
+impl TelemetryConfig {
+    /// Where spans are POSTed, `None` when export is off.
+    pub fn traces_url(&self) -> Result<Option<String>> {
+        let Some(raw) = self
+            .endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+        else {
+            return Ok(None);
+        };
+        let mut url =
+            url::Url::parse(raw).map_err(|e| anyhow!("[telemetry] endpoint = \"{raw}\": {e}"))?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            bail!("[telemetry] endpoint = \"{raw}\": an http(s) URL is needed (OTLP/HTTP)");
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            bail!(
+                "[telemetry] endpoint: no credentials in the URL; send them as a header \
+                 naming a [secrets] variable (docs/otel.md)"
+            );
+        }
+        if !url.path().ends_with("/v1/traces") {
+            let path = format!("{}/v1/traces", url.path().trim_end_matches('/'));
+            url.set_path(&path);
+        }
+        Ok(Some(url.to_string()))
+    }
+
+    /// The host the collector is on, for binding header secrets to.
+    pub fn host(&self) -> Option<String> {
+        let url = url::Url::parse(&self.traces_url().ok()??).ok()?;
+        url.host_str()
+            .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
+    }
+
+    /// The `${VAR}`s the headers use.
+    pub fn header_vars(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for value in self.headers.values() {
+            let mut rest = value.as_str();
+            while let Some(start) = rest.find("${") {
+                let after = &rest[start + 2..];
+                let Some(end) = after.find('}') else { break };
+                out.push(after[..end].to_string());
+                rest = &after[end + 1..];
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Refuses a header that holds a key rather than naming one.
+    pub fn check_headers(&self) -> Result<()> {
+        for (name, value) in &self.headers {
+            let literal = strip_vars(value);
+            let secret_name =
+                ferrule_sandbox::looks_secret(name) || name.eq_ignore_ascii_case("authorization");
+            let literal_key = literal
+                .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+                .any(looks_like_key);
+            if literal_key || (secret_name && !value.contains("${") && !value.trim().is_empty()) {
+                bail!(
+                    "[telemetry] headers.{name} holds a key: put it in the environment, add the \
+                     variable to [secrets], and write `${{VAR}}` here instead (docs/otel.md)"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `value` with each `${VAR}` taken out.
+fn strip_vars(value: &str) -> String {
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find('}') {
+            Some(end) => rest = &rest[start + end + 1..],
+            None => {
+                rest = "";
+            }
+        }
+        out.push(' ');
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether a word is shaped like an API key: a known prefix, or 20+ token
+/// characters mixing letters and digits.
+fn looks_like_key(word: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "sk-",
+        "sk_",
+        "pk_",
+        "rk_",
+        "xox",
+        "xapp-",
+        "ghp_",
+        "gho_",
+        "ghs_",
+        "github_pat_",
+        "glpat-",
+        "AKIA",
+        "AIza",
+        "hf_",
+    ];
+    let word = word.trim_matches(|c| c == '"' || c == '\'');
+    if word.len() >= 12 && PREFIXES.iter().any(|p| word.starts_with(p)) {
+        return true;
+    }
+    word.len() >= 20
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.+/=".contains(c))
+        && word.chars().any(|c| c.is_ascii_digit())
+        && word.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 /// `[egress]` (docs/egress.md).
@@ -1151,6 +1293,14 @@ profile = "openai"
 # price_input_per_mtok = 0.02  # every request is a ledger row
 # max_requests_per_minute = 60  # `ferrule memory reindex`'s pace
 
+# [telemetry]               # OpenTelemetry traces of the agent's work over OTLP/HTTP
+# endpoint = "http://127.0.0.1:4318"  # (docs/otel.md). Off until set; /v1/traces
+#                            # is appended. Sessions, turns, model and tool calls.
+# headers = { "x-honeycomb-team" = "${HONEYCOMB_API_KEY}" }  # name a variable, never
+#                            # a key; a secret-looking one is bound to the endpoint.
+# content = false            # true: prompts, replies and tool I/O too, scrubbed.
+# service_name = "ferrule"
+
 # [extensions]              # Self-extension: the agent installs MCP servers and
 # enabled = false            # skills mid-run (mcp_add, skill_install, skill_keep…).
 # allow = []                 # Installable without asking, exact pins only, e.g.
@@ -1312,6 +1462,21 @@ impl Config {
                     .entry(var)
                     .or_insert_with(|| SecretSpec::Hosts(vec![e.host]));
             }
+        }
+        if let Some(url) = self.telemetry.traces_url()? {
+            self.telemetry.check_headers()?;
+            // A secret-looking header variable is bound to the collector,
+            // so the export carries its placeholder and the proxy swaps it.
+            if let Some(host) = self.telemetry.host() {
+                for var in self.telemetry.header_vars() {
+                    if ferrule_sandbox::looks_secret(&var) {
+                        self.secrets
+                            .entry(var)
+                            .or_insert_with(|| SecretSpec::Hosts(vec![host.clone()]));
+                    }
+                }
+            }
+            tracing::debug!("telemetry: exporting to {url}");
         }
         if let Some(settings) = self.web_search.settings()? {
             if let (Some(var), Some(host)) = (
@@ -1594,5 +1759,83 @@ mod tests {
         );
         let cfg: Config = toml::from_str("[secrets]\nT = { hosts = [\"x.com\"] }").unwrap();
         assert!(!ferrule_proxy::SecretRule::from(&cfg.secrets["T"]).in_url);
+    }
+
+    #[test]
+    fn example_telemetry_block_parses_uncommented_and_binds_its_header_key() {
+        let start = EXAMPLE_CONFIG.find("# [telemetry]").unwrap();
+        let end = start + EXAMPLE_CONFIG[start..].find("\n\n").unwrap();
+        let uncommented: String = EXAMPLE_CONFIG[start..end]
+            .lines()
+            .map(|l| format!("{}\n", l.strip_prefix("# ").unwrap_or(l)))
+            .collect();
+        let cfg: Config = toml::from_str(&uncommented).unwrap();
+        let cfg = cfg.finish().unwrap();
+        assert_eq!(
+            cfg.telemetry.traces_url().unwrap().as_deref(),
+            Some("http://127.0.0.1:4318/v1/traces")
+        );
+        let rule = ferrule_proxy::SecretRule::from(&cfg.secrets["HONEYCOMB_API_KEY"]);
+        assert_eq!(rule.hosts, ["127.0.0.1"]);
+        assert!(crate::egress::endpoints(&cfg).contains(&("127.0.0.1".into(), 4318)));
+    }
+
+    #[test]
+    fn telemetry_is_off_by_default_and_its_url_is_checked() {
+        let t = |toml: &str| toml::from_str::<Config>(toml).unwrap().telemetry;
+        assert_eq!(t("").traces_url().unwrap(), None);
+        assert_eq!(
+            t("[telemetry]\nendpoint = \"https://otel.example.com/v1/traces\"")
+                .traces_url()
+                .unwrap()
+                .as_deref(),
+            Some("https://otel.example.com/v1/traces")
+        );
+        assert_eq!(
+            t("[telemetry]\nendpoint = \"https://api.example.com/otlp/\"")
+                .traces_url()
+                .unwrap()
+                .as_deref(),
+            Some("https://api.example.com/otlp/v1/traces")
+        );
+        for bad in [
+            "grpc://h:4317",
+            "https://user:pw@h.example.com",
+            "not a url",
+        ] {
+            let e = t(&format!("[telemetry]\nendpoint = \"{bad}\"")).traces_url();
+            assert!(e.is_err(), "{bad}");
+        }
+        assert!(toml::from_str::<Config>("[telemetry]\nendpont = \"x\"").is_err());
+    }
+
+    #[test]
+    fn a_telemetry_header_holding_a_key_is_refused() {
+        let load = |headers: &str| {
+            toml::from_str::<Config>(&format!(
+                "[telemetry]\nendpoint = \"https://api.honeycomb.io\"\nheaders = {{ {headers} }}"
+            ))
+            .unwrap()
+            .finish()
+        };
+        for raw in [
+            r#"authorization = "Bearer abc""#,
+            r#"x-honeycomb-team = "hcaik_01j9zq8x7c6v5b4n3m2l1k0j9h8g""#,
+            r#"x-custom = "sk-ant-api03-abcdefghijklmnop""#,
+            r#"x-api-key = "plain""#,
+        ] {
+            let e = load(raw).unwrap_err().to_string();
+            assert!(e.contains("[secrets]"), "{raw}: {e}");
+        }
+        for fine in [
+            r#"authorization = "Bearer ${OTEL_TOKEN}""#,
+            r#"x-scope-orgid = "tenant-1""#,
+            r#"x-honeycomb-dataset = "ferrule""#,
+        ] {
+            assert!(load(fine).is_ok(), "{fine}");
+        }
+        let cfg = load(r#"authorization = "Bearer ${OTEL_TOKEN}""#).unwrap();
+        let rule = ferrule_proxy::SecretRule::from(&cfg.secrets["OTEL_TOKEN"]);
+        assert_eq!(rule.hosts, ["api.honeycomb.io"]);
     }
 }

@@ -37,6 +37,9 @@ pub fn endpoints(cfg: &Config) -> Vec<(String, u16)> {
     if let Ok(Some(s)) = cfg.web_search.settings() {
         urls.push(s.endpoint);
     }
+    if let Ok(Some(t)) = cfg.telemetry.traces_url() {
+        urls.push(t);
+    }
     let mut out: Vec<(String, u16)> = urls.iter().filter_map(|u| host_port(u)).collect();
     out.sort();
     out.dedup();

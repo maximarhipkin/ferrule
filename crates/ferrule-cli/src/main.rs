@@ -28,6 +28,7 @@ mod settings_admin;
 mod settings_door;
 mod setup;
 mod tasks_admin;
+mod telemetry;
 mod trust;
 mod web_search;
 
@@ -508,7 +509,7 @@ fn main() -> Result<()> {
     // build, so the runtime runs on a thread with Linux's 8 MiB everywhere.
     // Its workers too: they poll the gateway's turns, and on Windows those
     // outgrew tokio's 2 MiB once the Discord and Slack channels came in (M31).
-    std::thread::Builder::new()
+    let done = std::thread::Builder::new()
         .name("ferrule-main".into())
         .stack_size(8 << 20)
         .spawn(move || {
@@ -519,7 +520,10 @@ fn main() -> Result<()> {
                 .block_on(dispatch(cli.cmd))
         })?
         .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    // The last spans of a chat, a gateway or a task run (M33).
+    telemetry::shutdown();
+    done
 }
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
@@ -1596,6 +1600,8 @@ pub(crate) async fn run_root(
 /// Prints a root run's answer, and exits 2 when it stopped short, 1 when
 /// it failed.
 pub(crate) fn finish_run(answer: Result<RootRun, String>) -> Result<()> {
+    // `process::exit` below skips main's own flush.
+    telemetry::shutdown();
     match answer {
         Ok(run) => {
             match &run.incomplete {
@@ -2310,6 +2316,7 @@ async fn tasks_run_now(
         }
         Err(e) => {
             eprintln!("run failed: {e}");
+            telemetry::shutdown();
             std::process::exit(1);
         }
     }

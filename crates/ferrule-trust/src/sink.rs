@@ -2,7 +2,7 @@
 //! charges it to the hub on the way to the real sink.
 
 use crate::hub::Hub;
-use ferrule_core::{LedgerRecord, LedgerSink};
+use ferrule_core::{LedgerRecord, LedgerSink, TraceEvent, TraceLevel};
 use std::sync::Arc;
 
 /// A row's price in dollars, when its provider has prices.
@@ -43,5 +43,14 @@ impl LedgerSink for TrustSink {
         }
         self.hub.charge(&self.tree, &record);
         self.inner.record(record);
+    }
+
+    // Trace events pass straight through to the exporter behind (M33).
+    fn trace_level(&self) -> TraceLevel {
+        self.inner.trace_level()
+    }
+
+    fn trace(&self, event: TraceEvent) {
+        self.inner.trace(event);
     }
 }

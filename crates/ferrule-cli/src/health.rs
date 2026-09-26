@@ -124,6 +124,15 @@ pub fn build(
             Arc::new(move || crate::connections::status_lines(&conns)),
         );
     }
+    if let Ok(Some(url)) = cfg.telemetry.traces_url() {
+        health = health.with_section(
+            "telemetry",
+            Arc::new(move || {
+                vec![crate::telemetry::status_line()
+                    .unwrap_or_else(|| format!("{url} — nothing to export yet"))]
+            }),
+        );
+    }
     let notice = startup_notice(cfg, &health);
     Ok(health
         .with_startup_notice(notice)

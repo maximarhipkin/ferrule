@@ -133,6 +133,7 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     proxy(&mut r, &cfg);
     web_search_check(&mut r, &cfg, &http, offline).await;
     memory_check(&mut r, &cfg);
+    telemetry_check(&mut r, &cfg);
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
     trust_check(&mut r, &cfg, chat_on);
@@ -1087,6 +1088,47 @@ fn egress_check(r: &mut Report, cfg: &config::Config) {
             ),
         );
         r.hint("`ferrule trust audit --since 24h` lists each; docs/egress.md says how to open one");
+    }
+}
+
+/// M33: where spans go, and what the last exporter (a gateway, a chat, a
+/// run) said about them. Nothing is sent.
+fn telemetry_check(r: &mut Report, cfg: &config::Config) {
+    // `Config::load` already refused a `[telemetry]` that doesn't validate.
+    let Ok(Some(url)) = cfg.telemetry.traces_url() else {
+        return;
+    };
+    let content = if cfg.telemetry.content {
+        "with content (scrubbed)"
+    } else {
+        "spans only, no content"
+    };
+    r.ok("telemetry", format!("OTLP/HTTP to {url}, {content}"));
+    let status = crate::telemetry::status_path()
+        .ok()
+        .and_then(|p| ferrule_otel::read_status(&p));
+    let Some(s) = status.filter(|s| s.endpoint == url) else {
+        r.note("telemetry", "nothing exported to it yet");
+        return;
+    };
+    let line = format!(
+        "last exporter (pid {}, {}): {}",
+        s.pid,
+        s.updated,
+        crate::telemetry::describe(&s)
+    );
+    if s.exported == 0 && s.failed > 0 {
+        r.warn("telemetry", line);
+        r.hint("is the collector up, and reachable under [egress]? docs/otel.md");
+    } else if s.dropped > 0 || s.failed > 0 {
+        r.warn("telemetry", line);
+        if s.dropped > 0 {
+            r.hint(
+                "dropped spans: the queue was full (a slow collector, or a burst); docs/otel.md",
+            );
+        }
+    } else {
+        r.ok("telemetry", line);
     }
 }
 

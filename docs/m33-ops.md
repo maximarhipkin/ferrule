@@ -474,9 +474,11 @@ workspace already has:
 
 The ledger is where every model call is already described. `trust::equip` is
 the single place every agent's sink (root, chat, gateway lane, scheduler,
-sub-agent) is wrapped. `ferrule-otel::OtelSink` wraps the `TrustSink`
-there, so each row it sees already carries `tree` and `cost_usd`. Rows pass
-through to the inner sink unchanged.
+sub-agent) is wrapped. `ferrule-otel::OtelSink` goes there *inside* the
+`TrustSink`, between it and the file sink: `TrustSink(OtelSink(file))`.
+`TrustSink` stamps `tree` and `cost_usd` on a row before handing it on, so
+each row the OTel sink sees already carries both. Rows pass through to the
+inner sink unchanged.
 
 A ledger row can't describe the two things spans need beyond model calls:
 turn boundaries and individual tool calls. Its `tool_batch` is only an
@@ -502,8 +504,9 @@ fn trace(&self, event: TraceEvent) {}
 - `TurnFinished { session_id, at, ok, incomplete: Option<String> }` at the
   end of `run`, whatever the outcome.
 
-`TrustSink` forwards both methods to its inner sink. It sits *inside*
-`OtelSink`, so in practice it forwards to the file sink's no-ops.
+`TrustSink` forwards both methods to its inner sink, which is the
+`OtelSink` when export is on. `OtelSink` answers the higher of its own level
+and its inner sink's.
 
 ### 2.3 The span tree
 
@@ -524,8 +527,8 @@ ferrule.session <session>              trace = one per root tree (random id)
     `chat` too, with `ferrule.call_kind`);
   - `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`;
   - `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`;
-  - `gen_ai.usage.cached_input_tokens` (`ferrule.` custom until semconv has
-    it);
+  - `ferrule.usage.cached_input_tokens` and
+    `ferrule.usage.cache_write_input_tokens` (custom until semconv has them);
   - `gen_ai.conversation.id = session_id`.
 - **Custom attributes:** `ferrule.cost_usd`, `ferrule.iteration`,
   `ferrule.tool_calls`, `ferrule.route.tier`, `ferrule.first_token_ms`.
@@ -535,7 +538,8 @@ ferrule.session <session>              trace = one per root tree (random id)
 
 **Tool spans:** `gen_ai.tool.name`, `gen_ai.tool.call.id`, and
 `gen_ai.tool.type`, which is `function` for built-ins, `extension` for MCP
-and plugin tools, and `agent` for `spawn_agent`/`send_agent`. A failed call
+and plugin tools (any name with `__`), and `agent` for `spawn_agent`,
+`wait_agent`, `resume_agent`, `close_agent` and `list_agents`. A failed call
 gets status `ERROR`.
 
 **Turn span:** `ferrule.task_shape`, `ferrule.origin`, and summed
@@ -594,20 +598,23 @@ service_name = "ferrule"
 
 ### 2.5 Batching, backpressure, shutdown
 
-- **Handing off:** `OtelSink::record`/`trace` build the span on the calling
-  thread (cheap: a few string clones) and `try_send` it into a bounded
-  `std::sync::mpsc::sync_channel(2048)`. **When it's full, the span is
-  dropped** and `dropped` is incremented. The agent loop never waits on the
-  exporter.
+- **Handing off:** `OtelSink::record`/`trace` only clone the row or event
+  and `try_send` it into a bounded `std::sync::mpsc::sync_channel(2048)`.
+  Spans are built on the export thread (`trace::Tracer`), so the turn/session
+  bookkeeping needs no lock on the agent's side. **When the queue is full,
+  the message is dropped** and `dropped` is incremented. The agent loop
+  never waits on the exporter.
 - **The export thread** has its own current-thread tokio runtime, so it
   never shares the agent's runtime. It batches up to 512 spans or 2 s,
   whichever comes first, and POSTs `application/json` with a 10 s timeout.
   - A failed POST (connection refused, 5xx, timeout) drops that batch and
-    increments `failed_batches`/`failed_spans`.
+    adds its spans to `failed`. So does a full batch that arrives while the
+    thread is backing off.
   - There is no retry queue: a dead collector must cost bounded memory.
   - The thread backs off, doubling up to 30 s, while the collector stays
     down, so a dead endpoint isn't hammered.
-- **Counters:** `exported`, `dropped`, `failed_spans`, `last_error`. They
+- **Counters:** `exported`, `dropped`, `failed` (spans), `last_error`,
+  `last_ok`. Error text never carries the URL. They
   appear:
   - in `/status` (a health section, gateway);
   - in `ferrule doctor`, from `<data>/telemetry/status.json`, which the
@@ -615,7 +622,8 @@ service_name = "ferrule"
   - in the debug log.
 - **Shutdown:**
   - `Exporter::shutdown(deadline)` closes the open turns and sessions
-    (status `UNSET`, `ferrule.closed_at_shutdown = true`), flushes the queue
+    (status `UNSET`, `ferrule.closed = "shutdown"`; `"evicted"` and
+    `"superseded"` mark the other early closes), flushes the queue
     and waits for the thread up to the deadline (3 s).
   - It's called before `finish_run`'s `process::exit`, after chat's loop,
     and after the gateway's select.

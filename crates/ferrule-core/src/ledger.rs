@@ -10,6 +10,7 @@
 //! whole point, see `docs/research-routing-and-local-models.md` Phase 0.
 
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -167,6 +168,71 @@ impl LedgerRecord {
 /// log it and drop the row instead.
 pub trait LedgerSink: Send + Sync {
     fn record(&self, record: LedgerRecord);
+
+    /// How much of the loop's work beyond ledger rows this sink wants as
+    /// [`TraceEvent`]s (M33, OTel export). Asked once per run; the loop
+    /// builds no events for a sink that says `Off`.
+    fn trace_level(&self) -> TraceLevel {
+        TraceLevel::Off
+    }
+
+    /// One turn boundary, tool call or reply (see [`TraceEvent`]). Must not
+    /// block.
+    fn trace(&self, _event: TraceEvent) {}
+}
+
+/// What a [`LedgerSink`] wants besides rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum TraceLevel {
+    #[default]
+    Off,
+    /// Turn boundaries and tool calls: names, timings, outcomes.
+    Spans,
+    /// The same plus what was said: the goal, replies, tool arguments and
+    /// results (the sink scrubs them).
+    Content,
+}
+
+/// What a ledger row can't say: where turns start and end, and each tool
+/// call. The `Option` fields are set only at [`TraceLevel::Content`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum TraceEvent {
+    TurnStarted {
+        session_id: String,
+        task_shape: String,
+        origin: Option<String>,
+        at: SystemTime,
+        goal: Option<String>,
+    },
+    ToolCall {
+        session_id: String,
+        id: String,
+        name: String,
+        ok: bool,
+        started: SystemTime,
+        elapsed: Duration,
+        arguments: Option<String>,
+        result: Option<String>,
+    },
+    /// The model's reply on the call whose row comes next.
+    CallContent { session_id: String, text: String },
+    TurnFinished {
+        session_id: String,
+        at: SystemTime,
+        ok: bool,
+        incomplete: Option<String>,
+    },
+}
+
+impl TraceEvent {
+    pub fn session_id(&self) -> &str {
+        match self {
+            Self::TurnStarted { session_id, .. }
+            | Self::ToolCall { session_id, .. }
+            | Self::CallContent { session_id, .. }
+            | Self::TurnFinished { session_id, .. } => session_id,
+        }
+    }
 }
 
 /// Static per-session context `Agent` carries so every ledger row it emits

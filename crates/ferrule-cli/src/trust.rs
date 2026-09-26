@@ -233,6 +233,11 @@ pub fn equip(
     let prices = crate::models::prices(cfg);
     let price: ferrule_trust::Pricer =
         Arc::new(move |r: &LedgerRecord| prices(&r.provider, &r.model).map(|p| p.cost_usd(r)));
+    // Inside the trust sink, so the exporter sees rows stamped and priced.
+    let inner = match crate::telemetry::exporter(cfg) {
+        Some(exporter) => exporter.sink(inner, tree) as Arc<dyn LedgerSink>,
+        None => inner,
+    };
     let sink = Arc::new(TrustSink::new(inner, hub.clone(), tree, Some(price)));
     let root = TrustGuard::root(hub, tree, route_for(tree)).planning(is_planning(tree));
     let guard = if child { root.child() } else { root };
