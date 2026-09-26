@@ -69,6 +69,13 @@ impl StreamingReply {
         progress: impl Fn() + Send + 'static,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
+        let mut pacing = pacing;
+        if let Some(limit) = channel.message_limit() {
+            pacing.limit = pacing.limit.min(limit);
+        }
+        if let Some(every) = channel.stream_every() {
+            pacing.every = pacing.every.max(every);
+        }
         let editor = Editor {
             channel,
             base,

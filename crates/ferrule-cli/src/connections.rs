@@ -1,5 +1,5 @@
 //! M20 connections in the binary: the one `Connections` service per
-//! process, how it reaches the owner (Telegram buttons, else the terminal),
+//! process, how it reaches the owner (chat buttons, else the terminal),
 //! the servers it adds next to the config's, `/connect` and friends in the
 //! gateway, the `/status` section, and `ferrule connections …`. The design
 //! is `docs/m20-connections.md`.
@@ -10,7 +10,9 @@ use clap::Subcommand;
 use ferrule_connections::{relay, Action, Actor, Button, Chat, Connections, Events, State};
 use ferrule_gateway::{Channel, InboundMessage, OutboundMessage, Router};
 use ferrule_mcp::McpServerConfig;
+use ferrule_trust::ChatRef;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 static SHARED: OnceLock<Option<Arc<Connections>>> = OnceLock::new();
@@ -22,8 +24,9 @@ static GATEWAY: Mutex<Option<Door>> = Mutex::new(None);
 
 /// Where the gateway can reach the owner and the agent.
 struct Door {
-    telegram: Option<Arc<dyn Channel>>,
-    owner: Option<i64>,
+    channels: HashMap<String, Arc<dyn Channel>>,
+    /// The owner's chats, the primary first.
+    owners: Vec<ChatRef>,
     router: Weak<Router>,
 }
 
@@ -74,10 +77,14 @@ fn set_gate(cfg: &config::Config, conns: &Connections) {
 }
 
 /// The gateway's way to the owner and back into a chat.
-pub fn attach(cfg: &config::Config, telegram: Option<Arc<dyn Channel>>, router: &Arc<Router>) {
+pub fn attach(
+    cfg: &config::Config,
+    channels: HashMap<String, Arc<dyn Channel>>,
+    router: &Arc<Router>,
+) {
     *GATEWAY.lock().unwrap() = Some(Door {
-        telegram,
-        owner: trust::owner_chat(cfg),
+        channels,
+        owners: trust::owners(cfg),
         router: Arc::downgrade(router),
     });
 }
@@ -195,21 +202,25 @@ struct GatewayEvents;
 #[async_trait::async_trait]
 impl Events for GatewayEvents {
     async fn tell_owner(&self, text: &str, buttons: Vec<Button>) {
+        // The primary owner chat whose channel is running.
         let route = {
             let door = GATEWAY.lock().unwrap();
-            door.as_ref()
-                .and_then(|d| Some((d.telegram.clone()?, d.owner?)))
+            door.as_ref().and_then(|d| {
+                d.owners
+                    .iter()
+                    .find_map(|o| Some((d.channels.get(&o.channel)?.clone(), o.chat.clone())))
+            })
         };
-        if let Some((telegram, owner)) = route {
+        if let Some((channel, owner)) = route {
             let msg = OutboundMessage {
-                channel: telegram.name().to_string(),
-                chat_id: owner.to_string(),
+                channel: channel.name().to_string(),
+                chat_id: owner,
                 text: text.to_string(),
                 reply_to: None,
                 attachments: vec![],
             };
             let out: Vec<_> = buttons.iter().cloned().map(gateway_button).collect();
-            if ferrule_gateway::send_with_buttons(telegram.as_ref(), msg, &out)
+            if ferrule_gateway::send_with_buttons(channel.as_ref(), msg, &out)
                 .await
                 .is_ok()
             {
@@ -251,9 +262,10 @@ impl Events for GatewayEvents {
 }
 
 /// `/connect`, `/connections`, `/disconnect`, `/decline` and pasted
-/// redirects, before any chat turn. Only the owner's Telegram chat (or the
-/// gateway's own console) manages connections; a button tap is no more
-/// trusted than typing its command.
+/// redirects, before any chat turn. Only the owner's chat on a channel (or
+/// the gateway's own console) manages connections; a button tap is no more
+/// trusted than typing its command. `owner` is Telegram's; Discord's and
+/// Slack's come from the trust hub.
 pub struct ConnectionsDoor {
     pub conns: Arc<Connections>,
     pub owner: Option<i64>,
@@ -271,6 +283,14 @@ impl ConnectionsDoor {
             }
             // The gateway's stdin: someone at the server itself.
             "local" => Actor::Terminal,
+            "discord" | "slack"
+                if trust::existing_hub().is_some_and(|h| {
+                    h.owner_on(&msg.channel)
+                        .is_some_and(|o| o.chat == msg.chat_id)
+                }) =>
+            {
+                Actor::Owner(chat)
+            }
             _ => Actor::Other(chat),
         }
     }

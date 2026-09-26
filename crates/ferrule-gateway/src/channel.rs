@@ -61,8 +61,8 @@ pub async fn send_with_buttons(
     channel.send(msg).await
 }
 
-/// A messaging surface: Telegram, a local stdin/loopback adapter, eventually
-/// WhatsApp/Discord/Slack. Implementations must be cheap to clone via `Arc`
+/// A messaging surface: Telegram, Discord, Slack, a local stdin/loopback
+/// adapter. Implementations must be cheap to clone via `Arc`
 /// (the gateway shares one instance across every session that uses it).
 #[async_trait::async_trait]
 pub trait Channel: Send + Sync {
@@ -131,6 +131,19 @@ pub trait Channel: Send + Sync {
     /// words (M19c: Telegram's 409 Conflict), for `/status`. `None` when
     /// nothing is known to be wrong.
     fn problem(&self) -> Option<String> {
+        None
+    }
+
+    /// The most one message may hold, in UTF-16 units, when the channel's
+    /// cap is below the streamed reply's own (M31: Discord's 2000). `None`:
+    /// the default [`crate::StreamPacing`] limit.
+    fn message_limit(&self) -> Option<usize> {
+        None
+    }
+
+    /// The shortest gap between a streamed reply's edits, when the channel
+    /// needs more than the default second (M31: Slack's `chat.update` tier).
+    fn stream_every(&self) -> Option<std::time::Duration> {
         None
     }
 

@@ -582,6 +582,27 @@ that convention yet — ask before introducing one).
       `embedder = "off"`: turning it on is an opt-in download or a paid
       endpoint.
     - **Decisions for Max and open edges:** see the M30 session-log entry.
+  - **M31 Discord and Slack**: **built** (2026-09-26, branch
+    `m31-discord-slack`, PR to main open, not merged). Design in
+    `docs/m31-channels.md`; user guides `docs/discord.md` and
+    `docs/slack.md`.
+    - Two new adapters behind the `Channel` trait, both outbound
+      WebSockets (no public URL): Discord's Gateway v10 (heartbeat, resume,
+      close codes, per-route REST buckets) and Slack Socket Mode (ack
+      first, `event_id` de-dup, `disconnect`, Markdown → mrkdwn).
+    - Allowlists per channel (DMs by user, shared channels by mention
+      only), strangers never reach the model; pairing by a six-digit code
+      in `ferrule setup` only.
+    - The owner generalized to `ChatRef` (`[trust] discord_owner`,
+      `slack_owner`, `owner_channel`); Telegram's owner and strings stay
+      as they were. Approvals get Allow/Refuse buttons on Discord/Slack.
+    - One daemon runs every channel; a dead socket or a rejected token
+      shows in `/status`, `ferrule status`, the heartbeat, the watchdog,
+      the dashboard's problems and `ferrule doctor` (reads only), and
+      stops that channel alone.
+    - `ferrule setup` gets Discord and Slack steps (token check, slash
+      commands, invite URL, pairing). Text only.
+    - **Decisions for Max and open edges:** see the M31 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -4061,3 +4082,40 @@ Windows until this PR's CI run.
 embedding request (rows still count afterwards); the CLI reindex/search
 rows bypass `trust::equip`'s sink; cross-lingual recall is 3 in 10 at r@5;
 brute-force cosine past ~50k rows.
+
+### 2026-09-26 — M31 Discord and Slack (Devi, Opus 5.5)
+
+**Scope.** Built `docs/m31-channels.md` on branch `m31-discord-slack` in
+six commits: the design, core seams (`ChatRef` owners, `Channel` additions,
+the shared access/pairing rules), the Discord adapter, the Slack adapter,
+the CLI wiring (config, setup, doctor, status, dashboard, trust), and the
+docs with doctor's Slack scope check. User guides: `docs/discord.md`,
+`docs/slack.md`. Hermetic tests run a mock Discord Gateway + REST, a mock
+Slack Socket Mode + Web API, and one daemon answering Telegram, Discord and
+Slack at once, with a dead Discord socket beside two live channels.
+
+**Decisions for Max:**
+- Shared channels are mention-only even when allow-listed; Slack answers
+  in a thread, Discord as a reply.
+- The daemon never registers Discord slash commands (a mutating call);
+  setup does. Slack has one `/ferrule <command>`.
+- The pairing code is six digits and exists only while setup waits
+  (two minutes).
+- The dashboard shows a dead channel through its problems list and a
+  `problem` field in the API; `app.js` wasn't touched, so there's no new
+  table column.
+- Setup's Discord and Slack questions default to "no" in the guided path.
+- Telegram keeps text approvals and its strings; its only visible
+  addition is `/undo` in the command list.
+
+**Unverified:** no real Discord bot or Slack app has been connected (the
+live tests are `#[ignore]`d; commands in the guides); the Slack manifest
+hasn't been pasted into a real workspace.
+
+**Eval.** `eval run evals/starter --variant ab` against the mock model:
+engineered 20/20, naive 11/20, $0.98, same verdict on every task as the
+last run.
+
+**Open edges:** Telegram approval buttons; a channel column in the
+dashboard page; WhatsApp (the options are in the design, §9); files and
+voice on Discord/Slack.

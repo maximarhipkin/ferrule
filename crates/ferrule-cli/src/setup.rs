@@ -1,11 +1,13 @@
 //! `ferrule setup`: the interactive installer. The first run walks through
-//! a model provider and its key, Telegram, tool credentials, web search, the sandbox,
+//! a model provider and its key, Telegram, Discord, Slack, tool credentials, web search, the sandbox,
 //! the browser and the background service; later runs open a menu to change any one
 //! part. Answers are checked live where they can be (the key opens the
 //! model list, the bot token answers `getMe`) and saved the moment they're
 //! confirmed, so Ctrl-C never loses what's done. Keys go to the private
 //! secrets file, never into the config, and config edits keep the file's
 //! comments and layout.
+
+mod channels;
 
 use crate::{browser, config, probe, secrets, service};
 use anyhow::{anyhow, bail, Context, Result};
@@ -80,6 +82,14 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(telegram_step(t, http, true).await)?.quit() {
         return Ok(false);
     }
+    heading("Discord");
+    if settle(channels::discord_step(t, true).await)?.quit() {
+        return Ok(false);
+    }
+    heading("Slack");
+    if settle(channels::slack_step(t, true).await)?.quit() {
+        return Ok(false);
+    }
     heading("Tool credentials");
     if settle(credentials_step(t, http, true).await)?.quit() {
         return Ok(false);
@@ -104,7 +114,11 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(crate::mcp_add::setup_step(t, true).await)?.quit() {
         return Ok(false);
     }
-    if t.config()?.gateway.telegram_token_env.is_some() {
+    let gw = t.config()?.gateway;
+    if gw.telegram_token_env.is_some()
+        || gw.discord_token_env.is_some()
+        || gw.slack_bot_token_env.is_some()
+    {
         heading("Background service");
         if settle(service_step(t, true))?.quit() {
             return Ok(false);
@@ -121,6 +135,8 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
         let items = vec![
             format!("Model provider       {}", provider_summary(&cfg)),
             format!("Telegram             {}", telegram_summary(&cfg)),
+            format!("Discord              {}", channels::discord_summary(&cfg)),
+            format!("Slack                {}", channels::slack_summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Web search           {}", web_search_summary(&cfg)),
             format!("Memory recall        {}", memory_summary(&cfg)),
@@ -143,13 +159,15 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
         let result = match pick {
             0 => provider_step(t, http, false).await,
             1 => telegram_step(t, http, false).await,
-            2 => credentials_step(t, http, false).await,
-            3 => web_search_step(t, false),
-            4 => memory_step(t, false).await,
-            5 => sandbox_step(t, false),
-            6 => browser_step(t),
-            7 => crate::mcp_add::setup_step(t, false).await,
-            8 => service_step(t, false),
+            2 => channels::discord_step(t, false).await,
+            3 => channels::slack_step(t, false).await,
+            4 => credentials_step(t, http, false).await,
+            5 => web_search_step(t, false),
+            6 => memory_step(t, false).await,
+            7 => sandbox_step(t, false),
+            8 => browser_step(t),
+            9 => crate::mcp_add::setup_step(t, false).await,
+            10 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -352,6 +370,9 @@ impl Target {
         let cfg = self.config()?;
         let used = cfg.providers.values().any(|p| p.api_key_env == name)
             || cfg.gateway.telegram_token_env.as_deref() == Some(name)
+            || cfg.gateway.discord_token_env.as_deref() == Some(name)
+            || cfg.gateway.slack_bot_token_env.as_deref() == Some(name)
+            || cfg.gateway.slack_app_token_env.as_deref() == Some(name)
             || cfg.secrets.contains_key(name);
         if !used {
             secrets::remove(&secrets::path()?, name)?;

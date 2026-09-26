@@ -20,6 +20,11 @@ The goal: **the owner never has to guess.** Every reason the bot doesn't
 answer is told to the owner in Telegram in plain words, or shown by
 `/status`, `ferrule status` and `ferrule doctor`.
 
+The checklist below is written for Telegram. Discord and Slack (M31) show
+in the same `/status`, `ferrule status` and `ferrule doctor`, with their
+own checks: see [discord.md](discord.md#health) and
+[slack.md](slack.md#health).
+
 ## The bot doesn't answer: a checklist
 
 Check these in order. Each step shows more than the one before.

@@ -7,7 +7,7 @@ use crate::ledger::{self, LedgerTag};
 use anyhow::{anyhow, Result};
 use ferrule_core::{LedgerRecord, LedgerSink, Transcript};
 use ferrule_proxy::HostPattern;
-use ferrule_trust::{Hub, Prompter, Route, SystemClock, TrustGuard, TrustSink};
+use ferrule_trust::{ChatRef, Hub, Prompter, Route, SystemClock, TrustGuard, TrustSink};
 use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal as _, Write as _};
 use std::sync::{Arc, Mutex};
@@ -34,7 +34,7 @@ pub fn hub(cfg: &Config) -> Result<Arc<Hub>> {
         )
         .map_err(|e| anyhow!(e))?,
     );
-    hub.set_owner(owner_chat(cfg));
+    hub.set_owners(owners(cfg));
     *slot = Some(hub.clone());
     Ok(hub)
 }
@@ -49,13 +49,13 @@ pub fn bound_hosts(cfg: &Config) -> Vec<HostPattern> {
         .collect()
 }
 
-/// `[trust] owner_chat`, else the first private chat (a positive id) the
-/// gateway allows.
 /// The hub, if something in this process made it already.
 pub fn existing_hub() -> Option<Arc<Hub>> {
     HUB.lock().unwrap().clone()
 }
 
+/// `[trust] owner_chat`, else the first private chat (a positive id) the
+/// gateway allows.
 pub fn owner_chat(cfg: &Config) -> Option<i64> {
     cfg.trust.owner_chat.or_else(|| {
         cfg.gateway
@@ -64,6 +64,55 @@ pub fn owner_chat(cfg: &Config) -> Option<i64> {
             .copied()
             .find(|c| *c > 0)
     })
+}
+
+/// The owner's chat on every channel that has one (M31), the primary
+/// first: `[trust] owner_channel`, else Telegram, Discord, Slack. Telegram's
+/// is `owner_chat` as before; Discord's and Slack's are `[trust]
+/// discord_owner`/`slack_owner`, else the first allowed user, when the
+/// channel is configured.
+pub fn owners(cfg: &Config) -> Vec<ChatRef> {
+    let g = &cfg.gateway;
+    let mut out: Vec<ChatRef> = owner_chat(cfg).map(ChatRef::from).into_iter().collect();
+    if g.discord_token_env.is_some() {
+        let who = cfg
+            .trust
+            .discord_owner
+            .clone()
+            .or_else(|| g.discord_allowed_users.first().cloned());
+        out.extend(who.map(|u| ChatRef::new("discord", u)));
+    }
+    if g.slack_bot_token_env.is_some() {
+        let who = cfg
+            .trust
+            .slack_owner
+            .clone()
+            .or_else(|| g.slack_allowed_users.first().cloned());
+        out.extend(who.map(|u| ChatRef::new("slack", u)));
+    }
+    if let Some(first) = &cfg.trust.owner_channel {
+        if let Some(i) = out.iter().position(|c| &c.channel == first) {
+            let c = out.remove(i);
+            out.insert(0, c);
+        }
+    }
+    out
+}
+
+/// Whether `msg` is the owner's: `Some(true)` in an owner's own chat,
+/// `Some(false)` when an owner writes in a shared chat, `None` otherwise
+/// (and on anything that isn't a chat channel).
+pub fn owner_in(hub: &Hub, msg: &ferrule_gateway::InboundMessage) -> Option<bool> {
+    let owner = hub.owner_on(&msg.channel)?;
+    if owner.chat == msg.chat_id {
+        return Some(true);
+    }
+    (msg.sender_id.as_deref() == Some(owner.chat.as_str())).then_some(false)
+}
+
+/// The channels whose chats the owner's commands are read in.
+pub fn is_chat_channel(channel: &str) -> bool {
+    ferrule_trust::config::OWNER_CHANNELS.contains(&channel)
 }
 
 /// Who answers for `tree` from now on (`ferrule run` and `chat` seat the
@@ -112,6 +161,13 @@ pub fn route_for(tree: &str) -> Route {
         return Route::Owner {
             chat_label: format!("Telegram chat {chat}"),
         };
+    }
+    for (prefix, title) in [("discord__", "Discord"), ("slack__", "Slack")] {
+        if let Some(chat) = tree.strip_prefix(prefix) {
+            return Route::Owner {
+                chat_label: format!("{title} chat {chat}"),
+            };
+        }
     }
     Route::Unattended(format!("session `{tree}` has nobody to ask"))
 }
@@ -196,43 +252,103 @@ impl LedgerSink for NoLedger {
     fn record(&self, _: LedgerRecord) {}
 }
 
-/// Sends the owner's warnings and questions through the gateway's Telegram
-/// channel.
-pub struct ChannelNotifier(pub Arc<dyn ferrule_gateway::Channel>);
+/// Sends the owner's warnings and questions through the gateway's chat
+/// channels, each to its own: a Telegram chat through Telegram, a Discord
+/// one through Discord. Questions get Allow/Refuse buttons on Discord and
+/// Slack; Telegram's stay text, as before M31.
+pub struct ChannelNotifier(pub HashMap<String, Arc<dyn ferrule_gateway::Channel>>);
 
-#[async_trait::async_trait]
-impl ferrule_trust::Notifier for ChannelNotifier {
-    async fn send(&self, chat: i64, text: &str) -> Result<(), String> {
-        self.0
-            .send(ferrule_gateway::OutboundMessage {
-                channel: self.0.name().to_string(),
-                chat_id: chat.to_string(),
-                text: text.to_string(),
-                reply_to: None,
-                attachments: vec![],
-            })
+impl ChannelNotifier {
+    async fn deliver(
+        &self,
+        chat: &ChatRef,
+        text: &str,
+        buttons: &[ferrule_gateway::Button],
+    ) -> Result<(), String> {
+        let Some(channel) = self.0.get(&chat.channel) else {
+            return Err(format!("{} isn't running", chat.channel_title()));
+        };
+        let msg = ferrule_gateway::OutboundMessage {
+            channel: channel.name().to_string(),
+            chat_id: chat.chat.clone(),
+            text: text.to_string(),
+            reply_to: None,
+            attachments: vec![],
+        };
+        ferrule_gateway::send_with_buttons(channel.as_ref(), msg, buttons)
             .await
             .map_err(|e| e.to_string())
     }
 }
 
-/// The owner's commands in Telegram, before any chat turn: `/stop`,
-/// `/resume`, `/plan` and the answers to open approvals. Other channels
-/// pass straight through.
+#[async_trait::async_trait]
+impl ferrule_trust::Notifier for ChannelNotifier {
+    async fn send(&self, chat: i64, text: &str) -> Result<(), String> {
+        self.deliver(&ChatRef::from(chat), text, &[]).await
+    }
+
+    async fn send_to(&self, chat: &ChatRef, text: &str) -> Result<(), String> {
+        self.deliver(chat, text, &[]).await
+    }
+
+    async fn send_choices(
+        &self,
+        chat: &ChatRef,
+        text: &str,
+        choices: &[(String, String)],
+    ) -> Result<(), String> {
+        if chat.channel == "telegram" {
+            return self.deliver(chat, text, &[]).await;
+        }
+        let buttons: Vec<_> = choices
+            .iter()
+            .map(|(label, reply)| ferrule_gateway::Button {
+                text: label.clone(),
+                action: ferrule_gateway::ButtonAction::Command(reply.clone()),
+            })
+            .collect();
+        self.deliver(chat, text, &buttons).await
+    }
+}
+
+/// The owner's commands in every chat channel, before any chat turn:
+/// `/stop`, `/resume`, `/plan`, `/undo` and the answers to open approvals.
+/// The console and scheduled turns pass straight through.
 pub struct OwnerDoor {
     pub hub: Arc<Hub>,
     /// Runs `/plan <task>` for a chat; its reply is the acknowledgement.
-    pub plan: Option<Arc<dyn Fn(i64, String) -> String + Send + Sync>>,
+    pub plan: Option<Arc<dyn Fn(ChatRef, String) -> String + Send + Sync>>,
+    /// Reverts the agent's latest commit (M29's `ferrule undo`) for `/undo`.
+    pub undo: Option<Arc<dyn Fn() -> String + Send + Sync>>,
 }
 
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for OwnerDoor {
     async fn intercept(&self, msg: &ferrule_gateway::InboundMessage) -> Option<String> {
-        if msg.channel != "telegram" {
+        if !is_chat_channel(&msg.channel) {
             return None;
         }
-        let chat = msg.chat_id.parse::<i64>().ok()?;
-        match self.hub.intercept(chat, &msg.text) {
+        let chat = match msg.channel.as_str() {
+            // As before M31: a Telegram chat id is a number.
+            "telegram" => ChatRef::from(msg.chat_id.parse::<i64>().ok()?),
+            _ => ChatRef::new(&msg.channel, &msg.chat_id),
+        };
+        let first = msg.text.split_whitespace().next().unwrap_or("");
+        if first
+            .split('@')
+            .next()
+            .unwrap_or("")
+            .eq_ignore_ascii_case("/undo")
+        {
+            if owner_in(&self.hub, msg).is_none() {
+                return Some("Only the owner can undo.".into());
+            }
+            return Some(match &self.undo {
+                Some(undo) => undo(),
+                None => "/undo isn't available in this gateway.".into(),
+            });
+        }
+        match self.hub.intercept(chat.clone(), &msg.text) {
             ferrule_trust::Intercept::Pass => None,
             ferrule_trust::Intercept::Reply(r) => Some(r),
             ferrule_trust::Intercept::Plan(task) => Some(match &self.plan {
@@ -429,8 +545,12 @@ pub fn status_lines(hub: &Hub) -> Vec<String> {
             "off"
         }
     ));
-    out.push(match hub.owner() {
-        Some(chat) => format!("approvals: Telegram chat {chat} (gateway), or the terminal"),
+    out.push(match hub.primary() {
+        Some(chat) => format!(
+            "approvals: {} chat {} (gateway), or the terminal",
+            chat.channel_title(),
+            chat.chat
+        ),
         None => "approvals: the terminal only (no owner chat); unattended runs refuse".into(),
     });
     out

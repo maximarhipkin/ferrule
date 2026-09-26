@@ -41,7 +41,8 @@ pub struct Ctx {
     pub models: Option<Arc<crate::models::Models>>,
     pub hub: Option<Arc<ferrule_trust::Hub>>,
     pub connections: Option<Arc<ferrule_connections::Connections>>,
-    pub owner_chat: Option<i64>,
+    /// The owner's primary chat, on any channel (M31).
+    pub owner_chat: Option<ferrule_trust::ChatRef>,
     pub tasks: Option<crate::tasks_admin::TasksAdmin>,
     /// `<data>`: the ledger, the agents and the catalog's cache.
     pub data: Option<PathBuf>,
@@ -64,7 +65,7 @@ impl Ctx {
             live: None,
             models: crate::models::shared().ok(),
             connections: crate::connections::shared(cfg),
-            owner_chat: crate::trust::owner_chat(cfg),
+            owner_chat: crate::trust::owners(cfg).into_iter().next(),
             tasks: data.as_ref().map(|d| {
                 crate::tasks_admin::TasksAdmin::new(d.join("tasks.db"), hub.clone())
                     .with_config(crate::config::config_path().ok().flatten())
