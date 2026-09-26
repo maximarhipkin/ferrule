@@ -113,7 +113,7 @@ impl Tool for EditFileTool {
 /// `edits: [{search, replace}]`, or one `search`/`replace` at the top level
 /// (models write it that way often enough; Claude Code's `old_string` /
 /// `new_string` are taken too).
-fn parse_hunks(args: &Value) -> Result<Vec<Hunk>, String> {
+pub fn parse_hunks(args: &Value) -> Result<Vec<Hunk>, String> {
     let one = |v: &Value| -> Option<Hunk> {
         let search = v.get("search").or_else(|| v.get("old_string"))?.as_str()?;
         let replace = v.get("replace").or_else(|| v.get("new_string"))?.as_str()?;
@@ -149,7 +149,30 @@ fn edit_path(path: &Path, shown: &str, hunks: &[Hunk]) -> Result<String, String>
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(format!("can't read `{shown}`: {e}")),
     };
-    let (text, enc) = match &existing {
+    match edit_bytes(existing.as_deref(), shown, hunks)? {
+        Edited::Unchanged(message) => Ok(message),
+        Edited::Write { bytes, summary } => {
+            write_atomic(path, &bytes).map_err(|e| format!("can't write `{shown}`: {e}"))?;
+            Ok(summary)
+        }
+    }
+}
+
+/// What [`edit_bytes`] decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edited {
+    /// Nothing to write; the message is the tool's result.
+    Unchanged(String),
+    /// Write `bytes`, then return `summary` (the diff).
+    Write { bytes: Vec<u8>, summary: String },
+}
+
+/// The whole edit without the file system: `existing` is the file's bytes
+/// (`None` = it doesn't exist). Keeps the encoding, BOM and line endings.
+/// The remote `edit_file` (ferrule-ssh) reads and writes over SSH and
+/// shares this.
+pub fn edit_bytes(existing: Option<&[u8]>, shown: &str, hunks: &[Hunk]) -> Result<Edited, String> {
+    let (text, enc) = match existing {
         Some(bytes) => decode(bytes).map_err(|why| format!("`{shown}` {why}"))?,
         None => (String::new(), Encoding::Utf8 { bom: false }),
     };
@@ -161,9 +184,9 @@ fn edit_path(path: &Path, shown: &str, hunks: &[Hunk]) -> Result<String, String>
     };
     let (new, rungs) = apply_edits(&base, existing.is_none(), shown, hunks)?;
     if new == base && existing.is_some() {
-        return Ok(format!(
+        return Ok(Edited::Unchanged(format!(
             "`{shown}` unchanged: the edits leave it as it was, so nothing was written"
-        ));
+        )));
     }
     let out = if crlf {
         new.replace('\n', "\r\n")
@@ -177,8 +200,10 @@ fn edit_path(path: &Path, shown: &str, hunks: &[Hunk]) -> Result<String, String>
              Keep REPLACE to plain ASCII, or change this file with the shell tool."
         )
     })?;
-    write_atomic(path, &bytes).map_err(|e| format!("can't write `{shown}`: {e}"))?;
-    Ok(summary(shown, existing.is_none(), &base, &new, &rungs))
+    Ok(Edited::Write {
+        bytes,
+        summary: summary(shown, existing.is_none(), &base, &new, &rungs),
+    })
 }
 
 /// Apply every hunk in order to `text` (LF line endings). `missing`: the
