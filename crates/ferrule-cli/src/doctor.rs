@@ -130,6 +130,7 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     let backend = sandbox(&mut r, &cfg, &secrets_path);
     let confined = backend != Backend::None;
     mcp(&mut r, &cfg, backend);
+    plugins_check(&mut r);
     proxy(&mut r, &cfg);
     web_search_check(&mut r, &cfg, &http, offline).await;
     memory_check(&mut r, &cfg);
@@ -835,6 +836,70 @@ fn mcp(r: &mut Report, cfg: &config::Config, backend: Backend) {
             "mcp",
             format!("unsandboxed, like shell commands: {}", names(&rest)),
         ),
+    }
+}
+
+/// M32: each installed plugin — loaded here, so a module that no longer
+/// matches what was approved shows up before an agent needs it.
+fn plugins_check(r: &mut Report) {
+    let Ok(data) = config::data_dir() else {
+        return;
+    };
+    let layout = ferrule_extensions::Layout::new(data);
+    let lock = match ferrule_extensions::LockStore::new(layout.lock_path()).load() {
+        Ok(l) => l,
+        Err(e) => return r.warn("plugins", format!("the extensions lock can't be read: {e}")),
+    };
+    if lock.plugins.is_empty() {
+        return;
+    }
+    if !ferrule_plugins::AVAILABLE {
+        r.warn(
+            "plugins",
+            format!(
+                "{} installed, but this build has no plugin runtime: none of them load",
+                lock.plugins.len()
+            ),
+        );
+        r.hint("install a release build, or build with the default `plugins` feature");
+        return;
+    }
+    for (name, entry) in &lock.plugins {
+        if entry.status == ferrule_extensions::Status::Suspended {
+            r.warn(
+                "plugins",
+                format!(
+                    "`{name}` is suspended: {}",
+                    entry.reason.as_deref().unwrap_or("no reason recorded")
+                ),
+            );
+            r.hint(format!(
+                "`ferrule extensions resume {name}` shows why and asks again"
+            ));
+            continue;
+        }
+        let dir = layout.plugins_dir().join(name);
+        match ferrule_plugins::load_dir(&dir) {
+            Ok(p) if p.manifest().digest() != entry.manifest_sha256 => r.warn(
+                "plugins",
+                format!(
+                    "`{name}`'s manifest changed since it was approved; agents will suspend it"
+                ),
+            ),
+            Ok(p) => {
+                let m = p.manifest();
+                r.ok(
+                    "plugins",
+                    format!(
+                        "{name} {}: {} tool(s); may: {}",
+                        m.version,
+                        m.tools.len(),
+                        entry.capabilities.describe().join("; ")
+                    ),
+                )
+            }
+            Err(e) => r.warn("plugins", format!("`{name}` doesn't load: {e}")),
+        }
     }
 }
 

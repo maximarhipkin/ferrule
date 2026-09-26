@@ -27,12 +27,14 @@ use ferrule_skills::SkillsHandle;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 /// How often a daemon re-reads the lock, to pick up what the owner approved
 /// or removed from the CLI.
+mod plugin;
+
 pub const SYNC_EVERY: Duration = Duration::from_secs(2);
 /// A self-written skill's check gets this long.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(120);
@@ -89,6 +91,9 @@ pub struct Review {
     pub items: Vec<String>,
     pub findings: Vec<Finding>,
     pub sandbox_degraded: Option<String>,
+    /// M32: what a plugin may do, one line each (with what is new since
+    /// the last grant called out). Empty for servers and skills.
+    pub capabilities: Vec<String>,
 }
 
 impl Review {
@@ -101,7 +106,7 @@ impl Review {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     pub name: String,
-    /// `server` or `skill`.
+    /// `server`, `skill` or `plugin`.
     pub kind: &'static str,
     /// `configured`, or the lock origin.
     pub origin: String,
@@ -231,6 +236,10 @@ pub struct ExtensionManager {
     /// The configured servers as last applied by `start`/`set_configured`,
     /// running or not.
     configured: tokio::sync::Mutex<Vec<McpServerConfig>>,
+    /// M32: loaded plugins, by name.
+    plugins: RwLock<BTreeMap<String, plugin::LivePlugin>>,
+    /// Warned once that installed plugins can't run in this build.
+    no_plugin_runtime: AtomicBool,
 }
 
 impl ToolSource for ExtensionManager {
@@ -240,6 +249,7 @@ impl ToolSource for ExtensionManager {
             .unwrap()
             .values()
             .flat_map(|l| l.tools.iter().cloned())
+            .chain(self.plugin_tools())
             .collect()
     }
 }
@@ -260,6 +270,8 @@ impl ExtensionManager {
             ops: tokio::sync::Mutex::new(()),
             next_id: AtomicU64::new(1),
             last_lock: Mutex::new(None),
+            plugins: RwLock::new(BTreeMap::new()),
+            no_plugin_runtime: AtomicBool::new(false),
         })
     }
 
@@ -409,9 +421,11 @@ impl ExtensionManager {
         changes
     }
 
-    /// The sandbox new servers get from now on. Running ones keep theirs.
+    /// The sandbox new servers get from now on. Running ones keep theirs;
+    /// plugins, which run in-process, switch at once.
     pub fn set_sandbox(&self, sandbox: Arc<Sandbox>) {
         *self.sandbox.write().unwrap() = sandbox;
+        self.rebuild_plugin_tools();
     }
 
     pub fn sandbox(&self) -> Arc<Sandbox> {
@@ -643,6 +657,7 @@ impl ExtensionManager {
                     items: prepared.infos.iter().map(|i| i.name.clone()).collect(),
                     findings: prepared.surface.findings.clone(),
                     sandbox_degraded: prepared.client.sandbox_degraded().map(str::to_string),
+                    capabilities: vec![],
                 };
                 if !confirm(&review) {
                     self.abort(prepared).await;
@@ -661,6 +676,7 @@ impl ExtensionManager {
                     items: vec![prepared.candidate.name.clone()],
                     findings: prepared.candidate.findings.clone(),
                     sandbox_degraded: None,
+                    capabilities: vec![],
                 };
                 if !confirm(&review) {
                     prepared.cleanup();
@@ -669,6 +685,7 @@ impl ExtensionManager {
                 let waivers = skill_waivers(&prepared.candidate);
                 self.commit_skill(prepared, Origin::Agent, waivers, req.replace)?
             }
+            Request::Plugin(req) => self.approve_plugin(req, confirm).await?,
         };
         self.queue.remove(id)?;
         Ok(out)
@@ -706,6 +723,7 @@ impl ExtensionManager {
                 items: infos.iter().map(|i| i.name.clone()).collect(),
                 findings: surface.findings.clone(),
                 sandbox_degraded: client.sandbox_degraded().map(str::to_string),
+                capabilities: vec![],
             };
             if !confirm(&review) {
                 client.shutdown().await;
@@ -746,6 +764,7 @@ impl ExtensionManager {
                 items: vec![name.to_string()],
                 findings: candidate.findings.clone(),
                 sandbox_degraded: None,
+                capabilities: vec![],
             };
             if !confirm(&review) {
                 return Err(refused("not resumed"));
@@ -765,6 +784,9 @@ impl ExtensionManager {
             })?;
             self.refresh_skills();
             return Ok(());
+        }
+        if let Some(entry) = lock.plugins.get(name).cloned() {
+            return self.resume_plugin(name, entry, confirm);
         }
         Err(refused(format!("nothing installed is named `{name}`")))
     }
@@ -821,6 +843,8 @@ impl ExtensionManager {
                 tools: vec![],
             });
         }
+        drop(live);
+        self.list_plugins(&lock, &mut out);
         Ok(out)
     }
 
@@ -871,6 +895,7 @@ impl ExtensionManager {
         for name in gone {
             self.unload(&name).await;
         }
+        self.sync_plugins(&lock);
 
         let skills_changed = {
             let mut last = self.last_lock.lock().unwrap();

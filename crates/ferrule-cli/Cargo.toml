@@ -9,13 +9,16 @@ name = "ferrule"
 path = "src/main.rs"
 
 [features]
-default = ["grammars", "local-embed"]
+default = ["grammars", "local-embed", "plugins"]
 # M29: the repo map's tree-sitter grammars. Without them `code_search` is a
 # text search and there is no map.
 grammars = ["ferrule-codemap/default"]
 # M30: the in-process embedding model (`[memory] embedder = "local"`).
 # Without it, `local` falls back to keyword recall and doctor says so.
 local-embed = ["ferrule-embed/local"]
+# M32: the WASM interpreter (wasmi) that runs tool plugins. Without it
+# installed plugins still list, but none loads or installs, and doctor says so.
+plugins = ["ferrule-plugins/runtime"]
 
 [dependencies]
 dunce = { workspace = true }
@@ -37,6 +40,7 @@ ferrule-learn = { path = "../ferrule-learn" }
 ferrule-trust = { path = "../ferrule-trust" }
 ferrule-connections = { path = "../ferrule-connections" }
 ferrule-codemap = { path = "../ferrule-codemap", default-features = false }
+ferrule-plugins = { path = "../ferrule-plugins", default-features = false }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -61,6 +65,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# M32: the plugin fixture is WAT, assembled in the test.
+wat = "1"
 # The M20 mocks (an OAuth + MCP provider, the relay), shared with
 # ferrule-connections' own tests through `#[path]`.
 bytes = "1"

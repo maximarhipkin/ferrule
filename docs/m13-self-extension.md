@@ -11,6 +11,9 @@ else only after the owner says yes, and never with a tool description that tries
 
 Decisions for Max are marked **[Max]**. Each one has a default so the build doesn't wait on it.
 
+Since M32 the same flow also installs WASM tool plugins (`plugin_add`, `plugin_remove`), with
+their capabilities shown to the owner: `docs/plugins.md`, `docs/m32-wasm-plugins.md`.
+
 ---
 
 ## 1. What gets built

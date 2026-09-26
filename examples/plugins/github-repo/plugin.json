@@ -1,0 +1,28 @@
+{
+  "name": "github-repo",
+  "version": "0.1.0",
+  "description": "Look up a GitHub repository.",
+  "wasm": "github_repo.wasm",
+  "sha256": "046c49cac1944f619e80e2c9fdac2eefd90bf29bee623f7c21103f771945f84d",
+  "tools": [
+    {
+      "name": "repo",
+      "description": "Stars, forks, open issues, default branch and language of a GitHub repository.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "owner": {"type": "string"},
+          "repo": {"type": "string"}
+        },
+        "required": ["owner", "repo"],
+        "additionalProperties": false
+      },
+      "read_only": true
+    }
+  ],
+  "capabilities": {
+    "http": {"domains": ["api.github.com"]},
+    "secrets": ["GITHUB_TOKEN"]
+  },
+  "limits": {"timeout_secs": 20}
+}

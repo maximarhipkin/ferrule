@@ -1,0 +1,31 @@
+{
+  "name": "unit-convert",
+  "version": "0.1.0",
+  "description": "Convert length, mass and temperature units.",
+  "wasm": "unit_convert.wasm",
+  "sha256": "f0ce96427d29efdff638d6b21d007fca0b479f52bbb69269680773d4f3948db6",
+  "tools": [
+    {
+      "name": "convert",
+      "description": "Convert a value between units of length (mm cm m km in ft yd mi), mass (g kg t oz lb) or temperature (c f k).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "value": {"type": "number"},
+          "from": {"type": "string"},
+          "to": {"type": "string"}
+        },
+        "required": ["value", "from", "to"],
+        "additionalProperties": false
+      },
+      "read_only": true
+    },
+    {
+      "name": "units",
+      "description": "List the units convert knows.",
+      "parameters": {"type": "object", "properties": {}, "additionalProperties": false},
+      "read_only": true
+    }
+  ],
+  "capabilities": {}
+}
