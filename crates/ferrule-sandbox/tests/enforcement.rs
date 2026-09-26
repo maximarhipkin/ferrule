@@ -530,8 +530,10 @@ fn unix_sockets_outside_the_allowlist_are_refused() {
 
     let got = unix_probe(&sb, &wsp, &targets);
     eprintln!("{got}");
+    // libtest prints the first result on its own `test … ... ` line.
     let line = |label: &str| {
         got.lines()
+            .map(|l| l.rsplit(" ... ").next().unwrap_or(l))
             .find_map(|l| l.strip_prefix(&format!("{label}: ")))
             .unwrap_or_else(|| panic!("no {label} in {got}"))
             .to_string()
