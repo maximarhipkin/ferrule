@@ -4358,7 +4358,8 @@ Branch `m34-ssh-local`. Design and as-built notes are in
 - `fitted()` isn't applied in the eval's own window path, so the eval
   can't move.
 
-**Checks.** 1164 tests, 15 ignored, with the sshd tests required; fmt and
+**Checks.** 1225 tests after merging main (M33), 18 ignored, with the
+sshd tests required; fmt and
 clippy `-D warnings` are clean. The starter eval against the mock through
 the real binary is unchanged: engineered 20/20, naive 11/20, $0.98.
 
