@@ -11,4 +11,5 @@ pub mod ws;
 
 pub use discord::DiscordChannel;
 pub use local::LocalChannel;
+pub use slack::SlackChannel;
 pub use telegram::TelegramChannel;
