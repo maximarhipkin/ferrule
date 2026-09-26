@@ -10,7 +10,7 @@ use crate::common::{self, last_user, replayable};
 use crate::DriverOptions;
 use ferrule_core::error::CoreError;
 use ferrule_core::message::{Message, NativeBlocks, Role, ToolCall, Usage};
-use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
+use ferrule_core::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use ferrule_core::tool::ToolDefinition;
 use serde_json::{json, Value};
 use tracing::warn;
@@ -128,14 +128,27 @@ impl ResponsesProvider {
         Payload { body, replayed }
     }
 
-    async fn post(&self, body: &Value) -> Result<Value, CoreError> {
-        let reply = common::send(
-            self.client
-                .post(format!("{}/responses", self.base_url))
-                .bearer_auth(&self.api_key)
-                .json(body),
-        )
-        .await?;
+    fn request(&self, body: &Value) -> reqwest::RequestBuilder {
+        self.client
+            .post(format!("{}/responses", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(body)
+    }
+
+    /// Send `body` and return the response object. With a sink, it asks
+    /// for a stream, whose final event carries that same object.
+    async fn post(&self, body: &Value, sink: Option<&DeltaSink>) -> Result<Value, CoreError> {
+        let reply = match sink {
+            None => common::send(self.request(body)).await?,
+            Some(sink) => {
+                let mut body = body.clone();
+                body["stream"] = json!(true);
+                match common::open(self.request(&body)).await? {
+                    common::Opened::Json(reply) => reply,
+                    common::Opened::Events(events) => return read_stream(events, sink).await,
+                }
+            }
+        };
         if let Some(err) = reply.body.get("error").filter(|e| !e.is_null()) {
             return Err(common::error_in_body(err, reply.wait));
         }
@@ -251,7 +264,8 @@ impl Provider for ResponsesProvider {
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
         let first = self.payload(&req, false);
-        let body = match self.post(&first.body).await {
+        let sink = req.stream.as_ref();
+        let body = match self.post(&first.body, sink).await {
             // A host that can't read our reasoning back: once, without it.
             Err(CoreError::Provider(m)) if first.replayed && reasoning_rejected(&m) => {
                 warn!(
@@ -259,12 +273,39 @@ impl Provider for ResponsesProvider {
                     "reasoning items rejected, retrying once without them: {}",
                     m.chars().take(200).collect::<String>()
                 );
-                self.post(&self.payload(&req, true).body).await?
+                self.post(&self.payload(&req, true).body, sink).await?
             }
             other => other?,
         };
         self.parse_response(&body)
     }
+}
+
+/// A Responses stream: text deltas go to the sink, and the final event
+/// (`response.completed`, `.incomplete` or `.failed`) carries the whole
+/// response object, which the plain parser then reads, status included.
+async fn read_stream(mut events: common::Events, sink: &DeltaSink) -> Result<Value, CoreError> {
+    while let Some(event) = events.next().await? {
+        let data = event.json()?;
+        let kind = data
+            .get("type")
+            .and_then(Value::as_str)
+            .or(event.name.as_deref())
+            .unwrap_or("");
+        match kind {
+            "response.output_text.delta" => {
+                let piece = data["delta"].as_str().unwrap_or("");
+                sink.send(Delta::Text(piece.to_string()));
+            }
+            "response.completed" | "response.incomplete" | "response.failed" => {
+                return Ok(data["response"].clone());
+            }
+            "error" => return Err(common::error_in_body(&data, None)),
+            k if k.ends_with(".delta") => sink.send(Delta::Progress),
+            _ => {}
+        }
+    }
+    Err(common::ended_early(events.seen()))
 }
 
 fn reasoning_rejected(message: &str) -> bool {

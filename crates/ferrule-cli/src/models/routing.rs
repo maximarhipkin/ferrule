@@ -703,6 +703,7 @@ model = "n-top"
             tools: vec![],
             max_output_tokens: None,
             temperature: None,
+            stream: None,
         }
     }
 

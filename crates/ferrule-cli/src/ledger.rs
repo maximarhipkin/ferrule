@@ -356,6 +356,65 @@ pub fn render_table(rows: &[SummaryRow]) -> String {
         .join("\n")
 }
 
+/// A duration for the speed block: milliseconds under a second, else
+/// seconds with one decimal.
+fn ms(v: u64) -> String {
+    if v < 1000 {
+        format!("{v}ms")
+    } else {
+        format!("{:.1}s", v as f64 / 1000.0)
+    }
+}
+
+/// M27's lines under the table: the overall cache hit, then time to first
+/// token and first reply and the parallel batches, each only when the rows
+/// have it. Empty when there's nothing to say.
+pub fn render_speed(records: &[LedgerRecord]) -> String {
+    let calls: Vec<&LedgerRecord> = records
+        .iter()
+        .filter(|r| r.call_kind != "eval_result")
+        .collect();
+    let mut lines = Vec::new();
+    let input: u64 = calls.iter().map(|r| r.input_tokens).sum();
+    let cached: u64 = calls.iter().map(|r| r.cached_input_tokens).sum();
+    if input > 0 {
+        lines.push(format!(
+            "cache hit: {:.1}% of input tokens",
+            cached as f64 * 100.0 / input as f64
+        ));
+    }
+    let speed = || calls.iter().filter_map(|r| r.speed.as_ref());
+    let p50 = |mut v: Vec<u64>| {
+        v.sort_unstable();
+        (!v.is_empty()).then(|| (percentile(&v, 50.0), v.len()))
+    };
+    let mut first = Vec::new();
+    if let Some((p, n)) = p50(speed().filter_map(|s| s.first_token_ms).collect()) {
+        first.push(format!("first token p50 {} (n={n})", ms(p)));
+    }
+    if let Some((p, n)) = p50(speed().filter_map(|s| s.first_visible_ms).collect()) {
+        first.push(format!("first reply p50 {} (n={n})", ms(p)));
+    }
+    if !first.is_empty() {
+        lines.push(format!("speed: {}", first.join(" · ")));
+    }
+    let batches: Vec<_> = speed()
+        .filter_map(|s| s.tool_batch.as_ref())
+        .filter(|b| b.parallel > 1)
+        .collect();
+    if !batches.is_empty() {
+        let wall: u64 = batches.iter().map(|b| b.wall_ms).sum();
+        let sum: u64 = batches.iter().map(|b| b.sum_ms).sum();
+        lines.push(format!(
+            "parallel batches: {}, {} wall vs {} summed",
+            batches.len(),
+            ms(wall),
+            ms(sum)
+        ));
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +450,7 @@ mod tests {
             eval: None,
             tree: None,
             route: None,
+            speed: None,
         }
     }
 
@@ -465,6 +525,52 @@ mod tests {
                 output: 2.0,
                 cache_write: None,
             })
+        );
+    }
+
+    #[test]
+    fn the_speed_block_shows_only_what_the_rows_have() {
+        use ferrule_core::{SpeedStats, ToolBatch};
+        let plain = [rec("chat", "a", 100, 1000, 250, 5, "ok")];
+        assert_eq!(render_speed(&plain), "cache hit: 25.0% of input tokens");
+        assert_eq!(render_speed(&[rec("chat", "a", 1, 0, 0, 0, "error")]), "");
+
+        let with = |speed: SpeedStats| {
+            let mut r = rec("chat", "a", 100, 1000, 750, 5, "ok");
+            r.speed = Some(speed);
+            r
+        };
+        let batch = |parallel, wall_ms, sum_ms| ToolBatch {
+            calls: 3,
+            parallel,
+            wall_ms,
+            sum_ms,
+        };
+        let mut verdict = rec("chat", "a", 0, 1_000_000, 0, 0, "ok");
+        verdict.call_kind = "eval_result".into();
+        let rows = [
+            with(SpeedStats {
+                first_token_ms: Some(400),
+                first_visible_ms: Some(1500),
+                tool_batch: None,
+            }),
+            with(SpeedStats {
+                first_token_ms: Some(600),
+                first_visible_ms: None,
+                tool_batch: Some(batch(3, 900, 2400)),
+            }),
+            with(SpeedStats {
+                first_token_ms: None,
+                first_visible_ms: None,
+                tool_batch: Some(batch(1, 50, 50)),
+            }),
+            verdict,
+        ];
+        assert_eq!(
+            render_speed(&rows),
+            "cache hit: 75.0% of input tokens\n\
+             speed: first token p50 400ms (n=2) · first reply p50 1.5s (n=1)\n\
+             parallel batches: 1, 900ms wall vs 2.4s summed"
         );
     }
 

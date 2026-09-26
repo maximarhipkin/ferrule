@@ -17,6 +17,7 @@ pub mod router;
 pub mod scheduler;
 pub mod sdnotify;
 pub mod session;
+pub mod stream;
 
 pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
@@ -37,3 +38,4 @@ pub use scheduler::{
     initial_next_run_at, NewTask, Run, RunOutcome, RunStatus, Scheduler, SchedulerError, Task,
     TaskKind, TaskStore, SCHEDULER_PSEUDO_CHANNEL,
 };
+pub use stream::StreamPacing;

@@ -330,6 +330,7 @@ pub async fn grade(judge: &Judge, sink: &EvalSink, ask: Ask<'_>, bundle: &Bundle
         tools: vec![],
         max_output_tokens: Some(JUDGE_MAX_OUTPUT),
         temperature: Some(0.0),
+        stream: None,
     };
     let started = Instant::now();
     let res = judge.provider.complete(req).await;
@@ -355,6 +356,7 @@ pub async fn grade(judge: &Judge, sink: &EvalSink, ask: Ask<'_>, bundle: &Bundle
         eval: None,
         tree: None,
         route: None,
+        speed: None,
     };
     match res {
         Ok(r) => {

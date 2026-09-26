@@ -309,6 +309,9 @@ impl Tool for SearchHistoryTool {
     fn changes_files(&self) -> bool {
         false
     }
+    fn read_only(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

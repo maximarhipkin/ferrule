@@ -581,6 +581,26 @@ and `docs/windows-sandbox.md`). PR to `main` open, not merged.
 the saved keys on any OS, and a Windows user gets the same write
 confinement as Linux and macOS.
 
+### M27 — speed
+
+**Status.** Built (`docs/m27-speed.md`; user guide `docs/speed.md`).
+PR to `main` open, not merged.
+- Read-only tool calls from one response run in parallel (`[agent]
+  parallel_tools`, default 4); writes stay ordered barriers, approvals stay
+  serial, results keep the model's order.
+- All three drivers stream when asked. Telegram replies grow by edits
+  (throttled to 1/s, 429s honoured, rollover past 4000 chars, never lost on
+  a failed edit); `ferrule chat` prints as it comes. `[agent] stream`,
+  `[gateway] telegram_stream`.
+- A cache-stable prefix: recalled memory moved out of the system prompt,
+  and the Anthropic previous-turn breakpoint fixed; a test pins the bytes.
+- `ferrule ledger` shows cache hit, time to first token and first reply,
+  and parallel batches' wall vs summed time. The eval is unchanged.
+
+**Done means.** On a live Telegram chat the first words show within about
+a second, the ledger's cache hit climbs across sessions, and a turn of
+several reads takes about as long as its slowest one.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
@@ -602,8 +622,10 @@ confinement as Linux and macOS.
   - the Streamable HTTP transport has no server-initiated stream or resumption.
     (The Chrome launch check now runs on macOS and Windows in CI, where M11
     drives a real Chrome.)
-- **Anytime:** parallel read-only tool calls, streaming replies, and a stable
-  prompt prefix for caching.
+- **Anytime:** parallel read-only tool calls, streaming replies and a stable
+  prompt prefix shipped as M27. Left over: streaming to channels that
+  can't edit, formatting mid-stream, `sendMessageDraft`, and a 1-hour
+  cache TTL.
 - **The strategy backlog** (`docs/research-number-one-harness-strategy.md`
   §4): a `web_search` tool, keyword-triggered skills, Aider-style edit
   mechanics (SEARCH/REPLACE edits, a repo map, per-edit lint, atomic

@@ -7,8 +7,8 @@ use ferrule_core::error::CoreError;
 use serde_json::Value;
 use std::time::Duration;
 
-/// Every driver's client: a 10-minute timeout (no streaming, and a
-/// thinking model can take minutes).
+/// Every driver's client: a 10-minute timeout on the whole call (a
+/// thinking model can take minutes; a stream also has a stall limit).
 pub(crate) fn client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(600));
     // Test builds only: bypass any ambient proxy (e.g. the sandbox's
@@ -89,17 +89,47 @@ pub(crate) struct Reply {
 /// a body that isn't JSON all become errors here, transient when another
 /// try may pass. An error object inside a 2xx body is the caller's to read.
 pub(crate) async fn send(request: reqwest::RequestBuilder) -> Result<Reply, CoreError> {
+    let resp = connect(request).await?;
+    read_json(resp).await
+}
+
+/// What a streaming request got back: an event stream, or (a server that
+/// ignores `stream: true`) a plain JSON reply, read as [`send`] reads it.
+pub(crate) enum Opened {
+    Events(Events),
+    Json(Reply),
+}
+
+/// [`send`] for a request that asked to stream. A non-2xx reply fails
+/// exactly as it does there, `Retry-After` included.
+pub(crate) async fn open(request: reqwest::RequestBuilder) -> Result<Opened, CoreError> {
+    let resp = connect(request).await?;
+    let is_stream = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().starts_with("text/event-stream"));
+    if resp.status().is_success() && is_stream {
+        Ok(Opened::Events(Events::new(resp)))
+    } else {
+        read_json(resp).await.map(Opened::Json)
+    }
+}
+
+async fn connect(request: reqwest::RequestBuilder) -> Result<reqwest::Response, CoreError> {
     // `without_url()`: the URL isn't secret here, but some gateways put
     // a key in it, and these errors end up in logs and chats.
-    let resp = match request.send().await.map_err(|e| e.without_url()) {
-        Ok(resp) => resp,
+    match request.send().await.map_err(|e| e.without_url()) {
+        Ok(resp) => Ok(resp),
         // No connection or no answer in time: the next try may get one.
-        Err(e) if e.is_timeout() => return Err(transient(format!("request timed out: {e}"), None)),
-        Err(e) if e.is_connect() => return Err(transient(format!("could not connect: {e}"), None)),
-        Err(e) if e.is_request() => return Err(transient(format!("request failed: {e}"), None)),
-        Err(e) => return Err(CoreError::Provider(format!("request failed: {e}"))),
-    };
+        Err(e) if e.is_timeout() => Err(transient(format!("request timed out: {e}"), None)),
+        Err(e) if e.is_connect() => Err(transient(format!("could not connect: {e}"), None)),
+        Err(e) if e.is_request() => Err(transient(format!("request failed: {e}"), None)),
+        Err(e) => Err(CoreError::Provider(format!("request failed: {e}"))),
+    }
+}
 
+async fn read_json(resp: reqwest::Response) -> Result<Reply, CoreError> {
     let status = resp.status();
     let wait = retry_after(resp.headers());
     let classify = |message: String| {
@@ -135,6 +165,176 @@ pub(crate) async fn send(request: reqwest::RequestBuilder) -> Result<Reply, Core
     Ok(Reply { body, wait })
 }
 
+/// No bytes at all for this long is a dead connection, not a slow model:
+/// every API here pings or sends keep-alives while it thinks.
+const STALL: Duration = Duration::from_secs(300);
+
+/// One server-sent event: its `event:` name, if any, and its `data:`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Event {
+    pub name: Option<String>,
+    pub data: String,
+}
+
+impl Event {
+    /// The data as JSON; an event that isn't is a malformed reply.
+    pub fn json(&self) -> Result<Value, CoreError> {
+        serde_json::from_str(&self.data).map_err(|_| {
+            let start: String = self.data.chars().take(300).collect();
+            CoreError::MalformedResponse(format!("a stream event that isn't JSON: {start}"))
+        })
+    }
+}
+
+/// A `text/event-stream` body, read an event at a time.
+pub(crate) struct Events {
+    resp: reqwest::Response,
+    buf: Vec<u8>,
+    seen: usize,
+    done: bool,
+    stall: Duration,
+}
+
+impl Events {
+    fn new(resp: reqwest::Response) -> Self {
+        Events {
+            resp,
+            buf: Vec::new(),
+            seen: 0,
+            done: false,
+            stall: STALL,
+        }
+    }
+
+    /// Events read so far.
+    pub fn seen(&self) -> usize {
+        self.seen
+    }
+
+    /// The next event, or `None` when the body ends. A read that fails or
+    /// stalls is transient: the whole call is worth another try.
+    pub async fn next(&mut self) -> Result<Option<Event>, CoreError> {
+        loop {
+            if let Some(event) = self.take_event() {
+                self.seen += 1;
+                return Ok(Some(event));
+            }
+            if self.done {
+                return Ok(None);
+            }
+            let chunk = match tokio::time::timeout(self.stall, self.resp.chunk()).await {
+                Err(_) => {
+                    return Err(transient(
+                        format!(
+                            "stream stalled after {} events: nothing for {}s (timed out)",
+                            self.seen,
+                            self.stall.as_secs()
+                        ),
+                        None,
+                    ))
+                }
+                Ok(Err(e)) => {
+                    return Err(transient(
+                        format!(
+                            "stream broke after {} events: {}",
+                            self.seen,
+                            e.without_url()
+                        ),
+                        None,
+                    ))
+                }
+                Ok(Ok(chunk)) => chunk,
+            };
+            match chunk {
+                Some(bytes) => self.buf.extend_from_slice(&bytes),
+                None => {
+                    // A last event with no blank line after it still counts.
+                    self.done = true;
+                    if !self.buf.is_empty() {
+                        self.buf.extend_from_slice(b"\n\n");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The first complete event in the buffer, skipping comments and
+    /// blocks with no data.
+    fn take_event(&mut self) -> Option<Event> {
+        loop {
+            let (end, skip) = block_end(&self.buf)?;
+            let block: Vec<u8> = self.buf.drain(..end + skip).take(end).collect();
+            if let Some(event) = parse_block(&String::from_utf8_lossy(&block)) {
+                return Some(event);
+            }
+        }
+    }
+}
+
+/// Where the first event block ends (a blank line, in any of the three
+/// line endings) and how long the blank line is.
+fn block_end(buf: &[u8]) -> Option<(usize, usize)> {
+    (0..buf.len()).find_map(|i| {
+        let rest = &buf[i..];
+        if rest.starts_with(b"\r\n\r\n") {
+            Some((i, 4))
+        } else if rest.starts_with(b"\n\n") || rest.starts_with(b"\r\r") {
+            Some((i, 2))
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_block(block: &str) -> Option<Event> {
+    let mut name = None;
+    let mut data: Option<String> = None;
+    for line in block.split(['\n', '\r']) {
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        let (field, value) = line.split_once(':').unwrap_or((line, ""));
+        let value = value.strip_prefix(' ').unwrap_or(value);
+        match field {
+            "event" => name = Some(value.to_string()),
+            "data" => match &mut data {
+                Some(d) => {
+                    d.push('\n');
+                    d.push_str(value);
+                }
+                None => data = Some(value.to_string()),
+            },
+            _ => {}
+        }
+    }
+    Some(Event { name, data: data? })
+}
+
+/// A stream that ended with no terminal event.
+pub(crate) fn ended_early(seen: usize) -> CoreError {
+    transient(
+        format!("stream ended early, after {seen} events, with no final event"),
+        None,
+    )
+}
+
+/// An error event inside a stream. Anthropic's types map to the status
+/// the same failure has as a reply, so it classes (and retries) the same.
+pub(crate) fn stream_error(err: &Value) -> CoreError {
+    let kind = err.get("type").and_then(Value::as_str).unwrap_or("");
+    let status = match kind {
+        "overloaded_error" => Some(529),
+        "rate_limit_error" => Some(429),
+        "api_error" => Some(500),
+        "timeout_error" => Some(408),
+        _ => None,
+    };
+    match status {
+        Some(s) => transient(format!("HTTP {s} in the stream: {}", truncate(err)), None),
+        None => error_in_body(err, None),
+    }
+}
+
 /// An error object in a 2xx body, as an error: transient when it says so.
 pub(crate) fn error_in_body(err: &Value, wait: Option<Duration>) -> CoreError {
     let message = format!("error in an HTTP 200 response: {}", truncate(err));
@@ -168,6 +368,34 @@ pub(crate) fn replayable<'m>(
 }
 
 #[cfg(test)]
+mod sse_tests {
+    use super::*;
+
+    #[test]
+    fn an_event_block_reads_as_the_spec_says() {
+        let e = parse_block("event: delta\ndata: {\"a\":\ndata:1}\n: a comment\nid: 7").unwrap();
+        assert_eq!(e.name.as_deref(), Some("delta"));
+        assert_eq!(e.data, "{\"a\":\n1}");
+        assert_eq!(e.json().unwrap(), serde_json::json!({"a": 1}));
+        // A comment or a keep-alive alone is no event.
+        assert_eq!(parse_block(": ping"), None);
+        assert_eq!(parse_block("event: ping"), None);
+        assert!(matches!(
+            parse_block("data: nope").unwrap().json(),
+            Err(CoreError::MalformedResponse(_))
+        ));
+    }
+
+    #[test]
+    fn a_block_ends_at_a_blank_line_in_any_line_ending() {
+        assert_eq!(block_end(b"data: 1\n\ndata: 2"), Some((7, 2)));
+        assert_eq!(block_end(b"data: 1\r\n\r\n"), Some((7, 4)));
+        assert_eq!(block_end(b"data: 1\r\rx"), Some((7, 2)));
+        assert_eq!(block_end(b"data: 1\n"), None);
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod mock {
     //! A canned HTTP server on 127.0.0.1: one request in per response out,
     //! each request's raw text handed back for the test to read.
@@ -178,14 +406,15 @@ pub(crate) mod mock {
         pub status: &'static str,
         pub headers: &'static str,
         pub body: String,
+        /// Written one at a time with a pause between: a stream's chunks.
+        pub pieces: Vec<String>,
+        /// Promise more bytes than are sent, then hang up: a stream that
+        /// dies mid-way.
+        pub cut: bool,
     }
 
     pub fn ok(body: impl Into<String>) -> Canned {
-        Canned {
-            status: "200 OK",
-            headers: "content-type: application/json\r\n",
-            body: body.into(),
-        }
+        status("200 OK", "content-type: application/json\r\n", body.into())
     }
 
     pub fn status(status: &'static str, headers: &'static str, body: impl Into<String>) -> Canned {
@@ -193,6 +422,33 @@ pub(crate) mod mock {
             status,
             headers,
             body: body.into(),
+            pieces: Vec::new(),
+            cut: false,
+        }
+    }
+
+    /// A `text/event-stream` reply sent in these pieces.
+    pub fn sse(pieces: &[&str]) -> Canned {
+        Canned {
+            pieces: pieces.iter().map(|p| p.to_string()).collect(),
+            ..status("200 OK", "content-type: text/event-stream\r\n", "")
+        }
+    }
+
+    /// [`sse`] whose connection drops after the last piece.
+    pub fn sse_cut(pieces: &[&str]) -> Canned {
+        Canned {
+            cut: true,
+            ..sse(pieces)
+        }
+    }
+
+    /// One SSE event: `event:` (when named) and its JSON data.
+    pub fn event(name: &str, data: &serde_json::Value) -> String {
+        if name.is_empty() {
+            format!("data: {data}\n\n")
+        } else {
+            format!("event: {name}\ndata: {data}\n\n")
         }
     }
 
@@ -206,14 +462,22 @@ pub(crate) mod mock {
             for reply in replies {
                 let (mut stream, _) = listener.accept().unwrap();
                 seen.push(read_request(&mut stream));
+                let len = reply.body.len()
+                    + reply.pieces.iter().map(String::len).sum::<usize>()
+                    + if reply.cut { 1000 } else { 0 };
                 let resp = format!(
-                    "HTTP/1.1 {}\r\n{}content-length: {}\r\nconnection: close\r\n\r\n{}",
-                    reply.status,
-                    reply.headers,
-                    reply.body.len(),
-                    reply.body
+                    "HTTP/1.1 {}\r\n{}content-length: {len}\r\nconnection: close\r\n\r\n{}",
+                    reply.status, reply.headers, reply.body
                 );
                 stream.write_all(resp.as_bytes()).unwrap();
+                for piece in &reply.pieces {
+                    stream.flush().unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    // The client may have stopped reading (an error event).
+                    if stream.write_all(piece.as_bytes()).is_err() {
+                        break;
+                    }
+                }
             }
             seen
         });

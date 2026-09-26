@@ -44,6 +44,7 @@ fn req(messages: Vec<Message>) -> CompletionRequest {
         tools: vec![tool("read_file"), tool("list_dir")],
         max_output_tokens: None,
         temperature: None,
+        stream: None,
     }
 }
 
@@ -298,6 +299,29 @@ fn the_previous_user_message_keeps_a_breakpoint_for_the_next_turn() {
     assert_eq!(
         breakpoints(&b),
         ["/messages/2/content/0", "/messages/4/content/0"]
+    );
+    // The goal with its memory and a hook's note is one wire message: the
+    // next turn's breakpoint goes where this turn's request ended.
+    let turn = |n: &str| {
+        vec![
+            Message::user(n),
+            Message::user("[Long-term memory]\n- #1 a fact"),
+            Message::user("[hook: UserPromptSubmit]\nthe build is at /out"),
+        ]
+    };
+    let mut msgs = turn("one");
+    let a = with(DriverOptions::default())
+        .payload(&req(msgs.clone()), false)
+        .body;
+    msgs.push(Message::assistant(Some("ok".into()), vec![], None));
+    msgs.extend(turn("two"));
+    let b = with(DriverOptions::default())
+        .payload(&req(msgs), false)
+        .body;
+    assert_eq!(breakpoints(&a), ["/messages/0/content/2", "/tools/1"]);
+    assert_eq!(
+        breakpoints(&b),
+        ["/messages/0/content/2", "/messages/2/content/2", "/tools/1"]
     );
     // With no system prompt, the last tool carries the first breakpoint.
     let b = with(DriverOptions::default())

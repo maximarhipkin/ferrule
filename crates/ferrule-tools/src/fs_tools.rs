@@ -112,6 +112,9 @@ impl Tool for ReadFileTool {
     fn changes_files(&self) -> bool {
         false
     }
+    fn read_only(&self) -> bool {
+        true
+    }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -210,6 +213,9 @@ impl ListDirTool {
 impl Tool for ListDirTool {
     fn changes_files(&self) -> bool {
         false
+    }
+    fn read_only(&self) -> bool {
+        true
     }
 
     fn definition(&self) -> ToolDefinition {

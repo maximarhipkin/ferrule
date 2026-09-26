@@ -401,6 +401,10 @@ declined can't be repeated for 10 minutes.
 
 ## 8. Telegram
 
+(M27 later made Telegram replies stream by editing the sent message in
+place: `Channel::post` and `GatewayError::RateLimited`, in `docs/speed.md`
+and `docs/m27-speed.md` §2.)
+
 - **Buttons.** `ChannelCapabilities` gains `buttons`. `Channel` gains
   `send_with_buttons(msg, rows)`, defaulting to the text with each URL on
   its own line, so other channels keep working. Telegram sends an

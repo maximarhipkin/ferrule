@@ -79,6 +79,47 @@ pub struct LedgerRecord {
     /// escalation, why it moved. `None` when routing is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<crate::routing::RouteTag>,
+    /// M27: how fast the turn felt — time to the first streamed token and
+    /// to the first thing the user saw, and the tool batch that ran just
+    /// before this call. `None` when nothing was measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<SpeedStats>,
+}
+
+/// M27 timings on a ledger row. Every part is optional: a row carries only
+/// what was measured on it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SpeedStats {
+    /// From sending the request to the first streamed text delta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_token_ms: Option<u64>,
+    /// From the start of the turn to the first text the user saw: the
+    /// first streamed message, or the end of the answering call when the
+    /// reply wasn't streamed. Set once per turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_visible_ms: Option<u64>,
+    /// The tool calls answered between the previous call and this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_batch: Option<ToolBatch>,
+}
+
+impl SpeedStats {
+    pub fn is_empty(&self) -> bool {
+        self.first_token_ms.is_none()
+            && self.first_visible_ms.is_none()
+            && self.tool_batch.is_none()
+    }
+}
+
+/// One response's tool calls: how many, how many ran side by side, and
+/// wall time against the sum of the calls' own times (the saving is
+/// `sum_ms - wall_ms`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolBatch {
+    pub calls: usize,
+    pub parallel: usize,
+    pub wall_ms: u64,
+    pub sum_ms: u64,
 }
 
 /// Where an eval row belongs. The per-call rows carry it with `result`

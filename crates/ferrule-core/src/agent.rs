@@ -3,16 +3,17 @@ use crate::event::AgentEvent;
 use crate::guard::{unless_halted, Guard, GuardedCall, Verdict as GuardVerdict};
 use crate::history::{result_ref, SEARCH_HISTORY};
 use crate::hooks::{Budget, Inbox, SessionRecall, StopFlag};
-use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink};
+use crate::ledger::{LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch};
 use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
-use crate::message::{Message, Usage};
+use crate::message::{Message, ToolCall, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
-use crate::provider::{CompletionRequest, CompletionResponse, Provider};
+use crate::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use crate::routing::Signal;
 use crate::stuck::{Step, Stuck};
-use crate::tool::{Tool, ToolContext, ToolRegistry};
+use crate::tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
 use crate::transcript::Transcript;
 use crate::verify::Verifier;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -44,6 +45,9 @@ pub struct AgentConfig {
     /// `search_history` reference before anything is summarized. Only
     /// when the agent has a transcript and the `search_history` tool.
     pub shorten_tool_results_over: usize,
+    /// M27: at most this many read-only tool calls from one response run
+    /// at the same time. 1 runs every call one after another, as before.
+    pub parallel_tools: usize,
 }
 
 /// What the loop does when the context outgrows the profile's trigger.
@@ -71,6 +75,7 @@ impl Default for AgentConfig {
             overflow: ContextOverflow::Compact,
             detect_stuck: true,
             shorten_tool_results_over: 4_000,
+            parallel_tools: 4,
         }
     }
 }
@@ -187,6 +192,62 @@ impl StopReason {
     }
 }
 
+/// A call past the gate (M27): its hook input, what PreToolUse said, and
+/// the answer already settled when the guard refused it or a hook blocked
+/// it.
+struct Gated {
+    input: HookInput,
+    pre: Fired,
+    settled: Option<String>,
+}
+
+/// A call's answer: the text, whether it worked, whether the tool was
+/// reached (PostToolUse follows only then), and how long the tool took.
+struct Ran {
+    raw: String,
+    ok: bool,
+    reached: bool,
+    elapsed: Duration,
+}
+
+impl Ran {
+    fn settled(raw: &str) -> Self {
+        Self {
+            raw: raw.to_string(),
+            ok: false,
+            reached: false,
+            elapsed: Duration::ZERO,
+        }
+    }
+
+    fn of(result: Result<ToolOutput, CoreError>, elapsed: Duration) -> Self {
+        let (raw, ok) = match result {
+            Ok(out) => (out.content, true),
+            Err(e) => (format!("error: {e}"), false),
+        };
+        Self {
+            raw,
+            ok,
+            reached: true,
+            elapsed,
+        }
+    }
+}
+
+/// What cut a tool segment short.
+enum Interrupt {
+    Halted(String),
+    Stopped,
+}
+
+/// A tool result with the PreToolUse hooks' note after it.
+fn with_pre_note(raw: &str, pre: &Fired) -> String {
+    match &pre.context {
+        Some(note) => format!("{raw}\n\n[hook: PreToolUse] {note}"),
+        None => raw.to_string(),
+    }
+}
+
 /// One serialized agent run loop. Construct one per session; do not drive it
 /// concurrently — sessions are serialized by the caller (session lane).
 pub struct Agent {
@@ -209,6 +270,12 @@ pub struct Agent {
     session_recall: Option<Arc<dyn SessionRecall>>,
     /// Session-start recall ran (it runs once per agent).
     recalled: bool,
+    /// What it recalled (M27: a user message after the goal, so the
+    /// system prompt stays byte-stable for the cache). Compaction carries
+    /// it forward verbatim, as it does the goal.
+    memory: Option<String>,
+    /// The recalled block still has to go in after this run's goal.
+    memory_due: bool,
     /// What the current run was asked to do: kept verbatim through
     /// compaction, since it's what says when the work is done.
     goal: Option<String>,
@@ -218,6 +285,14 @@ pub struct Agent {
     /// loop, a check that kept failing): why. Its answer is then a status,
     /// not a result.
     pub incomplete: Option<String>,
+    /// M27 timings waiting for the next ledger row.
+    speed: Arc<std::sync::Mutex<SpeedStats>>,
+    /// Where the answer streams while it's written (M27), if anywhere.
+    reply_stream: Option<DeltaSink>,
+    /// When the current run started, and whether its first visible text
+    /// has been timed yet.
+    run_started: Instant,
+    shown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Agent {
@@ -245,10 +320,16 @@ impl Agent {
             guard: None,
             session_recall: None,
             recalled: false,
+            memory: None,
+            memory_due: false,
             goal: None,
             messages: Vec::new(),
             usage: Usage::default(),
             incomplete: None,
+            speed: Default::default(),
+            reply_stream: None,
+            run_started: Instant::now(),
+            shown: Default::default(),
         }
     }
 
@@ -333,6 +414,14 @@ impl Agent {
     /// The owner's guard, if any.
     pub fn guard(&self) -> Option<Arc<dyn Guard>> {
         self.guard.clone()
+    }
+
+    /// Stream the answer into `sink` while the model writes it (M27): the
+    /// text of each `turn` and `status` call, a [`Delta::Reset`] before
+    /// each call and each retry. Compaction and other side calls never
+    /// stream. `None` turns it off.
+    pub fn set_reply_stream(&mut self, sink: Option<DeltaSink>) {
+        self.reply_stream = sink;
     }
 
     /// Replaces the guard (the gateway puts a turn deadline in front of
@@ -506,7 +595,12 @@ impl Agent {
         let mut fallbacks = 0;
         loop {
             let start = Instant::now();
-            let (served, result) = self.provider.complete_routed(req.clone()).await;
+            let mut req = req.clone();
+            if let (Some(sink), "turn" | "status") = (&self.reply_stream, call_kind) {
+                sink.send(Delta::Reset);
+                req.stream = Some(self.timed(sink.clone(), start));
+            }
+            let (served, result) = self.provider.complete_routed(req).await;
             let latency_ms = start.elapsed().as_millis() as u64;
             let retry_in = match &result {
                 Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
@@ -585,6 +679,27 @@ impl Agent {
         }
     }
 
+    /// `sink`, timing the call's first streamed byte and the run's first
+    /// visible text into the next ledger row.
+    fn timed(&self, sink: DeltaSink, call_start: Instant) -> DeltaSink {
+        let speed = self.speed.clone();
+        let shown = self.shown.clone();
+        let run_start = self.run_started;
+        let ms = |since: Instant| since.elapsed().as_millis() as u64;
+        DeltaSink::new(move |delta| {
+            {
+                let mut s = speed.lock().unwrap();
+                s.first_token_ms.get_or_insert_with(|| ms(call_start));
+                if matches!(&delta, Delta::Text(t) if !t.is_empty())
+                    && !shown.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    s.first_visible_ms = Some(ms(run_start));
+                }
+            }
+            sink.send(delta)
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn record_completion(
         &self,
@@ -657,6 +772,7 @@ impl Agent {
             eval: None,
             tree: None,
             route,
+            speed: Some(std::mem::take(&mut *self.speed.lock().unwrap())).filter(|s| !s.is_empty()),
         };
         ledger.sink.record(record);
     }
@@ -706,6 +822,9 @@ impl Agent {
             guard.begin();
         }
         self.provider.begin_turn();
+        self.run_started = Instant::now();
+        self.shown
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         let result = self.run_inner(goal, tx).await;
         if let Some(inbox) = &inbox {
             inbox.end();
@@ -772,6 +891,11 @@ impl Agent {
         self.goal = Some(goal.to_string());
         self.incomplete = None;
         self.push(Message::user(goal));
+        if std::mem::take(&mut self.memory_due) {
+            if let Some(memory) = self.memory.clone() {
+                self.push(Message::user(memory));
+            }
+        }
         for (event, note) in [
             (HookEvent::SessionStart, session_note),
             (HookEvent::UserPromptSubmit, submitted.context),
@@ -900,129 +1024,46 @@ impl Agent {
                 return Ok(answer);
             }
 
-            for (i, call) in msg.tool_calls.iter().enumerate() {
-                if self.stopped() {
-                    // Every call needs a result, or the history can't be
-                    // sent again when the agent is resumed.
-                    for skipped in &msg.tool_calls[i..] {
-                        self.push(Message::tool_result(
-                            &skipped.id,
-                            "not run: the agent was stopped",
-                        ));
-                    }
-                    return Err(CoreError::Aborted("the agent was stopped".into()));
-                }
-                self.emit(
-                    &tx,
-                    AgentEvent::ToolCallStarted {
-                        id: call.id.clone(),
-                        name: call.name.clone(),
-                        arguments: call.arguments.clone(),
-                    },
-                )
-                .await;
+            // M27: a run of read-only calls goes through the gate one by
+            // one, runs side by side, and is finished one by one in the
+            // order asked; every other call is a segment of its own, run as
+            // before (docs/m27-speed.md §1).
+            let calls = &msg.tool_calls;
+            let batch_started = Instant::now();
+            let mut batch = ToolBatch {
+                calls: calls.len(),
+                ..Default::default()
+            };
+            let g = guard.as_ref();
+            let mut at = 0;
+            while at < calls.len() {
+                let end = self.segment_end(calls, at);
+                let seg = &calls[at..end];
+                let parallel = seg.len() > 1;
 
-                // The owner's gate first, then the PreToolUse hooks, then
-                // the tool, then PostToolUse, each raced against a halt
-                // (docs/m19-trust-cost.md §13). A hook never sees a call
-                // the gate refused, and has nothing to approve with.
-                let mut input = self.hook_input();
-                input.tool_name = Some(call.name.clone());
-                input.tool_input = Some(call.arguments.clone());
-                input.tool_use_id = Some(call.id.clone());
-                let seen = GuardedCall {
-                    tool: &call.name,
-                    args: &call.arguments,
-                    changes_files: self.tools.changes_files(&call.name),
-                };
-                let g = guard.as_ref();
-                let dispatched = 'dispatch: {
-                    let verdict = match g {
-                        Some(gd) => match unless_halted(g, gd.before_tool_call(seen)).await {
-                            Ok(v) => v,
-                            Err(why) => break 'dispatch Err(why),
-                        },
-                        None => GuardVerdict::Allow,
-                    };
-                    if let GuardVerdict::Refuse(why) = verdict {
-                        let raw = format!("refused by ferrule: {why}");
-                        break 'dispatch Ok((raw, false, Fired::default(), false));
-                    }
-                    let pre = match unless_halted(
-                        g,
-                        self.fire(&tx, HookEvent::PreToolUse, input.clone()),
-                    )
-                    .await
-                    {
-                        Ok(pre) => pre,
-                        Err(why) => break 'dispatch Err(why),
-                    };
-                    if let Some((_, reason)) = &pre.block {
-                        let raw = format!("error: not run: a PreToolUse hook blocked it: {reason}");
-                        break 'dispatch Ok((raw, false, pre, false));
-                    }
-                    let run = self
-                        .tools
-                        .call(&call.name, call.arguments.clone(), &self.tool_ctx);
-                    match unless_halted(g, run).await {
-                        Ok(Ok(out)) => Ok((out.content, true, pre, true)),
-                        Ok(Err(e)) => Ok((format!("error: {e}"), false, pre, true)),
-                        Err(why) => Err(why),
-                    }
-                };
-                let (raw, ok, pre, reached) = match dispatched {
-                    Ok(d) => d,
-                    Err(why) => {
-                        self.emit(
-                            &tx,
-                            AgentEvent::ToolCallFinished {
-                                id: call.id.clone(),
-                                name: call.name.clone(),
-                                ok: false,
-                                output_chars: 0,
-                            },
-                        )
-                        .await;
-                        for skipped in &msg.tool_calls[i..] {
+                // The gate: the owner's guard, then the PreToolUse hooks,
+                // each raced against a halt (docs/m19-trust-cost.md §13).
+                // A hook never sees a call the guard refused, and has
+                // nothing to approve with.
+                let mut gated: Vec<Gated> = Vec::with_capacity(seg.len());
+                for call in seg {
+                    if self.stopped() {
+                        // Every call needs a result, or the history can't
+                        // be sent again when the agent is resumed.
+                        self.unrun(&tx, &seg[..gated.len()]).await;
+                        for skipped in &calls[at..] {
                             self.push(Message::tool_result(
                                 &skipped.id,
-                                "not run: ferrule halted the run",
+                                "not run: the agent was stopped",
                             ));
                         }
-                        return Ok(self.halt(&tx, iteration + 1, why).await);
+                        return Err(CoreError::Aborted("the agent was stopped".into()));
                     }
-                };
-                if !ok {
-                    warn!(tool = %call.name, "tool call failed");
-                }
-                if ok && self.tools.changes_files(&call.name) {
-                    unverified = true;
-                    needs_check = true;
-                }
-                let mut content = raw.clone();
-                if let Some(note) = &pre.context {
-                    content.push_str(&format!("\n\n[hook: PreToolUse] {note}"));
-                }
-                // PostToolUse follows only a call that was dispatched: not
-                // one the gate refused or a hook blocked.
-                if reached {
-                    input.tool_response = Some(serde_json::json!({"ok": ok, "content": raw}));
-                    let post = self.fire(&tx, HookEvent::PostToolUse, input);
-                    let post = match unless_halted(g, post).await {
-                        Ok(post) => post,
+                    match self.gate(&tx, g, call).await {
+                        Ok(passed) => gated.push(passed),
                         Err(why) => {
-                            self.emit(
-                                &tx,
-                                AgentEvent::ToolCallFinished {
-                                    id: call.id.clone(),
-                                    name: call.name.clone(),
-                                    ok,
-                                    output_chars: content.len(),
-                                },
-                            )
-                            .await;
-                            self.push(Message::tool_result(&call.id, content));
-                            for skipped in &msg.tool_calls[i + 1..] {
+                            self.unrun(&tx, &seg[..=gated.len()]).await;
+                            for skipped in &calls[at..] {
                                 self.push(Message::tool_result(
                                     &skipped.id,
                                     "not run: ferrule halted the run",
@@ -1030,45 +1071,151 @@ impl Agent {
                             }
                             return Ok(self.halt(&tx, iteration + 1, why).await);
                         }
-                    };
-                    for note in post.context.iter().chain(post.block.iter().map(|b| &b.1)) {
-                        content.push_str(&format!("\n\n[hook: PostToolUse] {note}"));
                     }
                 }
-                self.emit(
-                    &tx,
-                    AgentEvent::ToolCallFinished {
-                        id: call.id.clone(),
-                        name: call.name.clone(),
-                        ok,
-                        output_chars: content.len(),
-                    },
-                )
-                .await;
 
-                steps.push(Step::new(&call.name, &call.arguments, &raw, ok));
-                self.push(Message::tool_result(&call.id, content));
-                if routes {
-                    misfits = if self.tools.misfit(&call.name, &call.arguments) {
-                        misfits + 1
-                    } else {
-                        0
+                let (ran, interrupted) = if parallel {
+                    self.run_side_by_side(g, seg, &gated).await
+                } else {
+                    self.run_one(g, &seg[0], &gated[0]).await
+                };
+                batch.sum_ms += ran
+                    .iter()
+                    .flatten()
+                    .map(|r| r.elapsed.as_millis() as u64)
+                    .sum::<u64>();
+                if parallel {
+                    batch.parallel += seg.len();
+                }
+
+                if let Some(interrupt) = interrupted {
+                    // Halted or stopped mid-run: what finished keeps its
+                    // result, the rest is marked not run.
+                    let note = match &interrupt {
+                        Interrupt::Halted(_) => "not run: ferrule halted the run",
+                        Interrupt::Stopped => "not run: the agent was stopped",
                     };
-                    let key = (call.name.clone(), call.arguments.to_string());
-                    repeats = match repeats {
-                        (Some(last), n) if last == key => (Some(last), n + 1),
-                        _ => (Some(key), 1),
+                    for ((call, passed), done) in seg.iter().zip(&gated).zip(&ran) {
+                        let (content, ok) = match done {
+                            Some(done) => (with_pre_note(&done.raw, &passed.pre), done.ok),
+                            None => (note.to_string(), false),
+                        };
+                        self.emit(
+                            &tx,
+                            AgentEvent::ToolCallFinished {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                ok,
+                                output_chars: if done.is_some() { content.len() } else { 0 },
+                            },
+                        )
+                        .await;
+                        self.push(Message::tool_result(&call.id, content));
+                    }
+                    for skipped in &calls[end..] {
+                        self.push(Message::tool_result(&skipped.id, note));
+                    }
+                    return match interrupt {
+                        Interrupt::Halted(why) => Ok(self.halt(&tx, iteration + 1, why).await),
+                        Interrupt::Stopped => {
+                            Err(CoreError::Aborted("the agent was stopped".into()))
+                        }
                     };
-                    // A move starts both counts again, so the next tier
-                    // gets the same allowance.
-                    let moved = (misfits > 0
-                        && self.signal(&tx, Signal::ToolErrors(misfits)).await)
-                        || self.signal(&tx, Signal::Repeated(repeats.1)).await;
-                    if moved {
-                        misfits = 0;
-                        repeats.1 = 0;
+                }
+
+                for (k, (call, (passed, done))) in
+                    seg.iter().zip(gated.into_iter().zip(ran)).enumerate()
+                {
+                    let Ran {
+                        raw, ok, reached, ..
+                    } = done.expect("every call has a result when not interrupted");
+                    let Gated { mut input, pre, .. } = passed;
+                    if !ok {
+                        warn!(tool = %call.name, "tool call failed");
+                    }
+                    if ok && self.tools.changes_files(&call.name) {
+                        unverified = true;
+                        needs_check = true;
+                    }
+                    let mut content = with_pre_note(&raw, &pre);
+                    // PostToolUse follows only a call that was dispatched:
+                    // not one the guard refused or a hook blocked.
+                    if reached {
+                        input.tool_response = Some(serde_json::json!({"ok": ok, "content": raw}));
+                        let post = self.fire(&tx, HookEvent::PostToolUse, input);
+                        let post = match unless_halted(g, post).await {
+                            Ok(post) => post,
+                            Err(why) => {
+                                self.emit(
+                                    &tx,
+                                    AgentEvent::ToolCallFinished {
+                                        id: call.id.clone(),
+                                        name: call.name.clone(),
+                                        ok,
+                                        output_chars: content.len(),
+                                    },
+                                )
+                                .await;
+                                self.push(Message::tool_result(&call.id, content));
+                                // The rest of the segment ran, but its
+                                // PostToolUse hooks didn't: not run, as a
+                                // halt mid-call is.
+                                self.unrun(&tx, &seg[k + 1..]).await;
+                                for skipped in &calls[at + k + 1..] {
+                                    self.push(Message::tool_result(
+                                        &skipped.id,
+                                        "not run: ferrule halted the run",
+                                    ));
+                                }
+                                return Ok(self.halt(&tx, iteration + 1, why).await);
+                            }
+                        };
+                        for note in post.context.iter().chain(post.block.iter().map(|b| &b.1)) {
+                            content.push_str(&format!("\n\n[hook: PostToolUse] {note}"));
+                        }
+                    }
+                    self.emit(
+                        &tx,
+                        AgentEvent::ToolCallFinished {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            ok,
+                            output_chars: content.len(),
+                        },
+                    )
+                    .await;
+
+                    steps.push(Step::new(&call.name, &call.arguments, &raw, ok));
+                    self.push(Message::tool_result(&call.id, content));
+                    if routes {
+                        misfits = if self.tools.misfit(&call.name, &call.arguments) {
+                            misfits + 1
+                        } else {
+                            0
+                        };
+                        let key = (call.name.clone(), call.arguments.to_string());
+                        repeats = match repeats {
+                            (Some(last), n) if last == key => (Some(last), n + 1),
+                            _ => (Some(key), 1),
+                        };
+                        // A move starts both counts again, so the next tier
+                        // gets the same allowance.
+                        let moved = (misfits > 0
+                            && self.signal(&tx, Signal::ToolErrors(misfits)).await)
+                            || self.signal(&tx, Signal::Repeated(repeats.1)).await;
+                        if moved {
+                            misfits = 0;
+                            repeats.1 = 0;
+                        }
                     }
                 }
+                at = end;
+            }
+            // A lone call's wall time is its own time: only a batch has
+            // anything to compare.
+            if batch.calls > 1 {
+                batch.wall_ms = batch_started.elapsed().as_millis() as u64;
+                self.speed.lock().unwrap().tool_batch = Some(batch);
             }
 
             if let Some(stuck) = Stuck::detect(&steps).filter(|_| self.config.detect_stuck) {
@@ -1156,6 +1303,197 @@ impl Agent {
         Ok(answer)
     }
 
+    /// Where the segment starting at `at` ends (exclusive): past every
+    /// read-only call that follows, when there are two or more of them and
+    /// parallel calls are on; one call otherwise.
+    fn segment_end(&self, calls: &[ToolCall], at: usize) -> usize {
+        if self.config.parallel_tools <= 1 || !self.tools.read_only(&calls[at].name) {
+            return at + 1;
+        }
+        let mut end = at + 1;
+        while end < calls.len() && self.tools.read_only(&calls[end].name) {
+            end += 1;
+        }
+        end
+    }
+
+    /// One call through the gate: announced, asked about by the owner's
+    /// guard, then by the PreToolUse hooks. `Err` is a halt.
+    async fn gate(
+        &self,
+        tx: &mpsc::Sender<AgentEvent>,
+        g: Option<&Arc<dyn Guard>>,
+        call: &ToolCall,
+    ) -> Result<Gated, String> {
+        self.emit(
+            tx,
+            AgentEvent::ToolCallStarted {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            },
+        )
+        .await;
+        let mut input = self.hook_input();
+        input.tool_name = Some(call.name.clone());
+        input.tool_input = Some(call.arguments.clone());
+        input.tool_use_id = Some(call.id.clone());
+        let seen = GuardedCall {
+            tool: &call.name,
+            args: &call.arguments,
+            changes_files: self.tools.changes_files(&call.name),
+        };
+        let verdict = match g {
+            Some(gd) => unless_halted(g, gd.before_tool_call(seen)).await?,
+            None => GuardVerdict::Allow,
+        };
+        if let GuardVerdict::Refuse(why) = verdict {
+            return Ok(Gated {
+                input,
+                pre: Fired::default(),
+                settled: Some(format!("refused by ferrule: {why}")),
+            });
+        }
+        let pre = unless_halted(g, self.fire(tx, HookEvent::PreToolUse, input.clone())).await?;
+        let settled = pre
+            .block
+            .as_ref()
+            .map(|(_, reason)| format!("error: not run: a PreToolUse hook blocked it: {reason}"));
+        Ok(Gated {
+            input,
+            pre,
+            settled,
+        })
+    }
+
+    /// `ToolCallFinished` for calls announced but never answered.
+    async fn unrun(&self, tx: &mpsc::Sender<AgentEvent>, calls: &[ToolCall]) {
+        for call in calls {
+            self.emit(
+                tx,
+                AgentEvent::ToolCallFinished {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    ok: false,
+                    output_chars: 0,
+                },
+            )
+            .await;
+        }
+    }
+
+    /// One call, in place, as ferrule always ran them.
+    async fn run_one(
+        &self,
+        g: Option<&Arc<dyn Guard>>,
+        call: &ToolCall,
+        passed: &Gated,
+    ) -> (Vec<Option<Ran>>, Option<Interrupt>) {
+        if let Some(raw) = &passed.settled {
+            return (vec![Some(Ran::settled(raw))], None);
+        }
+        let started = Instant::now();
+        let run = self
+            .tools
+            .call(&call.name, call.arguments.clone(), &self.tool_ctx);
+        match unless_halted(g, run).await {
+            Ok(result) => (vec![Some(Ran::of(result, started.elapsed()))], None),
+            Err(why) => (vec![None], Some(Interrupt::Halted(why))),
+        }
+    }
+
+    /// A segment of read-only calls, side by side: at most
+    /// `parallel_tools` at once, one at a time per serial group, each in
+    /// its own task. A halt or a stop ends the wait; what finished keeps
+    /// its result and the rest is aborted.
+    async fn run_side_by_side(
+        &self,
+        g: Option<&Arc<dyn Guard>>,
+        seg: &[ToolCall],
+        gated: &[Gated],
+    ) -> (Vec<Option<Ran>>, Option<Interrupt>) {
+        let mut ran: Vec<Option<Ran>> = (0..seg.len()).map(|_| None).collect();
+        let slots = Arc::new(tokio::sync::Semaphore::new(
+            self.config.parallel_tools.max(1),
+        ));
+        let mut groups: HashMap<String, Arc<tokio::sync::Mutex<()>>> = HashMap::new();
+        let mut tasks = tokio::task::JoinSet::new();
+        let mut which = HashMap::new();
+        for (k, (call, passed)) in seg.iter().zip(gated).enumerate() {
+            if let Some(raw) = &passed.settled {
+                ran[k] = Some(Ran::settled(raw));
+                continue;
+            }
+            let Some(tool) = self.tools.get(&call.name) else {
+                let missing = CoreError::ToolNotFound(call.name.clone());
+                ran[k] = Some(Ran::of(Err(missing), Duration::ZERO));
+                continue;
+            };
+            let group = tool
+                .serial_group()
+                .map(|name| groups.entry(name).or_default().clone());
+            let slots = slots.clone();
+            let args = call.arguments.clone();
+            let ctx = self.tool_ctx.clone();
+            let handle = tasks.spawn(async move {
+                let _turn = match group {
+                    Some(lock) => Some(lock.lock_owned().await),
+                    None => None,
+                };
+                let _slot = slots.acquire_owned().await;
+                let started = Instant::now();
+                let result = tool.call(args, &ctx).await;
+                (k, result, started.elapsed())
+            });
+            which.insert(handle.id(), k);
+        }
+
+        let halted = async {
+            match g {
+                Some(gd) => gd.halted().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(halted);
+        let poll = Duration::from_millis(25);
+        let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + poll, poll);
+        let settle =
+            |ran: &mut Vec<Option<Ran>>, next: Result<_, tokio::task::JoinError>| match next {
+                Ok((_, (k, result, took))) => ran[k] = Some(Ran::of(result, took)),
+                Err(e) => {
+                    let k = which[&e.id()];
+                    warn!(tool = %seg[k].name, "tool call panicked");
+                    ran[k] = Some(Ran {
+                        raw: "error: the tool crashed".into(),
+                        ok: false,
+                        reached: true,
+                        elapsed: Duration::ZERO,
+                    });
+                }
+            };
+        let interrupt = loop {
+            tokio::select! {
+                biased;
+                why = &mut halted => break Some(Interrupt::Halted(why)),
+                _ = tick.tick() => {
+                    if self.stopped() {
+                        break Some(Interrupt::Stopped);
+                    }
+                }
+                next = tasks.join_next_with_id() => match next {
+                    None => break None,
+                    Some(next) => settle(&mut ran, next),
+                },
+            }
+        };
+        // Cut short: a call that already finished still counts.
+        while let Some(next) = tasks.try_join_next_with_id() {
+            settle(&mut ran, next);
+        }
+        tasks.abort_all();
+        (ran, interrupt)
+    }
+
     /// Ends a run the guard stopped, with the guard's own message as the
     /// answer and no model call: a run stopped for spending too much must
     /// not spend more to say so.
@@ -1197,6 +1535,7 @@ impl Agent {
             tools: self.tools.definitions(),
             max_output_tokens: self.config.max_output_tokens,
             temperature: self.config.temperature,
+            stream: None,
         }
     }
 
@@ -1219,7 +1558,9 @@ impl Agent {
 
     /// Session-start recall, once per agent: the goal is the session's
     /// first user message (a resumed session's history already has one)
-    /// plus this run's request.
+    /// plus this run's request. The block goes in a user message right
+    /// after the goal, never into the system prompt, which stays the same
+    /// bytes for every session (M27: the cached prefix).
     async fn recall_for(&mut self, goal: &str) {
         if self.recalled {
             return;
@@ -1237,9 +1578,8 @@ impl Agent {
             Some(first) if first != goal => format!("{first}\n{goal}"),
             _ => goal.to_string(),
         };
-        if let Some(block) = recall.recall(&query).await.filter(|b| !b.trim().is_empty()) {
-            self.append_system_prompt(&block);
-        }
+        self.memory = recall.recall(&query).await.filter(|b| !b.trim().is_empty());
+        self.memory_due = self.memory.is_some();
     }
 
     /// Adds to the history and the transcript.
@@ -1351,6 +1691,7 @@ impl Agent {
             tools: vec![],
             max_output_tokens: Some(4096),
             temperature: Some(0.0),
+            stream: None,
         };
         let summary = self
             .call_provider(tx, summary_req, iteration, "compaction")
@@ -1391,6 +1732,12 @@ impl Agent {
         if let Some(goal) = self.goal.as_deref().filter(|g| !goal_in_tail(g)) {
             summary_msg.push_str("\n\n[The request being worked on, verbatim]\n");
             summary_msg.push_str(goal);
+        }
+        // Recalled memory lived in the system prompt before M27, where no
+        // compaction reached it; it stays as whole now.
+        if let Some(memory) = self.memory.as_deref().filter(|m| !goal_in_tail(m)) {
+            summary_msg.push_str("\n\n");
+            summary_msg.push_str(memory);
         }
         summary_msg.push_str("\n\nContinue from here.");
         rebuilt.push(Message::user(summary_msg));

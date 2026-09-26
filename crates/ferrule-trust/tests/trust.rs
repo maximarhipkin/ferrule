@@ -489,6 +489,7 @@ async fn the_day_cap_counts_every_process_survives_a_restart_and_resets_at_midni
         eval: None,
         tree: None,
         route: None,
+        speed: None,
     };
     w.sink().record(other.clone());
     // Yesterday's spend (in Jerusalem) doesn't count.

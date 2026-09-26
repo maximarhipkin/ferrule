@@ -9,6 +9,42 @@ pub struct CompletionRequest {
     pub max_output_tokens: Option<u32>,
     /// Harness-controlled: keep sampling deterministic-ish by default.
     pub temperature: Option<f32>,
+    /// Stream the reply into this sink (M27). `None`: the driver sends and
+    /// parses exactly as it did before streaming existed.
+    pub stream: Option<DeltaSink>,
+}
+
+/// A piece of a reply as it streams in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delta {
+    /// Visible answer text.
+    Text(String),
+    /// Bytes that aren't visible text (reasoning, tool arguments): the
+    /// model is alive.
+    Progress,
+    /// Drop what was shown so far: a new call or a new attempt starts.
+    /// Drivers never send it; the agent does.
+    Reset,
+}
+
+/// Where a streaming driver sends its deltas.
+#[derive(Clone)]
+pub struct DeltaSink(pub std::sync::Arc<dyn Fn(Delta) + Send + Sync>);
+
+impl DeltaSink {
+    pub fn new(f: impl Fn(Delta) + Send + Sync + 'static) -> Self {
+        DeltaSink(std::sync::Arc::new(f))
+    }
+
+    pub fn send(&self, delta: Delta) {
+        (self.0)(delta)
+    }
+}
+
+impl std::fmt::Debug for DeltaSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeltaSink")
+    }
 }
 
 /// What a provider returns. `message.tool_calls` non-empty means the loop

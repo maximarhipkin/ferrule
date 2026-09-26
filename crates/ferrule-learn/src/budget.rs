@@ -201,6 +201,7 @@ pub fn row(
         eval: None,
         tree: None,
         route: None,
+        speed: None,
     }
 }
 

@@ -78,6 +78,19 @@ pub trait Tool: Send + Sync {
     fn changes_files(&self) -> bool {
         true
     }
+    /// M27: whether the call only reads, so it may run at the same time as
+    /// other read-only calls from the same response. Stricter than
+    /// `!changes_files()`: a todo list or a memory note changes nothing the
+    /// verify command checks, but it still writes. Unknown means no.
+    fn read_only(&self) -> bool {
+        false
+    }
+    /// M27: calls in the same group never overlap, even when read-only. An
+    /// MCP stdio server is one pipe to one process that may not take a
+    /// second request before the first is answered.
+    fn serial_group(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Tools that can change while an agent runs: MCP servers installed or
@@ -108,6 +121,10 @@ impl ToolRegistry {
     /// same name, so nothing dynamic can replace `shell` or `write_file`.
     pub fn attach(&mut self, source: Arc<dyn ToolSource>) {
         self.sources.push(source);
+    }
+    /// The tool called `name`, registered or from a source.
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.lookup(name)
     }
     fn lookup(&self, name: &str) -> Option<Arc<dyn Tool>> {
         if let Some(t) = self.tools.get(name) {
@@ -147,6 +164,10 @@ impl ToolRegistry {
     }
     pub fn changes_files(&self, name: &str) -> bool {
         self.lookup(name).is_some_and(|t| t.changes_files())
+    }
+    /// Whether `name` is a known tool that only reads (M27).
+    pub fn read_only(&self, name: &str) -> bool {
+        self.lookup(name).is_some_and(|t| t.read_only())
     }
     /// Whether a call can't be right as written: an unknown tool, arguments
     /// that aren't an object, or a field its schema requires left out. M25

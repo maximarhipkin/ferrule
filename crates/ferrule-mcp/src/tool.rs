@@ -29,6 +29,18 @@ impl Tool for McpRemoteTool {
         !self.read_only
     }
 
+    /// The server's `readOnlyHint`. Trusted as far as running side by side
+    /// with other reads; approvals and the sandbox still apply per call.
+    fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn serial_group(&self) -> Option<String> {
+        self.client
+            .is_stdio()
+            .then(|| format!("mcp:{}", self.client.name()))
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.full_name.clone(),

@@ -29,10 +29,10 @@ mod trust;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
-use ferrule_core::{Agent, AgentConfig, AgentEvent, ToolContext, Transcript};
+use ferrule_core::{Agent, AgentConfig, AgentEvent, Delta, DeltaSink, ToolContext, Transcript};
 use ferrule_gateway::{
-    Channel, Gateway, LocalChannel, NewTask, Router, RunOutcome, Scheduler, TaskKind, TaskStore,
-    TelegramChannel,
+    Channel, Gateway, LocalChannel, NewTask, Router, RunOutcome, Scheduler, StreamPacing, TaskKind,
+    TaskStore, TelegramChannel,
 };
 use ferrule_mcp::McpServerConfig;
 use ferrule_memory::MemoryStore;
@@ -471,10 +471,21 @@ fn main() -> Result<()> {
         }
     }
     secrets::load_into_env();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(dispatch(cli.cmd))
+    // The command's future is polled on this thread. Windows gives a main
+    // thread 1 MiB of stack where Linux gives 8, and an agent turn's
+    // future (streaming, a parallel tool batch) outgrew 1 MiB in a debug
+    // build, so the runtime runs on a thread with Linux's 8 MiB everywhere.
+    std::thread::Builder::new()
+        .name("ferrule-main".into())
+        .stack_size(8 << 20)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(dispatch(cli.cmd))
+        })?
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
@@ -976,6 +987,7 @@ fn build_agent_from(
         profile,
         AgentConfig {
             max_iterations,
+            parallel_tools: cfg.agent.parallel_tools.max(1),
             ..Default::default()
         },
         tool_ctx,
@@ -1189,11 +1201,55 @@ fn secrets_warnings(
     warnings
 }
 
+/// What `ferrule chat` streamed of the current model call: its text, and
+/// whether that line is still open.
+#[derive(Default)]
+struct ChatStreamed {
+    shown: String,
+    open: bool,
+}
+
+/// A reply stream that prints each call's text as it comes, on a fresh
+/// line after every reset (M27).
+fn chat_stream() -> (DeltaSink, Arc<std::sync::Mutex<ChatStreamed>>) {
+    let state = Arc::new(std::sync::Mutex::new(ChatStreamed::default()));
+    let keep = state.clone();
+    let sink = DeltaSink::new(move |d| {
+        let mut st = keep.lock().unwrap();
+        match d {
+            Delta::Reset => {
+                if st.open {
+                    println!();
+                }
+                *st = ChatStreamed::default();
+            }
+            Delta::Text(t) if !t.is_empty() => {
+                if !st.open {
+                    print!("\n\x1b[1;32magent:\x1b[0m ");
+                    st.open = true;
+                }
+                print!("{t}");
+                let _ = std::io::stdout().flush();
+                st.shown.push_str(&t);
+            }
+            _ => {}
+        }
+    });
+    (sink, state)
+}
+
 fn spawn_renderer(show_reasoning: bool) -> mpsc::Sender<AgentEvent> {
+    spawn_renderer_with(show_reasoning, false)
+}
+
+/// The event printer; `streamed` leaves out the text a reply stream
+/// already printed.
+fn spawn_renderer_with(show_reasoning: bool, streamed: bool) -> mpsc::Sender<AgentEvent> {
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(256);
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
             match ev {
+                AgentEvent::AssistantText { .. } if streamed => {}
                 AgentEvent::AssistantText { text } => println!("\n\x1b[1massistant:\x1b[0m {text}"),
                 AgentEvent::Reasoning { text } if show_reasoning => {
                     println!(
@@ -1433,6 +1489,15 @@ async fn close_tree(sup: &ferrule_agents::Supervisor, root: &str) {
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
     let (mut agent, sup) = build_root(provider, workspace, 60, &session_id, "chat").await?;
+    // M27: the answer prints as the model writes it.
+    let streamed = config::Config::load()
+        .map(|(cfg, _)| cfg.agent.stream)
+        .unwrap_or(true)
+        .then(|| {
+            let (sink, streamed) = chat_stream();
+            agent.set_reply_stream(Some(sink));
+            streamed
+        });
     println!("ferrule chat — Ctrl-D to exit. Session {session_id}");
     let stdin = std::io::stdin();
     loop {
@@ -1457,10 +1522,16 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
         if prompt.is_empty() {
             continue;
         }
-        let tx = spawn_renderer(false);
-        match agent.run(prompt, tx).await {
+        let tx = spawn_renderer_with(false, streamed.is_some());
+        let result = agent.run(prompt, tx).await;
+        // What the stream already printed isn't printed again.
+        let printed = streamed
+            .as_ref()
+            .map(|s| std::mem::take(&mut *s.lock().unwrap()));
+        match result {
             Ok(text) => match &agent.incomplete {
                 Some(reason) => println!("\n\x1b[1;33magent (incomplete: {reason}):\x1b[0m {text}"),
+                None if printed.as_ref().is_some_and(|p| p.shown == text && p.open) => println!(),
                 None => println!("\n\x1b[1;32magent:\x1b[0m {text}"),
             },
             Err(e) => eprintln!("\x1b[31mrun failed: {e}\x1b[0m"),
@@ -1471,6 +1542,16 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     }
     agent.end_session("exit", &spawn_renderer(false)).await;
     Ok(())
+}
+
+/// The channels whose replies stream (M27): Telegram when
+/// `[gateway] telegram_stream`, or else `[agent] stream`, says so.
+fn streaming_channels(cfg: &config::Config) -> Vec<String> {
+    let telegram = cfg.gateway.telegram_stream.unwrap_or(cfg.agent.stream);
+    telegram
+        .then(|| "telegram".to_string())
+        .into_iter()
+        .collect()
 }
 
 /// Builds every channel enabled in `[gateway]`, keyed by channel name. Shared
@@ -1588,7 +1669,8 @@ async fn run_gateway(
     // doors (see `ferrule_gateway::Gateway::new`'s doc comment).
     let router = Arc::new(
         Router::new(sessions_dir, agent_factory, named_channels.clone())
-            .with_max_turn(health::max_turn(&cfg)),
+            .with_max_turn(health::max_turn(&cfg))
+            .with_streaming(streaming_channels(&cfg), StreamPacing::default()),
     );
     // A chat whose agents report while it's idle is run again, and its
     // answer goes to the chat.
@@ -2477,6 +2559,10 @@ fn ledger_cmd(since: Option<String>) -> Result<()> {
         );
     } else {
         println!("{}", ledger::render_table(&ledger::aggregate(&records)));
+        let speed = ledger::render_speed(&records);
+        if !speed.is_empty() {
+            println!("\n{speed}");
+        }
     }
     if malformed > 0 {
         eprintln!("skipped {malformed} malformed line(s)");
