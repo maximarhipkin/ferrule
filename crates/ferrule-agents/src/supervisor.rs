@@ -1025,12 +1025,17 @@ impl Supervisor {
     /// stopped and its notice isn't delivered yet. Once this is false,
     /// every wake-up for the tree's root has been sent.
     pub fn busy(&self, tree: &str) -> bool {
-        self.finishing.load(Ordering::SeqCst) > 0
-            || self
-                .store
-                .tree(tree)
-                .map(|rows| rows.iter().any(|r| r.status == Status::Running))
-                .unwrap_or(false)
+        // The store first: a run bumps `finishing` before it records its
+        // end, so a row seen stopped means a notice already sent or still
+        // counted. Read the other way round, a run that stops between the
+        // two reads looks like neither, and its notice arrives after the
+        // caller stopped waiting.
+        let running = self
+            .store
+            .tree(tree)
+            .map(|rows| rows.iter().any(|r| r.status == Status::Running))
+            .unwrap_or(false);
+        running || self.finishing.load(Ordering::SeqCst) > 0
     }
 
     /// Items waiting in `id`'s inbox.

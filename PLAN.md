@@ -4372,3 +4372,62 @@ the runner's sshd starts unprivileged.
 **Open edges:** setup's local-model check runs in "Add a provider" and
 not in "Change the model"; `/status` watches the default model only; no
 remote sandbox, remote `code_search`, per-task workspace or streaming.
+
+### 2026-09-26 — Two flaky tests (Devi, Opus 5.5)
+
+Branch `fix-flaky-tests`. A cleanup run, not a milestone: no design or
+user doc, no roadmap change.
+
+**`a_sub_agent_runs_on_a_named_connected_model_and_still_counts_toward_its_trees_budget`
+(models.rs) — a real race in the M12 wake-up path, fixed in the
+product.** `Supervisor::busy` read the `finishing` counter *before* the
+store. A child that stopped between the two reads looked neither running
+(the store already said idle) nor finishing (the counter was read before
+the child bumped it). `ferrule run`'s loop in `run_root` then saw no news
+and a quiet tree, closed the tree, and printed the root's "waiting" answer.
+The child's notice reached the channel a moment later, after nobody was
+listening. A trace of the failing runs showed exactly that order:
+`finished` → store idle → loop break → notice pushed. How a user hits it:
+`ferrule run` with a sub-agent the root doesn't `wait_agent` for, when the
+child finishes just as the root's turn ends. The run exits early, and the
+child's work is closed unread. The fix reads the store first. A run bumps
+`finishing` before it records its end and drops it only after the wake-up
+is sent, so a stopped row means the notice is either counted or already
+queued. `wait` already read in that order. The gateway doesn't call
+`busy`, so only `ferrule run` (and the plan-approval path through
+`run_root`) was affected.
+Before: 25 failures in 960 runs of the single test, 8 at a time (9/480 and
+16/480); the CI failure on PR #28 (ubuntu, run 36249487472) had the same
+`final: ROOT_WAITING`. After: 0 of 1000 the same way.
+
+**`the_watchdog_tells_the_owner_about_another_chats_stuck_turn`
+(health.rs) — the test assumed timing; the product was right.** Windows
+CI (run 36240639111, commit 6587f97) got `Stuck on a model call for 1 s`
+where the test wanted the shell tool's stall. With `watchdog_after_secs =
+1`, the model-call phase (recall, hooks, the HTTP round trip) was quiet
+for a second on the Windows runner. That is a stall of its own, told once,
+and the tool starting re-arms the watchdog for the second one. It never
+failed locally: 0 of 256 under 16 CPU hogs and 32 parallel copies. A
+scripted model that answers after 1.5 s reproduces the Windows message
+exactly. The test now waits for the notice that names the `shell` tool
+and accepts any whole-second duration. With the 1.5-s model it passes.
+After: 0 of 200 runs, 8 at a time under 8 CPU hogs.
+
+**Checks.** 20 full-suite runs (every test binary, 4 suites at a time):
+both tests passed all 20. One unrelated failure turned up, listed below.
+1225 tests, 18 ignored. fmt and clippy `-D warnings` are clean. The starter
+eval against the mock through the real binary is unchanged: engineered
+20/20, naive 11/20, $0.98.
+
+**Other flaky tests seen, not fixed (different causes):**
+- `a_dropped_socket_resumes_with_the_session_and_last_sequence`
+  (ferrule-gateway/tests/discord.rs:249), 1 of 20 suites. The mock counts
+  `resumed` just before it *sends* RESUMED. The client clears
+  `problem()` only when it *reads* it. The test asserts `problem()` is
+  None in between. It should `until(…, || r.ch.problem().is_none())`, as
+  slack.rs does.
+- From PR #28's CI history (macOS): `a_dropped_link_is_interrupted_and_the_next_command_reconnects`
+  (ferrule-ssh/tests/sshd.rs:514), `timeouts_and_output_caps_match_the_local_shell`
+  (sshd.rs:585) and `a_run_over_ssh_works_and_the_key_never_leaves_ssh`
+  (ferrule-cli/tests/ssh.rs:407). M34's last two commits addressed the
+  output-cap one, and none failed on the merged head.
