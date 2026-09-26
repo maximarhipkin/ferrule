@@ -122,6 +122,7 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     let http = probe::client();
     providers(&mut r, &cfg, &http, offline).await;
     models_check(&mut r, ping_models).await;
+    local_check(&mut r, &cfg, &http, offline, ping_models).await;
     let telegram_on = telegram(&mut r, &cfg, &http, offline).await;
     let discord_on = discord(&mut r, &cfg, offline).await;
     let slack_on = slack(&mut r, &cfg, offline).await;
@@ -145,6 +146,56 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
     Ok(r.finish())
+}
+
+/// M34: every provider on a local server (docs/local-models.md): what
+/// the server is, and each model's window against the one ferrule plans
+/// for; with `--ping-models`, the tool probe. Offline: skipped.
+async fn local_check(
+    r: &mut Report,
+    cfg: &config::Config,
+    http: &reqwest::Client,
+    offline: bool,
+    ping: bool,
+) {
+    if offline {
+        return;
+    }
+    let cat = crate::models::Catalog::from_config(cfg);
+    for (name, p) in &cfg.providers {
+        let Some(origin) = crate::local::local_origin(&p.base_url) else {
+            continue;
+        };
+        let Some(server) = crate::local::identify(http, &origin).await else {
+            r.note(
+                "local",
+                format!(
+                    "{name}: {origin} isn't Ollama, llama.cpp, LM Studio or vLLM, or isn't running"
+                ),
+            );
+            continue;
+        };
+        r.ok("local", format!("{name}: {}", server.describe()));
+        for e in cat.entries.iter().filter(|e| e.provider == *name) {
+            let key = e.key().unwrap_or_else(|| "none".into());
+            let planned = e.harness().context_window;
+            for f in
+                crate::local::check_model(http, &server, &e.base_url, &key, &e.model, planned, ping)
+                    .await
+            {
+                let text = format!("{name}: {}", f.text);
+                match f.level {
+                    crate::local::Level::Ok => r.ok("local", text),
+                    crate::local::Level::Note => r.note("local", text),
+                    crate::local::Level::Warn => r.warn("local", text),
+                    crate::local::Level::Fail => r.fail("local", text),
+                }
+                if let Some(fix) = f.fix {
+                    r.hint(fix);
+                }
+            }
+        }
+    }
 }
 
 /// M34: every remote workspace ([ssh.<name>], and an `ssh://` default):

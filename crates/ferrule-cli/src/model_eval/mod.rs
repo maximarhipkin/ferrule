@@ -621,7 +621,7 @@ pub async fn run(
     ));
     let mut profile = ferrule_core::HarnessProfile::by_name(&c.profile);
     if let Some(w) = c.context_window {
-        profile.context_window = w;
+        profile = profile.fitted(w);
     }
     let hub = s.hub.clone();
     let stop = cancel.clone();

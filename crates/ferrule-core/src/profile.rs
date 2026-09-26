@@ -93,6 +93,22 @@ impl HarnessProfile {
         }
     }
 
+    /// This profile on a model whose window is `window` (a configured
+    /// `context_window`, or what a local server really gives). The reserve
+    /// shrinks to a quarter of a small window, so the trigger can't
+    /// underflow; below 16K the threshold rises to 0.80, because there the
+    /// fixed prefix (system prompt, tool schemas) is most of the budget and
+    /// compacting at 70% would compact every turn. A window at least 4× the
+    /// reserve keeps the profile's numbers (docs/m34-ssh-local.md §12).
+    pub fn fitted(mut self, window: usize) -> Self {
+        self.context_window = window;
+        self.output_reserve = self.output_reserve.min((window / 4).max(1024));
+        if window < 16_384 {
+            self.compaction_threshold = self.compaction_threshold.max(0.80);
+        }
+        self
+    }
+
     pub fn by_name(name: &str) -> Self {
         match name {
             "kimi" => Self::kimi(),
@@ -130,6 +146,31 @@ mod tests {
         let usable = k.context_window - k.output_reserve;
         let ratio = t as f32 / usable as f32;
         assert!(ratio > 0.65 && ratio < 0.78, "ratio {ratio}");
+    }
+
+    #[test]
+    fn fitted_keeps_big_windows_and_rescues_small_ones() {
+        let g = HarnessProfile::generic();
+        let big = g.clone().fitted(128_000);
+        assert_eq!(
+            (big.output_reserve, big.compaction_threshold),
+            (16_000, 0.70)
+        );
+        let w32 = g.clone().fitted(32_768);
+        assert_eq!(
+            (w32.output_reserve, w32.compaction_threshold),
+            (8_192, 0.70)
+        );
+        let w8 = g.clone().fitted(8_192);
+        assert_eq!((w8.output_reserve, w8.compaction_threshold), (2_048, 0.80));
+        assert!(w8.compaction_trigger_tokens() > 4_000);
+        let w4 = g.clone().fitted(4_096);
+        assert_eq!(w4.output_reserve, 1_024);
+        assert!(w4.compaction_trigger_tokens() > 2_000);
+        // Unfitted, 8K with generic's 16K reserve left nothing to compact at.
+        let mut raw = g;
+        raw.context_window = 8_192;
+        assert_eq!(raw.compaction_trigger_tokens(), 0);
     }
 
     #[test]

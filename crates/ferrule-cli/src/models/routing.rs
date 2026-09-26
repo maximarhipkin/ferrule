@@ -245,7 +245,9 @@ impl Models {
         if floor.is_some() {
             let tiers = &st.catalog.routing.tiers;
             if let Some(w) = tiers.iter().map(|t| t.entry.harness().context_window).min() {
-                profile.context_window = profile.context_window.min(w);
+                if w < profile.context_window {
+                    profile = profile.fitted(w);
+                }
             }
         }
         Ok((entry, profile))

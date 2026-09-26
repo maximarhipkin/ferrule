@@ -13,6 +13,7 @@ mod health;
 mod hooks_cli;
 mod learn;
 mod ledger;
+mod local;
 mod mcp_add;
 mod mcp_config;
 mod memory_tools;

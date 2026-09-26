@@ -118,6 +118,11 @@ pub fn build(
             )
             .with_stall_hook(Arc::new(move |session: &str| stalls.stalled(session)));
     }
+    // M34: the default model's local server — its window, and whether it
+    // calls tools; lines only when something's wrong.
+    if let Some(local) = crate::local::status_section(cfg) {
+        health = health.with_section("local model", local);
+    }
     if let Some(conns) = crate::connections::shared(cfg) {
         health = health.with_section(
             "connections",
