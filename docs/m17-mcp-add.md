@@ -7,6 +7,10 @@ message, with no restart. This builds on M13 (`docs/m13-self-extension.md`):
 the extension manager, the description scan and the `list_changed` re-scan.
 M13 §13 left `ExtensionManager::add_server` as "the M17 hook".
 
+A tool that doesn't need a whole process can be a WASM plugin instead
+(`ferrule plugins add`, `docs/plugins.md`), with no process and capabilities
+granted one by one.
+
 ## 1. The command
 
 ```

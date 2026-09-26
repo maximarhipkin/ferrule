@@ -28,6 +28,9 @@ Searched in this order; the first skill with a given name wins:
 `ferrule skills disable <name>` / `enable <name>`, or `/skills` in
 Telegram, turn one off and on.
 
+For a tool rather than instructions, a WASM plugin (`docs/plugins.md`)
+adds one in a capability sandbox.
+
 ## Triggers
 
 Add `triggers:` to the frontmatter, and the skill loads with any message

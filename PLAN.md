@@ -582,6 +582,33 @@ that convention yet — ask before introducing one).
       `embedder = "off"`: turning it on is an opt-in download or a paid
       endpoint.
     - **Decisions for Max and open edges:** see the M30 session-log entry.
+  - **M32 WASM tool plugins**: **built** (2026-09-26, branch
+    `m32-wasm-plugins`, PR to main open, not merged). Design and as-built
+    notes are in `docs/m32-wasm-plugins.md`; the user guide is
+    `docs/plugins.md`.
+    - `ferrule-plugins`: wasmi 2.0 (an interpreter, +1.2 MB against
+      wasmtime's +9.4 MB), behind the default-on `plugins` feature. A
+      JSON core-module ABI with one import, `ferrule.host_call`; WASI
+      imports are refused at load.
+    - Capabilities are deny by default: workspace-relative file grants
+      under M26's read deny list, HTTPS to granted domains only through
+      `web_fetch`'s client and the credential proxy, `${SECRET}`
+      expanding to the placeholder only, and opt-in clock and random.
+      Fuel, a deadline, a memory cap and an output cap each turn into a
+      tool error.
+    - Tools are `plugin__<plugin>__<tool>`, with the schema checked
+      before the call. Read-only means claimed and no write grant; an
+      `approval` tool goes through M19's gate; http output is fenced as
+      untrusted.
+    - Install through M13's manager: exact pins plus the wasm SHA-256,
+      the scan, the queue, capabilities shown to the owner, re-approval
+      on widening, suspension on tamper, and hot-add. The owner CLI is
+      `ferrule plugins add/list/remove`, the agent's tools are
+      `plugin_add`/`plugin_remove`, and doctor loads each plugin.
+    - `ferrule-plugin-sdk` (`export!`, host wrappers; `publish = false`
+      until there's a license) and two committed, reproducible examples:
+      `unit-convert` and `github-repo`.
+    - **Decisions for Max and open edges:** see the M32 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -4061,3 +4088,51 @@ Windows until this PR's CI run.
 embedding request (rows still count afterwards); the CLI reindex/search
 rows bypass `trust::equip`'s sink; cross-lingual recall is 3 in 10 at r@5;
 brute-force cosine past ~50k rows.
+
+### 2026-09-26 — M32 WASM tool plugins (Devi, Opus 5.5)
+
+**Scope.** Built `docs/m32-wasm-plugins.md` on branch `m32-wasm-plugins`
+in eight commits:
+- the design;
+- the `ferrule-plugins` runtime;
+- the M19 gate for tools that declare approval;
+- the install flow in `ferrule-extensions`;
+- the CLI and doctor;
+- the SDK;
+- the examples;
+- the proxy test.
+
+The user guide is `docs/plugins.md`.
+
+**Decisions for Max:**
+- wasmi over wasmtime/extism, for size: +1.2 MB against +9.4/+16.2 MB on
+  x86_64-musl. Calls run at interpreter speed, which suits tool glue and
+  doesn't suit heavy compute (design §1).
+- A JSON core-module ABI rather than WIT/WASI. Rust is the only tested
+  language. TinyGo, AssemblyScript, Zig and C should work; javy and
+  componentize-py can't (they need WASI or components).
+- An allow-listed plugin installs without the owner only when it asks for
+  nothing beyond clock/random. Files, http or secrets always reach the
+  owner, and widening goes back to them.
+- An agent-proposed local directory must be inside the workspace and
+  always queues.
+- `/status` and the dashboard don't list plugins, because the health
+  report can't see the extension manager. `plugins list`,
+  `extensions list` and doctor cover it.
+- The SDK has `publish = false`: the repo has no license yet.
+- The example `.wasm` files are committed. They are built reproducibly,
+  so CI never needs the wasm target.
+
+**Checks.** fmt, clippy `-D warnings` and the workspace tests pass. The
+starter eval must stay engineered 20/20, naive 11/20, $0.98; the run
+through the real binary is in the PR report.
+
+**Unverified live:** a `url:` install from a real HTTPS host, and the
+`github-repo` example against the real GitHub (both are `#[ignore]`d or
+mocked through the real proxy). macOS and Windows are unverified until
+this PR's CI run.
+
+**Open edges:** no per-plugin ledger rows (the `http` op is traced, not
+billed). The committed example binaries can go stale against the SDK,
+and the ignored rebuild test is what notices. There is no TinyGo or
+AssemblyScript example.

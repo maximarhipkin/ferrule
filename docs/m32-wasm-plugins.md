@@ -498,3 +498,51 @@ tests.
 
 `release.yml` is dispatched once on the branch to prove the five targets
 build with the feature on, and to measure the archive growth per target.
+
+## 13. As built
+
+Built on branch `m32-wasm-plugins` in seven parts (design, runtime,
+approval gate, install flow, CLI, SDK, examples, proxy test). The design
+held with these differences:
+
+- **CLI.** It is `ferrule plugins add <source> [--path] [--sha256]
+  [--replace] [--workspace]`, `list` and `remove <name>`. There is no
+  `--yes` or `--purge`: `add` always asks at a terminal (it refuses
+  without one), and `remove` deletes the plugin's directory. A bare
+  `https://…/plugin.json` is taken as `url:`, and any other `https://` as
+  `git:`. Plain `http://` is refused.
+- **Allow-listed sources.** They install without the owner only when the
+  plugin asks for nothing beyond `clock`/`random`, or for nothing beyond
+  what an earlier approval already granted. A local directory proposed by
+  the agent must be inside the workspace and always queues. An owner "yes"
+  given before the capabilities were known (a pending request approved
+  from its summary) is asked again with them.
+- **`/status` and the dashboard** don't list plugins. The health report
+  lives in `ferrule-gateway`, which doesn't see the extension manager, so
+  it wasn't the small change §5 allowed. `ferrule plugins list`,
+  `ferrule extensions list` and doctor cover it.
+- **SDK.** `ferrule-plugin-sdk` has the full crates.io metadata but
+  `publish = false`: the repository has no license yet. To publish, add
+  one and drop that line. The random op's wrapper is `random_hex(len)`
+  (the op returns hex), not `random_bytes`. There are no path-only
+  dependencies (serde and serde_json only).
+- **Examples.** `unit-convert` does length, mass and temperature (no data
+  sizes). `build.sh` builds with `--remap-path-prefix`, so the committed
+  modules carry no builder paths, and a rebuild is byte-identical:
+  `unit_convert.wasm` 86,827 B, `github_repo.wasm` 97,899 B. The ignored
+  tests are `build_sh_reproduces_the_committed_modules` and
+  `github_repo_answers_live` in `crates/ferrule-plugins/tests/examples.rs`.
+- **Timeout test.** It is a loop against a short `timeout_secs`
+  (`a_deadline_stops_a_loop`), not a sleeping host op. The deadline is
+  checked between fuel slices either way.
+
+Where the tests are:
+
+| what | where |
+|---|---|
+| load checks, capabilities, limits, fencing, read-only, cancel | `crates/ferrule-plugins/tests/runtime.rs` (WAT probe) |
+| the committed examples | `crates/ferrule-plugins/tests/examples.rs` |
+| placeholder swap through the real proxy, undeclared domain, no route without it | `crates/ferrule-proxy/tests/plugin.rs` |
+| the M19 gate for `approval` tools | `crates/ferrule-trust/tests/trust.rs` (`a_tool_that_asks_for_approval_goes_through_the_gate`) |
+| install: pin, scan, queue, capabilities, widening, tamper, hot-add, schema refusal | `crates/ferrule-extensions/tests/plugins.rs` |
+| the CLI and doctor through the binary | `crates/ferrule-cli/tests/plugins.rs` |
