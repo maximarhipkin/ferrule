@@ -244,6 +244,26 @@ pub fn health(ctx: &Ctx) -> Value {
     if let Some(m) = &ctx.models {
         model_problems(m, ctx.live.as_ref(), &mut problems);
     }
+    // M34: the remote workspace's link and the local model's server.
+    if ctx.live.is_some() {
+        if let Some(line) = crate::remote::status_lines().into_iter().next() {
+            out["workspace"] = json!(ctx.redactor.redact(&line));
+        }
+        if let Some(down) = crate::remote::probe() {
+            problems.push(json!({
+                "what": ctx.redactor.redact(&down),
+                "fix": "The link reconnects by itself; `ferrule ssh test <name>` says why it can't.",
+                "section": "health",
+            }));
+        }
+        for line in crate::local::problems() {
+            problems.push(json!({
+                "what": ctx.redactor.redact(&line),
+                "fix": "`ferrule doctor --ping-models` has the fix; docs/local-models.md explains it.",
+                "section": "health",
+            }));
+        }
+    }
     out["problems"] = json!(problems);
     out
 }

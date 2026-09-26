@@ -7,7 +7,7 @@
 
 use crate::config::Config;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 /// Each detection request's budget: a local server answers in
@@ -820,18 +820,36 @@ pub async fn check_model(
     out
 }
 
+/// The gateway's local-model lines, for `/status` and the dashboard.
+static LINES: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
+
+/// What's wrong with the default model's local server now; empty when
+/// nothing is, or it isn't local.
+pub fn problems() -> Vec<String> {
+    LINES
+        .get()
+        .map(|l| l.lock().unwrap_or_else(|p| p.into_inner()).clone())
+        .unwrap_or_default()
+}
+
 /// The gateway's `/status` section for the default model, when it's on a
 /// local server: its window at start and every [`RECHECK`], the tool
 /// probe once at start. Lines only when something's wrong.
 pub fn status_section(cfg: &Config) -> Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>> {
+    watch(cfg, crate::probe::client())
+}
+
+fn watch(
+    cfg: &Config,
+    http: reqwest::Client,
+) -> Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>> {
     let cat = crate::models::Catalog::from_config(cfg);
     let entry = cat.default_entry().ok()?.0.clone();
     let origin = local_origin(&entry.base_url)?;
     let handle = tokio::runtime::Handle::try_current().ok()?;
-    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let lines = LINES.get_or_init(Default::default).clone();
     let out = lines.clone();
     handle.spawn(async move {
-        let http = crate::probe::client();
         let planned = entry.harness().context_window;
         let key = entry.key().unwrap_or_else(|| "none".into());
         let mut first = true;
@@ -1184,6 +1202,35 @@ mod tests {
         assert!(found
             .iter()
             .any(|f| f.text.contains("template has no tool support")));
+    }
+
+    #[tokio::test]
+    async fn the_gateway_watch_says_what_is_wrong_and_nothing_else() {
+        let origin = ollama_server(
+            r#"{"models":[{"name":"qwen3-coder:30b","model":"qwen3-coder:30b","context_length":4096}]}"#,
+        );
+        let cfg: Config = toml::from_str(&format!(
+            "default_provider = \"ollama\"\n[providers.ollama]\nbase_url = \"{origin}/v1\"\napi_key_env = \"FERRULE_TEST_NONE\"\nmodel = \"qwen3-coder:30b\"\n"
+        ))
+        .unwrap();
+        let section = watch(&cfg, http()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while section().is_empty() {
+            assert!(std::time::Instant::now() < deadline, "no status line");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // The probe gets a 404 here (no chat route): only the window line.
+        assert_eq!(
+            section(),
+            vec!["local: qwen3-coder:30b window 4096 < 128000 planned (Ollama drops the front of long prompts)"]
+        );
+        assert_eq!(problems(), section());
+        // A hosted default has no watch at all.
+        let hosted: Config = toml::from_str(
+            "default_provider = \"x\"\n[providers.x]\nbase_url = \"https://api.example.com/v1\"\napi_key_env = \"K\"\nmodel = \"m\"\n",
+        )
+        .unwrap();
+        assert!(watch(&hosted, http()).is_none());
     }
 
     #[test]
