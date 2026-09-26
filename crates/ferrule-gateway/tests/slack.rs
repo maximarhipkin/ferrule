@@ -234,9 +234,13 @@ async fn a_silent_socket_is_closed_and_reopened() {
     // socket at all: an `apps.connections.open` address that never talks.
     let (dead, port) = support::bind();
     let listener = dead;
+    // Blocking, and so its sockets: on macOS and Windows an accepted socket
+    // inherits the listener's non-blocking mode, and the handshake fails.
+    listener.set_nonblocking(false).unwrap();
     std::thread::spawn(move || {
         let mut held = vec![];
         for stream in listener.incoming().flatten() {
+            let _ = stream.set_nonblocking(false);
             let mut ws = match tokio_tungstenite::tungstenite::accept(stream) {
                 Ok(ws) => ws,
                 Err(_) => continue,

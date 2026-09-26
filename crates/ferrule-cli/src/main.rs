@@ -484,12 +484,15 @@ fn main() -> Result<()> {
     // thread 1 MiB of stack where Linux gives 8, and an agent turn's
     // future (streaming, a parallel tool batch) outgrew 1 MiB in a debug
     // build, so the runtime runs on a thread with Linux's 8 MiB everywhere.
+    // Its workers too: they poll the gateway's turns, and on Windows those
+    // outgrew tokio's 2 MiB once the Discord and Slack channels came in (M31).
     std::thread::Builder::new()
         .name("ferrule-main".into())
         .stack_size(8 << 20)
         .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
+                .thread_stack_size(8 << 20)
                 .build()?
                 .block_on(dispatch(cli.cmd))
         })?
