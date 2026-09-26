@@ -22,7 +22,7 @@ pub mod stream;
 pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
 };
-pub use channels::{LocalChannel, TelegramChannel};
+pub use channels::{DiscordChannel, LocalChannel, TelegramChannel};
 pub use error::GatewayError;
 pub use gateway::{Gateway, Interceptor, ACK_EMOJI};
 pub use health::{

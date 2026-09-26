@@ -141,6 +141,27 @@ fn proxy_for(host: &str, tls: bool) -> Option<(String, u16, Option<String>)> {
     Some((phost, pport, creds))
 }
 
+/// The HTTP client for a channel's API: a mock on the loopback is never
+/// sent through a proxy (reqwest would, from `HTTPS_PROXY`).
+pub fn http_client(api: &str, connect: Duration, request: Duration) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+    let host = api
+        .split_once("://")
+        .map_or(api, |(_, rest)| rest)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("");
+    if is_loopback(host) {
+        builder = builder.no_proxy();
+    }
+    builder
+        .connect_timeout(connect)
+        .timeout(request)
+        .tcp_keepalive(Duration::from_secs(30))
+        .build()
+        .expect("reqwest client")
+}
+
 fn is_loopback(host: &str) -> bool {
     host == "localhost"
         || host
