@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-911-8a929a" alt="911 workspace tests">
+  <img src="https://img.shields.io/badge/tests-969-8a929a" alt="969 workspace tests">
 </p>
 
 <p align="center">
@@ -179,6 +179,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Providers & models** | Three drivers: native Anthropic Messages (prompt caching, optional extended thinking), OpenAI Responses (the Codex models, reasoning effort) and OpenAI-compatible Chat for OpenAI, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on outage, and the ledger records the model that actually answered, cache reads and writes included. Optional routing: start every turn on a cheap model and move up to a stronger one only on a failure (a failed check, broken tool calls, going in circles, `/model strong`), with a daily cap on the strong spend. All three drivers stream, read-only tool calls run in parallel, and the prompt prefix stays byte-stable so the cache hits ([`docs/models.md`](docs/models.md), [`docs/m23-drivers.md`](docs/m23-drivers.md), [`docs/routing.md`](docs/routing.md), [`docs/speed.md`](docs/speed.md)). |
 | **Connections** | The agent connects Jira and Confluence, Gmail, Drive, Notion, Linear, Attio and GitHub by itself. It asks, you tap one Telegram button, and the OAuth code (always PKCE) comes back through your own small Cloudflare Worker relay, a `cloudflared` quick tunnel or a pasted URL, so no inbound port. Tokens are sealed on disk, refreshed per request and never shown to the model. Read-only by default; writes ask you first ([`docs/m20-connections.md`](docs/m20-connections.md)). |
 | **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. `web_search` through Brave, Tavily, Exa or your own SearXNG: the key never leaves the proxy, and every search is a ledger row with a daily cap. Off until `ferrule setup` → Web search ([`docs/web-search.md`](docs/web-search.md)). |
+| **Editing** | `edit_file`: SEARCH/REPLACE edits, all or nothing, never fuzzy on content, keeping line endings and encoding. In a code repo, a tree-sitter repo map (Rust, Python, TS/JS, Go, Java) and `code_search` for definitions and references. Per-edit lint with your project's own rustfmt, ruff, gofmt, eslint or tsc. Optional auto-commit of the agent's own changes on a `ferrule/auto-*` branch, never pushed; `ferrule undo` or `/undo` takes it back ([`docs/editing.md`](docs/editing.md)). |
 | **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. `ferrule mcp add` tests and scans a server, then adds it to the running daemon without a restart. |
 | **Browser** | agent-browser's MCP server on your installed Chrome, in the sandbox and behind the proxy ([`docs/browser.md`](docs/browser.md)). |
 | **Sub-agents** | `spawn_agent` / `wait` / `resume` / `close`: planner, worker and verifier roles with isolated contexts, a worktree per child, roles on their own providers, tree limits and a shared budget ([`docs/agents.md`](docs/agents.md)). |
@@ -516,6 +517,7 @@ crates/
   ferrule-gateway    daemon: channels (Telegram, local), session router, scheduler
   ferrule-mcp        MCP client: sandboxed stdio servers, Streamable HTTP servers
   ferrule-skills     Agent Skills discovery and loading
+  ferrule-codemap    tree-sitter repo map and code search
   ferrule-sandbox    OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt)
   ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing
   ferrule-cli        the `ferrule` binary
@@ -524,7 +526,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 911 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 969 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -605,12 +607,15 @@ and a dated entry for every session.
       cache-stable prompt prefix
 - [x] M28: `web_search` (Brave, Tavily, Exa, SearXNG) through the proxy
       and the ledger, and keyword-triggered skills
+- [x] M29: edit mechanics — `edit_file` SEARCH/REPLACE, a tree-sitter
+      repo map and `code_search`, per-edit lint, optional auto-commit
+      with undo
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M29 edit
-mechanics and a tree-sitter repo map, M30 vector recall, M31 Discord
+Every open track, in order (Max, 25.09: "do everything"): M30 vector
+recall, M31 Discord
 and Slack, M32 WASM plugins, M33 ops (SSH, egress policy, OTel,
 importers).
 
@@ -623,9 +628,8 @@ Designed and now queued above: code-extension plugins (M32).
 
 - [ ] Vector recall (local embeddings) merged with BM25
 - [ ] WASM tool plugins
-- [ ] Tree-sitter semantic code search
 - [ ] More channels (Discord, Slack, WhatsApp — in that order)
-- [ ] The strategy backlog: Aider-style edit mechanics, local-model
+- [ ] The strategy backlog: local-model
       polish, migration importers, an SSH backend, egress
       domain policy, OTel export
       ([strategy](docs/research-number-one-harness-strategy.md))
