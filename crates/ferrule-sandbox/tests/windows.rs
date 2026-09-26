@@ -319,6 +319,14 @@ fn the_exit_code_and_output_come_back() {
             shell.name,
             show(&out)
         );
+        // The PowerShell prelude must not error under the token's
+        // ConstrainedLanguage mode.
+        assert!(
+            out.stderr.is_empty(),
+            "{}: stderr: {}",
+            shell.name,
+            show(&out)
+        );
     }
 }
 

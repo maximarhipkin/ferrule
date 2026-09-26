@@ -78,6 +78,10 @@ setx FERRULE_SHELL powershell   # then restart ferrule (or its service)
 is told which shell it has, and with PowerShell it writes PowerShell
 syntax.
 
+Under the token, PowerShell runs in **ConstrainedLanguage** mode: cmdlets
+and pipelines work, but arbitrary .NET calls and `Add-Type` don't, and
+output stays in the console's code page instead of UTF-8.
+
 MCP servers aren't affected. They run their own program (python, node…)
 under the token, not a shell.
 

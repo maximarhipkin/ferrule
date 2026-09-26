@@ -347,6 +347,10 @@ design above:
   - An automatic switch to PowerShell was rejected: the brief says to
     degrade, and a silent change of shell also changes the syntax the
     model must write.
+- **PowerShell under the token runs in ConstrainedLanguage mode** (seen in
+  CI). The UTF-8 output prelude sets a .NET property, which that mode
+  refuses, so it now runs only in FullLanguage, and a tier-1 test asserts
+  that a PowerShell command's stderr is empty.
 - **The restricted token's handle** needs `TOKEN_ADJUST_DEFAULT` on the
   source token so its default DACL can be set (found by CI).
 - **`harden_self()` is a no-op** when ferrule's own token lacks an enabled

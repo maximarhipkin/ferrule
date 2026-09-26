@@ -76,8 +76,14 @@ impl Shell {
             ShellKind::Posix => vec!["-c".into(), script.into()],
             ShellKind::PowerShell => {
                 // Windows PowerShell writes redirected output in the OEM code
-                // page; ask for UTF-8 so non-ASCII text survives.
-                let script = format!("[Console]::OutputEncoding = [Text.Encoding]::UTF8\n{script}");
+                // page; ask for UTF-8 so non-ASCII text survives. Under the
+                // sandbox's token PowerShell runs in ConstrainedLanguage mode,
+                // where setting that property is an error on every command,
+                // so it is set only in FullLanguage.
+                let script = format!(
+                    "if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') \
+                     {{ [Console]::OutputEncoding = [Text.Encoding]::UTF8 }}\n{script}"
+                );
                 [
                     "-NoLogo",
                     "-NoProfile",
