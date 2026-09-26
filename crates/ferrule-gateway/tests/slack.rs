@@ -212,23 +212,18 @@ async fn a_closed_socket_reconnects() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_disabled_link_is_explained_and_retried() {
-    let buf = Buf::default();
-    let b = buf.clone();
-    let sub = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_writer(move || b.clone())
-        .finish();
-    let _g = tracing::subscriber::set_default(sub);
     let s = Slack::start();
     let r = start(&s, &["U1"], &[]).await;
     s.send(json!({ "type": "disconnect", "reason": "link_disabled" }));
+    // On this one thread the problem stays up for the whole backoff, and
+    // the poll comes round twice as often.
+    until("the problem named", T, || {
+        r.ch.problem()
+            .is_some_and(|p| p.contains("Socket Mode is off for this app (link_disabled)"))
+    })
+    .await;
     until("a second socket", T, || s.state().connections >= 2).await;
     until("hello clears it", T, || r.ch.problem().is_none()).await;
-    let logs = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
-    assert!(
-        logs.contains("Socket Mode is off for this app (link_disabled)"),
-        "{logs}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -765,6 +760,9 @@ async fn no_log_line_or_error_carries_a_token_or_the_socket_ticket() {
         .with_writer(move || b.clone())
         .finish();
     let _g = tracing::subscriber::set_default(sub);
+    // Another test may have cached these callsites as off before this
+    // subscriber existed.
+    tracing::callsite::rebuild_interest_cache();
     let s = Slack::start();
     let mut r = start(&s, &["U1"], &[]).await;
     s.close();

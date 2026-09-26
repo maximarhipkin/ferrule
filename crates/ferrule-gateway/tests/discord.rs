@@ -770,6 +770,9 @@ async fn no_log_line_or_error_carries_the_token() {
         .with_writer(move || b.clone())
         .finish();
     let _g = tracing::subscriber::set_default(sub);
+    // Another test may have cached these callsites as off before this
+    // subscriber existed.
+    tracing::callsite::rebuild_interest_cache();
     let d = Discord::start();
     d.state().plans.push_back(Plan::Close(1011));
     let mut r = start(&d, &["1001"], &[]).await;
