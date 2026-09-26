@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-1009-8a929a" alt="1009 workspace tests">
+  <img src="https://img.shields.io/badge/tests-1075-8a929a" alt="1075 workspace tests">
 </p>
 
 <p align="center">
@@ -187,7 +187,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. Add `triggers: [ship it, release]` and the skill loads when your message says so, Hebrew included; only what a person types counts, never a web page or tool output ([`docs/skills.md`](docs/skills.md)). |
 | **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall, plus optional meaning-based recall (a local multilingual model or any OpenAI-compatible `/v1/embeddings` endpoint) merged with it ([`docs/memory.md`](docs/memory.md)). `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
 | **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons, kept only when the task passes twice with the lesson in the prompt ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md)). |
-| **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Telegram replies grow as they're written, edited about once a second (`[gateway] telegram_stream`). Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
+| **Gateway** | A long-running daemon with Telegram, Discord, Slack and local channels, all at once, one session lane per chat, resumed across restarts. Discord and Slack connect out over a WebSocket (no public URL) and approve with buttons ([`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md)). Telegram replies grow as they're written, edited about once a second (`[gateway] telegram_stream`). Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
 | **Dashboard** | One page for the whole app: health first, connections, models with an OpenRouter catalog, prices and recommendations, usage, tasks, logs, extensions and sub-agents. Send `/dashboard` and get a one-use 10-minute link; a `cloudflared` quick tunnel opens on demand and `/dashboard off` revokes it all. Caps, MCP servers, skills, hooks and task schedules are edited from the page, a candidate model can be evaluated on the starter suite (cost shown first), and the login survives a restart. It never calls the model, so it works when every model is down ([`docs/dashboard.md`](docs/dashboard.md)). |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
 | **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, secret env vars are stripped, and reads of ferrule's secrets, credential dirs and your `deny_read` paths are denied. On Windows: a restricted token in a job object, no admin rights; commands need PowerShell there, since Git Bash can't start under the token ([below](#windows), [`docs/sandbox.md`](docs/sandbox.md)). |
@@ -245,7 +245,9 @@ enter them:
    the key, pick a model from the ones the key can use.
 2. **Telegram** (optional): paste the token from
    [@BotFather](https://t.me/BotFather), then message the bot. Your chat
-   goes on the bot's allow-list; it ignores everyone else.
+   goes on the bot's allow-list; it ignores everyone else. **Discord** and
+   **Slack** are the next two steps, each optional
+   ([`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md)).
 3. **Tool credentials** (optional): tokens the agent's commands may use,
    such as `GITHUB_TOKEN`, each bound to the hosts it's for (see the
    [credential gateway](#credential-gateway)).
@@ -388,9 +390,23 @@ telegram_allowed_chats = [123456789]   # everyone else is ignored
 ferrule gateway          # long-polls Telegram; one session per chat
 ```
 
+**Discord and Slack** run in the same daemon, next to Telegram:
+
+```toml
+[gateway]
+discord_token_env = "DISCORD_BOT_TOKEN"
+discord_allowed_users = ["123456789012345678"]
+slack_bot_token_env = "SLACK_BOT_TOKEN"   # xoxb-
+slack_app_token_env = "SLACK_APP_TOKEN"   # xapp-
+slack_allowed_users = ["U0123ABCD"]
+```
+
 Anyone can find a bot and message it, so only the chats in
 `telegram_allowed_chats` reach the agent. While the list is empty, the bot
 answers each new chat once with its chat id and forwards nothing.
+Discord and Slack follow the same rule with their own user lists, and in
+a shared channel they answer only when mentioned. Setup can pair you
+with a six-digit code.
 
 **Scheduled tasks** run inside `ferrule gateway`, so it has to be running:
 
@@ -527,7 +543,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 1009 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 1075 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -613,13 +629,15 @@ and a dated entry for every session.
       with undo
 - [x] M30: vector recall — local or `/v1/embeddings` embeddings
       merged with BM25, off by default
+- [x] M31: Discord (Gateway WebSocket) and Slack (Socket Mode) channels,
+      streamed replies and button approvals, in the same daemon
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M31 Discord
-and Slack, M32 WASM plugins, M33 ops (SSH, egress policy, OTel,
-importers).
+Every open track, in order (Max, 25.09: "do everything"): M32 WASM
+plugins, M33 ops (egress policy, OTel, importers), M34 an SSH
+execution backend and local-model first-run polish.
 
 M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
@@ -629,7 +647,7 @@ Designed and now queued above: code-extension plugins (M32).
 **Planned**
 
 - [ ] WASM tool plugins
-- [ ] More channels (Discord, Slack, WhatsApp — in that order)
+- [ ] WhatsApp (options in [`docs/m31-channels.md`](docs/m31-channels.md))
 - [ ] The strategy backlog: local-model
       polish, migration importers, an SSH backend, egress
       domain policy, OTel export
