@@ -562,6 +562,25 @@ PR to `main` open, not merged.
 **Done means.** On a real pair, `routed` passes close to `strong` at close
 to `cheap`'s price, and the ledger says why each escalation happened.
 
+### M26 — isolation
+
+**Status.** Built (`docs/m26-isolation.md`; user guides `docs/sandbox.md`
+and `docs/windows-sandbox.md`). PR to `main` open, not merged.
+- Sandboxed reads: ferrule's secrets, the usual credential dirs and
+  browser profiles, and the owner's `deny_read` are closed to commands, MCP
+  servers and the file tools. `allow_read` re-opens a default.
+- A native Windows sandbox with no admin: a restricted token in a job
+  object. Writes stay in the workspace and temp, the tree dies with the
+  command, and ferrule's secrets and process are shut. The network isn't
+  enforced there.
+- Plain-HTTP `web_fetch` goes through the credential proxy. A
+  `sandbox = false` MCP server still can't read the secrets, and doctor
+  lists what it can do.
+
+**Done means.** A prompt-injected command can't `cat ~/.ssh/id_ed25519` or
+the saved keys on any OS, and a Windows user gets the same write
+confinement as Linux and macOS.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
