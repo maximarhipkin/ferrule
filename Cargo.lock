@@ -1099,6 +1099,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrule-ssh"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "ferrule-core",
+ "ferrule-sandbox",
+ "ferrule-tools",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "ferrule-tools"
 version = "0.3.0"
 dependencies = [
