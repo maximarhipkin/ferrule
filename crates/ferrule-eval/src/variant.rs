@@ -16,6 +16,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// M29 `--edit-tools`: which file-writing tools every variant is offered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EditTools {
+    /// `write_file` and `edit_file`, as ferrule ships.
+    #[default]
+    Both,
+    /// `write_file` only, as before M29.
+    WriteOnly,
+}
+
+impl EditTools {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "both" => Some(Self::Both),
+            "write-only" => Some(Self::WriteOnly),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Variant {
@@ -105,6 +126,8 @@ pub struct Build<'a> {
     /// The eval runner passes one only when a suite opts in; the learning
     /// pass's gate passes the candidate playbook.
     pub playbook: Option<&'a str>,
+    /// M29: `write_file` alone, or with `edit_file`.
+    pub edit_tools: EditTools,
 }
 
 /// The base of ferrule's own system prompt, kept in step with the CLI's
@@ -142,6 +165,9 @@ pub fn build(b: Build<'_>) -> Agent {
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
+    if b.edit_tools == EditTools::WriteOnly {
+        registry.remove("edit_file");
+    }
     if b.sandbox.policy().mode == Mode::ReadOnly {
         registry.remove("write_file");
         registry.remove("edit_file");

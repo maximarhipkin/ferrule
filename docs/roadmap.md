@@ -601,6 +601,27 @@ PR to `main` open, not merged.
 a second, the ledger's cache hit climbs across sessions, and a turn of
 several reads takes about as long as its slowest one.
 
+### M29 — edit mechanics
+
+**Status.** Built (`docs/m29-edit-mechanics.md`; user guide
+`docs/editing.md`). PR to `main` open, not merged.
+- `edit_file`: SEARCH/REPLACE edits that apply all or nothing, never
+  fuzzily, keep the file's line endings and encoding, and fail with the
+  closest region and what to try next. `write_file` stays in every
+  profile.
+- A tree-sitter repo map (Aider-style PageRank, cache-friendly placement)
+  and `code_search` for definitions and references, in code repos only.
+- Per-edit lint with the project's own rustfmt/ruff/gofmt/eslint/tsc, as
+  a built-in PostToolUse hook.
+- Optional auto-commit of exactly the agent's files on its own branch,
+  with `ferrule undo` and `/undo`.
+- `ferrule eval --edit-tools write-only` to measure `edit_file` against
+  whole-file rewrites.
+
+**Done means.** On a real model, `--edit-tools both` passes at least as
+often as `write-only` for fewer tokens per pass, and an unattended run's
+changes arrive as one reviewable, undoable commit.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

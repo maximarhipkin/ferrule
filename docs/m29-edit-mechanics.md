@@ -512,8 +512,13 @@ none gets the map or `code_search`.
 What changes is the tool list. Both variants now also carry `edit_file`'s
 schema, and `write_file`'s description is longer. The mock prices only the
 messages (`prompt_chars // 4`), so its token and cost numbers can't move.
-A real provider pays for the schemas on every call. The exact per-call
-delta is given in `docs/editing.md` once built.
+A real provider pays for the schemas on every call: ~227 tokens more
+per call (chars / 4). That is `edit_file`'s schema (820 chars, ~205) plus
+`write_file`'s longer description (160 chars, was 73, ~22). Over the
+starter A/B's 150 calls that's ~34k input tokens, mostly cached.
+`docs/editing.md` has the table. Measured on the real binary against the
+mock: engineered 20/20, naive 11/20, $0.98, identical with
+`--edit-tools write-only`.
 
 `ferrule eval run … --edit-tools both|write-only` (default `both`)
 compares `write_file` alone against `edit_file` offered, with everything
