@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-1181-8a929a" alt="1181 workspace tests">
+  <img src="https://img.shields.io/badge/tests-1225-8a929a" alt="1225 workspace tests">
 </p>
 
 <p align="center">
@@ -177,11 +177,13 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 |---|---|
 | **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
 | **Providers & models** | Three drivers: native Anthropic Messages (prompt caching, optional extended thinking), OpenAI Responses (the Codex models, reasoning effort) and OpenAI-compatible Chat for OpenAI, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on outage, and the ledger records the model that actually answered, cache reads and writes included. Optional routing: start every turn on a cheap model and move up to a stronger one only on a failure (a failed check, broken tool calls, going in circles, `/model strong`), with a daily cap on the strong spend. All three drivers stream, read-only tool calls run in parallel, and the prompt prefix stays byte-stable so the cache hits ([`docs/models.md`](docs/models.md), [`docs/m23-drivers.md`](docs/m23-drivers.md), [`docs/routing.md`](docs/routing.md), [`docs/speed.md`](docs/speed.md)). |
+| **Local models** | `ferrule setup` finds Ollama, llama.cpp, LM Studio and vLLM on this machine, compares the context window the server really gives with what the harness needs, and says how to fix a small one (on Ollama it can make a larger-window copy of the model, on a yes). A probe tells "this model can't call tools" apart from "its template is broken", and doctor and `/status` keep checking after setup ([`docs/local-models.md`](docs/local-models.md)). |
 | **Connections** | The agent connects Jira and Confluence, Gmail, Drive, Notion, Linear, Attio and GitHub by itself. It asks, you tap one Telegram button, and the OAuth code (always PKCE) comes back through your own small Cloudflare Worker relay, a `cloudflared` quick tunnel or a pasted URL, so no inbound port. Tokens are sealed on disk, refreshed per request and never shown to the model. Read-only by default; writes ask you first ([`docs/m20-connections.md`](docs/m20-connections.md)). |
 | **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. `web_search` through Brave, Tavily, Exa or your own SearXNG: the key never leaves the proxy, and every search is a ledger row with a daily cap. Off until `ferrule setup` → Web search ([`docs/web-search.md`](docs/web-search.md)). |
 | **Editing** | `edit_file`: SEARCH/REPLACE edits, all or nothing, never fuzzy on content, keeping line endings and encoding. In a code repo, a tree-sitter repo map (Rust, Python, TS/JS, Go, Java) and `code_search` for definitions and references. Per-edit lint with your project's own rustfmt, ruff, gofmt, eslint or tsc. Optional auto-commit of the agent's own changes on a `ferrule/auto-*` branch, never pushed; `ferrule undo` or `/undo` takes it back ([`docs/editing.md`](docs/editing.md)). |
 | **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. `ferrule mcp add` tests and scans a server, then adds it to the running daemon without a restart. |
 | **Browser** | agent-browser's MCP server on your installed Chrome, in the sandbox and behind the proxy ([`docs/browser.md`](docs/browser.md)). |
+| **SSH workspaces** | Point the agent at a directory on another machine: `--workspace ssh://user@host/srv/app`. Shell and file tools run there over your own OpenSSH, with strict host keys (first contact only after you confirm the fingerprint, a changed key stops everything), keys never read by ferrule, and the credential proxy carried through, so placeholders work remotely and the real key never lands on the host. Approvals, caps, `/stop` and hooks apply unchanged; the remote account is the boundary ([`docs/ssh.md`](docs/ssh.md)). |
 | **Sub-agents** | `spawn_agent` / `wait` / `resume` / `close`: planner, worker and verifier roles with isolated contexts, a worktree per child, roles on their own providers, tree limits and a shared budget ([`docs/agents.md`](docs/agents.md)). |
 | **Self-extension** | The agent installs vetted skills and MCP servers for itself: a poisoning scan, version pinning and an allow-list ([`docs/m13-self-extension.md`](docs/m13-self-extension.md)). |
 | **Plugins** | WASM tool plugins: small sandboxed tools, the same sandbox on every OS, nothing to install. A plugin reaches only what it was granted — workspace directories, HTTPS to its declared domains through the credential proxy, secrets as placeholders only — and you approve its capabilities at install; widening them asks again. `ferrule plugins add / list / remove`, a Rust SDK in `crates/ferrule-plugin-sdk` and examples in `examples/plugins/` ([`docs/plugins.md`](docs/plugins.md)). |
@@ -546,6 +548,7 @@ crates/
   ferrule-plugin-sdk the Rust SDK for writing a plugin
   ferrule-codemap    tree-sitter repo map and code search
   ferrule-sandbox    OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt)
+  ferrule-ssh        SSH workspaces: remote shell and file tools over OpenSSH
   ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing, egress policy
   ferrule-otel       OpenTelemetry export: OTLP/HTTP JSON spans
   ferrule-cli        the `ferrule` binary
@@ -554,7 +557,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 1181 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 1225 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -648,12 +651,15 @@ and a dated entry for every session.
 - [x] M33: ops — an egress domain policy with an SSRF guard, a
       unix-socket allowlist, OpenTelemetry export, and importers from
       OpenClaw and Hermes
+- [x] M34: SSH workspaces, and a local-model first run that catches a
+      small context window and broken tool calling
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-The last track of that queue (Max, 25.09: "do everything"): M34, an SSH
-execution backend and local-model first-run polish.
+The "do everything" queue (Max, 25.09) is done through M34. Still open:
+WhatsApp, waiting on a decision, and each milestone's follow-ups in
+[`PLAN.md`](PLAN.md).
 
 M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
@@ -662,8 +668,8 @@ strategy synthesis:
 **Planned**
 
 - [ ] WhatsApp (options in [`docs/m31-channels.md`](docs/m31-channels.md))
-- [ ] The strategy backlog: local-model
-      polish and an SSH backend (M34)
+- [ ] Later, from the strategy backlog: recipes, a pinned memory
+      block, tool-call emulation for models without function calling
       ([strategy](docs/research-number-one-harness-strategy.md))
 
 The full gap analysis vs OpenClaw, Hermes and NanoClaw — and the backlog
@@ -695,6 +701,8 @@ day-to-day state is tracked in [`PLAN.md`](PLAN.md).
   [`m19b-reliability.md`](docs/m19b-reliability.md),
   [`m20-connections.md`](docs/m20-connections.md),
   [`models.md`](docs/models.md) and [`m21-models.md`](docs/m21-models.md)
+- [`docs/ssh.md`](docs/ssh.md), [`docs/local-models.md`](docs/local-models.md):
+  SSH workspaces, and running on a local model
 - [`docs/egress.md`](docs/egress.md), [`docs/otel.md`](docs/otel.md),
   [`docs/migrate.md`](docs/migrate.md): the egress policy, OpenTelemetry
   export, and importing from OpenClaw or Hermes
