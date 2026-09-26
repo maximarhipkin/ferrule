@@ -667,6 +667,7 @@ dependencies = [
  "ferrule-agents",
  "ferrule-connections",
  "ferrule-core",
+ "ferrule-embed",
  "ferrule-eval",
  "ferrule-extensions",
  "ferrule-gateway",
@@ -885,6 +886,7 @@ dependencies = [
 name = "ferrule-memory"
 version = "0.3.0"
 dependencies = [
+ "ferrule-embed",
  "rusqlite",
  "serde",
  "serde_json",

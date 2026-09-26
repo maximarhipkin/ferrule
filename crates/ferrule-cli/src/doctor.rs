@@ -128,6 +128,7 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     mcp(&mut r, &cfg, backend);
     proxy(&mut r, &cfg);
     web_search_check(&mut r, &cfg, &http, offline).await;
+    memory_check(&mut r, &cfg);
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
     trust_check(&mut r, &cfg, telegram_on);
@@ -854,6 +855,108 @@ fn proxy(r: &mut Report, cfg: &config::Config) {
 
 /// M28: `[web_search]` without a paid call: the key is set and bound to the
 /// endpoint's host; a keyless SearXNG instance is asked for its `/config`.
+/// M30: which recall the agent gets, and how much of the store has
+/// vectors from the configured embedder. Nothing is called.
+fn memory_check(r: &mut Report, cfg: &config::Config) {
+    use crate::config::EmbedderChoice;
+    // `Config::load` already refused a `[memory]` that doesn't validate.
+    let Ok(choice) = cfg.memory.choice(&cfg.providers) else {
+        return;
+    };
+    let model = match choice {
+        EmbedderChoice::Off => {
+            r.note("memory", "keyword recall ([memory] embedder is off)");
+            return;
+        }
+        EmbedderChoice::Local => {
+            if !cfg!(feature = "local-embed") {
+                r.warn(
+                    "memory",
+                    "embedder = \"local\", but this build has no local embedder: keyword recall",
+                );
+                return;
+            }
+            use ferrule_embed::download::{presence, verify, Presence, POTION_MULTILINGUAL};
+            let spec = POTION_MULTILINGUAL;
+            let Ok(data) = config::data_dir() else {
+                return;
+            };
+            let dir = spec.dir(&data);
+            match presence(&spec, &dir) {
+                Presence::Present => {}
+                Presence::Missing => {
+                    r.warn(
+                        "memory",
+                        "the local embedding model isn't downloaded: keyword recall",
+                    );
+                    r.hint("`ferrule memory model download`");
+                    return;
+                }
+                Presence::Incomplete(files) => {
+                    r.warn(
+                        "memory",
+                        format!(
+                            "the local embedding model is incomplete ({}): keyword recall",
+                            files.join(", ")
+                        ),
+                    );
+                    r.hint("`ferrule memory model download` finishes it");
+                    return;
+                }
+            }
+            if let Err(e) = verify(&spec, &dir) {
+                r.fail(
+                    "memory",
+                    format!("the local embedding model doesn't verify: {e}"),
+                );
+                r.hint(format!(
+                    "delete {} and run `ferrule memory model download`",
+                    tilde(&dir)
+                ));
+                return;
+            }
+            ferrule_embed::ModelId::new("local", &spec.tag(), spec.dim)
+        }
+        EmbedderChoice::Endpoint(e) => {
+            if let Some(var) = &e.key_env {
+                if key(var).is_none() {
+                    r.warn(
+                        "memory",
+                        format!("{}: no key (${var} isn't set): keyword recall", e.model),
+                    );
+                    r.hint("export it, or `ferrule setup` → Memory recall");
+                    return;
+                }
+            }
+            ferrule_embed::ModelId::new("openai", &e.model, e.dim)
+        }
+    };
+    let db = config::data_dir().map(|d| d.join("memory.db"));
+    let counts = match db {
+        Ok(db) if db.exists() => ferrule_memory::MemoryStore::open(&db)
+            .and_then(|s| s.embedding_counts(model.as_str()))
+            .ok(),
+        _ => Some(Default::default()),
+    };
+    let Some(c) = counts else {
+        r.warn(
+            "memory",
+            format!("{model} · the memory store can't be read"),
+        );
+        return;
+    };
+    r.ok(
+        "memory",
+        format!(
+            "hybrid recall · {model} · {}/{} live memories embedded",
+            c.live_embedded, c.live
+        ),
+    );
+    if c.live_embedded < c.live {
+        r.hint("the rest are found by keyword until `ferrule memory reindex` (or recall catches up on its own)");
+    }
+}
+
 async fn web_search_check(
     r: &mut Report,
     cfg: &config::Config,
