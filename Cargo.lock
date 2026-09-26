@@ -986,6 +986,7 @@ dependencies = [
  "ferrule-core",
  "ferrule-embed",
  "ferrule-mcp",
+ "ferrule-plugins",
  "ferrule-sandbox",
  "ferrule-tools",
  "http",
@@ -1004,6 +1005,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "wat",
  "webpki-roots",
 ]
 

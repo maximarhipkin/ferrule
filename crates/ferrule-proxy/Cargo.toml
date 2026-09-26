@@ -27,8 +27,10 @@ webpki-roots = "1"
 ferrule-core = { path = "../ferrule-core" }
 ferrule-embed = { path = "../ferrule-embed", default-features = false }
 ferrule-mcp = { path = "../ferrule-mcp" }
+ferrule-plugins = { path = "../ferrule-plugins" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
 ferrule-tools = { path = "../ferrule-tools" }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
+wat = "1"
