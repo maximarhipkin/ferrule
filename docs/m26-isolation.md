@@ -350,7 +350,7 @@ design above:
 - **PowerShell under the token runs in ConstrainedLanguage mode** (seen in
   CI). The UTF-8 output prelude sets a .NET property, which that mode
   refuses, so it now runs only in FullLanguage, and a tier-1 test asserts
-  that a PowerShell command's stderr is empty.
+  that a PowerShell command's stderr holds no error record.
 - **The restricted token's handle** needs `TOKEN_ADJUST_DEFAULT` on the
   source token so its default DACL can be set (found by CI).
 - **`harden_self()` is a no-op** when ferrule's own token lacks an enabled

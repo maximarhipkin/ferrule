@@ -320,9 +320,11 @@ fn the_exit_code_and_output_come_back() {
             show(&out)
         );
         // The PowerShell prelude must not error under the token's
-        // ConstrainedLanguage mode.
+        // ConstrainedLanguage mode. (Windows PowerShell may still write a
+        // startup progress record to stderr, which is fine.)
+        let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            out.stderr.is_empty(),
+            !stderr.contains("S=\"Error\"") && !stderr.contains("language mode"),
             "{}: stderr: {}",
             shell.name,
             show(&out)
