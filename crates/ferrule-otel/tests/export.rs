@@ -387,3 +387,34 @@ fn a_collector_error_status_is_counted_as_failed() {
     assert_eq!(status.failed, 4);
     assert!(status.last_error.unwrap().contains("503"));
 }
+
+/// A real collector: `FERRULE_OTEL_LIVE_ENDPOINT=http://127.0.0.1:4318 cargo
+/// test -p ferrule-otel --test export -- --ignored live`, with e.g. Jaeger
+/// (`docker run -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one`)
+/// running. `FERRULE_OTEL_LIVE_HEADER=name=value` adds one header for a
+/// hosted backend. The trace then shows up as service `ferrule-live-test`.
+#[test]
+#[ignore = "live: needs FERRULE_OTEL_LIVE_ENDPOINT, a running OTLP/HTTP collector"]
+fn live_a_real_collector_takes_the_spans() {
+    let base = std::env::var("FERRULE_OTEL_LIVE_ENDPOINT")
+        .expect("set FERRULE_OTEL_LIVE_ENDPOINT to the collector's OTLP/HTTP base URL");
+    let url = format!("{}/v1/traces", base.trim_end_matches('/'));
+    let mut settings = Settings::new(url, client());
+    settings.service_name = "ferrule-live-test".into();
+    if let Ok(h) = std::env::var("FERRULE_OTEL_LIVE_HEADER") {
+        let (k, v) = h
+            .split_once('=')
+            .expect("FERRULE_OTEL_LIVE_HEADER is name=value");
+        settings.headers.push((k.into(), v.into()));
+    }
+    let exporter = Exporter::start(settings).unwrap();
+    let sink = exporter.sink(Arc::new(Null), "live");
+    turn(sink.as_ref(), "live");
+    assert!(
+        exporter.shutdown(Duration::from_secs(10)),
+        "the flush timed out"
+    );
+    let status = exporter.status();
+    assert_eq!(status.failed, 0, "{:?}", status.last_error);
+    assert!(status.exported >= 3, "{status:?}");
+}

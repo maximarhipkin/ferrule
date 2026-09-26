@@ -83,9 +83,17 @@ but their contents can't be read. The file tools refuse the listing too.
 except Unix ones on Linux (seccomp) and every network operation on macOS.
 On Windows it isn't enforced, and doctor says so.
 
+Unix sockets are allowlisted either way (Linux and macOS), so a reachable
+`docker.sock` or tmux server isn't a way out: `unix_sockets` and
+`unix_sockets_default` in `[sandbox]`, described in
+[egress.md](egress.md#unix-sockets).
+
 Separately from the sandbox, commands get `HTTPS_PROXY`, pointing at
 ferrule's credential proxy, so `[secrets]` placeholders are swapped for
-real values on the hosts they are bound to.
+real values on the hosts they are bound to. The same proxy enforces the
+`[egress]` network policy: which hosts the model's tools and proxied
+commands may reach, with private addresses and cloud metadata blocked by
+default. See [egress.md](egress.md).
 
 ### Plain HTTP
 

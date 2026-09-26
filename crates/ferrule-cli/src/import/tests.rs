@@ -591,3 +591,39 @@ fn markdown_splits_into_entries() {
         ]
     );
 }
+
+/// A real install, read and applied into a throwaway ferrule home, twice:
+/// `FERRULE_IMPORT_LIVE_OPENCLAW=~/.openclaw` and/or
+/// `FERRULE_IMPORT_LIVE_HERMES=~/.hermes`, then
+/// `cargo test -p ferrule-cli live_ -- --ignored --nocapture`. The source is
+/// only read; the summary printed is what `ferrule import` would show.
+#[tokio::test]
+#[ignore = "live: needs FERRULE_IMPORT_LIVE_OPENCLAW or FERRULE_IMPORT_LIVE_HERMES, a real install"]
+async fn live_a_real_install_imports_cleanly() {
+    let home = dirs::home_dir();
+    let mut plans = Vec::new();
+    if let Ok(dir) = std::env::var("FERRULE_IMPORT_LIVE_OPENCLAW") {
+        plans.push(openclaw::read(Path::new(&dir), None, &env_var, home.as_deref()).unwrap());
+    }
+    if let Ok(dir) = std::env::var("FERRULE_IMPORT_LIVE_HERMES") {
+        plans.push(hermes::read(Path::new(&dir), None, home.as_deref()).unwrap());
+    }
+    assert!(
+        !plans.is_empty(),
+        "set FERRULE_IMPORT_LIVE_OPENCLAW or _HERMES"
+    );
+    for plan in plans {
+        let dir = tempfile::tempdir().unwrap();
+        let t = targets(dir.path());
+        let (first, out) = run_to_string(&plan, &t, true, false).await;
+        println!("{out}");
+        let (again, _) = run_to_string(&plan, &t, true, false).await;
+        assert_eq!(
+            (again.added, again.superseded),
+            (0, 0),
+            "a re-run wrote again"
+        );
+        assert_eq!(again.config_changes, 0);
+        assert_eq!(again.kept, first.added + first.kept + first.superseded);
+    }
+}

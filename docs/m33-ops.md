@@ -1,6 +1,6 @@
 # M33 — ops: egress policy, OTel export, migration importers
 
-**Status:** design, 2026-09-26 (branch `m33-ops`). User guides:
+**Status:** built, 2026-09-26 (branch `m33-ops`; as-built notes inline). User guides:
 [`egress.md`](egress.md), [`otel.md`](otel.md), [`migrate.md`](migrate.md).
 
 This milestone covers three items from `research-number-one-harness-strategy.md` §4:
