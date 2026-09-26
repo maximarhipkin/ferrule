@@ -271,7 +271,7 @@ with `FakeEmbedder` and checks the harness, not the model. An `#[ignore]`d
 test runs it with the real local model:
 
 ```sh
-FERRULE_EMBED_MODEL_DIR=/path/to/models/potion-multilingual-128M \
+FERRULE_EMBED_MODEL_DIR=/path/to/models/potion-multilingual-128M@73908c3 \
   cargo test -p ferrule-memory --test bench -- --ignored --nocapture
 ```
 
@@ -332,3 +332,148 @@ model is a 530 MB opt-in download).
 - Re-ranking with a cross-encoder, or with the LLM.
 - GPU, or transformer embedders in process.
 - Changing the eval suite, graders or mock model.
+
+## As built
+
+Built on branch `m30-vector-recall` in four commits: `ferrule-embed`
+(§1), the vector side of `ferrule-memory` (§2.1–2.3), the benchmark (§3),
+and the wiring in `ferrule-cli` (§2.4–2.6: config, tools, session-start
+recall, `ferrule memory reindex`, `ferrule memory model download`, doctor
+and setup). User guide: [memory.md](memory.md).
+
+**The benchmark and the ship rule.** With the local model (48 queries,
+floor 0.3, r@1 / r@5 / MRR):
+
+| category | BM25 | weighted 0.7 | RRF k=60 |
+|---|---|---|---|
+| keyword (8) | 1 / 1 / 1 | 1 / 1 / 1 | 1 / 1 / 1 |
+| paraphrase (10) | .200 / .200 / .217 | .600 / .800 / .683 | .400 / .800 / .583 |
+| synonym (8) | .250 / .250 / .250 | .750 / .875 / .812 | .625 / .875 / .750 |
+| cross-lingual (10) | 0 / 0 / 0 | .200 / .300 / .250 | .200 / .400 / .258 |
+| typo (6) | .167 / .167 / .167 | .500 / .667 / .583 | .500 / .667 / .583 |
+| distractor (6) | .500 / .833 / .667 | .833 / 1 / .917 | .667 / 1 / .833 |
+| all (48) | .333 / .375 / .358 | .625 / .750 / .684 | .542 / .771 / .644 |
+
+Facts returned per query: BM25 4.38, both merges 5.06. The whole run
+(80 facts, 48 queries, three methods, plus the sweep) takes 3.6 s in a
+release build.
+
+Both merges beat BM25 on paraphrase and cross-lingual without losing a
+keyword query, so hybrid ships. **Weighted** is the default: it wins r@1
+and MRR overall and in every category except cross-lingual, where RRF is
+ahead by one query at r@5. Cross-lingual is the weak spot: 2 of 10 first,
+3 of 10 in the top five. The distilled static model keeps only part of
+bge-m3's alignment across languages.
+
+The sweep (all 48: r@1 / r@5 / MRR, facts per query):
+
+| floor | weighted 0.5 | weighted 0.7 | weighted 0.9 | RRF |
+|---|---|---|---|---|
+| 0.20 | .562 / .750 / .651 | .583 / .833 / .704 | .625 / .896 / .747 | .521 / .812 / .655 |
+| 0.25 | .562 / .729 / .638 | .583 / .812 / .685 | .604 / .854 / .714 | .521 / .833 / .649 |
+| **0.30** | .562 / .688 / .617 | **.625 / .750 / .684** | .625 / .771 / .698 | .542 / .771 / .644 |
+| 0.35 | .562 / .625 / .591 | .604 / .646 / .628 | .604 / .667 / .639 | .521 / .667 / .590 |
+| 0.40 | .521 / .583 / .550 | .562 / .604 / .583 | .562 / .604 / .587 | .500 / .604 / .552 |
+
+Facts per query by floor: 6.67, 5.58, 5.06, 4.83, 4.71. The 0.3 floor
+and 0.7 weight are kept, even though a lower floor and a higher weight
+score better here. At 0.2, every recall adds 2.3 facts over BM25 to the
+session-start block, mostly unrelated ones. At 0.9, a 48-query fixture
+written by the same hand as the code is too small to justify handing
+ranking almost entirely to a 256-dimension static model. Both are one
+config line away (`min_similarity`, `vector_weight`).
+
+The command, with the model downloaded:
+
+```sh
+FERRULE_EMBED_MODEL_DIR=<data>/models/potion-multilingual-128M@73908c3 \
+  cargo test --release -p ferrule-memory --test bench -- --ignored --nocapture
+```
+
+**Binary growth** (release, x86_64 Linux, `ferrule`): main 17,313,488
+bytes; M30 20,023,280 (+2.71 MB, +15.6%); M30 with
+`--no-default-features` 17,515,344 (+0.20 MB). Nearly all of it is the
+local backend: `tokenizers` with `fancy-regex`, and `ring`'s SHA-256
+(already linked, via rustls). That backend sits behind the `local-embed`
+feature of `ferrule-cli`, which is on by default.
+
+**Departures from the design:**
+
+- **The price is never borrowed.** §1.2 said `price_input_per_mtok` falls
+  back to the borrowed provider's. A chat model's input price is 10–100×
+  an embedding model's, so borrowing it would have overstated every row.
+  Only `[memory] price_input_per_mtok` prices a row. When it isn't set,
+  the row is written unpriced (`cost_usd` empty).
+- **Ledger rows** have provider `embedding` and call_kind `embedding`,
+  and are written only for the endpoint backend. The local model costs
+  nothing and would add a row per `remember`.
+- **`dimensions` is sent only to `text-embedding-3*` models, and only when
+  set.** Some other servers reject the field. For those models it is required
+  in config, because the dimension is part of the model id and must be
+  known before the first answer. OpenAI's own models have known
+  defaults (3-small and ada-002 1536, 3-large 3072).
+- **Session-start recall skips the goal embedding when the store has no
+  live memories.** A new user with a paid endpoint would otherwise pay
+  for one call per session to search an empty table.
+- **Lazy catch-up runs after session-start recall only**, not after the
+  `recall` tool: one background batch of 32 per session, off the critical
+  path.
+- **Near-duplicates:** cosine ≥ 0.8, checked with the real model. Plain
+  restatements score 0.83–0.92 ("Our API rate limit is 100 requests per
+  minute" vs "The API allows 100 requests a minute": 0.88). Different
+  facts on the same subject score 0.50–0.73 ("The staging database is
+  Postgres 16" vs "The production database is Postgres 16": 0.73).
+- **`FERRULE_EMBED_MODEL_BASE`** overrides the download's base URL, for
+  mirrors and for the hermetic download tests.
+- **Warnings go to `tracing::warn!`**, once per process for each cause. A
+  terminal command logs errors only (M19c), so a failing embedder is
+  silent in `ferrule run` and visible in the gateway's journal and with
+  `RUST_LOG=warn`. `ferrule doctor` is where an owner sees it.
+
+**Not done (follow-ups):**
+
+- The trust gate isn't consulted before an embedding request. Each
+  request is recorded and counts toward the dollar caps afterwards, but a
+  tripped kill switch or a spent cap doesn't stop the next embedding the
+  way it stops a model call. Recall would fall back to BM25, so the fix is
+  small: check the gate in `Embedding::embed`.
+- `ferrule memory reindex` and `ferrule memory search` write their ledger
+  rows straight to the file sink (task_shape `memory`), not through
+  `trust::equip`'s sink. The rows are the same; only the live dashboard
+  feed misses them until it re-reads the file.
+- No ANN index (§2.3's limits stand); `search_history` stays keyword.
+- The endpoint backend has no live test against a real provider. Its
+  401/429/500, dimension and key-swap behaviour are tested through the
+  real proxy against a local HTTPS origin (`ferrule-proxy/tests/embed.rs`).
+
+**Tests.**
+- `ferrule-embed`: the fake embedder, and download checksum mismatch
+  and short-file refusals (`tests/download.rs`). There is also an
+  `#[ignore]`d real download (530,977,691 bytes, 14.9 s, verified).
+- `ferrule-proxy/tests/embed.rs`: `/v1/embeddings` through the real
+  credential proxy — the key is swapped in, a refused key is 401 and
+  never echoed, 429 carries `Retry-After`, a wrong dimension is refused,
+  and a 5xx keeps its status.
+- `ferrule-memory/tests/vectors.rs`:
+  - merge ordering, and time decay after the merge;
+  - a hit on a replaced fact returns its correction;
+  - another model's vectors are never compared;
+  - reindex resume;
+  - the trigger that clears a vector with its text, and `forget`;
+  - `user_version` unchanged;
+  - no vector gives exactly BM25.
+- `tests/bench.rs`: the harness on the fake embedder.
+- `ferrule-cli`:
+  - reindex stops on an error and resumes, and waits out a 429;
+  - a failing embedder is `None`, and its paid call is an error row;
+  - tools store vectors and find a misspelling;
+  - the near-duplicate hint;
+  - goal recall catches up in the background;
+  - `[memory]` config parsing and key binding.
+- `ferrule-cli/tests/memory.rs`, through the real binary with a scripted
+  `/embeddings`:
+  - recall by meaning, with the system prompt and tools byte-identical
+    across every request of two sessions, and each turn's second request
+    extending its first;
+  - a 500 from the endpoint leaves keyword recall, with nothing on
+    stdout or stderr, and `ferrule memory reindex` reporting "0 of 2".
