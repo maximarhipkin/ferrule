@@ -391,6 +391,7 @@ mod tests {
             eval: None,
             tree: None,
             route: None,
+            speed: None,
         }
     }
 

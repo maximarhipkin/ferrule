@@ -965,6 +965,7 @@ fn build_agent_from(
         profile,
         AgentConfig {
             max_iterations,
+            parallel_tools: cfg.agent.parallel_tools.max(1),
             ..Default::default()
         },
         tool_ctx,

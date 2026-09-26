@@ -356,3 +356,25 @@ async fn enabled_tools_hide_the_rest_and_output_caps_truncate() {
         .unwrap();
     assert!(out.content.starts_with("012\n"), "{}", out.content);
 }
+
+#[tokio::test]
+async fn a_stdio_server_is_one_serial_group_and_read_only_comes_from_the_hint() {
+    let tools = connect_and_build_tools(fixture_cfg("test", None), host())
+        .await
+        .expect("connect");
+    let tool = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t.definition().name == name)
+            .unwrap()
+            .clone()
+    };
+    // M27: `env` says readOnlyHint, `write` says nothing.
+    assert!(tool("mcp__test__env").read_only());
+    assert!(!tool("mcp__test__write").read_only());
+    // One pipe: every tool of the server shares one group, so two of its
+    // read-only calls never overlap.
+    for t in &tools {
+        assert_eq!(t.serial_group().as_deref(), Some("mcp:test"));
+    }
+}

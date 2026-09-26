@@ -29,7 +29,7 @@ pub use event::AgentEvent;
 pub use guard::{Guard, GuardedCall, Verdict};
 pub use history::{result_ref, SearchHistoryTool, SEARCH_HISTORY};
 pub use hooks::{Budget, Inbox, SessionRecall, StopFlag};
-pub use ledger::{EvalTag, LedgerContext, LedgerRecord, LedgerSink};
+pub use ledger::{EvalTag, LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch};
 pub use lifecycle::{HookEvent, HookSet};
 pub use message::{Message, NativeBlocks, Role, ToolCall, Usage};
 pub use profile::HarnessProfile;

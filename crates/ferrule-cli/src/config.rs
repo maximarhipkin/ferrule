@@ -208,6 +208,10 @@ pub struct AgentSettings {
     /// How long the check may take before it counts as failed.
     #[serde(default = "default_verify_timeout_secs")]
     pub verify_timeout_secs: u64,
+    /// M27: how many read-only tool calls from one response may run at
+    /// once. 1 runs them one after another.
+    #[serde(default = "default_parallel_tools")]
+    pub parallel_tools: usize,
 }
 
 impl Default for AgentSettings {
@@ -215,8 +219,13 @@ impl Default for AgentSettings {
         Self {
             verify_command: None,
             verify_timeout_secs: default_verify_timeout_secs(),
+            parallel_tools: default_parallel_tools(),
         }
     }
+}
+
+fn default_parallel_tools() -> usize {
+    4
 }
 
 fn default_verify_timeout_secs() -> u64 {
