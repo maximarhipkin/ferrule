@@ -294,7 +294,8 @@ impl Broker {
         (self.addr.to_string(), "ferrule", &self.token)
     }
 
-    /// The URL commands use as `HTTPS_PROXY`, credentials included.
+    /// The URL commands use as `HTTPS_PROXY` and `HTTP_PROXY`, credentials
+    /// included.
     pub fn proxy_url(&self) -> String {
         format!("http://ferrule:{}@{}", self.token, self.addr)
     }
@@ -310,8 +311,13 @@ impl Broker {
             .map(|s| (s.name.clone(), s.placeholder.clone()))
             .collect();
         let proxy = self.proxy_url();
-        env.push(("HTTPS_PROXY".into(), proxy.clone()));
-        env.push(("https_proxy".into(), proxy));
+        // Both cases of both: curl reads only the lowercase `http_proxy`,
+        // other tools only the uppercase. Plain HTTP carries secrets only to
+        // loopback (see the server), but it is still proxied and audited.
+        // `NO_PROXY` is left as it is.
+        for var in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+            env.push((var.into(), proxy.clone()));
+        }
         // Node 24+ only honours HTTPS_PROXY with this set.
         env.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
         match &self.bundle {
@@ -491,6 +497,10 @@ mod tests {
         assert_eq!(ph.len(), real.len());
         assert!(env["HTTPS_PROXY"].starts_with("http://ferrule:"));
         assert!(env["HTTPS_PROXY"].ends_with(&b.addr().to_string()));
+        for var in ["https_proxy", "HTTP_PROXY", "http_proxy"] {
+            assert_eq!(env[var], env["HTTPS_PROXY"], "{var}");
+        }
+        assert!(!env.contains_key("NO_PROXY") && !env.contains_key("no_proxy"));
         let bundle = std::fs::read_to_string(&env["SSL_CERT_FILE"]).unwrap();
         assert!(bundle.contains("BEGIN CERTIFICATE"));
         assert_eq!(env["SSL_CERT_FILE"], env["GIT_SSL_CAINFO"]);

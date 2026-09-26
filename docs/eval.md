@@ -227,8 +227,10 @@ transcripts and this report: ~/.local/share/ferrule/eval/20260924T153312-a8ae1c
 ```
 
 How to read it:
-- `(1×check)`: ferrule's verify command failed once, the agent got the
-  output back, and fixed the problem.
+- `(1×check)`: ferrule's verify command failed once and the agent got the
+  output back. On a pass, it fixed the problem; on a fail, it didn't.
+- `failed checks fixed`: failed checks on task runs that then passed.
+  Checks that failed on a run that failed anyway aren't counted (M28).
 - `(N×compact)`: ferrule compacted the context N times and kept the
   request.
 - `(N×trunc)`: the naive harness dropped its oldest messages N times, and

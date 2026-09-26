@@ -131,7 +131,7 @@ impl Follower {
         }
         let cfg = match std::fs::read_to_string(&self.path)
             .map_err(anyhow::Error::from)
-            .and_then(|t| Ok(toml::from_str::<Config>(&t)?))
+            .and_then(|t| toml::from_str::<Config>(&t)?.finish())
         {
             Ok(cfg) => cfg,
             Err(e) => {

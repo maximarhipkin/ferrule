@@ -20,19 +20,26 @@ pub const TASK_PREFIX: &str = "scheduler__";
 pub struct Spend {
     pub tokens: u64,
     pub usd: f64,
+    /// `web_search` calls (M28), for `[web_search] max_searches_per_day`.
+    pub searches: u64,
 }
+
+/// The ledger's `call_kind` for one `web_search` request.
+pub const SEARCH_CALL_KIND: &str = "web_search";
 
 impl Spend {
     pub fn of(r: &LedgerRecord) -> Self {
         Self {
             tokens: r.input_tokens + r.output_tokens,
             usd: r.cost_usd.unwrap_or(0.0),
+            searches: u64::from(r.call_kind == SEARCH_CALL_KIND),
         }
     }
 
     pub fn add(&mut self, other: Spend) {
         self.tokens += other.tokens;
         self.usd += other.usd;
+        self.searches += other.searches;
     }
 }
 
@@ -268,6 +275,25 @@ mod tests {
         let rest = serde_json::to_string(&row("2026-09-25T09:00:00+00:00", "x", 7, 0.0)).unwrap();
         writeln!(f, "{}", &rest["{\"timestamp\":".len()..]).unwrap();
         assert_eq!(m.read(now, None).unwrap().0.tokens, 507);
+    }
+
+    #[test]
+    fn search_rows_are_counted_apart_and_still_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.jsonl");
+        let m = Meter::new(path.clone(), chrono_tz::UTC);
+        let now = at("2026-09-25T10:00:00Z");
+        let mut search = row("2026-09-25T09:00:00+00:00", "a", 0, 0.005);
+        search.call_kind = SEARCH_CALL_KIND.into();
+        append(&path, &search);
+        append(&path, &search);
+        append(&path, &row("2026-09-25T09:00:00+00:00", "a", 10, 0.5));
+        let mut yesterday = search.clone();
+        yesterday.timestamp = "2026-09-24T09:00:00+00:00".into();
+        append(&path, &yesterday);
+        let today = m.read(now, None).unwrap().0;
+        assert_eq!((today.searches, today.tokens), (2, 10));
+        assert!((today.usd - 0.51).abs() < 1e-9);
     }
 
     #[test]

@@ -6,14 +6,15 @@
 use crate::config;
 use anyhow::{anyhow, bail, Result};
 use clap::Subcommand;
-use ferrule_core::{Tool, ToolRegistry, ToolSource};
+use ferrule_core::{PromptTriggers, Tool, ToolRegistry, ToolSource};
 use ferrule_extensions::scan::report_for_owner;
 use ferrule_extensions::{
-    AllowList, Approver, ExtensionManager, Layout, ManagerConfig, Outcome, Pending, Review,
+    AllowList, Approver, ExtensionManager, Layout, LockStore, ManagerConfig, Outcome, Pending,
+    Review,
 };
 use ferrule_mcp::McpServerConfig;
 use ferrule_sandbox::Sandbox;
-use ferrule_skills::{LiveSkillTools, Scope, SkillRoot, SkillsHandle};
+use ferrule_skills::{LiveSkillTools, Scope, Skill, SkillRoot, SkillsHandle, TriggerOptions, Vet};
 use serde::Deserialize;
 use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
@@ -134,9 +135,24 @@ impl Extensions {
 
     /// Skills as tools over the live set: `activate_skill` knows a skill
     /// installed mid-session.
-    pub fn skill_tools(&self) -> (SkillsHandle, Arc<dyn ToolSource>) {
+    pub fn skill_tools(&self) -> (SkillsHandle, Arc<LiveSkillTools>) {
         let handle = self.skills();
         (handle.clone(), Arc::new(LiveSkillTools::new(handle)))
+    }
+
+    /// M28: the keyword triggers over `live`'s set, each skill vetted as
+    /// it matches (docs/skills.md).
+    pub fn skill_triggers(
+        &self,
+        live: &LiveSkillTools,
+        cfg: &config::SkillsConfig,
+    ) -> Arc<dyn PromptTriggers> {
+        Arc::new(live.triggers(TriggerOptions {
+            max_triggered: cfg.max_triggered,
+            budget_tokens: cfg.trigger_budget_tokens,
+            project: cfg.project_triggers,
+            vet: trigger_vet(self.manager.layout()),
+        }))
     }
 
     /// `ferrule chat` at a terminal: ask there, instead of only queueing.
@@ -183,6 +199,30 @@ static LIVE_SKILLS: std::sync::OnceLock<SkillsHandle> = std::sync::OnceLock::new
 /// The running agents' skill set, to turn a skill off or on at once (M24).
 pub(crate) fn live_skills() -> Option<&'static SkillsHandle> {
     LIVE_SKILLS.get()
+}
+
+/// Whether a skill may load when a message names it: scanned now, and one
+/// the agent installed must be in the lock, active, with its SKILL.md as
+/// installed. An unreadable lock refuses those, not the owner's own skills.
+fn trigger_vet(layout: &Layout) -> Vet {
+    let installed = layout.skills_dir();
+    let installed = dunce::canonicalize(&installed).unwrap_or(installed);
+    let lock = LockStore::new(layout.lock_path());
+    Arc::new(move |skill: &Skill| {
+        let dir = dunce::canonicalize(skill.dir()).unwrap_or_else(|_| skill.dir().to_path_buf());
+        if !dir.starts_with(&installed) {
+            return ferrule_extensions::skill::vet_trigger(&dir, None);
+        }
+        let key = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let lock = lock
+            .load()
+            .map_err(|e| format!("the extensions lock can't be read: {e}"))?;
+        let entry = lock
+            .skills
+            .get(key)
+            .ok_or("installed, but not in the extensions lock")?;
+        ferrule_extensions::skill::vet_trigger(&dir, Some(entry))
+    })
 }
 
 fn skills_handle(cfg: &config::SkillsConfig, workspace: &Path, layout: &Layout) -> SkillsHandle {
