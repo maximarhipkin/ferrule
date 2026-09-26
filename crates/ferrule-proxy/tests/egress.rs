@@ -151,6 +151,7 @@ async fn setup() -> Setup {
         )]),
         state_dir: dir.path().join("proxy"),
         upstream: None,
+        http_upstream: None,
         ca_bundle: Some(base),
     };
     let broker = Broker::start(cfg, |name| (name == "TOKEN").then(|| TOKEN.to_string()))
@@ -195,6 +196,35 @@ async fn web_fetch_goes_through_the_proxy_and_trusts_its_ca() {
         .call(json!({ "url": url }), &ctx)
         .await;
     assert!(direct.is_err(), "{:?}", direct.map(|o| o.content));
+}
+
+/// M26: plain `http://` goes through the proxy too. The origin is loopback
+/// with the secret bound, so the proxy swaps it in; the real value arriving
+/// is the proof the fetch went through the proxy.
+#[tokio::test]
+async fn plain_http_web_fetch_goes_through_the_proxy() {
+    let s = setup().await;
+    let plain = common::plain_origin(handler()).await;
+    let url = format!(
+        "http://127.0.0.1:{plain}/page?key={}",
+        placeholder(&s.broker)
+    );
+    let ctx = ToolContext::default();
+    let out = WebFetchTool::with_egress(Some(s.egress.clone()))
+        .call(json!({ "url": url }), &ctx)
+        .await
+        .expect("fetched through the proxy");
+    assert!(out.content.contains("key_real=true"), "{}", out.content);
+
+    let direct = WebFetchTool::default()
+        .call(json!({ "url": url }), &ctx)
+        .await
+        .expect("fetched directly");
+    assert!(
+        direct.content.contains("key_real=false"),
+        "{}",
+        direct.content
+    );
 }
 
 fn remote(url: String, auth: &str) -> McpServerConfig {

@@ -171,6 +171,12 @@ impl McpClient {
         }
     }
 
+    /// Whether the OS keeps this server out of the read denies, even when
+    /// it's otherwise unconfined.
+    pub fn hides_reads(&self) -> bool {
+        self.http.is_none() && self.sandbox.hides_reads()
+    }
+
     /// Ensure a live connection exists (spawning + handshaking if needed),
     /// send `method`/`params`, and wait up to `timeout` for the matching
     /// response. A dead or absent connection triggers exactly one respawn

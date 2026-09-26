@@ -97,6 +97,7 @@ async fn setup() -> Setup {
         ]),
         state_dir: dir.path().join("proxy"),
         upstream: None,
+        http_upstream: None,
         ca_bundle: Some(base),
     };
     let lookup = |name: &str| match name {
@@ -289,7 +290,7 @@ async fn raw(port: u16, request: &str) -> String {
 }
 
 #[tokio::test]
-async fn the_proxy_wants_its_credentials_and_only_tunnels() {
+async fn the_proxy_wants_its_credentials_and_a_full_target() {
     let s = setup().await;
     let port = s.broker.addr().port();
     let target = format!("127.0.0.1:{}", s.origin_port);
@@ -307,12 +308,18 @@ async fn the_proxy_wants_its_credentials_and_only_tunnels() {
     let url = s.broker.proxy_url();
     let creds = url.trim_start_matches("http://").split('@').next().unwrap();
     let auth = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, creds);
-    let plain = raw(
+    let origin_form = raw(
         port,
-        &format!("GET http://{target}/ HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"),
+        &format!("GET / HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"),
     )
     .await;
-    assert!(plain.starts_with("HTTP/1.1 400"), "{plain}");
+    assert!(origin_form.starts_with("HTTP/1.1 400"), "{origin_form}");
+    let https_url = raw(
+        port,
+        &format!("GET https://{target}/ HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"),
+    )
+    .await;
+    assert!(https_url.starts_with("HTTP/1.1 400"), "{https_url}");
 
     let dead = raw(
         port,
@@ -320,6 +327,135 @@ async fn the_proxy_wants_its_credentials_and_only_tunnels() {
     )
     .await;
     assert!(dead.starts_with("HTTP/1.1 502"), "{dead}");
+}
+
+/// M26: plain `http://` is forwarded rather than refused. A loopback server
+/// with secrets bound gets them swapped like over HTTPS; a remote one is
+/// refused, since the real value would cross the network in the clear.
+#[tokio::test]
+async fn plain_http_is_forwarded_and_secrets_only_go_to_loopback() {
+    let s = setup().await;
+    let plain = common::plain_origin(respond).await;
+    let (tok, short) = (&s.placeholders["TOKEN"], &s.placeholders["SHORT"]);
+    let resp = s
+        .client
+        .get(format!(
+            "http://127.0.0.1:{plain}/repos/{tok}/check?key={tok}&note={short}"
+        ))
+        .bearer_auth(tok)
+        .header("x-api-key", short)
+        .header("accept-encoding", "gzip")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["x-echo"], tok.as_str());
+    let body = resp.text().await.unwrap();
+    for check in ["bearer", "api_key", "path", "query", "gzip_stripped"] {
+        assert!(body.contains(&format!("{check}=true")), "{check}: {body}");
+    }
+    assert!(!body.contains(TOKEN) && !body.contains(SHORT), "{body}");
+
+    // `localhost` has nothing bound: forwarded untouched both ways.
+    let body = s
+        .client
+        .get(format!("http://localhost:{plain}/check"))
+        .bearer_auth(tok)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("bearer=false"), "{body}");
+    assert!(body.contains(&format!("echo={TOKEN}")), "{body}");
+
+    // A remote host with a secret bound: refused before any connection.
+    s.broker
+        .bind(
+            "REMOTE",
+            &vec!["api.remote.example".to_string()].into(),
+            TOKEN,
+        )
+        .unwrap();
+    let resp = s
+        .client
+        .get("http://api.remote.example/v1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    assert!(resp.text().await.unwrap().contains("only go over HTTPS"));
+}
+
+/// Plain HTTP to an unbound host goes through the `HTTP_PROXY` ferrule was
+/// started behind, in absolute form with that proxy's credentials (and not
+/// ferrule's own), unless `NO_PROXY` covers the host.
+#[tokio::test]
+async fn plain_http_goes_through_the_upstream_http_proxy() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let up_port = listener.local_addr().unwrap().port();
+    let seen = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(sock.read_u8().await.unwrap());
+        }
+        sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 8\r\n\r\nupstream")
+            .await
+            .unwrap();
+        String::from_utf8(head).unwrap()
+    });
+    let plain = common::plain_origin(respond).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = BrokerConfig {
+        secrets: BTreeMap::from([("SHORT".to_string(), vec!["127.0.0.1".to_string()].into())]),
+        state_dir: dir.path().join("proxy"),
+        upstream: None,
+        http_upstream: Some(
+            Upstream::parse(&format!("http://u:p@127.0.0.1:{up_port}"), "localhost").unwrap(),
+        ),
+        ca_bundle: None,
+    };
+    let broker = Broker::start(cfg, |_| Some(SHORT.to_string()))
+        .unwrap()
+        .unwrap();
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(broker.proxy_url()).unwrap())
+        .build()
+        .unwrap();
+
+    let body = client
+        .get("http://unbound.example/x?y=1")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(body, "upstream");
+    let head = seen.await.unwrap();
+    assert!(
+        head.starts_with("GET http://unbound.example/x?y=1 HTTP/1.1\r\n"),
+        "{head}"
+    );
+    let theirs = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "u:p");
+    assert!(
+        head.contains(&format!("proxy-authorization: Basic {theirs}")),
+        "{head}"
+    );
+    assert_eq!(head.matches("proxy-authorization").count(), 1, "{head}");
+
+    // NO_PROXY: straight to the server.
+    let body = client
+        .get(format!("http://localhost:{plain}/check"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("bearer=false"), "{body}");
 }
 
 /// Through this machine's real upstream proxy to a public echo service,
@@ -336,6 +472,7 @@ async fn curl_through_the_real_network() {
         )]),
         state_dir: dir.path().to_path_buf(),
         upstream: Upstream::from_env().unwrap(),
+        http_upstream: Upstream::from_env_http().unwrap(),
         ca_bundle: None,
     };
     let broker = Broker::start(cfg, |_| Some("passwd".to_string()))

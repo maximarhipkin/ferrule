@@ -119,8 +119,10 @@ Each command gets:
   and `AWS_CA_BUNDLE`. With no base bundle found, only `NODE_EXTRA_CA_CERTS`
   is set, and a warning says so.
 
-`HTTP_PROXY` is left alone: plain HTTP isn't something to put credentials
-on.
+`HTTP_PROXY` is left alone for commands. Since M26 ferrule's own clients
+(`web_fetch`, MCP over HTTP) send plain HTTP through the proxy too; it
+swaps secrets there only for loopback servers and answers 403 for a bound
+remote host, since plain HTTP isn't something to put credentials on.
 
 ### Keeping the real value away from the command
 

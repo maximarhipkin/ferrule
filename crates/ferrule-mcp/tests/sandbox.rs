@@ -1,6 +1,7 @@
 //! A real MCP server (`tests/fixtures/mock_mcp.py`) under the real OS
 //! sandbox: what it can write, judged by which files exist afterwards —
-//! not by what the server says. Skipped where there's no sandbox backend.
+//! not by what the server says — and what it can read. Skipped where
+//! there's no sandbox backend.
 
 use ferrule_core::tool::{Tool, ToolContext};
 use ferrule_mcp::{connect_and_build_tools, McpServerConfig, ServerHost};
@@ -36,12 +37,20 @@ fn dirs() -> Dirs {
 /// `None` when this machine can't sandbox — the test then has nothing to
 /// check. `/tmp` is left out so "outside" really is outside.
 fn sandbox(mode: Mode) -> Option<Arc<Sandbox>> {
-    let sandbox = Sandbox::new(Policy {
+    sandbox_with(Policy {
         mode,
         tmp: false,
         ..Policy::default()
     })
-    .unwrap();
+}
+
+fn sandbox_with(policy: Policy) -> Option<Arc<Sandbox>> {
+    // Windows: the start-up probe runs the commands' shell, and Git Bash
+    // can't hold the token (docs/windows-sandbox.md). The server is python.
+    if cfg!(windows) {
+        std::env::set_var(ferrule_sandbox::SHELL_VAR, "powershell");
+    }
+    let sandbox = Sandbox::new(policy).unwrap();
     if !sandbox.is_active() {
         eprintln!("skipped: {}", sandbox.degraded().unwrap_or("no sandbox"));
         return None;
@@ -155,4 +164,29 @@ async fn sandbox_false_writes_anywhere_and_keeps_the_real_home() {
     assert!(write(&tools, d.outside.join("a")).await.exists(), "outside");
     let home = call(&tools, "env", json!({"name": "HOME"})).await;
     assert_ne!(Path::new(&home), d.state);
+}
+
+#[tokio::test]
+async fn denied_reads_fail_for_a_server_with_or_without_the_sandbox() {
+    let d = dirs();
+    let secrets = d.outside.join("secrets");
+    std::fs::create_dir(&secrets).unwrap();
+    let key = secrets.join("key");
+    std::fs::write(&key, "sk-live").unwrap();
+    let open = d.outside.join("open.txt");
+    std::fs::write(&open, "fine").unwrap();
+    let Some(sandbox) = sandbox_with(Policy {
+        tmp: false,
+        deny_read: vec![secrets.clone()],
+        ..Policy::default()
+    }) else {
+        return;
+    };
+    for sandboxed in [true, false] {
+        let tools = tools(server(sandboxed, &d.extra), sandbox.clone(), &d).await;
+        let got = call(&tools, "read", json!({ "path": key })).await;
+        assert!(got.starts_with("refused"), "sandbox = {sandboxed}: {got}");
+        let got = call(&tools, "read", json!({ "path": open })).await;
+        assert_eq!(got, "fine", "sandbox = {sandboxed}");
+    }
 }

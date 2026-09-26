@@ -1,6 +1,7 @@
 //! Reaching the real server: directly, or through the proxy ferrule itself was
-//! started behind (`HTTPS_PROXY`), so a corporate or container proxy keeps
-//! working once sandboxed commands are pointed at ferrule instead.
+//! started behind (`HTTPS_PROXY` for tunnels, `HTTP_PROXY` for plain HTTP),
+//! so a corporate or container proxy keeps working once sandboxed commands
+//! are pointed at ferrule instead.
 
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::STANDARD;
@@ -45,12 +46,21 @@ impl Upstream {
     /// From `HTTPS_PROXY` / `ALL_PROXY` (either case) and `NO_PROXY`. `None`
     /// when no proxy is set.
     pub fn from_env() -> Result<Option<Self>> {
+        Self::from_vars(&["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"])
+    }
+
+    /// The same for plain HTTP: `HTTP_PROXY` / `ALL_PROXY` (either case).
+    pub fn from_env_http() -> Result<Option<Self>> {
+        Self::from_vars(&["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"])
+    }
+
+    fn from_vars(names: &[&str]) -> Result<Option<Self>> {
         let var = |names: &[&str]| {
             names
                 .iter()
                 .find_map(|n| std::env::var(n).ok().filter(|v| !v.trim().is_empty()))
         };
-        let Some(url) = var(&["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) else {
+        let Some(url) = var(names) else {
             return Ok(None);
         };
         let no_proxy = var(&["NO_PROXY", "no_proxy"]).unwrap_or_default();
@@ -127,6 +137,33 @@ pub(crate) async fn connect(
     })
     .await
     .with_context(|| format!("connecting to {host}:{port}: timed out"))?
+}
+
+/// A connection for one plain-HTTP request to `host:port`: to `upstream`
+/// unless it's bypassed, which is returned so the request can go in absolute
+/// form with its credentials, or else straight to the server.
+pub(crate) async fn connect_http<'u>(
+    upstream: Option<&'u Upstream>,
+    host: &str,
+    port: u16,
+) -> Result<(TcpStream, Option<&'u Upstream>)> {
+    let via = upstream.filter(|u| !u.bypasses(host));
+    let (addr, what) = match via {
+        Some(up) => ((up.host.as_str(), up.port), format!("upstream proxy {up}")),
+        None => ((host, port), format!("{host}:{port}")),
+    };
+    let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .with_context(|| format!("connecting to {what}: timed out"))?
+        .with_context(|| format!("connecting to {what}"))?;
+    Ok((tcp, via))
+}
+
+impl Upstream {
+    /// `Basic …` for `Proxy-Authorization`, when the URL had credentials.
+    pub(crate) fn auth(&self) -> Option<&str> {
+        self.auth.as_deref()
+    }
 }
 
 async fn tunnel(up: &Upstream, host: &str, port: u16) -> Result<TcpStream> {

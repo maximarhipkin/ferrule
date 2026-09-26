@@ -480,7 +480,10 @@ pub async fn add_to(path: PathBuf, mut a: AddArgs) -> Result<Vec<String>> {
     names.extend(new.iter().map(|s| s.name.clone()));
     let mut server = server_config(&a, &names)?;
     if server.url.is_none() && !a.command.is_empty() && a.no_sandbox {
-        warn("--no-sandbox: it can write anywhere you can and read the saved keys");
+        warn(
+            "--no-sandbox: it can write anywhere you can; where there's a sandbox the saved \
+             keys stay shut (`ferrule doctor` says what else stays open)",
+        );
     }
     add_server(t.root(), &server, a.replace)?;
     for s in &new {

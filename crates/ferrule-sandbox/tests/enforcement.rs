@@ -7,6 +7,10 @@ use std::path::Path;
 use std::process::{Output, Stdio};
 
 fn sandbox(policy: Policy) -> Option<Sandbox> {
+    if cfg!(windows) {
+        eprintln!("skipping: these run /bin/sh; Windows has tests/windows.rs");
+        return None;
+    }
     let sb = Sandbox::new(Policy {
         require: false,
         ..policy
@@ -218,6 +222,81 @@ fn hidden_paths_outside_the_workspace_and_the_host_environ() {
         &format!("cat /proc/{}/environ", std::process::id()),
     );
     assert!(!out.status.success(), "the host environ was readable");
+    if cfg!(target_os = "linux") {
+        let open = sb.unconfined("sandbox = false");
+        let out = sh(
+            &open,
+            ws.path(),
+            &format!("cat /proc/{}/environ", std::process::id()),
+        );
+        assert!(
+            !out.status.success(),
+            "an unconfined helper read the environ"
+        );
+    }
+}
+
+#[test]
+fn denied_reads_fail_and_allowed_reads_work() {
+    let ws = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(ws.path().join(".env"), "TOKEN=sk-live\n").unwrap();
+    std::fs::write(ws.path().join("notes.txt"), "fine\n").unwrap();
+    let creds = elsewhere.path().join("creds");
+    std::fs::create_dir(&creds).unwrap();
+    std::fs::write(creds.join("key"), "sk-live\n").unwrap();
+    std::fs::write(elsewhere.path().join("open.txt"), "fine\n").unwrap();
+    let Some(sb) = sandbox(Policy {
+        deny_read: vec![".env".into(), creds.clone()],
+        ..no_tmp(Mode::WorkspaceWrite)
+    }) else {
+        return;
+    };
+    let dir = elsewhere.path().display();
+    for script in [
+        "cat .env".to_string(),
+        format!("cat '{dir}/creds/key'"),
+        format!("cp '{dir}/creds/key' stolen"),
+    ] {
+        let out = sh(&sb, ws.path(), &script);
+        assert!(!out.status.success(), "`{script}` went through");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("sk-live"));
+    }
+    assert!(!ws.path().join("stolen").exists());
+    let out = sh(&sb, ws.path(), &format!("cat notes.txt '{dir}/open.txt'"));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "fine\nfine\n");
+
+    // An MCP server's sandbox keeps the same denies on top of its state dir.
+    let state = tempfile::tempdir().unwrap();
+    let helper = sb.for_helper(state.path(), &[]);
+    let out = sh(&helper, ws.path(), &format!("cat '{dir}/creds/key'"));
+    assert!(!out.status.success());
+    let out = sh(&helper, ws.path(), "cat notes.txt");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "fine\n");
+
+    // One with `sandbox = false` writes where it likes, but the denies hold.
+    // (On Linux not directly beside a denied path: the carve grants that
+    // dir's entries, not new ones in it.)
+    std::fs::create_dir(elsewhere.path().join("out")).unwrap();
+    let open = sb.unconfined("sandbox = false");
+    assert!(open.is_hide_only());
+    let out = sh(&open, ws.path(), &format!("cat '{dir}/creds/key'"));
+    assert!(
+        !out.status.success(),
+        "an unconfined helper read a denied path"
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("sk-live"));
+    let out = sh(
+        &open,
+        ws.path(),
+        &format!("echo w > '{dir}/out/written' && cat '{dir}/open.txt' .env"),
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("sk-live"));
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("fine\n"));
+    assert!(
+        elsewhere.path().join("out/written").exists(),
+        "writes are open"
+    );
 }
 
 #[test]
