@@ -473,6 +473,9 @@ fn read_only_needs_the_claim_and_no_write_grant() {
         assert!(!s.tool("echo").read_only(), "{caps}");
         assert!(s.tool("echo").changes_files(), "{caps}");
     }
+    // `approval` in the manifest reaches the M19 gate.
+    assert!(pure.tool("trap").needs_approval());
+    assert!(!pure.tool("echo").needs_approval());
     let name = pure.tool("echo").definition().name;
     assert_eq!(name, "plugin__probe__echo");
     assert!(pure

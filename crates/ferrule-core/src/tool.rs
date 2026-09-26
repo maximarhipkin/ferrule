@@ -91,6 +91,11 @@ pub trait Tool: Send + Sync {
     fn serial_group(&self) -> Option<String> {
         None
     }
+    /// M32: every call needs the owner's approval (the M19 gate), whatever
+    /// its arguments, e.g. a plugin tool its manifest marks `approval`.
+    fn needs_approval(&self) -> bool {
+        false
+    }
 }
 
 /// Tools that can change while an agent runs: MCP servers installed or
@@ -168,6 +173,10 @@ impl ToolRegistry {
     /// Whether `name` is a known tool that only reads (M27).
     pub fn read_only(&self, name: &str) -> bool {
         self.lookup(name).is_some_and(|t| t.read_only())
+    }
+    /// Whether `name` is a known tool that asks for approval (M32).
+    pub fn needs_approval(&self, name: &str) -> bool {
+        self.lookup(name).is_some_and(|t| t.needs_approval())
     }
     /// Whether a call can't be right as written: an unknown tool, arguments
     /// that aren't an object, or a field its schema requires left out. M25

@@ -143,6 +143,10 @@ impl Tool for PluginTool {
     fn read_only(&self) -> bool {
         self.spec.read_only && !self.changes_files()
     }
+
+    fn needs_approval(&self) -> bool {
+        self.spec.approval
+    }
 }
 
 /// As web search escapes results: nothing inside can close the fence.

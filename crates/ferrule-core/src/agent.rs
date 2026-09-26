@@ -1417,6 +1417,7 @@ impl Agent {
             tool: &call.name,
             args: &call.arguments,
             changes_files: self.tools.changes_files(&call.name),
+            needs_approval: self.tools.needs_approval(&call.name),
         };
         let verdict = match g {
             Some(gd) => unless_halted(g, gd.before_tool_call(seen)).await?,
