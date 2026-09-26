@@ -601,6 +601,23 @@ PR to `main` open, not merged.
 a second, the ledger's cache hit climbs across sessions, and a turn of
 several reads takes about as long as its slowest one.
 
+### M28 — search and skills
+
+**Status.** Built (`docs/m28-search-skills.md`; user guides
+`docs/web-search.md` and `docs/skills.md`). PR to `main` open, not merged.
+- `web_search`: Brave, Tavily, Exa or SearXNG through the credential
+  proxy, off by default, every search in the ledger with a daily cap.
+- Keyword-triggered skills: `triggers:` in SKILL.md loads a skill with the
+  message that names it. Only a person's message counts, the skill is
+  re-vetted at each match, and it lands after the message so the cached
+  prefix holds.
+- Fixes: the eval's "failed checks fixed" line, and `HTTP_PROXY` for
+  sandboxed commands.
+
+**Done means.** The agent answers a question about this week's news with
+sources, within the owner's search cap, and a skill loads the moment the
+owner says its keyword, and never because a web page did.
+
 ### M29 — edit mechanics
 
 **Status.** Built (`docs/m29-edit-mechanics.md`; user guide

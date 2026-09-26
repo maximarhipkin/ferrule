@@ -519,6 +519,23 @@ that convention yet — ask before introducing one).
     - Ledger rows carry an optional `speed` (first token, first reply, tool
       batch); `ferrule ledger` prints cache hit and speed under the table.
     - **Decisions for Max and open edges:** see the M27 session-log entry.
+  - **M28 search and skills**: **built** (2026-09-26, branch
+    `m28-search-skills`, PR to main open, not merged). Design and as-built
+    notes are in `docs/m28-search-skills.md`; the user guides are
+    `docs/web-search.md` and `docs/skills.md`.
+    - `web_search` (Brave, Tavily, Exa, SearXNG), off by default. The key
+      stays in the credential proxy; every search is a ledger row, with
+      `[web_search] max_searches_per_day` and an optional price toward the
+      dollar caps. `ferrule setup` and `doctor` cover it.
+    - Keyword-triggered skills: `triggers:` in SKILL.md. Whole words and
+      phrases, Unicode case and accents, Hebrew prefixes, no regex. Only a
+      person's message is matched (`Agent::run_user`); the skill goes in
+      after it, never into the system prompt. At most 2 a message within
+      4000 tokens, re-scanned and lock-checked at every match; project
+      skills only with `project_triggers`.
+    - Fixes: "failed checks fixed" counts only passing task runs;
+      sandboxed commands get `HTTP_PROXY`/`http_proxy`.
+    - **Decisions for Max and open edges:** see the M28 session-log entry.
   - **M29 edit mechanics**: **built** (2026-09-26, branch
     `m29-edit-mechanics`, PR to main open, not merged). Design in
     `docs/m29-edit-mechanics.md`; user guide `docs/editing.md`.
@@ -3888,6 +3905,37 @@ over 4096; in `ferrule chat` the streamed text can interleave with tool
 event lines; memory is lost under truncate mode; `sendMessageDraft`, a
 1-hour cache TTL and formatting mid-stream are left for later
 (`docs/roadmap.md`).
+
+### 2026-09-26 — M28 search and skills (Devi, Opus 5.5)
+
+**Scope.** Built `docs/m28-search-skills.md` on branch
+`m28-search-skills` in four commits: two fixes, `web_search`, its
+follow-up after merging M27, and keyword-triggered skills. User guides:
+`docs/web-search.md` and `docs/skills.md` (there was no skills doc
+before).
+
+**Decisions for Max:**
+- `web_search` stays in plan mode, like `web_fetch`.
+- A search without a set price is recorded at $0; every sent search is a
+  row; the gate also honours the kill switch and dollar caps.
+- Searches running in parallel each hold a place under the daily cap
+  until recorded (two minutes at most, for a stopped turn).
+- `doctor` makes no paid search; `&` isn't escaped in results.
+- Hebrew prefixes up to 4 letters (the design said 3; `וכשהשחרור` needs
+  4).
+- A too-large match counts toward `max_triggered`, a refused one doesn't.
+- Trigger vetting re-scans and checks the lock but not the install name
+  rules.
+- Sub-agents never trigger. A triggered skill counts as active for
+  `activate_skill`.
+
+**Unverified:** live searches against the four providers (mocked, live
+tests `#[ignore]`); triggers on a real Telegram chat; macOS and Windows
+until this PR's CI run.
+
+**Open edges:** `web_fetch` output isn't fenced or escaped, so a page can
+forge a `<skill_content>` block and suppress (not cause) a trigger;
+scheduled prompts can't trigger by design; no native provider search.
 
 ### 2026-09-26 — M29 edit mechanics (Devi, Opus 5.5)
 

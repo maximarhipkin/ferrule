@@ -27,6 +27,7 @@ mod settings_door;
 mod setup;
 mod tasks_admin;
 mod trust;
+mod web_search;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
@@ -989,10 +990,16 @@ fn build_agent_from(
     // loaded on demand through the activate_skill tool. Rescanned per agent,
     // so a skill installed while the gateway runs shows up in new sessions;
     // the tools follow the live set, so one installed mid-session works too.
+    // M28: a root agent's own person's messages also load the skills they
+    // name, never a sub-agent's (docs/skills.md).
+    let mut prompt_triggers = None;
     if cfg.skills.enabled && !planning {
         let (skills, tools) = mcp_tools.skill_tools();
         if let Some(catalog) = skills.get().catalog() {
             system.push_str(&format!("\n\n[Skills]\n{catalog}"));
+        }
+        if cfg.skills.triggers && child.is_none() {
+            prompt_triggers = Some(mcp_tools.skill_triggers(&tools, &cfg.skills));
         }
         registry.attach(tools);
     }
@@ -1010,6 +1017,22 @@ fn build_agent_from(
     // M19: the owner's caps, kill switch and approval gates, per run tree.
     let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
     models.attach_hub(trust::hub(&cfg)?);
+    // M28: read-only, so plan mode keeps it, like `web_fetch`.
+    let session_id = transcript
+        .as_ref()
+        .and_then(|t| t.path().file_stem())
+        .map_or_else(|| "ephemeral".into(), |s| s.to_string_lossy().into_owned());
+    if let Some(tool) = web_search::tool(
+        &cfg,
+        broker,
+        sandbox.egress().cloned(),
+        trust::hub(&cfg)?,
+        &ledger,
+        &tree,
+        session_id,
+    )? {
+        registry.register(Arc::new(tool));
+    }
     let hooks_workspace = tool_ctx.workspace.clone();
     let mut agent = Agent::new(
         provider,
@@ -1076,6 +1099,9 @@ fn build_agent_from(
             cfg.agent.auto_commit_branch,
         )?;
         agent = agent.with_run_observer(Arc::new(autocommit::AutoCommitObserver::new(commit)));
+    }
+    if let Some(triggers) = prompt_triggers {
+        agent = agent.with_prompt_triggers(triggers);
     }
     Ok(agent)
 }
@@ -1371,6 +1397,9 @@ fn spawn_renderer_with(show_reasoning: bool, streamed: bool) -> mpsc::Sender<Age
                     println!("\x1b[33m[routing: {from} → {to} ({reason})]\x1b[0m")
                 }
                 AgentEvent::Stuck { note } => println!("\x1b[33m{note}\x1b[0m"),
+                AgentEvent::SkillTriggered { name, matched } => {
+                    println!("\x1b[36m[skill `{name}` loaded: \"{matched}\"]\x1b[0m")
+                }
                 // A hook's error is the owner's to see, not the model's.
                 AgentEvent::HookFinished {
                     event,
@@ -1470,7 +1499,7 @@ pub(crate) async fn run_root(
             tx: wake_tx,
         }));
     }
-    let mut answer = agent.run(prompt, spawn_renderer(show_reasoning)).await;
+    let mut answer = agent.run_user(prompt, spawn_renderer(show_reasoning)).await;
     // Agents it started and didn't wait for: their reports run it again,
     // until none is left running.
     if let Some(sup) = &sup {
@@ -1597,7 +1626,7 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
             continue;
         }
         let tx = spawn_renderer_with(false, streamed.is_some());
-        let result = agent.run(prompt, tx).await;
+        let result = agent.run_user(prompt, tx).await;
         // What the stream already printed isn't printed again.
         let printed = streamed
             .as_ref()
@@ -2200,6 +2229,18 @@ fn skills_cmd(workspace: PathBuf) {
             offered,
             s.location.display()
         );
+        if !s.triggers.is_empty() {
+            let off = if !cfg.triggers {
+                "  (off: [skills] triggers = false)"
+            } else if !s.model_invocable {
+                "  (off: hidden skills don't trigger)"
+            } else if s.scope == ferrule_skills::Scope::Project && !cfg.project_triggers {
+                "  (off: [skills] project_triggers = false)"
+            } else {
+                ""
+            };
+            println!("  {:<32} triggers: {}{off}", "", s.triggers.join(", "));
+        }
     }
     if set.skills.iter().any(|s| !s.model_invocable) {
         println!("  (hidden = `disable-model-invocation: true`; not in the catalog, no tool can load it)");
@@ -2602,7 +2643,10 @@ fn config_edit_cmd() -> Result<()> {
         bail!("`{editor}` exited with {status}");
     }
     let text = std::fs::read_to_string(&path)?;
-    if let Err(e) = toml::from_str::<config::Config>(&text) {
+    if let Err(e) = toml::from_str::<config::Config>(&text)
+        .map_err(anyhow::Error::from)
+        .and_then(config::Config::finish)
+    {
         bail!("{} doesn't parse any more:\n{e}", path.display());
     }
     println!("✓ {} parses", path.display());

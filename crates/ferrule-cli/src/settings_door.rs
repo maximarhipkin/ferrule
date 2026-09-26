@@ -109,12 +109,16 @@ impl SettingsDoor {
                     .skills
                     .iter()
                     .map(|s| {
-                        format!(
+                        let mut line = format!(
                             "{} ({}){}",
                             s.name,
                             s.scope,
                             if s.disabled { " — off" } else { "" }
-                        )
+                        );
+                        if !s.triggers.is_empty() {
+                            line.push_str(&format!(" — triggers: {}", s.triggers.join(", ")));
+                        }
+                        line
                     })
                     .collect();
                 out.push("/skills off <name>, /skills on <name>".into());

@@ -31,6 +31,9 @@ pub type AgentFactory = Arc<dyn Fn(&str, Transcript) -> Result<Agent, GatewayErr
 struct LaneJob {
     msg: InboundMessage,
     reply: Option<oneshot::Sender<Result<Reply, String>>>,
+    /// A person typed it (a chat message), so its keywords may load skills
+    /// (M28). Not a scheduled prompt, not a sub-agent's news.
+    person: bool,
 }
 
 /// What an agent turn answered.
@@ -253,7 +256,13 @@ impl Router {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
         let (tx, state) = self.lane_for(&sid, &msg)?;
         state.lock().unwrap().queued += 1;
-        let sent = tx.send(LaneJob { msg, reply: None }).await;
+        let sent = tx
+            .send(LaneJob {
+                msg,
+                reply: None,
+                person: true,
+            })
+            .await;
         if sent.is_err() {
             state.lock().unwrap().queued -= 1;
         }
@@ -267,7 +276,11 @@ impl Router {
         let sid = session::session_id(&msg.channel, &msg.chat_id);
         let (tx, state) = self.lane_for(&sid, &msg)?;
         state.lock().unwrap().queued += 1;
-        let sent = tx.try_send(LaneJob { msg, reply: None });
+        let sent = tx.try_send(LaneJob {
+            msg,
+            reply: None,
+            person: true,
+        });
         if sent.is_err() {
             state.lock().unwrap().queued -= 1;
         }
@@ -293,6 +306,7 @@ impl Router {
             .send(LaneJob {
                 msg,
                 reply: Some(reply_tx),
+                person: false,
             })
             .await;
         if sent.is_err() {
@@ -402,7 +416,14 @@ impl Router {
                 .unwrap_or(0),
         };
         lane.state.lock().unwrap().queued += 1;
-        let sent = lane.tx.try_send(LaneJob { msg, reply: None }).is_ok();
+        let sent = lane
+            .tx
+            .try_send(LaneJob {
+                msg,
+                reply: None,
+                person: false,
+            })
+            .is_ok();
         if !sent {
             lane.state.lock().unwrap().queued -= 1;
         }
@@ -464,6 +485,7 @@ async fn run_lane(
         let LaneJob {
             msg: inbound,
             reply,
+            person,
         } = job;
         watch.start(&inbound.text);
         // The agent's events only feed the lane's state (what it's doing,
@@ -499,7 +521,11 @@ async fn run_lane(
             _ => None,
         };
         watch.guard.arm();
-        let run_result = agent.run(&inbound.text, etx).await;
+        let run_result = if person {
+            agent.run_user(&inbound.text, etx).await
+        } else {
+            agent.run(&inbound.text, etx).await
+        };
         watch.guard.disarm();
         agent.set_reply_stream(None);
         // Whatever still holds a sender (a sub-agent) now finds it closed
@@ -1001,6 +1027,55 @@ mod tests {
         assert_eq!(sent[1].chat_id, "chat-1");
         assert!(sent[0].reply_to.is_some());
         assert_eq!(sent[1].reply_to, None);
+    }
+
+    /// Remembers every message it's asked about; never loads anything.
+    #[derive(Default)]
+    struct AskedTriggers(std::sync::Mutex<Vec<String>>);
+    impl ferrule_core::PromptTriggers for AskedTriggers {
+        fn triggered(&self, prompt: &str, _: &[String]) -> Vec<ferrule_core::Triggered> {
+            self.0.lock().unwrap().push(prompt.to_string());
+            Vec::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_chat_message_can_trigger_a_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let asked = Arc::new(AskedTriggers::default());
+        let triggers = asked.clone();
+        let factory: AgentFactory = Arc::new(move |_sid, transcript| {
+            Ok(Agent::new(
+                Arc::new(EchoProvider),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test")
+            .with_prompt_triggers(triggers.clone()))
+        });
+        let router = Router::new(dir.path(), factory, channels);
+        let sid = session::session_id("test", "chat-1");
+
+        router
+            .dispatch(inbound("chat-1", "deploy it"))
+            .await
+            .unwrap();
+        router.offer(inbound("chat-1", "and again")).unwrap();
+        wait_until(|| recorder.texts().len() == 2).await;
+        // A sub-agent's news and a scheduled prompt aren't a person talking.
+        assert!(router.wake(&sid, "[agent a1 finished] deploy".into()));
+        wait_until(|| recorder.texts().len() == 3).await;
+        let mut task = inbound("task-1", "Scheduled: deploy");
+        task.channel = SCHEDULER_PSEUDO_CHANNEL.into();
+        router.dispatch_and_wait(task).await.unwrap();
+
+        assert_eq!(*asked.0.lock().unwrap(), ["deploy it", "and again"]);
     }
 
     #[tokio::test]

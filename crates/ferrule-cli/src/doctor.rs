@@ -8,6 +8,7 @@ use crate::{browser, config, probe, secrets, service};
 use anyhow::Result;
 use ferrule_mcp::McpServerConfig;
 use ferrule_sandbox::{Backend, Mode, Sandbox};
+use ferrule_tools::search::SearchProvider;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
@@ -126,6 +127,7 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     let confined = backend != Backend::None;
     mcp(&mut r, &cfg, backend);
     proxy(&mut r, &cfg);
+    web_search_check(&mut r, &cfg, &http, offline).await;
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
     trust_check(&mut r, &cfg, telegram_on);
@@ -902,6 +904,127 @@ fn proxy(r: &mut Report, cfg: &config::Config) {
             if set == 1 { "" } else { "s" }
         ),
     );
+}
+
+/// M28: `[web_search]` without a paid call: the key is set and bound to the
+/// endpoint's host; a keyless SearXNG instance is asked for its `/config`.
+async fn web_search_check(
+    r: &mut Report,
+    cfg: &config::Config,
+    http: &reqwest::Client,
+    offline: bool,
+) {
+    // `Config::load` already refused a `[web_search]` that doesn't validate.
+    let Ok(Some(s)) = cfg.web_search.settings() else {
+        r.note("search", "off (no [web_search] provider)");
+        return;
+    };
+    let name = s.provider.name();
+    let host = cfg.web_search.host(s.provider).unwrap_or_default();
+    let mut limits = Vec::new();
+    if cfg.web_search.max_searches_per_day > 0 {
+        limits.push(format!("{}/day", cfg.web_search.max_searches_per_day));
+    }
+    if let Some(p) = cfg.web_search.price_per_search_usd {
+        limits.push(format!("${p}/search"));
+    }
+    let limits = if limits.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", limits.join(", "))
+    };
+    if let Some(var) = &s.key_env {
+        if key(var).is_none() {
+            r.fail("search", format!("{name}: no key (${var} isn't set)"));
+            r.hint("`ferrule setup` → Web search, or export it");
+            return;
+        }
+        let bound = cfg.secrets.get(var).is_some_and(|spec| {
+            ferrule_proxy::SecretRule::from(spec)
+                .hosts
+                .iter()
+                .filter_map(|h| ferrule_proxy::HostPattern::parse(h).ok())
+                .any(|p| p.matches(&host))
+        });
+        if !bound {
+            r.fail(
+                "search",
+                format!("{name}: [secrets] {var} isn't bound to {host}, so the proxy won't put the key in"),
+            );
+            r.hint(format!(
+                "add \"{host}\" to {var}'s hosts, or remove {var} from [secrets]"
+            ));
+            return;
+        }
+        if s.endpoint.starts_with("http://") && !is_loopback(&host) {
+            r.fail(
+                "search",
+                format!("{name}: {} is plain http, and the proxy sends a key over it only to this machine", s.endpoint),
+            );
+            r.hint("use the https:// URL");
+            return;
+        }
+        if offline {
+            r.ok(
+                "search",
+                format!("{name} · key set, bound to {host}, not checked{limits}"),
+            );
+        } else {
+            // Without the key: refused before it's billed, and any answer
+            // at all says the endpoint is there.
+            let url = s.provider.search_url(&s.endpoint);
+            let req = match s.provider {
+                SearchProvider::Tavily | SearchProvider::Exa => {
+                    http.post(&url).json(&serde_json::json!({}))
+                }
+                _ => http.get(&url),
+            };
+            match req.send().await {
+                Ok(_) => r.ok(
+                    "search",
+                    format!("{name} · key set, bound to {host}, endpoint answers (the key isn't tried: that's a paid search){limits}"),
+                ),
+                Err(e) => r.warn("search", format!("{name}: couldn't reach {}: {}", s.endpoint, e.without_url())),
+            }
+        }
+    } else if offline {
+        r.ok(
+            "search",
+            format!("{name} at {} · not checked{limits}", s.endpoint),
+        );
+    } else {
+        let url = format!("{}/config", s.endpoint.trim_end_matches('/'));
+        match http.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                r.ok(
+                    "search",
+                    format!("{name} at {} answers{limits}", s.endpoint),
+                );
+            }
+            Ok(resp) => {
+                r.warn(
+                    "search",
+                    format!("{name}: {url} answered {}", resp.status()),
+                );
+                r.hint("check `endpoint`, and that the instance allows format=json");
+            }
+            Err(e) => r.warn(
+                "search",
+                format!("{name}: couldn't reach {}: {}", s.endpoint, e.without_url()),
+            ),
+        }
+    }
+    let ignored = s.provider.ignores(&s);
+    if !ignored.is_empty() {
+        r.note("search", format!("{name} ignores {}", ignored.join(", ")));
+    }
+}
+
+fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Result<()> {

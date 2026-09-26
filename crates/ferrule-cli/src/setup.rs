@@ -1,5 +1,5 @@
 //! `ferrule setup`: the interactive installer. The first run walks through
-//! a model provider and its key, Telegram, tool credentials, the sandbox,
+//! a model provider and its key, Telegram, tool credentials, web search, the sandbox,
 //! the browser and the background service; later runs open a menu to change any one
 //! part. Answers are checked live where they can be (the key opens the
 //! model list, the bot token answers `getMe`) and saved the moment they're
@@ -10,6 +10,7 @@
 use crate::{browser, config, probe, secrets, service};
 use anyhow::{anyhow, bail, Context, Result};
 use ferrule_sandbox::{Mode, Sandbox};
+use ferrule_tools::search::SearchProvider;
 use inquire::validator::Validation;
 use inquire::{
     Confirm, CustomUserError, InquireError, MultiSelect, Password, PasswordDisplayMode, Select,
@@ -83,6 +84,10 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(credentials_step(t, http, true).await)?.quit() {
         return Ok(false);
     }
+    heading("Web search");
+    if settle(web_search_step(t, true))?.quit() {
+        return Ok(false);
+    }
     heading("Sandbox");
     if settle(sandbox_step(t, true))?.quit() {
         return Ok(false);
@@ -113,6 +118,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Model provider       {}", provider_summary(&cfg)),
             format!("Telegram             {}", telegram_summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
+            format!("Web search           {}", web_search_summary(&cfg)),
             format!("Sandbox              {}", sandbox_summary(&cfg)),
             format!("Browser              {}", browser_summary(&cfg)),
             format!("MCP servers          {}", mcp_summary(&cfg)),
@@ -133,10 +139,11 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             0 => provider_step(t, http, false).await,
             1 => telegram_step(t, http, false).await,
             2 => credentials_step(t, http, false).await,
-            3 => sandbox_step(t, false),
-            4 => browser_step(t),
-            5 => crate::mcp_add::setup_step(t, false).await,
-            6 => service_step(t, false),
+            3 => web_search_step(t, false),
+            4 => sandbox_step(t, false),
+            5 => browser_step(t),
+            6 => crate::mcp_add::setup_step(t, false).await,
+            7 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -276,7 +283,9 @@ impl Target {
     }
 
     pub(crate) fn config(&self) -> Result<config::Config> {
-        toml::from_str(&self.doc.to_string()).map_err(|e| anyhow!("{e}"))
+        let cfg: config::Config =
+            toml::from_str(&self.doc.to_string()).map_err(|e| anyhow!("{e}"))?;
+        cfg.finish()
     }
 
     pub(crate) fn root(&mut self) -> &mut dyn TableLike {
@@ -446,6 +455,16 @@ fn credentials_summary(cfg: &config::Config) -> String {
         "none".into()
     } else {
         cfg.secrets.keys().cloned().collect::<Vec<_>>().join(", ")
+    }
+}
+
+fn web_search_summary(cfg: &config::Config) -> String {
+    match cfg.web_search.settings() {
+        Ok(Some(s)) => match &s.key_env {
+            Some(var) if !key_is_set(var) => format!("{} · key missing", s.provider.name()),
+            _ => s.provider.name().to_string(),
+        },
+        _ => "off".into(),
     }
 }
 
@@ -1814,6 +1833,140 @@ async fn edit_token(t: &mut Target, http: &reqwest::Client, name: &str) -> Resul
             ok(format!("removed {name}"));
         }
     }
+    Ok(())
+}
+
+// ── Web search ─────────────────────────────────────────────────────────
+
+/// A search provider setup offers: its key's usual variable and where to
+/// get one. `None` for SearXNG, which takes the owner's own instance.
+type SearchPreset = (
+    SearchProvider,
+    &'static str,
+    Option<(&'static str, &'static str)>,
+);
+
+const SEARCH_PROVIDERS: [SearchPreset; 4] = [
+    (
+        SearchProvider::Brave,
+        "Brave Search API",
+        Some(("BRAVE_API_KEY", "https://api-dashboard.search.brave.com")),
+    ),
+    (
+        SearchProvider::Tavily,
+        "Tavily",
+        Some(("TAVILY_API_KEY", "https://app.tavily.com")),
+    ),
+    (
+        SearchProvider::Exa,
+        "Exa",
+        Some(("EXA_API_KEY", "https://dashboard.exa.ai")),
+    ),
+    (
+        SearchProvider::Searxng,
+        "SearXNG (your own instance, no key)",
+        None,
+    ),
+];
+
+fn web_search_step(t: &mut Target, guided: bool) -> Result<()> {
+    let cfg = t.config()?;
+    let current = cfg.web_search.settings()?;
+    info("The agent can search the web through a search API. Its key goes through ferrule's proxy: the agent and its commands only ever see a stand-in.");
+    if guided
+        && !Confirm::new("Give the agent web search?")
+            .with_default(false)
+            .prompt()?
+    {
+        return Ok(());
+    }
+    let mut labels: Vec<&str> = SEARCH_PROVIDERS.iter().map(|p| p.1).collect();
+    if current.is_some() {
+        labels.push("Turn it off");
+    }
+    let pick = Select::new("Search with", labels).raw_prompt()?.index;
+    let old_key = current.as_ref().and_then(|s| s.key_env.clone());
+    let Some(&(provider, _, key)) = SEARCH_PROVIDERS.get(pick) else {
+        t.root().remove("web_search");
+        t.save()?;
+        if let Some(var) = old_key {
+            t.forget_secret(&var)?;
+        }
+        ok("web search off");
+        return Ok(());
+    };
+    let same = current.as_ref().is_some_and(|s| s.provider == provider);
+    let mut value = None;
+    let (key_env, endpoint) = match key {
+        Some((var, url)) => {
+            let var = old_key
+                .clone()
+                .filter(|_| same)
+                .unwrap_or_else(|| var.into());
+            if !key_is_set(&var) {
+                info(format!("Get a key at {url}"));
+            }
+            // No check: every call these APIs answer is a paid search.
+            value = ask_secret(&format!("{var} value"), key_is_set(&var), no_shape)?;
+            (Some(var), None)
+        }
+        None => {
+            let initial = current
+                .as_ref()
+                .filter(|_| same)
+                .map(|s| s.endpoint.clone())
+                .unwrap_or_default();
+            let url = Text::new("Your SearXNG instance's URL")
+                .with_initial_value(&initial)
+                .with_help_message("it must allow format=json (search.formats in its settings.yml)")
+                .with_validator(|v: &str| -> Result<Validation, CustomUserError> {
+                    Ok(match url::Url::parse(v.trim()) {
+                        Ok(u)
+                            if matches!(u.scheme(), "http" | "https") && u.host_str().is_some() =>
+                        {
+                            Validation::Valid
+                        }
+                        _ => Validation::Invalid("an http(s) URL".into()),
+                    })
+                })
+                .prompt()?;
+            (None, Some(url.trim().trim_end_matches('/').to_string()))
+        }
+    };
+    let cap = inquire::CustomType::<u64>::new("Most searches a day (0: no cap)")
+        .with_default(cfg.web_search.max_searches_per_day)
+        .prompt()?;
+    if let (Some(var), Some(value)) = (&key_env, &value) {
+        t.set_secret(var, value)?;
+    }
+    let tbl = table(t.root(), &["web_search"])?;
+    put(tbl, "provider", provider.name());
+    match &key_env {
+        Some(var) => put(tbl, "api_key_env", var.as_str()),
+        None => {
+            tbl.remove("api_key_env");
+        }
+    }
+    match &endpoint {
+        Some(url) => put(tbl, "endpoint", url.as_str()),
+        None if !same => {
+            tbl.remove("endpoint");
+        }
+        None => {}
+    }
+    if cap > 0 {
+        put(tbl, "max_searches_per_day", cap as i64);
+    } else {
+        tbl.remove("max_searches_per_day");
+    }
+    t.save()?;
+    if let Some(var) = old_key.filter(|v| key_env.as_ref() != Some(v)) {
+        t.forget_secret(&var)?;
+    }
+    ok(format!(
+        "web search with {}: the agent gets it the next time it starts",
+        provider.name()
+    ));
     Ok(())
 }
 

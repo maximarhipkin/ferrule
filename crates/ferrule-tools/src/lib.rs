@@ -5,12 +5,14 @@ pub mod diary;
 pub mod edit;
 pub mod egress;
 pub mod fs_tools;
+pub mod search;
 pub mod shell;
 pub mod web;
 
 pub use diary::{DiaryTool, WriteTodosTool};
 pub use edit::EditFileTool;
 pub use fs_tools::{ListDirTool, ReadFileTool, WriteFileTool};
+pub use search::{SearchProvider, SearchSettings, WebSearchTool};
 pub use shell::{CommandVerifier, ShellTool};
 pub use web::WebFetchTool;
 

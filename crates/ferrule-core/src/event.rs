@@ -102,6 +102,12 @@ pub enum AgentEvent {
         duration_ms: u64,
         error: Option<String>,
     },
+    /// M28: a skill loaded because the person's message named one of its
+    /// triggers.
+    SkillTriggered {
+        name: String,
+        matched: String,
+    },
     RunFinished {
         answer_chars: usize,
         iterations: usize,

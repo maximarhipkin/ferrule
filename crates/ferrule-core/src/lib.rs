@@ -20,6 +20,7 @@ pub mod routing;
 pub mod stuck;
 pub mod tool;
 pub mod transcript;
+pub mod triggers;
 pub mod verify;
 
 pub use agent::{Agent, AgentConfig, ContextOverflow, RetryPolicy};
@@ -39,4 +40,5 @@ pub use provider::{
 pub use routing::{Escalation, Ladder, Policy, RouteTag, Signal, Tier, Tiered};
 pub use tool::{Tool, ToolContext, ToolOutput, ToolRegistry, ToolSource};
 pub use transcript::Transcript;
+pub use triggers::{PromptTriggers, TriggerLoad, Triggered};
 pub use verify::Verifier;

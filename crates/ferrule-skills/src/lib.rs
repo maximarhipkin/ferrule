@@ -14,11 +14,13 @@
 pub mod discover;
 pub mod frontmatter;
 pub mod tool;
+pub mod triggers;
 
 pub use discover::{
     default_roots, discover, Diagnostic, Scope, Severity, Skill, SkillRoot, SkillSet,
 };
 pub use tool::{tools, LiveSkillTools, SkillsHandle, ACTIVATE_TOOL, READ_TOOL};
+pub use triggers::{SkillTriggers, TriggerOptions, Vet};
 
 impl SkillSet {
     /// The system-prompt section listing model-invocable skills, or `None`

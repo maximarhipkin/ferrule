@@ -51,6 +51,9 @@ pub struct Skill {
     /// False for `disable-model-invocation: true`: hidden from the catalog
     /// and the activation tool, listed only by `ferrule skills`.
     pub model_invocable: bool,
+    /// Words and phrases that load it when a person's message names them
+    /// (M28), as written; checked by [`crate::triggers::validate`].
+    pub triggers: Vec<String>,
 }
 
 impl Skill {
@@ -292,12 +295,18 @@ fn load(location: &Path, scope: Scope, diags: &mut Vec<Diagnostic>) -> Option<Sk
         description = description.chars().take(DESCRIPTION_MAX).collect();
     }
 
+    let (triggers, problems) = crate::triggers::validate(fm.list("triggers").unwrap_or_default());
+    for problem in problems {
+        diag(Severity::Warning, problem);
+    }
+
     Some(Skill {
         name,
         description,
         location: location.to_path_buf(),
         scope,
         model_invocable: !fm.flag("disable-model-invocation"),
+        triggers,
     })
 }
 
@@ -458,6 +467,29 @@ mod tests {
         let set = discover(&[root(&solo, Scope::User), root(&solo, Scope::User)], &[]);
         assert_eq!(set.skills.len(), 1);
         assert!(set.diagnostics.is_empty(), "{:?}", set.diagnostics);
+    }
+
+    #[test]
+    fn triggers_are_read_and_bad_ones_warned_about() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(
+            dir.path(),
+            "release",
+            "name: release\ndescription: d\ntriggers: [ship it, x, שחרור]",
+        );
+        write_skill(
+            dir.path(),
+            "deploy",
+            "name: deploy\ndescription: d\ntriggers:\n- deploy\n- \"roll out\"",
+        );
+        write_skill(dir.path(), "plain", "name: plain\ndescription: d");
+        let set = discover(&[root(dir.path(), Scope::User)], &[]);
+        assert_eq!(set.get("release").unwrap().triggers, ["ship it", "שחרור"]);
+        assert_eq!(set.get("deploy").unwrap().triggers, ["deploy", "roll out"]);
+        assert!(set.get("plain").unwrap().triggers.is_empty());
+        let warnings: Vec<_> = set.diagnostics.iter().map(|d| &d.message).collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("trigger `x` dropped"));
     }
 
     #[test]

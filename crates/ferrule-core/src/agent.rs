@@ -12,6 +12,7 @@ use crate::routing::Signal;
 use crate::stuck::{Step, Stuck};
 use crate::tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
 use crate::transcript::Transcript;
+use crate::triggers::{PromptTriggers, TriggerLoad};
 use crate::verify::Verifier;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -298,6 +299,10 @@ pub struct Agent {
     /// has been timed yet.
     run_started: Instant,
     shown: Arc<std::sync::atomic::AtomicBool>,
+    /// M28: keyword-triggered skills, asked only about a person's message.
+    triggers: Option<Arc<dyn PromptTriggers>>,
+    /// The current run's goal is a person's message ([`Agent::run_user`]).
+    from_person: bool,
 }
 
 impl Agent {
@@ -338,6 +343,8 @@ impl Agent {
             reply_stream: None,
             run_started: Instant::now(),
             shown: Default::default(),
+            triggers: None,
+            from_person: false,
         }
     }
 
@@ -436,6 +443,13 @@ impl Agent {
     /// the owner's).
     pub fn set_guard(&mut self, guard: Arc<dyn Guard>) {
         self.guard = Some(guard);
+    }
+
+    /// M28: skills whose triggers a person's message names load with it;
+    /// see [`PromptTriggers`] and [`Agent::run_user`].
+    pub fn with_prompt_triggers(mut self, triggers: Arc<dyn PromptTriggers>) -> Self {
+        self.triggers = Some(triggers);
+        self
     }
 
     pub fn with_session_recall(mut self, recall: Arc<dyn SessionRecall>) -> Self {
@@ -876,11 +890,24 @@ impl Agent {
         result
     }
 
+    /// [`Agent::run`] for a message a person typed: the one kind of text
+    /// that may trigger skills (M28). Everything else — a sub-agent's
+    /// news, a scheduled prompt, a plan to carry out — goes through `run`.
+    pub async fn run_user(
+        &mut self,
+        goal: &str,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<String, CoreError> {
+        self.from_person = true;
+        self.run(goal, tx).await
+    }
+
     async fn run_inner(
         &mut self,
         goal: &str,
         tx: mpsc::Sender<AgentEvent>,
     ) -> Result<String, CoreError> {
+        let from_person = std::mem::take(&mut self.from_person);
         let session_id = self.session_id();
         self.emit(
             &tx,
@@ -948,6 +975,9 @@ impl Agent {
             if let Some(note) = note {
                 self.push(Message::user(format!("[hook: {event}]\n{note}")));
             }
+        }
+        if from_person {
+            self.load_triggered(goal, &tx).await;
         }
 
         let mut steps: Vec<Step> = Vec::new();
@@ -1651,6 +1681,53 @@ impl Agent {
         }
         self.turn_context_last = Some(block.clone());
         self.push(Message::user(block));
+    }
+
+    /// M28: the skills `goal` triggers, each as a user message after it —
+    /// never in the system prompt, so every earlier byte stays the same.
+    async fn load_triggered(&mut self, goal: &str, tx: &mpsc::Sender<AgentEvent>) {
+        let Some(triggers) = self.triggers.clone() else {
+            return;
+        };
+        let loaded: Vec<String> = skill_blocks(&self.messages)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        for t in triggers.triggered(goal, &loaded) {
+            let (name, matched) = (t.name, t.matched);
+            let event = match t.load {
+                TriggerLoad::Loaded(block) => {
+                    self.push(Message::user(format!(
+                        "[ferrule: the skill `{name}` was loaded because the message says \"{matched}\"]\n{block}"
+                    )));
+                    info!(skill = %name, %matched, "skill triggered");
+                    self.emit(
+                        tx,
+                        AgentEvent::SkillTriggered {
+                            name: name.clone(),
+                            matched: matched.clone(),
+                        },
+                    )
+                    .await;
+                    format!("skill_triggered name={name} matched={matched:?}")
+                }
+                TriggerLoad::TooLarge => {
+                    self.push(Message::user(format!(
+                        "[ferrule: the skill `{name}` matches \"{matched}\" in the message but is too large to \
+                         load automatically; call activate_skill if it's needed]"
+                    )));
+                    warn!(skill = %name, %matched, "triggered skill over the budget, not loaded");
+                    format!("skill_trigger_skipped name={name} matched={matched:?} reason=\"over the budget\"")
+                }
+                TriggerLoad::Refused(why) => {
+                    warn!(skill = %name, %matched, %why, "triggered skill refused");
+                    format!("skill_trigger_refused name={name} matched={matched:?} reason={why:?}")
+                }
+            };
+            if let Some(t) = &self.transcript {
+                let _ = t.log_event(&event);
+            }
+        }
     }
 
     /// Adds to the history and the transcript.
