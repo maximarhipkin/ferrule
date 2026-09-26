@@ -212,6 +212,10 @@ pub struct AgentSettings {
     /// once. 1 runs them one after another.
     #[serde(default = "default_parallel_tools")]
     pub parallel_tools: usize,
+    /// M27: stream replies as the model writes them, where the channel can
+    /// edit a sent message (Telegram) and in `ferrule chat`.
+    #[serde(default = "default_stream")]
+    pub stream: bool,
 }
 
 impl Default for AgentSettings {
@@ -220,8 +224,13 @@ impl Default for AgentSettings {
             verify_command: None,
             verify_timeout_secs: default_verify_timeout_secs(),
             parallel_tools: default_parallel_tools(),
+            stream: default_stream(),
         }
     }
+}
+
+fn default_stream() -> bool {
+    true
 }
 
 fn default_parallel_tools() -> usize {
@@ -248,6 +257,9 @@ pub struct GatewayConfig {
     /// id lets every member of that group in.
     #[serde(default)]
     pub telegram_allowed_chats: Vec<i64>,
+    /// M27: whether Telegram replies stream; unset follows `[agent] stream`.
+    #[serde(default)]
+    pub telegram_stream: Option<bool>,
 }
 
 fn default_telegram_base_url() -> String {

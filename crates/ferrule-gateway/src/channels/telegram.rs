@@ -637,24 +637,47 @@ impl TelegramChannel {
         Ok(json!({ "inline_keyboard": rows }))
     }
 
-    async fn post_message(&self, payload: Value) -> Result<(), GatewayError> {
+    /// `sendMessage`; the new message's id.
+    async fn post_message(&self, payload: Value) -> Result<Option<String>, GatewayError> {
+        let result = self.deliver("sendMessage", &payload).await?;
+        Ok(result
+            .get("message_id")
+            .and_then(|v| v.as_i64())
+            .map(|id| id.to_string()))
+    }
+
+    /// A call that puts something in a chat. A 429 is
+    /// `GatewayError::RateLimited` with Telegram's `retry_after` (M27: a
+    /// streamed reply waits it out); any other failure names the method.
+    async fn deliver(&self, method: &str, payload: &Value) -> Result<Value, GatewayError> {
         let resp = self
             .client
-            .post(self.api_url("sendMessage"))
-            .json(&payload)
+            .post(self.api_url(method))
+            .json(payload)
             .send()
             .await
             .map_err(|e| {
-                GatewayError::Channel(format!("sendMessage request failed: {}", e.without_url()))
+                GatewayError::Channel(format!("{method} request failed: {}", e.without_url()))
             })?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(json!({}));
-        if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            return Err(GatewayError::Channel(format!(
-                "sendMessage failed (status {status}): {body}"
-            )));
+        if status.is_success() && body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Ok(body.get("result").cloned().unwrap_or(Value::Null));
         }
-        Ok(())
+        let code = body.get("error_code").and_then(|v| v.as_u64());
+        if status.as_u16() == 429 || code == Some(429) {
+            let secs = body
+                .get("parameters")
+                .and_then(|p| p.get("retry_after"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1);
+            return Err(GatewayError::RateLimited {
+                retry_after: Duration::from_secs(secs),
+            });
+        }
+        Err(GatewayError::Channel(format!(
+            "{method} failed (status {status}): {body}"
+        )))
     }
 
     fn payload(msg: &OutboundMessage) -> Value {
@@ -749,6 +772,10 @@ impl Channel for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError> {
+        self.post_message(Self::payload(&msg)).await.map(|_| ())
+    }
+
+    async fn post(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
         self.post_message(Self::payload(&msg)).await
     }
 
@@ -759,7 +786,7 @@ impl Channel for TelegramChannel {
     ) -> Result<(), GatewayError> {
         let mut payload = Self::payload(&msg);
         payload["reply_markup"] = Self::keyboard(buttons)?;
-        self.post_message(payload).await
+        self.post_message(payload).await.map(|_| ())
     }
 
     /// `setMessageReaction`: the 👀 receipt (M19b).
@@ -803,26 +830,7 @@ impl Channel for TelegramChannel {
 
     async fn edit(&self, chat_id: &str, message_id: &str, text: &str) -> Result<(), GatewayError> {
         let payload = json!({ "chat_id": chat_id, "message_id": message_id.parse::<i64>().unwrap_or(0), "text": text });
-        let resp = self
-            .client
-            .post(self.api_url("editMessageText"))
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| {
-                GatewayError::Channel(format!(
-                    "editMessageText request failed: {}",
-                    e.without_url()
-                ))
-            })?;
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(json!({}));
-        if !status.is_success() || !body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            return Err(GatewayError::Channel(format!(
-                "editMessageText failed (status {status}): {body}"
-            )));
-        }
-        Ok(())
+        self.deliver("editMessageText", &payload).await.map(|_| ())
     }
 }
 
