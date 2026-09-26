@@ -10,6 +10,7 @@ ferrule-core = { path = "../ferrule-core" }
 ferrule-tools = { path = "../ferrule-tools" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
 ferrule-skills = { path = "../ferrule-skills" }
+ferrule-codemap = { path = "../ferrule-codemap", default-features = false }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

@@ -320,6 +320,10 @@ which neither Claude Code nor Codex has. Forcing it into the hook shape
 would change its config and contract for no new capability. It would
 also mean editing the scheduler, which M16 is changing in parallel.
 
+M29 adds a second built-in: a PostToolUse **lint** hook on
+`edit_file|write_file` that runs the project's own linter on the edited
+file (`[agent] lint`, `docs/editing.md`).
+
 ## 7. Sub-agents, eval and the audit trail
 
 **Sub-agents inherit PreToolUse and PostToolUse.** A child is built with

@@ -1,0 +1,12 @@
+[Repo map: ranked outline of this repository — definitions with line numbers; replaces any earlier map. Use code_search/read_file for detail.]
+shop/price.py
+     3│MAX_PERCENT = 100
+     8│class Money:
+    12│def apply_discount(total: Money, percent: int) -> Money:
+shop/cart.py
+     4│class Cart:
+     5│def __init__(self):
+     8│def add_item(self, name, price: Money):
+    14│def checkout_total(self) -> Money:
+shop/__init__.py
+     3│DEFAULT_CURRENCY = "ILS"

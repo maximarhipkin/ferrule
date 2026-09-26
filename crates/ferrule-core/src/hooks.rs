@@ -56,3 +56,40 @@ impl StopFlag {
 pub trait SessionRecall: Send + Sync {
     async fn recall(&self, goal: &str) -> Option<String>;
 }
+
+/// Context that is asked for at the start of every run (M29: the repo map).
+/// The answer goes in as a user message after the goal and any recalled
+/// memory, never into the system prompt (M27: the cached prefix). The
+/// agent keeps the last block it added: an equal answer adds nothing while
+/// that block is still in the history, so a turn in which nothing changed
+/// adds no bytes. A changed block is appended; history is never edited.
+/// `None` (or an empty block) adds nothing, and a source that fails should
+/// answer `None`, not fail the run.
+#[async_trait::async_trait]
+pub trait TurnContext: Send + Sync {
+    /// `history` is the conversation so far, this run's goal included.
+    async fn context(&self, goal: &str, history: &[crate::message::Message]) -> Option<String>;
+}
+
+/// How a run ended, for a [`RunObserver`].
+pub struct RunEnd<'a> {
+    pub session_id: &'a str,
+    pub goal: &'a str,
+    /// The answer; `None` when `Agent::run` returned an error.
+    pub answer: Option<&'a str>,
+    /// Why the run stopped short, when it did.
+    pub incomplete: Option<&'a str>,
+}
+
+/// Something done around every root run (M29: auto-commit). `begin` is
+/// awaited before the run starts and `end` after it ends, however it ends:
+/// done, step limit, stop or error. A note `end` returns goes out as
+/// [`crate::AgentEvent::Notice`]; an observer that fails says so there
+/// and never fails the run.
+#[async_trait::async_trait]
+pub trait RunObserver: Send + Sync {
+    /// A short name for the notice (`auto-commit`).
+    fn name(&self) -> &str;
+    async fn begin(&self, session_id: &str);
+    async fn end(&self, run: &RunEnd<'_>) -> Option<String>;
+}

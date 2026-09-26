@@ -15,7 +15,11 @@ use std::path::{Path, PathBuf};
 /// `hidden` is the sandbox's list — ferrule's saved keys. These tools run in
 /// ferrule's own process, outside the sandbox, so a workspace that contains
 /// the data dir (`ferrule chat` from `~`) would otherwise hand them over.
-fn resolve(workspace: &Path, hidden: &[PathBuf], path: &str) -> Result<PathBuf, CoreError> {
+pub(crate) fn resolve(
+    workspace: &Path,
+    hidden: &[PathBuf],
+    path: &str,
+) -> Result<PathBuf, CoreError> {
     let candidate = if Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {
@@ -46,6 +50,44 @@ fn resolve(workspace: &Path, hidden: &[PathBuf], path: &str) -> Result<PathBuf, 
         });
     }
     Ok(resolved)
+}
+
+/// Write `bytes` to `path` atomically: a temp file in the same directory,
+/// flushed, given the original's permissions, then renamed over it. A
+/// crash leaves the old file or the new one, never half of each. Parent
+/// directories are created.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let tmp = dir.join(format!(
+        ".{name}.ferrule-{}-{nanos}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        if let Ok(meta) = std::fs::metadata(path) {
+            std::fs::set_permissions(&tmp, meta.permissions())?;
+        }
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Whether `path` is `dir` or under it. Folders on macOS and Windows are
@@ -161,7 +203,8 @@ impl Tool for WriteFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_file".into(),
-            description: "Write text content to a file inside the workspace, creating parent dirs."
+            description: "Create a new file, or replace a whole file, inside the workspace (parent dirs are created). \
+                To change part of an existing file use edit_file: cheaper and safer."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -179,12 +222,13 @@ impl Tool for WriteFileTool {
             &self.hidden,
             args["path"].as_str().unwrap_or(""),
         )?;
-        let content = args["content"].as_str().unwrap_or("");
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
-        tokio::fs::write(&path, content)
+        let content = args["content"].as_str().unwrap_or("").to_string();
+        let target = path.clone();
+        let bytes = content.clone();
+        tokio::task::spawn_blocking(move || write_atomic(&target, bytes.as_bytes()))
             .await
+            .map_err(std::io::Error::other)
+            .and_then(|r| r)
             .map_err(|e| CoreError::ToolFailed {
                 tool: "write_file".into(),
                 message: format!("{}: {e}", path.display()),

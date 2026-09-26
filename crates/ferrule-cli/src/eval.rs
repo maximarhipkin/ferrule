@@ -78,6 +78,11 @@ pub enum EvalCmd {
         /// the run was self-judged
         #[arg(long)]
         judge_provider: Option<String>,
+        /// M29: `both` offers edit_file with write_file (as ferrule ships);
+        /// `write-only` offers write_file alone, to compare the two
+        /// (docs/editing.md)
+        #[arg(long, default_value = "both")]
+        edit_tools: String,
     },
     /// Print a saved run's report and its diff against the run before it
     Report {
@@ -107,7 +112,10 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
             dry_run,
             keep,
             judge_provider,
+            edit_tools,
         } => {
+            let edit_tools = ferrule_eval::EditTools::parse(&edit_tools)
+                .ok_or_else(|| anyhow!("--edit-tools: `{edit_tools}` isn't both or write-only"))?;
             let variants = Variant::parse(&variant).ok_or_else(|| {
                 anyhow!("--variant: `{variant}` isn't engineered, naive, ab or routing")
             })?;
@@ -282,7 +290,11 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 keep,
                 work_root: None,
                 progress: Some(Arc::new(|line: &str| eprintln!("{line}"))),
+                edit_tools,
             };
+            if edit_tools == ferrule_eval::EditTools::WriteOnly {
+                eprintln!("ferrule eval: --edit-tools write-only: no variant is offered edit_file");
+            }
             let run = ferrule_eval::run_suite(&suite, &env, &opts).await?;
             let earlier = history::load_runs(&data.join("eval"));
             let text = format!(

@@ -134,13 +134,13 @@ async fn read_capped<R: AsyncRead + Unpin>(mut stream: R, into: Arc<Mutex<Vec<u8
 
 /// Kills the hook and everything it started.
 #[cfg(unix)]
-fn kill_tree(pid: u32) {
+pub(crate) fn kill_tree(pid: u32) {
     ferrule_sandbox::kill_process_group(pid);
 }
 
 /// Kills the hook and everything it started.
 #[cfg(windows)]
-fn kill_tree(pid: u32) {
+pub(crate) fn kill_tree(pid: u32) {
     let _ = std::process::Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
@@ -150,7 +150,7 @@ fn kill_tree(pid: u32) {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn kill_tree(_pid: u32) {}
+pub(crate) fn kill_tree(_pid: u32) {}
 
 #[cfg(all(test, unix))]
 mod tests {

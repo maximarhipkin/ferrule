@@ -135,9 +135,63 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     service_check(&mut r, &path, telegram_on)?;
     health_check(&mut r, &cfg, telegram_on);
     connections_check(&mut r, &cfg);
+    editing_check(&mut r, &cfg);
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
     Ok(r.finish())
+}
+
+/// M29: the edit tools, the repo map and the grammars this build has.
+fn editing_check(r: &mut Report, cfg: &config::Config) {
+    let tools = if cfg.agent.edit_file {
+        "edit_file + write_file"
+    } else {
+        "write_file only (edit_file = false)"
+    };
+    let langs = ferrule_codemap::languages();
+    let map = match cfg.agent.repo_map_tokens {
+        0 => "repo map off".to_string(),
+        n => format!("repo map {n} tokens in code repos"),
+    };
+    if langs.is_empty() {
+        r.note(
+            "editing",
+            format!("{tools} · built without grammars: code_search is text search, no repo map"),
+        );
+    } else {
+        r.ok("editing", format!("{tools} · {map} · {}", langs.join(", ")));
+    }
+    if cfg.agent.lint == config::LintMode::Off {
+        r.note("lint", "off (lint = \"off\")");
+        return;
+    }
+    let (found, missing): (Vec<_>, Vec<_>) = ferrule_hooks::lint::LINTERS
+        .iter()
+        .partition(|(name, _)| ferrule_hooks::lint::on_path(name));
+    let names = |l: &[&(&str, &str)]| {
+        l.iter()
+            .map(|(n, ext)| format!("{n} ({ext})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut line = format!(
+        "after each edit, where the project configures it · found: {}",
+        {
+            let f = names(&found);
+            if f.is_empty() {
+                "none".to_string()
+            } else {
+                f
+            }
+        }
+    );
+    if !missing.is_empty() {
+        line.push_str(&format!(" · not on PATH: {}", names(&missing)));
+    }
+    r.ok("lint", line);
+    if missing.iter().any(|(n, _)| matches!(*n, "eslint" | "tsc")) {
+        r.hint("eslint and tsc are also found in a project's node_modules/.bin");
+    }
 }
 
 /// M20: what's connected and whether logins have a relay to come back by.

@@ -668,6 +668,7 @@ pub async fn run(
         keep: false,
         work_root: None,
         progress: Some(progress),
+        edit_tools: Default::default(),
     };
     s.hub.audit().record(
         Utc::now(),

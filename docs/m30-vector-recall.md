@@ -390,12 +390,19 @@ FERRULE_EMBED_MODEL_DIR=<data>/models/potion-multilingual-128M@73908c3 \
   cargo test --release -p ferrule-memory --test bench -- --ignored --nocapture
 ```
 
-**Binary growth** (release, x86_64 Linux, `ferrule`): main 17,313,488
-bytes; M30 20,023,280 (+2.71 MB, +15.6%); M30 with
-`--no-default-features` 17,515,344 (+0.20 MB). Nearly all of it is the
-local backend: `tokenizers` with `fancy-regex`, and `ring`'s SHA-256
-(already linked, via rustls). That backend sits behind the `local-embed`
-feature of `ferrule-cli`, which is on by default.
+**Binary growth** (release, x86_64 Linux, `ferrule`, measured before
+merging M29):
+
+| build | bytes | growth |
+|---|---|---|
+| main at `98d6d92` | 17,313,488 | — |
+| M30 | 20,023,280 | +2.71 MB (+15.6%) |
+| M30 without `local-embed` | 17,515,344 | +0.20 MB |
+
+Nearly all of it is the local backend: `tokenizers` with `fancy-regex`
+(`ring`, used for SHA-256, was already linked through rustls). That
+backend sits behind `ferrule-cli`'s `local-embed` feature, on by default
+next to M29's `grammars`.
 
 **Departures from the design:**
 
