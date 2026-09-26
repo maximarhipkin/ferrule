@@ -216,6 +216,10 @@ pub struct AgentSettings {
     /// edit a sent message (Telegram) and in `ferrule chat`.
     #[serde(default = "default_stream")]
     pub stream: bool,
+    /// M29: offer `edit_file` (SEARCH/REPLACE). `write_file` stays either
+    /// way; false is for a provider that misbehaves with the tool.
+    #[serde(default = "default_true")]
+    pub edit_file: bool,
 }
 
 impl Default for AgentSettings {
@@ -225,8 +229,13 @@ impl Default for AgentSettings {
             verify_timeout_secs: default_verify_timeout_secs(),
             parallel_tools: default_parallel_tools(),
             stream: default_stream(),
+            edit_file: true,
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_stream() -> bool {
@@ -596,6 +605,7 @@ profile = "openai"
 # verify_timeout_secs = 600
 # parallel_tools = 4              # read-only tool calls from one response run at once; 1 = one by one
 # stream = true                   # replies grow as the model writes (Telegram, `ferrule chat`)
+# edit_file = true                # offer edit_file (SEARCH/REPLACE); write_file stays either way
 
 # [gateway]
 # local = true                              # enable the stdin/stdout channel

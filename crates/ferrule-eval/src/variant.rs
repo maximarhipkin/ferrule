@@ -8,8 +8,8 @@ use ferrule_core::{
 };
 use ferrule_sandbox::{Mode, Sandbox};
 use ferrule_tools::{
-    standard_registry, CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WebFetchTool,
-    WriteFileTool,
+    standard_registry, CommandVerifier, EditFileTool, ListDirTool, ReadFileTool, ShellTool,
+    WebFetchTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -140,9 +140,11 @@ pub fn build(b: Build<'_>) -> Agent {
     let hidden = b.sandbox.read_deny_list(b.workspace);
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
+    registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(ListDirTool::hiding(hidden)));
     if b.sandbox.policy().mode == Mode::ReadOnly {
         registry.remove("write_file");
+        registry.remove("edit_file");
     }
 
     let mut profile = b.profile.clone();

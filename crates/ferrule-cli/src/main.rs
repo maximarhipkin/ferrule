@@ -40,7 +40,8 @@ use ferrule_proxy::{Broker, BrokerConfig, Upstream};
 use ferrule_sandbox::{Backend, Egress, Mode, Sandbox};
 use ferrule_tools::standard_registry;
 use ferrule_tools::{
-    CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WebFetchTool, WriteFileTool,
+    CommandVerifier, EditFileTool, ListDirTool, ReadFileTool, ShellTool, WebFetchTool,
+    WriteFileTool,
 };
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -863,10 +864,15 @@ fn build_agent_from(
     let hidden = sandbox.read_deny_list(&tool_ctx.workspace);
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
+    registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(ListDirTool::hiding(hidden)));
     warn_data_in_workspace(&sandbox, &tool_ctx.workspace);
+    if !cfg.agent.edit_file {
+        registry.remove("edit_file");
+    }
     if sandbox.policy().mode == Mode::ReadOnly || read_only {
         registry.remove("write_file");
+        registry.remove("edit_file");
     }
     // M15: the root corrects and deletes memories, a writing child only
     // adds, a read-only child only recalls (docs/m15-memory.md §8).
@@ -904,7 +910,7 @@ fn build_agent_from(
     if planning {
         // `write_todos` and `log_diary` write under `.ferrule/` without
         // saying they change files.
-        for name in ["write_file", "write_todos", "log_diary"] {
+        for name in ["write_file", "edit_file", "write_todos", "log_diary"] {
             registry.remove(name);
         }
         for d in registry.definitions() {
