@@ -49,8 +49,8 @@ impl StopFlag {
 
 /// Long-term memory for the start of a session. On an agent's first run,
 /// before the goal is added, the loop asks for a block about the session's
-/// goal and appends it to the system prompt, once, so the prompt stays
-/// byte-stable afterwards. `None` (or an empty block) adds nothing; a store
+/// goal and adds it once, as a user message right after the goal (M27: the
+/// system prompt stays the same bytes for every session, so it caches). `None` (or an empty block) adds nothing; a store
 /// that can't be read should answer `None`, not fail the run.
 #[async_trait::async_trait]
 pub trait SessionRecall: Send + Sync {

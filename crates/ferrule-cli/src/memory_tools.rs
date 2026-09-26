@@ -179,7 +179,7 @@ impl Tool for RememberTool {
         });
         let mut description = "Save a fact to long-term memory, kept across sessions. \
                                One self-contained fact per call; facts matching a \
-                               session's task are added to its system prompt. \
+                               session's task are recalled at its start. \
                                A fact already known is not stored twice."
             .to_string();
         if self.access == MemoryAccess::Full {

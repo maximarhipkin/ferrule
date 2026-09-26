@@ -270,6 +270,12 @@ pub struct Agent {
     session_recall: Option<Arc<dyn SessionRecall>>,
     /// Session-start recall ran (it runs once per agent).
     recalled: bool,
+    /// What it recalled (M27: a user message after the goal, so the
+    /// system prompt stays byte-stable for the cache). Compaction carries
+    /// it forward verbatim, as it does the goal.
+    memory: Option<String>,
+    /// The recalled block still has to go in after this run's goal.
+    memory_due: bool,
     /// What the current run was asked to do: kept verbatim through
     /// compaction, since it's what says when the work is done.
     goal: Option<String>,
@@ -314,6 +320,8 @@ impl Agent {
             guard: None,
             session_recall: None,
             recalled: false,
+            memory: None,
+            memory_due: false,
             goal: None,
             messages: Vec::new(),
             usage: Usage::default(),
@@ -883,6 +891,11 @@ impl Agent {
         self.goal = Some(goal.to_string());
         self.incomplete = None;
         self.push(Message::user(goal));
+        if std::mem::take(&mut self.memory_due) {
+            if let Some(memory) = self.memory.clone() {
+                self.push(Message::user(memory));
+            }
+        }
         for (event, note) in [
             (HookEvent::SessionStart, session_note),
             (HookEvent::UserPromptSubmit, submitted.context),
@@ -1545,7 +1558,9 @@ impl Agent {
 
     /// Session-start recall, once per agent: the goal is the session's
     /// first user message (a resumed session's history already has one)
-    /// plus this run's request.
+    /// plus this run's request. The block goes in a user message right
+    /// after the goal, never into the system prompt, which stays the same
+    /// bytes for every session (M27: the cached prefix).
     async fn recall_for(&mut self, goal: &str) {
         if self.recalled {
             return;
@@ -1563,9 +1578,8 @@ impl Agent {
             Some(first) if first != goal => format!("{first}\n{goal}"),
             _ => goal.to_string(),
         };
-        if let Some(block) = recall.recall(&query).await.filter(|b| !b.trim().is_empty()) {
-            self.append_system_prompt(&block);
-        }
+        self.memory = recall.recall(&query).await.filter(|b| !b.trim().is_empty());
+        self.memory_due = self.memory.is_some();
     }
 
     /// Adds to the history and the transcript.
@@ -1718,6 +1732,12 @@ impl Agent {
         if let Some(goal) = self.goal.as_deref().filter(|g| !goal_in_tail(g)) {
             summary_msg.push_str("\n\n[The request being worked on, verbatim]\n");
             summary_msg.push_str(goal);
+        }
+        // Recalled memory lived in the system prompt before M27, where no
+        // compaction reached it; it stays as whole now.
+        if let Some(memory) = self.memory.as_deref().filter(|m| !goal_in_tail(m)) {
+            summary_msg.push_str("\n\n");
+            summary_msg.push_str(memory);
         }
         summary_msg.push_str("\n\nContinue from here.");
         rebuilt.push(Message::user(summary_msg));

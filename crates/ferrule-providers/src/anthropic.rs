@@ -97,7 +97,15 @@ impl AnthropicProvider {
                     if let Some(t) = nonempty(&m.content) {
                         push(&mut wire, "user", vec![text_block(t)]);
                         let at = wire.len() - 1;
-                        user_marks.push((at, wire[at].1.len() - 1));
+                        let mark = (at, wire[at].1.len() - 1);
+                        // Text right after the goal (recalled memory, a
+                        // hook's note) joins its wire message: the mark
+                        // moves to its end, where that request's own
+                        // breakpoint was (M27).
+                        match user_marks.last_mut() {
+                            Some(last) if last.0 == at => *last = mark,
+                            _ => user_marks.push(mark),
+                        }
                     }
                 }
                 Role::Tool => {
