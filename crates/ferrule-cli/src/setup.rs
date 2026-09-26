@@ -74,6 +74,12 @@ pub(crate) fn has_terminal() -> bool {
 
 /// The first run: every part in order.
 async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
+    if !crate::import::detected().is_empty() {
+        heading("Import");
+        if settle(crate::import::setup_step(t, true).await)?.quit() {
+            return Ok(false);
+        }
+    }
     heading("Model provider");
     if settle(provider_step(t, http, true).await)?.quit() {
         return Ok(false);
@@ -148,6 +154,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Network policy       {}", network_summary(&cfg)),
             format!("Browser              {}", browser_summary(&cfg)),
             format!("MCP servers          {}", mcp_summary(&cfg)),
+            format!("Import               {}", crate::import::setup_summary()),
             format!("Background service   {}", service_summary(&service)),
             "Done".to_string(),
         ];
@@ -173,7 +180,8 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             8 => network_step(t, false),
             9 => browser_step(t),
             10 => crate::mcp_add::setup_step(t, false).await,
-            11 => service_step(t, false),
+            11 => crate::import::setup_step(t, false).await,
+            12 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -615,14 +623,14 @@ pub(crate) fn no_shape(_: &str) -> Option<&'static str> {
 
 // ── Model provider ─────────────────────────────────────────────────────
 
-struct Preset {
+pub(crate) struct Preset {
     label: &'static str,
-    name: &'static str,
-    base_url: &'static str,
-    key_env: &'static str,
-    profile: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) base_url: &'static str,
+    pub(crate) key_env: &'static str,
+    pub(crate) profile: &'static str,
     /// Empty: pick from the provider's list.
-    model: &'static str,
+    pub(crate) model: &'static str,
     /// Where to get a key. Empty: none needed (a local server).
     key_url: &'static str,
 }
@@ -701,6 +709,11 @@ const PRESETS: &[Preset] = &[
         key_url: "",
     },
 ];
+
+/// The preset called `name`.
+pub(crate) fn preset(name: &str) -> Option<&'static Preset> {
+    PRESETS.iter().find(|p| p.name == name)
+}
 
 /// A provider being added or changed.
 struct NewProvider {

@@ -253,6 +253,36 @@ impl MemoryStore {
         })
     }
 
+    /// The live fact that already says `content`: the NOOP check `insert`
+    /// makes, without writing anything.
+    pub fn known(&self, content: &str) -> Result<Option<i64>, MemoryError> {
+        Ok(self
+            .live_candidates(content.trim())?
+            .into_iter()
+            .find(|m| same_fact(&m.content, content))
+            .map(|m| m.id))
+    }
+
+    /// Live facts carrying every tag in `tags`, oldest first.
+    pub fn live_tagged(&self, tags: &[&str]) -> Result<Vec<Memory>, MemoryError> {
+        let Some(first) = tags.first() else {
+            return Ok(Vec::new());
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, tags, created_at, superseded_by FROM memories
+             WHERE superseded_by IS NULL AND instr(tags, ?1) > 0 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![first], row_to_memory)?;
+        let mut out = Vec::new();
+        for m in rows {
+            let m = m?;
+            if tags.iter().all(|t| m.tags.iter().any(|have| have == t)) {
+                out.push(m);
+            }
+        }
+        Ok(out)
+    }
+
     /// `insert(content, tags, [id])`: replace one live fact.
     pub fn supersede(
         &self,
@@ -1027,6 +1057,20 @@ fn split_tags(tags: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether two facts say the same thing, as `insert` decides NOOP.
+pub fn same_fact(a: &str, b: &str) -> bool {
+    let words = word_set(a);
+    normalize(a) == normalize(b)
+        || (!words.is_empty() && jaccard(&words, &word_set(b)) >= DUPLICATE_JACCARD)
+}
+
+/// Whether `b` looks related to `a` without saying the same thing: what
+/// `insert` reports back as `similar`.
+pub fn resembles(a: &str, b: &str) -> bool {
+    let words = word_set(a);
+    !words.is_empty() && jaccard(&words, &word_set(b)) >= SIMILAR_JACCARD
+}
+
 /// Lowercase, collapse whitespace, strip trailing punctuation: two facts
 /// equal after this are the same fact.
 fn normalize(s: &str) -> String {
@@ -1420,6 +1464,46 @@ mod tests {
         assert!(matches!(
             store.undo_update(r.id, &r.replaced, true),
             Err(MemoryError::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn known_and_live_tagged_look_without_writing() {
+        let s = MemoryStore::in_memory().unwrap();
+        let a = s
+            .insert(
+                "Max deploys sasa-front on Vercel",
+                &["import:hermes", "from:MEMORY.md"],
+                &[],
+            )
+            .unwrap();
+        s.insert(
+            "The staging port is 5781",
+            &["import:hermes", "from:USER.md"],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            s.known("max deploys  sasa-front on vercel.").unwrap(),
+            Some(a.id)
+        );
+        assert_eq!(s.known("Max deploys on Netlify").unwrap(), None);
+        let tagged = s.live_tagged(&["import:hermes", "from:MEMORY.md"]).unwrap();
+        assert_eq!(tagged.len(), 1);
+        assert_eq!(tagged[0].id, a.id);
+        assert!(s.live_tagged(&["import:openclaw"]).unwrap().is_empty());
+        s.supersede(a.id, "Max deploys sasa-front on Netlify", &[])
+            .unwrap();
+        let tagged = s.live_tagged(&["import:hermes", "from:MEMORY.md"]).unwrap();
+        assert_eq!(tagged.len(), 1, "only the live head");
+        assert_ne!(tagged[0].id, a.id);
+        assert!(resembles(
+            "Max deploys sasa-front on Vercel",
+            "Max deploys sasa-front on Netlify"
+        ));
+        assert!(!same_fact(
+            "Max deploys sasa-front on Vercel",
+            "Max deploys sasa-front on Netlify"
         ));
     }
 }

@@ -442,7 +442,7 @@ pub async fn run(op: ExtCmd) -> Result<()> {
 /// Show the owner what they'd install and ask. A block hit needs the
 /// word `waive`: that approves exactly the flagged text shown, and a
 /// different text later suspends it again.
-fn confirm_at_terminal(review: &Review) -> bool {
+pub(crate) fn confirm_at_terminal(review: &Review) -> bool {
     println!("\n{}", review.what);
     println!("offers: {}", review.items.join(", "));
     if let Some(why) = &review.sandbox_degraded {

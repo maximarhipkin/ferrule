@@ -679,6 +679,44 @@ impl ExtensionManager {
         self.queue.remove(id)
     }
 
+    /// M33: install a skill from a local directory (an importer's find) the
+    /// way the owner approves one: scanned, shown through `confirm`, and
+    /// kept as the owner's on yes, with the block hits they saw waived.
+    /// Never installed without `confirm` saying yes, and never over an
+    /// installed skill of the same name. `source` is what the lock records.
+    pub async fn install_local_skill(
+        self: &Arc<Self>,
+        dir: &Path,
+        source: &str,
+        confirm: impl FnOnce(&Review) -> bool,
+    ) -> Result<Outcome> {
+        let _ops = self.ops.lock().await;
+        let candidate = skill::inspect(dir)?;
+        if self.store.load()?.skills.contains_key(&candidate.name) {
+            return Err(refused(format!(
+                "a skill `{}` is already installed",
+                candidate.name
+            )));
+        }
+        let review = Review {
+            what: format!("skill `{}` from {source}", candidate.name),
+            items: vec![candidate.name.clone()],
+            findings: candidate.findings.clone(),
+            sandbox_degraded: None,
+        };
+        if !confirm(&review) {
+            return Err(refused("not approved; nothing was installed"));
+        }
+        let waivers = skill_waivers(&candidate);
+        let prepared = PreparedSkill {
+            source: source.to_string(),
+            pin: None,
+            candidate,
+            clone: None,
+        };
+        self.commit_skill(prepared, Origin::Owner, waivers, false)
+    }
+
     /// Re-scan a suspended server or skill, show it to the owner, and make
     /// it active again (with its current surface approved) on yes.
     pub async fn resume(

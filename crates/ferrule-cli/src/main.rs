@@ -12,6 +12,7 @@ mod eval;
 mod filewrite;
 mod health;
 mod hooks_cli;
+mod import;
 mod learn;
 mod ledger;
 mod mcp_add;
@@ -201,6 +202,12 @@ enum Cmd {
     Extensions {
         #[command(subcommand)]
         op: self_extend::ExtCmd,
+    },
+    /// Bring memories, skills, channel allowlists and providers over from
+    /// OpenClaw or Hermes Agent. A dry run unless --apply
+    Import {
+        #[command(subcommand)]
+        from: import::ImportCmd,
     },
     /// Add an MCP server (started, scanned and its keys bound before it's
     /// written; running gateways pick it up, no restart), list, remove
@@ -690,6 +697,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         }
         Cmd::Hooks { op } => hooks_cli::run(op)?,
         Cmd::Extensions { op } => self_extend::run(op).await?,
+        Cmd::Import { from } => import::command(from).await?,
         Cmd::Mcp { op } => mcp_add::run(op).await?,
         Cmd::Connections { op } => connections::run(op).await?,
         Cmd::Sandbox {

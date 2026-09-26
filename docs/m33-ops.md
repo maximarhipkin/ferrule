@@ -782,20 +782,30 @@ ferrule import hermes   [--from <home>] [--profile <name>] [--apply] [--bind-sec
   `from:<file>` (the origin; the store has no origin column, and tags are
   what `memory` search and `ferrule memory` already show).
 - **Dedup:**
-  - Entries are normalised and deduplicated within the import first.
-  - `insert` already answers **Noop** for a live fact that says the same
-    thing, which is what makes a second run a no-op.
+  - Entries are deduplicated within the import first, with the store's
+    own sameness test (`ferrule_memory::same_fact`: equal once normalised,
+    or near-identical words).
+  - An entry whose text is already a live fact (`MemoryStore::known`) is
+    kept as it is. That is what makes a second run a no-op.
 - **Re-runs supersede rather than duplicate:**
-  - When an entry has changed at the source, `insert` reports it as
-    *similar* to the old imported one. If that similar fact carries the same
-    `import:<tool>` and `from:<file>` tags, the new text **supersedes** it
+  - The comparison is made per source file, before anything is written.
+    An entry that isn't known is matched against the live facts tagged
+    with the same `import:<tool>` and `from:<file>` that no other entry has
+    claimed. The first one that *resembles* it (`ferrule_memory::resembles`,
+    a word overlap of 30 % or more) is **superseded** by the new text
     (`replaces = [old id]`). History is kept, and only one is live.
   - An entry that's gone from the source is left alone. Ferrule doesn't
     delete memories because the other tool did.
-- **Secrets in memory:** an entry that looks like it carries a secret
-  (the sandbox's token shapes: `sk-…`, `xox[bp]-…`, `ghp_…`, long
-  high-entropy words) is **not imported**. The summary lists it by file and
-  line, never by content.
+- **Secrets in memory:** an entry is **not imported** when:
+  - one of its words has a key's shape (the config check's prefixes:
+    `sk-…`, `xox…`, `ghp_…`, `AKIA…`, and the rest);
+  - the gateway's redactor would change it;
+  - or it contains the value of any secret the import found (six
+    characters or more).
+
+  The summary lists it by file and line, never by content. The shape check
+  errs on the side of holding back, so a long hash or id can be held back
+  too; the owner adds such an entry by hand.
 
 `SOUL.md`, `AGENTS.md` and `IDENTITY.md` aren't memories. `AGENTS.md` is
 already a context-baseline file for ferrule, so the summary suggests copying
@@ -808,19 +818,24 @@ goes through the **M13 path**:
 - then owner confirmation;
 - then `commit_skill(…, Origin::Owner, …)`.
 
-The new `ExtensionManager::install_local_skill(dir, source, confirm, replace)`
-is `approve()` for a local directory. The source label is recorded as
-`import:openclaw:<path>`.
+The new `ExtensionManager::install_local_skill(dir, source, confirm)` is
+`approve()` for a local directory. It refuses a name that's already
+installed, and a "no" installs nothing. The source label is recorded as
+`import:<tool>:<path>`. What's installed is a staged copy whose
+frontmatter `name:` carries the mapped name; the source directory is never
+changed.
 
 In a dry run, the summary lists skills with their scan verdicts. With
 `--apply`, each skill is **confirmed one at a time at the terminal**. With
-no terminal, skills are skipped, and the summary says to re-run in one. No
-flag auto-approves an imported skill.
+no terminal, or no ferrule config yet, skills are skipped and the summary
+says why. No flag auto-approves an imported skill.
 
 **Name handling:**
-- Hermes and OpenClaw names are mapped onto ferrule's name rule (lowercase,
-  `-`/`_`, ≤ 40 characters): `.` becomes `-`, and names are truncated with a
-  short hash on collision.
+- Hermes and OpenClaw names are mapped onto ferrule's name rule (lowercase
+  `a-z0-9`, `-`/`_`, ≤ 40 characters): any other character becomes `-`
+  (`Weather Tool` → `weather-tool`). A name that's too long, or that two
+  skills in one import share, is cut and given `-` plus six hex digits of
+  a hash of its path.
 - An already installed skill with the same name is skipped with a note.
   Replacing one needs `ferrule extensions` afterwards.
 
@@ -864,8 +879,8 @@ union with what's there. Re-running changes nothing.
   and Codex Responses mode.
 - **What gets written:**
   - an existing `[providers.<name>]` is never overwritten;
-  - `[agent] provider`/`model` are set only when ferrule has no provider
-    configured yet.
+  - the top-level `default_provider` is set to the source's default only
+    when ferrule has neither `default_provider` nor `[models] default`.
 
 **Secrets are never written to `config.toml`.** A key is found:
 - as a literal in `openclaw.json`;
@@ -874,14 +889,19 @@ union with what's there. Re-running changes nothing.
 
 The importer records only its **env name**: the preset's
 (`ANTHROPIC_API_KEY`), or the variable it came from.
-- **Default:** the summary tells the owner to run `ferrule secrets set NAME`
-  (or to export it), and lists the names, never the values.
+- **Default:** the summary lists the names, never the values, and says
+  where each was found. Ferrule has no `secrets set` command; the owner
+  exports the variable, saves it with `ferrule setup`, or re-runs with
+  `--bind-secrets`.
 - **With `--bind-secrets` (plus `--apply`),** the owner consents to copy
   the values into ferrule's secret store, `<data>/private/secrets.env`
-  (0600, the same store as `ferrule secrets set`). Existing names aren't
-  overwritten.
+  (0600, the store `ferrule setup` writes). Existing names aren't
+  overwritten. `--bind-secrets` without `--apply` is an error.
 - **References are kept as references:** `${VAR}` and
-  `{source:"env", id}` refs map to that env name, and nothing is copied.
+  `{source:"env", id}` refs map to that env name. The value is known only
+  when the tool's own `.env` defines it; then `--bind-secrets` can copy
+  it, and otherwise the summary says the value isn't there. The
+  importer never reads the process environment for a value.
   `store`/`file`/`exec` refs are reported as not portable.
 
 Channel tokens follow the same rule, under ferrule's default names.
@@ -897,16 +917,16 @@ Channel tokens follow the same rule, under ferrule's default names.
   The step shows the dry-run summary and asks whether to apply it.
   - **Yes** runs the same code as `ferrule import … --apply`, with skills
     confirmed one by one and secrets bound only on a second explicit yes.
-  - **No** notes the command for later.
-- **The menu** gets "Import from OpenClaw/Hermes".
+  - **No** skips it; `ferrule import` or the menu does it later.
+- **The menu** gets an "Import" item, which shows what was found.
 
 ### 3.5 Failure modes
 
 - A malformed file is reported with the file and parse error, and the rest
   of the import goes on.
 - Apply is per area:
-  - config edits go through one `edit_config` under the config lock, with
-    the M31 rollback if the write fails;
+  - config edits go through one `edit_config` under the config lock,
+    checked and written atomically;
   - memories and skills commit individually.
 
   A crash midway leaves a state the next run completes, because every step

@@ -622,7 +622,7 @@ fn strip_vars(value: &str) -> String {
 
 /// Whether a word is shaped like an API key: a known prefix, or 20+ token
 /// characters mixing letters and digits.
-fn looks_like_key(word: &str) -> bool {
+pub(crate) fn looks_like_key(word: &str) -> bool {
     const PREFIXES: &[&str] = &[
         "sk-",
         "sk_",
