@@ -25,6 +25,7 @@ webpki-roots = "1"
 
 [dev-dependencies]
 ferrule-core = { path = "../ferrule-core" }
+ferrule-embed = { path = "../ferrule-embed", default-features = false }
 ferrule-mcp = { path = "../ferrule-mcp" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
 ferrule-tools = { path = "../ferrule-tools" }
