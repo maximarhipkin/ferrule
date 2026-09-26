@@ -17,11 +17,11 @@ pub mod tools;
 pub use allowlist::{AllowEntry, AllowList, Kind, Source};
 pub use error::{ExtError, Result};
 pub use layout::Layout;
-pub use lock::{LockFile, LockStore, Origin, ServerEntry, SkillEntry, Status, Waiver};
+pub use lock::{LockFile, LockStore, Origin, PluginEntry, ServerEntry, SkillEntry, Status, Waiver};
 pub use manager::{
     Approver, ExtensionManager, Listed, ManagerConfig, Outcome, Probe, QueueApprover, Review,
 };
 pub use pending::{Pending, PendingQueue, Request};
 pub use scan::{scan_skill, scan_tool, tool_digest, Finding, Level};
-pub use source::{McpRequest, SkillRequest};
+pub use source::{McpRequest, PluginRequest, SkillRequest};
 pub use tools::tools;

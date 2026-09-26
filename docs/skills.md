@@ -32,6 +32,9 @@ after the same scan and your confirmation, one at a time
 `ferrule skills disable <name>` / `enable <name>`, or `/skills` in
 Telegram, turn one off and on.
 
+For a tool rather than instructions, a WASM plugin (`docs/plugins.md`)
+adds one in a capability sandbox.
+
 ## Triggers
 
 Add `triggers:` to the frontmatter, and the skill loads with any message

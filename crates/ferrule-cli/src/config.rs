@@ -1301,13 +1301,16 @@ profile = "openai"
 # content = false            # true: prompts, replies and tool I/O too, scrubbed.
 # service_name = "ferrule"
 
-# [extensions]              # Self-extension: the agent installs MCP servers and
-# enabled = false            # skills mid-run (mcp_add, skill_install, skill_keep…).
-# allow = []                 # Installable without asking, exact pins only, e.g.
+# [extensions]              # Self-extension: the agent installs MCP servers,
+# enabled = false            # skills and WASM plugins mid-run (mcp_add,
+# allow = []                 # skill_install, plugin_add…). Installable without
+#                            # asking, exact pins only, e.g.
 #                            # ["npm:@modelcontextprotocol/*", "git:https://github.com/me/*"].
 #                            # Anything else waits for `ferrule extensions approve`.
 #                            # Read only from --config or the global config, never
-#                            # from ./ferrule.toml. Every tool text is scanned.
+#                            # from ./ferrule.toml. Every tool text is scanned. A
+#                            # plugin asking for files, network or secrets waits
+#                            # for the owner even when allowed (docs/plugins.md).
 
 # [learning]                # The learning pass: reviews failed or retried runs,
 # enabled = true             # keeps a lesson in data/learn/playbook.md only when the

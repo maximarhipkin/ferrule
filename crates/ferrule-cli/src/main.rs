@@ -21,6 +21,7 @@ mod memory_tools;
 mod model_eval;
 mod models;
 mod plan;
+mod plugins_cli;
 mod probe;
 mod secrets;
 mod self_extend;
@@ -197,7 +198,7 @@ enum Cmd {
         #[command(subcommand)]
         op: hooks_cli::HooksCmd,
     },
-    /// MCP servers and skills the agent installed: list, approve or deny
+    /// MCP servers, skills and plugins the agent installed: list, approve or deny
     /// its requests, remove, resume what the scan suspended
     Extensions {
         #[command(subcommand)]
@@ -208,6 +209,12 @@ enum Cmd {
     Import {
         #[command(subcommand)]
         from: import::ImportCmd,
+    },
+    /// WASM tool plugins: add one (hash-checked, scanned, its capabilities
+    /// shown before yes), list, remove (docs/plugins.md)
+    Plugins {
+        #[command(subcommand)]
+        op: plugins_cli::PluginsCmd,
     },
     /// Add an MCP server (started, scanned and its keys bound before it's
     /// written; running gateways pick it up, no restart), list, remove
@@ -699,6 +706,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Extensions { op } => self_extend::run(op).await?,
         Cmd::Import { from } => import::command(from).await?,
         Cmd::Mcp { op } => mcp_add::run(op).await?,
+        Cmd::Plugins { op } => plugins_cli::run(op).await?,
         Cmd::Connections { op } => connections::run(op).await?,
         Cmd::Sandbox {
             probe_net: true, ..

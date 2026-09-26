@@ -5,7 +5,7 @@
 
 use crate::error::Result;
 use crate::scan::Finding;
-use crate::source::{McpRequest, SkillRequest};
+use crate::source::{McpRequest, PluginRequest, SkillRequest};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::ErrorKind;
@@ -16,6 +16,7 @@ use std::path::PathBuf;
 pub enum Request {
     Mcp(McpRequest),
     Skill(SkillRequest),
+    Plugin(PluginRequest),
 }
 
 impl Request {
@@ -23,6 +24,7 @@ impl Request {
         match self {
             Request::Mcp(r) => &r.source,
             Request::Skill(r) => &r.source,
+            Request::Plugin(r) => &r.source,
         }
     }
 
@@ -42,6 +44,16 @@ impl Request {
                 Some(p) => format!("skill from {} (path `{p}`)", r.source),
                 None => format!("skill from {}", r.source),
             },
+            Request::Plugin(r) => {
+                let mut s = format!("WASM plugin from {}", r.source);
+                if let Some(p) = &r.path {
+                    s.push_str(&format!(" (path `{p}`)"));
+                }
+                if let Some(c) = &r.capabilities {
+                    s.push_str(&format!(", allowed to: {}", c.describe().join("; ")));
+                }
+                s
+            }
         }
     }
 }

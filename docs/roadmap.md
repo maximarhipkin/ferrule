@@ -672,6 +672,24 @@ and `docs/slack.md`). PR to `main` open, not merged.
 and survives a dropped socket. WhatsApp comes next (options in the design,
 §9).
 
+### M32 — WASM tool plugins
+
+**Status.** Built (`docs/m32-wasm-plugins.md`; user guide
+`docs/plugins.md`). PR to `main` open, not merged.
+- Tools as small WebAssembly modules run in wasmi. A module can reach
+  nothing it wasn't granted: workspace directories, HTTPS domains through
+  the credential proxy, secrets as placeholders only, and the clock.
+- Installed through M13's flow: exact pins and a SHA-256, the scan, and
+  the owner approving the capabilities (again whenever they widen).
+  Tampering suspends the plugin.
+- `ferrule plugins add/list/remove`, the agent's `plugin_add`, doctor, a
+  Rust SDK and two examples.
+
+**Done means.** The owner installs a plugin from a git commit, sees
+exactly what it may touch, and the agent uses it in the same session. A
+plugin that loops, bloats or asks for an undeclared host fails as a tool
+error, and a plugin never holds a real key.
+
 ### M33 — ops: egress policy, OTel export, importers
 
 **Status.** Built (`docs/m33-ops.md`; user guides `docs/egress.md`,

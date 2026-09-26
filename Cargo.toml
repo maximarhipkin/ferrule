@@ -21,7 +21,12 @@ members = [
     "crates/ferrule-connections",
     "crates/ferrule-codemap",
     "crates/ferrule-otel",
+    "crates/ferrule-plugins",
+    "crates/ferrule-plugin-sdk",
 ]
+# The example plugins build for wasm32-unknown-unknown on their own
+# (examples/plugins/build.sh); their .wasm output is committed.
+exclude = ["examples/plugins"]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

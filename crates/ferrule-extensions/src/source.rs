@@ -33,6 +33,27 @@ pub struct SkillRequest {
     pub replace: bool,
 }
 
+/// M32: the model's `plugin_add`, and the owner's `ferrule plugins add`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginRequest {
+    /// `git:https://…[@rev]`, `url:https://…/plugin.json`, or a local
+    /// directory (relative to the workspace when the agent asks).
+    pub source: String,
+    /// git only: the plugin's directory inside the repo.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The `.wasm`'s SHA-256. Required for a URL; checked against the
+    /// manifest whenever given.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub replace: bool,
+    /// The capabilities the owner is asked to grant, once ferrule has read
+    /// them. Set by ferrule only: whatever the model passes is dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ferrule_plugins::Capabilities>,
+}
+
 /// Server and skill names: they become tool-name prefixes and directory
 /// names, so lowercase ASCII, digits, `-` and `_`, no `__` (the tool-name
 /// separator), 1–40 characters.

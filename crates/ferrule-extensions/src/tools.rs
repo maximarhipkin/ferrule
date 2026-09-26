@@ -1,17 +1,18 @@
 //! The model's side: `mcp_add`, `mcp_remove`, `skill_install`,
-//! `skill_remove`, `skill_keep` and `extensions_list`. Every refusal is a
+//! `skill_remove`, `skill_keep`, `plugin_add`, `plugin_remove` (M32) and
+//! `extensions_list`. Every refusal is a
 //! tool error with policy wording only — never the flagged text itself.
 
 use crate::error::ExtError;
 use crate::manager::{ExtensionManager, Outcome};
-use crate::source::{McpRequest, SkillRequest};
+use crate::source::{McpRequest, PluginRequest, SkillRequest};
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use ferrule_core::CoreError;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// The six tools, over one manager.
+/// The eight tools, over one manager.
 pub fn tools(manager: &Arc<ExtensionManager>) -> Vec<Arc<dyn Tool>> {
     [
         Op::McpAdd,
@@ -19,6 +20,8 @@ pub fn tools(manager: &Arc<ExtensionManager>) -> Vec<Arc<dyn Tool>> {
         Op::SkillInstall,
         Op::SkillRemove,
         Op::SkillKeep,
+        Op::PluginAdd,
+        Op::PluginRemove,
         Op::List,
     ]
     .into_iter()
@@ -38,6 +41,8 @@ enum Op {
     SkillInstall,
     SkillRemove,
     SkillKeep,
+    PluginAdd,
+    PluginRemove,
     List,
 }
 
@@ -69,6 +74,8 @@ impl ExtTool {
             Op::SkillInstall => "skill_install",
             Op::SkillRemove => "skill_remove",
             Op::SkillKeep => "skill_keep",
+            Op::PluginAdd => "plugin_add",
+            Op::PluginRemove => "plugin_remove",
             Op::List => "extensions_list",
         }
     }
@@ -98,6 +105,11 @@ fn outcome_text(o: Outcome, kind: &str) -> String {
         } => {
             let mut s = if kind == "skill" {
                 format!("skill `{name}` installed; activate it with activate_skill")
+            } else if kind == "plugin" {
+                format!(
+                    "plugin `{name}` installed; its tools are available now: {}",
+                    tools.join(", ")
+                )
             } else {
                 format!(
                     "mcp server `{name}` installed; its tools are available now: {}",
@@ -188,8 +200,34 @@ impl Tool for ExtTool {
                     "required": ["name", "check"]
                 }),
             ),
+            Op::PluginAdd => (
+                "Install a WASM tool plugin (a plugin.json manifest and its .wasm) and use its tools \
+                 in this session. Sources: git:<https url>[@<rev>] (with `path`: the plugin's \
+                 directory in the repo), url:<https url of plugin.json> (with `sha256`: the .wasm's \
+                 SHA-256), or a directory in the workspace. The plugin runs sandboxed with only the \
+                 capabilities its manifest declares; files, network or secrets always need the \
+                 owner's approval, as does any local directory.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "path": {"type": "string", "description": "git only: the plugin's directory in the repo."},
+                        "sha256": {"type": "string", "description": "The .wasm's SHA-256; required for url sources."},
+                        "replace": {"type": "boolean", "description": "Reinstall over an existing plugin of this name."}
+                    },
+                    "required": ["source"]
+                }),
+            ),
+            Op::PluginRemove => (
+                "Remove a WASM plugin this agent installed.",
+                json!({
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"]
+                }),
+            ),
             Op::List => (
-                "List MCP servers and skills: configured, installed, suspended, and pending requests.",
+                "List MCP servers, skills and plugins: configured, installed, suspended, and pending requests.",
                 json!({"type": "object", "properties": {}}),
             ),
         };
@@ -239,6 +277,20 @@ impl Tool for ExtTool {
                     .await
                     .map_err(|e| self.ext(e))?;
                 outcome_text(o, "skill")
+            }
+            Op::PluginAdd => {
+                let req: PluginRequest = self.args(args)?;
+                outcome_text(
+                    m.install_plugin(req).await.map_err(|e| self.ext(e))?,
+                    "plugin",
+                )
+            }
+            Op::PluginRemove => {
+                let a: RemoveArgs = self.args(args)?;
+                m.remove_plugin(&a.name, false)
+                    .await
+                    .map_err(|e| self.ext(e))?;
+                format!("plugin `{}` removed", a.name)
             }
             Op::List => {
                 let mut lines = Vec::new();

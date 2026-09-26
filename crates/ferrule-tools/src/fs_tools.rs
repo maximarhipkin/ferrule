@@ -15,11 +15,7 @@ use std::path::{Path, PathBuf};
 /// `hidden` is the sandbox's list — ferrule's saved keys. These tools run in
 /// ferrule's own process, outside the sandbox, so a workspace that contains
 /// the data dir (`ferrule chat` from `~`) would otherwise hand them over.
-pub(crate) fn resolve(
-    workspace: &Path,
-    hidden: &[PathBuf],
-    path: &str,
-) -> Result<PathBuf, CoreError> {
+pub fn resolve(workspace: &Path, hidden: &[PathBuf], path: &str) -> Result<PathBuf, CoreError> {
     let candidate = if Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {
@@ -56,7 +52,7 @@ pub(crate) fn resolve(
 /// flushed, given the original's permissions, then renamed over it. A
 /// crash leaves the old file or the new one, never half of each. Parent
 /// directories are created.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);

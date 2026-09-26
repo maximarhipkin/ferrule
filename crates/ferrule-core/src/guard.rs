@@ -23,6 +23,9 @@ pub struct GuardedCall<'a> {
     pub args: &'a Value,
     /// The tool says it can change files (`Tool::changes_files`).
     pub changes_files: bool,
+    /// The tool asks for the owner's approval on every call
+    /// (`Tool::needs_approval`, e.g. a plugin tool marked `approval`).
+    pub needs_approval: bool,
 }
 
 #[async_trait::async_trait]

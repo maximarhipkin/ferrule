@@ -953,6 +953,7 @@ async fn a_sub_agent_of_an_unattended_run_is_unattended_too() {
             tool: "shell",
             args: &args,
             changes_files: true,
+            needs_approval: false,
         },
     )
     .await;
@@ -977,6 +978,7 @@ async fn a_connected_services_write_tool_needs_the_owners_yes() {
                     tool,
                     args,
                     changes_files: changes,
+                    needs_approval: false,
                 },
             )
             .await
@@ -1000,6 +1002,43 @@ async fn a_connected_services_write_tool_needs_the_owners_yes() {
         ask("mcp__notion__create_page", true).await,
         ferrule_core::Verdict::Allow
     ));
+}
+
+/// M32: a tool that declares every call needs approval (a plugin tool
+/// marked `approval`) is gated whatever it changes; plan mode refuses it.
+#[tokio::test]
+async fn a_tool_that_asks_for_approval_goes_through_the_gate() {
+    use ferrule_core::{Guard as _, GuardedCall, Verdict};
+    let w = World::new(caps());
+    let args = json!({});
+    let ask = |guard: TrustGuard, needs: bool| {
+        let args = &args;
+        async move {
+            guard
+                .before_tool_call(GuardedCall {
+                    tool: "plugin__probe__send",
+                    args,
+                    changes_files: false,
+                    needs_approval: needs,
+                })
+                .await
+        }
+    };
+    let alone = TrustGuard::root(w.hub.clone(), "scheduler__t", unattended());
+    let v = ask(alone.clone(), true).await;
+    assert!(
+        matches!(&v, Verdict::Refuse(t) if t.contains("`plugin__probe__send` is a tool that asks for approval on every call") && t.contains("nobody can approve it")),
+        "{v:?}"
+    );
+    assert!(matches!(ask(alone, false).await, Verdict::Allow));
+    let planning = TrustGuard::root(w.hub.clone(), "s1", telegram()).planning(true);
+    assert!(matches!(
+        ask(planning, true).await,
+        Verdict::Refuse(t) if t.contains("this is plan mode")
+    ));
+    let off = World::new(TrustConfig::off());
+    let v = ask(TrustGuard::root(off.hub.clone(), "s2", unattended()), true).await;
+    assert!(matches!(v, Verdict::Allow), "gates off: {v:?}");
 }
 
 // ---- plan mode -------------------------------------------------------
@@ -1057,6 +1096,7 @@ async fn plan_mode_starts_sub_agents_only_without_a_worktree() {
                     tool: "spawn_agent",
                     args: &args,
                     changes_files: false,
+                    needs_approval: false,
                 })
                 .await
         }
@@ -1083,6 +1123,7 @@ async fn plan_mode_starts_sub_agents_only_without_a_worktree() {
                 tool: "spawn_agent",
                 args: &args,
                 changes_files: false,
+                needs_approval: false,
             })
             .await,
         Verdict::Allow

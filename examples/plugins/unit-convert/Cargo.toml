@@ -1,0 +1,21 @@
+[package]
+name = "unit-convert"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Its own workspace: built on its own for wasm32 by ../build.sh.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ferrule-plugin-sdk = { path = "../../../crates/ferrule-plugin-sdk" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

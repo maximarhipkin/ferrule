@@ -1,6 +1,6 @@
 //! `TrustGuard`: the hub, seen from one agent in a run tree.
 
-use crate::classify::{classify, classify_connected, Gated};
+use crate::classify::{classify, classify_connected, classify_declared, Gated};
 use crate::hub::{Hub, Prompter};
 use async_trait::async_trait;
 use ferrule_core::{Guard, GuardedCall, Verdict};
@@ -96,9 +96,11 @@ impl Guard for TrustGuard {
 
     async fn before_tool_call(&self, call: GuardedCall<'_>) -> Verdict {
         let gated = || {
-            classify(call.tool, call.args, self.hub.bound_hosts()).or_else(|| {
-                classify_connected(call.tool, call.changes_files, &self.hub.connected())
-            })
+            classify(call.tool, call.args, self.hub.bound_hosts())
+                .or_else(|| {
+                    classify_connected(call.tool, call.changes_files, &self.hub.connected())
+                })
+                .or_else(|| classify_declared(call.tool, call.needs_approval))
         };
         if self.planning {
             if call.changes_files && call.tool != "shell" {

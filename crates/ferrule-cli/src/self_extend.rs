@@ -24,7 +24,7 @@ use std::sync::Arc;
 #[serde(default)]
 pub struct ExtensionsConfig {
     /// Offer the model `mcp_add`, `skill_install`, `skill_keep` and the
-    /// rest. Off by default: six more tool definitions on every request,
+    /// rest. Off by default: eight more tool definitions on every request,
     /// and widening its own powers is something the owner turns on.
     pub enabled: bool,
     /// Sources installable without asking (`npm:@scope/*`,
@@ -69,7 +69,7 @@ fn allow_list(ext: &ExtensionsConfig, path: &Path) -> AllowList {
 /// Who an agent is, as far as extensions go (where M12 meets M13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reach {
-    /// The top-level agent: every installed tool, plus the model's six
+    /// The top-level agent: every installed tool, plus the model's eight
     /// extension tools when `[extensions] enabled`.
     Root,
     /// A sub-agent: installed tools only — just the ones that change
@@ -270,7 +270,8 @@ fn yes(line: &str) -> bool {
 
 #[derive(Subcommand)]
 pub enum ExtCmd {
-    /// Configured and installed MCP servers, installed skills, their status
+    /// Configured and installed MCP servers, installed skills and plugins,
+    /// their status
     List,
     /// Install requests waiting for approval
     Pending,
@@ -284,16 +285,17 @@ pub enum ExtCmd {
     },
     /// Drop a pending request (nothing of it was fetched)
     Deny { id: String },
-    /// Remove a configured or installed server, or a skill; running agents
-    /// drop it within seconds
+    /// Remove a configured or installed server, a skill or a plugin;
+    /// running agents drop it within seconds
     Remove {
         name: String,
         /// Delete the server's state dir too
         #[arg(long)]
         purge: bool,
     },
-    /// Re-scan a suspended server or skill, show why it was suspended and
-    /// what it offers now, and make it active again on yes. Needs a terminal
+    /// Re-scan a suspended server, skill or plugin, show why it was
+    /// suspended and what it offers now, and make it active again on yes.
+    /// Needs a terminal
     Resume {
         name: String,
         #[arg(long, default_value = ".")]
@@ -421,8 +423,11 @@ pub async fn run(op: ExtCmd) -> Result<()> {
                 return Ok(());
             }
             let m = owner_manager(Path::new("."))?;
-            if m.lock()?.servers.contains_key(&name) {
+            let lock = m.lock()?;
+            if lock.servers.contains_key(&name) {
                 m.remove_server(&name, true, purge).await?;
+            } else if lock.plugins.contains_key(&name) {
+                m.remove_plugin(&name, true).await?;
             } else {
                 m.remove_skill(&name, true).await?;
             }
@@ -445,6 +450,16 @@ pub async fn run(op: ExtCmd) -> Result<()> {
 pub(crate) fn confirm_at_terminal(review: &Review) -> bool {
     println!("\n{}", review.what);
     println!("offers: {}", review.items.join(", "));
+    if !review.capabilities.is_empty() {
+        println!("may:");
+        for c in &review.capabilities {
+            if c.starts_with("NEW ") {
+                println!("  \x1b[1;33m{c}\x1b[0m");
+            } else {
+                println!("  {c}");
+            }
+        }
+    }
     if let Some(why) = &review.sandbox_degraded {
         println!("\x1b[1;31mnot fully sandboxed here: {why}\x1b[0m");
     }
@@ -526,10 +541,12 @@ mod tests {
             manager,
             enabled: true,
         };
-        let six = [
+        let eight = [
             "extensions_list",
             "mcp_add",
             "mcp_remove",
+            "plugin_add",
+            "plugin_remove",
             "skill_install",
             "skill_keep",
             "skill_remove",
@@ -537,13 +554,13 @@ mod tests {
 
         let mut root = ToolRegistry::new();
         ext.attach(&mut root, true, Reach::Root);
-        assert_eq!(names(&root), six);
+        assert_eq!(names(&root), eight);
 
         for reading_only in [false, true] {
             let mut child = ToolRegistry::new();
             ext.attach(&mut child, true, Reach::Child { reading_only });
             let n = names(&child);
-            assert!(six.iter().all(|t| !n.iter().any(|x| x == t)), "{n:?}");
+            assert!(eight.iter().all(|t| !n.iter().any(|x| x == t)), "{n:?}");
             assert!(!child.contains("mcp_add") && !child.contains("skill_keep"));
         }
     }

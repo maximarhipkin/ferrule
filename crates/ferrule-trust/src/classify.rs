@@ -22,6 +22,9 @@ pub enum Kind {
     HttpDelete,
     /// M20: a connected service's tool that doesn't say it only reads.
     ConnectedWrite,
+    /// M32: a tool that declares every call needs the owner's approval
+    /// (a plugin tool marked `approval` in its manifest).
+    DeclaredApproval,
 }
 
 impl fmt::Display for Kind {
@@ -31,6 +34,7 @@ impl fmt::Display for Kind {
             Kind::ForcePush => "force push",
             Kind::HttpDelete => "DELETE request to a host with a bound secret",
             Kind::ConnectedWrite => "change through a connected service",
+            Kind::DeclaredApproval => "tool that asks for approval on every call",
         })
     }
 }
@@ -60,6 +64,14 @@ pub fn classify_connected(tool: &str, changes: bool, connected: &[String]) -> Op
     let (server, _) = rest.split_once("__")?;
     (changes && connected.iter().any(|c| c == server)).then(|| Gated {
         kind: Kind::ConnectedWrite,
+        command: tool.to_string(),
+    })
+}
+
+/// M32: a tool that declares it needs approval (`Tool::needs_approval`).
+pub fn classify_declared(tool: &str, needs_approval: bool) -> Option<Gated> {
+    needs_approval.then(|| Gated {
+        kind: Kind::DeclaredApproval,
         command: tool.to_string(),
     })
 }
