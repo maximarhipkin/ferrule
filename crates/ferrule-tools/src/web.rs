@@ -117,7 +117,7 @@ impl Tool for WebFetchTool {
             .timeout(self.timeout)
             .build()
             .map_err(|e| CoreError::Provider(e.to_string()))?;
-        let text = client
+        let resp = client
             .get(url)
             .header("User-Agent", "ferrule/0.1")
             .send()
@@ -125,17 +125,28 @@ impl Tool for WebFetchTool {
             .map_err(|e| CoreError::ToolFailed {
                 tool: "web_fetch".into(),
                 message: e.to_string(),
-            })?
-            .text()
-            .await
-            .map_err(|e| CoreError::ToolFailed {
-                tool: "web_fetch".into(),
-                message: e.to_string(),
             })?;
-        Ok(ToolOutput::capped(
-            html_to_text(&text),
-            ctx.max_output_chars,
-        ))
+        if crate::egress::is_denial(&resp) {
+            // Not the page: the policy's reason, as a failure the model
+            // won't mistake for content (and shouldn't retry).
+            let why = resp.text().await.unwrap_or_default();
+            return Err(CoreError::ToolFailed {
+                tool: "web_fetch".into(),
+                message: why.trim().to_string(),
+            });
+        }
+        let status = resp.status();
+        let text = resp.text().await.map_err(|e| CoreError::ToolFailed {
+            tool: "web_fetch".into(),
+            message: e.to_string(),
+        })?;
+        let mut text = html_to_text(&text);
+        // An error page is still worth reading, but not as if it were the
+        // page asked for.
+        if !status.is_success() {
+            text = format!("HTTP {status}\n{text}");
+        }
+        Ok(ToolOutput::capped(text, ctx.max_output_chars))
     }
 }
 

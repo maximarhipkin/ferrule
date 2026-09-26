@@ -924,10 +924,7 @@ pub fn usage_of(
     hub: Option<&ferrule_trust::Hub>,
 ) -> Value {
     let rows = crate::ledger::aggregate(records);
-    let calls: Vec<&LedgerRecord> = records
-        .iter()
-        .filter(|r| r.call_kind != "eval_result")
-        .collect();
+    let calls: Vec<&LedgerRecord> = records.iter().filter(|r| !r.is_bookkeeping()).collect();
     let mut total = Sum::default();
     let mut per_day: BTreeMap<String, Sum> = BTreeMap::new();
     let mut per_task: BTreeMap<String, Sum> = BTreeMap::new();
@@ -995,11 +992,21 @@ pub fn usage_of(
         "per_model": models,
         "per_task": by(per_task),
         "per_chat": by(per_chat),
+        "egress_refused": egress_refused(records),
     });
     if let Some(hub) = hub {
         out["caps"] = spend(hub, &mut Vec::new());
     }
     out
+}
+
+/// M33: the proxy's refusals in the window, and the hosts refused most.
+fn egress_refused(records: &[LedgerRecord]) -> Value {
+    let (count, top) = crate::egress::recent_denials(records, DateTime::<Utc>::default());
+    json!({
+        "count": count,
+        "hosts": top.iter().map(|(h, n)| json!({ "host": h, "count": n })).collect::<Vec<_>>(),
+    })
 }
 
 // ---- Tasks --------------------------------------------------------------

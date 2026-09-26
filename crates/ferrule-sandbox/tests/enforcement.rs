@@ -394,3 +394,160 @@ fn network_off_blocks_inet_sockets_and_on_allows_them() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// Runs `unix_probe_helper` under the sandbox with `targets` (`label=path`,
+/// `label=@abstract`, or `own=path` to listen and then connect itself) and
+/// returns its stdout: one `label: ok` or `label: errno N` line per target.
+#[cfg(unix)]
+fn unix_probe(sb: &Sandbox, workspace: &Path, targets: &[String]) -> String {
+    let me = std::env::current_exe().unwrap();
+    let out = sb
+        .command(
+            &me,
+            [
+                "--exact",
+                "unix_probe_helper",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ],
+            workspace,
+        )
+        .unwrap()
+        .env("FERRULE_UNIX_PROBE", targets.join("\n"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+#[ignore = "helper, run by the Unix-socket tests in a sandboxed child"]
+#[cfg(unix)]
+fn unix_probe_helper() {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    let Some(targets) = std::env::var_os("FERRULE_UNIX_PROBE") else {
+        return;
+    };
+    let mut keep = Vec::new();
+    for line in targets.to_string_lossy().lines() {
+        let (label, target) = line.split_once('=').unwrap();
+        let result = if let Some(name) = target.strip_prefix('@') {
+            abstract_connect(name)
+        } else {
+            if label == "own" {
+                keep.push(UnixListener::bind(target).unwrap());
+            }
+            UnixStream::connect(target).map(drop)
+        };
+        match result {
+            Ok(()) => println!("{label}: ok"),
+            Err(e) => println!("{label}: errno {}", e.raw_os_error().unwrap_or(-1)),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn abstract_connect(name: &str) -> std::io::Result<()> {
+    use std::os::linux::net::SocketAddrExt;
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(name)?;
+    std::os::unix::net::UnixStream::connect_addr(&addr).map(drop)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn abstract_connect(_: &str) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+#[test]
+#[cfg(unix)]
+fn unix_sockets_outside_the_allowlist_are_refused() {
+    use std::os::unix::net::UnixListener;
+    let outside = tempfile::tempdir().unwrap();
+    let out = dunce::canonicalize(outside.path()).unwrap();
+    let ok = out.join("ok.sock");
+    let no = out.join("no.sock");
+    let _l1 = UnixListener::bind(&ok).unwrap();
+    let _l2 = UnixListener::bind(&no).unwrap();
+    // An allowed directory holding a symlink to the refused socket.
+    let lure = tempfile::tempdir().unwrap();
+    let lure = dunce::canonicalize(lure.path()).unwrap();
+    std::os::unix::fs::symlink(&no, lure.join("docker.sock")).unwrap();
+
+    let tag = std::process::id();
+    let Some(sb) = sandbox(Policy {
+        unix_sockets: vec![
+            ok.display().to_string(),
+            format!("{}/", lure.display()),
+            format!("@ferrule-test-ok-{tag}"),
+        ],
+        ..no_tmp(Mode::WorkspaceWrite)
+    }) else {
+        return;
+    };
+    if let Err(why) = sb.unix_enforcement() {
+        // GitHub's Linux runners are VMs with a 6.x kernel: the supervisor
+        // must work there, so a skip would hide a regression. (Inside
+        // Docker's default seccomp profile, `pidfd_getfd` is refused.)
+        assert!(
+            !(cfg!(target_os = "linux") && std::env::var_os("GITHUB_ACTIONS").is_some()),
+            "the Unix-socket supervisor should work on CI: {why}"
+        );
+        eprintln!("skipping: Unix sockets aren't enforced here ({why})");
+        return;
+    }
+    let ws = tempfile::tempdir().unwrap();
+    let wsp = dunce::canonicalize(ws.path()).unwrap();
+    // ferrule's own listener in the workspace: the command didn't make it.
+    let foreign = wsp.join("foreign.sock");
+    let _l3 = UnixListener::bind(&foreign).unwrap();
+
+    let mut targets = vec![
+        format!("allowed={}", ok.display()),
+        format!("denied={}", no.display()),
+        format!("symlink={}", lure.join("docker.sock").display()),
+        format!("own={}", wsp.join("mine.sock").display()),
+        format!("foreign={}", foreign.display()),
+    ];
+    #[cfg(target_os = "linux")]
+    let (_a1, _a2) = {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::SocketAddr;
+        let bind =
+            |n: &str| UnixListener::bind_addr(&SocketAddr::from_abstract_name(n).unwrap()).unwrap();
+        targets.push(format!("abstract_ok=@ferrule-test-ok-{tag}"));
+        targets.push(format!("abstract_no=@ferrule-test-no-{tag}"));
+        (
+            bind(&format!("ferrule-test-ok-{tag}")),
+            bind(&format!("ferrule-test-no-{tag}")),
+        )
+    };
+
+    let got = unix_probe(&sb, &wsp, &targets);
+    eprintln!("{got}");
+    // libtest prints the first result on its own `test … ... ` line.
+    let line = |label: &str| {
+        got.lines()
+            .map(|l| l.rsplit(" ... ").next().unwrap_or(l))
+            .find_map(|l| l.strip_prefix(&format!("{label}: ")))
+            .unwrap_or_else(|| panic!("no {label} in {got}"))
+            .to_string()
+    };
+    assert_eq!(line("allowed"), "ok");
+    assert_eq!(line("own"), "ok", "a socket the command made itself");
+    assert_ne!(line("denied"), "ok");
+    assert_ne!(line("symlink"), "ok", "a symlink doesn't launder a socket");
+    if cfg!(target_os = "linux") {
+        // EACCES from the supervisor, not a failure for another reason.
+        assert_eq!(line("denied"), "errno 13");
+        assert_eq!(line("symlink"), "errno 13");
+        assert_eq!(line("foreign"), "errno 13", "the workspace isn't a pass");
+        assert_eq!(line("abstract_ok"), "ok");
+        assert_eq!(line("abstract_no"), "errno 13");
+    }
+}

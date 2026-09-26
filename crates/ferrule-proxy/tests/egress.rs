@@ -153,6 +153,7 @@ async fn setup() -> Setup {
         upstream: None,
         http_upstream: None,
         ca_bundle: Some(base),
+        egress: None,
     };
     let broker = Broker::start(cfg, |name| (name == "TOKEN").then(|| TOKEN.to_string()))
         .unwrap()

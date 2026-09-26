@@ -100,6 +100,7 @@ fn proxy(origin_ca: &str) -> Setup {
         upstream: None,
         http_upstream: None,
         ca_bundle: Some(base),
+        egress: None,
     };
     let broker = Broker::start(cfg, |n| (n == "SEARCH_KEY").then(|| KEY.to_string()))
         .unwrap()
@@ -439,6 +440,7 @@ async fn live(p: SearchProvider, var: &str, endpoint: Option<String>) {
         upstream: ferrule_proxy::Upstream::from_env().unwrap(),
         http_upstream: ferrule_proxy::Upstream::from_env_http().unwrap(),
         ca_bundle: None,
+        egress: None,
     };
     let (placeholder, egress) = match key.clone() {
         Some(k) => {

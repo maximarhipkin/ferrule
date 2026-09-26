@@ -20,6 +20,7 @@ members = [
     "crates/ferrule-trust",
     "crates/ferrule-connections",
     "crates/ferrule-codemap",
+    "crates/ferrule-otel",
     "crates/ferrule-plugins",
     "crates/ferrule-plugin-sdk",
 ]

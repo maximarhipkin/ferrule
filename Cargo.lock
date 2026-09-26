@@ -741,6 +741,7 @@ dependencies = [
  "ferrule-learn",
  "ferrule-mcp",
  "ferrule-memory",
+ "ferrule-otel",
  "ferrule-plugins",
  "ferrule-providers",
  "ferrule-proxy",
@@ -992,6 +993,21 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "ferrule-otel"
+version = "0.3.0"
+dependencies = [
+ "chrono",
+ "ferrule-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

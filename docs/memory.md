@@ -7,6 +7,8 @@ and looks them up with `recall`. At the start of every session the facts
 closest to the goal are recalled into the prompt, within about 2,000
 characters, with recent facts ranked higher. Design: [m15-memory.md](m15-memory.md),
 [m30-vector-recall.md](m30-vector-recall.md).
+Memories from OpenClaw or Hermes Agent come over with `ferrule import`
+([migrate.md](migrate.md)).
 
 ## Keyword recall and recall by meaning
 

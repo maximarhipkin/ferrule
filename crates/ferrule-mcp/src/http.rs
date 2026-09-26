@@ -219,6 +219,10 @@ impl HttpTransport {
             if status == StatusCode::NOT_FOUND && has_session {
                 return Ok(Err(Expired));
             }
+            if ferrule_tools::egress::is_denial(&resp) {
+                let why = resp.text().await.unwrap_or_default();
+                return Err(McpError::Http(why.trim().to_string()));
+            }
             if !status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 let body = match &raw {

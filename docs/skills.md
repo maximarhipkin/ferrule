@@ -24,6 +24,10 @@ Searched in this order; the first skill with a given name wins:
    `<data>/extensions/skills`. They are scanned before install and
    locked to the digest of their `SKILL.md` (docs/m13-self-extension.md).
 
+Skills from OpenClaw or Hermes Agent install into 4. with `ferrule import`,
+after the same scan and your confirmation, one at a time
+([migrate.md](migrate.md)).
+
 `ferrule skills` lists every skill found, its scope and any warnings.
 `ferrule skills disable <name>` / `enable <name>`, or `/skills` in
 Telegram, turn one off and on.

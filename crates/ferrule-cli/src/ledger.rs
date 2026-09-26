@@ -269,8 +269,8 @@ pub fn percentile(sorted: &[u64], pct: f64) -> u64 {
 
 pub fn aggregate(records: &[LedgerRecord]) -> Vec<SummaryRow> {
     let mut groups: BTreeMap<(String, String, String), Vec<&LedgerRecord>> = BTreeMap::new();
-    // `ferrule eval`'s one-per-task verdict rows aren't provider calls.
-    for r in records.iter().filter(|r| r.call_kind != "eval_result") {
+    // `ferrule eval`'s verdict rows and egress refusals aren't provider calls.
+    for r in records.iter().filter(|r| !r.is_bookkeeping()) {
         groups
             .entry((r.task_shape.clone(), r.provider.clone(), r.model.clone()))
             .or_default()
@@ -370,10 +370,7 @@ fn ms(v: u64) -> String {
 /// token and first reply and the parallel batches, each only when the rows
 /// have it. Empty when there's nothing to say.
 pub fn render_speed(records: &[LedgerRecord]) -> String {
-    let calls: Vec<&LedgerRecord> = records
-        .iter()
-        .filter(|r| r.call_kind != "eval_result")
-        .collect();
+    let calls: Vec<&LedgerRecord> = records.iter().filter(|r| !r.is_bookkeeping()).collect();
     let mut lines = Vec::new();
     let input: u64 = calls.iter().map(|r| r.input_tokens).sum();
     let cached: u64 = calls.iter().map(|r| r.cached_input_tokens).sum();

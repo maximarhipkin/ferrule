@@ -512,6 +512,7 @@
           ["cache hit", u.cache_hit_pct + "%"],
           ["latency", "p50 " + u.p50_ms + " ms · p95 " + u.p95_ms + " ms"],
           ["errors", u.error_pct + "% · retried " + u.retry_pct + "%"],
+          ["egress refused", u.egress_refused.count ? u.egress_refused.count + " · " + u.egress_refused.hosts.map((h) => h.host + " ×" + h.count).join(", ") : "none"],
         ])),
         u.caps ? caps(u.caps) : null,
         el("h3", { text: "Cost per day" }), bars(u.per_day.map((d) => ({ k: d.key, v: d.usd })), usd),

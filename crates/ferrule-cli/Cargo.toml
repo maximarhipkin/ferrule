@@ -38,6 +38,7 @@ ferrule-eval = { path = "../ferrule-eval" }
 ferrule-hooks = { path = "../ferrule-hooks" }
 ferrule-learn = { path = "../ferrule-learn" }
 ferrule-trust = { path = "../ferrule-trust" }
+ferrule-otel = { path = "../ferrule-otel" }
 ferrule-connections = { path = "../ferrule-connections" }
 ferrule-codemap = { path = "../ferrule-codemap", default-features = false }
 ferrule-plugins = { path = "../ferrule-plugins", default-features = false }

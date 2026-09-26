@@ -15,6 +15,7 @@
 //! `docs/research-credential-gateway.md` for the full threat model.
 
 mod ca;
+pub mod egress;
 mod hosts;
 mod placeholder;
 mod server;
@@ -22,8 +23,10 @@ mod subst;
 mod upstream;
 
 pub use ca::default_ca_bundle;
+pub use egress::{Denial, EgressPolicy, Source};
 pub use hosts::HostPattern;
 pub use placeholder::placeholder;
+pub use server::EGRESS_HEADER;
 pub use upstream::Upstream;
 
 use anyhow::{bail, Context, Result};
@@ -82,6 +85,10 @@ pub struct BrokerConfig {
     /// The CA bundle to trust upstream and to extend for commands;
     /// [`default_ca_bundle`] when `None`.
     pub ca_bundle: Option<PathBuf>,
+    /// M33: the egress policy. With one the proxy starts even when no
+    /// secret is set, since the policy has a job of its own; `None` is the
+    /// secrets-only proxy of before.
+    pub egress: Option<EgressPolicy>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,9 +115,9 @@ pub struct Broker {
 impl Broker {
     /// Validates `cfg`, reads each secret through `lookup` (the real
     /// environment, normally) and starts the proxy on the current tokio
-    /// runtime. `None` when no configured secret has a value, so there is
-    /// nothing to protect. A secret that is configured but unset is a
-    /// warning, not an error.
+    /// runtime. `None` when no configured secret has a value and there's no
+    /// egress policy, so there is nothing to protect. A secret that is
+    /// configured but unset is a warning, not an error.
     pub fn start(
         cfg: BrokerConfig,
         lookup: impl Fn(&str) -> Option<String>,
@@ -126,7 +133,7 @@ impl Broker {
                 )),
             }
         }
-        if active.is_empty() {
+        if active.is_empty() && cfg.egress.is_none() {
             for w in &warnings {
                 tracing::warn!("{w}");
             }
@@ -193,7 +200,12 @@ impl Broker {
         let ca_cert_path = ca.cert_path.clone();
         let ca_spki_sha256 = ca.spki_sha256.clone();
         let shared = Arc::new(server::Shared {
-            expected_auth: format!("ferrule:{token}").into_bytes(),
+            expected_auth: format!("{}:{token}", Source::Command.user()).into_bytes(),
+            tool_auth: format!("{}:{token}", Source::Tool.user()).into_bytes(),
+            egress: cfg.egress,
+            deny_hook: RwLock::new(None),
+            denials: Default::default(),
+            reported: Default::default(),
             ca,
             secrets: RwLock::new(secrets),
             upstream: cfg.upstream,
@@ -297,12 +309,84 @@ impl Broker {
     /// The URL commands use as `HTTPS_PROXY` and `HTTP_PROXY`, credentials
     /// included.
     pub fn proxy_url(&self) -> String {
-        format!("http://ferrule:{}@{}", self.token, self.addr)
+        format!(
+            "http://{}:{}@{}",
+            Source::Command.user(),
+            self.token,
+            self.addr
+        )
+    }
+
+    /// The URL ferrule's own clients use for the model's requests
+    /// (`web_fetch`, search, MCP over HTTP, plugins): the egress policy
+    /// treats loopback as private for them.
+    pub fn tool_proxy_url(&self) -> String {
+        format!(
+            "http://{}:{}@{}",
+            Source::Tool.user(),
+            self.token,
+            self.addr
+        )
+    }
+
+    /// The egress policy the proxy enforces, if any.
+    pub fn egress(&self) -> Option<&EgressPolicy> {
+        self.shared.egress.as_ref()
+    }
+
+    /// Called (at most every 10 s per source, host and reason) when the
+    /// egress policy refuses a request: the ledger row and audit event.
+    pub fn on_deny(&self, hook: impl Fn(&Denial) + Send + Sync + 'static) {
+        *self.shared.deny_hook.write().unwrap() = Some(Arc::new(hook));
+    }
+
+    /// Requests refused since start.
+    pub fn denials(&self) -> u64 {
+        self.shared
+            .denials
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// `text` with every bound secret's real value replaced by its
+    /// placeholder, for anything leaving the process (OTel content).
+    pub fn scrub_text(&self, text: &str) -> String {
+        let pairs: Vec<_> = self
+            .shared
+            .secrets
+            .read()
+            .unwrap()
+            .iter()
+            .map(|s| (s.placeholder.clone(), s.real.clone(), false))
+            .collect();
+        if pairs.is_empty() {
+            return text.to_string();
+        }
+        match subst::Swaps::new(pairs).scrub(text.as_bytes()) {
+            Some(b) => String::from_utf8_lossy(&b).into_owned(),
+            None => text.to_string(),
+        }
+    }
+
+    /// Whether sandboxed commands are pointed at the proxy: when a secret
+    /// is bound, or the egress policy has rules of its own. The default
+    /// policy alone leaves commands as they were (an upgrade mustn't push a
+    /// working `pip install` through a new proxy nobody asked for).
+    pub fn commands_proxied(&self) -> bool {
+        !self.secrets.read().unwrap().is_empty()
+            || self
+                .shared
+                .egress
+                .as_ref()
+                .is_some_and(EgressPolicy::has_rules)
     }
 
     /// Variables to set on every sandboxed command: the placeholders, the
-    /// proxy, and a CA bundle that trusts it.
+    /// proxy, and a CA bundle that trusts it. Empty unless
+    /// [`Broker::commands_proxied`].
     pub fn child_env(&self) -> Vec<(String, String)> {
+        if !self.commands_proxied() {
+            return Vec::new();
+        }
         let mut env: Vec<(String, String)> = self
             .secrets
             .read()
@@ -448,6 +532,7 @@ mod tests {
             upstream: None,
             http_upstream: None,
             ca_bundle: None,
+            egress: None,
         }
     }
 
