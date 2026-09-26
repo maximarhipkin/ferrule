@@ -465,8 +465,9 @@ impl Link {
                 return Ok((m.socket(), m.rport));
             }
             *g = None;
-            self.health.lock().unwrap().reconnects += 1;
         }
+        // Up before: this is a reconnect.
+        let again = self.health.lock().unwrap().since.is_some();
         let mut tries = 0;
         let mut fresh = false;
         loop {
@@ -475,6 +476,9 @@ impl Link {
             match self.start_master(forward, rport).await {
                 Ok(m) => {
                     let out = (m.socket(), m.rport);
+                    if again {
+                        self.health.lock().unwrap().reconnects += 1;
+                    }
                     if forward.is_some() {
                         self.health.lock().unwrap().forward_note = None;
                     }

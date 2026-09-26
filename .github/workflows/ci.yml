@@ -50,6 +50,16 @@ jobs:
           echo "FERRULE_AGENT_BROWSER=$dir/$asset" >> "$GITHUB_ENV"
           echo "FERRULE_REQUIRE_BROWSER_TEST=1" >> "$GITHUB_ENV"
 
+      # The SSH tests start the runner's own sshd, unprivileged, on
+      # 127.0.0.1 (crates/ferrule-ssh/tests/sshd.rs). Linux must run them;
+      # macOS runs them if its sshd starts; Windows has none.
+      - name: sshd for the SSH tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test -x /usr/sbin/sshd || { sudo apt-get update -q && sudo apt-get install -y -q openssh-server; }
+          echo "FERRULE_REQUIRE_SSHD=1" >> "$GITHUB_ENV"
+
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
 
