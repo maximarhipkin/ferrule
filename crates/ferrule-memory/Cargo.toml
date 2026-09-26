@@ -2,7 +2,7 @@
 name = "ferrule-memory"
 version = "0.3.0"
 edition = "2021"
-description = "SQLite hybrid memory: FTS5 BM25 keyword recall now, vectors next"
+description = "SQLite hybrid memory: FTS5 BM25 keyword recall merged with vector recall"
 
 [dependencies]
 rusqlite = { workspace = true }

@@ -3,8 +3,13 @@
 //! Design follows the 2026 consensus for agent runtimes: one file you can
 //! read, back up, and `git diff`; FTS5 (BM25) keyword recall built in;
 //! time-decay scoring so recent memories outrank stale ones; a token budget
-//! on recall so memory never eats the context window. Vector/semantic recall
-//! plugs into the same tables later (embedding column is already reserved).
+//! on recall so memory never eats the context window.
+//!
+//! Vector recall (M30) lives in the same table: `embedding` holds a
+//! normalised f32 vector and `embedding_model` the id of the model that made
+//! it. The store never embeds anything itself; the caller passes vectors in
+//! ([`MemoryStore::set_embedding`], [`MemoryStore::recall_hybrid`]), so this
+//! crate stays free of any model or network code.
 
 use rusqlite::{params, Connection};
 use std::path::Path;
@@ -120,6 +125,7 @@ impl MemoryStore {
         if version < SCHEMA_VERSION {
             migrate(&conn)?;
         }
+        ensure_vector_column(&conn)?;
         Ok(Self { conn })
     }
 
@@ -319,35 +325,57 @@ impl MemoryStore {
     /// its chain: a query matching only a replaced fact's wording returns
     /// the correction, never the stale fact.
     pub fn recall(&self, query: &str, limit: usize) -> Result<Vec<Memory>, MemoryError> {
-        let now = now_secs() as f64;
-        let half_life_secs = 7.0 * 24.0 * 3600.0;
-        let escaped = fts_escape(query);
-        if escaped.is_empty() || limit == 0 {
+        if limit == 0 {
             return Ok(Vec::new());
         }
+        let scored = self
+            .bm25_candidates(query, limit * 5 + 20)?
+            .into_iter()
+            .map(|c| (c.id, c.created_at, c.superseded_by, -c.rank))
+            .collect();
+        self.rank_heads(scored, limit)
+    }
 
+    /// The top `n` FTS matches of `query`, best first (`rank` is bm25:
+    /// negative, more negative is better).
+    fn bm25_candidates(&self, query: &str, n: usize) -> Result<Vec<Candidate>, MemoryError> {
+        let escaped = fts_escape(query);
+        if escaped.is_empty() || n == 0 {
+            return Ok(Vec::new());
+        }
         let mut stmt = self.conn.prepare(
             "SELECT m.id, m.created_at, m.superseded_by, bm25(memories_fts) AS rank
              FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
              WHERE memories_fts MATCH ?1
              ORDER BY rank LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![escaped, (limit * 5 + 20) as i64], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, f64>(3)?,
-            ))
+        let rows = stmt.query_map(params![escaped, n as i64], |row| {
+            Ok(Candidate {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                superseded_by: row.get(2)?,
+                rank: row.get(3)?,
+            })
         })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
 
+    /// Time decay (the score halves every 7 days), then each row reported
+    /// as the live head of its chain, a chain keeping its best score, then
+    /// the top `limit`. `scored` is `(id, created_at, superseded_by,
+    /// score before decay)`.
+    fn rank_heads(
+        &self,
+        scored: Vec<(i64, i64, Option<i64>, f64)>,
+        limit: usize,
+    ) -> Result<Vec<Memory>, MemoryError> {
+        let now = now_secs() as f64;
+        let half_life_secs = 7.0 * 24.0 * 3600.0;
         let mut best: Vec<(i64, f64)> = Vec::new();
-        for row in rows {
-            let (id, created_at, superseded_by, rank) = row?;
+        for (id, created_at, superseded_by, raw) in scored {
             let age_secs = (now - created_at as f64).max(0.0);
             let decay = 0.5f64.powf(age_secs / half_life_secs);
-            // bm25 returns negative values; more negative = better match.
-            let score = (-rank) * decay;
+            let score = raw * decay;
             let head = match superseded_by {
                 None => id,
                 Some(_) => match self.head(id)? {
@@ -417,6 +445,19 @@ impl MemoryStore {
     /// budget. Each line is `- #id fact`, so the model can correct a fact
     /// by id in one call.
     pub fn assemble_for_goal(&self, goal: &str, char_budget: usize) -> Result<String, MemoryError> {
+        self.assemble_for_goal_hybrid(goal, None, char_budget, &Hybrid::default())
+    }
+
+    /// [`MemoryStore::assemble_for_goal`] with the goal's matches found by
+    /// [`MemoryStore::recall_hybrid`]. `vector` is the goal embedded by the
+    /// caller; `None` is exactly `assemble_for_goal`.
+    pub fn assemble_for_goal_hybrid(
+        &self,
+        goal: &str,
+        vector: Option<QueryVector<'_>>,
+        char_budget: usize,
+        hybrid: &Hybrid,
+    ) -> Result<String, MemoryError> {
         let mut seen = std::collections::HashSet::new();
         let mut used = 0usize;
         let mut parts = Vec::new();
@@ -428,8 +469,8 @@ impl MemoryStore {
             }
         };
         let query = goal_query(goal);
-        if !query.is_empty() {
-            for m in self.recall(&query, 10)? {
+        if !query.is_empty() || vector.is_some() {
+            for m in self.recall_hybrid(&query, vector, 10, hybrid)? {
                 push(&m);
             }
         }
@@ -606,6 +647,327 @@ impl MemoryStore {
         tx.commit()?;
         Ok(restored)
     }
+}
+
+/// How the two sides of a hybrid recall are combined.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Merge {
+    /// `w·cos + (1−w)·bm25/max(bm25)` over the union of candidates, a
+    /// missing side counting 0.
+    Weighted { vector_weight: f64 },
+    /// Reciprocal rank fusion: `Σ 1/(k + rank)` over the two ranked lists.
+    Rrf { k: f64 },
+}
+
+/// Hybrid recall settings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hybrid {
+    pub merge: Merge,
+    /// Rows whose cosine with the query is below this are not vector
+    /// candidates (they can still match by keyword).
+    pub min_similarity: f32,
+}
+
+impl Default for Hybrid {
+    fn default() -> Self {
+        Self {
+            merge: Merge::Weighted { vector_weight: 0.7 },
+            min_similarity: 0.3,
+        }
+    }
+}
+
+/// A query embedded by the caller: the model's id and the (normalised)
+/// vector. Only rows embedded by the same model id are compared with it.
+#[derive(Debug, Clone, Copy)]
+pub struct QueryVector<'a> {
+    pub model: &'a str,
+    pub vector: &'a [f32],
+}
+
+/// How many rows have a vector from a given model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmbeddingCounts {
+    /// Live (not superseded) facts.
+    pub live: usize,
+    /// Live facts with a vector from this model.
+    pub live_embedded: usize,
+    /// Rows of any kind (live or replaced) without a vector from this
+    /// model: what `ferrule memory reindex` has left to do.
+    pub stale: usize,
+}
+
+struct Candidate {
+    id: i64,
+    created_at: i64,
+    superseded_by: Option<i64>,
+    /// bm25 for a keyword match, cosine for a vector match.
+    rank: f64,
+}
+
+impl MemoryStore {
+    /// Stores `vector` as `id`'s embedding by `model`, if the row still
+    /// holds `content` (the text that was embedded). Returns whether it was
+    /// stored.
+    pub fn set_embedding(
+        &self,
+        id: i64,
+        content: &str,
+        model: &str,
+        vector: &[f32],
+    ) -> Result<bool, MemoryError> {
+        let n = self.conn.execute(
+            "UPDATE memories SET embedding = ?1, embedding_model = ?2 WHERE id = ?3 AND content = ?4",
+            params![vec_to_bytes(vector), model, id, content],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Up to `limit` rows (live or replaced) with no vector from `model`,
+    /// in id order, after `after_id`: the reindex queue.
+    pub fn stale_rows(
+        &self,
+        model: &str,
+        after_id: i64,
+        limit: usize,
+    ) -> Result<Vec<(i64, String)>, MemoryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content FROM memories
+             WHERE id > ?1 AND embedding_model IS NOT ?2
+             ORDER BY id LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![after_id, model, limit as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Up to `limit` live facts with no vector from `model`, newest first:
+    /// what the lazy re-embed after a session-start recall picks up.
+    pub fn stale_live(&self, model: &str, limit: usize) -> Result<Vec<(i64, String)>, MemoryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content FROM memories
+             WHERE superseded_by IS NULL AND embedding_model IS NOT ?1
+             ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![model, limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn embedding_counts(&self, model: &str) -> Result<EmbeddingCounts, MemoryError> {
+        Ok(self.conn.query_row(
+            "SELECT
+                 COALESCE(SUM(superseded_by IS NULL), 0),
+                 COALESCE(SUM(superseded_by IS NULL AND embedding_model IS ?1), 0),
+                 COALESCE(SUM(embedding_model IS NOT ?1), 0)
+             FROM memories",
+            params![model],
+            |r| {
+                Ok(EmbeddingCounts {
+                    live: r.get::<_, i64>(0)? as usize,
+                    live_embedded: r.get::<_, i64>(1)? as usize,
+                    stale: r.get::<_, i64>(2)? as usize,
+                })
+            },
+        )?)
+    }
+
+    /// Every row embedded by `query.model` with cosine ≥ `floor`, best
+    /// first, at most `n`. Brute force: one pass over the vectors.
+    fn vector_candidates(
+        &self,
+        query: QueryVector<'_>,
+        floor: f32,
+        n: usize,
+    ) -> Result<Vec<Candidate>, MemoryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at, superseded_by, embedding FROM memories
+             WHERE embedding_model = ?1 AND embedding IS NOT NULL",
+        )?;
+        let mut rows = stmt.query(params![query.model])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let blob = row.get_ref(3)?.as_blob().unwrap_or_default();
+            let Some(cos) = cosine_bytes(query.vector, blob) else {
+                continue;
+            };
+            if cos >= floor {
+                out.push(Candidate {
+                    id: row.get(0)?,
+                    created_at: row.get(1)?,
+                    superseded_by: row.get(2)?,
+                    rank: f64::from(cos),
+                });
+            }
+        }
+        out.sort_by(|a, b| {
+            b.rank
+                .partial_cmp(&a.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.id.cmp(&a.id))
+        });
+        out.truncate(n);
+        Ok(out)
+    }
+
+    /// Keyword and vector recall merged. With `vector` `None` this is
+    /// exactly [`MemoryStore::recall`]. Otherwise the top `5·limit + 20`
+    /// keyword matches and the top `5·limit + 20` rows by cosine (at or
+    /// above `min_similarity`, same model only) are merged per
+    /// `hybrid.merge`, then decayed and mapped to chain heads as `recall`
+    /// does. Rows without a vector from this model take part by keyword
+    /// only.
+    pub fn recall_hybrid(
+        &self,
+        query: &str,
+        vector: Option<QueryVector<'_>>,
+        limit: usize,
+        hybrid: &Hybrid,
+    ) -> Result<Vec<Memory>, MemoryError> {
+        let Some(qv) = vector else {
+            return self.recall(query, limit);
+        };
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let n = limit * 5 + 20;
+        let lexical = self.bm25_candidates(query, n)?;
+        let semantic = self.vector_candidates(qv, hybrid.min_similarity, n)?;
+
+        // id → (created_at, superseded_by, keyword part, vector part)
+        let mut merged: Vec<(i64, i64, Option<i64>, f64)> = Vec::new();
+        let mut add = |c: &Candidate, part: f64| match merged.iter_mut().find(|m| m.0 == c.id) {
+            Some(m) => m.3 += part,
+            None => merged.push((c.id, c.created_at, c.superseded_by, part)),
+        };
+        match hybrid.merge {
+            Merge::Weighted { vector_weight } => {
+                let w = vector_weight.clamp(0.0, 1.0);
+                let max = lexical.iter().map(|c| -c.rank).fold(0.0f64, f64::max);
+                for c in &lexical {
+                    let norm = if max > 0.0 {
+                        (-c.rank).max(0.0) / max
+                    } else {
+                        0.0
+                    };
+                    add(c, (1.0 - w) * norm);
+                }
+                for c in &semantic {
+                    add(c, w * c.rank);
+                }
+            }
+            Merge::Rrf { k } => {
+                for (i, c) in lexical.iter().enumerate() {
+                    add(c, 1.0 / (k + (i + 1) as f64));
+                }
+                for (i, c) in semantic.iter().enumerate() {
+                    add(c, 1.0 / (k + (i + 1) as f64));
+                }
+            }
+        }
+        self.rank_heads(merged, limit)
+    }
+
+    /// Live facts whose vector by `query.model` has cosine ≥ `threshold`
+    /// with `query.vector`, best first, skipping `exclude`: near-duplicates
+    /// the keyword check can miss (a paraphrase, another language).
+    pub fn similar_by_vector(
+        &self,
+        query: QueryVector<'_>,
+        threshold: f32,
+        exclude: &[i64],
+        limit: usize,
+    ) -> Result<Vec<Memory>, MemoryError> {
+        let mut out = Vec::new();
+        for c in self.vector_candidates(query, threshold, usize::MAX)? {
+            if out.len() == limit {
+                break;
+            }
+            if c.superseded_by.is_some() || exclude.contains(&c.id) {
+                continue;
+            }
+            if let Some(mut m) = self.get(c.id)? {
+                m.score = c.rank;
+                out.push(m);
+            }
+        }
+        Ok(out)
+    }
+
+    /// A plain insert with a given creation time, for benchmarks and tests
+    /// of time decay.
+    #[doc(hidden)]
+    pub fn remember_at(
+        &self,
+        content: &str,
+        tags: &[&str],
+        created_at: i64,
+    ) -> Result<i64, MemoryError> {
+        self.conn.execute(
+            "INSERT INTO memories (content, tags, created_at) VALUES (?1, ?2, ?3)",
+            params![content, tags.join(","), created_at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+}
+
+fn vec_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// The dot product of `q` with a stored vector (both normalised, so the
+/// cosine). `None` when the blob isn't a vector of `q`'s length.
+fn cosine_bytes(q: &[f32], blob: &[u8]) -> Option<f32> {
+    let (words, rest) = blob.as_chunks::<4>();
+    if !rest.is_empty() || words.len() != q.len() || q.is_empty() {
+        return None;
+    }
+    Some(
+        words
+            .iter()
+            .zip(q)
+            .map(|(w, x)| f32::from_le_bytes(*w) * x)
+            .sum(),
+    )
+}
+
+/// M30: the `embedding_model` column and a trigger that clears a row's
+/// vector when its text changes. Not a schema version: a build from before
+/// M30 never reads the column and keeps working on the file. Idempotent,
+/// and serialized across processes by `BEGIN IMMEDIATE`.
+fn ensure_vector_column(conn: &Connection) -> Result<(), MemoryError> {
+    let has = |conn: &Connection| -> Result<bool, MemoryError> {
+        let mut stmt = conn.prepare("PRAGMA table_info(memories)")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        for c in rows {
+            if c? == "embedding_model" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    let trigger = |conn: &Connection| -> Result<bool, MemoryError> {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'memories_embedding_clear'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? > 0)
+    };
+    if has(conn)? && trigger(conn)? {
+        return Ok(());
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    if !has(conn)? {
+        conn.execute_batch("ALTER TABLE memories ADD COLUMN embedding_model TEXT;")?;
+    }
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS memories_embedding_clear
+         AFTER UPDATE OF content ON memories WHEN old.content IS NOT new.content BEGIN
+             UPDATE memories SET embedding = NULL, embedding_model = NULL WHERE id = new.id;
+         END;",
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// 0 → 1: the `superseded_by` / `superseded_at` columns, their index and an
