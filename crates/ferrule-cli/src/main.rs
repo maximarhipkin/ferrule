@@ -37,7 +37,7 @@ use ferrule_gateway::{
 use ferrule_mcp::McpServerConfig;
 use ferrule_memory::MemoryStore;
 use ferrule_proxy::{Broker, BrokerConfig, Upstream};
-use ferrule_sandbox::{Egress, Mode, Sandbox};
+use ferrule_sandbox::{Backend, Egress, Mode, Sandbox};
 use ferrule_tools::standard_registry;
 use ferrule_tools::{
     CommandVerifier, ListDirTool, ReadFileTool, ShellTool, WebFetchTool, WriteFileTool,
@@ -246,6 +246,9 @@ enum Cmd {
         /// Internal: open a loopback socket and report, run inside the sandbox
         #[arg(long, hide = true)]
         probe_net: bool,
+        /// Internal: try to open process PID's memory and report (Windows)
+        #[arg(long, hide = true, value_name = "PID")]
+        probe_process: Option<u32>,
         /// Command to run under the sandbox (and `[secrets]` placeholders)
         #[arg(last = true)]
         exec: Vec<String>,
@@ -420,6 +423,9 @@ fn log_filter(daemon: bool) -> tracing_subscriber::EnvFilter {
 /// Sync on purpose: `--config` and the secrets file go into the environment
 /// before the runtime starts any thread, since `set_var` isn't thread-safe.
 fn main() -> Result<()> {
+    // On Windows, ferrule is also the sandbox's launcher (M26): run as
+    // `ferrule __sandbox-launch <program> <args…>`, it never gets here.
+    ferrule_sandbox::launch::intercept();
     let cli = Cli::parse();
     // Printed as RUST_LOG says; warnings and errors are also kept for
     // the gateway's `/status` (M19b).
@@ -626,9 +632,14 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             probe_net: true, ..
         } => probe_net(),
         Cmd::Sandbox {
+            probe_process: Some(pid),
+            ..
+        } => probe_process(pid),
+        Cmd::Sandbox {
             workspace,
             probe_net: false,
             exec,
+            ..
         } if !exec.is_empty() => {
             let (cfg, _) = config::Config::load()?;
             let status = shared_sandbox(&cfg)?
@@ -836,9 +847,9 @@ fn build_agent_from(
         sandbox.egress().cloned(),
     )));
     // The file tools run in this process, outside the sandbox: they refuse
-    // its hidden paths themselves, or a workspace that contains the data
-    // dir would let `read_file` hand over the saved keys.
-    let hidden = sandbox.policy().hidden.clone();
+    // its read denies themselves, or a workspace that contains the data
+    // dir (or is `~`) would let `read_file` hand over the saved keys.
+    let hidden = sandbox.read_deny_list(&tool_ctx.workspace);
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
     registry.register(Arc::new(ListDirTool::hiding(hidden)));
@@ -1013,11 +1024,13 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     // Commands get these back as placeholders, from the credential proxy.
     policy.secret_vars.extend(cfg.secrets.keys().cloned());
     policy.hidden.extend(hidden_paths());
+    policy.state_dir = config::data_dir().ok().map(|d| d.join("sandbox"));
     policy
 }
 
-/// The secrets file's directory and the credential proxy's CA key — never
-/// readable by a sandboxed command. The sandbox resolves them per command,
+/// The secrets file's directory, the credential proxy's CA key, the
+/// learning loop's notes and the session transcripts (whatever a tool ever
+/// printed) — never readable by a sandboxed command. The sandbox resolves them per command,
 /// so the proxy's keys (written when the broker first starts) are covered
 /// too; the secrets directory is created now so a file `ferrule setup`
 /// writes into it later lands inside something already hidden.
@@ -1032,7 +1045,12 @@ fn hidden_paths() -> Vec<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700));
     }
-    vec![private, data.join("proxy").join("keys"), data.join("learn")]
+    vec![
+        private,
+        data.join("proxy").join("keys"),
+        data.join("learn"),
+        data.join("sessions"),
+    ]
 }
 
 /// Landlock can't grant a folder without what's in it, so when the
@@ -1134,6 +1152,7 @@ fn broker_config(cfg: &config::Config) -> Result<BrokerConfig> {
             .collect(),
         state_dir: config::data_dir()?.join("proxy"),
         upstream: Upstream::from_env()?,
+        http_upstream: Upstream::from_env_http()?,
         ca_bundle: None,
     })
 }
@@ -2176,6 +2195,19 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         for root in roots.iter().skip(1) {
             println!("          {}", root.display());
         }
+        // What exists now; the file tools also refuse the rest of the list.
+        let denies = sandbox.read_denies(&workspace);
+        let owned = sandbox.owned_denies(&workspace);
+        for (i, path) in denies.iter().enumerate() {
+            // Windows only closes what ferrule may re-ACL to commands.
+            let tools_only = sandbox.backend() == Backend::Windows && !owned.contains(path);
+            println!(
+                "{}{}{}",
+                if i == 0 { "no reads  " } else { "          " },
+                path.display(),
+                if tools_only { " (file tools only)" } else { "" }
+            );
+        }
     }
     println!(
         "env       {} secret var(s) withheld{}",
@@ -2226,6 +2258,40 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
             .stdin(std::process::Stdio::null())
             .output()?)
     };
+    // The same two probes through cmd.exe on Windows, which always has it.
+    let cmd = |args: &[&std::ffi::OsStr]| -> Result<std::process::Output> {
+        Ok(sandbox
+            .command("cmd.exe", args, &workspace)?
+            .stdin(std::process::Stdio::null())
+            .output()?)
+    };
+    let write_to = |path: &Path| -> Result<std::process::Output> {
+        if cfg!(windows) {
+            cmd(&[
+                "/d".as_ref(),
+                "/c".as_ref(),
+                "echo".as_ref(),
+                "probe>".as_ref(),
+                path.as_os_str(),
+            ])
+        } else {
+            sh("echo probe > \"$1\"", path)
+        }
+    };
+    let read_from = |path: &Path| -> Result<std::process::Output> {
+        if cfg!(windows) {
+            cmd(&[
+                "/d".as_ref(),
+                "/c".as_ref(),
+                "type".as_ref(),
+                path.as_os_str(),
+                ">".as_ref(),
+                "NUL".as_ref(),
+            ])
+        } else {
+            sh("cat \"$1\" > /dev/null", path)
+        }
+    };
     println!("\nchecks");
 
     let env = if cfg!(windows) {
@@ -2269,7 +2335,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
 
     let probe_name = format!(".ferrule-sandbox-probe-{}", std::process::id());
     let inside = workspace.join(&probe_name);
-    let wrote = sh("echo probe > \"$1\"", &inside)?.status.success();
+    let wrote = write_to(&inside)?.status.success();
     let _ = std::fs::remove_file(&inside);
     match policy.mode {
         Mode::ReadOnly => report("workspace write is refused (read-only)", !wrote),
@@ -2285,8 +2351,8 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     // Aim outside every root, at a place this process itself can write — so
     // a refusal is the sandbox, not plain file permissions.
     let candidates = [
-        std::env::var_os("HOME").map(PathBuf::from),
-        Some(PathBuf::from("/var/tmp")),
+        ferrule_sandbox::home_dir(),
+        cfg!(unix).then(|| PathBuf::from("/var/tmp")),
         workspace.parent().map(Path::to_path_buf),
     ];
     let target = candidates
@@ -2303,7 +2369,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     match target {
         Some(dir) => {
             let probe = dir.join(&probe_name);
-            let out = sh("echo probe > \"$1\"", &probe)?;
+            let out = write_to(&probe)?;
             let escaped = out.status.success() || probe.exists();
             let _ = std::fs::remove_file(&probe);
             report(
@@ -2320,22 +2386,33 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     // itself; Landlock's ptrace scoping is what refuses this.
     if cfg!(target_os = "linux") {
         let environ = PathBuf::from(format!("/proc/{}/environ", std::process::id()));
-        let read = sh("cat \"$1\" > /dev/null", &environ)?.status.success();
+        let read = read_from(&environ)?.status.success();
         report(
             "ferrule's own environment is unreadable (/proc/<pid>/environ)",
             !read,
         );
     }
+    let me = std::env::current_exe()?;
+    if cfg!(windows) {
+        let pid = std::process::id().to_string();
+        let out = sandbox
+            .command(&me, ["sandbox", "--probe-process", &pid], &workspace)?
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        report(
+            "ferrule's own process memory is unreadable",
+            String::from_utf8_lossy(&out.stdout).contains("refused"),
+        );
+    }
     let saved = secrets::path()?;
     if saved.exists() {
-        let read = sh("cat \"$1\" > /dev/null", &saved)?.status.success();
+        let read = read_from(&saved)?.status.success();
         report(
             &format!("the saved keys are unreadable ({})", saved.display()),
             !read,
         );
     }
 
-    let me = std::env::current_exe()?;
     let net = sandbox
         .command(&me, ["sandbox", "--probe-net"], &workspace)?
         .stdin(std::process::Stdio::null())
@@ -2343,6 +2420,8 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     let opened = net.status.success();
     if policy.network {
         report("network sockets open", opened);
+    } else if sandbox.backend() == Backend::Windows {
+        println!("  skip  network: not enforced on Windows (docs/windows-sandbox.md)");
     } else {
         report(
             "network sockets are refused",
@@ -2354,6 +2433,17 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
     } else {
         bail!("{failures} check(s) failed")
     }
+}
+
+/// Run by `ferrule sandbox` inside the Windows sandbox: can this process
+/// read ferrule's memory, where the real secrets are?
+fn probe_process(pid: u32) {
+    #[cfg(windows)]
+    if !ferrule_sandbox::can_read_process(pid) {
+        println!("refused");
+        return;
+    }
+    println!("opened {pid}");
 }
 
 /// Run by `ferrule sandbox` inside the sandbox: can this process open an

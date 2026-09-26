@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-819-8a929a" alt="819 workspace tests">
+  <img src="https://img.shields.io/badge/tests-836-8a929a" alt="836 workspace tests">
 </p>
 
 <p align="center">
@@ -142,8 +142,9 @@ between the model and your real tokens — all on by default:
 1. **An OS sandbox around every shell command and stdio MCP server** —
    Landlock + seccomp on Linux, Seatbelt on macOS. Writes are confined to
    the workspace, secret-looking env vars (`*KEY*`, `*TOKEN*`, `*SECRET*`…)
-   are stripped, and the network can be hard-off via seccomp. (Native
-   Windows has no sandbox yet — [use WSL2](#windows).)
+   are stripped, and the network can be hard-off via seccomp. Native
+   Windows uses a restricted token inside a job object, with no admin
+   rights ([`docs/windows-sandbox.md`](docs/windows-sandbox.md)).
 2. **Placeholders, not tokens.** Commands see `$GITHUB_TOKEN` as a
    same-shaped placeholder. Saved keys live in `secrets.env` (0600, in a
    0700 directory) that the agent's file tools and sandboxed shell can't
@@ -187,7 +188,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Gateway** | A long-running daemon with Telegram and local channels, one session lane per chat, resumed across restarts. Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
 | **Dashboard** | One page for the whole app: health first, connections, models with an OpenRouter catalog, prices and recommendations, usage, tasks, logs, extensions and sub-agents. Send `/dashboard` and get a one-use 10-minute link; a `cloudflared` quick tunnel opens on demand and `/dashboard off` revokes it all. Caps, MCP servers, skills, hooks and task schedules are edited from the page, a candidate model can be evaluated on the starter suite (cost shown first), and the login survives a restart. It never calls the model, so it works when every model is down ([`docs/dashboard.md`](docs/dashboard.md)). |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
-| **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, and secret env vars are stripped. Native Windows has no sandbox yet ([below](#windows)). |
+| **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, secret env vars are stripped, and reads of ferrule's secrets, credential dirs and your `deny_read` paths are denied. On Windows: a restricted token in a job object, no admin rights; commands need PowerShell there, since Git Bash can't start under the token ([below](#windows), [`docs/sandbox.md`](docs/sandbox.md)). |
 | **Credential gateway** | Commands get a placeholder token. A local proxy swaps in the real one only for the hosts you allow. |
 | **Ledger** | Every model call is logged: tokens, cache hits, latency, errors, cost. |
 | **Trust & cost** | Token and dollar caps per run, per day and per scheduled task, with an 80% warning; a kill switch (`ferrule stop`, `/stop`, `/resume`); approvals for destructive actions; plan mode ([`docs/m19-trust-cost.md`](docs/m19-trust-cost.md)). |
@@ -268,11 +269,16 @@ ferrule config example  # every option, commented
 
 ### Windows
 
-Native Windows has **no OS sandbox** in ferrule yet: shell commands the
-agent runs have your own permissions. Saved keys still stay out of its file
-tools and out of the commands' environment. For full isolation, run the
-Linux build under [WSL2](https://learn.microsoft.com/windows/wsl/install)
-(the `curl … | sh` line, inside WSL).
+On Windows, shell commands and stdio MCP servers run under a restricted
+token inside a job object. No admin rights, service or driver are needed.
+Writes land only in the workspace and temp dirs. Ferrule's saved keys and
+your `deny_read` paths can't be read, and the whole process tree dies with
+the job. Git Bash can't start under that token, so with Git Bash commands
+run **unsandboxed** behind a warning. Set `FERRULE_SHELL=powershell` to get
+the sandbox, and `ferrule doctor` says which one you have. `network = false`
+isn't enforced on Windows. For full Linux-style isolation, run the Linux
+build under [WSL2](https://learn.microsoft.com/windows/wsl/install).
+Details: [`docs/windows-sandbox.md`](docs/windows-sandbox.md).
 
 The agent's shell is Git Bash when [Git for Windows](https://gitforwindows.org)
 is installed, else PowerShell, and the agent is told which one it has.
@@ -403,7 +409,8 @@ ferrule tasks runs <ID>               # truthful status for every run
 `command`, and runs inside the same OS sandbox as the shell: it can write
 the workspace, temp dirs and a state dir of its own, it always has the
 network, and its environment is scrubbed of secrets. `sandbox = false`
-opts out, and `ferrule doctor` flags it. A remote server speaks Streamable
+runs it hide-only (it can write anywhere, but still can't read the deny
+list), and `ferrule doctor` flags it. A remote server speaks Streamable
 HTTP over `url`, and its HTTPS goes through the credential proxy — a
 `${VAR}` in a header arrives as the placeholder and is swapped only for
 the hosts that secret is bound to:
@@ -444,8 +451,10 @@ ferrule sandbox                       # shows the policy and tests each promise
 ferrule sandbox -- sh -c 'touch /etc/x'   # run anything the way the agent would
 ```
 
-Reads are still open. Keep secrets out of files the agent can read, and use
-the credential gateway instead.
+Reads are denied for ferrule's own secrets (keys, tokens, connections,
+transcripts), the usual credential dirs (`~/.ssh`, cloud CLIs, browser
+profiles) and any `deny_read` path, minus `allow_read`. The same list binds
+the agent's file tools in-process ([`docs/sandbox.md`](docs/sandbox.md)).
 
 ## Credential gateway
 
@@ -514,7 +523,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 819 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 836 tests on Linux; macOS and Windows cfg out the platform-only ones
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -587,12 +596,14 @@ and a dated entry for every session.
       "evaluate a candidate", editing from the page, a 2-minute smoke script
 - [x] M25: routing Phase 1 — start cheap, escalate on failure signals,
       `ferrule eval --variant routing` to compare cheap, routed and strong
+- [x] M26: isolation — a native Windows sandbox (restricted token + job
+      object), sandboxed reads on every OS, plain-HTTP `web_fetch` through
+      the proxy
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-Every open track, in order (Max, 25.09: "do everything"): M26 isolation (a native Windows
-sandbox, sandboxed reads), M27 speed (parallel tool calls, streaming,
+Every open track, in order (Max, 25.09: "do everything"): M27 speed (parallel tool calls, streaming,
 cache-stable prompts), M28 `web_search` and keyword-triggered skills, M29
 edit mechanics and a tree-sitter repo map, M30 vector recall, M31 Discord
 and Slack, M32 WASM plugins, M33 ops (SSH, egress policy, OTel,
@@ -601,8 +612,7 @@ importers).
 M11–M13 were approved in order; M14–M19 came from the six-investigation
 strategy synthesis:
 [`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md).
-Designed and now queued above: sandboxing file reads and a native Windows
-sandbox (M26), code-extension plugins (M32).
+Designed and now queued above: code-extension plugins (M32).
 
 **Planned**
 

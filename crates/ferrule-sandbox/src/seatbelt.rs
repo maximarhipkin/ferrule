@@ -87,6 +87,21 @@ pub fn profile(
     }
     // Last, so they override both the blanket read grant and any writable
     // root the hidden path sits in.
+    params.extend(deny_hidden(hidden, &mut sections));
+    (sections.join("\n"), params)
+}
+
+/// A profile that allows everything but `hidden`: for a helper its config
+/// opted out of the sandbox, which still mustn't read ferrule's secrets.
+pub fn open_profile(hidden: &[PathBuf]) -> (String, Vec<(String, PathBuf)>) {
+    let mut sections = vec!["(version 1)\n(allow default)".to_string()];
+    let params = deny_hidden(hidden, &mut sections);
+    (sections.join("\n"), params)
+}
+
+/// Deny rules for `hidden`, appended last so they override every grant.
+fn deny_hidden(hidden: &[PathBuf], sections: &mut Vec<String>) -> Vec<(String, PathBuf)> {
+    let mut params = Vec::new();
     for (i, path) in hidden.iter().enumerate() {
         let key = format!("HIDDEN_{i}");
         let matcher = if path.is_dir() { "subpath" } else { "literal" };
@@ -95,15 +110,13 @@ pub fn profile(
         ));
         params.push((key, path.clone()));
     }
-    (sections.join("\n"), params)
+    params
 }
 
-/// `sandbox-exec -p <profile> -DKEY=path… -- program args…`
+/// `sandbox-exec -p <profile> -DKEY=path… -- program args…`, for a
+/// [`profile`] or an [`open_profile`].
 pub fn command<I, S>(
-    network: bool,
-    desktop: bool,
-    writable: &[PathBuf],
-    hidden: &[PathBuf],
+    (policy, params): (String, Vec<(String, PathBuf)>),
     program: impl AsRef<OsStr>,
     args: I,
 ) -> Command
@@ -111,7 +124,6 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let (policy, params) = profile(network, desktop, writable, hidden);
     let mut cmd = Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(policy);
     for (key, path) in params {
@@ -228,10 +240,7 @@ mod tests {
     #[test]
     fn command_uses_the_absolute_sandbox_exec() {
         let cmd = command(
-            true,
-            false,
-            &[PathBuf::from("/private/tmp")],
-            &[],
+            profile(true, false, &[PathBuf::from("/private/tmp")], &[]),
             "sh",
             ["-c", "true"],
         );
@@ -243,6 +252,16 @@ mod tests {
         assert_eq!(args[0], "-p");
         assert_eq!(args[2], "-DWRITABLE_ROOT_0=/private/tmp");
         assert_eq!(&args[3..], ["--", "sh", "-c", "true"]);
+    }
+
+    #[test]
+    fn the_open_profile_allows_all_but_the_hidden_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let (p, params) = open_profile(&[dir.path().to_path_buf()]);
+        assert!(p.starts_with("(version 1)\n(allow default)"));
+        assert!(p.ends_with("(deny file-read* file-write* (subpath (param \"HIDDEN_0\")))"));
+        assert_eq!(params, [("HIDDEN_0".to_string(), dir.path().to_path_buf())]);
+        assert!(balanced(&p));
     }
 
     #[test]

@@ -655,7 +655,8 @@ profile = "openai"
 # max_usd_per_pass = 0.5     # Caps come from the ledger (call_kind "learn"); the pass
 # max_usd_per_day = 1.0      # stops cleanly at either. `ferrule learn show|diff|revert`.
 
-# [sandbox]                 # OS sandbox for the shell tool (Landlock / Seatbelt).
+# [sandbox]                 # OS sandbox for the shell tool (Landlock / Seatbelt /
+#                            # a restricted token on Windows). docs/sandbox.md
 # mode = "workspace-write"   # or "read-only", or "off". `ferrule sandbox` shows
 #                            # what applies here and tests it.
 # require = false            # true: refuse to start if it can't be applied
@@ -665,6 +666,12 @@ profile = "openai"
 # tmp = true                 # /tmp and $TMPDIR stay writable
 # scrub_secret_env = true    # drop *KEY*/*TOKEN*/*SECRET*… and api_key_env vars
 # env_passthrough = []       # names to keep anyway, e.g. ["GITHUB_TOKEN"]
+# deny_read = []             # extra paths commands and the file tools can't
+#                            # read, e.g. ["~/work/.env.production"]
+# deny_default_reads = true  # ~/.ssh, cloud credential dirs, browser profiles
+# allow_read = []            # re-open one of those, e.g. ["~/.kube"]
+# process_limit = 256        # Windows: most processes per command tree (0 = none);
+#                            # memory_mb = 4096 caps the tree's memory there
 
 # [secrets]                 # Credential gateway: the shell tool's commands get a
 #                            # same-shaped placeholder in $NAME, never the real
@@ -832,6 +839,12 @@ mod tests {
                 && !cfg.sandbox.require
         );
         assert!(cfg.sandbox.writable_roots.is_empty() && cfg.sandbox.env_passthrough.is_empty());
+        assert!(
+            cfg.sandbox.deny_default_reads
+                && cfg.sandbox.deny_read.is_empty()
+                && cfg.sandbox.allow_read.is_empty()
+                && cfg.sandbox.process_limit == 256
+        );
         let rule = |name: &str| ferrule_proxy::SecretRule::from(&cfg.secrets[name]);
         assert_eq!(
             rule("GITHUB_TOKEN").hosts,

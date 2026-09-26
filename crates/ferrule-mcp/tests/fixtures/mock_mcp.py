@@ -6,7 +6,8 @@ via a numeric cursor. tools/call supports: echo, add, boom (isError),
 slow (never responds, for timeout/concurrency tests), crash (exits without
 responding), ping_first (sends a server->client ping reusing the call's own
 id before answering, to catch id-space confusion), write (creates a file,
-reporting a refusal as text rather than failing), env (reads a variable),
+reporting a refusal as text rather than failing), read (returns a file's
+text, or the refusal), env (reads a variable),
 grow (adds the tool named in its arguments to the list, then sends
 notifications/tools/list_changed before answering).
 
@@ -23,6 +24,7 @@ TOOLS = [
     {"name": "crash", "description": "Exits without responding", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "ping_first", "description": "Pings the client before answering", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "write", "description": "Write a file", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
+    {"name": "read", "description": "Read a file", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
     {"name": "env", "description": "Read an environment variable", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}, "annotations": {"readOnlyHint": True}},
 ]
 
@@ -70,6 +72,13 @@ def main():
                     with open(args["path"], "w") as f:
                         f.write("mcp")
                     text = "wrote"
+                except OSError as e:
+                    text = "refused: %s" % e
+                send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": text}], "isError": False}})
+            elif name == "read":
+                try:
+                    with open(args["path"]) as f:
+                        text = f.read()
                 except OSError as e:
                     text = "refused: %s" % e
                 send({"jsonrpc": "2.0", "id": mid, "result": {"content": [{"type": "text", "text": text}], "isError": False}})

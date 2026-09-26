@@ -51,6 +51,7 @@ async fn handshake_lists_paginated_tools_with_namespaced_names() {
             "mcp__test__echo",
             "mcp__test__env",
             "mcp__test__ping_first",
+            "mcp__test__read",
             "mcp__test__slow",
             "mcp__test__write"
         ]
@@ -281,7 +282,7 @@ async fn the_warm_up_runs_with_the_servers_env_before_every_call() {
 async fn tools_list_changed_is_passed_on_and_a_relist_sees_the_new_tool() {
     let client = Arc::new(ferrule_mcp::McpClient::new(fixture_cfg("grow", None), host()).unwrap());
     let mut changed = client.subscribe_list_changed();
-    assert_eq!(client.list_tools().await.unwrap().len(), 8);
+    assert_eq!(client.list_tools().await.unwrap().len(), 9);
     assert!(!changed.has_changed().unwrap());
 
     let out = client

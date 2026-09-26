@@ -55,8 +55,10 @@ jobs:
 
       # The sandbox and service code paths only this OS has.
       - name: Sandbox self-test
-        if: runner.os != 'Windows'
         shell: bash
+        # Git Bash can't run under the Windows token; PowerShell can.
+        env:
+          FERRULE_SHELL: ${{ runner.os == 'Windows' && 'powershell' || '' }}
         run: |
           cargo build --locked -p ferrule-cli
           mkdir -p "$RUNNER_TEMP/ws"

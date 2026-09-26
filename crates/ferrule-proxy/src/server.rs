@@ -1,7 +1,12 @@
-//! The proxy itself: an HTTP/1 CONNECT proxy on loopback. Tunnels to hosts no
+//! The proxy itself: an HTTP/1 proxy on loopback. Tunnels to hosts no
 //! secret is bound to are passed through untouched; tunnels to bound hosts
 //! are terminated with a local certificate so each request can have its
 //! placeholders swapped for real values, and each response scrubbed back.
+//!
+//! Plain HTTP (absolute-form requests) is forwarded too, so ferrule's own
+//! `http://` fetches leave the same way. Secrets only go over it to loopback
+//! servers: a bound remote host asked for over `http://` is refused, since
+//! anyone on the path would see the real value.
 
 use crate::ca::Ca;
 use crate::hosts::HostPattern;
@@ -47,6 +52,7 @@ pub(crate) struct Shared {
     /// Grows through `Broker::bind`; a tunnel takes its swaps when it opens.
     pub secrets: std::sync::RwLock<Vec<Secret>>,
     pub upstream: Option<Upstream>,
+    pub http_upstream: Option<Upstream>,
     pub tls_client: Arc<ClientConfig>,
 }
 
@@ -105,10 +111,7 @@ async fn handle(
         return Ok(resp);
     }
     if req.method() != Method::CONNECT {
-        return Ok(text(
-            StatusCode::BAD_REQUEST,
-            "ferrule proxy: only HTTPS (CONNECT) is proxied; plain HTTP never gets secrets\n",
-        ));
+        return Ok(plain_http(req, shared).await);
     }
     let Some((host, port)) = connect_target(req.uri()) else {
         return Ok(text(
@@ -325,6 +328,124 @@ async fn forward(
     Ok(scrub_response(resp, swaps))
 }
 
+/// One absolute-form `http://` request, forwarded on a fresh connection.
+async fn plain_http(req: Request<Incoming>, shared: Arc<Shared>) -> Response<ProxyBody> {
+    let (mut parts, body) = req.into_parts();
+    let authority = match (parts.uri.scheme_str(), parts.uri.authority()) {
+        (Some(scheme), Some(a)) if scheme.eq_ignore_ascii_case("http") => a.clone(),
+        _ => {
+            return text(
+                StatusCode::BAD_REQUEST,
+                "ferrule proxy: expected CONNECT or an absolute http:// URL\n",
+            )
+        }
+    };
+    let host = authority
+        .host()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    let port = authority.port_u16().unwrap_or(80);
+    let swaps = shared.swaps_for(&host);
+    if swaps.is_some() && !is_loopback(&host) {
+        return text(
+            StatusCode::FORBIDDEN,
+            &format!(
+                "ferrule proxy: {host} has secrets bound to it, and secrets only go over HTTPS; \
+                 use https://{authority}\n"
+            ),
+        );
+    }
+    if parts.headers.contains_key(header::UPGRADE) {
+        return text(
+            StatusCode::NOT_IMPLEMENTED,
+            "ferrule proxy: protocol upgrades (websockets) aren't supported over plain HTTP\n",
+        );
+    }
+
+    strip_hop_by_hop(&mut parts.headers);
+    parts.headers.remove(header::EXPECT);
+    // The URL decides where the request goes; a Host naming another site
+    // would let a shared front end route it (and any secret) elsewhere.
+    if let Ok(v) = HeaderValue::from_str(authority.as_str()) {
+        parts.headers.insert(header::HOST, v);
+    }
+    let pq = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
+    let mut pq = pq.to_string();
+    if let Some(swaps) = &swaps {
+        // Identity bodies only, so the response can be scrubbed.
+        parts.headers.remove(header::ACCEPT_ENCODING);
+        for (name, value) in parts.headers.iter_mut() {
+            if let Some(real) = swaps.inject_header(name, value) {
+                *value = real;
+            }
+        }
+        if let Some(real) = swaps.inject_uri(&pq) {
+            pq = real;
+        }
+    }
+
+    let (tcp, via) = match upstream::connect_http(shared.http_upstream.as_ref(), &host, port).await
+    {
+        Ok(c) => c,
+        Err(e) => return text(StatusCode::BAD_GATEWAY, &format!("ferrule proxy: {e:#}\n")),
+    };
+    let target = match via {
+        Some(up) => {
+            if let Some(v) = up.auth().and_then(|a| HeaderValue::from_str(a).ok()) {
+                parts.headers.insert(header::PROXY_AUTHORIZATION, v);
+            }
+            format!("http://{authority}{pq}")
+        }
+        None => pq,
+    };
+    parts.uri = match target.parse::<Uri>() {
+        Ok(uri) => uri,
+        Err(_) => {
+            return text(
+                StatusCode::BAD_REQUEST,
+                "ferrule proxy: bad request target\n",
+            )
+        }
+    };
+    parts.version = Version::HTTP_11;
+
+    let sent = async {
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tcp)).await?;
+        let name = host.clone();
+        tokio::spawn(async move {
+            if let Err(e) = conn.await {
+                debug!("connection to {name} ended: {e}");
+            }
+        });
+        anyhow::Ok(
+            sender
+                .send_request(Request::from_parts(parts, body))
+                .await?,
+        )
+    };
+    match (sent.await, swaps) {
+        (Ok(resp), Some(swaps)) => scrub_response(resp, swaps),
+        (Ok(resp), None) => {
+            let (mut parts, body) = resp.into_parts();
+            strip_hop_by_hop(&mut parts.headers);
+            Response::from_parts(parts, body.boxed())
+        }
+        (Err(e), _) => text(
+            StatusCode::BAD_GATEWAY,
+            &format!("ferrule proxy: {host}: {e:#}\n"),
+        ),
+    }
+}
+
+/// Whether plain HTTP to `host` stays on this machine.
+fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 fn scrub_response(resp: Response<Incoming>, swaps: Arc<Swaps>) -> Response<ProxyBody> {
     let (mut parts, body) = resp.into_parts();
     strip_hop_by_hop(&mut parts.headers);
@@ -503,5 +624,15 @@ mod tests {
         assert_eq!(host_of("api.github.com:443"), "api.github.com");
         assert_eq!(host_of("api.github.com"), "api.github.com");
         assert_eq!(host_of("[::1]:443"), "::1");
+    }
+
+    #[test]
+    fn only_loopback_hosts_count_as_local() {
+        for h in ["localhost", "127.0.0.1", "127.3.4.5", "::1"] {
+            assert!(is_loopback(h), "{h}");
+        }
+        for h in ["example.com", "10.0.0.1", "localhost.example.com", "::2"] {
+            assert!(!is_loopback(h), "{h}");
+        }
     }
 }

@@ -478,6 +478,28 @@ that convention yet — ask before introducing one).
       cheap only vs routed vs strong only; `evals/routing/weak_mock.py`
       shows it with no model.
     - **Decisions for Max and open edges:** see the M25 session-log entry.
+  - **M26 isolation**: **built** (2026-09-26, branch `m26-isolation`, PR to
+    main open, not merged). Design and as-built notes are in
+    `docs/m26-isolation.md`; the user guides are `docs/sandbox.md` and
+    `docs/windows-sandbox.md`.
+    - Sandboxed reads: one deny list (ferrule's secrets, now including
+      `<data>/sessions`; `~/.ssh`, the cloud credential dirs and browser
+      profiles by default; the owner's `deny_read`, with `allow_read` to
+      re-open a default). It is enforced by Landlock, Seatbelt, the Windows
+      backend and the file tools.
+    - Windows tier 1, no admin: a launcher starts the command under a
+      restricted token (write-restricted to per-root capability SIDs,
+      Authenticated Users deny-only) inside a job. The job kills the tree,
+      caps the process count and, optionally, the memory. Ferrule's secret
+      dirs and its own process carry a DACL that shuts the sandbox token
+      out. `network = false` isn't enforced there, and doctor says so.
+    - Plain-HTTP `web_fetch` goes through the proxy (absolute-form
+      forwarding). Secrets go over `http://` to loopback only; a bound
+      remote host gets 403.
+    - `sandbox = false` MCP servers run hide-only (writes open, the deny
+      list and ferrule's process still closed), and doctor lists what stays
+      open per server.
+    - **Decisions for Max and open edges:** see the M26 session-log entry.
   - **M27 speed**: **built** (2026-09-26, branch `m27-speed`, PR to main
     open, not merged). Design and as-built notes are in
     `docs/m27-speed.md`; the user guide is `docs/speed.md`.
@@ -3723,6 +3745,66 @@ checks): cheap 16/20 $0.05, routed 20/20 $0.06 with 4 escalations (all
 **Open edges:** a verifier sub-agent's verdict isn't a signal (free
 text); the report's "failed checks fixed" line sums failed checks whether
 or not the task then passed (pre-existing, visible on the cheap arm).
+
+### 2026-09-26 — M26 isolation: a Windows sandbox, sandboxed reads, the M10 edges (Devi, Opus 5.5)
+
+**Scope.** On branch `m26-isolation`: the design (`docs/m26-isolation.md`),
+then four parts. Part 1: the read policy. Part 2: plain HTTP through the
+proxy. Part 3: Windows tier 1. Part 4: hide-only unconfined servers,
+doctor and `ferrule sandbox` on Windows. Then the guides
+(`docs/sandbox.md`, `docs/windows-sandbox.md`).
+
+**What it does.**
+- Commands, MCP servers and the file tools can no longer read ferrule's
+  secrets, the usual credential dirs or the owner's `deny_read` paths.
+- Windows gets a real sandbox without admin: writes are confined, and
+  the job kills the whole tree.
+- `http://` fetches go through the proxy under the same rules as HTTPS.
+- A `sandbox = false` server still can't read the secrets.
+
+**Measured (mock, real binary).** `eval run evals/starter --variant ab`:
+engineered 20/20, naive 11/20, $0.98, unchanged. 835 tests pass on Linux
+after merging main (M25 included).
+
+**Decisions for Max:**
+- On Windows, the default credential dirs (`~/.ssh`, the cloud dirs,
+  browser profiles) are closed only to the file tools. Ferrule doesn't
+  rewrite ACLs it doesn't own: OpenSSH checks them, and browsers own
+  theirs. Adding a path to `deny_read` opts it into the protected DACL.
+- `network = false` on Windows keeps the backend active and warns, rather
+  than refusing to start: writes and reads are still worth confining.
+- Plain-HTTP secrets go to loopback only; a bound remote host gets 403
+  instead of a cleartext placeholder request.
+- Commands keep `HTTPS_PROXY` only (no `HTTP_PROXY`), so local dev servers
+  aren't affected.
+- `sandbox = false` now means hide-only, not wide open. Without any
+  backend it stays fully open, as before.
+- No separate §2.3 probe test: the real tier-1 tests settle whether the
+  conditional ACE holds.
+- Git Bash can't run under the write-restricted token: MSYS ACLs its
+  own pipes and shared memory to the user SID. It degrades to
+  unsandboxed with the warning, as the brief says, and doctor suggests
+  `FERRULE_SHELL=powershell`, which runs commands sandboxed. There is no
+  automatic switch, because it would silently change the syntax the model
+  writes.
+
+**Unverified:**
+- All of Windows until this PR's CI run (nothing Windows runs in the build
+  container).
+- The macOS hide-only profile until CI.
+- The system-service path, end to end.
+- Plain HTTP to a real remote host (the tests use loopback servers).
+
+**Open edges:**
+- `HTTP_PROXY` for commands.
+- Windows network enforcement (WFP, admin).
+- The Landlock hide-only limit: no new entries directly beside a denied
+  path, such as at the top of `~`.
+- The Low-integrity fallback, if the conditional ACE fails somewhere.
+- Git Bash under hide-only, so its reads stay confined even though its
+  writes can't be.
+- The README's Sandbox section still says reads are open (README
+  untouched by rule).
 
 ### 2026-09-26 — M27 speed (Devi, Opus 5.5)
 

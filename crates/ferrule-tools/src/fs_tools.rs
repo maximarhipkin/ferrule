@@ -41,7 +41,7 @@ fn resolve(workspace: &Path, hidden: &[PathBuf], path: &str) -> Result<PathBuf, 
         return Err(CoreError::ToolFailed {
             tool: "fs".into(),
             message: format!(
-                "`{path}` is ferrule's private data (saved keys); the file tools don't touch it"
+                "`{path}` is off limits: ferrule's private data (saved keys) or a path the sandbox's read policy denies (credentials, browser profiles, `deny_read`); the file tools don't touch it"
             ),
         });
     }

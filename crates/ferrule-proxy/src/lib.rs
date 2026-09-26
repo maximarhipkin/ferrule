@@ -6,8 +6,9 @@
 //! owned by ferrule. For HTTPS requests to a bound host the proxy swaps the
 //! placeholder for the real value in headers and the URL, and swaps it back
 //! out of the response; every other host gets a blind tunnel, so a
-//! placeholder sent anywhere else is just a useless string. The real values
-//! only ever live in ferrule's own memory.
+//! placeholder sent anywhere else is just a useless string. Plain HTTP is
+//! forwarded as well, but secrets only go over it to loopback servers. The
+//! real values only ever live in ferrule's own memory.
 //!
 //! This only holds while the OS sandbox keeps commands from reading
 //! ferrule's memory or environment (`/proc/<pid>/environ`); see
@@ -76,6 +77,8 @@ pub struct BrokerConfig {
     pub state_dir: PathBuf,
     /// Where ferrule's own traffic goes (`Upstream::from_env()`, usually).
     pub upstream: Option<Upstream>,
+    /// Where plain HTTP goes (`Upstream::from_env_http()`, usually).
+    pub http_upstream: Option<Upstream>,
     /// The CA bundle to trust upstream and to extend for commands;
     /// [`default_ca_bundle`] when `None`.
     pub ca_bundle: Option<PathBuf>,
@@ -194,6 +197,7 @@ impl Broker {
             ca,
             secrets: RwLock::new(secrets),
             upstream: cfg.upstream,
+            http_upstream: cfg.http_upstream,
             tls_client,
         });
         let task = handle.spawn(server::serve(listener, shared.clone()));
@@ -436,6 +440,7 @@ mod tests {
                 .collect(),
             state_dir: dir.to_path_buf(),
             upstream: None,
+            http_upstream: None,
             ca_bundle: None,
         }
     }
