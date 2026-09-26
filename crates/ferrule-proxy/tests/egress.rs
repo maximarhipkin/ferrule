@@ -227,6 +227,52 @@ async fn plain_http_web_fetch_goes_through_the_proxy() {
     );
 }
 
+/// M28: a sandboxed command's plain `http://` goes through the proxy too,
+/// because `child_env` sets `http_proxy` (the only one curl reads for
+/// HTTP) as well as `HTTPS_PROXY`. The real token arriving in the URL is
+/// the proof. Unix only (it runs `/bin/sh`), and skipped without curl.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_sandboxed_command_sends_plain_http_through_the_proxy() {
+    if std::process::Command::new("curl")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: no curl");
+        return;
+    }
+    let s = setup().await;
+    let plain = common::plain_origin(handler()).await;
+    let workspace = tempfile::tempdir().unwrap();
+    let sandbox = Sandbox::new(ferrule_sandbox::Policy {
+        require: false,
+        ..Default::default()
+    })
+    .unwrap()
+    .with_env(s.broker.child_env());
+    let script = format!("curl -sS \"http://127.0.0.1:{plain}/page?key=$TOKEN\"");
+    let mut cmd = sandbox
+        .command("/bin/sh", ["-c", script.as_str()], workspace.path())
+        .unwrap();
+    // The test's own environment may exempt loopback; a user's may too,
+    // and that is theirs to keep. Here it would hide what's being tested.
+    for var in ["NO_PROXY", "no_proxy"] {
+        cmd.env_remove(var);
+    }
+    let out = tokio::task::spawn_blocking(move || {
+        cmd.stdin(std::process::Stdio::null()).output().unwrap()
+    })
+    .await
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("key_real=true"),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn remote(url: String, auth: &str) -> McpServerConfig {
     McpServerConfig {
         name: "remote".into(),

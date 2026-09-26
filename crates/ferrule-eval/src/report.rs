@@ -19,6 +19,8 @@ pub struct VariantSummary {
     pub truncations: u32,
     pub compactions: u32,
     pub verify_failures: u32,
+    /// Failed checks on task runs that then passed: the ones fixed.
+    pub checks_fixed: u32,
     /// M25: moves up a tier, by reason.
     pub escalations: BTreeMap<String, u32>,
 }
@@ -48,6 +50,9 @@ pub fn summarize(results: &[TaskResult]) -> BTreeMap<Variant, VariantSummary> {
         s.truncations += r.truncations;
         s.compactions += r.compactions;
         s.verify_failures += r.verify_failures;
+        if r.outcome == Outcome::Pass {
+            s.checks_fixed += r.verify_failures;
+        }
         for why in &r.escalations {
             *s.escalations.entry(why.clone()).or_default() += 1;
         }
@@ -296,11 +301,7 @@ pub fn render(run: &SuiteRun) -> String {
         },
         None,
     );
-    line(
-        "failed checks fixed",
-        &|s| s.verify_failures.to_string(),
-        None,
-    );
+    line("failed checks fixed", &|s| s.checks_fixed.to_string(), None);
     if variants.contains(&Variant::Routed) {
         line(
             "escalations",
@@ -372,4 +373,32 @@ fn first_line(detail: &str) -> String {
         s.push('…');
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(task: &str, outcome: &str, verify_failures: u32) -> TaskResult {
+        serde_json::from_value(serde_json::json!({
+            "task": task,
+            "variant": "engineered",
+            "outcome": outcome,
+            "verify_failures": verify_failures,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn only_checks_on_runs_that_then_passed_count_as_fixed() {
+        let sums = summarize(&[
+            result("fixed", "pass", 2),
+            result("never-fixed", "fail", 3),
+            result("broke", "error", 1),
+            result("clean", "pass", 0),
+        ]);
+        let s = &sums[&Variant::Engineered];
+        assert_eq!(s.verify_failures, 6, "every failed check is still counted");
+        assert_eq!(s.checks_fixed, 2);
+    }
 }
