@@ -580,6 +580,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
         sh(d, &["init", "-q"]);
+        // Windows runners set core.autocrlf, which checks files out CRLF.
+        sh(d, &["config", "core.autocrlf", "false"]);
         write(d, "a.txt", "a\n");
         write(d, "b.txt", "b\n");
         write(d, "keep.txt", "keep\n");

@@ -188,10 +188,13 @@ fn the_cache_reuses_unchanged_files_and_reparses_changed_ones() {
 #[test]
 fn a_same_size_edit_is_not_missed() {
     let ws = scratch("python");
-    let map = CodeMap::new(ws.path(), vec![], None);
-    map.refresh();
     let price = ws.path().join("shop/price.py");
     let text = std::fs::read_to_string(&price).unwrap();
+    // A fresh mtime: the copy keeps the fixture's old one on macOS and
+    // Windows, and an old file isn't racy.
+    std::fs::write(&price, &text).unwrap();
+    let map = CodeMap::new(ws.path(), vec![], None);
+    map.refresh();
     let meta = std::fs::metadata(&price).unwrap();
     std::fs::write(&price, text.replace("apply_discount", "apply_rebates_")).unwrap();
     // Put the old mtime back: stat alone can't tell.
