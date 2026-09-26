@@ -3964,7 +3964,7 @@ tokens, $0.98 ($0.53 / $0.45), identical with `--edit-tools write-only`.
 The mock never calls `edit_file` and prices only messages. A real provider
 pays ~227 more input tokens per call for the schemas (`edit_file` ~205,
 `write_file`'s longer description ~22), ~34k over the A/B.
-`cargo test --workspace`: 928 passed.
+`cargo test --workspace`: 969 passed (after merging M28's `main`).
 
 **Decisions for Max:**
 - `write_file` stays in every profile. The edit advice is in the tool
