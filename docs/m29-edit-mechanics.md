@@ -554,10 +554,16 @@ else the same. The real-model command and its expected cost are in
 - **Git missing or the repo broken during auto-commit.** No commit, and
   the note says why. The run's result is unaffected.
 - **Undo with changed files.** Refused, with the file named.
-- **Release size.** The grammars add parser tables. The five release
-  archives are measured against v0.3.0 on this branch's workflow_dispatch
-  run. If the growth is out of proportion, the grammars sit behind default
-  features that a packager can drop.
+- **Release size.** The grammars add parser tables. Measured:
+  - All five release targets build on this branch's workflow_dispatch run
+    (https://github.com/maximarhipkin/ferrule/actions/runs/36224246208).
+  - The x86_64 Linux musl archive grew from 6.81 MB (v0.3.0) to 8.67 MB,
+    and its binary from 16.3 MB to 24.7 MB. That span covers M26–M29.
+  - M29's grammars alone, on a local release build (x86_64 Linux, fat
+    LTO, stripped), are 24.47 MB with them against 19.11 MB with
+    `--no-default-features`: +5.35 MB, +28%.
+  - A packager who doesn't want that builds with `--no-default-features`
+    and keeps `edit_file`, lint, auto-commit and text-only `code_search`.
 
 ## 8. Out of scope
 
