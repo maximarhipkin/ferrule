@@ -1026,6 +1026,7 @@ fn build_agent_from(
             entry.model.clone(),
         )
         .with_guard(guard);
+    let lint_sandbox = sandbox.clone();
     if let (Some(cmd), false) = (&cfg.agent.verify_command, planning) {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(
@@ -1038,7 +1039,19 @@ fn build_agent_from(
     // A planning run fires none: hooks run as the owner, outside the
     // read-only sandbox plan mode promises (docs/m19-trust-cost.md §13).
     if child.is_none() && !planning {
-        agent.add_hooks(hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?);
+        let mut hooks = hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?;
+        // M29: the project's linter after each edit, built in (so a
+        // sub-agent inherits it with the rest), in the sandbox.
+        if cfg.agent.lint == config::LintMode::Auto {
+            hooks.add(
+                ferrule_hooks::LintHook::new(
+                    lint_sandbox,
+                    Duration::from_secs(cfg.agent.lint_timeout_secs.max(1)),
+                )
+                .into_hook(),
+            );
+        }
+        agent.add_hooks(hooks);
     }
     Ok(agent)
 }

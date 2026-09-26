@@ -225,6 +225,26 @@ pub struct AgentSettings {
     /// stays.
     #[serde(default = "default_repo_map_tokens")]
     pub repo_map_tokens: usize,
+    /// M29: after `edit_file`/`write_file`, run the project's own linter
+    /// on the file and append what it reports. `auto`: when it's
+    /// installed and the project has its config file; `off`: never.
+    #[serde(default)]
+    pub lint: LintMode,
+    /// How long one linter run may take.
+    #[serde(default = "default_lint_timeout_secs")]
+    pub lint_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LintMode {
+    #[default]
+    Auto,
+    Off,
+}
+
+fn default_lint_timeout_secs() -> u64 {
+    10
 }
 
 impl Default for AgentSettings {
@@ -236,6 +256,8 @@ impl Default for AgentSettings {
             stream: default_stream(),
             edit_file: true,
             repo_map_tokens: default_repo_map_tokens(),
+            lint: LintMode::Auto,
+            lint_timeout_secs: default_lint_timeout_secs(),
         }
     }
 }
@@ -617,6 +639,8 @@ profile = "openai"
 # stream = true                   # replies grow as the model writes (Telegram, `ferrule chat`)
 # edit_file = true                # offer edit_file (SEARCH/REPLACE); write_file stays either way
 # repo_map_tokens = 1024          # repo map budget in a code repo (tokens); 0 = no map
+# lint = "auto"                   # after an edit, run the project's linter (rustfmt/ruff/gofmt/eslint/tsc) if installed and configured; "off"
+# lint_timeout_secs = 10
 
 # [gateway]
 # local = true                              # enable the stdin/stdout channel

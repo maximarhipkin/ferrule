@@ -337,31 +337,34 @@ current, and the next turn gets the new map.
 ## 3. Per-edit lint (a built-in PostToolUse hook)
 
 `LintHook` implements M18's `HookHandler`. It is added as
-`HookSource::Builtin` with the matcher `edit_file|write_file`, so it runs
-in the ordinary hook pipeline: after user hooks of the same event, it's
-inherited by children, and it's audited. The loop has no special case. It
-reads `tool_input.path`, skips failed calls, and picks a linter by
+`HookSource::Builtin` with the matcher `edit_file|write_file` and goes
+through the ordinary hook pipeline. M18 orders hooks by source, so it runs
+before user and workspace hooks of the same event. It's inherited by
+sub-agents and audited, and the loop has no special case. It reads `tool_input.path`, skips failed calls, and picks a linter by
 extension:
 
 | Files | Linter | Runs when (`lint = "auto"`) |
 |---|---|---|
-| `.rs` | `rustfmt --check --edition 2021 <file>` | a `Cargo.toml` is in the workspace |
-| `.py` | `ruff check --quiet <file>` | a `ruff.toml`/`.ruff.toml`, or `[tool.ruff]` in `pyproject.toml` |
+| `.rs` | `rustfmt --check --edition <Cargo.toml's, else 2021> <file>` | a `Cargo.toml` between the file and the workspace root |
+| `.py` | `ruff check --quiet --no-cache <file>` | a `ruff.toml`/`.ruff.toml`, or `[tool.ruff]` in `pyproject.toml` |
 | `.go` | `gofmt -l -e <file>` | a `go.mod` |
-| `.js .jsx .ts .tsx .mjs .cjs` | `eslint --no-color <file>` | an eslint config file |
-| `.ts .tsx` | `tsc --noEmit -p <dir of tsconfig.json>`, filtered to the edited file | a `tsconfig.json` |
+| `.js .jsx .ts .tsx .mjs .cjs` | `eslint --no-color <file>` | an eslint config file, or `eslintConfig` in `package.json` |
+| `.ts .tsx` | `tsc --noEmit --pretty false -p <dir of tsconfig.json>`, filtered to lines about the edited file | a `tsconfig.json` |
 
+- Each config is looked for from the edited file's directory up to the
+  workspace root, never above it.
 - The binary is looked up in the workspace's `node_modules/.bin` (for
   eslint and tsc) and then on `PATH`.
 - It runs **in the sandbox** (`Sandbox::command`), with a timeout
-  (`[agent] lint_timeout_secs`, default 10). The process group is killed on
-  timeout.
+  (`[agent] lint_timeout_secs`, default 10). The process group (the tree,
+  on Windows) is killed on timeout.
 - Output: stdout and stderr, the first 40 lines. When the linter exits
   non-zero or prints anything, it's returned as `additionalContext`, e.g.
-  `lint (ruff check): …` ("problems in the file after your edit; some may
-  predate it"). M18 appends that to the tool result.
+  ``lint (ruff check) on `src/a.py` — problems in the file after your edit (some
+  may predate it):`` followed by the output. M18 appends that to the tool result.
 - A clean result adds nothing.
-- A timeout adds one line saying so.
+- A timeout adds one line: ``lint (tsc --noEmit) on `a.ts` timed out after 10s;
+  nothing was checked``.
 - **A missing linter is silent.** `ferrule doctor` lists each linter as
   found or not.
 

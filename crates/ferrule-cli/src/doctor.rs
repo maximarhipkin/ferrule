@@ -158,6 +158,37 @@ fn editing_check(r: &mut Report, cfg: &config::Config) {
     } else {
         r.ok("editing", format!("{tools} · {map} · {}", langs.join(", ")));
     }
+    if cfg.agent.lint == config::LintMode::Off {
+        r.note("lint", "off (lint = \"off\")");
+        return;
+    }
+    let (found, missing): (Vec<_>, Vec<_>) = ferrule_hooks::lint::LINTERS
+        .iter()
+        .partition(|(name, _)| ferrule_hooks::lint::on_path(name));
+    let names = |l: &[&(&str, &str)]| {
+        l.iter()
+            .map(|(n, ext)| format!("{n} ({ext})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut line = format!(
+        "after each edit, where the project configures it · found: {}",
+        {
+            let f = names(&found);
+            if f.is_empty() {
+                "none".to_string()
+            } else {
+                f
+            }
+        }
+    );
+    if !missing.is_empty() {
+        line.push_str(&format!(" · not on PATH: {}", names(&missing)));
+    }
+    r.ok("lint", line);
+    if missing.iter().any(|(n, _)| matches!(*n, "eslint" | "tsc")) {
+        r.hint("eslint and tsc are also found in a project's node_modules/.bin");
+    }
 }
 
 /// M20: what's connected and whether logins have a relay to come back by.

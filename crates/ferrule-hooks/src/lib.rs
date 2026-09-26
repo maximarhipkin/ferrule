@@ -11,11 +11,13 @@
 pub mod audit;
 pub mod command;
 pub mod config;
+pub mod lint;
 pub mod trust;
 
 pub use audit::{recent_runs, JsonlAudit};
 pub use command::CommandHook;
 pub use config::{HookEntry, HooksConfig, WorkspaceHooks};
+pub use lint::LintHook;
 pub use trust::{load_workspace, TrustStore, WorkspaceState};
 
 use ferrule_core::lifecycle::{Hook, HookLimits, HookSet, HookSource, Matcher};
