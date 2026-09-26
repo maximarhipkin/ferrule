@@ -270,7 +270,8 @@ fn yes(line: &str) -> bool {
 
 #[derive(Subcommand)]
 pub enum ExtCmd {
-    /// Configured and installed MCP servers, installed skills, their status
+    /// Configured and installed MCP servers, installed skills and plugins,
+    /// their status
     List,
     /// Install requests waiting for approval
     Pending,
@@ -284,16 +285,17 @@ pub enum ExtCmd {
     },
     /// Drop a pending request (nothing of it was fetched)
     Deny { id: String },
-    /// Remove a configured or installed server, or a skill; running agents
-    /// drop it within seconds
+    /// Remove a configured or installed server, a skill or a plugin;
+    /// running agents drop it within seconds
     Remove {
         name: String,
         /// Delete the server's state dir too
         #[arg(long)]
         purge: bool,
     },
-    /// Re-scan a suspended server or skill, show why it was suspended and
-    /// what it offers now, and make it active again on yes. Needs a terminal
+    /// Re-scan a suspended server, skill or plugin, show why it was
+    /// suspended and what it offers now, and make it active again on yes.
+    /// Needs a terminal
     Resume {
         name: String,
         #[arg(long, default_value = ".")]
@@ -421,8 +423,11 @@ pub async fn run(op: ExtCmd) -> Result<()> {
                 return Ok(());
             }
             let m = owner_manager(Path::new("."))?;
-            if m.lock()?.servers.contains_key(&name) {
+            let lock = m.lock()?;
+            if lock.servers.contains_key(&name) {
                 m.remove_server(&name, true, purge).await?;
+            } else if lock.plugins.contains_key(&name) {
+                m.remove_plugin(&name, true).await?;
             } else {
                 m.remove_skill(&name, true).await?;
             }
@@ -442,9 +447,19 @@ pub async fn run(op: ExtCmd) -> Result<()> {
 /// Show the owner what they'd install and ask. A block hit needs the
 /// word `waive`: that approves exactly the flagged text shown, and a
 /// different text later suspends it again.
-fn confirm_at_terminal(review: &Review) -> bool {
+pub(crate) fn confirm_at_terminal(review: &Review) -> bool {
     println!("\n{}", review.what);
     println!("offers: {}", review.items.join(", "));
+    if !review.capabilities.is_empty() {
+        println!("may:");
+        for c in &review.capabilities {
+            if c.starts_with("NEW ") {
+                println!("  \x1b[1;33m{c}\x1b[0m");
+            } else {
+                println!("  {c}");
+            }
+        }
+    }
     if let Some(why) = &review.sandbox_degraded {
         println!("\x1b[1;31mnot fully sandboxed here: {why}\x1b[0m");
     }

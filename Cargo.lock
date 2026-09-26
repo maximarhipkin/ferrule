@@ -686,6 +686,7 @@ dependencies = [
  "ferrule-learn",
  "ferrule-mcp",
  "ferrule-memory",
+ "ferrule-plugins",
  "ferrule-providers",
  "ferrule-proxy",
  "ferrule-sandbox",
@@ -710,6 +711,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "wat",
  "windows-sys 0.61.2",
 ]
 
