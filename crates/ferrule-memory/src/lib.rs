@@ -11,6 +11,9 @@
 //! ([`MemoryStore::set_embedding`], [`MemoryStore::recall_hybrid`]), so this
 //! crate stays free of any model or network code.
 
+#[doc(hidden)]
+pub mod bench;
+
 use rusqlite::{params, Connection};
 use std::path::Path;
 use thiserror::Error;

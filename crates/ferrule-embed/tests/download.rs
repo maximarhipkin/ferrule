@@ -127,3 +127,38 @@ async fn a_matching_file_lands_verifies_and_is_not_fetched_twice() {
     let err = download::verify(&s, dir.path()).unwrap_err();
     assert!(err.contains("download again"), "{err}");
 }
+
+/// The real download from Hugging Face, pinned revision and hashes.
+/// `FERRULE_EMBED_DOWNLOAD_DIR` is where the files go (≈531 MB);
+/// `FERRULE_EXTRA_CA` optionally names a PEM bundle to trust as well
+/// (a TLS-intercepting proxy).
+#[tokio::test]
+#[ignore = "downloads 531 MB: set FERRULE_EMBED_DOWNLOAD_DIR"]
+async fn downloads_the_real_model() {
+    let dir = std::env::var("FERRULE_EMBED_DOWNLOAD_DIR").expect("FERRULE_EMBED_DOWNLOAD_DIR");
+    let mut builder = reqwest::Client::builder();
+    if let Ok(ca) = std::env::var("FERRULE_EXTRA_CA") {
+        for cert in reqwest::Certificate::from_pem_bundle(&std::fs::read(ca).unwrap()).unwrap() {
+            builder = builder.add_root_certificate(cert);
+        }
+    }
+    let spec = download::POTION_MULTILINGUAL;
+    let dir = std::path::Path::new(&dir).join(spec.tag());
+    let started = std::time::Instant::now();
+    download::download(
+        &builder.build().unwrap(),
+        &spec,
+        download::HUGGING_FACE,
+        &dir,
+        |_, _, _| {},
+    )
+    .await
+    .unwrap();
+    println!(
+        "downloaded to {} in {:.1?}",
+        dir.display(),
+        started.elapsed()
+    );
+    download::verify(&spec, &dir).unwrap();
+    assert_eq!(download::presence(&spec, &dir), Presence::Present);
+}
