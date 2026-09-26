@@ -3989,9 +3989,10 @@ pays ~227 more input tokens per call for the schemas (`edit_file` ~205,
   expected cost (~$1–3 with gpt-5-mini) are in `docs/editing.md`.
 - The real linters' output: the tests run stand-in scripts named
   rustfmt, ruff, gofmt, eslint and tsc.
-- Nothing about the release targets: all five built on the branch's
-  `release.yml` run (actions run 36224246208). The grammars add 5.35 MB
-  (+28%) to the stripped binary; `--no-default-features` drops them.
+
+**Release.** All five targets built on the branch's `release.yml` run
+(actions run 36224246208). The grammars add 5.35 MB (+28%) to the stripped
+binary, and `--no-default-features` drops them.
 
 **Open edges:** the saved eval history doesn't record `--edit-tools`; the
 map isn't refreshed mid-run; a workspace that is a subdirectory of a repo
