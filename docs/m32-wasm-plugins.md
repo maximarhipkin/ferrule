@@ -536,6 +536,25 @@ held with these differences:
   (`a_deadline_stops_a_loop`), not a sleeping host op. The deadline is
   checked between fuel slices either way.
 
+**Binary growth.**
+
+The same commit, built with and without the `plugins` feature (x86_64
+Linux gnu, the release profile: fat LTO, stripped):
+
+| build | bytes | gzip -9 |
+|---|---|---|
+| with | 28,279,696 | 9,978,572 |
+| without | 26,985,392 | 9,495,351 |
+| **growth** | **+1,294,304 (+4.8%)** | **+483,221** |
+
+That growth is what §1 measured for wasmi.
+
+`release.yml` was dispatched on this branch, run 36238767723, and all
+five targets built. Its archives are about 1.06–1.24 MB larger than those
+of the M31 dispatch (36232272523). That baseline predates M30's merge, so
+most of the difference is M30's `local-embed`; the paired build above is
+M32's share.
+
 Where the tests are:
 
 | what | where |

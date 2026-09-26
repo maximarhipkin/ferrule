@@ -17,7 +17,7 @@ grammars = ["ferrule-codemap/default"]
 # Without it, `local` falls back to keyword recall and doctor says so.
 local-embed = ["ferrule-embed/local"]
 # M32: the WASM interpreter (wasmi) that runs tool plugins. Without it
-# plugins still install and list, but none loads, and doctor says so.
+# installed plugins still list, but none loads or installs, and doctor says so.
 plugins = ["ferrule-plugins/runtime"]
 
 [dependencies]
