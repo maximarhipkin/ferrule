@@ -80,11 +80,11 @@ impl Entry {
 
     /// The harness profile, with the model's own window if it has one.
     pub fn harness(&self) -> HarnessProfile {
-        let mut p = HarnessProfile::by_name(&self.profile);
-        if let Some(w) = self.context_window {
-            p.context_window = w;
+        let p = HarnessProfile::by_name(&self.profile);
+        match self.context_window {
+            Some(w) => p.fitted(w),
+            None => p,
         }
-        p
     }
 
     pub fn key(&self) -> Option<String> {

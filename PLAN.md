@@ -663,6 +663,33 @@ that convention yet — ask before introducing one).
       idempotent; own JSON5 and YAML-subset readers. `ferrule setup`
       offers it when it finds either tool.
     - **Decisions for Max and open edges:** see the M33 session-log entry.
+  - **M34 SSH workspaces and local-model first run**: **built**
+    (2026-09-26, branch `m34-ssh-local`, PR to main open, not merged).
+    Design and as-built notes are in `docs/m34-ssh-local.md`; the user
+    guides are `docs/ssh.md` and `docs/local-models.md`.
+    - `ferrule-ssh`: a remote workspace over the system `ssh` (measured
+      against russh and ssh2: zero growth, 14 ms a command multiplexed).
+      `workspace = "ssh:<name>"` / `[ssh.<name>]` or `ssh://user@host/path`;
+      `shell`, `read_file`, `write_file`, `edit_file` and `list_dir` run
+      there under the same names, limits, deny patterns and M18/M19/M26
+      rules. `code_search`, the repo map, per-edit lint and auto-commit
+      are off, with notes.
+    - Strict host keys: first contact only through setup or `ferrule ssh
+      trust` (fingerprint shown, or `--fingerprint`), a changed key is a
+      hard stop. ferrule never reads a key or passphrase. The remote
+      account is the boundary, and setup, doctor and the docs say so.
+    - A nonce-marked wrapper tells never-started (retried with backoff)
+      from interrupted (never retried); a watchdog kills the remote
+      process group on `/stop` or a timeout. The credential proxy reaches
+      remote commands through `ssh -R`, public API only.
+    - Local models: Ollama, llama.cpp, LM Studio and vLLM are detected;
+      the real window is compared with the planned one, with each
+      server's fix (an Ollama derived model, only on a yes); a tool probe
+      tells "can't call tools" from "template broken";
+      `HarnessProfile::fitted` for small windows; a dated known-good list.
+    - Surfaces: setup steps, `ferrule ssh list|trust|test`, doctor,
+      `/status` and dashboard problems for both.
+    - **Decisions for Max and open edges:** see the M34 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -4283,3 +4310,65 @@ own CA is there. It now checks for the model's planted content instead.
 egress denials as span events; `ferrule telemetry replay`; importing MCP
 server definitions, scheduled jobs and OpenClaw's SQLite pairing
 approvals; Unix sockets on Windows.
+
+### 2026-09-26 — M34 SSH workspaces and local-model first run (Devi, Opus 5.5)
+
+Branch `m34-ssh-local`. Design and as-built notes are in
+`docs/m34-ssh-local.md`; the user guides are `docs/ssh.md` and
+`docs/local-models.md`, with pointers from `docs/sandbox.md` and
+`docs/models.md`.
+
+**Built:**
+- `edit_file`'s hunk matching as a byte-level `edit_bytes`, so the remote
+  edit applies hunks with the same code.
+- `ferrule-ssh`: targets (`ssh:<name>`, `ssh://…`), the link (a
+  ControlMaster on Unix that also holds the proxy's `-R`, reconnect with
+  backoff, nonce markers, the process-group watchdog), the stderr failure
+  classes, host-key trust through keyscan and fingerprints, and the five
+  remote tools with the M26 deny list resolved on the remote.
+- Tests against a real `sshd` on 127.0.0.1: tools, trust, a changed key,
+  auth, a dropped connection, `/stop`, the timeout and caps, and the proxy
+  forward. Linux CI requires them.
+- The CLI: `workspace`/`--workspace`, `ferrule ssh list|trust|test`, a
+  setup step, doctor checks per host, the `/status` line, and an e2e run
+  that greps the transcript, ledger and logs for the test key.
+- Local models: detection of Ollama, llama.cpp, LM Studio (REST v1 and
+  v0) and vLLM; each model's trained and effective window against the
+  planned one, with each server's fix; the tool probe; the Ollama derived
+  model on a yes; `HarnessProfile::fitted`; the dated known-good list;
+  doctor, setup and `/status`.
+- The dashboard's health lists a down link and the local-model problems,
+  each with its fix.
+
+**Decisions for Max:**
+- The system `ssh` over russh or ssh2: no growth, no native build
+  dependency, and it honours the user's agent, ssh config, jump hosts and
+  hardware keys (design §1). Windows pays a handshake per command.
+- Tasks and sub-agents follow the parent's remote and share its directory.
+  A per-task workspace and remote worktrees are follow-ups.
+- Plan mode, `read-only` and read-only children get **no** remote shell,
+  since the local sandbox can't hold a remote one to reading.
+- The Ollama fix is a derived `<model>-32k` model made only on a yes;
+  `OLLAMA_CONTEXT_LENGTH` is printed, never set. ferrule's OpenAI
+  endpoint can't pass `num_ctx` per request.
+- A window smaller than the planned one is a doctor **failure**, not a
+  warning: it's the silent-truncation case.
+- The known-good list is the Ollama library's `tools`-tagged models on
+  2026-09-26, not measured here (no GPU).
+- `fitted()` isn't applied in the eval's own window path, so the eval
+  can't move.
+
+**Checks.** 1225 tests after merging main (M33), 18 ignored, with the
+sshd tests required; fmt and
+clippy `-D warnings` are clean. The starter eval against the mock through
+the real binary is unchanged: engineered 20/20, naive 11/20, $0.98.
+
+**Unverified live:** a real remote host across a real network (only
+127.0.0.1 sshd), the Windows OpenSSH path (CI runs only the tests that
+need no sshd), and real Ollama, llama.cpp, LM Studio and vLLM servers
+(mocks with the documented API shapes). The macOS sshd tests run only if
+the runner's sshd starts unprivileged.
+
+**Open edges:** setup's local-model check runs in "Add a provider" and
+not in "Change the model"; `/status` watches the default model only; no
+remote sandbox, remote `code_search`, per-task workspace or streaming.

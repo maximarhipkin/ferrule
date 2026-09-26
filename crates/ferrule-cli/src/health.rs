@@ -118,11 +118,22 @@ pub fn build(
             )
             .with_stall_hook(Arc::new(move |session: &str| stalls.stalled(session)));
     }
+    // M34: the default model's local server — its window, and whether it
+    // calls tools; lines only when something's wrong.
+    if let Some(local) = crate::local::status_section(cfg) {
+        health = health.with_section("local model", local);
+    }
     if let Some(conns) = crate::connections::shared(cfg) {
         health = health.with_section(
             "connections",
             Arc::new(move || crate::connections::status_lines(&conns)),
         );
+    }
+    // M34: the remote workspace's link, from its last state (no round trip).
+    if crate::remote::current().is_some() {
+        health = health
+            .with_section("workspace", Arc::new(crate::remote::status_lines))
+            .with_probe(Arc::new(crate::remote::probe));
     }
     if let Ok(Some(url)) = cfg.telemetry.traces_url() {
         health = health.with_section(

@@ -503,6 +503,13 @@ pub struct Config {
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// M34: the workspace when `--workspace` isn't given: a local path, or
+    /// a remote one (`ssh:<name>`, `ssh://[user@]host[:port]/path`).
+    #[serde(default)]
+    pub workspace: Option<String>,
+    /// M34: remote workspaces by name, `[ssh.<name>]` (docs/ssh.md).
+    #[serde(default)]
+    pub ssh: BTreeMap<String, ferrule_ssh::HostConfig>,
     /// M33: where ferrule's requests, and commands' through the proxy, may
     /// go (docs/egress.md).
     #[serde(default)]
@@ -1158,6 +1165,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # the private secrets file `ferrule setup` keeps (a real env var wins).
 
 default_provider = "kimi"
+# workspace = "ssh:app"      # the workspace when --workspace isn't given: a
+#                            # path, or a remote one from [ssh.<name>] below
 
 [providers.kimi]
 base_url = "https://api.moonshot.ai/v1"
@@ -1413,6 +1422,15 @@ profile = "openai"
 # telegram_conflict_secs = 60 # Telegram's 409 Conflict (another program polling
 #                            # with the token, or a webhook) this long: one
 #                            # message to the owner, and one when it clears.
+
+# [ssh.app]                  # M34 (docs/ssh.md): a remote workspace. The shell
+# host = "app.example.com"   # and file tools run there over the system ssh;
+# user = "ferrule"           # `--workspace ssh:app` or workspace = "ssh:app".
+# port = 22                  # The remote ACCOUNT is the boundary: ferrule's
+# path = "/srv/app"          # sandbox doesn't reach it. Use a dedicated,
+# identity_file = "~/.ssh/ferrule_ed25519"  # low-privilege user. Host keys are
+#                            # strict: trust one with `ferrule ssh trust app`.
+# ssh_config = "~/.ssh/ferrule_config"  # used instead of ~/.ssh/config (ssh -F)
 "#;
 
 /// `~/.config/ferrule/config.toml` (or the platform's equivalent).
@@ -1555,6 +1573,28 @@ mod tests {
         assert_eq!(s.key_env.as_deref(), Some("BRAVE_API_KEY"));
         let rule = ferrule_proxy::SecretRule::from(&cfg.secrets["BRAVE_API_KEY"]);
         assert_eq!(rule.hosts, ["api.search.brave.com"]);
+    }
+
+    #[test]
+    fn example_ssh_block_parses_uncommented() {
+        let start = EXAMPLE_CONFIG.find("# [ssh.app]").unwrap();
+        let end = EXAMPLE_CONFIG[start..]
+            .find("\n\n")
+            .map_or(EXAMPLE_CONFIG.len(), |e| start + e);
+        let uncommented: String = EXAMPLE_CONFIG[start..end]
+            .lines()
+            .map(|l| format!("{}\n", l.strip_prefix("# ").unwrap_or(l)))
+            .collect();
+        let text = format!("workspace = \"ssh:app\"\n{uncommented}");
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.workspace.as_deref(), Some("ssh:app"));
+        let t = ferrule_ssh::Target::parse("ssh:app", &cfg.ssh).unwrap();
+        assert_eq!(t.host, "app.example.com");
+        assert_eq!(t.user.as_deref(), Some("ferrule"));
+        assert_eq!(t.path, "/srv/app");
+        // A misspelt key is an error, not a silently ignored setting.
+        let bad = "[ssh.app]\nhost = \"h\"\npath = \"/p\"\nidentityfile = \"k\"\n";
+        assert!(toml::from_str::<Config>(bad).is_err());
     }
 
     #[test]

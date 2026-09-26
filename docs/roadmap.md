@@ -710,6 +710,27 @@ fails in the sandbox; a turn shows up as a trace in Jaeger; and an
 OpenClaw or Hermes user runs one command to bring their memories and
 allowlists over, twice, with nothing changing the second time.
 
+### M34 — SSH workspaces and local-model first run
+
+**Status.** Built (`docs/m34-ssh-local.md`; user guides `docs/ssh.md` and
+`docs/local-models.md`). PR to `main` open, not merged.
+- The workspace can be a directory on another machine: the shell and file
+  tools run there over the system `ssh`, and everything else stays local.
+  Host keys are never trusted silently, a changed key is a hard stop, and
+  ferrule never touches a private key. The remote account is the
+  boundary.
+- A dropped connection interrupts a command rather than retrying it;
+  `/stop` kills the remote process group; the credential proxy reaches
+  remote commands through `ssh -R`.
+- Ollama, llama.cpp, LM Studio and vLLM are found by setup and doctor.
+  The window the server really gives is checked against the one ferrule
+  plans for, with the fix, and a probe tells a model that can't call
+  tools from a broken chat template.
+
+**Done means.** The agent edits and tests a project on a remote host
+without the owner's key ever leaving ssh, and a first run against a local
+Ollama either works or says exactly which window or template to fix.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

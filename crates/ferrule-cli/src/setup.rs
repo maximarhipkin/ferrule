@@ -8,6 +8,8 @@
 //! comments and layout.
 
 mod channels;
+mod local;
+mod remote;
 
 use crate::{browser, config, probe, secrets, service};
 use anyhow::{anyhow, bail, Context, Result};
@@ -155,6 +157,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Browser              {}", browser_summary(&cfg)),
             format!("MCP servers          {}", mcp_summary(&cfg)),
             format!("Import               {}", crate::import::setup_summary()),
+            format!("Remote workspace     {}", remote::summary(&cfg)),
             format!("Background service   {}", service_summary(&service)),
             "Done".to_string(),
         ];
@@ -181,7 +184,8 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             9 => browser_step(t),
             10 => crate::mcp_add::setup_step(t, false).await,
             11 => crate::import::setup_step(t, false).await,
-            12 => service_step(t, false),
+            12 => remote::step(t).await,
+            13 => service_step(t, false),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -806,15 +810,19 @@ async fn provider_step(t: &mut Target, http: &reqwest::Client, guided: bool) -> 
 
 async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
     let cfg = t.config()?;
-    let mut labels: Vec<&str> = PRESETS.iter().map(|p| p.label).collect();
-    labels.push("Another OpenAI-compatible server (vLLM, LM Studio, a gateway…)");
+    // M34: local servers running here come first, with what they serve.
+    let servers = interruptible(local::found(http, &cfg)).await?;
+    let mut labels: Vec<String> = servers.iter().map(local::label).collect();
+    labels.extend(PRESETS.iter().map(|p| p.label.to_string()));
+    labels.push("Another OpenAI-compatible server (vLLM, LM Studio, a gateway…)".into());
     let pick = Select::new("Which model provider?", labels)
-        .with_page_size(PRESETS.len() + 1)
+        .with_page_size(servers.len() + PRESETS.len() + 1)
         .raw_prompt()?
         .index;
-    let mut np = match PRESETS.get(pick) {
-        Some(preset) => NewProvider::from_preset(preset),
-        None => ask_custom_provider(&cfg)?,
+    let mut np = match (servers.get(pick), pick.checked_sub(servers.len())) {
+        (Some(server), _) => local::provider(server),
+        (None, Some(i)) if i < PRESETS.len() => NewProvider::from_preset(&PRESETS[i]),
+        _ => ask_custom_provider(&cfg)?,
     };
     if cfg.providers.contains_key(&np.name) {
         info(format!("You have `{}` already; this updates it.", np.name));
@@ -823,11 +831,21 @@ async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
         info(ANTHROPIC_NOTE);
     }
     let (key, models) = ask_provider_key(http, &np).await?;
+    if !np.needs_key {
+        local::describe_models(http, &np.base_url).await;
+    }
     np.model = pick_model(&models, &np.model)?;
     if let Some(key) = &key {
         t.set_secret(&np.key_env, key)?;
     }
     write_provider(t.root(), &np)?;
+    if !np.needs_key {
+        let probe_key = key
+            .clone()
+            .or_else(|| std::env::var(&np.key_env).ok())
+            .unwrap_or_else(|| "none".into());
+        local::fit(t, http, &mut np, &probe_key).await?;
+    }
     let default = crate::models::Catalog::from_config(&cfg)
         .default_entry()
         .ok()
