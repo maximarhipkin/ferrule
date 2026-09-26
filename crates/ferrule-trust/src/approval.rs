@@ -6,6 +6,7 @@
 //! question in the chat, so nothing waits on a reply that meant something
 //! else. A message that could mean either of two questions approves neither.
 
+use crate::chat::ChatRef;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -26,7 +27,7 @@ pub enum Answer {
 
 struct Pending {
     code: String,
-    chat: i64,
+    chat: ChatRef,
     what: String,
     tx: oneshot::Sender<Answer>,
 }
@@ -34,7 +35,7 @@ struct Pending {
 #[derive(Default)]
 struct Inner {
     pending: Vec<Pending>,
-    expired: VecDeque<(String, i64, Instant)>,
+    expired: VecDeque<(String, ChatRef, Instant)>,
     counter: u64,
 }
 
@@ -70,7 +71,12 @@ fn parse(text: &str) -> Said {
 
 impl Approvals {
     /// A new question for `chat`: its code, and where the answer arrives.
-    pub fn open(&self, chat: i64, what: &str) -> (String, oneshot::Receiver<Answer>) {
+    pub fn open(
+        &self,
+        chat: impl Into<ChatRef>,
+        what: &str,
+    ) -> (String, oneshot::Receiver<Answer>) {
+        let chat = chat.into();
         let mut inner = self.inner.lock().unwrap();
         let (tx, rx) = oneshot::channel();
         let code = loop {
@@ -113,7 +119,8 @@ impl Approvals {
         }
     }
 
-    pub fn pending_in(&self, chat: i64) -> usize {
+    pub fn pending_in(&self, chat: impl Into<ChatRef>) -> usize {
+        let chat = chat.into();
         let inner = self.inner.lock().unwrap();
         inner.pending.iter().filter(|p| p.chat == chat).count()
     }
@@ -121,7 +128,8 @@ impl Approvals {
     /// Reads a message from `chat` as an answer. `Some(reply)` means it was
     /// one (the reply goes back to the chat, the message goes no further);
     /// `None` means it's an ordinary message.
-    pub fn answer(&self, chat: i64, text: &str) -> Option<String> {
+    pub fn answer(&self, chat: impl Into<ChatRef>, text: &str) -> Option<String> {
+        let chat = chat.into();
         let mut inner = self.inner.lock().unwrap();
         let said = parse(text);
         let here: Vec<usize> = (0..inner.pending.len())

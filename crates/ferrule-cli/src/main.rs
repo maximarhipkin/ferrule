@@ -35,8 +35,8 @@ use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
 use ferrule_core::{Agent, AgentConfig, AgentEvent, Delta, DeltaSink, ToolContext, Transcript};
 use ferrule_gateway::{
-    Channel, Gateway, LocalChannel, NewTask, Router, RunOutcome, Scheduler, StreamPacing, TaskKind,
-    TaskStore, TelegramChannel,
+    Channel, DiscordChannel, Gateway, LocalChannel, NewTask, Router, RunOutcome, Scheduler,
+    SlackChannel, StreamPacing, TaskKind, TaskStore, TelegramChannel,
 };
 use ferrule_mcp::McpServerConfig;
 use ferrule_memory::MemoryStore;
@@ -512,12 +512,15 @@ fn main() -> Result<()> {
     // thread 1 MiB of stack where Linux gives 8, and an agent turn's
     // future (streaming, a parallel tool batch) outgrew 1 MiB in a debug
     // build, so the runtime runs on a thread with Linux's 8 MiB everywhere.
+    // Its workers too: they poll the gateway's turns, and on Windows those
+    // outgrew tokio's 2 MiB once the Discord and Slack channels came in (M31).
     std::thread::Builder::new()
         .name("ferrule-main".into())
         .stack_size(8 << 20)
         .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
+                .thread_stack_size(8 << 20)
                 .build()?
                 .block_on(dispatch(cli.cmd))
         })?
@@ -1166,9 +1169,18 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     policy
         .secret_vars
         .extend(cfg.providers.values().map(|p| p.api_key_env.clone()));
-    policy
-        .secret_vars
-        .extend(cfg.gateway.telegram_token_env.clone());
+    let g = &cfg.gateway;
+    policy.secret_vars.extend(
+        [
+            &g.telegram_token_env,
+            &g.discord_token_env,
+            &g.slack_bot_token_env,
+            &g.slack_app_token_env,
+        ]
+        .into_iter()
+        .flatten()
+        .cloned(),
+    );
     // Commands get these back as placeholders, from the credential proxy.
     policy.secret_vars.extend(cfg.secrets.keys().cloned());
     policy.hidden.extend(hidden_paths());
@@ -1699,14 +1711,38 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// The channels whose replies stream (M27): Telegram when
-/// `[gateway] telegram_stream`, or else `[agent] stream`, says so.
+/// The channels whose replies stream (M27): each chat channel when its
+/// `[gateway] <channel>_stream`, or else `[agent] stream`, says so.
 fn streaming_channels(cfg: &config::Config) -> Vec<String> {
-    let telegram = cfg.gateway.telegram_stream.unwrap_or(cfg.agent.stream);
-    telegram
-        .then(|| "telegram".to_string())
-        .into_iter()
-        .collect()
+    let g = &cfg.gateway;
+    [
+        ("telegram", g.telegram_stream),
+        ("discord", g.discord_stream),
+        ("slack", g.slack_stream),
+    ]
+    .into_iter()
+    .filter(|(_, on)| on.unwrap_or(cfg.agent.stream))
+    .map(|(name, _)| name.to_string())
+    .collect()
+}
+
+/// A token from the env var `[gateway] <key>` names.
+fn channel_token(env_var: &str, key: &str) -> Result<String> {
+    std::env::var(env_var).map_err(|_| {
+        anyhow!("env var `{env_var}` not set (needed by [gateway].{key}) — run `ferrule setup`, or export it")
+    })
+}
+
+/// A channel's allowed users, with the owner's chat on it added: the owner
+/// always gets through, as on Telegram.
+fn with_owner(cfg: &config::Config, channel: &str, users: &[String]) -> Vec<String> {
+    let mut users = users.to_vec();
+    for o in trust::owners(cfg) {
+        if o.channel == channel && !users.contains(&o.chat) {
+            users.push(o.chat);
+        }
+    }
+    users
 }
 
 /// Builds every channel enabled in `[gateway]`, keyed by channel name. Shared
@@ -1734,6 +1770,36 @@ fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channe
                 )),
         );
         named_channels.insert(telegram.name().to_string(), telegram);
+    }
+
+    let g = &cfg.gateway;
+    if let Some(env_var) = &g.discord_token_env {
+        let token = channel_token(env_var, "discord_token_env")?;
+        let discord: Arc<dyn Channel> = Arc::new(
+            DiscordChannel::with_api(token, g.discord_api_url.clone()).with_allowed(
+                with_owner(cfg, "discord", &g.discord_allowed_users),
+                g.discord_allowed_channels.clone(),
+            ),
+        );
+        named_channels.insert(discord.name().to_string(), discord);
+    }
+
+    match (&g.slack_bot_token_env, &g.slack_app_token_env) {
+        (Some(bot), Some(app)) => {
+            let bot = channel_token(bot, "slack_bot_token_env")?;
+            let app = channel_token(app, "slack_app_token_env")?;
+            let slack: Arc<dyn Channel> = Arc::new(
+                SlackChannel::with_api(bot, app, g.slack_api_url.clone()).with_allowed(
+                    with_owner(cfg, "slack", &g.slack_allowed_users),
+                    g.slack_allowed_channels.clone(),
+                ),
+            );
+            named_channels.insert(slack.name().to_string(), slack);
+        }
+        (None, None) => {}
+        _ => bail!(
+            "Slack needs both [gateway] slack_bot_token_env (xoxb-) and slack_app_token_env (xapp-, for Socket Mode) — run `ferrule setup`"
+        ),
     }
 
     Ok(named_channels)
@@ -1808,7 +1874,28 @@ async fn run_gateway(
 
     let named_channels = build_channels(&cfg)?;
     if named_channels.is_empty() {
-        bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true` and/or `telegram_token_env` in the config");
+        bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true`, `telegram_token_env`, `discord_token_env` or `slack_bot_token_env` in the config");
+    }
+    for (name, users, key) in [
+        (
+            "discord",
+            &cfg.gateway.discord_allowed_users,
+            "discord_allowed_users",
+        ),
+        (
+            "slack",
+            &cfg.gateway.slack_allowed_users,
+            "slack_allowed_users",
+        ),
+    ] {
+        if named_channels.contains_key(name)
+            && users.is_empty()
+            && !trust::owners(&cfg).iter().any(|o| o.channel == name)
+        {
+            tracing::warn!(
+                "{key} is empty: {name} answers nobody's DMs. Run `ferrule setup` to pair, or add a user id to [gateway] {key}"
+            );
+        }
     }
     if named_channels.contains_key("telegram") && cfg.gateway.telegram_allowed_chats.is_empty() {
         tracing::warn!(
@@ -1817,7 +1904,12 @@ async fn run_gateway(
         );
     }
     let adapters: Vec<Arc<dyn Channel>> = named_channels.values().cloned().collect();
-    let telegram = named_channels.get("telegram").cloned();
+    // The chat channels the owner can be reached on (M31).
+    let chat_channels: HashMap<String, Arc<dyn Channel>> = named_channels
+        .iter()
+        .filter(|(name, _)| trust::is_chat_channel(name))
+        .map(|(name, ch)| (name.clone(), ch.clone()))
+        .collect();
 
     // Arc'd so the same router serves both the gateway's channel adapters
     // and the scheduler's task-triggered turns — one router, two front
@@ -1842,7 +1934,8 @@ async fn run_gateway(
         Duration::from_secs(cfg.scheduler.gate_timeout_secs),
         cfg.scheduler.gate_workspace.clone(),
     )?;
-    // M19: the owner's warnings and questions go out through Telegram, and
+    // M19: the owner's warnings and questions go out through the owner's
+    // chat channels (M31), and
     // the scheduler waits while the kill switch is on.
     let hub = trust::hub(&cfg)?;
     let health = Arc::new(health::build(
@@ -1852,11 +1945,9 @@ async fn run_gateway(
             .ok()
             .map(Arc::new),
     )?);
-    hub.set_notifier(
-        telegram
-            .clone()
-            .map(|t| Arc::new(trust::ChannelNotifier(t)) as Arc<dyn ferrule_trust::Notifier>),
-    );
+    hub.set_notifier((!chat_channels.is_empty()).then(|| {
+        Arc::new(trust::ChannelNotifier(chat_channels.clone())) as Arc<dyn ferrule_trust::Notifier>
+    }));
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = Arc::new(learn::register(
         &cfg,
@@ -1874,9 +1965,24 @@ async fn run_gateway(
         })
     };
 
-    connections::attach(&cfg, telegram.clone(), &router);
+    connections::attach(&cfg, chat_channels.clone(), &router);
     let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
-    let plan = plan::telegram(router.clone(), hub.clone(), telegram, workspace.clone());
+    let plan = plan::chats(
+        router.clone(),
+        hub.clone(),
+        chat_channels,
+        workspace.clone(),
+    );
+    // M29's `/undo` from the owner's chat, like `ferrule undo`.
+    let undo: Arc<dyn Fn() -> String + Send + Sync> = {
+        let dir = workspace.clone();
+        Arc::new(move || {
+            config::Config::load()
+                .and_then(|(cfg, _)| shared_sandbox(&cfg))
+                .and_then(|sandbox| autocommit::undo(&dir, sandbox))
+                .unwrap_or_else(|e| format!("Nothing was undone: {e:#}"))
+        })
+    };
     let lanes = Arc::downgrade(&router);
     // M22: the page on 127.0.0.1, and `/dashboard` before every other door.
     let dash = if cfg.dashboard.enabled {
@@ -1927,6 +2033,7 @@ async fn run_gateway(
         .with_interceptor(Arc::new(trust::OwnerDoor {
             hub: hub.clone(),
             plan: Some(plan),
+            undo: Some(undo),
         }))
         .with_interceptor(Arc::new(settings_door::SettingsDoor {
             settings: settings_admin::Settings::new(

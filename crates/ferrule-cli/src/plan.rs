@@ -1,5 +1,5 @@
 //! M19 plan mode in the binary: `ferrule run --plan`, `ferrule plan …`
-//! and `/plan` in Telegram (docs/m19-trust-cost.md §8). The exploration
+//! and `/plan` in a chat (docs/m19-trust-cost.md §8). The exploration
 //! runs with the tree marked planning, so every agent built for it is
 //! read-only; the approved plan runs in the same session, with the normal
 //! tools and gates.
@@ -8,8 +8,9 @@ use crate::{config, trust, RootRun};
 use anyhow::{anyhow, Result};
 use ferrule_gateway::{Channel, InboundMessage, OutboundMessage, Router};
 use ferrule_trust::plan::execution_prompt;
-use ferrule_trust::{Hub, Plan, PlanStatus, PlanStore, Route};
+use ferrule_trust::{ChatRef, Hub, Plan, PlanStatus, PlanStore, Route};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -246,22 +247,22 @@ pub async fn cmd(op: PlanCmd) -> Result<()> {
     Ok(())
 }
 
-/// `/plan <task>` from a Telegram chat: returns the acknowledgement and
-/// runs the rest in the background — explore read-only in a session of
+/// `/plan <task>` from a chat on any channel: returns the acknowledgement
+/// and runs the rest in the background — explore read-only in a session of
 /// its own (`plan__<id>`, on a channel nothing listens to), ask the owner
 /// chat, and on `yes` run the plan there and send the answer to the chat
-/// that asked.
-pub fn telegram(
+/// that asked, on its own channel.
+pub fn chats(
     router: Arc<Router>,
     hub: Arc<Hub>,
-    telegram: Option<Arc<dyn Channel>>,
+    channels: HashMap<String, Arc<dyn Channel>>,
     workspace: PathBuf,
-) -> Arc<dyn Fn(i64, String) -> String + Send + Sync> {
+) -> Arc<dyn Fn(ChatRef, String) -> String + Send + Sync> {
     Arc::new(move |chat, task| {
-        tokio::spawn(telegram_plan(
+        tokio::spawn(chat_plan(
             router.clone(),
             hub.clone(),
-            telegram.clone(),
+            channels.get(&chat.channel).cloned(),
             workspace.clone(),
             chat,
             task,
@@ -270,22 +271,23 @@ pub fn telegram(
     })
 }
 
-async fn telegram_plan(
+async fn chat_plan(
     router: Arc<Router>,
     hub: Arc<Hub>,
-    telegram: Option<Arc<dyn Channel>>,
+    channel: Option<Arc<dyn Channel>>,
     workspace: PathBuf,
-    chat: i64,
+    chat: ChatRef,
     task: String,
 ) {
     let say = |text: String| {
-        let telegram = telegram.clone();
+        let channel = channel.clone();
+        let chat_id = chat.chat.clone();
         async move {
-            if let Some(ch) = telegram {
+            if let Some(ch) = channel {
                 let _ = ch
                     .send(OutboundMessage {
                         channel: ch.name().to_string(),
-                        chat_id: chat.to_string(),
+                        chat_id,
                         text,
                         reply_to: None,
                         attachments: vec![],
@@ -294,16 +296,16 @@ async fn telegram_plan(
             }
         }
     };
-    if let Err(e) = telegram_plan_inner(&router, &hub, &workspace, chat, &task, &say).await {
+    if let Err(e) = chat_plan_inner(&router, &hub, &workspace, &chat, &task, &say).await {
         say(format!("/plan failed: {e}")).await;
     }
 }
 
-async fn telegram_plan_inner<F, Fut>(
+async fn chat_plan_inner<F, Fut>(
     router: &Router,
     hub: &Hub,
     workspace: &Path,
-    chat: i64,
+    chat: &ChatRef,
     task: &str,
     say: &F,
 ) -> Result<()>
@@ -316,13 +318,17 @@ where
     trust::seat(
         &sid,
         Route::Owner {
-            chat_label: format!("the plan asked for in Telegram chat {chat}"),
+            chat_label: format!(
+                "the plan asked for in {} chat {}",
+                chat.channel_title(),
+                chat.chat
+            ),
         },
     );
     let turn = |text: String| InboundMessage {
         channel: PLAN_CHANNEL.into(),
         chat_id: pid.clone(),
-        sender: chat.to_string(),
+        sender: chat.chat.clone(),
         sender_id: None,
         message_id: String::new(),
         text,
@@ -355,11 +361,12 @@ where
         "plan_proposed",
         &plan,
         hub.run_id(&sid).as_deref(),
-        json!({"route": "telegram", "chat": chat}),
+        json!({"route": chat.channel, "chat": chat.audit_value()}),
     );
     let question = format!(
-        "Plan {} (asked in chat {chat}):\n\n{}\n\nTask: {task}",
+        "Plan {} (asked in chat {}):\n\n{}\n\nTask: {task}",
         plan.id,
+        chat.chat,
         plan.text.trim()
     );
     let timeout = Duration::from_secs(hub.config().plan_timeout_secs);
@@ -374,7 +381,13 @@ where
     let plan = store
         .decide(&plan.id, PlanStatus::Approved)
         .map_err(|e| anyhow!(e))?;
-    record(hub, "plan_approved", &plan, None, json!({"by": "telegram"}));
+    record(
+        hub,
+        "plan_approved",
+        &plan,
+        None,
+        json!({"by": chat.channel}),
+    );
     say(format!("Plan {} approved; running it.", plan.id)).await;
     let ran = router
         .dispatch_and_wait(turn(execution_prompt(&plan)))

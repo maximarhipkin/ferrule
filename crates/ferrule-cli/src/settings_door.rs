@@ -1,4 +1,4 @@
-//! `/caps`, `/mcp` and `/skills` in Telegram (docs/m24-dashboard-2.md §3),
+//! `/caps`, `/mcp` and `/skills` in a chat (docs/m24-dashboard-2.md §3),
 //! owner only: the same operations as the dashboard and the CLI.
 
 use crate::models::Retire;
@@ -28,11 +28,7 @@ const HOOKS: &str = "Workspace hooks are trusted on the dashboard (Extensions, w
 
 impl SettingsDoor {
     fn is_owner(&self, msg: &InboundMessage) -> bool {
-        let Some(owner) = self.hub.owner() else {
-            return false;
-        };
-        msg.chat_id.parse::<i64>().ok() == Some(owner)
-            || msg.sender_id.as_deref().and_then(|s| s.parse::<i64>().ok()) == Some(owner)
+        crate::trust::owner_in(&self.hub, msg).is_some()
     }
 
     fn caps(&self, words: &[&str], by: &str) -> anyhow::Result<String> {
@@ -137,7 +133,7 @@ impl SettingsDoor {
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for SettingsDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-        if msg.channel != "telegram" {
+        if !crate::trust::is_chat_channel(&msg.channel) {
             return None;
         }
         let mut words = msg.text.split_whitespace();
@@ -150,7 +146,7 @@ impl ferrule_gateway::Interceptor for SettingsDoor {
             return Some("Only the owner can change settings.".into());
         }
         let words: Vec<&str> = words.collect();
-        let by = format!("telegram chat {}", msg.chat_id);
+        let by = format!("{} chat {}", msg.channel, msg.chat_id);
         let result = match cmd.as_str() {
             "/caps" => self.caps(&words, &by),
             "/mcp" => self.mcp(&words, &by),

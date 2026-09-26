@@ -1,4 +1,4 @@
-//! `/dashboard` and `/dashboard off` in Telegram, answered by the gateway
+//! `/dashboard` and `/dashboard off` in a chat, answered by the gateway
 //! itself like `/status`: no model, no lane, so it works mid-turn, with the
 //! kill switch on or every model down (docs/m22-dashboard.md §1).
 
@@ -14,12 +14,7 @@ pub struct DashboardDoor {
 
 impl DashboardDoor {
     fn owner_chat(&self, msg: &InboundMessage) -> Option<bool> {
-        let owner = self.hub.owner()?;
-        if msg.chat_id.parse::<i64>().ok() == Some(owner) {
-            return Some(true);
-        }
-        let sender = msg.sender_id.as_deref().and_then(|s| s.parse::<i64>().ok());
-        (sender == Some(owner)).then_some(false)
+        crate::trust::owner_in(&self.hub, msg)
     }
 }
 
@@ -41,7 +36,7 @@ pub fn link_text(dash: &Dashboard, link: &str, remote: bool) -> String {
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for DashboardDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
-        if msg.channel != "telegram" {
+        if !crate::trust::is_chat_channel(&msg.channel) {
             return None;
         }
         let t = msg.text.trim();

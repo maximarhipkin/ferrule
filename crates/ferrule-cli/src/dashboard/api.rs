@@ -173,6 +173,15 @@ pub fn health(ctx: &Ctx) -> Value {
                 "section": "health",
             }));
         }
+        for c in &live.channels {
+            if let Some(p) = c.problem() {
+                problems.push(json!({
+                    "what": format!("{}: {}", c.name(), ctx.redactor.redact(&p)),
+                    "fix": format!("`ferrule doctor` checks the {} token and setup; docs/{}.md has the steps.", c.name(), c.name()),
+                    "section": "health",
+                }));
+            }
+        }
         let channels: Vec<Value> = live
             .channels
             .iter()
@@ -182,6 +191,8 @@ pub fn health(ctx: &Ctx) -> Value {
                     "polls": c.polls(),
                     "last_ok_poll": c.last_ok_poll().map(unix),
                     "stale": stale.iter().any(|s| s == c.name()),
+                    // A dead socket, a rejected token (M31).
+                    "problem": c.problem().map(|p| ctx.redactor.redact(&p)),
                 })
             })
             .collect();
@@ -476,10 +487,10 @@ async fn connection_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         );
     }
     // As the owner in their chat: the flow's outcome goes there too.
-    let actor = match ctx.owner_chat {
-        Some(id) => ferrule_connections::Actor::Owner(ferrule_connections::Chat {
-            channel: "telegram".into(),
-            id: id.to_string(),
+    let actor = match &ctx.owner_chat {
+        Some(owner) => ferrule_connections::Actor::Owner(ferrule_connections::Chat {
+            channel: owner.channel.clone(),
+            id: owner.chat.clone(),
         }),
         None => ferrule_connections::Actor::Terminal,
     };
@@ -544,13 +555,18 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         }
         "models/pin" | "models/unpin" => {
             let chat = need!(arg(body, "chat"));
+            // A chat on Telegram unless the page names another channel.
+            let channel = arg(body, "channel").unwrap_or("telegram");
             let d = if path == "models/pin" {
-                m.pin("telegram", chat, need!(arg(body, "model")), BY)
+                m.pin(channel, chat, need!(arg(body, "model")), BY)
             } else {
-                m.unpin("telegram", chat, BY)
+                m.unpin(channel, chat, BY)
             };
             if d.is_ok() {
-                retire(ctx, Some(&format!("telegram__{chat}")));
+                retire(
+                    ctx,
+                    Some(&ferrule_gateway::session::session_id(channel, chat)),
+                );
             }
             d
         }
@@ -1571,7 +1587,7 @@ command = "echo hi"
         .with_timing(Duration::from_secs(20), Duration::from_millis(20));
         let mut ctx = bare(dir.path());
         ctx.connections = Some(conns.clone());
-        ctx.owner_chat = Some(42);
+        ctx.owner_chat = Some(42.into());
 
         let (s, v) = call(
             &ctx,

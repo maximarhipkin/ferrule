@@ -4,6 +4,7 @@
 
 use crate::approval::{Answer, Approvals};
 use crate::audit::Audit;
+use crate::chat::ChatRef;
 use crate::clock::Clock;
 use crate::config::TrustConfig;
 use crate::kill::{stop_message, KillSwitch, StopInfo};
@@ -19,10 +20,31 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::watch;
 
-/// Sends the owner a message (Telegram, in the gateway).
+/// Sends the owner a message (through the gateway's channels).
 #[async_trait]
 pub trait Notifier: Send + Sync {
+    /// A Telegram chat: the notifier before M31.
     async fn send(&self, chat: i64, text: &str) -> Result<(), String>;
+
+    /// Any owner chat (M31). By default only a Telegram one, through `send`.
+    async fn send_to(&self, chat: &ChatRef, text: &str) -> Result<(), String> {
+        match chat.telegram_id() {
+            Some(id) => self.send(id, text).await,
+            None => Err(format!("no way to reach a {} chat", chat.channel)),
+        }
+    }
+
+    /// A question with answer buttons, `(label, the reply it sends)`, where
+    /// the channel has them. By default the text alone, which already says
+    /// what to reply.
+    async fn send_choices(
+        &self,
+        chat: &ChatRef,
+        text: &str,
+        _choices: &[(String, String)],
+    ) -> Result<(), String> {
+        self.send_to(chat, text).await
+    }
 }
 
 /// Asks a question at a terminal and reads one line; `None` at end of input.
@@ -78,7 +100,9 @@ pub struct Hub {
     audit: Audit,
     stop: KillSwitch,
     notifier: RwLock<Option<Arc<dyn Notifier>>>,
-    owner: RwLock<Option<i64>>,
+    /// The owner's chats, at most one per channel; the first is primary:
+    /// it gets the questions and the warnings (M31).
+    owners: RwLock<Vec<ChatRef>>,
     approvals: Approvals,
     runs: Mutex<HashMap<String, RunState>>,
     warned: Mutex<HashSet<String>>,
@@ -105,7 +129,19 @@ impl Hub {
             meter: Meter::new(ledger.to_path_buf(), tz),
             audit: Audit::new(data.join("trust").join("audit.jsonl")),
             stop: KillSwitch::new(data.join("trust").join("stop")),
-            owner: RwLock::new(cfg.owner_chat),
+            owners: RwLock::new(crate::config::order_owners(
+                cfg.owner_chat
+                    .map(ChatRef::from)
+                    .into_iter()
+                    .chain(
+                        cfg.discord_owner
+                            .clone()
+                            .map(|u| ChatRef::new("discord", u)),
+                    )
+                    .chain(cfg.slack_owner.clone().map(|u| ChatRef::new("slack", u)))
+                    .collect(),
+                cfg.owner_channel.as_deref(),
+            )),
             cfg: RwLock::new(cfg),
             tz,
             clock,
@@ -195,12 +231,61 @@ impl Hub {
         *self.notifier.write().unwrap() = n;
     }
 
+    /// The Telegram owner chat: set, replaced where it stood, or removed.
+    /// A new one comes first, as it did when it was the only owner.
     pub fn set_owner(&self, chat: Option<i64>) {
-        *self.owner.write().unwrap() = chat;
+        let mut owners = self.owners.write().unwrap();
+        let at = owners.iter().position(|o| o.channel == "telegram");
+        match (chat.map(ChatRef::from), at) {
+            (Some(c), Some(i)) => owners[i] = c,
+            (Some(c), None) => owners.insert(0, c),
+            (None, Some(i)) => {
+                owners.remove(i);
+            }
+            (None, None) => {}
+        }
     }
 
+    /// The Telegram owner chat, if there is one.
     pub fn owner(&self) -> Option<i64> {
-        *self.owner.read().unwrap()
+        self.owners
+            .read()
+            .unwrap()
+            .iter()
+            .find_map(ChatRef::telegram_id)
+    }
+
+    /// Every owner chat (M31), the primary first; one per channel is kept.
+    pub fn set_owners(&self, chats: Vec<ChatRef>) {
+        let mut seen = HashSet::new();
+        *self.owners.write().unwrap() = chats
+            .into_iter()
+            .filter(|c| seen.insert(c.channel.clone()))
+            .collect();
+    }
+
+    pub fn owners(&self) -> Vec<ChatRef> {
+        self.owners.read().unwrap().clone()
+    }
+
+    /// The chat that gets approvals and warnings.
+    pub fn primary(&self) -> Option<ChatRef> {
+        self.owners.read().unwrap().first().cloned()
+    }
+
+    /// Whether `chat` is one of the owner's chats.
+    pub fn is_owner(&self, chat: &ChatRef) -> bool {
+        self.owners.read().unwrap().contains(chat)
+    }
+
+    /// The owner's chat on `channel`.
+    pub fn owner_on(&self, channel: &str) -> Option<ChatRef> {
+        self.owners
+            .read()
+            .unwrap()
+            .iter()
+            .find(|o| o.channel == channel)
+            .cloned()
     }
 
     fn notifier(&self) -> Option<Arc<dyn Notifier>> {
@@ -503,20 +588,21 @@ impl Hub {
 
     /// Sends the owner a message and doesn't wait; a failure is logged.
     pub fn tell_owner(&self, text: String) {
-        let (Some(n), Some(chat)) = (self.notifier(), self.owner()) else {
+        let (Some(n), Some(chat)) = (self.notifier(), self.primary()) else {
             return;
         };
         let Ok(rt) = tokio::runtime::Handle::try_current() else {
             return;
         };
         rt.spawn(async move {
-            if let Err(e) = n.send(chat, &text).await {
+            if let Err(e) = n.send_to(&chat, &text).await {
                 tracing::warn!("trust: couldn't tell the owner ({e})");
             }
         });
     }
 
-    /// The kill switch on. `by`: who (`ferrule stop`, `telegram chat 42`).
+    /// The kill switch on. `by`: who (`ferrule stop`, `telegram chat 42`,
+    /// `discord chat 1234`).
     pub fn engage(&self, by: &str, reason: Option<String>) -> std::io::Result<StopInfo> {
         let info = StopInfo {
             at: self.clock.now().to_rfc3339(),
@@ -565,20 +651,31 @@ impl Hub {
         timeout: Duration,
     ) -> Result<(), String> {
         let run = self.run_id(tree);
-        let detail =
-            |answer: &str| json!({"subject": subject, "route": "telegram", "answer": answer});
-        let Some(chat) = self.owner() else {
-            self.answered(tree, &run, detail("unreachable"));
+        let Some(chat) = self.primary() else {
+            self.answered(
+                tree,
+                &run,
+                json!({"subject": subject, "route": "telegram", "answer": "unreachable"}),
+            );
             return Err("no owner chat is set to ask ([trust] owner_chat, or a private chat in [gateway] telegram_allowed_chats)".into());
         };
+        let route = chat.channel.clone();
         let Some(notifier) = self.notifier() else {
-            self.answered(tree, &run, detail("unreachable"));
-            return Err("couldn't reach the owner: Telegram isn't running in this process".into());
+            self.answered(
+                tree,
+                &run,
+                json!({"subject": subject, "route": route, "answer": "unreachable"}),
+            );
+            return Err(format!(
+                "couldn't reach the owner: {} isn't running in this process",
+                chat.channel_title()
+            ));
         };
-        let (code, rx) = self.approvals.open(chat, subject);
+        let (code, rx) = self.approvals.open(&chat, subject);
         let mut waiting = Waiting {
             hub: self,
             code: code.clone(),
+            route: route.clone(),
             tree,
             run: run.clone(),
             subject,
@@ -590,9 +687,13 @@ impl Hub {
             "approval_asked",
             Some(tree),
             run.as_deref(),
-            json!({"subject": subject, "route": "telegram", "chat": chat, "code": code}),
+            json!({"subject": subject, "route": route, "chat": chat.audit_value(), "code": code}),
         );
-        if let Err(e) = notifier.send(chat, &text).await {
+        let choices = [
+            ("Allow".to_string(), format!("yes {code}")),
+            ("Refuse".to_string(), format!("no {code}")),
+        ];
+        if let Err(e) = notifier.send_choices(&chat, &text, &choices).await {
             waiting.finish("unreachable");
             return Err(format!("couldn't reach the owner ({e})"));
         }
@@ -679,7 +780,8 @@ impl Hub {
 
     /// Reads a message from an allowed chat before it reaches a session:
     /// `/stop`, `/resume`, `/plan`, and replies to pending approvals.
-    pub fn intercept(&self, chat: i64, text: &str) -> Intercept {
+    pub fn intercept(&self, chat: impl Into<ChatRef>, text: &str) -> Intercept {
+        let chat = chat.into();
         let t = text.trim();
         let (cmd, rest) = match t.split_once(char::is_whitespace) {
             Some((c, r)) => (c, r.trim()),
@@ -689,16 +791,16 @@ impl Hub {
         match cmd.as_str() {
             "/stop" => {
                 let reason = (!rest.is_empty()).then(|| rest.to_string());
-                return Intercept::Reply(match self.engage(&format!("telegram chat {chat}"), reason) {
+                return Intercept::Reply(match self.engage(&chat.to_string(), reason) {
                     Ok(_) => "Stopped: every run halts now, and nothing new starts until /resume (or `ferrule stop --clear` on the machine).".into(),
                     Err(e) => format!("Couldn't write the stop file ({e}). Run `ferrule stop` on the machine."),
                 });
             }
             "/resume" => {
-                if self.owner() != Some(chat) {
+                if !self.is_owner(&chat) {
                     return Intercept::Reply("Only the owner chat can resume ferrule.".into());
                 }
-                return Intercept::Reply(match self.clear(&format!("telegram chat {chat}")) {
+                return Intercept::Reply(match self.clear(&chat.to_string()) {
                     Ok(true) => "Resumed: runs can start again.".into(),
                     Ok(false) => "ferrule wasn't stopped.".into(),
                     Err(e) => format!("Couldn't remove the stop file ({e})."),
@@ -713,7 +815,7 @@ impl Hub {
             "/plan" => return Intercept::Plan(rest.to_string()),
             _ => {}
         }
-        match self.approvals.answer(chat, text) {
+        match self.approvals.answer(&chat, text) {
             Some(reply) => Intercept::Reply(reply),
             None => Intercept::Pass,
         }
@@ -725,6 +827,8 @@ impl Hub {
 struct Waiting<'a> {
     hub: &'a Hub,
     code: String,
+    /// The owner's channel the question went to.
+    route: String,
     tree: &'a str,
     run: Option<String>,
     subject: &'a str,
@@ -738,7 +842,7 @@ impl Waiting<'_> {
         self.hub.answered(
             self.tree,
             &self.run,
-            json!({"subject": self.subject, "route": "telegram", "code": self.code, "answer": answer}),
+            json!({"subject": self.subject, "route": self.route, "code": self.code, "answer": answer}),
         );
     }
 }
