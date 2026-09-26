@@ -9,9 +9,9 @@
 
 <p align="center">
   <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.3.0-c4764a" alt="release v0.3.0"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.4.0-c4764a" alt="release v0.4.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
-  <img src="https://img.shields.io/badge/binary-~10_MB-8a929a" alt="binary: about 10 MB">
+  <img src="https://img.shields.io/badge/download-~10_MB-8a929a" alt="download: about 10 MB">
   <img src="https://img.shields.io/badge/tests-1225-8a929a" alt="1225 workspace tests">
 </p>
 
@@ -32,7 +32,7 @@
 
 Ferrule runs a coding and operations agent against any OpenAI-compatible
 model — from the terminal, from Telegram, or on a cron schedule. It's one
-binary of about 10 MB with nothing to install beside it (the Linux builds
+binary (a download of about 10 MB, about 30 MB unpacked) with nothing to install beside it (the Linux builds
 are fully static): `ferrule --version` starts in about 4 ms, and the idle
 gateway daemon uses about 9 MB of RAM. All state lives in files you can
 read: SQLite for memory and tasks, JSONL for transcripts and the cost
@@ -237,7 +237,7 @@ watchdog and how to rewrite it.
 | macOS | `~/.local/bin/ferrule` | Apple silicon, Intel |
 | Windows | `%LOCALAPPDATA%\Programs\ferrule\ferrule.exe`, added to your PATH | x86-64 (ARM64 runs it under emulation) |
 
-Both scripts read `FERRULE_VERSION` (a tag such as `v0.3.0`; default the
+Both scripts read `FERRULE_VERSION` (a tag such as `v0.4.0`; default the
 latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 
 ### Setup
@@ -652,7 +652,7 @@ and a dated entry for every session.
       unix-socket allowlist, OpenTelemetry export, and importers from
       OpenClaw and Hermes
 - [x] M34: SSH workspaces, and a local-model first run that catches a
-      small context window and broken tool calling
+      small context window and broken tool calling; `v0.4.0` released
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
