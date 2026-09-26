@@ -604,6 +604,7 @@ pub async fn test_entry_with(e: &Entry, key: Option<String>) -> TestOutcome {
         // read as a broken model.
         max_output_tokens: None,
         temperature: None,
+        stream: None,
     };
     let start = Instant::now();
     match tokio::time::timeout(TEST_WAIT, client.complete(req)).await {

@@ -448,7 +448,8 @@ impl SessionRecall for Recorder {
 }
 
 /// Session-start recall: asked once, with the session's first request and
-/// this run's goal, and added to the system prompt once.
+/// this run's goal, and added once, as a user message right after the goal
+/// (M27: the system prompt stays the same bytes for every session).
 #[tokio::test]
 async fn session_recall_runs_once_with_the_session_goal() {
     let model = Model::new(|_, _| say("ok"));
@@ -488,8 +489,17 @@ async fn session_recall_runs_once_with_the_session_goal() {
     assert!(queries[0].contains("Set up the staging database"));
     assert!(queries[0].contains("Which port did we pick?"));
     let system = agent.messages[0].content.as_deref().unwrap();
-    assert!(system.starts_with("You are a test agent."));
-    assert_eq!(system.matches("[Long-term memory]").count(), 1);
+    assert_eq!(system, "You are a test agent.");
+    let texts: Vec<&str> = agent
+        .messages
+        .iter()
+        .filter_map(|m| m.content.as_deref())
+        .collect();
+    let memory: Vec<usize> = (0..texts.len())
+        .filter(|&i| texts[i].contains("[Long-term memory]"))
+        .collect();
+    assert_eq!(memory.len(), 1);
+    assert_eq!(texts[memory[0] - 1], "Which port did we pick?");
     // The model saw it on the very first call.
     assert!(model.requests.lock().unwrap()[0].contains("#4 The staging port is 5782"));
 }

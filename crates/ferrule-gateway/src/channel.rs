@@ -88,6 +88,12 @@ pub trait Channel: Send + Sync {
     /// once for the same chat.
     async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError>;
 
+    /// Like `send`, returning the new message's id when the channel has
+    /// one, so it can be edited later (M27: a streamed reply).
+    async fn post(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
+        self.send(msg).await.map(|()| None)
+    }
+
     /// Optional: send with buttons, one per row. Use [`send_with_buttons`],
     /// which falls back to text.
     async fn send_buttons(

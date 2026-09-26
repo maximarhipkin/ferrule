@@ -209,6 +209,14 @@ pub struct AgentSettings {
     /// How long the check may take before it counts as failed.
     #[serde(default = "default_verify_timeout_secs")]
     pub verify_timeout_secs: u64,
+    /// M27: how many read-only tool calls from one response may run at
+    /// once. 1 runs them one after another.
+    #[serde(default = "default_parallel_tools")]
+    pub parallel_tools: usize,
+    /// M27: stream replies as the model writes them, where the channel can
+    /// edit a sent message (Telegram) and in `ferrule chat`.
+    #[serde(default = "default_stream")]
+    pub stream: bool,
 }
 
 impl Default for AgentSettings {
@@ -216,8 +224,18 @@ impl Default for AgentSettings {
         Self {
             verify_command: None,
             verify_timeout_secs: default_verify_timeout_secs(),
+            parallel_tools: default_parallel_tools(),
+            stream: default_stream(),
         }
     }
+}
+
+fn default_stream() -> bool {
+    true
+}
+
+fn default_parallel_tools() -> usize {
+    4
 }
 
 fn default_verify_timeout_secs() -> u64 {
@@ -240,6 +258,9 @@ pub struct GatewayConfig {
     /// id lets every member of that group in.
     #[serde(default)]
     pub telegram_allowed_chats: Vec<i64>,
+    /// M27: whether Telegram replies stream; unset follows `[agent] stream`.
+    #[serde(default)]
+    pub telegram_stream: Option<bool>,
 }
 
 fn default_telegram_base_url() -> String {
@@ -698,6 +719,8 @@ profile = "openai"
 # [agent]
 # verify_command = "cargo test"   # ferrule runs it before a run that changed files ends
 # verify_timeout_secs = 600
+# parallel_tools = 4              # read-only tool calls from one response run at once; 1 = one by one
+# stream = true                   # replies grow as the model writes (Telegram, `ferrule chat`)
 
 # [gateway]
 # local = true                              # enable the stdin/stdout channel
@@ -705,6 +728,7 @@ profile = "openai"
 # telegram_allowed_chats = []               # chat ids the bot answers; empty =
 #                                           # nobody (it replies with the chat id)
 # telegram_base_url = "https://api.telegram.org"
+# telegram_stream = true                    # unset = follow [agent] stream
 
 # [scheduler]
 # tick_interval_secs = 30   # how often to check for due tasks

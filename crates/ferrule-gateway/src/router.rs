@@ -3,8 +3,9 @@ use crate::error::GatewayError;
 use crate::message::{InboundMessage, OutboundMessage};
 use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
+use crate::stream::{StreamPacing, StreamingReply};
 use ferrule_core::{Agent, AgentEvent, CoreError, Guard, GuardedCall, Role, Transcript, Verdict};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -59,6 +60,10 @@ pub struct Router {
     max_turn: Option<Duration>,
     /// Woken whenever a lane starts or ends a turn (the running marker).
     changed: Arc<Notify>,
+    /// M27: the channels whose replies stream (each must also be able to
+    /// edit), and how.
+    streaming: HashSet<String>,
+    pacing: StreamPacing,
 }
 
 struct Lane {
@@ -162,7 +167,21 @@ impl Router {
             lane_queue_capacity: 64,
             max_turn: None,
             changed: Arc::new(Notify::new()),
+            streaming: HashSet::new(),
+            pacing: StreamPacing::default(),
         }
+    }
+
+    /// Streams replies on these channels (M27), where the channel can edit
+    /// a sent message; the rest get the final text as before.
+    pub fn with_streaming(
+        mut self,
+        channels: impl IntoIterator<Item = String>,
+        pacing: StreamPacing,
+    ) -> Self {
+        self.streaming = channels.into_iter().collect();
+        self.pacing = pacing;
+        self
     }
 
     /// Ends any turn that runs longer than `limit` (M19b's
@@ -412,10 +431,15 @@ impl Router {
         agent.set_guard(guard.clone());
         let channel = self.channels.get(channel_name).cloned();
         let (tx, rx) = mpsc::channel(self.lane_queue_capacity);
+        let stream = channel
+            .as_ref()
+            .is_some_and(|c| c.capabilities().edits && self.streaming.contains(channel_name))
+            .then_some(self.pacing);
         let watch = LaneWatch {
             state,
             changed: self.changed.clone(),
             guard: guard.clone(),
+            stream,
         };
         tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
         Ok((tx, guard))
@@ -452,9 +476,32 @@ async fn run_lane(
             watch.state.clone(),
             watch.changed.clone(),
         ));
+        let out = OutboundMessage {
+            channel: inbound.channel.clone(),
+            chat_id: inbound.chat_id.clone(),
+            text: String::new(),
+            // A wake-up has no message to reply to.
+            reply_to: (!inbound.message_id.is_empty()).then(|| inbound.message_id.clone()),
+            attachments: vec![],
+        };
+        // M27: the reply grows in place while the model writes it.
+        let streamer = match (&channel, watch.stream) {
+            (Some(ch), Some(pacing)) => {
+                let state = watch.state.clone();
+                let streamer = StreamingReply::start(ch.clone(), out.clone(), pacing, move || {
+                    let mut st = state.lock().unwrap();
+                    st.last_progress = Some(Instant::now());
+                    st.stall_reported = false;
+                });
+                agent.set_reply_stream(Some(streamer.sink()));
+                Some(streamer)
+            }
+            _ => None,
+        };
         watch.guard.arm();
         let run_result = agent.run(&inbound.text, etx).await;
         watch.guard.disarm();
+        agent.set_reply_stream(None);
         // Whatever still holds a sender (a sub-agent) now finds it closed
         // rather than feeding the next turn's state.
         drain.abort();
@@ -465,14 +512,12 @@ async fn run_lane(
                 failure_text(e)
             }
         };
-        if let Some(ch) = &channel {
+        if let Some(streamer) = streamer {
+            streamer.finish(reply_text).await;
+        } else if let Some(ch) = &channel {
             let out = OutboundMessage {
-                channel: inbound.channel.clone(),
-                chat_id: inbound.chat_id.clone(),
                 text: reply_text,
-                // A wake-up has no message to reply to.
-                reply_to: (!inbound.message_id.is_empty()).then(|| inbound.message_id.clone()),
-                attachments: vec![],
+                ..out
             };
             if let Err(e) = ch.send(out).await {
                 tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
@@ -497,6 +542,8 @@ struct LaneWatch {
     state: Arc<Mutex<LaneState>>,
     changed: Arc<Notify>,
     guard: Arc<TurnGuard>,
+    /// How this lane's replies stream; `None` when they don't.
+    stream: Option<StreamPacing>,
 }
 
 impl LaneWatch {

@@ -192,6 +192,7 @@ mod tests {
             eval: None,
             tree: Some(session.into()),
             route: None,
+            speed: None,
         }
     }
 

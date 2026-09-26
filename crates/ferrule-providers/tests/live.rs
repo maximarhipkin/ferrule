@@ -49,6 +49,7 @@ async fn two_step(provider: Arc<dyn Provider>) {
         tools: vec![weather()],
         max_output_tokens: None,
         temperature: None,
+        stream: None,
     };
     let first = provider.complete(req(&messages)).await.unwrap();
     eprintln!("first: {:?} · {:?}", first.message.tool_calls, first.usage);

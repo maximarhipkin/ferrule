@@ -141,6 +141,13 @@ impl McpClient {
         &self.cfg
     }
 
+    /// A child process on a pipe rather than a URL. Its calls are kept one
+    /// at a time (M27): a timeout counts from the send, and a server that
+    /// reads one request at a time would time out the second.
+    pub fn is_stdio(&self) -> bool {
+        self.http.is_none()
+    }
+
     /// Wakes whenever the server sends `notifications/tools/list_changed`.
     /// Only stdio servers can: a URL server would need the server-initiated
     /// stream this client doesn't open.

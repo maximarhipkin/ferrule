@@ -18,6 +18,10 @@ pub enum GatewayError {
     Unsupported(&'static str),
     #[error("session `{0}` has too many messages waiting")]
     QueueFull(String),
+    /// The channel asked us to slow down (Telegram's 429): nothing more
+    /// should go to that chat for `retry_after`.
+    #[error("rate limited by the channel; retry after {}s", retry_after.as_secs())]
+    RateLimited { retry_after: std::time::Duration },
     #[error("channel error: {0}")]
     Channel(String),
 }

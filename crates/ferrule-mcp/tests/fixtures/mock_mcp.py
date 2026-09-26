@@ -25,7 +25,7 @@ TOOLS = [
     {"name": "ping_first", "description": "Pings the client before answering", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "write", "description": "Write a file", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
     {"name": "read", "description": "Read a file", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
-    {"name": "env", "description": "Read an environment variable", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
+    {"name": "env", "description": "Read an environment variable", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}, "annotations": {"readOnlyHint": True}},
 ]
 
 

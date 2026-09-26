@@ -131,6 +131,9 @@ Mechanism: a `SessionRecall` hook in `ferrule-core`
 (`Agent::with_session_recall`). On the **first** `run()` of an agent,
 before the goal is pushed, the agent asks the hook for a memory block for
 the goal and appends it to the system prompt, under `[Long-term memory]`.
+(M27 moved it: the block is now a user message right after the goal, so
+the system prompt is the same bytes for every session and caches across
+them; compaction carries it forward verbatim. See `m27-speed.md` §3.)
 Every entry point gets it the same way: `run`, `chat`, the gateway, the
 scheduler and sub-agents, because the goal only exists inside `run()` and
 `build_agent_from` never sees it. That's why the old code passed `None`.

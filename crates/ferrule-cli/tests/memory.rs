@@ -1,8 +1,9 @@
 //! M15 through the real `ferrule` binary, against a scripted
 //! OpenAI-compatible server: a fact stored in one `ferrule run` and
-//! corrected with `update_memory` in a second is what the third session's
-//! system prompt holds; a read-only sub-agent gets `recall` and
-//! `search_history` but no tool that writes memory.
+//! corrected with `update_memory` in a second is what the third session
+//! recalls (a user message after the goal since M27); a read-only
+//! sub-agent gets `recall` and `search_history` but no tool that writes
+//! memory.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -20,6 +21,18 @@ fn text(m: &Value) -> String {
 
 fn system(req: &Value) -> String {
     text(&req["messages"][0])
+}
+
+/// The recalled memory block: since M27 a user message after the goal, so
+/// the system prompt stays the same bytes for every session.
+fn recalled(req: &Value) -> String {
+    req["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(text)
+        .find(|t| t.starts_with("[Long-term memory]"))
+        .unwrap_or_default()
 }
 
 /// The session's first user message: which run a request belongs to.
@@ -241,7 +254,7 @@ fn a_correction_made_through_the_tool_is_what_a_later_session_recalls() {
         }
         if goal.starts_with("S2") {
             // The model corrects the fact by the id its prompt shows.
-            return match memory_id(&system(req), "The deploy target is fly.io") {
+            return match memory_id(&recalled(req), "The deploy target is fly.io") {
                 Some(id) => call(
                     "update_memory",
                     json!({"id": id, "content": "The deploy target is render"}),
@@ -273,7 +286,8 @@ fn a_correction_made_through_the_tool_is_what_a_later_session_recalls() {
         .filter(|r| first_user(r).starts_with("S3"))
         .collect();
     assert_eq!(s3.len(), 1);
-    let prompt = system(s3[0]);
+    assert!(!system(s3[0]).contains("[Long-term memory]"));
+    let prompt = recalled(s3[0]);
     assert!(
         prompt.contains("[Long-term memory]\n- #2 The deploy target is render"),
         "{prompt}"
