@@ -48,7 +48,7 @@ point a provider at a mock on `127.0.0.1`.
 
 This works exactly like `web_fetch` and the shell (M7/M10):
 
-- `[web_search] api_key_env = "BRAVE_SEARCH_API_KEY"` names the env var
+- `[web_search] api_key_env = "BRAVE_API_KEY"` names the env var
   that holds the key. If that var isn't already under `[secrets]`,
   ferrule adds it there, bound to the endpoint's host
   (`api.search.brave.com`). So configuring search starts the proxy, the
@@ -83,8 +83,8 @@ web_search(query: string, count?: integer 1..max_results)
   hint (plan mode and the check use it). M27 adds `read_only()` to the
   `Tool` trait. If M27 is on `main` when M28 merges, `web_search` returns
   `true` there too, so it runs alongside other read-only calls.
-- **Output** is a fenced, escaped block. `<`, `>` and `&` in titles and
-  snippets are escaped, so a result can't close the fence or forge a
+- **Output** is a fenced, escaped block. `<` and `>` in titles and
+  snippets are escaped (`&` is left alone, for readable snippets), so a result can't close the fence or forge a
   `<skill_content>` block:
 
   ```
@@ -121,7 +121,7 @@ web_search(query: string, count?: integer 1..max_results)
 ```toml
 [web_search]
 provider = "brave"                 # brave | tavily | searxng | exa; unset = off
-api_key_env = "BRAVE_SEARCH_API_KEY"  # not needed for a keyless SearXNG
+api_key_env = "BRAVE_API_KEY"  # not needed for a keyless SearXNG
 # endpoint = "https://search.example.org"   # required for searxng
 max_results = 5                    # 1..20; the model may ask for fewer
 safe_search = "moderate"           # off | moderate | strict
@@ -150,14 +150,13 @@ Settings a provider can't use are listed by doctor, not rejected.
 
 ### 1.5 Ledger and caps
 
-Every search that gets a response (including an error response) writes
-one ledger row:
+Every search that is sent writes one ledger row, whether it gets an
+answer, an error status, or a network error or timeout:
 
 - `call_kind = "web_search"`, `provider = "web_search"`, `model =` the
   search provider's name, zero tokens, the latency, `outcome` ok/error.
-- `cost_usd = price_per_search_usd` when it's set. Otherwise `None`,
-  which the pricer leaves at `None`, because no model is priced as
-  `web_search/brave`.
+- `cost_usd = price_per_search_usd` for an answered search when it's
+  set, and $0.00 when it isn't. A failed search has no cost.
 
 Rows go through the agent's `TrustSink`, so they carry the run tree and
 are charged to the hub. That means a priced search counts toward M19's

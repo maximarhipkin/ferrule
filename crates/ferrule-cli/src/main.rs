@@ -26,6 +26,7 @@ mod settings_door;
 mod setup;
 mod tasks_admin;
 mod trust;
+mod web_search;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 use clap::{Parser, Subcommand};
@@ -969,6 +970,22 @@ fn build_agent_from(
     // M19: the owner's caps, kill switch and approval gates, per run tree.
     let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
     models.attach_hub(trust::hub(&cfg)?);
+    // M28: read-only, so plan mode keeps it, like `web_fetch`.
+    let session_id = transcript
+        .as_ref()
+        .and_then(|t| t.path().file_stem())
+        .map_or_else(|| "ephemeral".into(), |s| s.to_string_lossy().into_owned());
+    if let Some(tool) = web_search::tool(
+        &cfg,
+        broker,
+        sandbox.egress().cloned(),
+        trust::hub(&cfg)?,
+        &ledger,
+        &tree,
+        session_id,
+    )? {
+        registry.register(Arc::new(tool));
+    }
     let hooks_workspace = tool_ctx.workspace.clone();
     let mut agent = Agent::new(
         provider,
@@ -2446,7 +2463,10 @@ fn config_edit_cmd() -> Result<()> {
         bail!("`{editor}` exited with {status}");
     }
     let text = std::fs::read_to_string(&path)?;
-    if let Err(e) = toml::from_str::<config::Config>(&text) {
+    if let Err(e) = toml::from_str::<config::Config>(&text)
+        .map_err(anyhow::Error::from)
+        .and_then(config::Config::finish)
+    {
         bail!("{} doesn't parse any more:\n{e}", path.display());
     }
     println!("✓ {} parses", path.display());

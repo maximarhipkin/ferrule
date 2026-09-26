@@ -158,7 +158,9 @@ impl Settings {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => bail!("reading {}: {e}", self.path.display()),
         };
-        toml::from_str(&text).map_err(|e| anyhow!("{} doesn't parse: {e}", self.path.display()))
+        let cfg: Config = toml::from_str(&text)
+            .map_err(|e| anyhow!("{} doesn't parse: {e}", self.path.display()))?;
+        cfg.finish()
     }
 
     fn audit(&self, event: &str, detail: serde_json::Value) {

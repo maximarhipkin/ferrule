@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use ferrule_providers::{Api, DriverOptions, Thinking};
+use ferrule_tools::search::{SafeSearch, SearchProvider, SearchSettings};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -361,6 +362,130 @@ pub struct Config {
     /// M24: where `ferrule model eval` and the dashboard find the suite.
     #[serde(default)]
     pub eval: EvalConfig,
+    /// M28: the `web_search` tool, off unless a provider is set.
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
+}
+
+/// `[web_search]` (docs/web-search.md).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebSearchConfig {
+    /// `brave`, `tavily`, `searxng` or `exa`; unset: no `web_search` tool.
+    pub provider: Option<String>,
+    /// The env var holding the API key. Bound to the endpoint's host in
+    /// `[secrets]` unless it's there already.
+    pub api_key_env: Option<String>,
+    /// The API's base URL: the provider's own by default, required for
+    /// SearXNG.
+    pub endpoint: Option<String>,
+    pub max_results: usize,
+    pub safe_search: String,
+    pub region: Option<String>,
+    pub language: Option<String>,
+    pub max_output_tokens: usize,
+    pub timeout_secs: u64,
+    /// Charged per search toward `[trust]`'s dollar caps.
+    pub price_per_search_usd: Option<f64>,
+    /// 0: no cap.
+    pub max_searches_per_day: u64,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            api_key_env: None,
+            endpoint: None,
+            max_results: 5,
+            safe_search: "moderate".into(),
+            region: None,
+            language: None,
+            max_output_tokens: 1500,
+            timeout_secs: 20,
+            price_per_search_usd: None,
+            max_searches_per_day: 0,
+        }
+    }
+}
+
+impl WebSearchConfig {
+    /// The checked provider, or `None` when search is off.
+    pub fn provider(&self) -> Result<Option<SearchProvider>> {
+        let Some(name) = self.provider.as_deref() else {
+            return Ok(None);
+        };
+        let p = SearchProvider::parse(name).ok_or_else(|| {
+            anyhow!("[web_search] provider = \"{name}\": expected brave, tavily, searxng or exa")
+        })?;
+        Ok(Some(p))
+    }
+
+    /// The base URL searches go to.
+    pub fn endpoint(&self, p: SearchProvider) -> Option<String> {
+        self.endpoint
+            .clone()
+            .or_else(|| p.default_endpoint().map(str::to_string))
+    }
+
+    /// The endpoint's host, which the key is bound to.
+    pub fn host(&self, p: SearchProvider) -> Option<String> {
+        let endpoint = self.endpoint(p)?;
+        url::Url::parse(&endpoint)
+            .ok()?
+            .host_str()
+            .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
+    }
+
+    /// Everything the tool needs but the key's placeholder.
+    pub fn settings(&self) -> Result<Option<SearchSettings>> {
+        let Some(p) = self.provider()? else {
+            return Ok(None);
+        };
+        let Some(endpoint) = self.endpoint(p) else {
+            bail!("[web_search] provider = \"searxng\" needs `endpoint`, your instance's URL");
+        };
+        match url::Url::parse(&endpoint) {
+            Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().is_some() => {}
+            _ => bail!("[web_search] endpoint = \"{endpoint}\" isn't an http(s) URL"),
+        }
+        if p.needs_key() && self.api_key_env.as_deref().unwrap_or("").is_empty() {
+            bail!(
+                "[web_search] provider = \"{}\" needs `api_key_env`, the env var holding its key",
+                p.name()
+            );
+        }
+        if !(1..=ferrule_tools::search::MAX_RESULTS).contains(&self.max_results) {
+            bail!(
+                "[web_search] max_results must be 1 to {}",
+                ferrule_tools::search::MAX_RESULTS
+            );
+        }
+        let safe_search = SafeSearch::parse(&self.safe_search).ok_or_else(|| {
+            anyhow!(
+                "[web_search] safe_search = \"{}\": expected off, moderate or strict",
+                self.safe_search
+            )
+        })?;
+        if self
+            .price_per_search_usd
+            .is_some_and(|p| !(p >= 0.0 && p.is_finite()))
+        {
+            bail!("[web_search] price_per_search_usd can't be negative");
+        }
+        if self.max_output_tokens < 100 {
+            bail!("[web_search] max_output_tokens must be at least 100");
+        }
+        let mut s = SearchSettings::new(p, endpoint);
+        s.key_env = self.api_key_env.clone().filter(|e| !e.is_empty());
+        s.max_results = self.max_results;
+        s.safe_search = safe_search;
+        s.region = self.region.clone().filter(|r| !r.is_empty());
+        s.language = self.language.clone().filter(|l| !l.is_empty());
+        s.max_output_tokens = self.max_output_tokens;
+        s.timeout = std::time::Duration::from_secs(self.timeout_secs.max(1));
+        Ok(Some(s))
+    }
 }
 
 /// `[eval]` (docs/m24-dashboard-2.md §2).
@@ -615,6 +740,18 @@ profile = "openai"
 # paths = []                 # ~/.agents/skills, ~/.claude/skills. First name wins.
 # disabled = []              # skill names to ignore. `ferrule skills` lists them all.
 
+# [web_search]              # The web_search tool (docs/web-search.md). Off until a
+# provider = "brave"         # provider is set: brave, tavily, exa or searxng.
+# api_key_env = "BRAVE_API_KEY"  # Bound to the endpoint's host through the proxy;
+#                            # the model and the sandbox only ever see a placeholder.
+# endpoint = "https://api.search.brave.com"  # required for searxng
+# max_results = 5            # 1..20; the model may ask for fewer.
+# safe_search = "moderate"   # off, moderate or strict
+# max_output_tokens = 1500   # results are trimmed to fit
+# timeout_secs = 20
+# price_per_search_usd = 0.005  # counts toward [trust]'s dollar caps
+# max_searches_per_day = 0   # 0: no cap. Every search is a ledger row.
+
 # [extensions]              # Self-extension: the agent installs MCP servers and
 # enabled = false            # skills mid-run (mcp_add, skill_install, skill_keep…).
 # allow = []                 # Installable without asking, exact pins only, e.g.
@@ -748,8 +885,29 @@ impl Config {
         };
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let cfg = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let cfg: Self =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        let cfg = cfg
+            .finish()
+            .with_context(|| format!("in {}", path.display()))?;
         Ok((cfg, path))
+    }
+
+    /// Checks what parsing can't, and fills in what other settings imply:
+    /// `[web_search]`'s key, bound to its endpoint's host in `[secrets]`
+    /// unless the owner bound it there already.
+    pub fn finish(mut self) -> Result<Self> {
+        if let Some(settings) = self.web_search.settings()? {
+            if let (Some(var), Some(host)) = (
+                settings.key_env.clone(),
+                self.web_search.host(settings.provider),
+            ) {
+                self.secrets
+                    .entry(var)
+                    .or_insert_with(|| SecretSpec::Hosts(vec![host]));
+            }
+        }
+        Ok(self)
     }
 
     pub fn resolve_provider(
@@ -797,6 +955,60 @@ pub fn data_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn example_web_search_block_parses_uncommented_and_binds_its_key() {
+        let start = EXAMPLE_CONFIG.find("# [web_search]").unwrap();
+        let end = start + EXAMPLE_CONFIG[start..].find("\n\n").unwrap();
+        let uncommented: String = EXAMPLE_CONFIG[start..end]
+            .lines()
+            .map(|l| format!("{}\n", l.strip_prefix("# ").unwrap_or(l)))
+            .collect();
+        let cfg: Config = toml::from_str(&uncommented).unwrap();
+        let cfg = cfg.finish().unwrap();
+        let s = cfg.web_search.settings().unwrap().unwrap();
+        assert_eq!(s.provider, SearchProvider::Brave);
+        assert_eq!(s.key_env.as_deref(), Some("BRAVE_API_KEY"));
+        let rule = ferrule_proxy::SecretRule::from(&cfg.secrets["BRAVE_API_KEY"]);
+        assert_eq!(rule.hosts, ["api.search.brave.com"]);
+    }
+
+    #[test]
+    fn web_search_is_off_by_default_and_checked_when_on() {
+        let off: Config = toml::from_str("").unwrap();
+        assert!(off.web_search.settings().unwrap().is_none());
+        assert!(off.finish().unwrap().secrets.is_empty());
+        let bad = |t: &str| {
+            let c: Config = toml::from_str(t).unwrap();
+            c.finish().unwrap_err().to_string()
+        };
+        assert!(bad("[web_search]\nprovider = \"bing\"").contains("expected brave"));
+        assert!(bad("[web_search]\nprovider = \"brave\"").contains("api_key_env"));
+        assert!(bad("[web_search]\nprovider = \"searxng\"").contains("endpoint"));
+        assert!(
+            bad("[web_search]\nprovider = \"tavily\"\napi_key_env = \"K\"\nmax_results = 50")
+                .contains("max_results")
+        );
+        assert!(
+            bad("[web_search]\nprovider = \"exa\"\napi_key_env = \"K\"\nsafe_search = \"on\"")
+                .contains("safe_search")
+        );
+        // Keyless SearXNG binds nothing; an owner's own binding wins.
+        let c: Config = toml::from_str(
+            "[web_search]\nprovider = \"searxng\"\nendpoint = \"http://127.0.0.1:8888\"",
+        )
+        .unwrap();
+        assert!(c.finish().unwrap().secrets.is_empty());
+        let c: Config = toml::from_str(
+            "[secrets]\nK = [\"proxy.example\"]\n[web_search]\nprovider = \"exa\"\napi_key_env = \"K\"",
+        )
+        .unwrap();
+        let c = c.finish().unwrap();
+        assert_eq!(
+            ferrule_proxy::SecretRule::from(&c.secrets["K"]).hosts,
+            ["proxy.example"]
+        );
+    }
 
     #[test]
     fn example_config_parses_with_the_sandbox_secrets_and_browser_blocks_uncommented() {
