@@ -358,6 +358,29 @@ mod tests {
     }
 
     #[test]
+    fn the_symptom_lists_name_what_the_page_said_and_no_codes_of_ours() {
+        let g = symptoms(true);
+        let a = symptoms(false);
+        for id in [
+            "redirect",
+            "test-user",
+            "unverified",
+            "expired",
+            "disabled",
+            "admin",
+        ] {
+            assert!(g.iter().any(|s| s.0 == id), "google lacks {id}");
+        }
+        for id in ["domain", "token-off", "consent"] {
+            assert!(a.iter().any(|s| s.0 == id), "atlassian lacks {id}");
+        }
+        for (_, saw, fix) in g.iter().chain(a.iter()) {
+            assert!(!saw.is_empty() && !fix.is_empty());
+            assert!(!fix.contains("state=") && !fix.contains("code="), "{fix}");
+        }
+    }
+
+    #[test]
     fn no_explanation_repeats_a_code_or_a_state() {
         let google = svc("google_oauth");
         let atl = svc("atlassian");

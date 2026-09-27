@@ -590,7 +590,8 @@ fn model_problems(m: &crate::models::Models, live: Option<&Live>, problems: &mut
         problems.push(json!({
             "id": "prices",
             "fixes": [{ "label": "Fill prices", "action": "catalog/fill-prices", "body": {} }],
-            "what": format!("No prices for {}: their cost shows as $0.", unpriced.join(", ")),
+            // Each line is already a sentence ("x has no prices, so …").
+            "what": format!("{}.", unpriced.join("; ")),
             "fix": "Fill missing prices from the catalog.",
             "action": "catalog/fill-prices",
             "section": "models",
@@ -662,6 +663,19 @@ async fn connections(ctx: &Ctx) -> Answer {
     for svc in c.catalog().services() {
         let connected = s.connections.iter().any(|x| x.service == svc.name);
         let blocked = c.blocked(svc, relay_live).map(|r| r.text);
+        // What the owner may have seen on Google's or Atlassian's page,
+        // and what to do: for the ways in that go through their servers.
+        let symptoms: Vec<Value> = if svc.native.is_none()
+            && (ferrule_connections::explain::is_google(svc)
+                || ferrule_connections::explain::is_atlassian(svc))
+        {
+            ferrule_connections::explain::symptoms(ferrule_connections::explain::is_google(svc))
+                .into_iter()
+                .map(|(id, saw, fix)| json!({ "id": id, "saw": saw, "fix": fix }))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let option = json!({
             "name": svc.name,
             "title": svc.title(),
@@ -674,6 +688,14 @@ async fn connections(ctx: &Ctx) -> Answer {
             "fixed_callback": svc.fixed_callback,
             "connected": connected,
             "blocked": blocked,
+            "symptoms": symptoms,
+            // The last try's plain explanation, and the simpler way in to
+            // switch to (never the provider's raw error).
+            "attempt": c.last_attempt(&svc.name).map(|a| json!({
+                "at": a.at,
+                "text": ctx.redactor.redact(&a.text),
+                "switch_to": a.switch_to,
+            })),
         });
         match tiles.iter_mut().find(|t| t["tile"] == svc.tile()) {
             Some(t) => t["options"].as_array_mut().unwrap().push(option),

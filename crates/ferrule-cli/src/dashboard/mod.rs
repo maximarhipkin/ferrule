@@ -34,6 +34,36 @@ use tokio::net::TcpListener;
 const INDEX: &str = include_str!("assets/index.html");
 const APP_JS: &str = include_str!("assets/app.js");
 const APP_CSS: &str = include_str!("assets/app.css");
+/// Sets the theme before the first paint (the CSP allows no inline script).
+const THEME_JS: &str = include_str!("assets/theme.js");
+/// IBM Plex (OFL 1.1), served from the binary so the page never depends on
+/// a font CDN: Sans and Mono cut to Latin-1, Sans Hebrew whole, each loaded
+/// only when the page has a character in its `unicode-range`.
+const FONTS: &[(&str, &[u8])] = &[
+    (
+        "plex-sans-400.woff2",
+        include_bytes!("assets/fonts/plex-sans-400.woff2"),
+    ),
+    (
+        "plex-sans-600.woff2",
+        include_bytes!("assets/fonts/plex-sans-600.woff2"),
+    ),
+    (
+        "plex-sans-hebrew-400.woff2",
+        include_bytes!("assets/fonts/plex-sans-hebrew-400.woff2"),
+    ),
+    (
+        "plex-sans-hebrew-600.woff2",
+        include_bytes!("assets/fonts/plex-sans-hebrew-600.woff2"),
+    ),
+    (
+        "plex-mono-400.woff2",
+        include_bytes!("assets/fonts/plex-mono-400.woff2"),
+    ),
+];
+const FONT_LICENSE: &str = include_str!("assets/fonts/OFL.txt");
+/// A year: a font's name changes with its content.
+const FOREVER: &str = "public, max-age=31536000, immutable";
 
 /// What the page reads and changes; each piece is there when the process
 /// serving it has one (the gateway has them all, `ferrule dashboard` on
@@ -410,6 +440,19 @@ impl Dashboard {
             (_, "/app.css") if get => {
                 return Response::new(200, "text/css; charset=utf-8", APP_CSS)
             }
+            (_, "/theme.js") if get => {
+                return Response::new(200, "text/javascript; charset=utf-8", THEME_JS)
+            }
+            (_, "/fonts/OFL.txt") if get => {
+                return Response::new(200, "text/plain; charset=utf-8", FONT_LICENSE)
+                    .with_header("Cache-Control", FOREVER.into())
+            }
+            (_, path) if get && path.starts_with("/fonts/") => {
+                if let Some((_, bytes)) = FONTS.iter().find(|(n, _)| path[7..] == **n) {
+                    return Response::new(200, "font/woff2", *bytes)
+                        .with_header("Cache-Control", FOREVER.into());
+                }
+            }
             _ => {}
         }
         if !req.path.starts_with("/api/") {
@@ -619,6 +662,45 @@ mod tests {
             .await;
         assert_eq!(r.status, 200);
         assert!(String::from_utf8_lossy(&r.body).contains(&csrf));
+    }
+
+    #[tokio::test]
+    async fn fonts_are_cached_a_year_and_the_rest_not_at_all() {
+        let (_d, d) = dash();
+        let cache = |r: &Response| {
+            r.headers
+                .iter()
+                .find(|(k, _)| k == "Cache-Control")
+                .map(|(_, v)| v.clone())
+        };
+        let r = d
+            .handle(req("GET", "/fonts/plex-sans-400.woff2", &[], ""))
+            .await;
+        assert_eq!((r.status, r.content_type), (200, "font/woff2"));
+        assert_eq!(&r.body[..4], b"wOF2");
+        assert!(cache(&r).unwrap().contains("max-age=31536000"));
+        let r = d.handle(req("GET", "/fonts/OFL.txt", &[], "")).await;
+        assert_eq!(r.status, 200);
+        assert!(String::from_utf8_lossy(&r.body).contains("SIL Open Font License"));
+        for name in FONTS.iter().map(|(n, _)| n) {
+            let r = d
+                .handle(req("GET", &format!("/fonts/{name}"), &[], ""))
+                .await;
+            assert_eq!(r.status, 200, "{name}");
+        }
+        let r = d.handle(req("GET", "/fonts/nope.woff2", &[], "")).await;
+        assert_eq!(r.status, 404);
+        let r = d.handle(req("GET", "/fonts/../app.js", &[], "")).await;
+        assert_eq!(r.status, 404);
+        // The page and its scripts change with the binary: never cached
+        // (`http::write` adds no-store to anything without its own).
+        for path in ["/", "/app.js", "/app.css", "/theme.js"] {
+            let r = d.handle(req("GET", path, &[], "")).await;
+            assert_eq!(r.status, 200, "{path}");
+            assert_eq!(cache(&r), None, "{path}");
+        }
+        let r = d.handle(req("GET", "/api/session", &[], "")).await;
+        assert_eq!(cache(&r), None);
     }
 
     #[tokio::test]

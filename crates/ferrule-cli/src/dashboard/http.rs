@@ -197,18 +197,24 @@ fn unescape(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Writes `resp` with the headers every answer gets: no caching, no
-/// framing, no referrer, a CSP that allows only this origin's own files.
+/// Writes `resp` with the headers every answer gets: no caching (unless
+/// it carries its own `Cache-Control`), no framing, no referrer, a CSP that allows only this origin's own files.
 pub async fn write(stream: &mut TcpStream, resp: Response) {
+    // Nothing is cached unless the response says so (the fonts do).
+    let cached = resp
+        .headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("cache-control"));
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\
-         Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\
+         {}X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\
          X-Frame-Options: DENY\r\n\
          Content-Security-Policy: default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n",
         resp.status,
         reason(resp.status),
         resp.content_type,
-        resp.body.len()
+        resp.body.len(),
+        if cached { "" } else { "Cache-Control: no-store\r\n" },
     );
     for (k, v) in &resp.headers {
         head.push_str(&format!("{k}: {v}\r\n"));

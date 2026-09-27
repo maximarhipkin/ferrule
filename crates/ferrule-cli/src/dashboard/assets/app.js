@@ -1,10 +1,9 @@
-// The ferrule dashboard (docs/m22-dashboard.md, docs/dashboard.md) in the
-// "collar" design: a ferrule is the metal collar that keeps a tool's handle
-// from splitting under load; this page is the collar around the agent.
-// Plain DOM, built with textContent only: nothing the server sends is ever
-// parsed as HTML. User and agent text sits in `dir="auto"` elements so
-// Hebrew and Arabic read right to left. Nothing here calls a model: the
-// page works when every model is down.
+// The ferrule dashboard (docs/dashboard.md, docs/m37-control-room.md): the
+// control room Max runs his agent from. Plain DOM, built with textContent
+// only: nothing the server sends is ever parsed as HTML. User and agent
+// text sits in `dir="auto"` elements so Hebrew and Arabic read right to
+// left. Nothing here calls a model: the page works when every model is
+// down. Secrets go one way: typed in, sent, wiped; none ever comes back.
 "use strict";
 (function () {
   let csrf = null;
@@ -61,6 +60,8 @@
     csrf = null;
     stopPolling();
     document.getElementById("rail").hidden = true;
+    document.getElementById("tabs").hidden = true;
+    document.getElementById("sheet").hidden = true;
     document.getElementById("logout").hidden = true;
     document.getElementById("live").hidden = true;
     document.body.classList.remove("running");
@@ -74,8 +75,7 @@
 
   function toast(t, bad) {
     const box = document.getElementById("toast");
-    const card = el("div", { class: "t", dir: "auto", text: t });
-    card.style.borderLeftColor = bad ? "var(--bad)" : "var(--copper)";
+    const card = el("div", { class: "t" + (bad ? " bad" : ""), dir: "auto", text: t });
     box.replaceChildren(card);
     setTimeout(() => { if (card.parentNode) card.remove(); }, bad ? 9000 : 5000);
   }
@@ -95,6 +95,10 @@
       }
       if (r.said) toast(r.said, r.ok === false);
       if (r.links) r.links.forEach((l) => window.open(l.url, "_blank", "noopener"));
+      // What was typed next to the button went in: the redraw may drop it.
+      const box = button && button.closest(".card, .opt, .check, .alert");
+      if (box) box.querySelectorAll("[data-dirty]").forEach((i) => { delete i.dataset.dirty; });
+      if (path === "doctor/run" && r.id) doctor.watch(r.id);
       refresh();
       return r;
     } catch (e) {
@@ -224,7 +228,6 @@
   function capsCard(spend, extra) {
     if (spend.error) {
       return el("div", { class: "alert warn" },
-        el("span", { class: "sev", text: "brass" }),
         el("div", { class: "body" }, el("div", { class: "what msg", dir: "auto", text: String(spend.error) })));
     }
     return el("div", { class: "card" },
@@ -239,45 +242,200 @@
   // so in place, and the rest of the page keeps working.
   function sectionError(box, e) {
     box.replaceChildren(el("div", { class: "alert warn" },
-      el("span", { class: "sev", text: "brass" }),
       el("div", { class: "body" },
         el("div", { class: "what", text: "This section isn't available in this process" }),
         el("div", { class: "fix msg", dir: "auto", text: e.message }))));
   }
 
-  // ---- the problems banner, on top of every section ----------------------
+  // ---- M37 pieces --------------------------------------------------------
+
+  // Line icons, one path each, drawn in currentColor.
+  const ICONS = {
+    health: "M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6",
+    chat: "M4 5h16v11H9l-5 4z",
+    models: "M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4",
+    connections: "M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1",
+    more: "M5 12h.01M12 12h.01M19 12h.01",
+    console: "M4 6l6 6-6 6M12 18h8",
+    config: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4",
+    routing: "M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9c0 6-12 3-12 6",
+    usage: "M4 20V10M10 20V4M16 20v-7M2 20h20",
+    tasks: "M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
+    logs: "M4 6h16M4 12h16M4 18h10",
+    extensions: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+    agents: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0",
+  };
+  function icon(name) {
+    const s = el("svg", { class: "ico", viewBox: "0 0 24 24", "aria-hidden": "true" });
+    s.append(el("path", { d: ICONS[name] || ICONS.more, "stroke-width": name === "more" ? 3 : null }));
+    return s;
+  }
+
+  // A <details> that stays open (or shut) across the polls' redraws.
+  const opened = new Set();
+  function disc(key, cls, summary, ...body) {
+    const d = el("details", { class: cls || null, open: opened.has(key) },
+      el("summary", {}, summary), ...body);
+    d.addEventListener("toggle", () => { if (d.open) opened.add(key); else opened.delete(key); });
+    return d;
+  }
+
+  // A button that copies `value`; says so, or selects it to copy by hand.
+  function copyBtn(value) {
+    const b = el("button", { text: "Copy" });
+    b.onclick = async () => {
+      try { await navigator.clipboard.writeText(value); b.textContent = "Copied"; } catch (_) {
+        toast("Copy it by hand: " + value);
+      }
+      setTimeout(() => { b.textContent = "Copy"; }, 1600);
+    };
+    return b;
+  }
+
+  // Inputs for a form: a secret is a password box, emptied once it's sent.
+  function field(f, value) {
+    const attrs = { name: f.name, placeholder: f.placeholder || null, dir: "auto", autocomplete: f.secret ? "new-password" : "off" };
+    let i;
+    if (f.kind === "textarea") i = el("textarea", Object.assign({ rows: 5, spellcheck: "false" }, attrs));
+    else i = el("input", Object.assign({ type: f.secret ? "password" : f.kind === "email" ? "email" : f.kind === "date" ? "date" : "text" }, attrs));
+    if (value) i.value = value;
+    if (f.secret) i.dataset.secret = "1";
+    return el("label", { class: "field" },
+      el("span", { text: f.label + (f.optional ? " (optional)" : "") }),
+      i,
+      f.hint ? el("span", { class: "hint msg", dir: "auto", text: f.hint }) : null);
+  }
+  const values = (box) => {
+    const out = {};
+    box.querySelectorAll("input[name], textarea[name], select[name]").forEach((i) => {
+      if (i.type === "checkbox") return;
+      if (i.value.trim() !== "") out[i.name] = i.value.trim();
+    });
+    return out;
+  };
+  const wipeSecrets = (box) => box.querySelectorAll("[data-secret]").forEach((i) => { i.value = ""; delete i.dataset.dirty; });
+
+  // ---- notices (M37 §1) --------------------------------------------------
+  // Each strip says what's wrong, has a button per fix that can run from
+  // here, and closes for a day unless it's one of the two that never do.
+
+  function fixButton(f) {
+    if (f.action) return btn(f.label, f.action, f.body || {}, "primary");
+    if (f.section) return el("button", { text: f.label, onclick: () => show(f.section, f.tile ? { tile: f.tile } : null) });
+    return null;
+  }
+
+  function notice(p) {
+    const sev = p.top || p.action === "kill/off" ? "bad" : "warn";
+    const fixes = (p.fixes || []).map(fixButton);
+    if (!fixes.length) {
+      if (p.suggest) fixes.push(btn("Make " + p.suggest + " the default", "models/default", { model: p.suggest }, "primary"));
+      if (p.action) fixes.push(btn(p.action === "kill/off" ? "Turn the kill switch off" : "Fill missing prices", p.action, {}, "primary"));
+      if (p.section && p.section !== current) fixes.push(el("button", { text: "Open " + p.section, onclick: () => show(p.section) }));
+    }
+    return el("div", { class: "alert " + sev, "data-notice": p.id || null },
+      el("div", { class: "body" },
+        el("div", { class: "what msg", dir: "auto", text: p.what }),
+        p.fix ? el("div", { class: "fix msg", dir: "auto", text: p.fix }) : null,
+        p.back ? el("div", { class: "fix", text: "Back: it's still true a day later." }) : null,
+        fixes.length ? el("div", { class: "row" }, fixes) : null),
+      p.id && p.closable ? el("button", { class: "x", title: "Hide for a day", "aria-label": "Hide for a day", text: "×",
+        onclick: (e) => act("notices/dismiss", { id: p.id }, e.currentTarget) }) : null);
+  }
 
   function problems(list) {
     if (!list || !list.length) return null;
-    return el("div", {}, list.map((p) => {
-      const sev = p.top || p.action === "kill/off" ? "bad" : "warn";
-      return el("div", { class: "alert " + sev },
-        el("span", { class: "sev", text: sev === "bad" ? "rust" : "brass" }),
-        el("div", { class: "body" },
-          el("div", { class: "what msg", dir: "auto", text: p.what }),
-          p.fix ? el("div", { class: "fix msg", dir: "auto", text: p.fix }) : null),
-        el("div", { class: "row" },
-          p.suggest ? btn("Make " + p.suggest + " the default", "models/default", { model: p.suggest }, "primary") : null,
-          p.action ? btn(p.action === "kill/off" ? "Turn the kill switch off" : "Fill missing prices", p.action, {}, "primary") : null,
-          p.section && p.section !== current ? el("button", { text: "Open " + p.section, onclick: () => show(p.section) }) : null));
-    }));
+    return el("div", {}, list.map(notice));
   }
+
+  function hiddenNotices(list) {
+    if (!list || !list.length) return null;
+    return disc("hidden-notices", "card", frag(list.length + " hidden ", el("span", { class: "muted small", text: "· closed for a day, still true" })),
+      el("div", { class: "details-body stack" },
+        list.map((p) => el("div", { class: "row" },
+          el("span", { class: "grow msg", dir: "auto", text: p.what }),
+          p.until ? el("span", { class: "muted small", text: "back " + ago(p.until) }) : null,
+          btn("Show again", "notices/restore", { id: p.id }))),
+        el("div", { class: "row end" }, btn("Show all again", "notices/restore", {}))));
+  }
+
+  // ---- approvals: the owner's questions from any chat (M37 §4.3) ---------
+
+  function approvalsCard(list) {
+    if (!list || !list.length) return null;
+    return el("div", { class: "card" },
+      el("h3", { text: "Waiting for you", class: "mt0" }),
+      list.map((a) => el("div", { class: "check" },
+        led("warn pulse"),
+        el("div", { class: "body" },
+          el("div", { class: "t msg", dir: "auto", text: a.what }),
+          el("div", { class: "d", text: a.chat + " · asked " + secs(a.secs) + " ago" })),
+        el("div", { class: "row" },
+          btn("Allow", "approvals/answer", { code: a.code, allow: true }, "primary"),
+          btn("Refuse", "approvals/answer", { code: a.code, allow: false }, "danger")))));
+  }
+
+  // ---- doctor, as a run the page follows (M37 §1.3) ----------------------
+
+  const doctor = {
+    id: null, text: "", view: null, box: el("div"),
+    async watch(id) {
+      this.id = id; this.text = ""; this.view = null;
+      if (current !== "health") show("health");
+      let from = 0;
+      while (this.id === id) {
+        let v;
+        try { v = await api("/api/run?" + new URLSearchParams({ id, from })); } catch (e) { toast(e.message, true); break; }
+        this.text += v.text; from = v.next; this.view = v;
+        this.draw();
+        if (v.done) break;
+        await new Promise((r) => setTimeout(r, 700));
+      }
+    },
+    draw() {
+      const v = this.view;
+      if (!v) { setKids(this.box); return; }
+      const items = v.report && v.report.items ? v.report.items : null;
+      const bad = (i) => i.level === "warn" || i.level === "fail";
+      setKids(this.box, el("div", { class: "card" },
+        el("div", { class: "row" },
+          el("strong", { class: "grow", text: v.label }),
+          v.done ? tag(v.code === 0 ? "done" : "exit " + v.code, v.code === 0 ? "ok" : "warn") : tag("running " + secs(v.secs)),
+          el("button", { class: "ghost", text: "Close", onclick: () => { this.id = null; this.view = null; this.draw(); } })),
+        items ? el("div", {}, items.filter(bad).map((i) => el("div", { class: "check" },
+          led(i.level === "fail" ? "bad" : "warn"),
+          el("div", { class: "body" },
+            el("div", { class: "t", text: i.what }),
+            el("div", { class: "d msg", dir: "auto", text: [i.text].concat(i.hints || []).join("\n") })),
+          (i.fixes || []).length ? el("div", { class: "row" }, i.fixes.map(fixButton)) : null)),
+          items.some(bad) ? null : el("p", { class: "ok", text: "Every check passed (" + items.length + ")." }))
+          : el("pre", { class: "out msg", dir: "auto", text: this.text || "…" })));
+    },
+  };
 
   // ---- sections ----------------------------------------------------------
   // Each: `mount(root)` builds the static part once, `load()` refreshes the
-  // live part; `every` is its polling period in seconds (0: by hand only).
+  // live part; `every` is its polling period in seconds (0: by hand only);
+  // `live`: it polls even while the owner types (it keeps its own inputs).
 
   const sections = {};
 
   sections.health = {
+    title: "Home",
     every: 3,
-    mount(root) { this.box = el("div"); root.append(this.box); },
+    mount(root) {
+      this.box = el("div");
+      root.append(this.box, doctor.box);
+      doctor.draw();
+    },
     async load(h) {
       const kill = h.kill || null;
       const hb = h.heartbeat;
       const ch = h.channels || [];
       const turns = h.turns || [];
       const wd = h.watchdog;
+      let approvals = [];
+      try { approvals = (await api("/api/approvals")).approvals; } catch (_) { /* not here */ }
       const lanes = ch.length ? ch.map((c) => c.name).join(" + ") + (ch.length === 1 ? " lane" : " lanes") : null;
       const rows = [
         h.last_start ? ["last start", text(h.last_start)] : null,
@@ -290,9 +448,12 @@
         (h.updates || []).length ? ["updates", el("div", {}, ...h.updates.map((l) => el("div", { class: "msg", dir: "auto", text: l })))] : null,
         (h.repairs || []).length ? ["repairs", el("div", {}, ...h.repairs.map((l) => el("div", { class: "msg", dir: "auto", text: l })))] : null,
       ].filter(Boolean);
-      setKids(this.box, 
-        secHead("Health", "what ferrule is doing right now",
+      setKids(this.box,
+        secHead("Home", (h.problems || []).length ? (h.problems.length + " to look at") : "all quiet",
+          btn("Run doctor", "doctor/run", {}),
           kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
+        approvalsCard(approvals),
+        hiddenNotices(h.hidden),
         el("div", { class: "stats" },
           stat("version", h.version ? "v" + h.version : "–"),
           stat("uptime", h.uptime || "–", h.started ? "since " + h.started : null),
@@ -302,11 +463,12 @@
           stat("heartbeat", hb ? ago(hb.last_at) : "not set", hb ? hb.host + " · every " + secs(hb.every_secs) : null)),
         rows.length ? el("div", { class: "card" }, kv(rows)) : null,
         el("h3", { text: "Channels" }),
-        ch.length ? table(["channel", "polls", "last ok poll"], ch.map((c) => ({ cells: [
+        ch.length ? table(["channel", "polls", "last ok poll", ""], ch.map((c) => ({ cells: [
           frag(led(c.stale ? "bad" : "ok pulse"), " ", c.name,
             c.problem ? el("span", { class: "sub msg", dir: "auto", text: c.problem }) : null),
           c.polls ? "yes" : "no",
           el("span", { class: c.stale ? "bad" : "mono muted", text: ago(c.last_ok_poll) }),
+          c.stale ? btn("Restart", "channels/restart", { name: c.name }) : null,
         ]}))) : el("div", { class: "empty", text: "no channel in this process" }),
         el("h3", { text: "Running turns" }),
         turns.length ? table(["where", "message", "for", ""], turns.map((t) => ({ cells: [
@@ -315,7 +477,7 @@
           t.busy_secs === null || t.busy_secs === undefined ? el("span", { class: "muted", text: "queued" }) : el("span", { class: "mono", text: secs(t.busy_secs) }),
           t.busy_secs === null || t.busy_secs === undefined ? null : btn("Stop", "turn/stop", { session: t.session }, "danger"),
         ]}))) : el("div", { class: "empty", text: "nothing running" }),
-        h.spend ? el("h3", { text: "Spend today — against the caps" }) : null,
+        h.spend ? el("h3", { text: "Spend today, against the caps" }) : null,
         h.spend ? capsCard(h.spend) : null);
     },
   };
@@ -345,11 +507,13 @@
         save));
     box.open = true;
   }
-
   sections.models = {
+    title: "Models",
     every: 10,
     mount(root) {
       this.box = el("div");
+      this.chooseBox = el("div");
+      this.fb = null;
       this.search = el("input", { type: "search", placeholder: "search the catalog", dir: "auto", size: "24" });
       this.tools = el("select", {}, el("option", { value: "", text: "tool-capable only" }), el("option", { value: "all", text: "all models" }));
       this.sort = el("select", {}, ["in", "out", "context", "name"].map((s) => el("option", { value: s, text: "sort: " + s })));
@@ -361,7 +525,7 @@
       this.search.addEventListener("change", go);
       this.tools.onchange = go;
       this.sort.onchange = go;
-      root.append(this.box,
+      root.append(this.chooseBox, this.box,
         el("h3", { text: "Evaluate a candidate" }),
         el("div", { class: "card" },
           el("div", { class: "row" }, this.suite,
@@ -407,6 +571,7 @@
     },
     async load() {
       this.loadEval();
+      this.loadChoices();
       let m;
       try {
         m = await api("/api/models");
@@ -422,10 +587,9 @@
       const chat = el("input", { placeholder: "chat id", size: 10, dir: "auto" });
       const last = (v.last_served || [])[0];
       setKids(this.box, 
-        secHead("Models", v.models.length + " connected" + (v.default ? " · default " + v.default : ""),
-          btn("Fill missing prices", "catalog/fill-prices", {})),
+        el("h3", { text: "Connected models" }),
+        el("div", { class: "row mb" }, btn("Fill missing prices", "catalog/fill-prices", {})),
         m.fixed ? el("div", { class: "alert warn" },
-          el("span", { class: "sev", text: "brass" }),
           el("div", { class: "body" },
             el("div", { class: "what", text: "This gateway runs with --provider " + m.fixed + "." }),
             el("div", { class: "fix", text: "Every chat uses it until a restart, whatever the default says." }))) : null,
@@ -464,16 +628,9 @@
             btn("Unpin", "models/unpin", { chat: p.chat, channel: p.channel }),
           ]})))
           : el("div", { class: "empty", text: "no chat is pinned" }),
-        el("h3", { text: "Change" }),
+        el("h3", { text: "Pin a chat, add a model by id" }),
         el("div", { class: "card" },
           el("div", { class: "row" }, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value }))),
-          pick("Make default", "models/default", "model"),
-          (() => {
-            const f = el("input", { placeholder: "fallback, comma-separated", value: v.fallback.join(", "), dir: "auto" });
-            const b = el("button", { text: "Set fallback" });
-            b.onclick = () => act("models/fallback", { models: f.value.split(",").map((s) => s.trim()).filter(Boolean) }, b);
-            return el("div", { class: "row" }, f, b);
-          })(),
           (() => {
             const p = el("input", { placeholder: "provider", size: 10 });
             const id = el("input", { placeholder: "model id", dir: "auto" });
@@ -537,8 +694,139 @@
         setKids(this.rec, el("p", { class: "bad", text: e.message }));
       }
     },
-  };
 
+    // M37 §2: the pickers every model select uses, the fallback list in
+    // order, and the providers to connect with a key or a plan.
+    async loadChoices() {
+      // A half-edited fallback list isn't redrawn under the owner.
+      if (this.fbEdited) return;
+      let c;
+      try { c = await api("/api/models/choices"); } catch (e) { return sectionError(this.chooseBox, e); }
+      this.choices = c;
+      this.fb = c.fallback.slice();
+      this.drawChoices();
+    },
+    drawChoices() {
+      const c = this.choices;
+      const label = (m) => m.label + (m.ready ? "" : " (" + (m.missing || "not ready") + ")");
+      const def = el("select", { name: "default-model", "aria-label": "Default model" },
+        c.default ? null : el("option", { value: "", text: "choose…" }),
+        c.models.map((m) => el("option", { value: m.reference, text: label(m), disabled: !m.ready && m.reference !== c.default })));
+      def.value = c.default || "";
+      const setDef = el("button", { class: "primary", text: "Use" });
+      setDef.onclick = () => { if (def.value && def.value !== c.default) act("models/default", { model: def.value }, setDef); };
+      const others = c.models.filter((m) => m.reference !== c.default);
+      const edited = () => { this.fbEdited = true; this.drawChoices(); };
+      const rows = this.fb.map((ref, i) => {
+        const s = el("select", { "aria-label": "Fallback " + (i + 1) },
+          others.map((m) => el("option", { value: m.reference, text: label(m), disabled: this.fb.includes(m.reference) && m.reference !== ref })));
+        s.value = ref;
+        s.onchange = () => { this.fb[i] = s.value; edited(); };
+        const move = (d) => { const j = i + d; [this.fb[i], this.fb[j]] = [this.fb[j], this.fb[i]]; edited(); };
+        return el("div", { class: "row" },
+          el("span", { class: "mono muted", text: String(i + 1) }), s,
+          el("button", { class: "ghost", text: "↑", title: "Earlier", "aria-label": "Earlier", disabled: i === 0, onclick: () => move(-1) }),
+          el("button", { class: "ghost", text: "↓", title: "Later", "aria-label": "Later", disabled: i === this.fb.length - 1, onclick: () => move(1) }),
+          el("button", { class: "ghost", text: "×", title: "Take out", "aria-label": "Take out", onclick: () => { this.fb.splice(i, 1); edited(); } }));
+      });
+      const unused = others.filter((m) => !this.fb.includes(m.reference));
+      const save = el("button", { class: "primary", text: "Save the fallback list", disabled: !this.fbEdited });
+      save.onclick = async () => {
+        const r = await act("models/fallback", { models: this.fb }, save);
+        if (r) { this.fbEdited = false; this.loadChoices(); }
+      };
+      const providers = c.providers || [];
+      const on = providers.filter((p) => p.connected);
+      const off = providers.filter((p) => !p.connected);
+      setKids(this.chooseBox,
+        secHead("Models", c.models.length + " connected" + (c.default ? " · default " + c.default : "")),
+        el("div", { class: "grid2" },
+          el("div", { class: "card" },
+            el("h4", { text: "Default", class: "mt0" }),
+            el("p", { class: "muted small", text: "Every chat uses it unless the chat is pinned to another." }),
+            el("div", { class: "row" }, def, setDef)),
+          el("div", { class: "card" },
+            el("h4", { text: "Fallback, in order", class: "mt0" }),
+            el("p", { class: "muted small", text: "When the default is down, the next one that answers takes the turn." }),
+            rows.length ? el("div", { class: "stack fallback" }, rows) : el("div", { class: "empty", text: "no fallback: an outage stops the chat" }),
+            el("div", { class: "row mt" },
+              unused.length ? el("button", { text: "Add one", onclick: () => { this.fb.push(unused[0].reference); edited(); } }) : null,
+              save,
+              this.fbEdited ? el("button", { class: "ghost", text: "Discard", onclick: () => { this.fbEdited = false; this.loadChoices(); } }) : null))),
+        el("h3", { text: "Providers" }),
+        on.length ? el("div", { class: "tiles" }, on.map((p) => this.provider(p))) : el("div", { class: "empty", text: "no provider connected" }),
+        off.length ? disc("providers-off", "card", "Connect another provider (" + off.length + ")",
+          el("div", { class: "tiles details-body" }, off.map((p) => this.provider(p)))) : null);
+    },
+    provider(p) {
+      const head = el("div", { class: "row" },
+        el("strong", { class: "grow", text: p.title }),
+        p.connected ? (p.ready ? tag("ready", "ok") : tag("not ready", "bad")) : p.key_set ? tag("key saved", "copper") : null);
+      const box = el("div", { class: "card" }, head);
+      if (p.plan === "chatgpt" && !p.connected) {
+        const f = this.chatgpt;
+        box.append(el("p", { class: "muted small", text: "Sign in with your ChatGPT plan: a code shows here, you type it on OpenAI's page. No key." }));
+        if (f && f.state === "waiting") {
+          box.append(el("p", {}, "On ", el("a", { href: f.page, target: "_blank", rel: "noopener", text: f.page }), " enter:"),
+            el("div", { class: "big mono", text: f.user_code }),
+            el("div", { class: "row" }, copyBtn(f.user_code), btn("Cancel", "plans/chatgpt/cancel", {}, "danger")));
+        } else {
+          if (f && f.state === "failed") box.append(el("div", { class: "said bad msg", dir: "auto", text: f.said }));
+          const b = el("button", { class: "primary", text: "Sign in" });
+          b.onclick = async () => {
+            b.disabled = true;
+            try { this.chatgpt = await api("/api/plans/chatgpt/start", {}); this.pollChatgpt(); this.drawChoices(); } catch (e) { toast(e.message, true); b.disabled = false; }
+          };
+          box.append(el("div", { class: "row" }, b));
+        }
+        return box;
+      }
+      if (p.plan === "claude-code" && !p.connected) {
+        const t = el("input", { type: "password", name: "token", autocomplete: "new-password", placeholder: "sk-ant-oat…", "data-secret": "1" });
+        const b = el("button", { class: "primary", text: "Check and save" });
+        b.onclick = () => { const v = t.value.trim(); wipeSecrets(box); if (v) act("plans/claude", { token: v }, b); };
+        box.append(el("p", { class: "muted small", text: "Run `claude setup-token` on any machine signed in to your Claude plan and paste the token it prints." }),
+          el("div", { class: "row" }, t, b));
+        return box;
+      }
+      if (p.needs_key) {
+        const k = el("input", { type: "password", name: "key", autocomplete: "new-password", placeholder: p.connected ? "a new key replaces the saved one" : "paste the key", "data-secret": "1" });
+        const b = el("button", { class: p.connected ? null : "primary", text: p.connected ? "Replace key" : "Test and save" });
+        b.onclick = () => { const v = k.value.trim(); wipeSecrets(box); if (v) act("models/provider", { provider: p.name, key: v }, b).then(() => this.loadChoices()); };
+        box.append(frag(
+          p.key_url ? el("p", { class: "small" }, el("a", { href: p.key_url, target: "_blank", rel: "noopener", text: "Get a key" }),
+            el("span", { class: "muted", text: " · tested before it's saved; it never comes back to this page" })) : null,
+          el("div", { class: "row" }, k, b)));
+      } else if (!p.connected) {
+        box.append(el("div", { class: "row" }, btn("Connect", "models/provider", { provider: p.name }, "primary")));
+      }
+      if (p.connected || p.key_set) {
+        const list = el("div");
+        const b = el("button", { text: "List its models" });
+        b.onclick = async () => {
+          b.disabled = true;
+          try {
+            const r = await api("/api/models/provider/list?" + new URLSearchParams({ provider: p.name }));
+            setKids(list, el("div", { class: "stack mt scroll" },
+              r.models.slice(0, 200).map((m) => el("div", { class: "row" },
+                el("span", { class: "mono grow", text: m }),
+                r.connected.includes(m) ? tag("connected", "ok") : btn("Add", "models/add", { provider: p.name, model: m })))));
+          } catch (e) { setKids(list, el("p", { class: "bad small msg", dir: "auto", text: e.message })); }
+          b.disabled = false;
+        };
+        box.append(el("div", { class: "row mt" }, b), list);
+      }
+      return box;
+    },
+    async pollChatgpt() {
+      while (this.chatgpt && this.chatgpt.state === "waiting") {
+        await new Promise((r) => setTimeout(r, 3000));
+        try { this.chatgpt = await api("/api/plans/chatgpt/poll"); } catch (_) { break; }
+        if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); break; }
+        if (current === "models" && !this.fbEdited) this.drawChoices();
+      }
+    },
+  };
   // M25: which models a turn climbs, why it climbed, and what each tier cost.
   sections.routing = {
     every: 30,
@@ -575,7 +863,6 @@
           stat("escalations", String(st.escalations || 0), "over " + r.days + "d")),
         (v.problems || []).length ? v.problems.map((p) =>
           el("div", { class: "alert warn" },
-            el("span", { class: "sev", text: "brass" }),
             el("div", { class: "body" }, el("div", { class: "what msg", dir: "auto", text: p })))) : null,
         el("h3", { text: "Tiers" }),
         v.tiers.length ? table(["", "tier", "model", "price / 1M", "context", "key"], v.tiers.map((t, i) => ({ cells: [
@@ -604,53 +891,334 @@
     },
   };
 
+  // M37 §3: the one place for credentials. On top, the fixed callback
+  // address every OAuth sign-in comes back to; then what each service still
+  // needs, with the next step as a button; then a tile per service, each
+  // way in with what it covers, a guide for the phone, its fields (write-
+  // only: nothing typed here ever comes back) and a Test that says what
+  // failed. A way in that can't work yet says why instead of a button.
+  const CHECK_OK = ["ready", "connected", "available"];
+  const day = (unix) => new Date(unix * 1000).toISOString().slice(0, 10);
+  const CHECK_BAD = ["unreachable", "domain blocked", "API-token auth off"];
+
   sections.connections = {
+    title: "Connections",
     every: 10,
+    said: {},
     mount(root) { this.box = el("div"); root.append(this.box); },
     async load() {
-      let c;
+      let c, list = null;
       try {
         c = await api("/api/connections");
       } catch (e) { return sectionError(this.box, e); }
       if (!c.available) {
-        setKids(this.box, 
-          secHead("Connections", "oauth grants to outside services"),
-          el("div", { class: "empty", text: "Connections aren't set up in this process: see `ferrule connections`." }));
+        setKids(this.box,
+          secHead("Connections", "outside services the agent may use"),
+          el("div", { class: "empty", text: "Connections aren't set up in this process: run `ferrule connections setup` on the machine." }));
         return;
       }
-      const svc = el("select", {}, c.services.map((s) => el("option", { value: s, text: s })));
-      const write = el("input", { type: "checkbox" });
-      const go = el("button", { class: "primary", text: "Connect" });
-      go.onclick = () => act("connections/connect", { service: svc.value, write: write.checked }, go);
-      setKids(this.box, 
+      try { list = await api("/api/connections/checklist"); } catch (_) { /* the rest still works */ }
+      this.c = c;
+      this.aim(c);
+      setKids(this.box,
         secHead("Connections", c.connections.length + " connected · read-only unless you say otherwise"),
-        c.relay ? null : el("div", { class: "alert warn" },
-          el("span", { class: "sev", text: "brass" }),
-          el("div", { class: "body" }, el("div", { class: "what", text: "No relay set: sign-ins that need one won't work." }))),
-        c.connections.length ? table(["service", "state", "scopes", "last use", ""], c.connections.map((s) => {
-          const needs = String(s.state).toLowerCase().includes("reconnect");
-          return { cells: [
-            frag(el("strong", { text: s.title || s.name }), el("span", { class: "sub", text: "via " + s.via })),
-            frag(needs ? tag("needs reconnect", "bad") : tag("connected", "ok"),
-              s.last_error ? el("span", { class: "sub msg", dir: "auto", text: s.last_error }) : null),
-            s.write ? "read + write" : "read",
-            el("span", { class: "mono muted", text: ago(s.refreshed_at || s.connected_at) }),
-            el("div", { class: "row" },
-              btn(needs ? "Reconnect" : "Renew", "connections/connect", { service: s.name, write: s.write }, needs ? "primary" : null),
-              btn("Disconnect", "connections/disconnect", { name: s.name }, "danger")),
-          ]};
-        })) : el("div", { class: "empty", text: "nothing connected" }),
-        c.pending.length ? el("p", { class: "muted small", text: "Waiting on a sign-in: " + c.pending.join(", ") }) : null,
         c.asked.length ? el("div", { class: "alert warn" },
-          el("span", { class: "sev", text: "brass" }),
           el("div", { class: "body" },
             el("div", { class: "what", text: "The agent asked for: " + c.asked.join(", ") }),
-            el("div", { class: "fix", text: "It waits until you connect it here — it never sees the token." })),
-          btn("Connect " + c.asked[0], "connections/connect", { service: c.asked[0] }, "primary")) : null,
-        el("h3", { text: "Connect" }),
-        el("div", { class: "card" },
-          el("div", { class: "row" }, svc, el("label", { class: "cb" }, write, "write access"), go),
-          el("p", { class: "muted small", text: "The OAuth code comes back through your own relay or a quick tunnel — no inbound port. Services that take an API key are added on the machine: `ferrule connections add <name>`." })));
+            el("div", { class: "fix", text: "It waits until you connect it here, and it never sees the token." }),
+            el("div", { class: "row" }, c.asked.map((s) => el("button", { class: "primary", text: "Set up " + s, onclick: () => this.focus(s) }))))) : null,
+        this.relayCard(c),
+        list ? this.checklist(list) : null,
+        this.pending(c),
+        this.connected(c),
+        el("h3", { text: "Services" }),
+        el("div", { class: "tiles" }, c.tiles.map((t) => this.tile(c, t))));
+      if (this.target) {
+        const node = document.getElementById("tile-" + this.target);
+        this.target = null;
+        if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    },
+
+    // Opens a service's tile (by tile or option name) and scrolls to it,
+    // on the next draw. `quiet`: the caller loads next anyway.
+    focus(name, quiet) {
+      this.want = name;
+      if (!quiet) this.load();
+    },
+    // Called with fresh data, before drawing.
+    aim(c) {
+      const name = this.want;
+      this.want = null;
+      if (!name) return;
+      const tile = c.tiles.find((t) => t.tile === name || t.options.some((o) => o.name === name));
+      if (!tile) return;
+      const opt = tile.options.find((o) => o.name === name) || tile.options.find((o) => !o.blocked && !o.connected) || tile.options[0];
+      opened.add("opt:" + opt.name);
+      this.target = tile.tile;
+    },
+
+    relayCard(c) {
+      const card = el("div", { class: "card pad-lg", id: "relay" });
+      const steps = (s) => s && s.length ? el("ul", { class: "steps" }, s.map((x) => el("li", { class: x.ok ? null : "no", text: x.step }))) : null;
+      if (c.relay_url) {
+        card.append(frag(
+          el("div", { class: "row" },
+            el("h3", { class: "grow m0", text: "Fixed callback address" }),
+            c.relay_live ? tag("working", "ok") : tag("not answering", "bad")),
+          el("p", { class: "muted small", text: "Paste this where a service asks for a redirect or callback URL. It stays the same across restarts." }),
+          el("div", { class: "callback" }, el("code", { text: c.callback }), copyBtn(c.callback)),
+          (c.callbacks || []).length ? disc("callbacks", null, "Which callback each service uses",
+            el("div", { class: "details-body" }, kv(c.callbacks.map((x) => [x.service, text(x.callback)])))) : null,
+          steps(this.relaySteps),
+          el("div", { class: "row mt" },
+            this.stepsBtn("Check it", "connections/relay/check", () => ({})),
+            el("button", { class: "ghost", text: "Use another relay", onclick: () => { this.relayForms = !this.relayForms; this.load(); } }))));
+        if (!this.relayForms) return card;
+      } else {
+        card.append(
+          el("h3", { class: "mt0", text: "Fixed callback address" }),
+          el("p", { class: "small", text: "OAuth sign-ins (Google's wizard, Atlassian's OAuth, most MCP servers) send you back to an address that must never change. A small relay on your own Cloudflare account gives you one, free. Key-based ways in don't need it." }));
+      }
+      // Deploy: a Cloudflare API token, never shown again.
+      const deploy = el("div", { class: "opt mt" });
+      const tok = el("input", { type: "password", name: "token", autocomplete: "new-password", placeholder: "Cloudflare API token", "data-secret": "1" });
+      const acct = this.accounts ? el("select", { name: "account", "aria-label": "Cloudflare account" },
+        this.accounts.map((a) => el("option", { value: a.id, text: a.name + " (" + a.id.slice(0, 8) + "…)" }))) : null;
+      const go = el("button", { class: "primary", text: acct ? "Deploy to this account" : "Deploy the relay" });
+      go.onclick = async () => {
+        const token = tok.value.trim() || this.pendingToken;
+        if (!token) { toast("Paste the token first.", true); return; }
+        const body = { token };
+        if (acct) body.account = acct.value;
+        this.pendingToken = null;
+        wipeSecrets(deploy);
+        const r = await act("connections/relay/deploy", body, go);
+        if (r && r.choose) {
+          // Kept in memory for the second press only; never sent back.
+          this.accounts = r.choose; this.pendingToken = token; this.load();
+        } else if (r) {
+          this.accounts = null; this.relaySteps = r.steps; this.relayForms = false;
+        }
+      };
+      deploy.append(
+        el("strong", { text: "Deploy one with a Cloudflare token" }),
+        el("ol", { class: "guide" },
+          el("li", {}, "Open ", el("a", { href: "https://dash.cloudflare.com/profile/api-tokens", target: "_blank", rel: "noopener", text: "dash.cloudflare.com/profile/api-tokens" }), "."),
+          el("li", { text: "Create Token → use the template “Edit Cloudflare Workers” → Continue to summary → Create Token." }),
+          el("li", { text: "Copy the token and paste it here. ferrule finds your account, deploys the relay and checks it end to end." })),
+        acct ? el("div", { class: "field" }, el("span", { text: "The token reaches several accounts: pick one" }), acct) : el("div", { class: "row" }, tok),
+        el("div", { class: "row mt" }, go,
+          acct ? el("button", { class: "ghost", text: "Start over", onclick: () => { this.accounts = null; this.pendingToken = null; this.load(); } }) : null));
+      // Use one that's already running.
+      const use = el("div", { class: "opt mt" });
+      const url = el("input", { type: "url", name: "url", placeholder: "https://ferrule-relay.you.workers.dev", autocomplete: "off" });
+      const key = el("input", { type: "password", name: "key", placeholder: "the relay's key", autocomplete: "new-password", "data-secret": "1" });
+      const check = el("button", { text: "Check and use" });
+      check.onclick = async () => {
+        const body = { url: url.value.trim(), key: key.value.trim() };
+        wipeSecrets(use);
+        const r = await act("connections/relay/use", body, check);
+        if (r) { this.relaySteps = r.steps; this.relayForms = false; }
+      };
+      use.append(
+        el("strong", { text: "Or use a relay you already have" }),
+        el("p", { class: "muted small", text: "Its URL and key; it's checked before anything is saved." }),
+        el("div", { class: "stack" }, url, key),
+        el("div", { class: "row mt" }, check));
+      card.append(deploy, use);
+      return card;
+    },
+
+    // A button whose answer is a list of steps, each ticked or crossed.
+    stepsBtn(label, path, body) {
+      const b = el("button", { text: label });
+      b.onclick = async () => {
+        const r = await act(path, body(), b);
+        if (r) { this.relaySteps = r.steps; this.load(); }
+      };
+      return b;
+    },
+
+    checklist(list) {
+      if (!list.checks.length) return null;
+      const actionBtn = (ch) => {
+        const a = ch.action;
+        if (!a) return null;
+        switch (a.action) {
+          case "relay_setup":
+          case "relay_use":
+            return el("button", { class: "primary", text: a.label, onclick: () => {
+              this.relayForms = true;
+              const r = document.getElementById("relay");
+              if (r) r.scrollIntoView({ behavior: "smooth" });
+              this.load();
+            } });
+          case "relay_check": return this.stepsBtn(a.label, "connections/relay/check", () => ({}));
+          case "connect": return el("button", { class: "primary", text: a.label, onclick: () => this.focus(a.service) });
+          case "cancel": return btn(a.label, "connections/cancel", { id: a.id }, "danger");
+          case "google_client": return el("button", { class: "primary", text: a.label, onclick: () => { this.googleForm = !this.googleForm; this.load(); } });
+          default: return null;
+        }
+      };
+      return el("div", { class: "card" },
+        el("h3", { class: "mt0", text: "What each service still needs" }),
+        list.checks.map((ch) => {
+          const cls = CHECK_OK.includes(ch.state) ? "ok" : CHECK_BAD.includes(ch.state) ? "bad" : ch.state === "pending" ? "warn pulse" : "";
+          const row = el("div", { class: "check" },
+            led(cls),
+            el("div", { class: "body" },
+              el("div", { class: "t" }, ch.title, " ", tag(ch.state, cls.split(" ")[0] || null)),
+              ch.text ? el("div", { class: "d msg", dir: "auto", text: ch.text }) : null,
+              ch.id === "google_client" && this.googleForm ? this.googleClientForm() : null),
+            actionBtn(ch));
+          return row;
+        }));
+    },
+
+    googleClientForm() {
+      const box = el("div", { class: "stack mt" });
+      const id = el("input", { name: "id", placeholder: "Client ID (…apps.googleusercontent.com)", autocomplete: "off" });
+      const secret = el("input", { type: "password", name: "secret", placeholder: "Client secret", autocomplete: "new-password", "data-secret": "1" });
+      const save = el("button", { class: "primary", text: "Save the client" });
+      save.onclick = async () => {
+        const body = { id: id.value.trim(), secret: secret.value.trim() };
+        wipeSecrets(box);
+        if (await act("connections/google-client", body, save)) this.googleForm = false;
+      };
+      box.append(id, secret, el("div", { class: "row" }, save));
+      return box;
+    },
+
+    pending(c) {
+      const flows = c.pending_flows || [];
+      if (!flows.length) return null;
+      return el("div", { class: "card" },
+        el("h3", { class: "mt0", text: "Waiting on a sign-in" }),
+        flows.map((f) => el("div", { class: "check" },
+          led("warn pulse"),
+          el("div", { class: "body" },
+            el("div", { class: "t", text: f.title || f.service }),
+            el("div", { class: "d", text: "via " + f.via + " · started " + secs(f.age_secs) + " ago · gives up in " + secs(f.expires_in) })),
+          btn("Cancel", "connections/cancel", { id: f.id }, "danger"))));
+    },
+
+    connected(c) {
+      if (!c.connections.length) return null;
+      const att = Object.fromEntries((c.attention || []).map((a) => [a.name, a]));
+      return frag(
+        el("h3", { text: "Connected" }),
+        el("div", { class: "stack" }, c.connections.map((s) => {
+          const a = att[s.name];
+          const needs = s.state === "needs_reconnect" || (a && a.expired);
+          const said = this.said[s.name];
+          return el("div", { class: "card" },
+            el("div", { class: "row" },
+              led(needs ? "bad" : a ? "warn" : "ok"),
+              el("strong", { class: "grow", text: s.title || s.name }),
+              needs ? tag("needs attention", "bad") : a ? tag(a.days_left + " d left", "warn") : tag("connected", "ok"),
+              tag(s.write ? "read + write" : "read")),
+            el("p", { class: "muted small", text: "via " + s.via + (s.tools !== null && s.tools !== undefined ? " · " + s.tools + " tools" : "") +
+              " · connected " + ago(s.connected_at) + (s.refreshed_at ? " · refreshed " + ago(s.refreshed_at) : "") +
+              (s.expires_at ? " · sign-in renews " + ago(s.expires_at) : "") + (s.key_expires ? " · key expires " + day(s.key_expires) : "") }),
+            a ? el("div", { class: "said bad msg", dir: "auto", text: a.text }) : s.last_error ? el("div", { class: "said bad msg", dir: "auto", text: s.last_error }) : null,
+            said ? el("div", { class: "said " + (said.ok ? "ok" : "bad") + " msg", dir: "auto", text: said.said }) : null,
+            el("div", { class: "row mt" },
+              this.testBtn(s.name),
+              needs ? el("button", { class: "primary", text: "Fix it", onclick: () => this.focus(s.service) }) : null,
+              btn("Disconnect", "connections/disconnect", { name: s.name }, "danger")));
+        })));
+    },
+
+    // Test: the answer stays on the card until the next test.
+    testBtn(name) {
+      const b = el("button", { text: "Test" });
+      b.onclick = async () => {
+        b.disabled = true; b.textContent = "Testing…";
+        try {
+          const r = await api("/api/connections/test", { name });
+          this.said[name] = { ok: r.ok, said: r.said };
+        } catch (e) { this.said[name] = { ok: false, said: e.message }; }
+        this.load();
+      };
+      return b;
+    },
+
+    tile(c, t) {
+      const att = (c.attention || []).find((a) => a.tile === t.tile);
+      return el("div", { class: "card tile", id: "tile-" + t.tile },
+        el("div", { class: "head" },
+          el("h3", { class: "grow", text: t.title }),
+          att ? tag(att.expired ? "expired" : "expires in " + att.days_left + " d", att.expired ? "bad" : "warn") : t.connected ? tag("connected", "ok") : null),
+        t.options.length > 1 ? el("p", { class: "muted small m0", text: t.options.length + " ways in, simplest first." }) : null,
+        t.options.map((o) => this.option(c, o)));
+    },
+
+    option(c, o) {
+      const key = "opt:" + o.name;
+      const conn = c.connections.find((s) => s.service === o.name);
+      const body = el("div", { class: "details-body" });
+      if (o.covers) body.append(el("p", { class: "covers msg", dir: "auto", text: "Covers: " + o.covers }));
+      if ((o.guide || []).length) body.append(el("ol", { class: "guide" }, o.guide.map((g) => el("li", { class: "msg", dir: "auto", text: g }))));
+      if (o.fixed_callback && c.callback) body.append(el("p", { class: "small" }, "Callback to give it: ", el("code", { text: c.callback }), " ", copyBtn(c.callback)));
+      if (o.attempt) {
+        body.append(el("div", { class: "said bad" },
+          el("div", { class: "msg", dir: "auto", text: o.attempt.text }),
+          o.attempt.switch_to && o.attempt.switch_to !== o.name ? el("div", { class: "row mt" },
+            el("button", { class: "primary", text: "Use an API token instead", onclick: () => this.focus(o.attempt.switch_to) })) : null));
+      }
+      // What the vendor's page said, in its words, and what to do about it.
+      if ((o.symptoms || []).length && !o.connected) {
+        body.append(disc("sym:" + o.name, null, "Saw an error on their page?",
+          el("div", { class: "details-body" }, kv(o.symptoms.map((x) => [x.saw, text(x.fix)])))));
+      }
+      if (conn) {
+        const said = this.said[conn.name];
+        if (said) body.append(el("div", { class: "said " + (said.ok ? "ok" : "bad") + " msg", dir: "auto", text: said.said }));
+        body.append(el("div", { class: "row" }, this.testBtn(conn.name), btn("Disconnect", "connections/disconnect", { name: conn.name }, "danger")));
+      } else if (o.blocked) {
+        // Never a button bound to fail: why it can't work yet, instead.
+        body.append(el("div", { class: "alert info" }, el("div", { class: "body" }, el("div", { class: "fix msg", dir: "auto", text: o.blocked }))));
+      } else if (o.auth === "api_key") {
+        body.append(this.keyForm(o));
+      } else {
+        const write = el("input", { type: "checkbox" });
+        const go = el("button", { class: "primary", text: "Connect" });
+        go.onclick = () => act("connections/connect", { service: o.name, write: write.checked }, go);
+        body.append(el("div", { class: "row" }, el("label", { class: "cb" }, write, "allow changes (send, edit)"), go),
+          el("p", { class: "muted small", text: "Opens the sign-in in a new tab; this page updates when it's done." }));
+      }
+      return disc(key, "opt",
+        frag(el("span", { class: "grow", text: o.option || o.title }),
+          o.connected ? tag("connected", "ok") : null,
+          o.preview ? tag("preview", "warn") : null,
+          o.blocked && !o.connected ? tag("not yet", null) : null,
+          tag(o.auth === "api_key" ? "key" : "sign-in")),
+        body);
+    },
+
+    keyForm(o) {
+      const box = el("div", { class: "stack" });
+      const fields = el("div", {}, (o.fields || []).map((f) => field(f)));
+      const write = el("input", { type: "checkbox" });
+      const go = el("button", { class: "primary", text: "Check and connect" });
+      go.onclick = async () => {
+        const vals = values(fields);
+        const missing = (o.fields || []).filter((f) => !f.optional && !vals[f.name]).map((f) => f.label);
+        if (missing.length) { toast("Still empty: " + missing.join(", "), true); return; }
+        wipeSecrets(box);
+        const r = await act("connections/key", { service: o.name, fields: vals, write: write.checked }, go);
+        if (!r) return;
+        // Emptied and let go of, so the redraw that shows it connected isn't
+        // held back as typing.
+        box.querySelectorAll("input, textarea").forEach((i) => { if (i.type !== "checkbox") i.value = ""; delete i.dataset.dirty; });
+        if (box.contains(document.activeElement)) document.activeElement.blur();
+        this.load();
+      };
+      box.append(fields,
+        el("div", { class: "row" }, el("label", { class: "cb" }, write, "allow changes (send, edit)"), go),
+        el("p", { class: "muted small", text: "Checked against the service before it's saved, in the secrets file. It never comes back to this page, and the model never sees it." }));
+      return box;
     },
   };
 
@@ -723,7 +1291,6 @@
       setKids(this.box, 
         secHead("Tasks", r.tasks.length + " scheduled · gates skip at zero token cost"),
         r.paused ? el("div", { class: "alert bad" },
-          el("span", { class: "sev", text: "rust" }),
           el("div", { class: "body" }, el("div", { class: "what", text: "The kill switch is on: nothing runs." }))) : null,
         r.tasks.length ? r.tasks.map((t) => el("div", { class: "task" },
           el("div", { class: "head" },
@@ -731,7 +1298,7 @@
             tag(t.kind),
             t.enabled ? tag("on", "ok") : tag("paused", "warn"),
             t.builtin ? tag("built in") : null,
-            el("span", { class: "spacer", style: "flex:1" }),
+            el("span", { class: "spacer grow" }),
             el("span", { class: "cron", text: t.schedule + (t.kind === "cron" ? "  ·  " + t.timezone : "") })),
           kv([
             ["next", t.enabled ? el("span", { class: "mono", text: ago(t.next_run_at) }) : tag("paused", "warn")],
@@ -742,8 +1309,8 @@
             class: "run-dot " + (x.status === "succeeded" ? "ok" : x.status === "skipped" ? "warn" : x.status === "running" ? "" : "bad"),
             title: (x.detail || "") + " · " + ago(x.started_at),
           }, x.status + " · " + ago(x.started_at)))) : el("p", { class: "muted small", text: "never ran" }),
-          t.runs.slice(0, 1).map((x) => x.detail ? el("div", { class: "muted small msg", dir: "auto", text: x.detail, style: "margin-top:6px" }) : null),
-          el("div", { class: "row", style: "margin-top:10px" },
+          t.runs.slice(0, 1).map((x) => x.detail ? el("div", { class: "muted small msg mt", dir: "auto", text: x.detail }) : null),
+          el("div", { class: "row mt" },
             t.enabled ? btn("Pause", "tasks/pause", { id: t.id }) : btn("Resume", "tasks/resume", { id: t.id }, "primary"),
             btn("Run now", "tasks/run", { id: t.id }),
             ask("Schedule", "tasks/schedule", t.kind === "cron" ? "Cron schedule (5 fields), then optionally a space and an IANA timezone:" : "When (RFC 3339):",
@@ -832,7 +1399,7 @@
         x.hooks.length ? table(["event", "matcher", "command"], x.hooks.map((h) => ({ cells: [
           tag(h.event), el("span", { class: "mono", text: h.matcher || "*" }), el("code", { text: h.command }),
         ]}))) : el("div", { class: "empty", text: "none in the config" }),
-        w ? el("div", { class: "alert " + (w.trusted ? "ok" : "warn"), style: "display:block" },
+        w ? el("div", { class: "alert block " + (w.trusted ? "ok" : "warn") },
           el("div", { class: "row" },
             el("strong", { text: "Workspace hooks" }),
             el("code", { text: w.file }),
@@ -878,22 +1445,311 @@
     },
   };
 
-  // ---- navigation and polling --------------------------------------------
+  // ---- chat (M37 §4.3) ---------------------------------------------------
+  // Session dashboard__owner, like any other chat: the page polls what
+  // changed since the last revision and merges it by id, so a streamed
+  // edit replaces its bubble instead of adding one.
 
-  const order = ["health", "models", "routing", "connections", "usage", "tasks", "logs", "extensions", "agents"];
+  sections.chat = {
+    title: "Chat",
+    live: true,
+    every: 2,
+    from: 0,
+    entries: new Map(),
+    mount(root) {
+      this.top = el("div");
+      this.log = el("div", { class: "chat", "aria-live": "polite" });
+      this.input = el("textarea", { rows: 2, dir: "auto", placeholder: "Message your agent", "aria-label": "Message" });
+      this.sendBtn = el("button", { class: "primary", text: "Send" });
+      this.note = el("div", { class: "muted small" });
+      this.sendBtn.onclick = () => this.send();
+      this.input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
+      });
+      root.append(secHead("Chat", "the same agent, in its own session"), this.top, this.log,
+        el("div", { class: "composer" }, this.note, el("div", { class: "row" }, el("div", { class: "grow" }, this.input), this.sendBtn)));
+      this.drawn = false;
+    },
+    async load() {
+      let c, ap = { approvals: [] };
+      try {
+        [c, ap] = await Promise.all([api("/api/chat?from=" + this.from), api("/api/approvals").catch(() => ap)]);
+      } catch (e) { return sectionError(this.top, e); }
+      setKids(this.top, approvalsCard(ap.approvals));
+      // The log starts again after a restart: forget what was drawn.
+      if (c.next < this.from) { this.from = 0; this.entries.clear(); return this.load(); }
+      for (const e of c.entries) this.entries.set(e.id, e);
+      if (c.first) for (const id of [...this.entries.keys()]) if (id < c.first) this.entries.delete(id);
+      this.from = c.next;
+      const listening = c.listening;
+      this.input.disabled = !listening;
+      this.sendBtn.disabled = !listening;
+      this.note.textContent = listening ? "" : (c.why || "The agent isn't listening here: chat works when the dashboard runs inside the gateway (the service).");
+      if (c.entries.length || !this.drawn || this.waiting !== c.waiting) {
+        const stick = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 60 || !this.drawn;
+        this.draw(c.waiting);
+        if (stick) this.log.scrollTop = this.log.scrollHeight;
+        this.drawn = true;
+        this.waiting = c.waiting;
+      }
+    },
+    draw(waiting) {
+      const list = [...this.entries.values()].sort((a, b) => a.id - b.id);
+      setKids(this.log,
+        list.length ? null : el("div", { class: "empty", text: "Nothing yet. Whatever you type here goes to your agent, like a message on Telegram." }),
+        list.map((e) => el("div", { class: "bubble" + (e.who === "you" ? " you" : "") },
+          el("div", { class: "msg", dir: "auto", text: e.text }),
+          (e.buttons || []).length ? el("div", { class: "row" }, e.buttons.map((b) => b.url
+            ? el("a", { class: "btn", href: b.url, target: "_blank", rel: "noopener", text: b.text })
+            : el("button", { text: b.text, onclick: (ev) => this.send(b.send, ev.currentTarget) }))) : null,
+          el("div", { class: "at", text: new Date(e.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }))),
+        waiting ? el("div", { class: "typing", text: "thinking…" }) : null);
+    },
+    async send(said, button) {
+      const t = (said !== undefined ? said : this.input.value).trim();
+      if (!t) return;
+      const b = button || this.sendBtn;
+      b.disabled = true;
+      try {
+        await api("/api/chat/send", { text: t });
+        if (said === undefined) { this.input.value = ""; delete this.input.dataset.dirty; }
+        this.load();
+      } catch (e) { toast(e.message, true); } finally { b.disabled = false; }
+    },
+  };
+
+  // ---- console: a ferrule line, never a shell (M37 §4.2) -----------------
+
+  sections.console = {
+    title: "Console",
+    live: true,
+    every: 0,
+    mount(root) {
+      this.input = el("input", { type: "text", spellcheck: "false", autocomplete: "off", autocapitalize: "off", placeholder: "status", "aria-label": "ferrule command" });
+      this.chips = el("div", { class: "complete" });
+      this.help = el("div", { class: "muted small" });
+      this.runBtn = el("button", { class: "primary", text: "Run" });
+      this.cancelBtn = el("button", { class: "danger", text: "Cancel", hidden: true });
+      this.head = el("div", { class: "muted small" });
+      this.out = el("pre", { class: "out", hidden: true });
+      this.parity = el("div");
+      this.runBtn.onclick = () => this.run();
+      this.cancelBtn.onclick = () => this.job && act("console/cancel", { id: this.job }, this.cancelBtn);
+      this.input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); this.run(); } });
+      this.input.addEventListener("input", () => {
+        clearTimeout(this.t);
+        this.t = setTimeout(() => this.complete(), 180);
+      });
+      root.append(
+        secHead("Console", "ferrule commands, run here as on the machine; no shell"),
+        el("div", { class: "card" },
+          el("div", { class: "console-line" }, el("span", { class: "prompt", text: "ferrule" }), el("div", { class: "grow" }, this.input), this.runBtn, this.cancelBtn),
+          this.chips, this.help),
+        this.head, this.out, this.parity);
+      this.complete();
+      this.loadParity();
+    },
+    async load() { /* driven by the job's own poll */ },
+    async complete() {
+      let r;
+      try { r = await api("/api/console/complete?line=" + encodeURIComponent(this.input.value)); } catch (_) { return; }
+      this.help.textContent = r.path && r.path.length ? "ferrule " + r.path.join(" ") + (r.class ? " · " + r.class : "") : "";
+      setKids(this.chips, (r.items || []).slice(0, 24).map((it) => el("button", {
+        class: "ghost", title: it.help || null, text: it.word,
+        onclick: () => {
+          const v = this.input.value;
+          const cut = /\s$/.test(v) || v === "" ? v : v.replace(/\S+$/, "");
+          this.input.value = cut + it.word + " ";
+          this.input.focus();
+          this.complete();
+        },
+      })));
+    },
+    async run(confirm) {
+      const line = this.input.value.trim();
+      if (!line) return;
+      this.runBtn.disabled = true;
+      try {
+        const r = await api("/api/console/run", confirm ? { line, confirm: true } : { line });
+        this.job = r.job.id;
+        this.from = 0;
+        this.text = "";
+        this.out.hidden = false;
+        this.out.textContent = "";
+        this.head.textContent = "$ ferrule " + line + " · " + r.class;
+        this.cancelBtn.hidden = false;
+        this.poll();
+      } catch (e) {
+        if (e.status === 409 && e.data && e.data.confirm) {
+          if (window.confirm(e.data.confirm)) return this.run(true);
+        } else if (e.status === 403) {
+          toast(e.message + (e.data && e.data.page ? " · on this page: " + e.data.page : ""), true);
+        } else toast(e.message, true);
+      } finally { this.runBtn.disabled = false; }
+    },
+    async poll() {
+      const id = this.job;
+      let v;
+      try { v = await api("/api/console/job?id=" + encodeURIComponent(id) + "&from=" + this.from); } catch (e) { toast(e.message, true); return; }
+      if (id !== this.job) return;
+      const stick = this.out.scrollHeight - this.out.scrollTop - this.out.clientHeight < 40;
+      if (v.text) this.out.append(v.text);
+      if (stick) this.out.scrollTop = this.out.scrollHeight;
+      this.from = v.next;
+      if (v.done) {
+        this.cancelBtn.hidden = true;
+        this.head.append(" · " + (v.code === 0 ? "done" : v.why || "exit " + v.code) + " in " + secs(v.secs));
+        return;
+      }
+      setTimeout(() => this.poll(), 500);
+    },
+    async loadParity() {
+      let p;
+      try { p = await api("/api/console/parity"); } catch (_) { return; }
+      setKids(this.parity, disc("parity", "card", "Every command, and where it lives on this page",
+        el("div", { class: "details-body tbl" }, table(["command", "kind", "on the page", "note"],
+          p.rows.map((r) => ({ cells: [el("code", { text: r.command }), tag(r.class, r.class === "refused" ? "bad" : r.class === "destructive" ? "warn" : null), r.page || "–", r.note || ""] }))))));
+    },
+  };
+
+  // ---- config: the file, secrets hidden (M37 §4.4) -----------------------
+
+  sections.config = {
+    title: "Config",
+    every: 0,
+    mount(root) { this.box = el("div"); root.append(this.box); },
+    async load() {
+      let c;
+      try { c = await api("/api/config"); } catch (e) { return sectionError(this.box, e); }
+      const set = (key, value, b) => act("config/set", { key, value }, b);
+      const row = (f) => {
+        let input;
+        const shown = f.value === null || f.value === undefined ? "" : String(f.value);
+        if (f.kind === "bool" || f.kind === "choice") {
+          const opts = f.kind === "bool" ? ["true", "false"] : f.choices || [];
+          input = el("select", { name: f.key, "aria-label": f.key },
+            el("option", { value: "", text: "default" }),
+            opts.map((o) => el("option", { value: o, text: f.kind === "bool" ? (o === "true" ? "on" : "off") : o, selected: shown === o })));
+          input.onchange = () => {
+            const v = input.value;
+            set(f.key, v === "" ? null : f.kind === "bool" ? v === "true" : v, input);
+          };
+          return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), input);
+        }
+        input = el("input", { type: "number", name: f.key, step: f.kind === "float" ? "any" : "1", placeholder: "default", "aria-label": f.key });
+        input.value = shown;
+        const save = el("button", { text: "Save" });
+        save.onclick = () => {
+          const v = input.value.trim();
+          set(f.key, v === "" ? null : Number(v), save);
+        };
+        return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), el("div", { class: "row" }, input, save));
+      };
+      const raw = el("textarea", { rows: 18, spellcheck: "false", class: "mono", "aria-label": "config file" });
+      raw.value = c.text || "";
+      const said = el("div");
+      const check = el("button", { text: "Check" });
+      check.onclick = async () => {
+        check.disabled = true;
+        try {
+          const r = await api("/api/config/check", { text: raw.value });
+          setKids(said, r.ok
+            ? el("div", { class: "said ok", text: "Looks right" + (r.restart ? "; " + r.sections.join(", ") + " take effect after a restart" : "") + "." })
+            : el("div", { class: "said bad msg", dir: "auto", text: (r.line ? "Line " + r.line + ": " : "") + r.error }));
+        } catch (e) { setKids(said, el("div", { class: "said bad msg", dir: "auto", text: e.message })); } finally { check.disabled = false; }
+      };
+      const save = el("button", { class: "primary", text: "Save the file" });
+      save.onclick = async () => { if (await act("config/save", { text: raw.value }, save)) delete raw.dataset.dirty; };
+      setKids(this.box,
+        secHead("Config", c.path,
+          c.prev ? btn("Undo the last save", "config/undo", {}) : null,
+          c.last_good ? btn("Back to the last one that loaded", "config/restore", {}, "danger") : null),
+        c.problem ? el("div", { class: "alert bad" }, el("div", { class: "body" },
+          el("div", { class: "what", text: "The file doesn't load" + (c.problem.line ? " (line " + c.problem.line + ")" : "") }),
+          el("div", { class: "fix msg", dir: "auto", text: c.problem.error }))) : null,
+        (c.fields || []).length ? el("div", { class: "card" }, el("h3", { class: "mt0", text: "Settings" }), c.fields.map(row)) : null,
+        el("div", { class: "card" },
+          el("h3", { class: "mt0", text: "The file" }),
+          el("p", { class: "muted small", text: "Secrets show as placeholders and stay as they are when you save. Commands, gates, secret routing and who gets in can only change on the machine." }),
+          c.readable === false ? el("div", { class: "empty", text: "The file can't be read." }) : raw,
+          said,
+          el("div", { class: "row end" }, check, save)));
+    },
+  };
+
+
+  // ---- navigation and polling --------------------------------------------
+  // A phone gets a bottom bar of five (the rest in a sheet under "More");
+  // from 900 px, a sidebar with everything. Same sections, same URLs.
+
+  const order = ["health", "chat", "models", "connections", "console", "config", "routing", "usage", "tasks", "logs", "extensions", "agents"];
+  const TABS = ["health", "chat", "models", "connections"];
+  const RUN = ["health", "chat", "models", "connections", "console", "config"];
+  const ICON_OF = { health: "health" };
+  const SUB = { console: "ferrule commands", config: "the file, secrets hidden", routing: "which model for what", usage: "spend and caps", tasks: "scheduled runs", logs: "what happened", extensions: "skills, tools, MCP", agents: "sub-agents" };
   let current = "health";
   let timer = null;
   let banner = null;
   let lastHealth = null;
+  const badges = {};
 
-  function show(name) {
+  const title = (s) => sections[s].title || s[0].toUpperCase() + s.slice(1);
+
+  function navLink(s, withSub) {
+    const a = el("a", { href: "#" + s }, icon(ICON_OF[s] || s), el("span", { text: title(s) }),
+      withSub && SUB[s] ? el("span", { class: "sub muted small", text: SUB[s] }) : null);
+    a.dataset.s = s;
+    a.onclick = (e) => { e.preventDefault(); closeSheet(); show(s); };
+    return a;
+  }
+
+  function buildNav() {
+    const rail = document.getElementById("rail");
+    setKids(rail,
+      el("div", { class: "group", text: "Run" }), RUN.map((s) => navLink(s)),
+      el("div", { class: "group", text: "More" }), order.filter((s) => !RUN.includes(s)).map((s) => navLink(s)),
+      el("div", { class: "rail-foot" },
+        frag(el("b", { text: "session" }), el("br"), "12 h max · idle 30 min", el("br"),
+          el("b", { text: "login" }), el("br"), "one-use link")));
+    rail.hidden = false;
+    const tabs = document.getElementById("tabs");
+    const more = el("a", { href: "#more" }, icon("more"), el("span", { text: "More" }));
+    more.dataset.s = "more";
+    more.onclick = (e) => { e.preventDefault(); openSheet(); };
+    tabs.replaceChildren(...TABS.map((s) => navLink(s)), more);
+    tabs.hidden = false;
+    const sheet = document.getElementById("sheet");
+    sheet.replaceChildren(el("div", { class: "panel", role: "dialog", "aria-label": "More" },
+      el("div", { class: "grip" }), order.filter((s) => !TABS.includes(s)).map((s) => navLink(s, true))));
+    sheet.onclick = (e) => { if (e.target === sheet) closeSheet(); };
+    markNav();
+  }
+  function openSheet() { document.getElementById("sheet").hidden = false; }
+  function closeSheet() { document.getElementById("sheet").hidden = true; }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+
+  function markNav() {
+    for (const a of document.querySelectorAll("#rail a, #tabs a, #sheet a")) {
+      const s = a.dataset.s;
+      a.classList.toggle("on", s === current || (s === "more" && !TABS.includes(current)));
+      const n = s === "more" ? order.filter((x) => !TABS.includes(x)).reduce((t, x) => t + (badges[x] || 0), 0) : badges[s] || 0;
+      let dot = a.querySelector(".dot");
+      if (n && !dot) { dot = el("span", { class: "dot" }); a.append(dot); }
+      if (dot) { if (n) { dot.textContent = n > 9 ? "9+" : String(n); dot.setAttribute("aria-label", n + " need you"); } else dot.remove(); }
+    }
+  }
+
+  function show(name, opts) {
+    if (!sections[name]) name = "health";
     current = name;
-    for (const a of document.querySelectorAll("#rail a")) a.classList.toggle("on", a.dataset.s === name);
     const root = el("div");
     banner = el("div");
     document.getElementById("main").replaceChildren(banner, root);
     sections[name].mount(root);
     if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+    markNav();
+    window.scrollTo(0, 0);
+    if (opts && opts.tile && sections[name].focus) sections[name].focus(opts.tile, true);
     refresh();
   }
 
@@ -902,6 +1758,19 @@
     const h = location.hash.slice(1);
     if (csrf && order.includes(h) && h !== current) show(h);
   });
+
+  // What the owner typed is theirs until they send it: a typed-in input
+  // keeps its section from redrawing under it.
+  document.addEventListener("input", (e) => {
+    const t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) && t.type !== "checkbox") t.dataset.dirty = "1";
+  });
+  function typing() {
+    const main = document.getElementById("main");
+    const f = document.activeElement;
+    if (f && /^(INPUT|SELECT|TEXTAREA)$/.test(f.tagName) && main.contains(f)) return true;
+    return !!main.querySelector("[data-dirty]");
+  }
 
   // `auto`: a poll, not a click. A section polled by hand only still gets
   // the problems banner. The collar's sweep runs only while a turn does.
@@ -912,26 +1781,25 @@
     const s = sections[current];
     const name = current;
     try {
-      lastHealth = await api("/api/health");
+      let ap;
+      [lastHealth, ap] = await Promise.all([api("/api/health"), api("/api/approvals").catch(() => null)]);
       if (name !== current) return;
       document.getElementById("uptime").textContent = lastHealth.uptime ? "up " + lastHealth.uptime : "";
       if (lastHealth.version) document.getElementById("ver").textContent = "v" + lastHealth.version;
-      const liveLed = document.getElementById("live-led");
-      if (liveLed) liveLed.className = "led ok pulse";
+      document.getElementById("live-led").className = "led ok pulse";
       document.body.classList.toggle("running",
         (lastHealth.turns || []).some((t) => t.busy_secs !== null && t.busy_secs !== undefined));
-      const p = problems(lastHealth.problems);
-      setKids(banner, p);
-      // Not while the owner is typing or choosing in this section.
-      const f = document.activeElement;
-      const busy = f && /^(INPUT|SELECT|TEXTAREA)$/.test(f.tagName) && document.getElementById("main").contains(f);
-      if (!busy && !(auto === true && !s.every)) await s.load(lastHealth);
+      const probs = lastHealth.problems || [];
+      badges.health = probs.length;
+      badges.connections = probs.filter((p) => p.section === "connections").length;
+      if (ap) badges.chat = ap.approvals.length;
+      markNav();
+      setKids(banner, problems(probs));
+      if (!(auto === true && !s.every) && (s.live || !typing())) await s.load(lastHealth);
     } catch (e) {
       if (!csrf) return;
-      const liveLed = document.getElementById("live-led");
-      if (liveLed) liveLed.className = "led bad";
+      document.getElementById("live-led").className = "led bad";
       banner.replaceChildren(el("div", { class: "alert bad" },
-        el("span", { class: "sev", text: "rust" }),
         el("div", { class: "body" }, el("div", { class: "what msg", dir: "auto", text: e.message }))));
     }
     schedule();
@@ -942,7 +1810,7 @@
   function schedule() {
     clearTimeout(timer);
     timer = null;
-    // 0: only when asked (logs, extensions).
+    // 0: only when asked (console, config, logs, extensions).
     const every = sections[current].every ?? 15;
     if (every > 0 && !document.hidden && csrf) timer = setTimeout(() => refresh(true), every * 1000);
   }
@@ -952,10 +1820,10 @@
     if (document.hidden) stopPolling(); else if (csrf) refresh();
   });
 
-  window.ferrule = { el, api, sections };
+  window.ferrule = { el, api, sections, show };
 
-  // The collar mark, the theme toggle: present before any login, so even
-  // the logged-out card looks like ferrule.
+  // The collar mark and the theme toggle: present before any login, so
+  // even the logged-out card looks like ferrule.
   function bootChrome() {
     const s = el("svg", { class: "collar", viewBox: "0 0 26 26", role: "img" });
     s.append(
@@ -963,32 +1831,11 @@
       el("circle", { class: "ring", cx: 13, cy: 13, r: 9.5, "stroke-dasharray": "44.7 15", transform: "rotate(135 13 13)" }),
       el("circle", { class: "sweep", cx: 13, cy: 13, r: 9.5 }));
     document.getElementById("mark").replaceChildren(s);
-
-    // Theme: paper (light) ↔ forge (dark), kept in localStorage; the head
-    // script already applied the saved or system choice before first paint.
-    const html = document.documentElement;
-    const apply = (forge) => {
-      html.setAttribute("data-theme", forge ? "forge" : "paper");
-      document.getElementById("theme").textContent = forge ? "paper" : "forge";
-      try { localStorage.setItem("ferrule-theme", forge ? "forge" : "paper"); } catch (_) { /* no storage */ }
-    };
-    apply(html.getAttribute("data-theme") === "forge");
-    document.getElementById("theme").onclick = () => apply(html.getAttribute("data-theme") !== "forge");
-  }
-
-  function buildRail() {
-    const rail = document.getElementById("rail");
-    rail.replaceChildren(...order.map((s, i) => {
-      const a = el("a", { href: "#" + s },
-        el("span", { class: "n", text: String(i + 1).padStart(2, "0") }),
-        s);
-      a.dataset.s = s;
-      a.onclick = (e) => { e.preventDefault(); show(s); };
-      return a;
-    }), el("div", { class: "rail-foot" },
-      frag(el("b", { text: "session" }), el("br"), "12 h max · idle 30 min", el("br"),
-        el("b", { text: "login" }), el("br"), "one-use link")));
-    rail.hidden = false;
+    // auto (the system's) → paper → forge; theme.js applied it before paint.
+    const b = document.getElementById("theme");
+    const t = window.ferruleTheme;
+    const label = (p) => { b.textContent = p; b.title = "Theme: " + (p === "auto" ? "follows the system" : p === "paper" ? "light" : "dark"); };
+    if (t) { label(t.pick()); b.onclick = () => label(t.next()); } else b.hidden = true;
   }
 
   async function start() {
@@ -1012,7 +1859,7 @@
       loggedOut("Logged out.");
     };
     document.getElementById("live").hidden = false;
-    buildRail();
+    buildNav();
     show(order.includes(hash) ? hash : "health");
   }
 

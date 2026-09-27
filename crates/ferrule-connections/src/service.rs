@@ -2165,6 +2165,13 @@ async fn list_with(
                 None => plain(explain::unreachable(service, &explain::host_of(&url))),
             })
         }
+        // The owner's own egress policy said no: that, not a bad server.
+        Ok(Err(e)) if e.to_string().contains("ferrule egress policy: blocked") => {
+            Err(plain(format!(
+                "Your egress policy blocks {}: it's a private address. Add it to [egress] private_allow in the config if you mean it.",
+                explain::host_of(&url)
+            )))
+        }
         Ok(Err(_)) => Err(plain(format!(
             "{} answered, but not like an MCP server",
             service.title()
