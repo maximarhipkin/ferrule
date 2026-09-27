@@ -1012,6 +1012,9 @@ fn a_config_that_stops_reading_runs_on_the_last_good_copy_and_the_owner_hears_wh
     tg.say(42, "hello");
     tg.wait_for(42, "A:a-one", 0);
     drop(gw);
+    // The killed gateway's last getUpdates is still in the fake, which
+    // drains the queue 100 ms in; let it, or it swallows "still there?".
+    std::thread::sleep(Duration::from_millis(300));
     assert!(home.join("data/gateway/config.last-good.toml").exists());
 
     // A typo, and a restart: no crash loop, the last good config answers.
