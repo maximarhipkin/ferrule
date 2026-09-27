@@ -112,3 +112,55 @@ async fn openai_responses_two_step_tool_call() {
     let p = build(Api::Responses, "openai", &base, key, &model, options);
     two_step(p).await;
 }
+
+/// M36: the Codex client version, learned from the real npm registry and
+/// GitHub. Free and keyless:
+///
+/// ```text
+/// cargo test -p ferrule-providers --test live codex_client_version -- --ignored --nocapture
+/// ```
+///
+/// Behind a TLS-inspecting proxy, `FERRULE_EXTRA_CA` names its PEM bundle.
+#[tokio::test]
+#[ignore = "live: fetches from registry.npmjs.org and api.github.com"]
+async fn codex_client_version_is_learned_live() {
+    use ferrule_providers::codex::{version, CLIENT_VERSION};
+    for (name, sources) in [
+        (
+            "npm",
+            version::Sources {
+                npm: version::NPM_URL.into(),
+                github: String::new(),
+            },
+        ),
+        (
+            "github",
+            version::Sources {
+                npm: String::new(),
+                github: version::GITHUB_URL.into(),
+            },
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let id = Arc::new(
+            version::ClientIdentity::new(Some(dir.path()), Some(sources))
+                .with_client(extra_ca_client()),
+        );
+        let learned = id.refresh_past("0.0.0").await;
+        println!("{name}: {learned:?} (compiled in: {CLIENT_VERSION})");
+        let learned = learned.unwrap_or_else(|| panic!("{name} taught nothing"));
+        assert!(!version::newer(CLIENT_VERSION, &learned), "{learned}");
+        assert_eq!(id.learned().unwrap().source, name);
+    }
+}
+
+/// A client that also trusts `FERRULE_EXTRA_CA`, when it's set.
+fn extra_ca_client() -> reqwest::Client {
+    let mut client = reqwest::Client::builder();
+    if let Ok(ca) = std::env::var("FERRULE_EXTRA_CA") {
+        for cert in reqwest::Certificate::from_pem_bundle(&std::fs::read(ca).unwrap()).unwrap() {
+            client = client.add_root_certificate(cert);
+        }
+    }
+    client.build().unwrap()
+}

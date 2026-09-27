@@ -318,3 +318,174 @@ fn a_reset_reads_as_a_span_and_a_clock() {
         "in 3 d 2 h (02:00 UTC)"
     );
 }
+
+// M36: the client version is learned, and a "too old" refusal learns it
+// again (docs/m36-self-update.md §1).
+
+const TOO_OLD: &str = r#"{"detail":"The 'gpt-6-sol' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}"#;
+
+/// An identity that learns from a mock npm answering `latest`.
+fn learning(
+    npm: Vec<crate::common::mock::Canned>,
+) -> (
+    Arc<version::ClientIdentity>,
+    std::thread::JoinHandle<Vec<String>>,
+) {
+    let (base, served) = serve(npm);
+    let id = version::ClientIdentity::new(
+        None,
+        Some(version::Sources {
+            npm: format!("{base}/npm"),
+            github: String::new(),
+        }),
+    );
+    (Arc::new(id), served)
+}
+
+fn header<'r>(raw: &'r str, name: &str) -> Option<&'r str> {
+    raw.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.eq_ignore_ascii_case(name).then(|| v.trim())
+    })
+}
+
+#[tokio::test]
+async fn the_user_agent_carries_the_codex_version_and_says_ferrule() {
+    let wire = stream("pong");
+    let (url, seen) = serve(vec![sse(&refs(&wire))]);
+    provider(&url, fake()).complete(req()).await.unwrap();
+    let raw = seen.join().unwrap().remove(0);
+    let ua = header(&raw, "user-agent").unwrap();
+    assert!(
+        ua.starts_with(&format!("codex_cli_rs/{CLIENT_VERSION} (")),
+        "{ua}"
+    );
+    assert!(
+        ua.ends_with(&format!(") ferrule/{}", env!("CARGO_PKG_VERSION"))),
+        "{ua}"
+    );
+}
+
+#[tokio::test]
+async fn too_old_learns_the_version_and_retries_exactly_once() {
+    let (id, npm) = learning(vec![crate::common::mock::ok(r#"{"latest":"0.170.0"}"#)]);
+    // Fresh enough that the first request doesn't start its own refresh.
+    let wire = stream("pong");
+    let (url, seen) = serve(vec![
+        status(
+            "400 Bad Request",
+            "content-type: application/json\r\n",
+            TOO_OLD,
+        ),
+        sse(&refs(&wire)),
+    ]);
+    let codex = provider(&url, fake()).with_identity(id.clone());
+    let resp = codex.complete(req()).await.unwrap();
+    assert_eq!(resp.message.content.as_deref(), Some("pong"));
+    let seen = seen.join().unwrap();
+    assert_eq!(seen.len(), 2, "one refusal, one retry");
+    assert_eq!(header(&seen[0], "version"), Some(CLIENT_VERSION));
+    assert_eq!(header(&seen[1], "version"), Some("0.170.0"));
+    assert!(header(&seen[1], "user-agent")
+        .unwrap()
+        .contains("codex_cli_rs/0.170.0"));
+    assert_eq!(npm.join().unwrap().len(), 1, "exactly one refresh");
+    assert_eq!(id.current(), "0.170.0");
+}
+
+#[tokio::test]
+async fn too_old_twice_is_a_classified_failure_for_the_fallback() {
+    let (id, npm) = learning(vec![crate::common::mock::ok(r#"{"latest":"0.170.0"}"#)]);
+    let (url, seen) = serve(vec![
+        status(
+            "400 Bad Request",
+            "content-type: application/json\r\n",
+            TOO_OLD,
+        ),
+        status(
+            "400 Bad Request",
+            "content-type: application/json\r\n",
+            TOO_OLD,
+        ),
+    ]);
+    let err = provider(&url, fake())
+        .with_identity(id)
+        .complete(req())
+        .await
+        .unwrap_err();
+    assert_eq!(seen.join().unwrap().len(), 2, "no third try");
+    assert_eq!(npm.join().unwrap().len(), 1);
+    assert_eq!(ferrule_core::failure::classify(&err), Kind::ClientTooOld);
+    assert!(
+        err.to_string().contains("newer Codex client than 0.170.0"),
+        "{err}"
+    );
+    assert!(!err.is_transient());
+}
+
+#[tokio::test]
+async fn too_old_with_nothing_newer_to_learn_does_not_retry() {
+    let (id, npm) = learning(vec![crate::common::mock::ok(format!(
+        r#"{{"latest":"{CLIENT_VERSION}"}}"#
+    ))]);
+    let (url, seen) = serve(vec![status(
+        "400 Bad Request",
+        "content-type: application/json\r\n",
+        TOO_OLD,
+    )]);
+    let err = provider(&url, fake())
+        .with_identity(id)
+        .complete(req())
+        .await
+        .unwrap_err();
+    assert_eq!(seen.join().unwrap().len(), 1);
+    assert_eq!(npm.join().unwrap().len(), 1);
+    assert_eq!(ferrule_core::failure::classify(&err), Kind::ClientTooOld);
+}
+
+#[tokio::test]
+async fn an_ordinary_400_is_not_retried_or_relearned() {
+    let (url, seen) = serve(vec![status(
+        "400 Bad Request",
+        "content-type: application/json\r\n",
+        r#"{"detail":"Unsupported parameter: foo"}"#,
+    )]);
+    let id = Arc::new(version::ClientIdentity::new(
+        None,
+        Some(version::Sources {
+            npm: "http://127.0.0.1:9/never".into(),
+            github: String::new(),
+        }),
+    ));
+    let err = provider(&url, fake())
+        .with_identity(id)
+        .complete(req())
+        .await
+        .unwrap_err();
+    assert_eq!(seen.join().unwrap().len(), 1);
+    assert!(matches!(err, CoreError::Provider(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn the_model_list_leaves_out_models_for_a_newer_client() {
+    let models = r#"{"models":[
+      {"slug":"gpt-5.5","visibility":"list","priority":12,"minimal_client_version":"0.124.0"},
+      {"slug":"gpt-7","visibility":"list","priority":1,"minimal_client_version":"0.190.0"},
+      {"slug":"gpt-6-astra","visibility":"list","priority":2}]}"#;
+    let (url, seen) = serve(vec![crate::common::mock::ok(models)]);
+    let id = Arc::new(
+        version::ClientIdentity::new(None, None).with_override(Some("0.160.0-alpha.3".into())),
+    );
+    let list = provider(&url, fake())
+        .with_identity(id)
+        .list_models()
+        .await
+        .unwrap();
+    assert_eq!(list, ["gpt-6-astra", "gpt-5.5"]);
+    let raw = seen.join().unwrap().remove(0);
+    assert!(
+        raw.starts_with("GET /backend-api/codex/models?client_version=0.160.0 "),
+        "{raw}"
+    );
+    assert_eq!(header(&raw, "version"), Some("0.160.0-alpha.3"));
+}

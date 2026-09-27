@@ -572,6 +572,8 @@ fn main() -> Result<()> {
         }
     }
     secrets::load_into_env();
+    // M36: the Codex client version is learned and cached in the data dir.
+    ferrule_providers::codex::version::configure(config::data_dir_path().as_deref(), true);
     // The command's future is polled on this thread. Windows gives a main
     // thread 1 MiB of stack where Linux gives 8, and an agent turn's
     // future (streaming, a parallel tool batch) outgrew 1 MiB in a debug

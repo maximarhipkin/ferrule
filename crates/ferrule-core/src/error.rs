@@ -32,6 +32,10 @@ pub enum CoreError {
     Stopped(String),
     #[error("run aborted: {0}")]
     Aborted(String),
+    /// A provider failure its driver has already recognised (M36): see
+    /// [`crate::failure`]. It reads like [`CoreError::Provider`].
+    #[error("provider error: {}", .0.message)]
+    Failed(crate::failure::Failure),
 }
 
 impl CoreError {
@@ -146,6 +150,23 @@ impl CoreError {
     pub fn class(&self) -> FailureClass {
         let text = match self {
             CoreError::MalformedResponse(_) => return FailureClass::Malformed,
+            CoreError::Failed(f) => {
+                use crate::failure::Kind;
+                return match f.kind {
+                    Kind::RateLimited | Kind::UsageLimit => FailureClass::RateLimited,
+                    Kind::Overloaded => FailureClass::Overloaded,
+                    Kind::Server => FailureClass::Server,
+                    Kind::Timeout => FailureClass::Timeout,
+                    Kind::Connect => FailureClass::Connect,
+                    Kind::Auth | Kind::ChatgptSignin | Kind::ClaudeSignin => FailureClass::Auth,
+                    Kind::ModelGone => FailureClass::ModelNotFound,
+                    Kind::ContextTooLong => FailureClass::ContextTooLong,
+                    Kind::Refused => FailureClass::Refused,
+                    Kind::Malformed => FailureClass::Malformed,
+                    Kind::BadRequest | Kind::ClientTooOld => FailureClass::BadRequest,
+                    _ => FailureClass::Other,
+                };
+            }
             CoreError::Provider(t) => t.as_str(),
             CoreError::Transient { message, .. } => message.as_str(),
             _ => return FailureClass::Other,

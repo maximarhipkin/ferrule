@@ -37,11 +37,14 @@ pub fn chatgpt(issuer: &str) -> anyhow::Result<Arc<ChatGpt>> {
 
 /// Models on the ChatGPT plan: the account's own list when signed in
 /// (`GET /models`), else the built-in one, so setup works before sign-in.
-/// `model` stays free text: a new slug works without a release.
+/// `model` stays free text: a new slug works without a release. Either
+/// way, only models the current Codex client version may use (M36).
 pub async fn chatgpt_models(issuer: &str) -> Vec<String> {
     let builtin = || {
+        let version = ferrule_providers::codex::client_version();
         BUILTIN_CHATGPT_MODELS
             .iter()
+            .filter(|m| ferrule_providers::codex::version::builtin_usable(m, &version))
             .map(|m| m.to_string())
             .collect()
     };

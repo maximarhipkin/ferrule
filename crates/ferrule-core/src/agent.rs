@@ -2265,6 +2265,7 @@ fn error_kind_of(e: &CoreError) -> String {
         CoreError::MaxIterations(_) => "max_iterations",
         CoreError::Stopped(_) => "stopped",
         CoreError::Aborted(_) => "aborted",
+        CoreError::Failed(f) => return f.kind.name(),
     }
     .to_string()
 }

@@ -8,6 +8,7 @@ pub mod agent;
 pub mod baseline;
 pub mod error;
 pub mod event;
+pub mod failure;
 pub mod guard;
 pub mod history;
 pub mod hooks;
