@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.5.1-c4764a" alt="release v0.5.1"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.5.2-c4764a" alt="release v0.5.2"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/download-~10_MB-8a929a" alt="download: about 10 MB">
   <img src="https://img.shields.io/badge/tests-1225-8a929a" alt="1225 workspace tests">
@@ -238,7 +238,7 @@ watchdog and how to rewrite it.
 | macOS | `~/.local/bin/ferrule` | Apple silicon, Intel |
 | Windows | `%LOCALAPPDATA%\Programs\ferrule\ferrule.exe`, added to your PATH | x86-64 (ARM64 runs it under emulation) |
 
-Both scripts read `FERRULE_VERSION` (a tag such as `v0.5.1`; default the
+Both scripts read `FERRULE_VERSION` (a tag such as `v0.5.2`; default the
 latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 
 ### Setup
@@ -658,7 +658,8 @@ and a dated entry for every session.
       small context window and broken tool calling; `v0.4.0` released
 - [x] M35: subscription sign-in — a ChatGPT plan in Ferrule's own loop,
       a Claude plan through the unmodified Claude Code CLI; `v0.5.0` released,
-      `v0.5.1` fixes the ChatGPT plan's Codex version header
+      `v0.5.1`–`v0.5.2` fix the ChatGPT plan's live wire (Codex version
+      header, event stream)
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
