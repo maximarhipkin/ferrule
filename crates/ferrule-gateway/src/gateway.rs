@@ -27,6 +27,67 @@ pub struct Gateway {
     busy_notice_after: Duration,
     redactor: Arc<Redactor>,
     health: Option<Arc<Health>>,
+    restarts: Arc<ChannelRestarts>,
+}
+
+/// M37: a channel's inbound loop, started again from the dashboard. The
+/// same adapter runs again (its token and settings are what it started
+/// with); only a weak sender is kept, so the gateway still ends once every
+/// adapter is done.
+#[derive(Default)]
+pub struct ChannelRestarts {
+    inner: std::sync::Mutex<Loops>,
+}
+
+#[derive(Default)]
+struct Loops {
+    tx: Option<mpsc::WeakSender<InboundMessage>>,
+    running: Vec<(Arc<dyn Channel>, tokio::task::JoinHandle<()>)>,
+}
+
+impl ChannelRestarts {
+    fn start(&self, channel: Arc<dyn Channel>, tx: mpsc::Sender<InboundMessage>) {
+        let mut loops = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        loops.tx.get_or_insert_with(|| tx.downgrade());
+        let handle = spawn_loop(channel.clone(), tx);
+        loops.running.push((channel, handle));
+    }
+
+    /// Stops `name`'s loop and starts it again; an error says why it can't.
+    pub fn restart(&self, name: &str) -> Result<(), String> {
+        let mut loops = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = loops
+            .tx
+            .as_ref()
+            .and_then(mpsc::WeakSender::upgrade)
+            .ok_or("the gateway isn't running")?;
+        let Some(at) = loops.running.iter().position(|(c, _)| c.name() == name) else {
+            return Err(format!("no channel named {name}"));
+        };
+        let (channel, old) = loops.running.remove(at);
+        old.abort();
+        tracing::info!(channel = %name, "channel loop restarted");
+        let handle = spawn_loop(channel.clone(), tx);
+        loops.running.push((channel, handle));
+        Ok(())
+    }
+
+    fn take(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        let mut loops = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        loops.running.drain(..).map(|(_, h)| h).collect()
+    }
+}
+
+fn spawn_loop(
+    channel: Arc<dyn Channel>,
+    tx: mpsc::Sender<InboundMessage>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let name = channel.name().to_string();
+        if let Err(e) = channel.run(tx).await {
+            tracing::error!(channel = %name, error = %e, "channel adapter stopped");
+        }
+    })
 }
 
 /// Looks at every inbound message before the router does (M19: the owner's
@@ -58,7 +119,14 @@ impl Gateway {
             busy_notice_after: BUSY_NOTICE_AFTER,
             redactor: Arc::new(Redactor::default()),
             health: None,
+            restarts: Arc::default(),
         }
+    }
+
+    /// M37: where the dashboard restarts a channel's loop.
+    pub fn with_restarts(mut self, restarts: Arc<ChannelRestarts>) -> Self {
+        self.restarts = restarts;
+        self
     }
 
     /// M19b: `/status` answered here, from any chat, without the model or
@@ -100,16 +168,8 @@ impl Gateway {
     /// naturally instead of hanging forever.
     pub async fn run(self) -> Result<(), GatewayError> {
         let (tx, mut rx) = mpsc::channel::<InboundMessage>(256);
-        let mut handles = Vec::with_capacity(self.channels.len());
         for channel in &self.channels {
-            let channel = channel.clone();
-            let tx = tx.clone();
-            handles.push(tokio::spawn(async move {
-                let name = channel.name().to_string();
-                if let Err(e) = channel.run(tx).await {
-                    tracing::error!(channel = %name, error = %e, "channel adapter stopped");
-                }
-            }));
+            self.restarts.start(channel.clone(), tx.clone());
         }
         // Drop our own sender so `rx` closes once every adapter task above
         // has dropped its clone — i.e. once all channels are done.
@@ -125,7 +185,7 @@ impl Gateway {
                 h.dispatching(false);
             }
         }
-        for h in handles {
+        for h in self.restarts.take() {
             let _ = h.await;
         }
         for task in background {
@@ -555,6 +615,54 @@ mod tests {
         }
         assert_eq!(scripted.sent.lock().unwrap().len(), 1);
         assert_eq!(scripted.sent.lock().unwrap()[0].text, "echo: hello");
+    }
+
+    /// Counts its starts, then waits for ever, like a polling adapter.
+    struct Poller(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl Channel for Poller {
+        fn name(&self) -> &str {
+            "poller"
+        }
+        async fn run(&self, _tx: mpsc::Sender<InboundMessage>) -> Result<(), GatewayError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending().await
+        }
+        async fn send(&self, _msg: OutboundMessage) -> Result<(), GatewayError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_dashboard_restarts_one_channels_loop() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tempfile::tempdir().unwrap();
+        let factory: crate::router::AgentFactory =
+            Arc::new(|_sid, _t| Err(GatewayError::Channel("no agent".into())));
+        let router = Arc::new(Router::new(dir.path(), factory, HashMap::new()));
+        let restarts = Arc::new(ChannelRestarts::default());
+        assert!(restarts.restart("poller").is_err(), "not running yet");
+        let poller = Arc::new(Poller(Default::default()));
+        let mut gateway = Gateway::new(router).with_restarts(restarts.clone());
+        gateway.add_channel(poller.clone());
+        let run = tokio::spawn(gateway.run());
+        let wait_for = |n: usize| {
+            let poller = poller.clone();
+            async move {
+                for _ in 0..200 {
+                    if poller.0.load(SeqCst) == n {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                panic!("never started {n} times");
+            }
+        };
+        wait_for(1).await;
+        restarts.restart("poller").unwrap();
+        wait_for(2).await;
+        assert!(restarts.restart("nope").unwrap_err().contains("no channel"));
+        run.abort();
     }
 
     struct StopWord;

@@ -79,6 +79,11 @@ pub struct McpServerConfig {
     /// connection's token (M20). Not reachable from a config file.
     #[serde(skip)]
     pub auth: Option<crate::auth::Auth>,
+    /// Tools that run in-process instead of on a server (M37's native
+    /// connections): set instead of `command` and `url`. Not reachable
+    /// from a config file.
+    #[serde(skip)]
+    pub local: Option<crate::local::Local>,
 }
 
 impl Default for McpServerConfig {
@@ -101,6 +106,7 @@ impl Default for McpServerConfig {
             desktop_services: false,
             warm_up: Vec::new(),
             auth: None,
+            local: None,
         }
     }
 }

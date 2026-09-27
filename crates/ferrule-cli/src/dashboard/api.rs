@@ -33,6 +33,8 @@ pub struct Live {
     pub fixed: Option<String>,
     /// Retires one lane, or every chat's, after a model change.
     pub retire: Retire,
+    /// M37: a channel's loop started again from the page.
+    pub restarts: Arc<ferrule_gateway::ChannelRestarts>,
 }
 
 type Answer = Option<(u16, Value)>;
@@ -98,6 +100,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "extensions" | "settings" => settings_view(ctx),
             "agents" => agents(ctx),
             "eval" => ok(ctx.evals.view()),
+            "run" => run_view(ctx, req),
+            "runs" => ok(json!({ "runs": ctx.runs.list() })),
             _ => None,
         };
     }
@@ -116,6 +120,15 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         | "skills/enable" | "hooks/trust" | "hooks/untrust" => settings_op(ctx, path, body).await,
         "eval/estimate" | "eval/start" => eval_op(ctx, path == "eval/start", body).await,
         "eval/cancel" => eval_cancel(ctx, body),
+        "notices/dismiss" | "notices/restore" => notices_op(ctx, path, body),
+        "doctor/run" => doctor_run(ctx, body),
+        "run/cancel" => {
+            let id = need!(arg(body, "id"));
+            ok(json!({ "ok": ctx.runs.cancel(id) }))
+        }
+        "channels/restart" => channel_restart(ctx, body),
+        "config/restore" => config_restore(ctx, body),
+        "gateway/restart" => gateway_restart(ctx, body),
         _ => None,
     }
 }
@@ -148,6 +161,8 @@ pub fn health(ctx: &Ctx) -> Value {
                     && quiet >= stuck_after.unwrap_or(ferrule_gateway::health::HEARTBEAT_STUCK);
                 if stuck {
                     problems.push(json!({
+                        "id": format!("stuck:{}", l.session_id),
+                        "fixes": [{ "label": "Stop it", "action": "turn/stop", "body": { "session": l.session_id } }],
                         "what": ctx.redactor.redact(&h.stall_notice(l)),
                         "fix": "Stop it from the list of running turns.",
                         "section": "health",
@@ -168,6 +183,8 @@ pub fn health(ctx: &Ctx) -> Value {
         let stale = h.stale_channels(&live.channels);
         for c in &stale {
             problems.push(json!({
+                "id": format!("channel:{c}"),
+                "fixes": [{ "label": format!("Restart {c}"), "action": "channels/restart", "body": { "name": c } }],
                 "what": format!("{c} hasn't polled successfully for over {}", human(h.settings().poll_stale)),
                 "fix": "Check the network and the bot token; the gateway keeps retrying.",
                 "section": "health",
@@ -176,6 +193,11 @@ pub fn health(ctx: &Ctx) -> Value {
         for c in &live.channels {
             if let Some(p) = c.problem() {
                 problems.push(json!({
+                    "id": format!("channel-problem:{}", c.name()),
+                    "fixes": [
+                        { "label": format!("Restart {}", c.name()), "action": "channels/restart", "body": { "name": c.name() } },
+                        { "label": "Run doctor", "action": "doctor/run", "body": {} },
+                    ],
                     "what": format!("{}: {}", c.name(), ctx.redactor.redact(&p)),
                     "fix": format!("`ferrule doctor` checks the {} token and setup; docs/{}.md has the steps.", c.name(), c.name()),
                     "section": "health",
@@ -226,6 +248,8 @@ pub fn health(ctx: &Ctx) -> Value {
             problems.insert(
                 0,
                 json!({
+                    "id": "kill",
+                    "fixes": [{ "label": "Turn it off", "action": "kill/off", "body": {} }],
                     "what": format!("The kill switch is on (by {}, {}): no model is called.", s.by, s.at),
                     "fix": "Turn it off here, or send /resume.",
                     "action": "kill/off",
@@ -251,6 +275,8 @@ pub fn health(ctx: &Ctx) -> Value {
         }
         if let Some(down) = crate::remote::probe() {
             problems.push(json!({
+                "id": "workspace",
+                "fixes": [{ "label": "Run doctor", "action": "doctor/run", "body": {} }],
                 "what": ctx.redactor.redact(&down),
                 "fix": "The link reconnects by itself; `ferrule ssh test <name>` says why it can't.",
                 "section": "health",
@@ -258,6 +284,7 @@ pub fn health(ctx: &Ctx) -> Value {
         }
         for line in crate::local::problems() {
             problems.push(json!({
+                "fixes": [{ "label": "Run doctor with model pings", "action": "doctor/run", "body": { "ping_models": true } }],
                 "what": ctx.redactor.redact(&line),
                 "fix": "`ferrule doctor --ping-models` has the fix; docs/local-models.md explains it.",
                 "section": "health",
@@ -275,6 +302,7 @@ pub fn health(ctx: &Ctx) -> Value {
             .filter(|(t, _)| *t == crate::update::Tone::Warn)
         {
             problems.push(json!({
+                "fixes": [{ "label": "Check for an update", "action": "console/run", "body": { "line": "update --check" } }],
                 "what": ctx.redactor.redact(line),
                 "fix": "`ferrule doctor` shows the update state; docs/updates.md explains it.",
                 "section": "health",
@@ -283,8 +311,10 @@ pub fn health(ctx: &Ctx) -> Value {
         out["updates"] = json!(report.into_iter().map(|(_, l)| l).collect::<Vec<_>>());
         // M36 §7: the self-check's problems and the last ten repairs.
         if let Some((_, found)) = crate::selfcheck::last(data) {
-            for line in found.values() {
+            for (key, line) in &found {
                 problems.push(json!({
+                    "id": format!("selfcheck:{key}"),
+                    "fixes": [{ "label": "Run doctor", "action": "doctor/run", "body": {} }],
                     "what": ctx.redactor.redact(line),
                     "fix": "The self-check tells the owner when it's fixed; `ferrule doctor` shows it too.",
                     "section": "health",
@@ -297,8 +327,64 @@ pub fn health(ctx: &Ctx) -> Value {
             .map(|r| ctx.redactor.redact(&ferrule_core::repairs::line(r)))
             .collect::<Vec<_>>());
     }
-    out["problems"] = json!(problems);
+    // M37 §1: every strip closes but two, and one closed less than a day
+    // ago while still true is under `hidden`.
+    let (shown, hidden) = match ctx.data.as_deref() {
+        Some(data) => super::notices::Notices::at(data).split(&owner_key(ctx), problems, now()),
+        None => (problems, Vec::new()),
+    };
+    out["problems"] = json!(shown);
+    out["hidden"] = json!(hidden);
     out
+}
+
+fn now() -> u64 {
+    unix(SystemTime::now()).max(0) as u64
+}
+
+/// Whose dismissals these are: the owner's primary chat, else "owner".
+fn owner_key(ctx: &Ctx) -> String {
+    ctx.owner_chat.as_ref().map_or_else(
+        || "owner".to_string(),
+        |c| format!("{}:{}", c.channel, c.chat),
+    )
+}
+
+/// `POST /api/notices/dismiss {id}`: only one of today's problems closes,
+/// and not the two that never do.
+fn notices_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
+    let Some(data) = ctx.data.as_deref() else {
+        return missing("the data directory");
+    };
+    let store = super::notices::Notices::at(data);
+    let owner = owner_key(ctx);
+    if path == "notices/restore" {
+        let id = body.get("id").and_then(Value::as_str);
+        return match store.restore(&owner, id, now()) {
+            Ok(n) => ok(json!({ "ok": true, "restored": n, "said": format!("{n} shown again.") })),
+            Err(e) => bad(500, e),
+        };
+    }
+    let id = need!(arg(body, "id"));
+    if let Some(why) = super::notices::unclosable(id) {
+        return bad(409, format!("This one can't be hidden: {why}."));
+    }
+    let health = health(ctx);
+    let Some(problem) = health["problems"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(health["hidden"].as_array().into_iter().flatten())
+        .find(|p| p["id"] == id)
+    else {
+        return bad(404, "That notice isn't showing any more.");
+    };
+    match store.dismiss(&owner, problem, now()) {
+        Ok(until) => ok(
+            json!({ "ok": true, "until": until, "said": "Hidden for a day; it comes back if it's still true." }),
+        ),
+        Err(e) => bad(409, e),
+    }
 }
 
 /// `https://hc-ping.com/<uuid>` → `hc-ping.com`.
@@ -357,6 +443,8 @@ fn spend(hub: &ferrule_trust::Hub, problems: &mut Vec<Value>) -> Value {
         let s = share(used, cap);
         if s.is_some_and(|s| s >= 1.0) {
             problems.push(json!({
+                "id": format!("cap:{name}"),
+                "fixes": [{ "label": "Edit caps", "section": "usage" }],
                 "what": format!("Today's cap {name} is used up: runs stop until tomorrow."),
                 "fix": "Raise it under Edit caps below (or /caps in Telegram), or wait for the day to turn.",
                 "section": "usage",
@@ -396,6 +484,23 @@ fn model_problems(m: &crate::models::Models, live: Option<&Live>, problems: &mut
         }
         p
     };
+    let fix = |what: String| {
+        let mut p = fix(what);
+        let d = default.map_or("none", |d| d.reference.as_str());
+        let can = view
+            .models
+            .iter()
+            .any(|r| r.key_present && r.down_secs.is_none());
+        p["id"] = json!(if can {
+            format!("model-down:{d}")
+        } else {
+            "models-none".to_string()
+        });
+        if let Some(h) = &healthy {
+            p["fixes"] = json!([{ "label": format!("Make {h} the default"), "action": "models/default", "body": { "model": h } }]);
+        }
+        p
+    };
     match default {
         Some(d) if d.down_secs.is_some() => problems.insert(
             0,
@@ -432,6 +537,7 @@ fn model_problems(m: &crate::models::Models, live: Option<&Live>, problems: &mut
     }
     if let Some(f) = live.and_then(|l| l.fixed.as_ref()) {
         problems.push(json!({
+            "id": "provider-fixed",
             "what": format!("The gateway was started with --provider {f}: every chat uses it, whatever the default says."),
             "fix": "Restart the gateway without --provider to follow the default.",
             "section": "models",
@@ -440,6 +546,8 @@ fn model_problems(m: &crate::models::Models, live: Option<&Live>, problems: &mut
     let unpriced = catalog::unpriced(&m.catalog());
     if !unpriced.is_empty() {
         problems.push(json!({
+            "id": "prices",
+            "fixes": [{ "label": "Fill prices", "action": "catalog/fill-prices", "body": {} }],
             "what": format!("No prices for {}: their cost shows as $0.", unpriced.join(", ")),
             "fix": "Fill missing prices from the catalog.",
             "action": "catalog/fill-prices",
@@ -564,6 +672,190 @@ async fn connection_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         }
         Err(e) => bad(400, format!("{e:#}")),
     }
+}
+
+// ---- Fixes (M37 §1.3) ----------------------------------------------------
+
+/// The env a child `ferrule` needs to read this process's config.
+fn child_env(ctx: &Ctx) -> Vec<(String, std::ffi::OsString)> {
+    let mut env = Vec::new();
+    if let Some(c) = &ctx.config_path {
+        env.push(("FERRULE_CONFIG".to_string(), c.clone().into_os_string()));
+    }
+    if let Some(d) = &ctx.data {
+        env.push(("FERRULE_DATA_DIR".to_string(), d.clone().into_os_string()));
+    }
+    env
+}
+
+/// `ferrule doctor --json`, as a run the page polls; its report comes
+/// back with a fix button on each item that has one.
+fn doctor_run(ctx: &Ctx, body: &Value) -> Answer {
+    let mut args = vec!["doctor".into(), "--json".into()];
+    if body.get("ping_models").and_then(Value::as_bool) == Some(true) {
+        args.push("--ping-models".into());
+    }
+    let label = format!(
+        "ferrule {}",
+        args.iter()
+            .map(|a: &std::ffi::OsString| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    match ctx.runs.start(label, args, child_env(ctx)) {
+        Ok(run) => ok(json!({ "ok": true, "id": run.id })),
+        Err(e) => bad(500, format!("couldn't start doctor: {e}")),
+    }
+}
+
+/// `GET /api/run?id=&from=`: a run's output after `from`; a finished
+/// doctor also has its report.
+fn run_view(ctx: &Ctx, req: &Request) -> Answer {
+    let Some(id) = req.query.get("id") else {
+        return bad(400, "`id` is missing");
+    };
+    let Some(run) = ctx.runs.get(id) else {
+        return bad(404, "no such run (the page keeps the last 20)");
+    };
+    let from = req
+        .query
+        .get("from")
+        .and_then(|f| f.parse().ok())
+        .unwrap_or(0);
+    let mut v = run.view(from);
+    if run.done() && run.label.starts_with("ferrule doctor") {
+        v["report"] = doctor_report(&run.output()).unwrap_or(Value::Null);
+    }
+    ok(v)
+}
+
+/// The doctor's JSON line, each item with the fixes the page can run.
+pub fn doctor_report(out: &str) -> Option<Value> {
+    let mut report: Value = out
+        .lines()
+        .rev()
+        .find_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+        .filter(|v| v["items"].is_array())?;
+    for item in report["items"].as_array_mut().into_iter().flatten() {
+        if !matches!(item["level"].as_str(), Some("warn" | "fail")) {
+            continue;
+        }
+        let what = item["what"].as_str().unwrap_or("");
+        let fixes = match what {
+            "telegram" | "discord" | "slack" => json!([
+                { "label": format!("Restart {what}"), "action": "channels/restart", "body": { "name": what } }
+            ]),
+            "config" => json!([
+                { "label": "Restore the last good config", "action": "config/restore", "body": {} }
+            ]),
+            "updates" => json!([
+                { "label": "Check for an update", "action": "console/run", "body": { "line": "update --check" } }
+            ]),
+            "models" | "provider" | "keys" | "routing" => {
+                json!([{ "label": "Open Models", "section": "models" }])
+            }
+            "connect" | "mcp" => json!([{ "label": "Open Connections", "section": "connections" }]),
+            "hooks" | "plugins" | "browser" | "search" => {
+                json!([{ "label": "Open Extensions", "section": "extensions" }])
+            }
+            "gateway" | "service" => json!([
+                { "label": "Restart the gateway", "action": "gateway/restart", "body": {} }
+            ]),
+            _ => continue,
+        };
+        item["fixes"] = fixes;
+    }
+    Some(report)
+}
+
+fn channel_restart(ctx: &Ctx, body: &Value) -> Answer {
+    let Some(live) = &ctx.live else {
+        return missing("the gateway");
+    };
+    let name = need!(arg(body, "name"));
+    match live.restarts.restart(name) {
+        Ok(()) => ok(json!({
+            "ok": true,
+            "said": format!("{name} started again. A new token or setting needs a gateway restart."),
+        })),
+        Err(e) => bad(400, e),
+    }
+}
+
+/// Puts the last config that read back in place of the file, keeping the
+/// file as `<config>.prev`.
+fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
+    let (Some(data), Some(file)) = (ctx.data.as_deref(), ctx.config_path.as_deref()) else {
+        return missing("the config file");
+    };
+    let copy = crate::last_good::path(data);
+    let Ok(good) = std::fs::read_to_string(&copy) else {
+        return bad(
+            404,
+            "There's no last good config yet: it's kept after each good start.",
+        );
+    };
+    let now = std::fs::read_to_string(file).unwrap_or_default();
+    if now == good {
+        return ok(json!({ "ok": true, "said": "The config is already the last good one." }));
+    }
+    need!(confirmed(
+        body,
+        format!(
+            "Replace {} with the last config that read? The current file is kept as {}.prev.",
+            file.display(),
+            file.display()
+        )
+    ));
+    let prev = crate::dashboard::config_prev(file);
+    let done = crate::secrets::write_private(&prev, &now)
+        .and_then(|()| crate::secrets::write_private(file, &good));
+    match done {
+        Ok(()) => ok(json!({
+            "ok": true,
+            "said": "Restored. The gateway follows MCP servers and secrets now; the rest after a restart.",
+            "restart": true,
+        })),
+        Err(e) => bad(500, format!("{e:#}")),
+    }
+}
+
+/// Only under a service that starts it again: the process ends cleanly
+/// and the service brings it back on the file as it is now.
+fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
+    if ctx.live.is_none() {
+        return missing("the gateway");
+    }
+    if !crate::last_good::supervised() {
+        return bad(
+            409,
+            "The gateway runs in a terminal, not as a service, so nothing would start it again: restart it there.",
+        );
+    }
+    need!(confirmed(
+        body,
+        "Restart the gateway? Running turns stop. If you're on the tunnel address, this page stops \
+         working and a new link comes to your chat within a minute."
+            .to_string()
+    ));
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        tracing::info!("restart asked for from the dashboard");
+        terminate_self();
+    });
+    ok(json!({ "ok": true, "said": "Restarting…" }))
+}
+
+/// The same clean shutdown as `systemctl stop`, which the service follows
+/// with a start.
+fn terminate_self() {
+    #[cfg(unix)]
+    // SAFETY: signalling our own pid; the gateway's handler shuts down.
+    unsafe {
+        libc::kill(libc::getpid(), libc::SIGTERM);
+    }
+    #[cfg(not(unix))]
+    std::process::exit(0);
 }
 
 // ---- Models -------------------------------------------------------------
@@ -1710,5 +2002,109 @@ command = "echo hi"
         let (s, _) = call(&ctx, "POST turn/stop", json!({"session": "x"})).await;
         assert_eq!(s, 503);
         drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_notice_closes_for_a_day_comes_back_on_restore_and_the_kill_switch_never_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        let data = dir.path().join("data");
+        std::fs::write(
+            data.join(crate::selfcheck::FILE),
+            r#"{"problems":{"disk":"The disk is nearly full: 1 GB left."},"at":1}"#,
+        )
+        .unwrap();
+        let (_, health) = call(&ctx, "health", json!({})).await;
+        let p = &health["problems"][0];
+        assert_eq!(p["id"], "selfcheck:disk", "{health}");
+        assert_eq!(p["closable"], true);
+        assert_eq!(p["fixes"][0]["action"], "doctor/run");
+
+        let (s, v) = call(
+            &ctx,
+            "POST notices/dismiss",
+            json!({"id": "selfcheck:disk"}),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        let (_, health) = call(&ctx, "health", json!({})).await;
+        assert_eq!(health["problems"], json!([]), "{health}");
+        assert_eq!(health["hidden"][0]["id"], "selfcheck:disk");
+        let (s, _) = call(&ctx, "POST notices/dismiss", json!({"id": "h:gone"})).await;
+        assert_eq!(s, 404, "only a notice that's showing closes");
+
+        let (s, v) = call(&ctx, "POST notices/restore", json!({})).await;
+        assert_eq!((s, v["restored"].clone()), (200, json!(1)));
+        let (_, health) = call(&ctx, "health", json!({})).await;
+        assert_eq!(health["problems"][0]["id"], "selfcheck:disk");
+
+        let h = hub(dir.path());
+        ctx.hub = Some(h.clone());
+        h.engage(BY, None).unwrap();
+        let (_, health) = call(&ctx, "health", json!({})).await;
+        assert_eq!(health["problems"][0]["id"], "kill");
+        assert_eq!(health["problems"][0]["closable"], false);
+        let (s, v) = call(&ctx, "POST notices/dismiss", json!({"id": "kill"})).await;
+        assert_eq!(s, 409, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("can't be hidden"));
+    }
+
+    #[test]
+    fn the_doctors_report_gets_a_fix_per_item_that_has_one() {
+        let out = "some log line\n".to_string()
+            + &json!({"version": "x", "ok": false, "warnings": 1, "failures": 1, "items": [
+                {"level": "fail", "what": "telegram", "text": "token refused", "hints": []},
+                {"level": "warn", "what": "config", "text": "unknown key", "hints": []},
+                {"level": "ok", "what": "models", "text": "fine", "hints": []},
+                {"level": "warn", "what": "memory", "text": "big", "hints": []},
+            ]})
+            .to_string();
+        let r = doctor_report(&out).unwrap();
+        let items = r["items"].as_array().unwrap();
+        assert_eq!(items[0]["fixes"][0]["action"], "channels/restart");
+        assert_eq!(items[0]["fixes"][0]["body"]["name"], "telegram");
+        assert_eq!(items[1]["fixes"][0]["action"], "config/restore");
+        assert!(
+            items[2].get("fixes").is_none(),
+            "an ok line has nothing to fix"
+        );
+        assert!(items[3].get("fixes").is_none(), "no known repair");
+        assert!(doctor_report("not json").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_last_good_config_goes_back_after_a_confirm_keeping_the_file_as_prev() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        let file = dir.path().join("config.toml");
+        ctx.config_path = Some(file.clone());
+        std::fs::write(&file, "broken = [").unwrap();
+        let (s, _) = call(&ctx, "POST config/restore", json!({})).await;
+        assert_eq!(s, 404, "no copy yet");
+        let copy = crate::last_good::path(&dir.path().join("data"));
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::write(&copy, "[gateway]\n").unwrap();
+        let (s, v) = call(&ctx, "POST config/restore", json!({})).await;
+        assert_eq!(s, 409, "{v}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "broken = [");
+        let (s, v) = call(&ctx, "POST config/restore", json!({"confirm": true})).await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "[gateway]\n");
+        let prev = super::super::config_prev(&file);
+        assert_eq!(std::fs::read_to_string(prev).unwrap(), "broken = [");
+        let (_, v) = call(&ctx, "POST config/restore", json!({})).await;
+        assert!(v["said"].as_str().unwrap().contains("already"));
+    }
+
+    #[tokio::test]
+    async fn restarts_need_the_gateway_and_a_service_behind_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = bare(dir.path());
+        let (s, _) = call(&ctx, "POST channels/restart", json!({"name": "telegram"})).await;
+        assert_eq!(s, 503);
+        let (s, _) = call(&ctx, "POST gateway/restart", json!({"confirm": true})).await;
+        assert_eq!(s, 503);
+        let (s, _) = call(&ctx, "run?id=nope", json!({})).await;
+        assert_eq!(s, 404);
     }
 }

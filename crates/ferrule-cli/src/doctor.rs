@@ -24,16 +24,21 @@ struct Report {
     color: bool,
     warnings: usize,
     failures: usize,
+    /// `--json` (M37): the lines are kept, not printed, and `finish`
+    /// prints them as one JSON object for the dashboard.
+    json: Option<Vec<serde_json::Value>>,
 }
 
 impl Report {
-    fn new() -> Self {
+    fn new(json: bool) -> Self {
         use std::io::IsTerminal;
-        let color = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+        let color =
+            !json && std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
         Self {
             color,
             warnings: 0,
             failures: 0,
+            json: json.then(Vec::new),
         }
     }
 
@@ -50,6 +55,18 @@ impl Report {
                 ("✗", "31")
             }
         };
+        if let Some(items) = &mut self.json {
+            let level = match level {
+                Level::Ok => "ok",
+                Level::Note => "note",
+                Level::Warn => "warn",
+                Level::Fail => "fail",
+            };
+            items.push(serde_json::json!({
+                "level": level, "what": what, "text": text.to_string(), "hints": [],
+            }));
+            return;
+        }
         let mark = if self.color {
             format!("\x1b[{ansi}m{mark}\x1b[0m")
         } else {
@@ -75,11 +92,31 @@ impl Report {
     }
 
     /// A follow-up line under the last check: what to do about it.
-    fn hint(&self, text: impl Display) {
+    fn hint(&mut self, text: impl Display) {
+        if let Some(items) = &mut self.json {
+            if let Some(hints) = items.last_mut().and_then(|i| i["hints"].as_array_mut()) {
+                hints.push(text.to_string().into());
+            }
+            return;
+        }
         println!("  {:<11} → {text}", "");
     }
 
     fn finish(self) -> bool {
+        if let Some(items) = self.json {
+            // One line, last: whatever a check printed on its own comes before.
+            println!(
+                "{}",
+                serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "ok": self.failures == 0,
+                    "warnings": self.warnings,
+                    "failures": self.failures,
+                    "items": items,
+                })
+            );
+            return self.failures == 0;
+        }
         println!();
         let n = |count: usize, one: &str, many: &str| {
             format!("{count} {}", if count == 1 { one } else { many })
@@ -97,13 +134,15 @@ impl Report {
     }
 }
 
-pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
-    let mut r = Report::new();
-    println!(
-        "ferrule doctor · v{}{}\n",
-        env!("CARGO_PKG_VERSION"),
-        if offline { " · offline" } else { "" }
-    );
+pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
+    let mut r = Report::new(json);
+    if !json {
+        println!(
+            "ferrule doctor · v{}{}\n",
+            env!("CARGO_PKG_VERSION"),
+            if offline { " · offline" } else { "" }
+        );
+    }
     let (cfg, path) = match config::Config::load() {
         Ok(loaded) => loaded,
         Err(e) => {

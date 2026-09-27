@@ -15,6 +15,7 @@ pub mod client;
 pub mod config;
 pub mod error;
 mod http;
+pub mod local;
 pub mod tool;
 
 pub use auth::{Auth, CredentialSource};
@@ -22,4 +23,5 @@ pub use browser::BrowserConfig;
 pub use client::{CallToolResult, McpClient, McpToolInfo, ServerHost};
 pub use config::McpServerConfig;
 pub use error::McpError;
+pub use local::{Local, LocalServer};
 pub use tool::{build_tools, connect_and_build_tools, McpRemoteTool};

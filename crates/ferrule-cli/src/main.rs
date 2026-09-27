@@ -104,6 +104,9 @@ enum Cmd {
         /// Also make one real call to every connected model (costs a few tokens each)
         #[arg(long, conflicts_with = "offline")]
         ping_models: bool,
+        /// Print the checks as one JSON object (the dashboard reads it)
+        #[arg(long)]
+        json: bool,
     },
     /// Install the newest signed release (docs/updates.md)
     Update {
@@ -592,7 +595,7 @@ fn main() -> Result<()> {
     // Root on Linux sets up, and checks, the system service's files.
     let system_files = match cli.cmd {
         Cmd::Setup { .. } => true,
-        Cmd::Doctor { .. } | Cmd::Config { .. } | Cmd::Update { .. } => {
+        Cmd::Doctor { .. } | Cmd::Config { .. } | Cmd::Update { .. } | Cmd::Connections { .. } => {
             Path::new(service::SYSTEM_CONFIG).exists()
         }
         _ => false,
@@ -656,8 +659,9 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Doctor {
             offline,
             ping_models,
+            json,
         } => {
-            if !doctor::run(offline, ping_models).await? {
+            if !doctor::run(offline, ping_models, json).await? {
                 std::process::exit(1);
             }
         }
@@ -2233,6 +2237,8 @@ async fn run_gateway(
         })
     };
     let lanes = Arc::downgrade(&router);
+    // M37: the page restarts a channel's loop.
+    let restarts = Arc::new(ferrule_gateway::ChannelRestarts::default());
     // M22: the page on 127.0.0.1, and `/dashboard` before every other door.
     let dash = if cfg.dashboard.enabled {
         let dash = dashboard::Dashboard::new(
@@ -2245,6 +2251,7 @@ async fn run_gateway(
                     channels: adapters.clone(),
                     fixed: provider.clone(),
                     retire: retirer(lanes.clone()),
+                    restarts: restarts.clone(),
                 }),
                 ..dashboard::Ctx::from_config(&cfg)
             },
@@ -2270,6 +2277,7 @@ async fn run_gateway(
         None
     };
     let mut gateway = Gateway::new(router)
+        .with_restarts(restarts)
         .with_health(health.clone())
         .with_redactor(Arc::new(health::redactor(&cfg)));
     if let Some(dash) = &dash {

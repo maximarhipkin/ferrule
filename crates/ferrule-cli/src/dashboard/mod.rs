@@ -8,6 +8,8 @@ pub mod auth;
 pub mod cli;
 pub mod door;
 pub mod http;
+pub mod notices;
+pub mod runs;
 #[cfg(test)]
 pub mod testing;
 
@@ -55,6 +57,8 @@ pub struct Ctx {
     pub workspace: Option<PathBuf>,
     /// The candidate eval running from the page (M24), one at a time.
     pub evals: Arc<crate::model_eval::Jobs>,
+    /// `ferrule` commands started from the page (M37: doctor, the console).
+    pub runs: Arc<runs::Runs>,
 }
 
 impl Ctx {
@@ -77,6 +81,7 @@ impl Ctx {
             config_path: crate::config::config_path().ok().flatten(),
             workspace: std::env::current_dir().ok(),
             evals: Arc::default(),
+            runs: Arc::default(),
         }
     }
 
@@ -96,6 +101,7 @@ impl Ctx {
             config_path: None,
             workspace: None,
             evals: Arc::default(),
+            runs: Arc::default(),
         }
     }
 }
@@ -514,6 +520,13 @@ pub fn redact_value(value: &mut Value, r: &Redactor) {
         Value::Object(o) => o.values_mut().for_each(|v| redact_value(v, r)),
         _ => {}
     }
+}
+
+/// Where a config the page replaced is kept: `<config>.prev`.
+pub fn config_prev(file: &std::path::Path) -> PathBuf {
+    let mut name = file.as_os_str().to_owned();
+    name.push(".prev");
+    PathBuf::from(name)
 }
 
 #[cfg(test)]

@@ -636,7 +636,7 @@ pub async fn add_to(path: PathBuf, mut a: AddArgs) -> Result<Vec<String>> {
     // the server stays added.
     if !a.no_doctor {
         println!();
-        if let Err(e) = crate::doctor::run(true, false).await {
+        if let Err(e) = crate::doctor::run(true, false, false).await {
             warn(format!("doctor: {e:#}"));
         }
     }
