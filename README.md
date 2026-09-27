@@ -63,7 +63,7 @@ Three reasons to pick ferrule over a for-loop around an API call:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.sh | sh
-ferrule setup        # provider + key (tested live), Telegram, credentials, sandbox, service
+ferrule setup        # model (ChatGPT/Claude plan, API key or local), Telegram, credentials, sandbox, service
 ferrule run "list the files here and summarise the project"
 ```
 
@@ -177,6 +177,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 |---|---|
 | **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
 | **Providers & models** | Three drivers: native Anthropic Messages (prompt caching, optional extended thinking), OpenAI Responses (the Codex models, reasoning effort) and OpenAI-compatible Chat for OpenAI, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on outage, and the ledger records the model that actually answered, cache reads and writes included. Optional routing: start every turn on a cheap model and move up to a stronger one only on a failure (a failed check, broken tool calls, going in circles, `/model strong`), with a daily cap on the strong spend. All three drivers stream, read-only tool calls run in parallel, and the prompt prefix stays byte-stable so the cache hits ([`docs/models.md`](docs/models.md), [`docs/m23-drivers.md`](docs/m23-drivers.md), [`docs/routing.md`](docs/routing.md), [`docs/speed.md`](docs/speed.md)). |
+| **Subscriptions** | Sign in with the plan you already pay for instead of an API key. **ChatGPT plan:** `ferrule login chatgpt` (device code, browser or a pasted URL, also `/login chatgpt` in your own Telegram chat); the token is sealed and refreshed, and the model runs in Ferrule's own loop with every tool, gate and the sandbox. **Claude plan:** each turn runs the unmodified `claude` CLI, as Anthropic's terms require, signed in through Claude's own flow or a `claude setup-token`; Ferrule's memory, tasks and messaging are bridged in over MCP and its approvals still apply. Plan turns cost $0 in the ledger, with the notional price beside them, and a usage limit falls back to your next model ([`docs/subscriptions.md`](docs/subscriptions.md)). |
 | **Local models** | `ferrule setup` finds Ollama, llama.cpp, LM Studio and vLLM on this machine, compares the context window the server really gives with what the harness needs, and says how to fix a small one (on Ollama it can make a larger-window copy of the model, on a yes). A probe tells "this model can't call tools" apart from "its template is broken", and doctor and `/status` keep checking after setup ([`docs/local-models.md`](docs/local-models.md)). |
 | **Connections** | The agent connects Jira and Confluence, Gmail, Drive, Notion, Linear, Attio and GitHub by itself. It asks, you tap one Telegram button, and the OAuth code (always PKCE) comes back through your own small Cloudflare Worker relay, a `cloudflared` quick tunnel or a pasted URL, so no inbound port. Tokens are sealed on disk, refreshed per request and never shown to the model. Read-only by default; writes ask you first ([`docs/m20-connections.md`](docs/m20-connections.md)). |
 | **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. `web_search` through Brave, Tavily, Exa or your own SearXNG: the key never leaves the proxy, and every search is a ledger row with a daily cap. Off until `ferrule setup` → Web search ([`docs/web-search.md`](docs/web-search.md)). |
@@ -245,9 +246,11 @@ latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 `ferrule setup` walks through everything, testing keys and tokens as you
 enter them:
 
-1. **Model provider**: OpenAI, Moonshot (Kimi), OpenRouter, DeepSeek,
-   Anthropic, Ollama on this machine, or any OpenAI-compatible URL. Paste
-   the key, pick a model from the ones the key can use.
+1. **Model**: sign in with a ChatGPT or Claude plan
+   ([`docs/subscriptions.md`](docs/subscriptions.md)), or use an API key
+   (OpenAI, Moonshot (Kimi), OpenRouter, DeepSeek, Anthropic, or any
+   OpenAI-compatible URL; paste the key, pick a model from the ones it can
+   use), or a local model (Ollama, llama.cpp, LM Studio, vLLM).
 2. **Telegram** (optional): paste the token from
    [@BotFather](https://t.me/BotFather), then message the bot. Your chat
    goes on the bot's allow-list; it ignores everyone else. **Discord** and
@@ -653,11 +656,13 @@ and a dated entry for every session.
       OpenClaw and Hermes
 - [x] M34: SSH workspaces, and a local-model first run that catches a
       small context window and broken tool calling; `v0.4.0` released
+- [x] M35: subscription sign-in — a ChatGPT plan in Ferrule's own loop,
+      a Claude plan through the unmodified Claude Code CLI
 - [x] Tests green on Linux, macOS and Windows in CI
 
 **Next**
 
-The "do everything" queue (Max, 25.09) is done through M34. Still open:
+The "do everything" queue (Max, 25.09) is done through M35. Still open:
 WhatsApp, waiting on a decision, and each milestone's follow-ups in
 [`PLAN.md`](PLAN.md).
 
