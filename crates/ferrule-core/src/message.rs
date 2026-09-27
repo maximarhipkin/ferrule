@@ -127,7 +127,7 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -138,6 +138,12 @@ pub struct Usage {
     /// `cached_input_tokens`. 0 where the provider doesn't report writes.
     #[serde(default)]
     pub cache_write_input_tokens: u64,
+    /// What the call would have cost at API prices, when the provider
+    /// knows better than the price table: the Claude Code engine's own
+    /// figure for a plan turn (M35). Ledger rows carry it as
+    /// `notional_usd`; it is never money spent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notional_usd: Option<f64>,
 }
 
 #[cfg(test)]

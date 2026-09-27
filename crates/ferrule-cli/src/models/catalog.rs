@@ -95,6 +95,8 @@ pub fn sources(cfg: &Config) -> Vec<Source> {
     let mut out: Vec<Source> = cfg
         .providers
         .iter()
+        // A plan's models aren't listed at an OpenAI-style `/models`.
+        .filter(|(_, p)| p.plan.is_none())
         .map(|(name, p)| Source {
             name: name.clone(),
             provider: Some(name.clone()),
@@ -1196,6 +1198,8 @@ model = "anthropic/claude-sonnet-5"
             api: ferrule_providers::Api::Chat,
             api_set: false,
             options: Default::default(),
+            plan: None,
+            issuer: String::new(),
         };
         let zero = Some(ProviderPricing {
             input: 0.0,

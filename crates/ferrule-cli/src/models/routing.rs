@@ -889,6 +889,7 @@ model = "n-top"
                     until: std::time::Instant::now() + std::time::Duration::from_secs(60),
                     reason: "HTTP 503".into(),
                     told: false,
+                    again: "in 1 minute".into(),
                 },
             );
         };

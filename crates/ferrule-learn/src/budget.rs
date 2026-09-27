@@ -201,6 +201,8 @@ pub fn row(
         eval: None,
         tree: None,
         route: None,
+        plan: None,
+        notional_usd: None,
         speed: None,
     }
 }
@@ -224,6 +226,7 @@ mod tests {
             output_tokens: o,
             cached_input_tokens: 0,
             cache_write_input_tokens: 0,
+            notional_usd: None,
         }
     }
 

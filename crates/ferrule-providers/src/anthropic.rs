@@ -22,6 +22,19 @@ const VERSION: &str = "2023-06-01";
 /// default: a request asking for less is raised to this (it's only a cap).
 pub const MAX_TOKENS_FLOOR: u32 = 16_000;
 
+/// M35: what a Claude subscription's OAuth token (`claude setup-token`)
+/// starts with. Ferrule never sends one to the API: the Claude plan runs
+/// only through the unmodified `claude` binary.
+pub const SUBSCRIPTION_TOKEN_PREFIX: &str = "sk-ant-oat";
+
+/// Said when a key is a subscription token.
+pub const SUBSCRIPTION_TOKEN_REFUSED: &str = "this is a Claude subscription token (from `claude setup-token`); ferrule can't use it as an API key. Use the Claude plan through Claude Code: `ferrule login claude`";
+
+/// Whether `key` is a Claude subscription token rather than an API key.
+pub fn is_subscription_token(key: &str) -> bool {
+    key.trim().starts_with(SUBSCRIPTION_TOKEN_PREFIX)
+}
+
 pub struct AnthropicProvider {
     name: String,
     base_url: String,
@@ -29,6 +42,9 @@ pub struct AnthropicProvider {
     model: String,
     options: DriverOptions,
     client: reqwest::Client,
+    /// The key was a subscription token: it isn't kept, and every call
+    /// fails without a request.
+    refused: bool,
 }
 
 /// A request body, and whether it carries anything the thinking-400 retry
@@ -50,13 +66,19 @@ impl AnthropicProvider {
         model: impl Into<String>,
         options: DriverOptions,
     ) -> Self {
+        let mut api_key = api_key.into();
+        let refused = is_subscription_token(&api_key);
+        if refused {
+            api_key.clear();
+        }
         Self {
             name: name.into(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            api_key: api_key.into(),
+            api_key,
             model: model.into(),
             options,
             client: common::client(),
+            refused,
         }
     }
 
@@ -243,6 +265,9 @@ impl AnthropicProvider {
     /// Send `body` and return the reply's message. With a sink, it asks
     /// for a stream and rebuilds that message from the events.
     async fn post(&self, body: &Value, sink: Option<&DeltaSink>) -> Result<Value, CoreError> {
+        if self.refused {
+            return Err(CoreError::Provider(SUBSCRIPTION_TOKEN_REFUSED.into()));
+        }
         let reply = match sink {
             None => common::send(self.request(body)).await?,
             Some(sink) => {
@@ -324,6 +349,7 @@ impl AnthropicProvider {
                 output_tokens: n("output_tokens"),
                 cached_input_tokens: read,
                 cache_write_input_tokens: write,
+                notional_usd: None,
             },
         })
     }

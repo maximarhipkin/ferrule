@@ -41,6 +41,7 @@ ferrule-learn = { path = "../ferrule-learn" }
 ferrule-trust = { path = "../ferrule-trust" }
 ferrule-otel = { path = "../ferrule-otel" }
 ferrule-connections = { path = "../ferrule-connections" }
+ferrule-plans = { path = "../ferrule-plans" }
 ferrule-codemap = { path = "../ferrule-codemap", default-features = false }
 ferrule-plugins = { path = "../ferrule-plugins", default-features = false }
 tokio = { workspace = true }
@@ -67,6 +68,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# M35: the mock issuer and Codex backend.
+ferrule-plans = { path = "../ferrule-plans", features = ["mock"] }
 # M32: the plugin fixture is WAT, assembled in the test.
 wat = "1"
 # The M20 mocks (an OAuth + MCP provider, the relay), shared with

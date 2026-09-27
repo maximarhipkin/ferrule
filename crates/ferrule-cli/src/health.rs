@@ -69,7 +69,12 @@ pub fn redactor(cfg: &Config) -> Redactor {
         .flatten()
         .cloned(),
     );
-    names.extend(cfg.providers.values().map(|p| p.api_key_env.clone()));
+    names.extend(
+        cfg.providers
+            .values()
+            .filter_map(|p| p.key_var())
+            .map(String::from),
+    );
     Redactor::new(names.iter().filter_map(|n| std::env::var(n).ok()))
 }
 
@@ -117,6 +122,14 @@ pub fn build(
                 Arc::new(move || crate::models::status_lines(&models)),
             )
             .with_stall_hook(Arc::new(move |session: &str| stalls.stalled(session)));
+    }
+    // M35: each plan's sign-in and usage windows, from the usage file.
+    if cfg.providers.values().any(|p| p.plan.is_some()) {
+        let cfg = cfg.clone();
+        health = health.with_section(
+            "plans",
+            Arc::new(move || crate::subscription::status_lines(&cfg)),
+        );
     }
     // M34: the default model's local server — its window, and whether it
     // calls tools; lines only when something's wrong.
@@ -251,6 +264,16 @@ const STALE_STATUS: Duration = Duration::from_secs(30);
 /// keeps. False when no gateway is running.
 pub fn status_cmd() -> Result<bool> {
     let running = status_report()?;
+    // M35: the plans are read from their own files, gateway or not.
+    if let Ok((cfg, _)) = crate::config::Config::load() {
+        let lines = crate::subscription::status_lines(&cfg);
+        if !running && !lines.is_empty() {
+            println!("\nplans:");
+            for line in lines {
+                println!("  {line}");
+            }
+        }
+    }
     // M19c: where to look next, for an installed service.
     if let crate::service::Status::Installed { .. } = crate::service::status() {
         println!("\nthe service's logs: {}", crate::service::logs_hint());

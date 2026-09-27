@@ -85,6 +85,14 @@ pub struct LedgerRecord {
     /// before this call. `None` when nothing was measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<SpeedStats>,
+    /// M35: the subscription plan that answered (`"chatgpt"`,
+    /// `"claude-code"`). Such a call costs nothing on top of the plan, so
+    /// `cost_usd` is 0 and `notional_usd` holds what it would have cost at
+    /// API prices. `None` for API-key calls and on older rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notional_usd: Option<f64>,
 }
 
 /// M27 timings on a ledger row. Every part is optional: a row carries only

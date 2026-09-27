@@ -10,7 +10,7 @@ use crate::ledger::{FileLedgerSink, Prices, ProviderPricing};
 use crate::models::{catalog, Catalog};
 use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
-use ferrule_core::{Guard, GuardedCall, LedgerRecord, LedgerSink, Verdict};
+use ferrule_core::{Guard, GuardedCall, LedgerSink, Verdict};
 use ferrule_eval::{history, report, Caps, Env, Options, Outcome, Pricing, Suite, SuiteRun};
 use ferrule_trust::{Hub, Route, TrustConfig, TrustGuard, TrustSink};
 use serde::{Deserialize, Serialize};
@@ -615,10 +615,10 @@ pub async fn run(
         ferrule_sandbox::Sandbox::new(crate::sandbox_policy(&s.cfg)).map_err(|e| anyhow!(e))?,
     );
     let prices = prices_with(&s.cfg, c);
-    let ledger: Arc<dyn LedgerSink> = Arc::new(FileLedgerSink::new(
-        s.data.join("ledger.jsonl"),
-        prices.clone(),
-    ));
+    let plans = crate::models::plans(&s.cfg);
+    let ledger: Arc<dyn LedgerSink> = Arc::new(
+        FileLedgerSink::new(s.data.join("ledger.jsonl"), prices.clone()).with_plans(plans.clone()),
+    );
     let mut profile = ferrule_core::HarnessProfile::by_name(&c.profile);
     if let Some(w) = c.context_window {
         profile = profile.fitted(w);
@@ -626,9 +626,7 @@ pub async fn run(
     let hub = s.hub.clone();
     let stop = cancel.clone();
     let owner: ferrule_eval::OwnerTrust = Arc::new(move |tree: &str, sink| {
-        let p = prices.clone();
-        let price: ferrule_trust::Pricer =
-            Arc::new(move |r: &LedgerRecord| p(&r.provider, &r.model).map(|p| p.cost_usd(r)));
+        let price = crate::trust::pricer(prices.clone(), plans.clone());
         let sink = Arc::new(TrustSink::new(sink, hub.clone(), tree, Some(price)));
         let guard = TrustGuard::root(
             hub.clone(),

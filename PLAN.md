@@ -690,6 +690,32 @@ that convention yet — ask before introducing one).
     - Surfaces: setup steps, `ferrule ssh list|trust|test`, doctor,
       `/status` and dashboard problems for both.
     - **Decisions for Max and open edges:** see the M34 session-log entry.
+  - **M35 subscription sign-in**: **built** (2026-09-27, branch
+    `m35-subscriptions`, PR to main open, not merged). Design and as-built
+    notes are in `docs/m35-subscriptions.md`; the user guide is
+    `docs/subscriptions.md`.
+    - `ferrule-plans` (new crate): ChatGPT sign-in (device code, PKCE
+      through a loopback listener, a pasted redirect), the sealed store,
+      refresh with rotation under a cross-process lock, logout that
+      revokes; the plans' usage file.
+    - The Codex flavour of the Responses driver: the plan's token, one
+      refresh on a 401, a usage limit as a wait until the reset (M21 falls
+      back), the rate-limit windows recorded.
+    - The Claude Code engine: each turn runs the unmodified `claude`
+      (never `--bare`) with ferrule's own config dir and `--resume`; the
+      child's env loses every API key and base URL; claude's permission
+      prompts go to ferrule's approvals, and ferrule's own tools are
+      bridged over MCP (a bridged call pauses the turn and runs through the
+      agent's gates); process-group kill, timeout and output cap.
+    - The red line: no ferrule code path calls Anthropic with a plan
+      token. A `sk-ant-oat` key is refused by the Anthropic driver on every
+      call, by setup and by doctor. No Claude sign-in or token paste in any
+      chat.
+    - Surfaces: `ferrule login|logout chatgpt|claude`, `/login chatgpt`
+      (owner chat, device code), the setup model step's four ways, doctor's
+      plan checks, `status`/`/status`/dashboard windows, ledger rows at $0
+      with `plan` and `notional_usd`.
+    - **Decisions for Max and open edges:** see the M35 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -4431,3 +4457,105 @@ eval against the mock through the real binary is unchanged: engineered
   (sshd.rs:585) and `a_run_over_ssh_works_and_the_key_never_leaves_ssh`
   (ferrule-cli/tests/ssh.rs:407). M34's last two commits addressed the
   output-cap one, and none failed on the merged head.
+
+### 2026-09-27 — M35 subscription sign-in: a ChatGPT plan and a Claude plan (Devi, Opus 5.5)
+
+**Scope.** Setup offers "sign in with your ChatGPT plan" and "sign in with
+your Claude plan" next to "paste an API key" and "a local model". Design
+and as-built notes: `docs/m35-subscriptions.md`. User guide:
+`docs/subscriptions.md`, linked from `docs/models.md` and `docs/migrate.md`
+(the "OAuth logins not carried over" line now says how to sign in again).
+Branch `m35-subscriptions`, one commit per part (design, A–F).
+
+**The rules it's built on.** Anthropic's terms forbid third-party apps
+from offering Claude.ai login or routing requests through plan credentials,
+and allow "an end user signing in to the unmodified Claude Code binary with
+their own Claude subscription". So every Claude-plan model request comes
+from the unmodified `claude` binary; ferrule never calls the Anthropic API
+with a plan token, and there is no Claude sign-in or token paste in any
+chat. OpenAI tolerates third-party harnesses on a ChatGPT plan; the guide
+calls that tolerance, not a contract.
+
+**What was built.**
+- A: `ferrule-plans`: ChatGPT sign-in (device code, PKCE through a loopback
+  listener, a pasted redirect), the sealed store, refresh with rotation
+  under a cross-process lock, logout that revokes, the usage file.
+- B: the Codex flavour of the Responses driver (the plan's token, one
+  refresh on a 401, the usage limit as a wait until the reset so M21 falls
+  back, the rate-limit windows).
+- C: ChatGPT surfaces: `ferrule login|logout chatgpt`, `/login chatgpt` by
+  device code in the owner's chat only, the setup model step's four ways,
+  doctor, plan-aware readiness in models/routing/dashboard, ledger rows at
+  $0 with `plan` and `notional_usd`, the owner told once when a sign-in
+  expires.
+- D: the Claude Code engine: `claude -p` (never `--bare`) with ferrule's own
+  config dir and `--resume` per chat; the child's env stripped of API keys,
+  base URLs and outranking switches; claude's permission prompts asked of
+  the run's guard; ferrule's tools bridged over MCP (a bridged call pauses
+  the turn and runs through the agent's own gates); process-group kill,
+  timeout, output cap; rate-limit events and a rejected limit with its
+  reset.
+- E: Claude surfaces: `ferrule login claude` (claude's own
+  `auth login --claudeai`, or `--token` for a setup-token), `logout`, the
+  state from `claude auth status --json`, doctor, the hidden `claude-mcp`
+  relay, an exported `CLAUDE_CODE_OAUTH_TOKEN` taken out of ferrule's env
+  at startup, claude's dirs hidden from ferrule's commands, Anthropic's
+  hosts through egress, and a `sk-ant-oat` key refused as an API key on
+  every call, in setup and in doctor.
+- F: the live test, the guide, the docs.
+
+**Decisions taken alone (for Max to overrule).**
+- `claude -p` rather than the Agent SDK: the SDK is a Node/Python library a
+  Rust runtime would drive through a Node child anyway.
+- Way (2), a pasted setup-token, is offered at all, sealed, and the guide
+  says plainly that it is storing a Claude credential. Ways (1) and (3)
+  are recommended for anyone who wants no grey area. It exists because a
+  gateway running as a service has no shell environment.
+- Claude Code's session id rides in the reply's native blocks rather than
+  a separate `sessions.json`.
+- The ChatGPT sign-in uses the Codex CLI's public client id, read from
+  `openai/codex` at a pinned commit.
+- Claude-code models get a 1,000,000-token window by default so ferrule's
+  compactor never cuts a resumed session; claude compacts itself.
+- `~/.claude` is hidden from ferrule's own commands only when a
+  claude-code provider exists, not added to M26's default denies.
+- A `sk-ant-oat` key forces the Anthropic driver whatever `api` says, so
+  the refusal can't be bypassed by `api = "chat"`.
+
+**Live.** One run of the `#[ignore]`d
+`live_two_chat_turns_through_the_real_claude_with_the_sandbox_on`: claude
+2.1.283, Haiku, ferrule's sandbox in its default mode, egress through
+ferrule's broker chained to the host's proxy. Transcript (no secrets):
+
+```
+you> Remember the word ferrule-otter. Reply with just: noted.
+▶ remember {"content":"ferrule-otter"}
+  ✓ remember (15 chars)
+agent: noted.
+you> Which word did I ask you to remember? One word.
+agent: ferrule-otter
+```
+
+Three ledger rows at `cost_usd` 0, `plan = "claude-code"`: the paused
+row of turn 1 (the bridged `remember`), its resumed row (notional
+$0.023), and turn 2 (notional $0.0036, 23.5k of 23.7k input tokens
+cached). An earlier run of the same test spent two more turns. It
+passed the resume check but tripped an exact row count that didn't
+allow for the bridged call; that count was loosened.
+
+**Not verified live.** The ChatGPT plan end to end (this container can't
+reach `auth.openai.com` or `chatgpt.com`; the protocol comes from the Codex
+source at a pinned commit and is tested against mocks); `ferrule login
+claude` through Anthropic's own screens (the live run used an exported
+token); a spent Claude usage limit; Windows and macOS against a real
+`claude` (the fake-binary tests run there in CI).
+
+**Checks.** 1279 tests passed, 0 failed, 20 ignored. fmt and clippy
+`-D warnings` are clean. The starter eval against the mock through the
+real binary: engineered 20/20, naive 11/20, $0.98.
+
+**CI fix.** The e2e wizard answers the new "How should ferrule reach a
+model?" question (API key) before the provider list.
+
+**Follow-ups.** The OTel exporter doesn't send `plan`/`notional_usd`; a
+ChatGPT live turn once someone signs in; README lines (listed in the PR).

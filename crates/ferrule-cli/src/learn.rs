@@ -232,7 +232,7 @@ fn env(cfg: &Config, workspace: &Path, provider: Option<String>) -> Result<ferru
     };
     let key = entry
         .key()
-        .filter(|k| !k.is_empty())
+        .filter(|k| !k.is_empty() || entry.plan.is_some())
         .ok_or_else(|| anyhow::anyhow!(entry.no_key()))?;
     let name = entry.provider.clone();
     let model = entry.client(key);

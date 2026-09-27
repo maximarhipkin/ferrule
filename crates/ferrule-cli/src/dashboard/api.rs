@@ -376,8 +376,8 @@ fn model_problems(m: &crate::models::Models, live: Option<&Live>, problems: &mut
         Some(d) if !d.key_present => problems.insert(
             0,
             fix(format!(
-                "The default model {} has no key ({} isn't set).",
-                d.reference, d.key_env
+                "The default model {} can't be called: {}.",
+                d.reference, d.missing
             )),
         ),
         _ => {}
@@ -991,6 +991,7 @@ pub fn usage_of(
                 "p95_ms": r.p95_latency_ms,
                 "usd": r.cost_usd,
                 "priced_calls": r.priced_calls,
+                "notional_usd": r.notional_usd,
             })
         })
         .collect();

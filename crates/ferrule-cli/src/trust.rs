@@ -230,9 +230,7 @@ pub fn equip(
         ),
     };
     // Priced by the model that ran (M21), so a fallback counts at its own.
-    let prices = crate::models::prices(cfg);
-    let price: ferrule_trust::Pricer =
-        Arc::new(move |r: &LedgerRecord| prices(&r.provider, &r.model).map(|p| p.cost_usd(r)));
+    let price = pricer(crate::models::prices(cfg), crate::models::plans(cfg));
     // Inside the trust sink, so the exporter sees rows stamped and priced.
     let inner = match crate::telemetry::exporter(cfg) {
         Some(exporter) => exporter.sink(inner, tree) as Arc<dyn LedgerSink>,
@@ -559,4 +557,18 @@ pub fn status_lines(hub: &Hub) -> Vec<String> {
         None => "approvals: the terminal only (no owner chat); unattended runs refuse".into(),
     });
     out
+}
+
+/// What the budget counts a row as: its price, and nothing for a plan's
+/// call (M35; the file sink records its notional price).
+pub fn pricer(
+    prices: crate::ledger::Prices,
+    plans: crate::ledger::PlanOf,
+) -> ferrule_trust::Pricer {
+    Arc::new(move |r: &LedgerRecord| {
+        if plans(&r.provider).is_some() {
+            return Some(0.0);
+        }
+        prices(&r.provider, &r.model).map(|p| p.cost_usd(r))
+    })
 }

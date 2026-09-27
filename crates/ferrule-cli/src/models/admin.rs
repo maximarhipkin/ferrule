@@ -39,6 +39,12 @@ pub struct ModelRow {
     pub fallback_rank: Option<usize>,
     pub key_env: String,
     pub key_present: bool,
+    /// What's missing when `key_present` is false, said for people.
+    pub missing: String,
+    /// M35: the subscription it runs on (`chatgpt`, `claude-code`).
+    pub plan: Option<String>,
+    /// The plan's usage windows, as `/status` says them.
+    pub usage: Option<String>,
     pub profile: String,
     /// M23: `anthropic (inferred)`, `chat (set)`.
     pub driver: String,
@@ -139,7 +145,7 @@ impl Models {
             .map(|e| {
                 let r = e.reference();
                 let down = st.down.get(&r).filter(|d| d.until > now);
-                let key_present = e.key().is_some_and(|k| !k.is_empty());
+                let key_present = e.ready();
                 if !key_present && default.as_deref() == Some(r.as_str()) {
                     problems.push(e.no_key());
                 }
@@ -148,6 +154,17 @@ impl Models {
                     fallback_rank: rank(&r),
                     key_present,
                     key_env: e.key_env.clone(),
+                    missing: if key_present {
+                        String::new()
+                    } else {
+                        e.missing()
+                    },
+                    plan: e.plan.map(|p| p.as_str().to_string()),
+                    usage: e.plan.and_then(|p| {
+                        let data = crate::config::data_dir().ok()?;
+                        let reading = ferrule_plans::UsageFile::new(&data).get(p.as_str())?;
+                        Some(reading.line(crate::subscription::now()))
+                    }),
                     profile: e.profile.clone(),
                     driver: e.driver(),
                     context_window: e.harness().context_window,
@@ -648,6 +665,11 @@ pub fn explain(e: &Entry, err: &CoreError) -> String {
         .any(|w| lower.contains(w));
     let detail: String = msg.chars().take(200).collect();
     match status {
+        Some(401 | 403) if e.plan.is_some() => format!(
+            "the plan refused the sign-in (HTTP {}): run `ferrule login {}`",
+            status.unwrap(),
+            e.plan.map_or("", |p| p.login_word())
+        ),
         Some(401 | 403) => format!(
             "the key was refused (HTTP {}). Check `${}`, or replace it in `ferrule setup`",
             status.unwrap(),

@@ -78,6 +78,7 @@ impl Provider for Model {
                 output_tokens: 0,
                 cached_input_tokens: 0,
                 cache_write_input_tokens: 0,
+                notional_usd: None,
             },
         })
     }
@@ -489,6 +490,8 @@ async fn the_day_cap_counts_every_process_survives_a_restart_and_resets_at_midni
         eval: None,
         tree: None,
         route: None,
+        plan: None,
+        notional_usd: None,
         speed: None,
     };
     w.sink().record(other.clone());

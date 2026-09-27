@@ -719,6 +719,8 @@ fn finish(p: RunOne<'_>, mut tag: EvalTag, mut result: TaskResult, started: Inst
         eval: Some(tag),
         tree: None,
         route: None,
+        plan: None,
+        notional_usd: None,
         speed: None,
     });
     result

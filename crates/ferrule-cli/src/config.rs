@@ -7,8 +7,14 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
+    /// M35: a subscription instead of a key (docs/subscriptions.md).
+    /// `base_url` and `api_key_env` are then optional.
+    #[serde(default)]
+    pub plan: Option<Plan>,
+    #[serde(default)]
     pub base_url: String,
     /// Env var holding the API key (never the key itself in the file).
+    #[serde(default)]
     pub api_key_env: String,
     pub model: String,
     /// Harness profile: kimi | openai | anthropic | generic
@@ -48,6 +54,120 @@ pub struct ProviderConfig {
     /// provider's.
     #[serde(default)]
     pub models: BTreeMap<String, ModelConfig>,
+    /// M35: `[plans.chatgpt] issuer`, copied in by [`Config::finish`].
+    #[serde(skip)]
+    pub issuer: String,
+}
+
+/// M35: which subscription a provider signs in with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Plan {
+    /// A ChatGPT plan, through the Codex backend.
+    Chatgpt,
+    /// A Claude plan, through the unmodified `claude` binary.
+    ClaudeCode,
+}
+
+impl Plan {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Plan::Chatgpt => "chatgpt",
+            Plan::ClaudeCode => "claude-code",
+        }
+    }
+
+    /// Its name in a sentence ("the ChatGPT plan").
+    pub fn title(self) -> &'static str {
+        match self {
+            Plan::Chatgpt => "ChatGPT",
+            Plan::ClaudeCode => "Claude",
+        }
+    }
+
+    /// What `ferrule login` calls it.
+    pub fn login_word(self) -> &'static str {
+        match self {
+            Plan::Chatgpt => "chatgpt",
+            Plan::ClaudeCode => "claude",
+        }
+    }
+}
+
+impl std::fmt::Display for Plan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// `[plans]`: what isn't per model (docs/subscriptions.md).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PlansConfig {
+    pub chatgpt: ChatGptPlanConfig,
+    pub claude_code: ClaudeCodePlanConfig,
+}
+
+/// `[plans.claude_code]`: how the Claude Code engine runs `claude`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClaudeCodePlanConfig {
+    /// Found on `PATH`; an absolute path works.
+    pub binary: String,
+    /// `""` is `<data>/claude-code`; `"~/.claude"` reuses claude's own
+    /// login (and its settings, which doctor then checks).
+    pub config_dir: String,
+    pub turn_timeout_minutes: u64,
+    pub max_output_mb: u64,
+    /// Claude Code strips its credentials from its Bash commands' env
+    /// (needs bubblewrap on Linux, else the turn fails).
+    pub scrub_subprocess_env: bool,
+}
+
+impl Default for ClaudeCodePlanConfig {
+    fn default() -> Self {
+        Self {
+            binary: "claude".into(),
+            config_dir: String::new(),
+            turn_timeout_minutes: 20,
+            max_output_mb: 16,
+            scrub_subprocess_env: false,
+        }
+    }
+}
+
+impl ClaudeCodePlanConfig {
+    /// The engine's `CLAUDE_CONFIG_DIR`.
+    pub fn config_dir(&self, data: &std::path::Path) -> PathBuf {
+        let dir = self.config_dir.trim();
+        if dir.is_empty() {
+            return data.join("claude-code");
+        }
+        match dir
+            .strip_prefix("~/")
+            .or(if dir == "~" { Some("") } else { None })
+        {
+            Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+            None => PathBuf::from(dir),
+        }
+    }
+
+    /// `binary` found on `PATH`, else as written (so "not found" names it).
+    pub fn binary(&self) -> PathBuf {
+        let raw = PathBuf::from(if self.binary.trim().is_empty() {
+            "claude"
+        } else {
+            self.binary.trim()
+        });
+        ferrule_plans::claude::cli::find(&raw).unwrap_or(raw)
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChatGptPlanConfig {
+    /// OpenAI's sign-in server; tests point it at a mock.
+    pub issuer: Option<String>,
 }
 
 /// `[providers.X.models."id"]`: where a model differs from its provider.
@@ -160,10 +280,27 @@ impl RoutingConfig {
 }
 
 impl ProviderConfig {
-    /// The wire API: as written, else inferred from `base_url`.
+    /// The wire API: as written, else inferred from `base_url`. A ChatGPT
+    /// plan speaks Responses.
     pub fn api(&self) -> Api {
+        if self.plan == Some(Plan::Chatgpt) {
+            return Api::Responses;
+        }
         self.api
             .unwrap_or_else(|| ferrule_providers::infer_api(&self.base_url))
+    }
+
+    /// `base_url`, or the plan's own endpoint when it's unset.
+    pub fn endpoint(&self) -> String {
+        match (self.plan, self.base_url.is_empty()) {
+            (Some(Plan::Chatgpt), true) => ferrule_providers::codex::DEFAULT_BASE_URL.into(),
+            _ => self.base_url.clone(),
+        }
+    }
+
+    /// The env var a keyed provider reads; none for a plan.
+    pub fn key_var(&self) -> Option<&str> {
+        (self.plan.is_none() && !self.api_key_env.is_empty()).then_some(self.api_key_env.as_str())
     }
 
     /// The driver settings for `model`: its own, else the provider's.
@@ -518,6 +655,9 @@ pub struct Config {
     /// endpoint is set (docs/otel.md).
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// M35: the subscriptions' settings (docs/subscriptions.md).
+    #[serde(default)]
+    pub plans: PlansConfig,
 }
 
 /// `[telemetry]` (docs/otel.md).
@@ -1457,6 +1597,15 @@ pub fn config_path() -> Result<Option<PathBuf>> {
 }
 
 impl Config {
+    /// M35: whether any provider runs through Claude Code, which widens
+    /// egress to Anthropic's hosts and hides claude's credentials from
+    /// commands.
+    pub fn uses_claude_code(&self) -> bool {
+        self.providers
+            .values()
+            .any(|p| p.plan == Some(Plan::ClaudeCode))
+    }
+
     pub fn load() -> Result<(Self, PathBuf)> {
         let Some(path) = config_path()? else {
             bail!("no config found. Run `ferrule setup` first.")
@@ -1475,6 +1624,7 @@ impl Config {
     /// `[web_search]`'s and `[memory]`'s keys, bound to their endpoint's
     /// host in `[secrets]` unless the owner bound them there already.
     pub fn finish(mut self) -> Result<Self> {
+        self.check_providers()?;
         self.memory.hybrid()?;
         self.egress.policy()?;
         if let EmbedderChoice::Endpoint(e) = self.memory.choice(&self.providers)? {
@@ -1512,6 +1662,37 @@ impl Config {
         Ok(self)
     }
 
+    /// A keyed provider still needs `base_url` and `api_key_env` (as
+    /// before M35); a plan fills in its own.
+    fn check_providers(&mut self) -> Result<()> {
+        let issuer = self.plans.chatgpt.issuer.clone().unwrap_or_default();
+        let mut names: Vec<&String> = self.providers.keys().collect();
+        names.sort();
+        for name in names {
+            let p = &self.providers[name];
+            if let Some(plan) = p.plan {
+                if !p.api_key_env.is_empty() {
+                    bail!(
+                        "[providers.{name}] has a plan and api_key_env: a plan signs in (`ferrule login {}`), drop api_key_env",
+                        plan.login_word()
+                    );
+                }
+                continue;
+            }
+            for (field, value) in [("base_url", &p.base_url), ("api_key_env", &p.api_key_env)] {
+                if value.is_empty() {
+                    bail!("[providers.{name}]: missing field `{field}`");
+                }
+            }
+        }
+        for p in self.providers.values_mut() {
+            if p.plan == Some(Plan::Chatgpt) {
+                p.issuer = issuer.clone();
+            }
+        }
+        Ok(())
+    }
+
     pub fn resolve_provider(
         &self,
         name: Option<&str>,
@@ -1524,6 +1705,10 @@ impl Config {
             .providers
             .get(&name)
             .ok_or_else(|| anyhow!("provider `{name}` not in config"))?;
+        if cfg.plan.is_some() {
+            // A plan's credential is read per call from its own store.
+            return Ok((name, cfg, String::new()));
+        }
         let key = std::env::var(&cfg.api_key_env).with_context(|| {
             format!(
                 "env var `{}` not set (needed by provider `{name}`) — run `ferrule setup`, or export it",
@@ -1557,6 +1742,47 @@ pub fn data_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M35: a plan provider needs neither `base_url` nor `api_key_env`,
+    /// refuses a key variable, speaks Responses to its own endpoint and
+    /// picks up `[plans.chatgpt] issuer`; a keyed one still needs both.
+    #[test]
+    fn a_plan_provider_signs_in_instead_of_naming_a_key() {
+        let text = r#"
+default_provider = "chatgpt"
+
+[plans.chatgpt]
+issuer = "http://127.0.0.1:9"
+
+[providers.chatgpt]
+plan = "chatgpt"
+model = "gpt-5.5"
+"#;
+        let cfg: Config = toml::from_str(text).unwrap();
+        let cfg = cfg.finish().unwrap();
+        let p = &cfg.providers["chatgpt"];
+        assert_eq!(p.plan, Some(Plan::Chatgpt));
+        assert_eq!(p.api(), Api::Responses);
+        assert_eq!(p.endpoint(), ferrule_providers::codex::DEFAULT_BASE_URL);
+        assert_eq!(p.key_var(), None);
+        assert_eq!(p.issuer, "http://127.0.0.1:9");
+        let (name, _, key) = cfg.resolve_provider(None).unwrap();
+        assert_eq!((name.as_str(), key.as_str()), ("chatgpt", ""));
+
+        let keyed = format!("{text}api_key_env = \"OPENAI_API_KEY\"\n");
+        let cfg: Config = toml::from_str(&keyed).unwrap();
+        let e = cfg.finish().unwrap_err().to_string();
+        assert!(
+            e.contains("has a plan and api_key_env") && e.contains("ferrule login chatgpt"),
+            "{e}"
+        );
+
+        let bare: Config = toml::from_str("[providers.x]\nmodel = \"m\"\n").unwrap();
+        let e = bare.finish().unwrap_err().to_string();
+        assert!(e.contains("[providers.x]: missing field `base_url`"), "{e}");
+        let bad = toml::from_str::<Config>("[providers.x]\nplan = \"gemini\"\nmodel = \"m\"\n");
+        assert!(bad.is_err(), "an unknown plan doesn't parse");
+    }
 
     #[test]
     fn example_web_search_block_parses_uncommented_and_binds_its_key() {

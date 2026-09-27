@@ -742,6 +742,7 @@ dependencies = [
  "ferrule-mcp",
  "ferrule-memory",
  "ferrule-otel",
+ "ferrule-plans",
  "ferrule-plugins",
  "ferrule-providers",
  "ferrule-proxy",
@@ -1009,6 +1010,26 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "ferrule-plans"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ferrule-connections",
+ "ferrule-core",
+ "ferrule-plans",
+ "ferrule-providers",
+ "ferrule-sandbox",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
