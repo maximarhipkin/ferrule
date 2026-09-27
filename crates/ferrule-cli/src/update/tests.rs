@@ -804,7 +804,8 @@ fn a_request_is_read_once_never_through_a_link_and_never_picks_a_version() {
         Request {
             ferrule: true,
             claude: false,
-            to: None
+            to: None,
+            id: 0
         }
     );
     assert!(!path.exists());
@@ -873,6 +874,7 @@ fn watch(data: &Path, units: bool, auto: Option<bool>, source: Source) -> Watch 
         current: v("0.5.1"),
         target: LINUX.into(),
         jitter: 0,
+        claude: None,
     }
 }
 
@@ -1174,4 +1176,307 @@ async fn live_the_real_release_list_parses() {
     assert!(r
         .asset(&format!("{}.sha256", release::archive_name(LINUX)))
         .is_some());
+}
+
+// M36 §5: `claude`, only ever the stand-in (`ferrule-fake-claude`).
+
+/// The stand-in `claude`, next to this test binary's `ferrule` when the
+/// workspace built it, else built now.
+fn fake_claude() -> PathBuf {
+    static FAKE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FAKE.get_or_init(|| {
+        let exe = std::env::current_exe().unwrap();
+        let profile = exe.parent().and_then(Path::parent).unwrap();
+        let fake = profile.join(format!(
+            "ferrule-fake-claude{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        if !fake.exists() {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+            let mut cmd = std::process::Command::new(cargo);
+            cmd.args([
+                "build",
+                "-p",
+                "ferrule-plans",
+                "--bin",
+                "ferrule-fake-claude",
+            ]);
+            if profile.file_name() == Some("release".as_ref()) {
+                cmd.arg("--release");
+            }
+            assert!(cmd.status().unwrap().success(), "building the fake claude");
+        }
+        fake
+    })
+    .clone()
+}
+
+/// A copy where claude's native installer puts it, so its version files
+/// are this test's own; the copy waits until it runs ("text file busy").
+fn native_claude(root: &Path) -> PathBuf {
+    let dir = root.join(".local/share/claude/versions/2.1.283");
+    std::fs::create_dir_all(&dir).unwrap();
+    let claude = dir.join(format!("claude{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(fake_claude(), &claude).unwrap();
+    for _ in 0..100 {
+        match std::process::Command::new(&claude)
+            .arg("--version")
+            .output()
+        {
+            Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(Duration::from_millis(20)),
+            _ => break,
+        }
+    }
+    claude
+}
+
+const DIST_TAGS: &str = "/-/package/@anthropic-ai/claude-code/dist-tags";
+
+async fn npm(latest: &str) -> Mock {
+    let mock = Mock::start().await;
+    mock.put(
+        DIST_TAGS,
+        serde_json::to_vec(&serde_json::json!({"latest": latest, "stable": "2.0.0"})).unwrap(),
+    );
+    mock
+}
+
+fn claude_at(binary: &Path, root: &Path, mock: &Mock) -> super::claude::Claude {
+    super::claude::Claude {
+        binary: binary.into(),
+        config_dir: root.join("claude-code"),
+        npm: format!("{}{DIST_TAGS}", mock.base),
+    }
+}
+
+#[tokio::test]
+async fn claude_is_updated_when_npm_has_a_newer_one_and_left_alone_when_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let state_dir = super::state_dir(&data);
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let binary = native_claude(dir.path());
+    let mock = npm("2.2.0").await;
+    let claude = claude_at(&binary, dir.path(), &mock);
+
+    let done = super::claude::run(&state_dir, &claude, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((done.from.as_str(), done.to.as_str()), ("2.1.283", "2.2.0"));
+    let st = State::load(&state_dir);
+    assert_eq!(st.claude_installed.as_deref(), Some("2.2.0"));
+    assert_eq!(st.claude_latest.as_deref(), Some("2.2.0"));
+    assert!(st.claude_checked.is_some());
+    assert_eq!(st.events.len(), 1);
+    assert_eq!(st.events[0].kind, EventKind::ClaudeUpdated);
+    assert_eq!(
+        super::notice::event_text(&st.events[0]),
+        None,
+        "a routine update isn't told"
+    );
+
+    // Current: nothing runs.
+    std::fs::remove_file(binary.with_file_name("fake-update.json")).unwrap();
+    assert_eq!(
+        super::claude::run(&state_dir, &claude, None).await.unwrap(),
+        None
+    );
+    assert!(!binary.with_file_name("fake-update.json").exists());
+    assert_eq!(State::load(&state_dir).events.len(), 1);
+    let lines = super::status_lines(&data, None);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("claude 2.2.0, up to date")),
+        "{lines:?}"
+    );
+
+    // A turn that needs it forces the update, and is told.
+    let done = super::claude::run(&state_dir, &claude, Some("needs an update"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(done.from, done.to, "the fake is already the latest");
+    assert_eq!(State::load(&state_dir).events.len(), 1, "nothing changed");
+}
+
+#[tokio::test]
+async fn a_failing_claude_update_is_told_once_until_it_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let state_dir = super::state_dir(&data);
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let binary = native_claude(dir.path());
+    let fails = binary.with_file_name("fake-update-fails");
+    std::fs::write(&fails, "").unwrap();
+    let mock = npm("2.2.0").await;
+    let mut w = watch(&data, false, None, Source::new("http://127.0.0.1:9"));
+    w.claude = Some(claude_at(&binary, dir.path(), &mock));
+    let fake = Arc::new(FakeOwner::default());
+    let owner: Arc<dyn Owner> = fake.clone();
+
+    w.tick(&owner).await.unwrap();
+    let lines = told(&fake);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("The claude CLI couldn't be updated") && lines[0].contains("EACCES"),
+        "{lines:?}"
+    );
+    let report = super::report(&data, None, false);
+    assert!(
+        report
+            .iter()
+            .any(|(t, l)| *t == super::Tone::Warn && l.contains("its update failed")),
+        "{report:?}"
+    );
+
+    // The next day, the same failure: not told again, nor recorded twice.
+    let mut st = State::load(&state_dir);
+    st.claude_checked = None;
+    st.save(&state_dir).unwrap();
+    w.tick(&owner).await.unwrap();
+    assert_eq!(told(&fake).len(), 1);
+    assert_eq!(State::load(&state_dir).events.len(), 1);
+
+    // Then it works: quietly.
+    std::fs::remove_file(&fails).unwrap();
+    let mut st = State::load(&state_dir);
+    st.claude_checked = None;
+    st.save(&state_dir).unwrap();
+    w.tick(&owner).await.unwrap();
+    assert_eq!(told(&fake).len(), 1);
+    let st = State::load(&state_dir);
+    assert_eq!(st.events.last().unwrap().kind, EventKind::ClaudeUpdated);
+    assert_eq!(Told::load(&data).unwrap().claude_failed, None);
+
+    // With the units, the gateway leaves claude to them.
+    std::fs::write(binary.with_file_name("fake-latest"), "2.3.0").unwrap();
+    let mock = npm("2.3.0").await;
+    let mut w = watch(&data, true, None, Source::new("http://127.0.0.1:9"));
+    w.claude = Some(claude_at(&binary, dir.path(), &mock));
+    let mut st = State::load(&state_dir);
+    st.claude_checked = None;
+    st.save(&state_dir).unwrap();
+    w.tick(&owner).await.unwrap();
+    assert_eq!(
+        State::load(&state_dir).claude_installed.as_deref(),
+        Some("2.2.0")
+    );
+}
+
+#[tokio::test]
+async fn the_gateway_asks_the_unit_to_update_claude_and_waits_for_its_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_path_buf();
+    let state_dir = super::state_dir(&data);
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let binary = native_claude(dir.path());
+    let mock = npm("2.2.0").await;
+    let claude = claude_at(&binary, dir.path(), &mock);
+
+    // The unit: started by the request, it runs claude's update.
+    let unit = {
+        let (data, claude) = (data.clone(), claude.clone());
+        tokio::spawn(async move {
+            loop {
+                if data.join("update").join(state::REQUEST_FILE).exists() {
+                    let exe = std::env::current_exe().unwrap();
+                    let settings = crate::config::UpdateConfig::default();
+                    super::apply_unit(&settings, &data, &exe, Some(&claude))
+                        .await
+                        .unwrap();
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+    };
+    let asked = tokio::spawn({
+        let (data, state_dir) = (data.clone(), state_dir.clone());
+        async move {
+            super::claude::ask_unit(
+                &data,
+                &state_dir,
+                Duration::from_secs(60),
+                Duration::from_millis(20),
+            )
+            .await
+        }
+    });
+    asked.await.unwrap().unwrap();
+    unit.await.unwrap();
+    let st = State::load(&state_dir);
+    assert_eq!(st.claude_installed.as_deref(), Some("2.2.0"));
+    let e = st.events.last().unwrap();
+    assert_eq!(e.kind, EventKind::ClaudeUpdated);
+    assert_eq!(
+        super::notice::event_text(e).unwrap(),
+        "Updated the claude CLI 2.1.283 → 2.2.0 after a turn failed."
+    );
+
+    // A unit that can't: the gateway hears why, and doesn't wait it out.
+    std::fs::write(binary.with_file_name("fake-update-fails"), "").unwrap();
+    std::fs::write(binary.with_file_name("fake-latest"), "2.3.0").unwrap();
+    let unit = {
+        let data = data.clone();
+        tokio::spawn(async move {
+            loop {
+                if data.join("update").join(state::REQUEST_FILE).exists() {
+                    let exe = std::env::current_exe().unwrap();
+                    let settings = crate::config::UpdateConfig::default();
+                    // No claude to update here.
+                    super::apply_unit(&settings, &data, &exe, None)
+                        .await
+                        .unwrap();
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+    };
+    let e = super::claude::ask_unit(
+        &data,
+        &state_dir,
+        Duration::from_secs(60),
+        Duration::from_millis(20),
+    )
+    .await
+    .unwrap_err();
+    unit.await.unwrap();
+    assert!(format!("{e}").contains("updating claude is off"), "{e}");
+
+    // Nobody answers: it gives up after the wait.
+    let e = super::claude::ask_unit(
+        &data,
+        &state_dir,
+        Duration::from_millis(100),
+        Duration::from_millis(20),
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{e}").contains("didn't run within"), "{e}");
+}
+
+#[tokio::test]
+async fn doctor_shows_claudes_version_the_latest_and_how_it_updates() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = native_claude(dir.path());
+    let mock = npm("2.2.0").await;
+    let claude = claude_at(&binary, dir.path(), &mock);
+    let (ok, line) = super::claude::doctor_line(&claude, false).await;
+    assert!(!ok);
+    assert!(
+        line.starts_with("claude 2.1.283, 2.2.0 is out (native installer)"),
+        "{line}"
+    );
+    let (ok, line) = super::claude::doctor_line(&claude, true).await;
+    assert!(ok, "offline: not known to be behind");
+    assert!(line.starts_with("claude 2.1.283 (native"), "{line}");
+    let missing = super::claude::Claude {
+        binary: dir.path().join("nowhere/claude"),
+        ..claude
+    };
+    let (ok, line) = super::claude::doctor_line(&missing, true).await;
+    assert!(!ok && line.starts_with("claude: "), "{line}");
 }

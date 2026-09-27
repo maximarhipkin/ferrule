@@ -2176,7 +2176,11 @@ async fn run_gateway(
     }));
     // M36: a line per update or rollback, and what's out (docs/updates.md).
     update::notice::spawn(
-        update::notice::Watch::new(config::data_dir()?, &cfg.update),
+        update::notice::Watch::new(
+            config::data_dir()?,
+            &cfg.update,
+            update::claude::Claude::from_config(&cfg, &config::data_dir()?),
+        ),
         Arc::new(update::notice::HubOwner(hub.clone())),
     );
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));

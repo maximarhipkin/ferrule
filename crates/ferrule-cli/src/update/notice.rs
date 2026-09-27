@@ -61,10 +61,17 @@ pub struct Watch {
     pub target: String,
     /// Added to the daily check's day, so installs don't all ask at once.
     pub jitter: u64,
+    /// The `claude` to keep current; without the units the gateway does
+    /// it daily.
+    pub claude: Option<super::claude::Claude>,
 }
 
 impl Watch {
-    pub fn new(data: PathBuf, settings: &crate::config::UpdateConfig) -> Self {
+    pub fn new(
+        data: PathBuf,
+        settings: &crate::config::UpdateConfig,
+        claude: Option<super::claude::Claude>,
+    ) -> Self {
         Watch {
             data,
             auto: settings.auto,
@@ -74,12 +81,24 @@ impl Watch {
             current: release::current(),
             target: release::TARGET.to_string(),
             jitter: u64::from(uuid::Uuid::new_v4().as_u128() as u16) % 7200,
+            claude,
         }
     }
 
     /// Tell what's new; ask or offer what's out.
     pub async fn tick(&self, owner: &Arc<dyn Owner>) -> Result<()> {
-        let state = State::load(&super::state_dir(&self.data));
+        let state_dir = super::state_dir(&self.data);
+        if let Some(claude) = self.claude.as_ref().filter(|_| !self.units) {
+            let due = State::load(&state_dir)
+                .claude_checked
+                .is_none_or(|at| state::now() >= at + CHECK_EVERY + self.jitter);
+            if due {
+                if let Err(e) = super::claude::run(&state_dir, claude, None).await {
+                    tracing::debug!("claude update check: {e:#}");
+                }
+            }
+        }
+        let state = State::load(&state_dir);
         let loaded = Told::load(&self.data);
         let mut told = loaded.clone().unwrap_or_default();
         let last = state.events.last().map_or(0, |e| e.id);
@@ -98,6 +117,15 @@ impl Watch {
                     continue;
                 }
                 told.failed = Some(event.to.clone());
+            }
+            if event.kind == EventKind::ClaudeFailed {
+                if told.claude_failed.as_deref() == Some(event.notes.as_str()) {
+                    continue;
+                }
+                told.claude_failed = Some(event.notes.clone());
+            }
+            if event.kind == EventKind::ClaudeUpdated {
+                told.claude_failed = None;
             }
             if let Some(text) = event_text(event) {
                 owner.tell(text);
@@ -192,8 +220,10 @@ pub fn event_text(e: &Event) -> Option<String> {
             e.to,
             release::clip(&e.notes, 300)
         ),
+        // claude ships most days: only an update that fixed a turn is told.
+        EventKind::ClaudeUpdated if e.notes.is_empty() || e.from == e.to => return None,
         EventKind::ClaudeUpdated => {
-            format!("Updated the claude CLI {} → {}.", e.from, e.to)
+            format!("Updated the claude CLI {} → {} {}.", e.from, e.to, e.notes)
         }
         EventKind::ClaudeFailed => format!(
             "The claude CLI couldn't be updated: {}",

@@ -10,6 +10,7 @@
 //! - `bridge`: the loopback MCP server for ferrule's tools and the
 //!   permission prompt, and the relay behind `ferrule claude-mcp`.
 //! - `engine`: the `ClaudeCode` provider.
+//! - `update`: keeping claude current through its own updater (M36).
 
 pub mod bridge;
 pub mod cli;
@@ -17,5 +18,6 @@ pub mod engine;
 pub mod env;
 pub mod stream;
 pub mod token;
+pub mod update;
 
-pub use engine::{ClaudeCode, EngineConfig};
+pub use engine::{ClaudeCode, EngineConfig, Repairer};

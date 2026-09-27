@@ -65,6 +65,8 @@ pub struct State {
     /// What the last `claude` check found: installed and latest versions.
     pub claude_installed: Option<String>,
     pub claude_latest: Option<String>,
+    /// The last request id a claude run answered.
+    pub claude_answered: Option<u64>,
 }
 
 impl State {
@@ -138,6 +140,9 @@ pub struct Request {
     /// Only `ferrule update --to` sets this, from a terminal; a request
     /// file's `to` is ignored (the daemon doesn't pick versions).
     pub to: Option<String>,
+    /// Echoed back in the state's `claude_answered` once the unit has run
+    /// claude's update, so the gateway knows its answer is in.
+    pub id: u64,
 }
 
 /// Ask the apply unit to run now: the path unit watches for this file.
@@ -202,6 +207,8 @@ pub struct Told {
     pub checked: Option<u64>,
     /// The last version a failure was told for.
     pub failed: Option<String>,
+    /// The last claude update failure told, until one works.
+    pub claude_failed: Option<String>,
 }
 
 impl Told {

@@ -5,6 +5,12 @@
 //! `$CLAUDE_CONFIG_DIR/fake/`, keeps sessions there so `--resume` works,
 //! and picks what to do from a `[word]` in the prompt it reads on stdin.
 //! The token is recorded as a hash, never as itself.
+//!
+//! Its version is `fake-version` beside the binary (2.1.283 without one);
+//! `update` sets it to `fake-latest` (2.2.0), or fails when
+//! `fake-update-fails` is there, and records who ran it in
+//! `fake-update.json`. A `[needs-update]` turn fails the way an outdated
+//! claude does until the version is 2.2.0 or later.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -20,6 +26,52 @@ fn out(v: Value) {
 fn arg(args: &[String], flag: &str) -> Option<String> {
     let i = args.iter().position(|a| a == flag)?;
     args.get(i + 1).cloned()
+}
+
+/// The directory the binary is in, where its version lives.
+fn home() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    exe.parent().unwrap().to_path_buf()
+}
+
+fn version() -> String {
+    std::fs::read_to_string(home().join("fake-version"))
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|_| "2.1.283".into())
+}
+
+/// `claude update`, as the native installer's would.
+fn update() -> i32 {
+    let dir = home();
+    #[cfg(unix)]
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let uid = 0u32;
+    let seen = json!({
+        "uid": uid,
+        "home": std::env::var("HOME").ok(),
+        "autoupdater_off": std::env::var("DISABLE_AUTOUPDATER").ok(),
+        "stdin_closed": std::io::stdin().read(&mut [0u8; 1]).map_or(true, |n| n == 0),
+    });
+    std::fs::write(dir.join("fake-update.json"), seen.to_string()).unwrap();
+    if dir.join("fake-update-fails").exists() {
+        eprintln!("Error: EACCES: permission denied, open '/somewhere/claude'");
+        return 1;
+    }
+    let latest = std::fs::read_to_string(dir.join("fake-latest"))
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|_| "2.2.0".into());
+    let from = version();
+    std::fs::write(dir.join("fake-version"), &latest).unwrap();
+    println!("Successfully updated from {from} to version {latest}");
+    0
+}
+
+/// `a` is at least `b`.
+fn at_least(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> { v.split('.').filter_map(|p| p.parse().ok()).collect() };
+    parse(a) >= parse(b)
 }
 
 fn now() -> u64 {
@@ -99,7 +151,7 @@ fn not_a_turn(args: &[String], fake: &std::path::Path) -> Option<i32> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let marker = fake.join("logged-in");
     match words.as_slice() {
-        ["--version"] => println!("2.1.283 (Claude Code)"),
+        ["--version"] => println!("{} (Claude Code)", version()),
         ["auth", "status", ..] => {
             let token = std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some();
             let login = marker.exists();
@@ -131,6 +183,9 @@ fn not_a_turn(args: &[String], fake: &std::path::Path) -> Option<i32> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args == ["update"] {
+        std::process::exit(update());
+    }
     let config = PathBuf::from(std::env::var("CLAUDE_CONFIG_DIR").expect("CLAUDE_CONFIG_DIR"));
     let fake = config.join("fake");
     std::fs::create_dir_all(fake.join("sessions")).unwrap();
@@ -205,6 +260,12 @@ fn main() {
         out(result(&session, text, false, None));
     };
 
+    if prompt.contains("[needs-update]") && !at_least(&version(), "2.2.0") {
+        eprintln!(
+            "Claude Code needs an update. A newer version (2.2.0 or higher) is required to continue."
+        );
+        std::process::exit(1);
+    }
     if limited {
         out(result(
             &session,

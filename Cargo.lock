@@ -1104,6 +1104,7 @@ dependencies = [
  "ferrule-plans",
  "ferrule-providers",
  "ferrule-sandbox",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

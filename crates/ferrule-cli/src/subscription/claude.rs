@@ -60,6 +60,10 @@ pub fn engine_config(cfg: &Config) -> Result<EngineConfig> {
     let workspace = std::env::current_dir().unwrap_or_else(|_| data.clone());
     let mut e = EngineConfig::new(s.binary(), dir.clone(), workspace);
     e.private_dir = Some(crate::secrets::private_dir()?);
+    e.repair = crate::update::claude::Claude::from_config(cfg, &data).map(|c| {
+        Arc::new(crate::update::claude::Fixer::new(data.clone(), c))
+            as Arc<dyn ferrule_plans::claude::Repairer>
+    });
     e.data_dir = Some(data);
     e.turn_timeout = Duration::from_secs(s.turn_timeout_minutes.max(1) * 60);
     e.max_output_bytes = s.max_output_mb.max(1) * 1024 * 1024;

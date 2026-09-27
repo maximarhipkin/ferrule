@@ -88,6 +88,18 @@ pub struct EngineConfig {
     /// The M26 sandbox; claude runs under it as a helper. `None`: not
     /// confined (tests, or the sandbox off).
     pub sandbox: Option<Sandbox>,
+    /// M36: updates claude when a turn failed because it is too old or its
+    /// install is broken; the turn is then tried once more.
+    pub repair: Option<Arc<dyn Repairer>>,
+}
+
+/// M36 §5.3: whoever can update `claude` here (directly, or by asking the
+/// update unit).
+#[async_trait]
+pub trait Repairer: Send + Sync + std::fmt::Debug {
+    /// Update claude now; `why` is the failed turn's error. `Ok` once the
+    /// update ran.
+    async fn update_claude(&self, why: &str) -> anyhow::Result<()>;
 }
 
 impl EngineConfig {
@@ -103,6 +115,7 @@ impl EngineConfig {
             scrub_subprocess_env: false,
             bridge_command: None,
             sandbox: None,
+            repair: None,
         }
     }
 
@@ -158,8 +171,42 @@ impl ClaudeCode {
             .retain(|t| t.paused_at.is_none_or(|at| at.elapsed() < timeout));
     }
 
-    /// Starts a turn for the chat in `req`.
+    /// Starts a turn for the chat in `req`; a claude too old for Claude's
+    /// servers, or a broken install, is updated and the turn tried once more.
     async fn start(
+        &self,
+        req: &CompletionRequest,
+        ctx: &CallContext,
+    ) -> Result<CompletionResponse, CoreError> {
+        let first = self.start_once(req, ctx).await;
+        let (Err(e), Some(repair)) = (&first, &self.config.repair) else {
+            return first;
+        };
+        let kind = ferrule_core::failure::classify(e);
+        let fixable = match kind {
+            ferrule_core::failure::Kind::ClaudeTooOld => true,
+            // Installed but broken; a missing one is found, not updated.
+            ferrule_core::failure::Kind::ClaudeMissing => {
+                super::cli::find(&self.config.binary).is_some()
+            }
+            _ => false,
+        };
+        if !fixable {
+            return first;
+        }
+        match repair.update_claude(&e.to_string()).await {
+            Ok(()) => {
+                tracing::info!(kind = %kind.name(), "claude-code: claude updated; trying the turn again");
+                self.start_once(req, ctx).await
+            }
+            Err(fix) => {
+                tracing::warn!(error = %format!("{fix:#}"), "claude-code: claude couldn't be updated");
+                first
+            }
+        }
+    }
+
+    async fn start_once(
         &self,
         req: &CompletionRequest,
         ctx: &CallContext,

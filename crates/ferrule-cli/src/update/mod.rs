@@ -3,6 +3,7 @@
 //! and rolled back and pinned if it doesn't come up.
 
 pub mod apply;
+pub mod claude;
 pub mod notice;
 pub mod release;
 pub mod state;
@@ -63,18 +64,22 @@ pub struct Args {
 
 pub async fn cli(args: Args) -> Result<()> {
     // An unreadable config mustn't stop the fix for it from installing.
-    let settings = match crate::config::Config::load() {
-        Ok((cfg, _)) => cfg.update,
+    let cfg = match crate::config::Config::load() {
+        Ok((cfg, _)) => Some(cfg),
         Err(e) => {
             eprintln!("ferrule: the config didn't load ({e:#}); using the update defaults");
-            crate::config::UpdateConfig::default()
+            None
         }
     };
+    let settings = cfg.as_ref().map(|c| c.update.clone()).unwrap_or_default();
     let data = crate::config::data_dir_path().context("no data dir; set FERRULE_DATA_DIR")?;
     let exe = dunce::canonicalize(std::env::current_exe()?)?;
     swap::clean_old(&exe);
     if args.apply {
-        return apply_unit(&settings, &data, &exe).await;
+        let claude = cfg
+            .as_ref()
+            .and_then(|c| claude::Claude::from_config(c, &data));
+        return apply_unit(&settings, &data, &exe, claude.as_ref()).await;
     }
     if args.unsigned && args.to.is_none() {
         bail!("--unsigned is for an old release asked for by name: ferrule update --to <tag> --unsigned");
@@ -180,9 +185,49 @@ pub async fn cli(args: Args) -> Result<()> {
 
 /// `update --apply`, from the units: a request from the gateway, or the
 /// daily timer.
-async fn apply_unit(settings: &crate::config::UpdateConfig, data: &Path, exe: &Path) -> Result<()> {
+async fn apply_unit(
+    settings: &crate::config::UpdateConfig,
+    data: &Path,
+    exe: &Path,
+    claude: Option<&claude::Claude>,
+) -> Result<()> {
     let state_dir = state_dir(data);
     let request = state::take_request(data);
+    let asked = request.as_ref().is_some_and(|r| r.claude);
+    let due = match &request {
+        Some(r) => r.claude,
+        None => !state::State::load(&state_dir)
+            .claude_checked
+            .is_some_and(|at| state::now().saturating_sub(at) < TIMER_GAP),
+    };
+    match claude.filter(|_| due) {
+        Some(c) => {
+            let why = asked.then_some("after a turn failed");
+            match claude::run(&state_dir, c, why).await {
+                Ok(Some(u)) => println!("claude updated {} → {}", u.from, u.to),
+                Ok(None) => println!("claude is current"),
+                Err(e) => println!("claude: {e:#}"),
+            }
+        }
+        // The gateway waits for an answer.
+        None if asked => {
+            let mut st = state::State::load(&state_dir);
+            st.claude_checked = Some(state::now());
+            st.push(
+                state::EventKind::ClaudeFailed,
+                "",
+                "",
+                "updating claude is off here: [update] claude = false, or no Claude plan",
+            );
+            st.save(&state_dir)?;
+        }
+        None => {}
+    }
+    if let Some(id) = request.as_ref().filter(|r| r.claude).map(|r| r.id) {
+        let mut st = state::State::load(&state_dir);
+        st.claude_answered = Some(id);
+        st.save(&state_dir)?;
+    }
     let mut apply = Apply::new_defaults(
         Source::github(),
         exe.to_path_buf(),
@@ -345,6 +390,38 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
                     ago(e.at),
                     release::clip(&e.notes, 200)
                 ),
+            ),
+        });
+    }
+    if let Some(at) = state.claude_checked {
+        let installed = state.claude_installed.as_deref().unwrap_or("?");
+        let failed = state
+            .events
+            .iter()
+            .rev()
+            .find(|e| {
+                matches!(
+                    e.kind,
+                    state::EventKind::ClaudeUpdated | state::EventKind::ClaudeFailed
+                )
+            })
+            .filter(|e| e.kind == state::EventKind::ClaudeFailed);
+        lines.push(match (failed, state.claude_latest.as_deref()) {
+            (Some(e), _) => (
+                Tone::Warn,
+                format!(
+                    "claude {installed}: its update failed {} ago: {}",
+                    ago(e.at),
+                    release::clip(&e.notes, 200)
+                ),
+            ),
+            (None, Some(l)) if ferrule_plans::claude::update::is_newer(l, installed) => (
+                Tone::Note,
+                format!("claude {installed}, {l} is out; checked {} ago", ago(at)),
+            ),
+            _ => (
+                Tone::Ok,
+                format!("claude {installed}, up to date; checked {} ago", ago(at)),
             ),
         });
     }
