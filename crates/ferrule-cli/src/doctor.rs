@@ -120,7 +120,7 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     let secrets_path = secrets::path()?;
     keys(&mut r, &secrets_path);
     let http = probe::client();
-    providers(&mut r, &cfg, &http, offline).await;
+    providers(&mut r, &cfg, &http, offline, ping_models).await;
     models_check(&mut r, ping_models).await;
     local_check(&mut r, &cfg, &http, offline, ping_models).await;
     let telegram_on = telegram(&mut r, &cfg, &http, offline).await;
@@ -388,7 +388,13 @@ fn key(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client, offline: bool) {
+async fn providers(
+    r: &mut Report,
+    cfg: &config::Config,
+    http: &reqwest::Client,
+    offline: bool,
+    ping: bool,
+) {
     if cfg.providers.is_empty() {
         r.fail("provider", "none set up");
         r.hint("`ferrule setup` → Model provider");
@@ -415,13 +421,20 @@ async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client,
         let p = &cfg.providers[name];
         let is_default = Some(name.as_str()) == default;
         // M23: which driver talks to it, and whether the config says so.
-        let label = format!(
-            "{name}{} · {} · {} api ({})",
-            if is_default { " (default)" } else { "" },
-            p.model,
-            p.api(),
-            if p.api.is_some() { "set" } else { "inferred" }
-        );
+        let label = match p.plan {
+            Some(plan) => format!(
+                "{name}{} · {} · the {plan} plan",
+                if is_default { " (default)" } else { "" },
+                p.model,
+            ),
+            None => format!(
+                "{name}{} · {} · {} api ({})",
+                if is_default { " (default)" } else { "" },
+                p.model,
+                p.api(),
+                if p.api.is_some() { "set" } else { "inferred" }
+            ),
+        };
         let broken = |r: &mut Report, text: String| {
             if is_default {
                 r.fail("provider", text)
@@ -429,6 +442,10 @@ async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client,
                 r.warn("provider", text)
             }
         };
+        if let Some(plan) = p.plan {
+            plan_check(r, &label, plan, is_default, offline, ping).await;
+            continue;
+        }
         let Some(value) = key(&p.api_key_env) else {
             broken(r, format!("{label}: no key (${} isn't set)", p.api_key_env));
             r.hint(format!(
@@ -470,6 +487,88 @@ async fn providers(r: &mut Report, cfg: &config::Config, http: &reqwest::Client,
             }
             Err(e) => r.warn("provider", format!("{label}: couldn't check the key: {e}")),
         }
+    }
+}
+
+/// M35: a provider on a subscription: the sign-in, when it was made and
+/// the plan's usage windows; with `--ping-models`, one refresh (which
+/// rotates the tokens, as a call would a day before they go stale).
+async fn plan_check(
+    r: &mut Report,
+    label: &str,
+    plan: config::Plan,
+    is_default: bool,
+    offline: bool,
+    ping: bool,
+) {
+    use crate::subscription::{self, SignIn};
+    let broken = |r: &mut Report, text: String| {
+        if is_default {
+            r.fail("provider", text)
+        } else {
+            r.warn("provider", text)
+        }
+    };
+    let state = subscription::state(plan);
+    match &state {
+        SignIn::In { .. } => {}
+        SignIn::Unreadable(_) => {
+            broken(r, format!("{label}: {}", state.word()));
+            r.hint(format!(
+                "`ferrule logout {0}`, then `ferrule login {0}`",
+                plan.login_word()
+            ));
+            return;
+        }
+        _ => {
+            broken(r, format!("{label}: {}", state.word()));
+            r.hint(format!("`ferrule login {}`", plan.login_word()));
+            return;
+        }
+    }
+    let mut text = format!("{label} · {}", state.word());
+    if plan == config::Plan::Chatgpt {
+        if let Ok(Some(meta)) = crate::secrets::private_dir()
+            .map(|d| ferrule_plans::chatgpt::store::Store::new(&d).meta())
+            .unwrap_or(Ok(None))
+        {
+            text.push_str(&format!(
+                ", signed in {}",
+                subscription::login::age_words(meta.signed_in_at)
+            ));
+        }
+        if ping && !offline {
+            let issuer = config::Config::load()
+                .ok()
+                .and_then(|(c, _)| c.plans.chatgpt.issuer)
+                .unwrap_or_default();
+            match subscription::chatgpt(&issuer) {
+                Ok(auth) => match auth.refresh_now().await {
+                    Ok(_) => text.push_str(" · refresh works"),
+                    Err(e) => {
+                        broken(r, format!("{label}: the refresh failed: {e}"));
+                        r.hint("`ferrule login chatgpt`");
+                        return;
+                    }
+                },
+                Err(e) => {
+                    broken(r, format!("{label}: {e:#}"));
+                    return;
+                }
+            }
+        } else if !offline {
+            text.push_str(" · refresh not tried (--ping-models tries it)");
+        }
+    }
+    r.ok("provider", text);
+    if let Some(reading) = config::data_dir()
+        .ok()
+        .and_then(|d| ferrule_plans::UsageFile::new(&d).get(plan.as_str()))
+    {
+        r.note(
+            "plan",
+            format!("{plan}: {}", reading.line(subscription::now())),
+        );
     }
 }
 
@@ -530,7 +629,10 @@ async fn models_check(r: &mut Report, ping: bool) {
         }
     }
     for m in view.models.iter().filter(|m| !m.primary && !m.key_present) {
-        let text = format!("{}: no key (${} isn't set)", m.reference, m.key_env);
+        let text = match &m.plan {
+            Some(_) => format!("{}: {}", m.reference, m.missing),
+            None => format!("{}: no key (${} isn't set)", m.reference, m.key_env),
+        };
         if m.default {
             r.fail("models", text)
         } else {
@@ -538,11 +640,12 @@ async fn models_check(r: &mut Report, ping: bool) {
         }
     }
     // A missing key was just said (or, for a provider's own model, above).
-    for p in view
-        .problems
-        .iter()
-        .filter(|p| in_use && !p.starts_with("no key:") && !view.routing.problems.contains(p))
-    {
+    for p in view.problems.iter().filter(|p| {
+        in_use
+            && !p.starts_with("no key:")
+            && !p.starts_with("not signed in")
+            && !view.routing.problems.contains(p)
+    }) {
         r.fail("models", p);
         r.hint("`ferrule model list` shows what's connected; `ferrule model default <ref>` fixes the default");
     }
@@ -593,8 +696,8 @@ fn routing_check(r: &mut Report, v: &crate::models::routing_admin::RoutingView) 
         r.warn(
             "routing",
             format!(
-                "tier {} ({}): no key (${} isn't set), so a turn can't climb to it",
-                t.name, t.reference, t.key_env
+                "tier {} ({}): {}, so a turn can't climb to it",
+                t.name, t.reference, t.missing
             ),
         );
     }

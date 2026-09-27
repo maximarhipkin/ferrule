@@ -356,6 +356,8 @@ pub async fn grade(judge: &Judge, sink: &EvalSink, ask: Ask<'_>, bundle: &Bundle
         eval: None,
         tree: None,
         route: None,
+        plan: None,
+        notional_usd: None,
         speed: None,
     };
     match res {

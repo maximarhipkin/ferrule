@@ -856,6 +856,8 @@ impl Agent {
             eval: None,
             tree: None,
             route,
+            plan: None,
+            notional_usd: None,
             speed: Some(std::mem::take(&mut *self.speed.lock().unwrap())).filter(|s| !s.is_empty()),
         };
         ledger.sink.record(record);

@@ -31,6 +31,7 @@ mod service;
 mod settings_admin;
 mod settings_door;
 mod setup;
+mod subscription;
 mod tasks_admin;
 mod telemetry;
 mod trust;
@@ -275,6 +276,20 @@ enum Cmd {
         #[command(subcommand)]
         op: trust::TrustCmd,
     },
+    /// Sign in to a subscription: the ChatGPT plan here, the Claude plan
+    /// through the `claude` binary (docs/subscriptions.md)
+    Login {
+        which: subscription::login::Which,
+        /// ChatGPT: sign in through a browser instead of a device code
+        #[arg(long)]
+        browser: bool,
+        /// ChatGPT: paste the address the browser ended on (no listener)
+        #[arg(long, conflicts_with = "browser")]
+        paste: bool,
+    },
+    /// Sign out of a subscription: revoke what can be revoked, delete what
+    /// ferrule stored
+    Logout { which: subscription::login::Which },
     /// Plans proposed by `ferrule run --plan` and `/plan`: list, approve
     /// (which runs it), reject
     Plan {
@@ -705,6 +720,20 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         } => trust::stop_cmd(reason, clear, status)?,
         Cmd::Trust { op } => trust::cmd(op)?,
         Cmd::Plan { op } => plan::cmd(op).await?,
+        Cmd::Login {
+            which,
+            browser,
+            paste,
+        } => {
+            use subscription::login::Flow;
+            let flow = match (browser, paste) {
+                (_, true) => Flow::Paste,
+                (true, _) => Flow::Browser,
+                _ => Flow::Device,
+            };
+            subscription::login::login(which, flow).await?
+        }
+        Cmd::Logout { which } => subscription::login::logout(which).await?,
         Cmd::Skills {
             workspace,
             op: None,
@@ -1228,9 +1257,12 @@ fn build_agent_from(
 /// holding them on disk.
 fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     let mut policy = cfg.sandbox.clone();
-    policy
-        .secret_vars
-        .extend(cfg.providers.values().map(|p| p.api_key_env.clone()));
+    policy.secret_vars.extend(
+        cfg.providers
+            .values()
+            .filter_map(|p| p.key_var())
+            .map(String::from),
+    );
     let g = &cfg.gateway;
     policy.secret_vars.extend(
         [
@@ -2117,6 +2149,10 @@ async fn run_gateway(
             hub: hub.clone(),
             retire: retirer(lanes.clone()),
         }))
+        .with_interceptor(Arc::new(subscription::login::PlanDoor::new(
+            hub.clone(),
+            cfg.plans.chatgpt.issuer.clone().unwrap_or_default(),
+        )))
         .with_interceptor(Arc::new(models::ModelDoor {
             models: models::shared()?,
             hub,

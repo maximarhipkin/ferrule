@@ -192,6 +192,8 @@ mod tests {
             eval: None,
             tree: Some(session.into()),
             route: None,
+            plan: None,
+            notional_usd: None,
             speed: None,
         }
     }

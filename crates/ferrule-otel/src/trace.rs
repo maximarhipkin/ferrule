@@ -536,6 +536,8 @@ mod tests {
             eval: None,
             tree: Some("root".into()),
             route: None,
+            plan: None,
+            notional_usd: None,
             speed: None,
         }
     }

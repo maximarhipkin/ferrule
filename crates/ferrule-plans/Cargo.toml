@@ -17,5 +17,10 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 url = "2"
 
+[features]
+# A mock issuer and Codex backend for tests, here and in the CLI.
+mock = []
+
 [dev-dependencies]
 tempfile = { workspace = true }
+ferrule-plans = { path = ".", features = ["mock"] }

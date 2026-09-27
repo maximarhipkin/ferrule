@@ -11,6 +11,7 @@ mod channels;
 mod local;
 mod remote;
 
+use crate::config::Plan;
 use crate::{browser, config, probe, secrets, service};
 use anyhow::{anyhow, bail, Context, Result};
 use ferrule_sandbox::{Mode, Sandbox};
@@ -475,7 +476,9 @@ fn provider_summary(cfg: &config::Config) -> String {
     };
     let p = &cfg.providers[name];
     let mut text = format!("{name} · {}", p.model);
-    if !key_is_set(&p.api_key_env) {
+    if let Some(plan) = p.plan {
+        text.push_str(&format!(" · {}", crate::subscription::sign_in_word(plan)));
+    } else if !key_is_set(&p.api_key_env) {
         text.push_str(" · key missing");
     }
     if cat.entries.len() > 1 {
@@ -785,10 +788,10 @@ async fn provider_step(t: &mut Target, http: &reqwest::Client, guided: bool) -> 
             } else {
                 ""
             };
-            let missing = if key_is_set(&p.api_key_env) {
-                ""
-            } else {
-                " · key missing"
+            let missing = match p.plan {
+                Some(plan) => format!(" · {}", crate::subscription::sign_in_word(plan)),
+                None if key_is_set(&p.api_key_env) => String::new(),
+                None => " · key missing".into(),
             };
             format!("{name} · {}{default}{missing}", p.model)
         })
@@ -808,20 +811,128 @@ async fn provider_step(t: &mut Target, http: &reqwest::Client, guided: bool) -> 
     }
 }
 
+/// M35: the four ways to a model, each with its trade-off in a line.
+const MODEL_WAYS: [&str; 4] = [
+    "ChatGPT plan · your ChatGPT Plus/Pro/Business plan, no API bill; runs in ferrule's own loop (OpenAI tolerates this, it isn't a contract)",
+    "Claude plan · your Claude Pro/Max plan, through the claude CLI; some ferrule features don't apply",
+    "API key · any provider, pay per token, every ferrule feature",
+    "Local model · Ollama, llama.cpp, LM Studio or vLLM on this machine or your LAN",
+];
+
 async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
+    let way = Select::new("How should ferrule reach a model?", MODEL_WAYS.to_vec())
+        .raw_prompt()?
+        .index;
+    match way {
+        0 => chatgpt_plan_step(t).await,
+        1 => crate::subscription::claude_setup_step(t).await,
+        2 => add_keyed_provider(t, http, false).await,
+        _ => add_keyed_provider(t, http, true).await,
+    }
+}
+
+/// M35: sign in to the ChatGPT plan if needed, pick a model, and save
+/// `[providers.chatgpt]` with `plan = "chatgpt"`.
+async fn chatgpt_plan_step(t: &mut Target) -> Result<()> {
+    use crate::subscription::{self, login, SignIn};
+    let cfg = t.config()?;
+    let issuer = cfg.plans.chatgpt.issuer.clone().unwrap_or_default();
+    match subscription::state(Plan::Chatgpt) {
+        s @ SignIn::In { .. } => ok(s.word()),
+        _ => {
+            let who = interruptible(login::sign_in_chatgpt(&issuer, login::Flow::Device)).await??;
+            ok(who);
+        }
+    }
+    let existing = cfg
+        .providers
+        .iter()
+        .find(|(_, p)| p.plan == Some(Plan::Chatgpt))
+        .map(|(n, p)| (n.clone(), p.model.clone()));
+    let name = match &existing {
+        Some((n, _)) => n.clone(),
+        None if cfg.providers.contains_key("chatgpt") => "chatgpt-plan".into(),
+        None => "chatgpt".into(),
+    };
+    let current = existing
+        .map(|(_, m)| m)
+        .unwrap_or_else(|| login::CHATGPT_MODEL.into());
+    let models = interruptible(subscription::chatgpt_models(&issuer)).await?;
+    let model = pick_model(&models, &current)?;
+    let tbl = table(t.root(), &["providers", &name])?;
+    put(tbl, "plan", "chatgpt");
+    put(tbl, "model", model.as_str());
+    ask_default(t, &cfg, &name, &model)?;
+    t.save()?;
+    ok(format!("saved `{name}` · {model} on the ChatGPT plan"));
+    test_saved(t, &format!("{name}/{model}"), None).await
+}
+
+/// The models a plan provider can pick from.
+async fn plan_models(cfg: &config::Config, p: &config::ProviderConfig) -> Result<Vec<String>> {
+    Ok(match p.plan {
+        Some(Plan::Chatgpt) => {
+            let issuer = cfg.plans.chatgpt.issuer.clone().unwrap_or_default();
+            interruptible(crate::subscription::chatgpt_models(&issuer)).await?
+        }
+        Some(Plan::ClaudeCode) => crate::subscription::CLAUDE_CODE_MODELS
+            .iter()
+            .map(|m| m.to_string())
+            .collect(),
+        None => Vec::new(),
+    })
+}
+
+/// Offers `name/model` as the default (without asking when there's none).
+pub(crate) fn ask_default(
+    t: &mut Target,
+    cfg: &config::Config,
+    name: &str,
+    model: &str,
+) -> Result<()> {
+    let default = crate::models::Catalog::from_config(cfg)
+        .default_entry()
+        .ok()
+        .map(|(e, _)| e.reference());
+    let make_default = match default {
+        None => true,
+        Some(d) if d.split('/').next() == Some(name) => false,
+        Some(d) => Confirm::new(&format!(
+            "Use `{name}/{model}` instead of `{d}` by default?"
+        ))
+        .with_default(false)
+        .prompt()?,
+    };
+    if make_default {
+        make_provider_default(t.root(), name)?;
+    }
+    Ok(())
+}
+
+/// A provider with a key (`local`: a server here or on the LAN, which
+/// usually needs none).
+async fn add_keyed_provider(t: &mut Target, http: &reqwest::Client, local: bool) -> Result<()> {
     let cfg = t.config()?;
     // M34: local servers running here come first, with what they serve.
-    let servers = interruptible(local::found(http, &cfg)).await?;
+    let servers = if local {
+        interruptible(local::found(http, &cfg)).await?
+    } else {
+        Vec::new()
+    };
+    let presets: Vec<&Preset> = PRESETS
+        .iter()
+        .filter(|p| p.key_url.is_empty() == local)
+        .collect();
     let mut labels: Vec<String> = servers.iter().map(local::label).collect();
-    labels.extend(PRESETS.iter().map(|p| p.label.to_string()));
+    labels.extend(presets.iter().map(|p| p.label.to_string()));
     labels.push("Another OpenAI-compatible server (vLLM, LM Studio, a gateway…)".into());
     let pick = Select::new("Which model provider?", labels)
-        .with_page_size(servers.len() + PRESETS.len() + 1)
+        .with_page_size(servers.len() + presets.len() + 1)
         .raw_prompt()?
         .index;
     let mut np = match (servers.get(pick), pick.checked_sub(servers.len())) {
         (Some(server), _) => local::provider(server),
-        (None, Some(i)) if i < PRESETS.len() => NewProvider::from_preset(&PRESETS[i]),
+        (None, Some(i)) if i < presets.len() => NewProvider::from_preset(presets[i]),
         _ => ask_custom_provider(&cfg)?,
     };
     if cfg.providers.contains_key(&np.name) {
@@ -846,23 +957,7 @@ async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
             .unwrap_or_else(|| "none".into());
         local::fit(t, http, &mut np, &probe_key).await?;
     }
-    let default = crate::models::Catalog::from_config(&cfg)
-        .default_entry()
-        .ok()
-        .map(|(e, _)| e.reference());
-    let make_default = match default {
-        None => true,
-        Some(d) if d.split('/').next() == Some(np.name.as_str()) => false,
-        Some(d) => Confirm::new(&format!(
-            "Use `{}/{}` instead of `{d}` by default?",
-            np.name, np.model
-        ))
-        .with_default(false)
-        .prompt()?,
-    };
-    if make_default {
-        make_provider_default(t.root(), &np.name)?;
-    }
+    ask_default(t, &cfg, &np.name, &np.model)?;
     t.save()?;
     ok(format!("saved `{}` · {}", np.name, np.model));
     test_saved(t, &format!("{}/{}", np.name, np.model), key).await
@@ -1060,6 +1155,7 @@ async fn add_model_step(t: &mut Target, http: &reqwest::Client, name: &str) -> R
     let cfg = t.config()?;
     let p = cfg.providers[name].clone();
     let models = match std::env::var(&p.api_key_env) {
+        _ if p.plan.is_some() => plan_models(&cfg, &p).await?,
         Ok(key) => {
             match interruptible(probe::models(
                 http,
@@ -1296,7 +1392,11 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
         "Change the model",
         "Add another model on it",
         "Test it",
-        "Replace the API key",
+        if p.plan.is_some() {
+            "Sign in again"
+        } else {
+            "Replace the API key"
+        },
     ];
     if !is_default {
         actions.push("Make it the default");
@@ -1304,7 +1404,9 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
     actions.push("Remove it");
     match Select::new(&format!("{name}:"), actions).prompt()? {
         "Change the model" => {
-            let models = if key_is_set(&p.api_key_env) {
+            let models = if p.plan.is_some() {
+                plan_models(&cfg, &p).await?
+            } else if key_is_set(&p.api_key_env) {
                 let key = std::env::var(&p.api_key_env)?;
                 match interruptible(probe::models(
                     http,
@@ -1335,6 +1437,18 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
         }
         "Add another model on it" => add_model_step(t, http, name).await?,
         "Test it" => test_saved(t, name, None).await?,
+        "Sign in again" => match p.plan {
+            Some(Plan::Chatgpt) => {
+                let issuer = cfg.plans.chatgpt.issuer.clone().unwrap_or_default();
+                let who = interruptible(crate::subscription::login::sign_in_chatgpt(
+                    &issuer,
+                    crate::subscription::login::Flow::Device,
+                ))
+                .await??;
+                ok(who);
+            }
+            _ => crate::subscription::claude_setup_step(t).await?,
+        },
         "Replace the API key" => {
             let (key, _) = ask_provider_key(http, &NewProvider::from_config(name, &p)).await?;
             if let Some(key) = key {
@@ -1369,7 +1483,9 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
                 }
             }
             t.save()?;
-            t.forget_secret(&p.api_key_env)?;
+            if let Some(var) = p.key_var() {
+                t.forget_secret(var)?;
+            }
             ok(format!("removed `{name}`"));
         }
     }

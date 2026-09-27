@@ -321,7 +321,7 @@
           r.context_window ? num(r.context_window) : "–",
           r.down_secs !== null && r.down_secs !== undefined
             ? el("span", { class: "bad msg", dir: "auto", text: "down " + secs(r.down_secs) + ": " + (r.down_reason || "") })
-            : r.key_present ? tag("ready", "ok") : tag(r.key_env + " not set", "bad"),
+            : el("span", {}, r.key_present ? tag("ready", "ok") : tag(r.missing, "bad"), r.plan ? el("div", { class: "muted", text: r.plan + " plan" + (r.usage ? " · " + r.usage : "") }) : null),
           el("div", { class: "row" },
             r.default ? null : btn("Default", "models/default", { model: r.reference }),
             btn("Test", "models/test", { model: r.reference }),
@@ -433,7 +433,7 @@
         v.tiers.length ? table(["tier", "model", "price", "context", "key"], v.tiers.map((t, i) => [
           String(i + 1) + " · " + t.name, t.reference, t.pricing ? price(t.pricing) : tag("no price", "warn"),
           t.context_window ? num(t.context_window) : "–",
-          t.key_present ? tag("ready", "ok") : tag(t.key_env + " not set", "bad"),
+          t.key_present ? tag("ready", "ok") : tag(t.missing, "bad"),
         ])) : el("p", { class: "muted", text: "No tiers set." }),
         el("h3", { text: "Escalations" }),
         st.escalations
@@ -520,7 +520,7 @@
         el("h3", { text: "Per model" }),
         table(["model", "calls", "errors", "cache", "p50/p95", "cost"], u.per_model.map((r) => [
           el("span", {}, r.provider + "/" + r.model, el("div", { class: "muted", text: r.shape })), String(r.calls), String(r.errors),
-          r.cache_hit_pct + "%", r.p50_ms + "/" + r.p95_ms + " ms", r.priced_calls < r.calls ? el("span", { class: "warn", text: usd(r.usd) + " (" + (r.calls - r.priced_calls) + " unpriced)" }) : usd(r.usd)])),
+          r.cache_hit_pct + "%", r.p50_ms + "/" + r.p95_ms + " ms", r.notional_usd != null ? usd(r.usd) + " (plan; " + usd(r.notional_usd) + " at API prices)" : r.priced_calls < r.calls ? el("span", { class: "warn", text: usd(r.usd) + " (" + (r.calls - r.priced_calls) + " unpriced)" }) : usd(r.usd)])),
         el("h3", { text: "Per task" }), u.per_task.length ? group(u.per_task) : el("p", { class: "muted", text: "No scheduled runs." }),
         el("h3", { text: "Per chat" }), u.per_chat.length ? group(u.per_chat) : el("p", { class: "muted", text: "No chats." }));
     },

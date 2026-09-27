@@ -489,6 +489,8 @@ async fn the_day_cap_counts_every_process_survives_a_restart_and_resets_at_midni
         eval: None,
         tree: None,
         route: None,
+        plan: None,
+        notional_usd: None,
         speed: None,
     };
     w.sink().record(other.clone());

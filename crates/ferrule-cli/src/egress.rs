@@ -118,6 +118,8 @@ pub fn denial_record(d: &Denial) -> LedgerRecord {
         eval: None,
         tree: None,
         route: None,
+        plan: None,
+        notional_usd: None,
         speed: None,
     }
 }

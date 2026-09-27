@@ -71,12 +71,40 @@ pub fn write_price(set: Option<f64>, api: ferrule_providers::Api, input: f64) ->
 /// provider's), `None` when not all three are configured.
 pub type Prices = Arc<dyn Fn(&str, &str) -> Option<ProviderPricing> + Send + Sync>;
 
+/// The plan a provider signs in with (M35), `None` for a keyed one.
+pub type PlanOf = Arc<dyn Fn(&str) -> Option<crate::config::Plan> + Send + Sync>;
+
+/// Prices `record` in place. A plan's call costs nothing on top of the
+/// plan: `cost_usd` is 0, `plan` names it and `notional_usd` is what it
+/// would have cost at API prices (M35). Everything else keeps `cost_usd`
+/// if something upstream already priced it.
+pub fn price_row(record: &mut LedgerRecord, prices: &Prices, plans: Option<&PlanOf>) {
+    if record.is_error() {
+        return;
+    }
+    if let Some(plan) = plans.and_then(|p| p(&record.provider)) {
+        record.plan = Some(plan.as_str().to_string());
+        if record.notional_usd.is_none() {
+            record.notional_usd =
+                prices(&record.provider, &record.model).map(|p| p.cost_usd(record));
+        }
+        record.cost_usd = Some(0.0);
+        return;
+    }
+    if record.cost_usd.is_none() {
+        if let Some(p) = prices(&record.provider, &record.model) {
+            record.cost_usd = Some(p.cost_usd(record));
+        }
+    }
+}
+
 /// Appends one JSON line per record. Shared by every session in the
 /// process; the mutex keeps concurrent sessions' lines from interleaving.
 /// A write failure is logged and the row dropped — it never fails a turn.
 pub struct FileLedgerSink {
     path: PathBuf,
     prices: Prices,
+    plans: Option<PlanOf>,
     lock: Mutex<()>,
 }
 
@@ -85,8 +113,15 @@ impl FileLedgerSink {
         Self {
             path,
             prices,
+            plans: None,
             lock: Mutex::new(()),
         }
+    }
+
+    /// Rows from these providers are a plan's: $0, and the notional price.
+    pub fn with_plans(mut self, plans: PlanOf) -> Self {
+        self.plans = Some(plans);
+        self
     }
 
     fn append(&self, line: &str) -> std::io::Result<()> {
@@ -101,11 +136,7 @@ impl FileLedgerSink {
 
 impl LedgerSink for FileLedgerSink {
     fn record(&self, mut record: LedgerRecord) {
-        if record.cost_usd.is_none() && !record.is_error() {
-            if let Some(p) = (self.prices)(&record.provider, &record.model) {
-                record.cost_usd = Some(p.cost_usd(&record));
-            }
-        }
+        price_row(&mut record, &self.prices, self.plans.as_ref());
         let line = match serde_json::to_string(&record) {
             Ok(mut l) => {
                 l.push('\n');
@@ -140,10 +171,9 @@ pub fn build_sink(cfg: &Config) -> Option<Arc<dyn LedgerSink>> {
             return None;
         }
     };
-    Some(Arc::new(FileLedgerSink::new(
-        path,
-        crate::models::prices(cfg),
-    )))
+    Some(Arc::new(
+        FileLedgerSink::new(path, crate::models::prices(cfg)).with_plans(crate::models::plans(cfg)),
+    ))
 }
 
 /// Which entry point a ledger row came from. The sink is shared; the tag is
@@ -246,6 +276,9 @@ pub struct SummaryRow {
     /// Sum over priced rows only; `None` if no row in the group was priced.
     pub cost_usd: Option<f64>,
     pub priced_calls: usize,
+    /// M35: what the group's plan calls would have cost at API prices;
+    /// `None` when none of them was on a plan with prices.
+    pub notional_usd: Option<f64>,
 }
 
 impl SummaryRow {
@@ -299,6 +332,10 @@ pub fn aggregate(records: &[LedgerRecord]) -> Vec<SummaryRow> {
                     Some(priced.iter().sum())
                 },
                 priced_calls: priced.len(),
+                notional_usd: rows
+                    .iter()
+                    .filter_map(|r| r.notional_usd)
+                    .reduce(|a, b| a + b),
             }
         })
         .collect()
@@ -316,6 +353,11 @@ pub fn render_table(rows: &[SummaryRow]) -> String {
             // `*` = only some of the group's calls had prices configured.
             Some(c) if r.priced_calls < r.calls => format!("{c:.4}*"),
             Some(c) => format!("{c:.4}"),
+        };
+        // A plan's calls are $0; what they'd have cost at API prices.
+        let cost = match r.notional_usd {
+            Some(n) => format!("{cost} (plan; {n:.4} at API prices)"),
+            None => cost,
         };
         table.push(vec![
             r.task_shape.clone(),
@@ -447,6 +489,8 @@ mod tests {
             eval: None,
             tree: None,
             route: None,
+            plan: None,
+            notional_usd: None,
             speed: None,
         }
     }

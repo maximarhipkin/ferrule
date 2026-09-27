@@ -4,7 +4,7 @@
 //! call from the agent's [`Scope`], so a change reaches a running lane at
 //! its next call.
 
-use crate::config::{Config, ProviderConfig};
+use crate::config::{Config, Plan, ProviderConfig};
 use crate::ledger::{Prices, ProviderPricing};
 use chrono::{DateTime, Utc};
 use ferrule_core::provider::{CompletionRequest, CompletionResponse, Provider};
@@ -52,11 +52,26 @@ pub struct Entry {
     pub api_set: bool,
     #[serde(skip)]
     pub options: DriverOptions,
+    /// M35: the subscription it signs in with; `None` is a keyed model.
+    pub plan: Option<Plan>,
+    /// M35: `[plans.chatgpt] issuer`.
+    #[serde(skip)]
+    pub issuer: String,
 }
 
 impl Entry {
     /// A driver for this model with `key`.
     pub fn client(&self, key: impl Into<String>) -> Arc<dyn Provider> {
+        if let Some(plan) = self.plan {
+            return crate::subscription::client(
+                plan,
+                &self.provider,
+                &self.base_url,
+                &self.model,
+                self.options.clone(),
+                &self.issuer,
+            );
+        }
         ferrule_providers::build(
             self.api,
             self.provider.clone(),
@@ -87,13 +102,45 @@ impl Entry {
         }
     }
 
+    /// The key from the env. A plan has none and needs none (`""`): its
+    /// credential is read per call from its own store.
     pub fn key(&self) -> Option<String> {
+        if self.plan.is_some() {
+            return Some(String::new());
+        }
         std::env::var(&self.key_env).ok()
     }
 
+    /// A call has what it needs: the key is set, or the plan is signed in.
+    pub fn ready(&self) -> bool {
+        match self.plan {
+            Some(plan) => matches!(
+                crate::subscription::state(plan),
+                crate::subscription::SignIn::In { .. }
+            ),
+            None => self.key().is_some_and(|k| !k.is_empty()),
+        }
+    }
+
+    /// What a call is missing, short: "key missing ($X)" or the plan's
+    /// "not signed in — `ferrule login chatgpt`".
+    pub fn missing(&self) -> String {
+        match self.plan {
+            Some(plan) => crate::subscription::sign_in_word(plan),
+            None => format!("key missing (${})", self.key_env),
+        }
+    }
+
     /// Why a call can't be made: the key isn't in the env or the secrets
-    /// file.
+    /// file, or the plan isn't signed in.
     pub fn no_key(&self) -> String {
+        if let Some(plan) = self.plan {
+            return format!(
+                "{} ({})",
+                crate::subscription::not_signed_in(plan),
+                self.reference()
+            );
+        }
         format!(
             "no key: `${}` isn't set ({}); run `ferrule setup`, or export it",
             self.key_env,
@@ -254,6 +301,14 @@ impl Catalog {
             })
             .and_then(|e| e.pricing)
     }
+
+    /// The plan `provider` signs in with (M35), `None` for a keyed one.
+    pub fn plan_of(&self, provider: &str) -> Option<Plan> {
+        self.entries
+            .iter()
+            .find(|e| e.provider == provider)
+            .and_then(|e| e.plan)
+    }
 }
 
 fn entry(
@@ -285,7 +340,7 @@ fn entry(
         provider: name.to_string(),
         model: model.to_string(),
         primary,
-        base_url: p.base_url.clone(),
+        base_url: p.endpoint(),
         key_env: p.api_key_env.clone(),
         profile: mc.profile.clone().unwrap_or_else(|| p.profile.clone()),
         context_window: mc.context_window,
@@ -295,6 +350,8 @@ fn entry(
         api: p.api(),
         api_set: p.api.is_some(),
         options: p.driver_options(model),
+        plan: p.plan,
+        issuer: p.issuer.clone(),
     }
 }
 
@@ -360,6 +417,8 @@ struct Down {
     until: Instant,
     reason: String,
     told: bool,
+    /// When it's tried again, in words: "in 5 minutes", or a plan's reset.
+    again: String,
 }
 
 #[derive(Default)]
@@ -413,6 +472,18 @@ pub fn prices(cfg: &Config) -> Prices {
         Err(_) => {
             let cat = Catalog::from_config(cfg);
             Arc::new(move |p: &str, model: &str| cat.price(p, model))
+        }
+    }
+}
+
+/// Which plan a ledger row's provider is on (M35), from the same catalog
+/// as [`prices`].
+pub fn plans(cfg: &Config) -> crate::ledger::PlanOf {
+    match shared() {
+        Ok(m) => Arc::new(move |p: &str| m.catalog().plan_of(p)),
+        Err(_) => {
+            let cat = Catalog::from_config(cfg);
+            Arc::new(move |p: &str| cat.plan_of(p))
         }
     }
 }
@@ -496,9 +567,8 @@ impl Models {
                     if !d.told {
                         d.told = true;
                         tell = Some(format!(
-                            "{from} isn't answering ({}), so {reference} answered instead. I'll try {from} again in {} minutes.",
-                            d.reason,
-                            DOWN_FOR.as_secs() / 60
+                            "{from} isn't answering ({}), so {reference} answered instead. I'll try {from} again {}.",
+                            d.reason, d.again
                         ));
                     }
                 }
@@ -510,6 +580,41 @@ impl Models {
         if let Some(text) = tell {
             if let Some(hub) = self.hub.lock().unwrap().clone() {
                 hub.tell_owner(text);
+            }
+        }
+    }
+
+    /// M35: a plan's sign-in that expired or was revoked is said to the
+    /// owner once (until a call on it works again): the chat that hit it
+    /// may be someone else's, or a task nobody reads.
+    pub fn plan_signin(&self, entry: &Entry, result: Result<(), &CoreError>) {
+        let Some(plan) = entry.plan else { return };
+        let key = format!("signin\n{}", entry.provider);
+        let tell = {
+            let mut st = self.state.lock().unwrap();
+            match result {
+                Ok(()) => {
+                    st.warned.remove(&key);
+                    return;
+                }
+                Err(e) if e.to_string().contains("expired or was revoked") => st.warned.insert(key),
+                Err(_) => return,
+            }
+        };
+        if tell {
+            if let Some(hub) = self.hub.lock().unwrap().clone() {
+                hub.tell_owner(format!(
+                    "The {} plan's sign-in for {} expired or was revoked. \
+                     Run `ferrule login {}` on the server{}.",
+                    plan.title(),
+                    entry.provider,
+                    plan.login_word(),
+                    if plan == Plan::Chatgpt {
+                        " (or send /login chatgpt here)"
+                    } else {
+                        ""
+                    }
+                ));
             }
         }
     }
@@ -536,14 +641,16 @@ impl Models {
         }
         let from = served.reference();
         let reason = short_reason(error);
+        let (down_for, again) = down_for(error);
         {
             let mut st = self.state.lock().unwrap();
             st.down.insert(
                 from.clone(),
                 Down {
-                    until: Instant::now() + DOWN_FOR,
+                    until: Instant::now() + down_for,
                     reason: reason.clone(),
                     told: false,
+                    again,
                 },
             );
         }
@@ -697,13 +804,40 @@ fn warn_once(st: &mut State, key: &str, text: &str) {
     }
 }
 
-/// "HTTP 503 after its retries", "no connection", or the start of the
-/// message.
+/// The longest a model is skipped for when its error says to wait (a
+/// plan's weekly window resets within a week).
+const DOWN_AT_MOST: Duration = Duration::from_secs(8 * 24 * 3600);
+
+/// How long a model that stayed down is skipped, and that in words:
+/// [`DOWN_FOR`], or longer when the error says when to come back (M35: a
+/// plan's usage limit, until it resets).
+fn down_for(error: &CoreError) -> (Duration, String) {
+    match error {
+        CoreError::Transient {
+            retry_after: Some(wait),
+            ..
+        } if *wait > DOWN_FOR => {
+            let wait = (*wait).min(DOWN_AT_MOST);
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let at = ferrule_providers::codex::describe_reset(now + wait.as_secs(), now);
+            (wait, format!("when it resets, {at}"))
+        }
+        _ => (DOWN_FOR, format!("in {} minutes", DOWN_FOR.as_secs() / 60)),
+    }
+}
+
+/// "HTTP 503 after its retries", "no connection", "the ChatGPT plan's
+/// usage limit is reached", or the start of the message.
 fn short_reason(error: &CoreError) -> String {
     let msg = match error {
         CoreError::Transient { message, .. } => message.as_str(),
         _ => return error.to_string(),
     };
+    if let Some((_, rest)) = msg.split_once("usage_limit_reached: ") {
+        return rest.split(';').next().unwrap_or(rest).trim().to_string();
+    }
     if let Some(code) = msg
         .split(|c: char| !c.is_ascii_digit())
         .find(|w| w.len() == 3 && matches!(w.as_bytes()[0], b'4' | b'5'))
@@ -786,6 +920,8 @@ impl Provider for RoutedProvider {
         };
         let result = route.client.complete(req).await;
         self.models.served(&self.scope, &route, result.is_ok());
+        self.models
+            .plan_signin(&route.entry, result.as_ref().map(|_| ()));
         if let (Some(level), Ok(r)) = (level, &result) {
             self.models
                 .count_spend(level, route.entry.pricing, &r.usage);
@@ -1309,5 +1445,191 @@ profile = "kimi"
         let out = m.test("a").await;
         assert!(!out.ok);
         assert!(out.said.starts_with("couldn't reach"), "{}", out.said);
+    }
+
+    /// The owner's chat, as the hub's notifier sees it.
+    #[derive(Default)]
+    struct Told(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl ferrule_trust::Notifier for Told {
+        async fn send(&self, _chat: i64, text: &str) -> Result<(), String> {
+            self.0.lock().unwrap().push(text.to_string());
+            Ok(())
+        }
+    }
+
+    fn told_hub(dir: &Path) -> (Arc<Hub>, Arc<Told>) {
+        let hub = Arc::new(
+            Hub::new(
+                Default::default(),
+                dir,
+                &dir.join("ledger.jsonl"),
+                Arc::new(ferrule_trust::SystemClock),
+                vec![],
+            )
+            .unwrap(),
+        );
+        hub.set_owner(Some(42));
+        let told = Arc::new(Told::default());
+        hub.set_notifier(Some(told.clone()));
+        (hub, told)
+    }
+
+    async fn settle(told: &Told, n: usize) -> Vec<String> {
+        for _ in 0..100 {
+            if told.0.lock().unwrap().len() >= n {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Anything more would have arrived by now.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        told.0.lock().unwrap().clone()
+    }
+
+    const PLAN_CONFIG: &str = r#"
+default_provider = "chatgpt"
+
+[models]
+fallback = ["b/b-large"]
+
+[providers.chatgpt]
+plan = "chatgpt"
+model = "gpt-5.5"
+
+[providers.b]
+base_url = "http://127.0.0.1:2/v1"
+api_key_env = "PATH"
+model = "b-large"
+"#;
+
+    /// M35: the plan's usage limit sends calls to the fallback until the
+    /// plan resets, and the owner hears when that is.
+    #[tokio::test]
+    async fn a_plan_at_its_usage_limit_falls_back_until_it_resets() {
+        let (dir, m) = models(PLAN_CONFIG);
+        let (hub, told) = told_hub(dir.path());
+        m.attach_hub(hub);
+        let s = Scope::for_session("telegram__42");
+        let plan = Served {
+            provider: "chatgpt".into(),
+            model: "gpt-5.5".into(),
+        };
+        let two_days = 2 * 86_400;
+        let limit = CoreError::Transient {
+            message: "HTTP 429 usage_limit_reached: the ChatGPT plan's usage limit is reached (plus); it resets in 2 d 0 h (10:00 UTC)".into(),
+            retry_after: Some(Duration::from_secs(two_days)),
+        };
+        let over = m.fail_over(&s, &plan, &limit).unwrap();
+        assert_eq!(
+            (over.from.as_str(), over.to.as_str()),
+            ("chatgpt/gpt-5.5", "b/b-large")
+        );
+        let down = m.down();
+        assert_eq!(down[0].0, "chatgpt/gpt-5.5");
+        assert!(
+            down[0].1 > Duration::from_secs(two_days - 60),
+            "{:?}",
+            down[0].1
+        );
+        assert_eq!(
+            down[0].2,
+            "the ChatGPT plan's usage limit is reached (plus)"
+        );
+
+        let route = m.route(&s).unwrap();
+        assert_eq!(route.entry.reference(), "b/b-large");
+        m.served(&s, &route, true);
+        m.served(&s, &route, true);
+        let said = settle(&told, 1).await;
+        assert_eq!(said.len(), 1, "told once: {said:?}");
+        assert!(
+            said[0].contains("usage limit is reached")
+                && said[0].contains("again when it resets, in 2 d 0 h"),
+            "{}",
+            said[0]
+        );
+    }
+
+    /// M35: an expired or revoked sign-in is said to the owner once, and
+    /// again only after a call on the plan worked in between.
+    #[tokio::test]
+    async fn an_expired_sign_in_is_said_to_the_owner_once() {
+        let (dir, m) = models(PLAN_CONFIG);
+        let (hub, told) = told_hub(dir.path());
+        m.attach_hub(hub);
+        let cat = Catalog::from_config(&cfg(PLAN_CONFIG));
+        let plan = cat.resolve("chatgpt").unwrap().clone();
+        let keyed = cat.resolve("b").unwrap().clone();
+        let expired = CoreError::Provider(ferrule_plans::chatgpt::EXPIRED.into());
+        let other = CoreError::Provider("HTTP 500".into());
+        m.plan_signin(&plan, Err(&expired));
+        m.plan_signin(&plan, Err(&expired));
+        m.plan_signin(&plan, Err(&other));
+        m.plan_signin(&keyed, Err(&expired));
+        let said = settle(&told, 1).await;
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].starts_with("The ChatGPT plan's sign-in for chatgpt expired or was revoked")
+                && said[0].contains("`ferrule login chatgpt`")
+                && said[0].contains("/login chatgpt"),
+            "{}",
+            said[0]
+        );
+        m.plan_signin(&plan, Ok(()));
+        m.plan_signin(&plan, Err(&expired));
+        assert_eq!(settle(&told, 2).await.len(), 2);
+    }
+
+    /// M35: a plan's call is $0 in the ledger with what it would have
+    /// cost at API prices; the budget counts nothing for it.
+    #[test]
+    fn a_plan_call_is_free_with_its_notional_price() {
+        // Priced on the plan; `b` has no prices.
+        let text = PLAN_CONFIG.replace(
+            "model = \"gpt-5.5\"\n",
+            "model = \"gpt-5.5\"\nprice_input_per_mtok = 1.0\n\
+             price_cached_input_per_mtok = 0.5\nprice_output_per_mtok = 2.0\n",
+        );
+        let c = cfg(&text);
+        let cat = Arc::new(Catalog::from_config(&c));
+        let (p, q) = (cat.clone(), cat.clone());
+        let prices: crate::ledger::Prices = Arc::new(move |pr: &str, mo: &str| p.price(pr, mo));
+        let plans: crate::ledger::PlanOf = Arc::new(move |pr: &str| q.plan_of(pr));
+        let mut row: ferrule_core::LedgerRecord = serde_json::from_value(serde_json::json!({
+            "timestamp": "2026-09-27T00:00:00Z", "session_id": "s", "task_shape": "chat",
+            "provider": "chatgpt", "model": "gpt-5.5", "iteration": 0,
+            "input_tokens": 1_000_000, "cached_input_tokens": 0, "output_tokens": 1_000_000,
+            "tool_calls": 0, "latency_ms": 1, "outcome": "ok"
+        }))
+        .unwrap();
+        let budget = crate::trust::pricer(prices.clone(), plans.clone());
+        assert_eq!(budget(&row), Some(0.0));
+        crate::ledger::price_row(&mut row, &prices, Some(&plans));
+        assert_eq!(row.plan.as_deref(), Some("chatgpt"));
+        assert_eq!(row.cost_usd, Some(0.0));
+        assert!((row.notional_usd.unwrap() - 3.0).abs() < 1e-9);
+        // A keyed provider's row is priced as before, with no plan.
+        let mut keyed = row.clone();
+        (
+            keyed.provider,
+            keyed.model,
+            keyed.plan,
+            keyed.notional_usd,
+            keyed.cost_usd,
+        ) = ("b".into(), "b-large".into(), None, None, None);
+        crate::ledger::price_row(&mut keyed, &prices, Some(&plans));
+        assert_eq!(
+            (keyed.plan, keyed.notional_usd, keyed.cost_usd),
+            (None, None, None)
+        );
+
+        let rows = crate::ledger::aggregate(&[row]);
+        let table = crate::ledger::render_table(&rows);
+        assert!(
+            table.contains("0.0000 (plan; 3.0000 at API prices)"),
+            "{table}"
+        );
     }
 }

@@ -6,12 +6,15 @@
 //!   `PlanAuth` the Codex driver asks for a token.
 //! - `usage`: the plans' usage windows, in a file that status, doctor and
 //!   the dashboard read.
+//! - `mock` (feature `mock`): a mock issuer and Codex backend for tests.
 //!
 //! The design is `docs/m35-subscriptions.md`.
 
 pub mod chatgpt;
 mod jwt;
 mod lock;
+#[cfg(feature = "mock")]
+pub mod mock;
 pub mod usage;
 
 pub use chatgpt::ChatGpt;

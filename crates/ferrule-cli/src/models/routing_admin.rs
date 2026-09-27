@@ -36,6 +36,8 @@ pub struct TierRow {
     pub pricing: Option<ProviderPricing>,
     pub key_present: bool,
     pub key_env: String,
+    /// What's missing when `key_present` is false.
+    pub missing: String,
     pub context_window: usize,
 }
 
@@ -51,8 +53,9 @@ pub(super) fn view_of(st: &mut State, r: &Routing) -> RoutingView {
                 name: t.name.clone(),
                 reference: t.entry.reference(),
                 pricing: t.entry.pricing,
-                key_present: t.entry.key().is_some_and(|k| !k.is_empty()),
+                key_present: t.entry.ready(),
                 key_env: t.entry.key_env.clone(),
+                missing: t.entry.missing(),
                 context_window: t.entry.harness().context_window,
             })
             .collect(),
@@ -226,7 +229,7 @@ pub fn render(r: &RoutingView) -> String {
         let key = if t.key_present {
             String::new()
         } else {
-            format!("; key missing (${})", t.key_env)
+            format!("; {}", t.missing)
         };
         out.push_str(&format!(
             "{i}. {} → {}{}{key}\n",
@@ -340,7 +343,7 @@ pub fn suggest(cat: &Catalog, listings: &[Listing], rec: Option<&Recommended>) -
     let mut priced: Vec<Pick> = cat
         .entries
         .iter()
-        .filter(|e| e.key().is_some_and(|k| !k.is_empty()))
+        .filter(|e| e.ready())
         .filter_map(|e| {
             let p = e
                 .pricing

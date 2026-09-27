@@ -165,6 +165,8 @@ pub fn search_record(
         eval: None,
         tree: None,
         route: None,
+        plan: None,
+        notional_usd: None,
         speed: None,
     }
 }

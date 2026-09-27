@@ -371,8 +371,11 @@ pub fn render(view: &ModelsView, chat: Option<(&str, &str)>) -> String {
         if !m.aliases.is_empty() {
             notes.push(format!("alias {}", m.aliases.join(", ")));
         }
+        if let Some(plan) = &m.plan {
+            notes.push(format!("the {plan} plan"));
+        }
         if !m.key_present {
-            notes.push(format!("key missing (${})", m.key_env));
+            notes.push(m.missing.clone());
         }
         if let Some(secs) = m.down_secs {
             notes.push(format!(
