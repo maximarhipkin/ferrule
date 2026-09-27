@@ -4559,3 +4559,66 @@ model?" question (API key) before the provider list.
 
 **Follow-ups.** The OTel exporter doesn't send `plan`/`notional_usd`; a
 ChatGPT live turn once someone signs in; README lines (listed in the PR).
+
+### 2026-09-27 — dashboard collar redesign (Kimi Code)
+
+The dashboard's front end is replaced with the "collar" design, ported from
+the finished prototype (`/tmp/ferrule-dash-redesign/prototype/`, mock data)
+onto the live `/api/*` wiring. Only the three embedded assets changed —
+`crates/ferrule-cli/src/dashboard/assets/{index.html,app.css,app.js}` — no
+Rust, no routes, no docs contract touched.
+
+- **Design system ported verbatim** from `prototype/app.css`: paper/forge
+  tokens, collar mark with the live sweep (`body.running` only, 2.6 s, off
+  under `prefers-reduced-motion`), sticky blurred header, numbered left rail
+  (01–09, horizontal strip ≤760 px, hidden when logged out), section heads
+  with the copper ring bullet, BRASS/RUST alert banners on top of every
+  section, stat strips, cap ring gauges, tables with dead-row dimming, task
+  cards with run-dots, the mono log grid, and the bottom toast.
+- **Fonts:** Geist / Geist Mono (OFL, via fontsource's latin woff2) are
+  embedded as base64 data URLs in `app.css` (@font-face 400/500/600 +
+  mono 400/500) — the page has zero network dependency and no CDN link.
+  Separate woff2 files couldn't be served without a new Rust route, so the
+  data-URL embedding is how "embed next to app.css" landed within the
+  no-`.rs`-changes boundary.
+- **Bug fixes folded in:** raw `replaceChildren`/`append` calls that took
+  arrays or nulls now go through a `setKids` helper (flatten + drop
+  null/false) — a literal "null" text on the Models page (`m.fixed` absent)
+  was caught live and fixed; `last_served` renders `view.last_served[0]`
+  instead of stringifying the array; the kill-switch row builds
+  "by … at …" conditionally instead of printing `nullnull`. `dir="auto"`
+  stays on every user/agent-text element (the Hebrew source-scan test pins
+  this). Added: a `hashchange` listener (pasted/back-button `#section`
+  links navigate), a `[hidden]`-aware shell grid (logged-out card was
+  squeezed into the rail's column), and `text-overflow` on the log level
+  column (long audit event names overlapped).
+- **Verified live** against a scratch HOME (`/tmp/ferrule-dash-check`):
+  mock provider + dead default provider, local channel over a FIFO, seeded
+  ledger/tasks/skills/hooks. All 9 sections screenshot-verified at desktop
+  and 390 px, paper and forge (theme persists across reloads via
+  `localStorage ferrule-theme`, defaults to `prefers-color-scheme`). Through
+  the real UI: turn/stop (Stop button), kill/on + kill/off (the 409
+  `window.confirm` step captured on screen), tasks run/pause/resume, skills
+  disable/enable — each audited as `by: dashboard`. Page fully usable with
+  the default model down the whole session (RUST banner + working
+  "Make X the default" fix button); Hebrew task name renders RTL.
+  `scripts/dashboard-smoke.sh`: 8 passed, 1 skipped (no cloudflared).
+  `cargo test -p ferrule-cli --test dashboard`: 14/14, including the Hebrew
+  RTL and the no-secret-in-any-response tests.
+- **Known cosmetic note:** the caps editor's number inputs accept the
+  stepper/keyboard as before; nothing about them changed.
+
+### 2026-09-27 (wrap) — collar port: main-session finish + v0.5.2 merge (Kimi Code)
+
+The porting subagent's provider hit its 5-hour quota during verification,
+so the wrap landed in the main session: smoke re-run (`8 passed, 1
+skipped`), an independent live visual pass (health + models, desktop and
+390 px, both themes), and the rebase onto v0.5.2 — M35C had touched the
+same dashboard code, so the merge folded its features into the new design:
+the models table's state cell now carries the plan line (`r.plan` +
+`r.usage`), and usage's per-model cost cell carries `notional_usd` ("plan;
+$X at API prices"). Post-merge re-verified: build clean, smoke 8/8, both
+themes live. One tool-side artifact to disregard: the Kimi desktop panel's
+browser drops localStorage across reloads, so theme persistence looked
+broken there; the agent's run-2 Chrome check (and the code path) confirm
+it persists.

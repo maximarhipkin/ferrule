@@ -5,16 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>ferrule</title>
+<script>
+// Paper or forge before the first paint: the saved choice, else the system's.
+try {
+  var t = localStorage.getItem("ferrule-theme");
+  if (t !== "paper" && t !== "forge") t = matchMedia("(prefers-color-scheme: dark)").matches ? "forge" : "paper";
+  document.documentElement.setAttribute("data-theme", t);
+} catch (e) { /* no storage: the CSS default (paper) stands */ }
+</script>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
 <body>
-<header>
-  <strong>ferrule</strong>
-  <span id="pulse" class="muted"></span>
-  <button id="logout" hidden>log out</button>
+<header id="top">
+  <div class="brand">
+    <span id="mark" aria-hidden="true"></span>
+    <span class="word">ferrule</span>
+    <span class="ver" id="ver"></span>
+  </div>
+  <div class="top-right">
+    <span id="live" class="live" hidden><span class="led ok pulse" id="live-led"></span><span id="uptime"></span></span>
+    <button id="theme" class="ghost" title="paper / forge">forge</button>
+    <button id="logout" class="ghost" hidden>log out</button>
+  </div>
 </header>
-<nav id="nav" hidden></nav>
-<main id="main"><p class="muted">Loading…</p></main>
+<div id="shell">
+  <nav id="rail" aria-label="sections" hidden></nav>
+  <main id="main"><p class="muted">Loading…</p></main>
+</div>
+<div id="toast"></div>
 </body>
 </html>
