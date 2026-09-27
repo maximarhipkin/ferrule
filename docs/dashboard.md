@@ -13,11 +13,20 @@ Send **`/dashboard`** to your bot in your private chat. The gateway answers
 it itself, ahead of everything else, so it works mid-turn, with every model
 down, with the kill switch on or a cap hit.
 
-- With `cloudflared` installed (the default, `[dashboard] remote =
-  "tunnel"`), the reply is "Opening the dashboard's tunnel, the link
-  follows in a moment", then an `https://….trycloudflare.com/login#…`
-  link. Tap it.
-- Without `cloudflared`, or with `remote = "off"`, you get a
+- By default (`[dashboard] remote = "tunnel"`), the reply is "Opening the
+  dashboard's tunnel, the link follows in a moment", then an
+  `https://….trycloudflare.com/login#…` link. Tap it.
+- The tunnel needs `cloudflared`. Ferrule looks for it on `PATH`, then in
+  the usual install dirs (`/usr/local/bin`, `/usr/bin`, `/opt/homebrew/bin`,
+  `~/.local/bin`, …), then in `<data>/bin`. When it finds none, the first
+  `/dashboard` downloads Cloudflare's official build for this machine from
+  the latest [cloudflared release](https://github.com/cloudflare/cloudflared/releases)
+  into `<data>/bin`, checks it against the SHA-256 digest GitHub publishes
+  for that file, and only then runs it. The reply says so, and the link
+  follows in about a minute. A download that doesn't match is thrown
+  away. Nothing to install, and nothing to type on the server.
+- With `[connections] cloudflared = "off"`, `remote = "off"`, or on a
+  platform Cloudflare doesn't build for, you get a
   `http://127.0.0.1:<port>/login#…` link and the `ssh -L` command that
   reaches it from another machine.
 - Sent from a group, the link goes to your private chat. From anyone but
@@ -247,7 +256,7 @@ owner's chat. With the link it signs in, loads the page and
 `/api/health`, and checks that the API refuses a request without the
 cookie. It then fetches the live OpenRouter catalog once and closes with
 `/dashboard off`, checking that the session is revoked. If `cloudflared` is
-installed, the config asks for a quick tunnel and the page and login go
+found, the config asks for a quick tunnel and the page and login go
 through `trycloudflare.com`; if not, that step prints SKIP. Each step
 prints PASS, FAIL or SKIP, and the script exits non-zero on any FAIL.
 It needs Python 3 (standard library only); the driver is

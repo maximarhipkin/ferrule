@@ -338,7 +338,9 @@ Chosen when a flow starts, in this order:
 1. **Relay** — `relay_url` set, `FERRULE_RELAY_KEY` present, `/health`
    answers within 5 s.
 2. **Quick tunnel** — the relay is missing or down and `cloudflared` is
-   found (`[connections] cloudflared`, else `PATH`). ferrule listens on a
+   found (`[connections] cloudflared`, else `PATH`, the usual install dirs and
+   `<data>/bin`, where `/dashboard` puts the copy it downloads; a sign-in
+   never downloads it itself). ferrule listens on a
    loopback port, runs `cloudflared tunnel --url http://127.0.0.1:<port>`,
    reads the `https://*.trycloudflare.com` URL from its output, and uses
    `<tunnel>/cb` as the redirect URI. The tunnel lives only while that

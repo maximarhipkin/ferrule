@@ -100,9 +100,11 @@ pub async fn cmd(op: Option<DashCmd>) -> Result<()> {
                 );
                 return Ok(());
             }
-            let Some(bin) = super::cloudflared(&cfg) else {
-                bail!("cloudflared isn't installed (or [connections] cloudflared is \"off\")");
-            };
+            let cloudflared = super::cloudflared(&cfg);
+            if cloudflared.needs_fetch() {
+                println!("Fetching cloudflared (Cloudflare's tunnel program) the first time…");
+            }
+            let bin = cloudflared.path().await?;
             let tunnel = ferrule_connections::tunnel::open(&bin, port).await?;
             let host = super::host_of(&tunnel.url)?;
             let token = links.mint(Some(&host), minutes)?;

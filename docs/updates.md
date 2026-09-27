@@ -5,9 +5,10 @@ Claude plan, keeps the ChatGPT plan's client identity current, and repairs
 what it recognises when something breaks. The design, with the reasons, is
 [m36-self-update.md](m36-self-update.md).
 
-## Upgrading from v0.5.x: run the one-liner once
+## Upgrading from v0.6.0 or older: run the one-liner once
 
-Installs from before v0.6 don't have the update units. Run the install
+Installs from before v0.7 don't have the update units (v0.7.0 is the
+first signed release). Run the install
 one-liner once more (the same one you installed with):
 
 ```sh
@@ -26,8 +27,8 @@ units.
 ```
 ferrule update               # check, download, verify, install, restart the service
 ferrule update --check       # say what's available, change nothing
-ferrule update --to v0.6.0   # a specific release, even an older one (asks; unpins it)
-ferrule update --to v0.5.1 --unsigned   # a release from before signing: checksum only
+ferrule update --to v0.7.0   # a specific release, even an older one (asks; unpins it)
+ferrule update --to v0.6.0 --unsigned   # a release from before signing: checksum only
 ```
 
 A release is installed only when:
@@ -61,9 +62,9 @@ binary goes back, the service restarts again, and the bad version is
 
 You hear about it once, in your chat:
 
-- "Updated Ferrule 0.6.0 → 0.6.1: <the release notes' first line>"
-- "Ferrule 0.6.1 didn't start properly, so I went back to 0.6.0 and won't
-  try 0.6.1 again. `ferrule update --to v0.6.1` retries it."
+- "Updated Ferrule 0.7.0 → 0.7.1: <the release notes' first line>"
+- "Ferrule 0.7.1 didn't start properly, so I went back to 0.7.0 and won't
+  try 0.7.1 again. `ferrule update --to v0.7.1` retries it."
 
 A quiet check says nothing.
 
@@ -83,7 +84,7 @@ you as an approval button; Allow asks the apply unit to install it now.
 
 A gateway run by hand, and every Windows install (there is no Windows
 service yet), checks daily itself and tells you once per release: "Ferrule
-v0.6.1 is out: run `ferrule update`". `ferrule update` then does it all in
+v0.7.1 is out: run `ferrule update`". `ferrule update` then does it all in
 the foreground. On Windows the running `ferrule.exe` is renamed aside
 (`ferrule.exe.<hex>.old`, deleted at the next start) and the new one takes
 its place; restart ferrule yourself. Nothing watches a hand-run gateway, so

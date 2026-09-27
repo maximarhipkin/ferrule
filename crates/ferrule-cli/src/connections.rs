@@ -53,9 +53,11 @@ fn make(cfg: &config::Config) -> Result<Arc<Connections>> {
         workspace: std::env::current_dir().unwrap_or_else(|_| data.clone()),
         state_dir,
     };
+    let mut settings = cfg.connections.clone();
+    settings.bin_dir = Some(data.join("bin"));
     let conns = Connections::new(
         &secrets::private_dir()?,
-        cfg.connections.clone(),
+        settings,
         Arc::new(crate::config_follow::secret_value),
         Arc::new(GatewayEvents),
         Some(host),
@@ -365,7 +367,14 @@ pub fn doctor_line(cfg: &config::Config) -> String {
         Some(_) => format!("relay set but {} is missing", relay::RELAY_KEY_ENV),
         None => "no relay".into(),
     };
-    format!("{n} connected, {relay}")
+    use ferrule_connections::cloudflared::Cloudflared;
+    let tunnel = match crate::dashboard::cloudflared(cfg) {
+        Cloudflared::Off => "cloudflared off".into(),
+        Cloudflared::At(path) => format!("cloudflared {}", path.display()),
+        Cloudflared::Fetch(_) => "cloudflared fetched on the first /dashboard".into(),
+        Cloudflared::Missing => "no cloudflared".into(),
+    };
+    format!("{n} connected, {relay}, {tunnel}")
 }
 
 #[derive(Subcommand)]

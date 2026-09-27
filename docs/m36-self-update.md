@@ -575,3 +575,17 @@ open:
 - **Disk space**: `statvfs` on Unix, `GetDiskFreeSpaceExW` on Windows.
 - **Windows** has no supervised gateway, so a config that reads again
   only gets the "restart ferrule" line there.
+- **`cloudflared` repairs itself too** (added before the merge, after a
+  v0.6.0 service answered `/dashboard` with a local link: `cloudflared`
+  wasn't on the unit's pinned `PATH`). The lookup is `[connections]
+  cloudflared` (a path, or `"off"`), then `PATH`, then the usual install
+  dirs, then `<data>/bin`. Found nowhere, the first `/dashboard` (or
+  `ferrule dashboard link --remote`) downloads Cloudflare's build for this
+  OS and CPU from the latest cloudflared release into `<data>/bin`,
+  checked against GitHub's SHA-256 digest for the asset (else the
+  release notes' checksum line); a mismatch or a missing checksum
+  installs nothing. `<data>` is writable under the unit's
+  `ProtectSystem=strict`. An OAuth sign-in uses a downloaded copy but
+  never downloads one (40 MB mid-consent; paste-back works). Doctor's
+  connections line says which: a path, "fetched on the first
+  /dashboard", "off" or none.

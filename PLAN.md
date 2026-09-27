@@ -734,6 +734,9 @@ that convention yet — ask before introducing one).
       plain words plus the raw error in the chat; a last-good config; a
       15-minute self-check that tells the owner about changes only; a
       repair log in doctor and the dashboard.
+    - `/dashboard` downloads a checksum-verified `cloudflared` into
+      `<data>/bin` when none is found, so the tunnel link works on a
+      service with a pinned `PATH` and nothing installed.
     - v0.5.x installs need the install one-liner once.
     - **Decisions for Max and open edges:** see the M36 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
@@ -4754,6 +4757,18 @@ mock GitHub and a test key); a real `claude` update (only the fake; the
 `claude` here is the one this run uses); the ChatGPT backend's refusal
 (mocked from the reported body). Live `#[ignore]`d tests: the Codex version
 from the real npm and GitHub, and the real release list.
+
+**Follow-up before the merge: the dashboard's `cloudflared`.** Max's
+v0.6.0 service answered `/dashboard` with a `127.0.0.1` link and an
+`ssh -L` line: `cloudflared` wasn't on the unit's pinned `PATH`, and the
+dashboard falls back to local without saying why.
+`ferrule-connections::cloudflared` now looks in the usual install dirs
+and `<data>/bin` too, and when it finds none the first `/dashboard`
+downloads Cloudflare's build for the platform into `<data>/bin`,
+sha256-checked against GitHub's asset digest (see the as-built notes).
+The live `#[ignore]`d test fails here only on the container's TLS proxy;
+the same check by hand (curl) matched the real 2026.9.3 linux-amd64
+digest, and the binary ran. After it: 1356 passed, 0 failed, 23 ignored.
 
 **Checks.** 1349 tests passed, 0 failed, 22 ignored (after merging main). fmt and clippy
 `-D warnings` are clean. The starter eval against the mock through the
