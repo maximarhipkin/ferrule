@@ -183,6 +183,50 @@ async fn a_stream_is_read_as_one_whatever_its_content_type() {
 }
 
 #[tokio::test]
+async fn the_items_come_from_output_item_done_when_completed_has_none() {
+    // Codex reads a turn's items from `response.output_item.done` and only
+    // the id and usage from `response.completed`; the backend may leave
+    // the final event's `output` out.
+    let message = json!({"id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+                         "content": [{"type": "output_text", "text": "on it", "annotations": []}]});
+    let call = json!({"id": "fc_1", "type": "function_call", "status": "completed",
+                      "call_id": "call_1", "name": "read_file", "arguments": "{\"path\":\"a.txt\"}"});
+    let done = |item: &Value| {
+        event(
+            "response.output_item.done",
+            &json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+        )
+    };
+    for completed in [
+        json!({"id": "resp_1", "status": "completed", "usage": {"input_tokens": 10, "output_tokens": 3}}),
+        json!({"id": "resp_1", "status": "completed", "output": [], "usage": {"input_tokens": 10, "output_tokens": 3}}),
+    ] {
+        let wire = vec![
+            event(
+                "response.output_text.delta",
+                &json!({"type": "response.output_text.delta", "delta": "on it"}),
+            ),
+            done(&message),
+            done(&call),
+            event(
+                "response.completed",
+                &json!({"type": "response.completed", "response": completed}),
+            ),
+        ];
+        let (url, _seen) = serve(vec![sse(&refs(&wire))]);
+        let resp = provider(&url, fake()).complete(req()).await.unwrap();
+        assert_eq!(resp.message.content.as_deref(), Some("on it"));
+        assert_eq!(resp.message.tool_calls.len(), 1);
+        assert_eq!(resp.message.tool_calls[0].name, "read_file");
+        assert_eq!(
+            resp.message.tool_calls[0].arguments,
+            json!({"path": "a.txt"})
+        );
+        assert_eq!(resp.usage.input_tokens, 10);
+    }
+}
+
+#[tokio::test]
 async fn the_cache_key_is_stable_across_a_conversation() {
     let p = provider("http://127.0.0.1:1/v1", fake());
     let mut r = req();
