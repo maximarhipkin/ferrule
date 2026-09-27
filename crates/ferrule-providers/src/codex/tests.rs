@@ -113,6 +113,13 @@ async fn a_turn_goes_to_the_codex_backend_in_its_shape() {
     assert!(head.contains("authorization: bearer access-1"));
     assert!(head.contains("chatgpt-account-id: acct_123"));
     assert!(head.contains("originator: codex_cli_rs"));
+    // The backend reads `version` as the Codex client's and refuses a model
+    // newer than it, so it carries the Codex version, never ferrule's own.
+    assert!(
+        head.contains(&format!("\r\nversion: {CLIENT_VERSION}\r\n")),
+        "{raw}"
+    );
+    assert!(!head.contains(&format!("\r\nversion: {}\r\n", env!("CARGO_PKG_VERSION"))));
     assert!(head.contains("accept: text/event-stream"));
     assert!(head.contains("session-id: ferrule-"));
     assert!(!head.contains("openai-beta"));
@@ -289,7 +296,9 @@ async fn the_model_list_is_the_backends_in_priority_order() {
     assert_eq!(list, ["gpt-6-astra", "gpt-5.5"]);
     let raw = seen.join().unwrap().remove(0);
     assert!(
-        raw.starts_with("GET /backend-api/codex/models?client_version=0.153.0 "),
+        raw.starts_with(&format!(
+            "GET /backend-api/codex/models?client_version={CLIENT_VERSION} "
+        )),
         "{raw}"
     );
     assert!(raw

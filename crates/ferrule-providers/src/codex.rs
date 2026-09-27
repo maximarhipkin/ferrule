@@ -25,9 +25,21 @@ use tracing::warn;
 pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 /// The `originator` the backend knows the Codex CLI's client by.
 pub const ORIGINATOR: &str = "codex_cli_rs";
-/// Sent as `client_version` when listing models: the catalog at the pinned
-/// commit filters on a `minimal_client_version` of this.
-pub const CLIENT_VERSION: &str = "0.153.0";
+/// The Codex CLI version ferrule speaks as: sent as `client_version` when
+/// listing models (the catalog filters on each model's
+/// `minimal_client_version`) and as the `version` header on every request,
+/// where the backend reads it as the client's version and refuses a model
+/// newer than it. `FERRULE_CODEX_CLIENT_VERSION` overrides it.
+pub const CLIENT_VERSION: &str = "0.157.1";
+
+/// [`CLIENT_VERSION`], or its override.
+pub fn client_version() -> String {
+    std::env::var("FERRULE_CODEX_CLIENT_VERSION")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| CLIENT_VERSION.to_string())
+}
 
 /// What to send as the account's credentials on one request.
 #[derive(Clone)]
@@ -121,7 +133,7 @@ impl CodexProvider {
             .bearer_auth(&creds.access_token)
             .header("originator", ORIGINATOR)
             .header(reqwest::header::USER_AGENT, user_agent())
-            .header("version", env!("CARGO_PKG_VERSION"));
+            .header("version", client_version());
         if let Some(id) = &creds.account_id {
             rb = rb.header("ChatGPT-Account-ID", id);
         }
@@ -183,7 +195,11 @@ impl CodexProvider {
     /// order (by `priority`), hidden ones left out.
     pub async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         let creds = self.auth.credentials().await?;
-        let url = format!("{}/models?client_version={CLIENT_VERSION}", self.base_url);
+        let url = format!(
+            "{}/models?client_version={}",
+            self.base_url,
+            client_version()
+        );
         let reply = common::send(self.request(reqwest::Method::GET, &url, &creds)).await?;
         let mut models: Vec<(i64, String)> = reply.body["models"]
             .as_array()
