@@ -1,0 +1,21 @@
+[package]
+name = "ferrule-plans"
+version = "0.4.0"
+edition = "2021"
+description = "M35 subscription plans: ChatGPT sign-in and its sealed tokens, the plans' usage windows, and the Claude Code engine that runs a turn inside the unmodified claude binary"
+
+[dependencies]
+ferrule-core = { path = "../ferrule-core" }
+ferrule-connections = { path = "../ferrule-connections" }
+ferrule-providers = { path = "../ferrule-providers" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

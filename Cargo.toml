@@ -24,6 +24,7 @@ members = [
     "crates/ferrule-plugins",
     "crates/ferrule-plugin-sdk",
     "crates/ferrule-ssh",
+    "crates/ferrule-plans",
 ]
 # The example plugins build for wasm32-unknown-unknown on their own
 # (examples/plugins/build.sh); their .wasm output is committed.

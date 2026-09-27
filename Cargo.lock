@@ -1012,6 +1012,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferrule-plans"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ferrule-connections",
+ "ferrule-core",
+ "ferrule-providers",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "ferrule-plugin-sdk"
 version = "0.1.0"
 dependencies = [
