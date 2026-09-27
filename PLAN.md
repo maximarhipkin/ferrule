@@ -4632,7 +4632,7 @@ mock GitHub and a test key); a real `claude` update (only the fake; the
 (mocked from the reported body). Live `#[ignore]`d tests: the Codex version
 from the real npm and GitHub, and the real release list.
 
-**Checks.** 1347 tests passed, 0 failed, 22 ignored. fmt and clippy
+**Checks.** 1349 tests passed, 0 failed, 22 ignored (after merging main). fmt and clippy
 `-D warnings` are clean. The starter eval against the mock through the
 real binary: engineered 20/20, naive 11/20, $0.98.
 
