@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560" role="img" aria-label="Ferrule vs OpenClaw, Hermes and NanoClaw: a capability table">
+  <defs>
+    <style>
+      text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #cdd4da; font-size: 13px; }
+      .t { font-size: 20px; font-weight: 700; fill: #e09668; }
+      .s { fill: #96a0aa; }
+      .col { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      .yes { fill: #7fb08f; font-weight: 700; font-size: 14px; }
+      .no { fill: #5a6068; font-size: 14px; }
+      .part { fill: #d3a53c; font-size: 11px; }
+      .row { fill: #cdd4da; }
+      .dim { fill: #8a929a; }
+    </style>
+  </defs>
+  <rect width="960" height="560" rx="16" fill="#0d0f12"/>
+  <text x="32" y="44" class="t">Ferrule vs the field</text>
+  <text x="32" y="66" class="s">Same jobs, different defaults · September 2026</text>
+
+  <!-- ferrule column wash -->
+  <rect x="336" y="84" width="150" height="436" rx="10" fill="#c4764a" opacity="0.07"/>
+
+  <!-- column heads -->
+  <text x="392" y="106" class="col" fill="#e09668" text-anchor="middle" style="fill:#e09668">ferrule</text>
+  <text x="549" y="106" class="col" text-anchor="middle" style="fill:#96a0aa">openclaw</text>
+  <text x="706" y="106" class="col" text-anchor="middle" style="fill:#96a0aa">hermes</text>
+  <text x="863" y="106" class="col" text-anchor="middle" style="fill:#96a0aa">nanoclaw</text>
+  <line x1="32" y1="118" x2="928" y2="118" stroke="#2a2e33"/>
+
+  <!-- rows: y = 132 + i*32 (text baseline) -->
+  <g>
+    <text x="52" y="144" class="row">OS sandbox on by default</text>
+    <text x="392" y="144" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="144" class="part" text-anchor="middle">opt-in</text>
+    <text x="706" y="144" class="part" text-anchor="middle">opt-in</text>
+    <text x="863" y="144" class="part" text-anchor="middle">per-container</text>
+    <line x1="32" y1="156" x2="928" y2="156" stroke="#22252a"/>
+
+    <text x="52" y="176" class="row">Built-in credential proxy</text>
+    <text x="392" y="176" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="176" class="no" text-anchor="middle">—</text>
+    <text x="706" y="176" class="no" text-anchor="middle">—</text>
+    <text x="863" y="176" class="part" text-anchor="middle">external</text>
+    <line x1="32" y1="188" x2="928" y2="188" stroke="#22252a"/>
+
+    <text x="52" y="208" class="row">One 10 MB binary · ~4 ms start</text>
+    <text x="392" y="208" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="208" class="no" text-anchor="middle">—</text>
+    <text x="706" y="208" class="no" text-anchor="middle">—</text>
+    <text x="863" y="208" class="part" text-anchor="middle">+ docker</text>
+    <line x1="32" y1="220" x2="928" y2="220" stroke="#22252a"/>
+
+    <text x="52" y="240" class="row">Truthful status + enforced verify loop</text>
+    <text x="392" y="240" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="240" class="no" text-anchor="middle">—</text>
+    <text x="706" y="240" class="no" text-anchor="middle">—</text>
+    <text x="863" y="240" class="no" text-anchor="middle">—</text>
+    <line x1="32" y1="252" x2="928" y2="252" stroke="#22252a"/>
+
+    <text x="52" y="272" class="row">Budget caps + kill switch</text>
+    <text x="392" y="272" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="272" class="no" text-anchor="middle">—</text>
+    <text x="706" y="272" class="no" text-anchor="middle">—</text>
+    <text x="863" y="272" class="no" text-anchor="middle">—</text>
+    <line x1="32" y1="284" x2="928" y2="284" stroke="#22252a"/>
+
+    <text x="52" y="304" class="row">Cheap-first routing + outage fallback</text>
+    <text x="392" y="304" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="304" class="no" text-anchor="middle">—</text>
+    <text x="706" y="304" class="no" text-anchor="middle">—</text>
+    <text x="863" y="304" class="no" text-anchor="middle">—</text>
+    <line x1="32" y1="316" x2="928" y2="316" stroke="#22252a"/>
+
+    <text x="52" y="336" class="row">Sub-agents with budgets and worktrees</text>
+    <text x="392" y="336" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="336" class="yes" text-anchor="middle">✓</text>
+    <text x="706" y="336" class="yes" text-anchor="middle">✓</text>
+    <text x="863" y="336" class="yes" text-anchor="middle">✓</text>
+    <line x1="32" y1="348" x2="928" y2="348" stroke="#22252a"/>
+
+    <text x="52" y="368" class="row">Self-extension with a poisoning scan</text>
+    <text x="392" y="368" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="368" class="part" text-anchor="middle">open registry</text>
+    <text x="706" y="368" class="yes" text-anchor="middle">✓</text>
+    <text x="863" y="368" class="part" text-anchor="middle">skills</text>
+    <line x1="32" y1="380" x2="928" y2="380" stroke="#22252a"/>
+
+    <text x="52" y="400" class="row">WASM tool plugins, capability-gated</text>
+    <text x="392" y="400" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="400" class="no" text-anchor="middle">—</text>
+    <text x="706" y="400" class="no" text-anchor="middle">—</text>
+    <text x="863" y="400" class="no" text-anchor="middle">—</text>
+    <line x1="32" y1="412" x2="928" y2="412" stroke="#22252a"/>
+
+    <text x="52" y="432" class="row">Dashboard included</text>
+    <text x="392" y="432" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="432" class="yes" text-anchor="middle">✓</text>
+    <text x="706" y="432" class="yes" text-anchor="middle">✓</text>
+    <text x="863" y="432" class="no" text-anchor="middle">—</text>
+    <line x1="32" y1="444" x2="928" y2="444" stroke="#22252a"/>
+
+    <text x="52" y="464" class="row">Its own harness benchmark (ferrule eval)</text>
+    <text x="392" y="464" class="yes" text-anchor="middle">✓</text>
+    <text x="549" y="464" class="no" text-anchor="middle">—</text>
+    <text x="706" y="464" class="no" text-anchor="middle">—</text>
+    <text x="863" y="464" class="no" text-anchor="middle">—</text>
+    <line x1="32" y1="476" x2="928" y2="476" stroke="#22252a"/>
+
+    <text x="52" y="496" class="row">Channels today</text>
+    <text x="392" y="496" class="part" text-anchor="middle">3 + local</text>
+    <text x="549" y="496" class="yes" text-anchor="middle">20+</text>
+    <text x="706" y="496" class="yes" text-anchor="middle">20+</text>
+    <text x="863" y="496" class="part" text-anchor="middle">~13</text>
+  </g>
+
+  <text x="32" y="540" class="dim" font-size="11">✓ shipped and on by default · a word marks a partial or opt-in answer · — none today · sources: docs/research-number-one-harness-strategy.md</text>
+</svg>

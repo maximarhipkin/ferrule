@@ -4643,6 +4643,22 @@ browser drops localStorage across reloads, so theme persistence looked
 broken there; the agent's run-2 Chrome check (and the code path) confirm
 it persists.
 
+### 2026-09-27 — README: vs-the-field section, roadmap moved out (Kimi Code)
+
+Per Max: the README's Roadmap section (Shipped/Next/Planned + the roadmap
+SVG) is removed — `docs/roadmap.md` stays the plan's home and is linked
+from Docs. Added **"Ferrule vs the field"** between "Why ferrule wins"
+and "Secure by default" (nav updated): an honest capability table vs
+OpenClaw, Hermes and NanoClaw as a new hand-written SVG
+(`docs/assets/vs-field.svg`, brand style, sources =
+`docs/research-number-one-harness-strategy.md`), with the cells where the
+others still lead (channel breadth, ecosystem size) said plainly, the
+measured eval result (+10 pts overall, 9/12 vs 1/12 on verify tasks,
+same model), and the `ferrule import openclaw|hermes` line. The pitch now
+names the current surfaces (Telegram/Discord/Slack/dashboard, plans and
+local models). The three term-*.png captures regenerated earlier today
+against the current binary land in the same commit.
+
 ### 2026-09-27 — M36 self-update and self-repair (Devi, Opus 5.5)
 
 **Scope.** Max's bot went silent on a ChatGPT plan when OpenAI raised a

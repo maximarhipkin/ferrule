@@ -22,7 +22,7 @@
   <a href="#install">Install</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#credential-gateway">Credential gateway</a> ·
-  <a href="#roadmap">Roadmap</a> ·
+  <a href="#ferrule-vs-the-field">vs the field</a> ·
   <a href="PLAN.md">PLAN.md</a>
 </p>
 
@@ -30,8 +30,9 @@
 
 ## The pitch
 
-Ferrule runs a coding and operations agent against any OpenAI-compatible
-model — from the terminal, from Telegram, or on a cron schedule. It's one
+Ferrule runs a coding and operations agent against any model — API keys,
+a ChatGPT or Claude plan, or a local Ollama — from the terminal, Telegram,
+Discord, Slack, a cron schedule, or its own web dashboard. It's one
 binary (a download of about 10 MB, about 30 MB unpacked) with nothing to install beside it (the Linux builds
 are fully static): `ferrule --version` starts in about 4 ms, and the idle
 gateway daemon uses about 9 MB of RAM. All state lives in files you can
@@ -129,6 +130,36 @@ Ferrule is that engineered harness, for every model it drives:
 
 The evidence and the design behind it:
 [`docs/research-report.md`](docs/research-report.md).
+
+## Ferrule vs the field
+
+OpenClaw proved people want an agent that lives where they chat. Hermes
+proved they want one that learns. NanoClaw proved they want one they can
+audit. Ferrule's bet: you shouldn't have to trade any of that for safety,
+cost control, or a harness that tells the truth.
+
+<p align="center">
+  <img src="docs/assets/vs-field.svg" alt="Ferrule vs OpenClaw, Hermes and NanoClaw: sandbox and credential proxy on by default, one 10 MB binary, truthful status, budget caps, routing, eval suite — versus partial or missing elsewhere" width="860">
+</p>
+
+Two cells in that table go the other way, honestly: the others carry more
+channels today (WhatsApp included; ferrule has Telegram, Discord and
+Slack), and their ecosystems are bigger by years. What ferrule won't
+compromise: the sandbox and the credential proxy are **on by default, not
+opt-in**; every run ends in a **status you can trust**, with a verify
+loop behind it; spend is **capped by you**, not hoped for. And the claims
+are measurable — the repo ships its own harness benchmark
+(`ferrule eval run evals/starter --variant ab`), where ferrule's harness
+beat its naive twin on the same model: +10 points overall, and 9/12 vs
+1/12 on the verify-graded tasks.
+
+Moving over is one command: `ferrule import openclaw` (or `hermes`)
+brings your memories, skills, channel allowlists and providers — a dry
+run until `--apply` ([`docs/migrate.md`](docs/migrate.md)).
+
+Sources for the competitor rows:
+[`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md)
+(six parallel investigations, September 2026).
 
 ## Secure by default
 
@@ -576,113 +607,6 @@ and keep `cargo clippy --workspace --all-targets` clean.
 [`PLAN.md`](PLAN.md) is the shared working log: current state, open gaps
 and a dated entry for every session.
 
-## Roadmap
-
-<p align="center">
-  <img src="docs/assets/roadmap.svg" alt="Ferrule roadmap" width="860">
-</p>
-
-**Shipped**
-
-- [x] M1–M2: gateway daemon, Telegram and local channels, session lanes
-- [x] M3: cron and one-shot scheduler with gate scripts
-- [x] M4: stdio MCP client
-- [x] Phase 0: per-call cost and latency ledger
-- [x] M5: Agent Skills
-- [x] M6: OS sandbox for the shell tool
-- [x] M7: credential gateway
-- [x] M8: one-line install and a setup wizard, Windows support, Telegram
-      allow-list
-- [x] M9: never stuck — retries with backoff, a stuck detector, a truthful
-      status at every stop, `verify_command` enforced
-- [x] M10: MCP servers and `web_fetch` under the sandbox and the proxy,
-      Streamable HTTP MCP, a hardened system service on Linux
-
-- [x] M11: a browser for the agent, driving an installed Chrome over MCP
-- [x] M12: multi-agent orchestration — planner, worker and verifier
-      sub-agents with isolated contexts that return summaries only
-- [x] M13: self-extension — the agent installs vetted skills and MCP
-      servers for itself (poisoning scan, version pinning, allow-list)
-- [x] M14: `ferrule eval` — harness task suites with verify/rubric
-      graders, results into the ledger
-- [x] M15: memory update pipeline (edit, forget, goal-driven recall) and
-      reversible compaction (`search_history` over the transcript)
-- [x] M16: the learning loop — offline consolidation and a curated
-      playbook in the system prompt
-- [x] M17: MCP hot-add and `ferrule mcp add` — guided, no restart, a
-      wizard step
-- [x] M18: lifecycle hooks (SessionStart, PreToolUse, PostToolUse, Stop,
-      PreCompact)
-- [x] M19: budget caps with a kill switch, destructive-action approvals,
-      plan mode
-- [x] M19b: reliability — never silently deaf (`/status` and `/stop`
-      mid-turn, watchdogs, heartbeat); `v0.2.0` released
-- [x] M20: connections — the agent connects services by itself: one
-      Telegram button, OAuth through your own Cloudflare Worker relay (no
-      inbound ports), tokens encrypted and never shown to the model
-- [x] M21: models — several at once, a default, a model per chat, task
-      or sub-agent, `/model` in Telegram, a fallback on outage
-- [x] M19c: the live-bot fixes — every reason the bot stays quiet is told
-      in Telegram or shown by `ferrule doctor`
-- [x] M22: one dashboard page for the whole app — status, stats, logs,
-      connections, and models with a catalog, prices and recommendations;
-      `v0.3.0` released
-- [x] M23: native drivers — Anthropic Messages and OpenAI Responses, with
-      fallback across drivers mid-conversation
-- [x] M24: the dashboard's leftovers — a login that survives a restart,
-      "evaluate a candidate", editing from the page, a 2-minute smoke script
-- [x] M25: routing Phase 1 — start cheap, escalate on failure signals,
-      `ferrule eval --variant routing` to compare cheap, routed and strong
-- [x] M26: isolation — a native Windows sandbox (restricted token + job
-      object), sandboxed reads on every OS, plain-HTTP `web_fetch` through
-      the proxy
-- [x] M27: speed — parallel read-only tool calls, streaming from every
-      driver with Telegram replies that grow as they're written, a
-      cache-stable prompt prefix
-- [x] M28: `web_search` (Brave, Tavily, Exa, SearXNG) through the proxy
-      and the ledger, and keyword-triggered skills
-- [x] M29: edit mechanics — `edit_file` SEARCH/REPLACE, a tree-sitter
-      repo map and `code_search`, per-edit lint, optional auto-commit
-      with undo
-- [x] M30: vector recall — local or `/v1/embeddings` embeddings
-      merged with BM25, off by default
-- [x] M31: Discord (Gateway WebSocket) and Slack (Socket Mode) channels,
-      streamed replies and button approvals, in the same daemon
-- [x] M32: WASM tool plugins — capabilities denied unless granted,
-      network only through the credential proxy, installed through the
-      M13 approval flow
-- [x] M33: ops — an egress domain policy with an SSRF guard, a
-      unix-socket allowlist, OpenTelemetry export, and importers from
-      OpenClaw and Hermes
-- [x] M34: SSH workspaces, and a local-model first run that catches a
-      small context window and broken tool calling; `v0.4.0` released
-- [x] M35: subscription sign-in — a ChatGPT plan in Ferrule's own loop,
-      a Claude plan through the unmodified Claude Code CLI; `v0.5.0` released,
-      `v0.5.1`–`v0.5.2` fix the ChatGPT plan's live wire (Codex version
-      header, event stream)
-- [x] Tests green on Linux, macOS and Windows in CI
-
-**Next**
-
-The "do everything" queue (Max, 25.09) is done through M35. Still open:
-WhatsApp, waiting on a decision, and each milestone's follow-ups in
-[`PLAN.md`](PLAN.md).
-
-M11–M13 were approved in order; M14–M19 came from the six-investigation
-strategy synthesis:
-[`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md).
-
-**Planned**
-
-- [ ] WhatsApp (options in [`docs/m31-channels.md`](docs/m31-channels.md))
-- [ ] Later, from the strategy backlog: recipes, a pinned memory
-      block, tool-call emulation for models without function calling
-      ([strategy](docs/research-number-one-harness-strategy.md))
-
-The full gap analysis vs OpenClaw, Hermes and NanoClaw — and the backlog
-it produced — is in
-[`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md);
-day-to-day state is tracked in [`PLAN.md`](PLAN.md).
 
 ## Docs
 
