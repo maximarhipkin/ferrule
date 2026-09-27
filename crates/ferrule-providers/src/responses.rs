@@ -309,10 +309,14 @@ impl Provider for ResponsesProvider {
 /// A Responses stream: text deltas go to the sink, and the final event
 /// (`response.completed`, `.incomplete` or `.failed`) carries the whole
 /// response object, which the plain parser then reads, status included.
+/// Its `output` may come empty: the ChatGPT plan's backend streams the
+/// items as `response.output_item.done` events, which is all the Codex
+/// CLI reads, so those stand in for a missing or empty `output`.
 pub(crate) async fn read_stream(
     mut events: common::Events,
     sink: &DeltaSink,
 ) -> Result<Value, CoreError> {
+    let mut items = Vec::new();
     while let Some(event) = events.next().await? {
         let data = event.json()?;
         let kind = data
@@ -325,8 +329,21 @@ pub(crate) async fn read_stream(
                 let piece = data["delta"].as_str().unwrap_or("");
                 sink.send(Delta::Text(piece.to_string()));
             }
+            "response.output_item.done" => {
+                if let Some(item) = data.get("item").filter(|i| i.is_object()) {
+                    items.push(item.clone());
+                }
+            }
             "response.completed" | "response.incomplete" | "response.failed" => {
-                return Ok(data["response"].clone());
+                let mut response = data["response"].clone();
+                let empty = response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .is_none_or(|o| o.is_empty());
+                if empty && !items.is_empty() {
+                    response["output"] = Value::Array(items);
+                }
+                return Ok(response);
             }
             "error" => return Err(common::error_in_body(&data, None)),
             k if k.ends_with(".delta") => sink.send(Delta::Progress),

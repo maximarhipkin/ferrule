@@ -192,7 +192,7 @@ impl CodexProvider {
                 self.auth.observe(&limits);
             }
             let quiet = DeltaSink::new(|_| {});
-            let opened = match common::opened(resp).await {
+            let opened = match common::opened_as_stream(resp).await {
                 Err(CoreError::Provider(m)) if requires_newer_client(&m) => {
                     if !relearned {
                         relearned = true;

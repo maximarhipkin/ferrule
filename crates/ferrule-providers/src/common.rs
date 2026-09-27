@@ -121,6 +121,18 @@ pub(crate) async fn opened(resp: reqwest::Response) -> Result<Opened, CoreError>
     }
 }
 
+/// [`opened`] for a backend that streams every success whatever its
+/// `Content-Type` says. The ChatGPT plan's Codex backend does (live,
+/// 27.09: events under a type that isn't `text/event-stream`), and the
+/// Codex CLI reads any 2xx as events without looking; so does this.
+pub(crate) async fn opened_as_stream(resp: reqwest::Response) -> Result<Opened, CoreError> {
+    if resp.status().is_success() {
+        Ok(Opened::Events(Events::new(resp)))
+    } else {
+        read_json(resp).await.map(Opened::Json)
+    }
+}
+
 pub(crate) async fn connect(
     request: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response, CoreError> {
