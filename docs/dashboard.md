@@ -65,8 +65,14 @@ ferrule dashboard                 # a link, or the page served from here when no
   running turns with **Stop**, the watchdog, the heartbeat (host only),
   the last restart, the kill switch with **Stop everything / Resume**,
   and today's spend against the caps.
-- **Connections** (M20): each service's state, scopes and last use;
-  **Connect**, **Reconnect**, **Disconnect**.
+- **Connections** (M20, M37): the one place for credentials. It has:
+  - the fixed callback address (the relay);
+  - a checklist with a next-step button on each line;
+  - sign-ins still waiting, with **Cancel**;
+  - what's connected, with **Test**, **Disconnect** and **Fix it**;
+  - a tile per service, with its ways in, simplest first.
+
+  See [connections.md](connections.md).
 - **Models** (M21): the default, the fallbacks, the pins and outages;
   **Set default**, **Pin**, **Unpin**, **Test**, **Add**, **Remove**.
   - **Catalog**: OpenRouter's list and your providers' own `/models`,
@@ -107,6 +113,53 @@ User content (message previews, task names, log lines, skill
 descriptions, the hooks file) sits in elements marked `dir="auto"`, so
 Hebrew or Arabic reads right to left inside the left-to-right page, and
 the log filter takes Hebrew as it is.
+
+## The control room (M37)
+
+M37 made the page the place you run your agent from. The design is in
+[m37-control-room.md](m37-control-room.md).
+
+![Home on a phone](assets/m37/home-390.png)
+![Connections on a desktop](assets/m37/connections-1280.png)
+
+- **Layout.** On a phone, a bottom bar holds Home, Chat, Models,
+  Connections and More; the other sections open in a sheet under More.
+  From 900 px wide, a sidebar lists every section. Light or dark follows
+  the system, and the toggle at the top overrides it for this browser.
+- **Notices** on Home each carry their fix buttons. **×** hides one for
+  a day. Hidden ones stay listed under "N hidden", with when each comes
+  back, **Show again** and **Show all again**. Doctor's findings are
+  notices too.
+- **Models.** The fallback chain and every place a model is named are
+  selects fed by the catalog, not text fields. A model can be added
+  together with its provider's key, and the key is tested first.
+- **Chat** is your agent in its own session (`dashboard__owner`). Replies
+  stream in, and buttons work as they do on Telegram. Approval questions
+  from any chat are listed above it, with **Allow** and **Refuse**.
+- **Console** runs `ferrule` commands, as at the machine. The line is
+  split without a shell and parsed like the CLI's own, and it runs with
+  its input closed. Completion comes from the CLI's own command tree.
+  Commands that change something show their class. Destructive ones ask
+  first. Commands that could run anything (and the ones that open a
+  shell) are refused, with a pointer to where the page does the same
+  thing. Every command is audited. **Every command, and where it lives
+  on this page** lists all of them. There is no shell and no terminal on
+  the page.
+- **Config** shows the file with secrets as placeholders, and a typed
+  form per section. **Check** gives the loader's own message and line.
+  **Save** writes atomically and keeps `ferrule.toml.prev` for **Undo**.
+  Fields that carry commands, gates, secret routing or who gets in can
+  only change on the machine.
+- **Everything works with every model down.** Nothing on the page calls
+  a model, except Chat and the model tests you press.
+
+**Fonts** are IBM Plex Sans (400 and 600), with Plex Sans Hebrew loaded
+only for Hebrew text, and IBM Plex Mono 400. They're served from the
+binary as woff2 with a one-year cache: about 129 KB in all, and about
+60 KB for a page with no Hebrew. Their licence is at `/fonts/OFL.txt`.
+Icons are inline SVG paths in the script. Type sizes are 13, 15, 17, 20,
+24 and 30 px. Text written by you or the agent sits in `dir="auto"`
+elements and is set with `textContent` only.
 
 ## What it never shows
 
@@ -261,3 +314,28 @@ through `trycloudflare.com`; if not, that step prints SKIP. Each step
 prints PASS, FAIL or SKIP, and the script exits non-zero on any FAIL.
 It needs Python 3 (standard library only); the driver is
 `scripts/dashboard_smoke.py`.
+
+## Browser check
+
+`scripts/dashboard_browser_check.mjs` drives a real headless Chromium
+against `ferrule gateway`, on a temp config with the mock model, a fake
+Telegram and a local MCP server that takes a key. It needs Node 22 and no
+packages. It signs in with the `/dashboard` link, then:
+
+- hides a notice and finds it in the hidden list;
+- picks a fallback model;
+- connects the MCP server with a key and tests it;
+- runs a console command;
+- chats once;
+- visits every section, failing on any script error or a stray
+  `null`/`undefined` on the page.
+
+CI runs it on Linux, macOS and Windows.
+
+```sh
+cargo build -p ferrule-cli
+node scripts/dashboard_browser_check.mjs --bin target/debug/ferrule [--chromium PATH] [--shots docs/assets/m37]
+```
+
+`--shots` saves the screenshots of Home, Connections, Models, Chat and
+Console at 390 and 1280 px.

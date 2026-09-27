@@ -233,7 +233,7 @@ In order of how likely each is to be Max's failure:
   with the owner actor.
 - **Keys from the page.** `POST /api/connections/key {name, fields,
   write}`: the fields are checked against the service's key form, then a
-  **test call** runs against the service's whoami (§3.4) with the key; only
+  **test call** runs with the key (§3.4); only
   a key that passes is sealed into the store. The key is never logged,
   never returned, and never reaches the model: it is injected by the MCP
   client as a header bound to the service's hosts (M20 §3.5).
@@ -244,75 +244,89 @@ In order of how likely each is to be Max's failure:
   is installed and the user's own paths have no config, like setup and
   doctor.
 
-### 3.3 Key-based alternatives
+### 3.3 Key-based alternatives (as built)
 
-A service in the catalog can carry a `[service.key]` table: the fields the
-owner types (`token`, or `email + token + site`), the header template, the
-URL the key is used with (a hosted MCP that takes a key, or the vendor's
-own), where to make one, and the whoami used as the test. A service with
-both OAuth and a key shows both on its tile: "Sign in" and "Use a key".
+The design first had a `[service.key]` table hung off each OAuth service.
+What shipped is simpler: **each way in is its own catalog entry**, and
+the ones for one service share a `tile`. An entry carries its `option`
+name, what it `covers`, a phone-sized `guide`, and its `fields`: what the
+key form asks for, with secret ones write-only. So a service with a
+sign-in and a key shows two lines on one tile, ordered simplest first.
+Previews go last. An entry with `fixed_callback = true` signs in only
+through the relay's fixed address.
 
-See §3.5 for the list, with what each takes.
+Three entries have `native` set: `jira`, `gmail` and `google`. Their
+tools run inside ferrule and call the vendor's REST API with the saved
+key. No MCP server is involved, since none of those vendors host one
+that takes that key.
 
-### 3.4 The test call
+### 3.4 The test call (as built)
 
-`whoami = {url, method, expect}`: an authenticated GET (or POST) that
-returns 200 for a valid key and 401/403 otherwise, bound to the service's
-hosts. The test runs from the gateway, not the browser. Its result on the
-page is "works: <account>" (a name or login pulled from a named JSON field,
-redacted) or the status and the vendor's error message, clipped.
+A key is tested before it's sealed, with the same call its tools will make:
 
-### 3.5 Services
+- **A native way in** runs its probe: Jira's `/rest/api/3/myself`, an
+  IMAP login for Gmail, a JWT exchange plus one Drive list for a service
+  account.
+- **An MCP server** gets `initialize` and `tools/list` with the key in its
+  header.
 
-Only services whose hosted MCP server, sign-in and key header are
-documented by the vendor are shipped. "DCR" means the server publishes
-OAuth discovery and dynamic client registration, so "Sign in" works with no
-app of the owner's; "own client" means the owner registers an OAuth app
-once (the page takes its id and secret, write-only). The test is the
-vendor's own REST "who am I", with the same key, never the MCP endpoint.
+**Test** on a connected line does the same again. Either way the answer
+is a sentence: "Works: …, N tools" or exactly what failed. It says which
+side refused, and why in plain words. A status code, the `state` or the
+key is never in it (`explain.rs`, §3.7). A key given an end date
+(`expires`) adds "the key expires in N days".
 
-**Key alternatives on existing services**
+A way in that can't work yet is **blocked**, and gets no button. Instead
+it says what's missing and offers the simpler options. `/connect` in the
+owner chat uses the same function (`Connections::blocked`). Two cases:
 
-| service | key fields | MCP header | test | account |
-|---|---|---|---|---|
-| github | token | `Authorization: Bearer {token}` | `GET api.github.com/user` | `/login` |
-| linear | key | `Authorization: Bearer {key}` | `POST api.linear.app/graphql {viewer{id name}}`, header `Authorization: {key}` | `/data/viewer/name` |
-| atlassian | email, token, site | `Authorization: Basic b64(email:token)` (the site admin must allow API-token auth) | `GET {site}.atlassian.net/rest/api/3/myself` | `/displayName` |
+- `google_oauth` and the Google previews without the owner's client;
+- any `fixed_callback` entry without a live relay.
 
-**New services**
+### 3.5 Services (as built)
 
-| service | hosted MCP | sign-in | key | test |
-|---|---|---|---|---|
-| airtable | `mcp.airtable.com/mcp` | DCR | PAT, `Bearer` | `GET api.airtable.com/v0/meta/whoami` |
-| sentry | `mcp.sentry.dev/mcp` | DCR | user token, `Sentry-Bearer` on MCP, `Bearer` on REST | `GET sentry.io/api/0/`, `/user` non-null |
-| supabase | `mcp.supabase.com/mcp` | DCR | PAT, `Bearer` | `GET api.supabase.com/v1/projects` |
-| cloudflare | `mcp.cloudflare.com/mcp` | DCR | API token, `Bearer` | `GET api.cloudflare.com/client/v4/user/tokens/verify`, `/result/status` = active |
-| monday | `mcp.monday.com/mcp` | DCR | API token, `Bearer` on MCP, raw on REST | `POST api.monday.com/v2 {me{id name}}` |
-| stripe | `mcp.stripe.com` | DCR | restricted key, `Bearer` | `GET api.stripe.com/v1/balance` |
-| intercom | `mcp.intercom.com/mcp` (US workspaces) | DCR | access token, `Bearer` | `GET api.intercom.io/me` |
-| todoist | `ai.todoist.net/mcp` | DCR | — | — |
-| canva | `mcp.canva.com/mcp` | DCR | — | — |
-| webflow | `mcp.webflow.com/mcp` | DCR | — | — |
-| dropbox | `mcp.dropbox.com/mcp` (beta) | DCR | — | — |
-| gcalendar | `calendarmcp.googleapis.com/mcp/v1` | own client, `calendar.readonly` | — | — |
-| gsheets | `sheetsmcp.googleapis.com/mcp/v1` | own client, `spreadsheets.readonly` | — | — |
+**Atlassian**, in this order:
 
-**Not shipped (follow-ups), and why**
+1. `jira` (native): site + email + API token (+ optional end date).
+   Covers Jira issues (search, read, create, update, comment, move) and
+   Confluence pages (search, read). No admin switch.
+2. `atlassian_token`: Rovo MCP with `Authorization: Basic {email:token}`,
+   or a service account's `Bearer` key with the email left empty. The
+   admin must allow API tokens for Rovo MCP. A 401 says so and switches
+   to 1.
+3. `atlassian`: Rovo MCP over OAuth with DCR, `fixed_callback`. The admin
+   must add the relay's domain as `https://<relay-host>/**`, and the tile
+   shows the exact pattern. A domain refusal is explained, with a button
+   to switch to 1.
 
-- Notion and Attio keys: their hosted MCP servers take OAuth only, or a key
-  there isn't documented.
-- Slack: needs a registered app; a bot token on its MCP server isn't
-  documented.
-- HubSpot, Asana, Box, Figma, ClickUp, Vercel: no DCR, or allow-listed
-  clients only.
-- Zendesk: a server per subdomain, in early access.
-- PayPal: its key is a client-credentials token that expires; it needs a
-  refresher.
-- Trello: no token auth on its server.
-- Square: only an SSE URL.
-- CIMD: the MCP spec of 2026-07-28 deprecates DCR in favour of client ID
-  metadata documents; Ferrule still registers with DCR where the server
-  offers it.
+**Google** (what each covers is said on the tile):
+
+- `gmail` (native): the address + an app password, IMAP to read, SMTP to
+  send. Sending is a write tool, so it is listed only with "allow
+  changes" and each send asks.
+- `google` (native): a service-account JSON key. Covers Drive
+  search/read, Sheets read/write, Docs read, Calendar list/create, for
+  what is shared with the account.
+- `google_oauth` (native tools, the owner's OAuth client
+  `FERRULE_GOOGLE_CLIENT_ID/_SECRET`, `fixed_callback`). The same tools,
+  as the owner. The guide says to publish the app, because Testing
+  expires after 7 days.
+- `gmail_mcp` and `gdrive_mcp`: Google's preview MCP servers, last.
+
+**Others** as before, plus key options where the vendor documents one:
+github (PAT), linear (sign-in, or `linear_key`), stripe (restricted key),
+huggingface, sentry, notion and attio (sign-in). Owners add their own in
+`[[connections.custom]]`.
+
+**Not shipped, and why.** The services in the first draft of this table
+had no documented key for their hosted MCP server, or no DCR:
+
+- Airtable, Supabase, Cloudflare, Monday, Intercom, Todoist, Canva,
+  Webflow and Dropbox are left for later (§8).
+- For Notion and Attio, only sign-in is documented.
+- Slack, HubSpot, Asana, Box, Figma, ClickUp and Vercel need a registered
+  app, or only allow listed clients.
+- Zendesk, PayPal, Trello and Square: as listed in the first draft.
 
 ### 3.6 Tiles
 
@@ -323,6 +337,46 @@ follows the theme), the name, and a state dot. A tap opens the details
 sheet: state, scopes, account, last use, **Connect / Reconnect /
 Disconnect / Test**, the key form, the paste box and the vendor's note.
 No CDN, no remote images.
+
+### 3.7 The fixed callback, the checklist, stuck flows, errors
+
+- **The relay card** tops the page:
+  - **Deploy.** Takes a Cloudflare API token (template "Edit Cloudflare
+    Workers", linked). The account comes from `GET /accounts`, with a
+    choice when there are several. It deploys `relay/worker.js`, saves
+    the URL and key, and checks end to end. The token isn't kept.
+  - **Use an existing relay.** Takes a URL + key, checked (health, then a
+    slot written and read back) before saving.
+  - **Once live**, it shows `<relay>/cb` with Copy, and which services
+    call back through it.
+- **The checklist** (`/api/connections/checklist`,
+  `ferrule connections setup`) has one line per real check:
+  - `relay`: missing, ready or unreachable;
+  - `google_client`;
+  - each preview;
+  - Atlassian.
+
+  Each line shows its state and the button for its next action. A line is
+  never offered as ready on a guess.
+- **Pending flows** are listed with Cancel and dropped after `flow_ttl`
+  (15 min).
+- **Error mapping** (`ferrule-connections/src/explain.rs`) turns each
+  failure into plain words for the page. It covers:
+  - an HTTP status from a token endpoint or an MCP server;
+  - an OAuth `error=` on the callback;
+  - a handshake that isn't MCP;
+  - the owner's own egress policy blocking a private address.
+
+  A switch-to-key button comes with it where one exists. For Google and
+  Atlassian, the page also lists the **symptoms**: the messages their
+  consent pages show, in their words, each with its fix, for errors that
+  never reach ferrule.
+- **Doctor and the Home banner** name a connection that stopped, or whose
+  key expires within 7 days (`Connections::attention(7)`). The fix button
+  opens its tile.
+- **CLI twin:** `ferrule connections setup [relay|google-client|<tile>|<service>] [--write]`.
+  It asks which way in, then that way's fields, reading secrets without
+  echo. It uses the same code as the page.
 
 ## 4. Terminal parity
 
@@ -615,7 +669,7 @@ height 1.5, tabular numerals in tables and stats.
 | CSRF on a new endpoint | Same gate as every other POST (`Origin`, JSON, cookie, CSRF header). |
 | A key leaks to the page | Keys are write-only; responses pass the redactor; tests check that a saved key never appears in any GET. |
 | A key leaks to the model | Keys are injected by the MCP client as headers bound to the service's hosts; they're never in a tool's input or output. |
-| A key is tested against the wrong host | The whoami URL comes from the catalog, not the request. |
+| A key is tested against the wrong host | The probe and the MCP URL come from the catalog, not the request. |
 | The console's parser is fooled into a shell | There is no shell: argv goes straight to `Command`; metacharacters are refused before parsing. |
 | The raw config editor sets a command | The command-bearing diff check refuses the save. |
 | A notice hides a real outage | The kill switch and "no model can answer" can't be hidden; everything else returns after 24 h if still true. |
@@ -638,7 +692,55 @@ height 1.5, tabular numerals in tables and stats.
 - A raw shell or PTY (§4.5).
 - Restarting the service when no service manager runs it (a gateway in a
   terminal can't be brought back from the page).
-- `relay deploy` (it needs wrangler and a Cloudflare login).
+- Deploying the relay anywhere but Cloudflare (§3.7 deploys to Cloudflare with an API token, no wrangler).
 - Vendor logos as image files (the tiles use simple glyphs).
 - Services whose auth can't be described precisely yet (§3.5 lists them as
   follow-ups).
+
+## 9. As built
+
+Where the build departs from the sections above:
+
+- **Connections:** §3.3–3.5 and §3.7 describe what shipped.
+  - Each way in is its own catalog entry on a shared tile.
+  - Three native ways in: Jira, Gmail and Google.
+  - The relay card, the checklist, pending flows, the error mapping,
+    the symptoms and `ferrule connections setup`.
+
+  Relay deploy no longer needs wrangler: it uses the Cloudflare API with
+  a token.
+- **Payload** (§5.1). Fonts, as woff2:
+
+  | file | bytes |
+  |---|---|
+  | Plex Sans 400 | 20,984 |
+  | Plex Sans 600 | 22,260 |
+  | Plex Mono 400 | 17,268 |
+  | Plex Sans Hebrew 400 | 33,260 |
+  | Plex Sans Hebrew 600 | 35,152 |
+
+  That's ≈129 KB in all, and ≈60 KB for a page with no Hebrew.
+  `OFL.txt` is 4,456 B. Icons are inline SVG paths in `app.js`, so
+  there's no icon file.
+  - `app.js`: 104,709 B (28,447 gzipped).
+  - `app.css`: 20,814 B (5,574 gzipped).
+  - `index.html` and `theme.js`: ≈1.3 KB each.
+
+  `theme.js` sets the theme before first paint, because the CSP allows
+  no inline script.
+- **Screenshots** (§5.2): only the "after" set is in `docs/assets/m37/`
+  (Home, Connections, Models, Chat and Console at 390 and 1280 px), made
+  by `scripts/dashboard_browser_check.mjs --shots`. No "before" set was
+  captured when the branch was cut.
+- **Browser check** (§6 tests):
+  - It drives Chromium over the DevTools protocol from Node 22 with no
+    packages, rather than through agent-browser, so it runs the same on a
+    laptop and in CI.
+  - It covers: hide a notice, pick a fallback, connect with a key (a
+    local MCP server, allowed through `[egress] private_allow`), run a
+    console command, chat, and every section rendered with no stray
+    `null`/`undefined`.
+  - CI runs it on Linux, macOS and Windows.
+- **Egress block, plain.** A connection blocked by the owner's own egress
+  policy says so: "Your egress policy blocks <host>…". Before, it was
+  reported as a server that doesn't speak MCP.
