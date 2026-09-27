@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-label="ferrule eval A/B: the engineered harness beats the naive one on the same model">
+  <defs>
+    <style>
+      text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #cdd4da; font-size: 13px; }
+      .t { font-size: 20px; font-weight: 700; fill: #e09668; }
+      .s { fill: #96a0aa; }
+      .v { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 16px; font-weight: 700; }
+      .k { fill: #8a929a; font-size: 11.5px; }
+      .f { fill: #8a929a; font-size: 11.5px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    </style>
+  </defs>
+  <rect width="960" height="420" rx="16" fill="#0d0f12"/>
+  <text x="32" y="44" class="t">Same model. Same tasks. Only the harness differs.</text>
+  <text x="32" y="66" class="s">ferrule eval · starter suite · qwen3-coder 30B · 32k window · 120 task runs</text>
+
+  <!-- bars: baseline y=330, 100% = 210px -->
+  <!-- all runs: naive 47% (99px), engineered 57% (120px) -->
+  <rect x="248" y="231" width="90" height="99" rx="4" fill="#3a3f46"/>
+  <rect x="358" y="210" width="90" height="120" rx="4" fill="#c4764a"/>
+  <text x="293" y="219" class="v" fill="#8a929a" text-anchor="middle">47%</text>
+  <text x="403" y="198" class="v" fill="#e09668" text-anchor="middle">57%</text>
+  <text x="293" y="352" class="k" text-anchor="middle">naive harness</text>
+  <text x="403" y="352" class="k" text-anchor="middle">ferrule</text>
+  <text x="348" y="132" class="s" text-anchor="middle" font-size="14" style="fill:#cdd4da;font-weight:600">all 60 task runs</text>
+
+  <!-- verify tasks: naive 8% (17px), engineered 75% (157px) -->
+  <rect x="608" y="313" width="90" height="17" rx="4" fill="#3a3f46"/>
+  <rect x="718" y="173" width="90" height="157" rx="4" fill="#c4764a"/>
+  <text x="653" y="301" class="v" fill="#8a929a" text-anchor="middle">8%</text>
+  <text x="763" y="161" class="v" fill="#e09668" text-anchor="middle">75%</text>
+  <text x="653" y="352" class="k" text-anchor="middle">naive harness</text>
+  <text x="763" y="352" class="k" text-anchor="middle">ferrule</text>
+  <text x="708" y="132" class="s" text-anchor="middle" font-size="14" style="fill:#cdd4da;font-weight:600">verify-graded tasks (12 runs each)</text>
+
+  <line x1="200" y1="330" x2="870" y2="330" stroke="#2a2e33"/>
+  <line x1="580" y1="120" x2="580" y2="356" stroke="#22252a"/>
+
+  <text x="32" y="384" class="f">context events: 65 compactions vs 37 truncations · errors: 0 both · tokens per pass ≈ equal</text>
+  <text x="32" y="406" class="f" fill="#e09668" style="fill:#e09668">reproduce: ferrule eval run evals/starter --variant ab</text>
+</svg>

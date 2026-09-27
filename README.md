@@ -91,18 +91,23 @@ withheld.
 
 ## Why ferrule wins
 
-The model you wrap matters less than how you wrap it. In OpenAI's 2026
-ARC-AGI-3 investigation, the *same* model scored **13.3%** with a default
-harness — reasoning discarded after every action, history silently
-truncated at the limit — and **38.3%** with an engineered one (retained
-reasoning plus compaction), while output-token use dropped ~6×. Nothing
-about the model changed.
+The model you wrap matters less than how you wrap it — and we measure it
+on ourselves. The same model (qwen3-coder 30B, 32k window), the same 20
+tasks, the same tools: ferrule's harness against a deliberately naive one
+that truncates history at the limit and never verifies:
 
 <p align="center">
-  <img src="docs/assets/chart-harness.png" alt="Same model, different harness: 13.3% vs 38.3% on ARC-AGI-3, 6x fewer output tokens" width="820">
+  <img src="docs/assets/eval-ab.svg" alt="ferrule eval A/B: ferrule's harness 57% vs the naive harness's 47% over 60 runs, and 75% vs 8% on verify-graded tasks — same model, same tasks" width="860">
 </p>
 
-Ferrule is that engineered harness, for every model it drives:
+Reproduce it: `ferrule eval run evals/starter --variant ab` — the suite,
+a mock model and the naive twin all ship in the repo
+([`docs/eval.md`](docs/eval.md)).
+
+The result this replicates: in OpenAI's 2026 ARC-AGI-3 investigation, the
+*same* model scored **13.3%** with a default harness and **38.3%** with an
+engineered one, on ~6× fewer output tokens. Ferrule is that engineered
+harness, for every model it drives:
 
 <p align="center">
   <img src="docs/assets/why-ferrule-wins.svg" alt="A for-loop around an API call versus the ferrule harness: per-model profiles, structured compaction, verify_command, never-stuck recovery, per-call ledger" width="860">
