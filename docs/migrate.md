@@ -145,7 +145,10 @@ only when ferrule has none for that channel.
   `[models] default`.
 - **Not carried over:** OAuth logins (Hermes `nous` and `openai-codex`,
   OpenClaw's `oauth`/`token` auth profiles), `key_cmd`, and Codex Responses
-  mode. The summary names each.
+  mode. The summary names each. Sign-ins aren't copied between programs:
+  sign in again with `ferrule login chatgpt` for a ChatGPT plan (what
+  `openai-codex` was), or `ferrule login claude` for a Claude plan, which
+  runs through Claude Code ([subscriptions.md](subscriptions.md)).
 
 ### Keys and tokens
 

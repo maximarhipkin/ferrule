@@ -23,7 +23,11 @@ listed under it. `ferrule model list` shows them all.
 
 The easiest way is `ferrule setup` → Model provider:
 
-- **Add a provider** has presets for OpenAI, Kimi, OpenRouter, DeepSeek,
+- **Add a provider** asks how to reach the model first: a ChatGPT plan, a
+  Claude plan (through Claude Code), an API key, or a local model. The two
+  plans need no key and cost $0 per token; what each one allows is in
+  [subscriptions.md](subscriptions.md).
+- **An API key** has presets for OpenAI, Kimi, OpenRouter, DeepSeek,
   Google Gemini, Groq, Anthropic and Ollama, and a custom endpoint.
 - A provider's menu has **Add another model on it** (same key, optional
   alias) and **Test it**.
@@ -51,6 +55,11 @@ Each provider is spoken to by one of three drivers, set with `api`:
 | `"chat"` | `/chat/completions` (OpenAI-compatible) | anything else |
 | `"anthropic"` | Anthropic's native `/v1/messages` | `base_url` is `api.anthropic.com` |
 | `"responses"` | OpenAI's `/v1/responses`, stateless | never; set it yourself |
+
+A plan provider (`plan = "chatgpt"` or `plan = "claude-code"`) needs no
+`api`, `base_url` or key: the ChatGPT plan uses a Responses flavour for its
+backend, and the Claude plan runs the `claude` binary
+([subscriptions.md](subscriptions.md)).
 
 When `api` is unset, Ferrule infers it from `base_url`. A value you write
 always wins. `ferrule doctor`, `ferrule model list` and the dashboard show

@@ -1,6 +1,6 @@
 # M35 — Subscription sign-in: a ChatGPT plan and a Claude plan (design)
 
-Status: design, 2026-09-27, branch `m35-subscriptions`. Written before the
+Status: built, 2026-09-27, branch `m35-subscriptions`. Written before the
 code; where the build departs from it, see **As built** at the end.
 User guide: [subscriptions.md](subscriptions.md).
 
@@ -622,3 +622,83 @@ over loopback TCP, not a Unix socket.
 - Gemini and Copilot subscriptions.
 - An interactive Claude Code session inside Telegram (`claude` without
   `-p`).
+
+---
+
+## As built
+
+Where the code departs from the design above, or settles what it left open:
+
+**Stores and money**
+- The ChatGPT sign-in is `<data>/private/plans/chatgpt.json` (metadata in
+  the clear, the tokens sealed, AAD `ferrule-plan:chatgpt`), and the lock
+  is `chatgpt.lock` next to it. The Claude setup-token is
+  `<data>/private/plans/claude-code.json`, the same way.
+- `plan` and `notional_usd` are fields of core's `LedgerRecord`, so every
+  writer carries them. The OTel exporter doesn't send them yet.
+- The engine takes the notional figure from `total_cost_usd` through
+  `Usage.notional_usd`. A turn that pauses for a bridged tool records its
+  usage on the row where claude's run finishes; the paused row has zero.
+- The ChatGPT model list is shown by `ferrule login chatgpt` and setup.
+  There is no `ferrule models list chatgpt`.
+
+**The engine's turn**
+- The prompt goes on stdin, not in argv, and the persona goes through
+  `--append-system-prompt-file` (a file in the turn's dir), so neither
+  meets an argv length limit or shows in `ps`.
+- Turn files live in `<config_dir>/ferrule-turns/<hex>` and are removed at
+  turn end.
+- Claude Code's session id rides in the reply's native blocks (api
+  `"claude-code"`), not in a `sessions.json`: the chat's own transcript
+  carries it, so there is no second store to keep in step.
+- A `CallContext` task-local carries the run's guard and workspace into
+  `complete()`, which has no other way to see them.
+- A bridged Ferrule tool call pauses the turn: claude's MCP call waits,
+  the engine returns the call as an ordinary agent `tool_call` (id
+  `claude-code-<hex>`), the agent runs it with its normal gates, and the
+  next `complete()` hands the result back to the waiting call and resumes
+  reading claude. The live run below shows it with `remember`.
+- `MCP_TOOL_TIMEOUT` is set to the turn timeout, and the turn timeout
+  counts only claude's own working time, not the time a paused turn waits
+  on a Ferrule tool or an owner's approval.
+- `--disallowedTools` drops `WebFetch`, `WebSearch` and `Task` when the
+  agent doesn't have the matching tools.
+- Claude-code models default to a 1,000,000-token window
+  (`CLAUDE_CODE_WINDOW`), so Ferrule's compactor never cuts the resumed
+  session.
+
+**Sign-in, state and doctor**
+- Way (1) runs `claude auth login --claudeai` at the terminal, not an
+  interactive `claude` with `/login`. The state and doctor ask
+  `claude auth status --json`, never a model call.
+- `--token` takes one line from piped stdin as well as hidden input at a
+  terminal.
+- A `sk-ant-oat` key makes `ferrule_providers::build` pick the Anthropic
+  driver whatever `api` says. That driver doesn't keep the key and refuses
+  every call before any request; setup's key check and doctor refuse it
+  too.
+
+**Isolation**
+- `~/.claude` is not in M26's default read denies. When a claude-code
+  provider exists, Ferrule's own sandbox hides the engine's config dir,
+  `~/.claude` and `~/.claude.json` from Ferrule's commands, and
+  `engine_sandbox` lifts those hides for the `claude` child only.
+- With egress on, Anthropic's hosts (`api.anthropic.com`, `claude.ai`,
+  `console.anthropic.com`, `statsig.anthropic.com`) are allowed on 443
+  when a claude-code provider exists.
+
+**Tests**
+- The fake binary is `ferrule-fake-claude`, a `[[bin]]` of ferrule-plans
+  that isn't shipped. The CLI tests take it from next to the ferrule
+  binary, or build it through `$CARGO`.
+- The real-hub approval round trip moved from `ferrule-plans/tests` to the
+  CLI tests (`tests/claude_plan.rs`), where the real binary, gateway and
+  hub run it.
+- The live engine test is
+  `live_two_chat_turns_through_the_real_claude_with_the_sandbox_on`
+  (`FERRULE_LIVE_CLAUDE=/path/to/claude`). Run on 2026-09-27 with claude
+  2.1.283 on Haiku, with the sandbox in its default mode and egress through
+  ferrule's broker chained to the host's proxy: turn 1 called `remember`
+  over the bridge and answered "noted.", turn 2 resumed and answered
+  "ferrule-otter", and three ledger rows came out at `cost_usd` 0. The
+  ChatGPT live test was not run; this container can't reach OpenAI.

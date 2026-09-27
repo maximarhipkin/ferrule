@@ -624,3 +624,92 @@ telegram_allowed_chats = [42]
         files_with(home, "TESTSECRET")
     );
 }
+
+// ── Live: the real claude binary, the sandbox on ─────────────────────────
+
+/// Two chat turns through the real `claude` named by
+/// `FERRULE_LIVE_CLAUDE`, signed in by whatever `CLAUDE_CODE_OAUTH_TOKEN`
+/// the caller exported, with ferrule's sandbox in its default mode and
+/// the caller's proxy kept. Spends two short Haiku turns on the plan.
+#[test]
+#[ignore = "live: spends two turns on a Claude plan; set FERRULE_LIVE_CLAUDE"]
+fn live_two_chat_turns_through_the_real_claude_with_the_sandbox_on() {
+    let Ok(binary) = std::env::var("FERRULE_LIVE_CLAUDE") else {
+        eprintln!("FERRULE_LIVE_CLAUDE not set; skipping");
+        return;
+    };
+    let dir = home(&format!(
+        r#"default_provider = "claude-code"
+
+[providers.claude-code]
+plan = "claude-code"
+model = "haiku"
+
+[skills]
+enabled = false
+
+[plans.claude_code]
+binary = '{binary}'
+"#
+    ));
+    let home = dir.path();
+    let mut cmd = command(home, &["chat"]);
+    // The caller's proxy and sign-in, which `command` drops for the
+    // hermetic tests.
+    for var in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ] {
+        if let Some(v) = std::env::var_os(var) {
+            cmd.env(var, v);
+        }
+    }
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        writeln!(
+            stdin,
+            "Remember the word ferrule-otter. Reply with just: noted."
+        )
+        .unwrap();
+        writeln!(stdin, "Which word did I ask you to remember? One word.").unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    let said = plain(&out.stdout);
+    let transcript = format!("── stdout ──\n{said}\n── stderr ──\n{}", plain(&out.stderr));
+    println!("{transcript}");
+    // Kept for a report: the transcript and the ledger, and the home.
+    let keep = std::env::var("FERRULE_LIVE_TRANSCRIPT").ok();
+    if let Some(path) = &keep {
+        std::fs::write(path, &transcript).unwrap();
+        let _ = std::fs::write(
+            format!("{path}.ledger.jsonl"),
+            std::fs::read(home.join("data/ledger.jsonl")).unwrap_or_default(),
+        );
+        let _ = std::fs::write(format!("{path}.home"), home.display().to_string());
+    }
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(said.to_lowercase().contains("otter"), "resumed: {said}");
+    let rows = jsonl(&home.join("data/ledger.jsonl"));
+    let rows: Vec<_> = rows
+        .iter()
+        .filter(|r| r["provider"] == "claude-code")
+        .collect();
+    // One row per model call: a turn in which claude runs one of
+    // ferrule's own tools over the bridge pauses and resumes, so more.
+    assert!(rows.len() >= 2, "{rows:#?}");
+    for row in rows {
+        assert_eq!(row["plan"], "claude-code", "{row:#}");
+        assert_eq!(row["cost_usd"], json!(0.0), "{row:#}");
+    }
+    if keep.is_some() {
+        std::mem::forget(dir);
+    }
+}

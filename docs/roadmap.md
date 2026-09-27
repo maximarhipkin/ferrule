@@ -731,6 +731,34 @@ allowlists over, twice, with nothing changing the second time.
 without the owner's key ever leaving ssh, and a first run against a local
 Ollama either works or says exactly which window or template to fix.
 
+### M35 — subscription sign-in: a ChatGPT plan and a Claude plan
+
+**Status.** Built (`docs/m35-subscriptions.md`; user guide
+`docs/subscriptions.md`). PR to `main` open, not merged.
+- **ChatGPT plan, native.** `ferrule login chatgpt` signs in with the
+  Codex CLI's public OAuth client (device code, a loopback browser flow, or
+  a pasted redirect), and the Responses driver calls the Codex backend from
+  ferrule's own loop. The token is sealed, refreshed one process at a time,
+  and revoked on logout. `/login chatgpt` works by device code in the
+  owner's own chat. OpenAI tolerates this; it is not a contract, and the
+  guide says so.
+- **Claude plan, through the unmodified `claude` binary.** Each turn runs
+  `claude -p` (never `--bare`) with ferrule's own config dir, resuming the
+  chat's Claude Code session. Ferrule's memory, tasks and messaging reach
+  claude over MCP, and claude's tool permissions are asked of ferrule's
+  approvals. Ferrule never calls the Anthropic API with a plan token: a
+  setup-token pasted as an API key is refused on every call. Sign-in is
+  Claude Code's own, a pasted setup-token (stored sealed, and the guide
+  says plainly that this is storing one), or an exported
+  `CLAUDE_CODE_OAUTH_TOKEN`. Never over Telegram.
+- Plan turns are ledgered at $0 with the notional API price beside them; a
+  spent usage window falls back to the next model and tells the owner when
+  it resets. Setup, status, doctor and the dashboard show each plan.
+
+**Done means.** A user with only a ChatGPT or a Claude subscription gets
+through setup and chats, in the terminal and in Telegram, with no API key,
+and every Claude-plan model request comes from Claude Code itself.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
