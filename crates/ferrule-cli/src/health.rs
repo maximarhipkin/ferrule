@@ -157,6 +157,14 @@ pub fn build(
             }),
         );
     }
+    // M36: the version, the last check and update, what's pinned.
+    if let Some(data) = config::data_dir_path() {
+        let auto = cfg.update.auto;
+        health = health.with_section(
+            "updates",
+            Arc::new(move || crate::update::status_lines(&data, auto)),
+        );
+    }
     let notice = startup_notice(cfg, &health);
     Ok(health
         .with_startup_notice(notice)

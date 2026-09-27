@@ -14,6 +14,7 @@ pub mod testing;
 use crate::config::{Config, DashboardConfig};
 use anyhow::{bail, Context, Result};
 use auth::{Links, Sessions};
+use ferrule_connections::cloudflared::Cloudflared;
 use ferrule_connections::tunnel::{self, Tunnel};
 use ferrule_gateway::Redactor;
 use http::{Request, Response};
@@ -33,8 +34,9 @@ const APP_CSS: &str = include_str!("assets/app.css");
 /// its own fewer).
 pub struct Ctx {
     pub redactor: Arc<Redactor>,
-    /// `[connections] cloudflared`, resolved.
-    pub cloudflared: Option<PathBuf>,
+    /// `[connections] cloudflared`, resolved: fetched on the first tunnel
+    /// when it's nowhere on the machine.
+    pub cloudflared: Cloudflared,
     /// The running gateway's lanes and health; `None` in `ferrule
     /// dashboard` on its own.
     pub live: Option<api::Live>,
@@ -83,7 +85,7 @@ impl Ctx {
     pub fn bare(redactor: Arc<Redactor>) -> Self {
         Self {
             redactor,
-            cloudflared: None,
+            cloudflared: Cloudflared::Missing,
             live: None,
             models: None,
             hub: None,
@@ -98,13 +100,11 @@ impl Ctx {
     }
 }
 
-/// `[connections] cloudflared`: a path, "off", or looked up on PATH.
-pub fn cloudflared(cfg: &Config) -> Option<PathBuf> {
-    match cfg.connections.cloudflared.as_deref() {
-        Some("off") => None,
-        Some(path) => Some(PathBuf::from(path)),
-        None => ferrule_mcp::browser::find_command("cloudflared"),
-    }
+/// `[connections] cloudflared`: "off", a path, one found on the machine,
+/// or Cloudflare's build fetched into `<data>/bin` when first needed.
+pub fn cloudflared(cfg: &Config) -> Cloudflared {
+    let bin = crate::config::data_dir_path().map(|d| d.join("bin"));
+    Cloudflared::resolve(cfg.connections.cloudflared.as_deref(), bin.as_deref())
 }
 
 pub struct Dashboard {
@@ -268,9 +268,7 @@ impl Dashboard {
                 self.settings.remote
             );
         }
-        let Some(bin) = self.ctx.cloudflared.clone() else {
-            bail!("cloudflared isn't installed (or [connections] cloudflared is \"off\")");
-        };
+        let bin = self.ctx.cloudflared.path().await?;
         let mut slot = self.tunnel.lock().await;
         if let Some(t) = slot.as_mut() {
             if t.alive() {
@@ -315,7 +313,7 @@ impl Dashboard {
                 return None;
             }
         };
-        if self.settings.remote != "tunnel" || self.ctx.cloudflared.is_none() {
+        if self.settings.remote != "tunnel" || !self.ctx.cloudflared.possible() {
             tracing::info!(
                 "{gone} dashboard tunnel session(s) ended with the restart; no tunnel to reopen"
             );

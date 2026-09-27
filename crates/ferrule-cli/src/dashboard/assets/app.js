@@ -287,6 +287,8 @@
           ? frag(tag("engaged", "bad"), kill.by ? " by " + kill.by : "", kill.at ? " " + kill.at : "", kill.reason ? text(" — " + kill.reason) : null)
           : frag(tag("off", "ok"), " ", el("span", { class: "muted", text: "every run proceeds" }))] : null,
         h.workspace ? ["workspace", text(h.workspace)] : null,
+        (h.updates || []).length ? ["updates", el("div", {}, ...h.updates.map((l) => el("div", { class: "msg", dir: "auto", text: l })))] : null,
+        (h.repairs || []).length ? ["repairs", el("div", {}, ...h.repairs.map((l) => el("div", { class: "msg", dir: "auto", text: l })))] : null,
       ].filter(Boolean);
       setKids(this.box, 
         secHead("Health", "what ferrule is doing right now",

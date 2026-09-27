@@ -259,11 +259,15 @@ impl Connections {
         Some(Relay::new(url, &key))
     }
 
+    /// Only one already on the machine: a 40 MB download mid-sign-in
+    /// isn't worth it when paste-back works (the dashboard fetches it).
     fn cloudflared(&self) -> Option<PathBuf> {
-        match self.cfg.cloudflared.as_deref() {
-            Some("off") => None,
-            Some(path) => Some(PathBuf::from(path)),
-            None => ferrule_mcp::browser::find_command("cloudflared"),
+        match crate::cloudflared::Cloudflared::resolve(
+            self.cfg.cloudflared.as_deref(),
+            self.cfg.bin_dir.as_deref(),
+        ) {
+            crate::cloudflared::Cloudflared::At(path) => Some(path),
+            _ => None,
         }
     }
 

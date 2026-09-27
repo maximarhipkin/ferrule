@@ -673,7 +673,7 @@ fn a_sub_agent_runs_on_a_named_connected_model_and_still_counts_toward_its_trees
 }
 
 #[test]
-fn a_503_falls_over_and_tells_the_owner_once_and_a_401_does_not() {
+fn a_503_falls_over_and_tells_the_owner_once_and_so_does_a_401() {
     let (a, b, c) = (Server::start("A"), Server::start("B"), Server::start("C"));
     a.fail_with(503);
     c.fail_with(401);
@@ -704,14 +704,15 @@ model = "c-one"
     tg.wait_for(42, "B:b-large", n);
     assert_eq!(tg.count(42, "isn't answering"), 1, "told once");
 
-    // A key refused: no fall-over, and the owner hears why.
+    // A key refused (M36 §6.2): the fallback answers too, and the owner
+    // hears why.
     let before = b.calls();
     tg.say_from(-100, 42, "/model use c");
     let (n, _) = tg.wait_for(-100, "c/c-one", 0);
     tg.say(-100, "third");
-    let (_, said) = tg.wait_for(-100, "401", n);
-    assert!(!said.contains("B:"), "{said}");
-    assert_eq!(b.calls(), before, "a 401 doesn't fall over");
+    tg.wait_for(-100, "B:b-large", n);
+    tg.wait_for(42, "its key was refused", 0);
+    assert!(b.calls() > before, "a 401 falls over");
     assert!(c.calls() >= 1);
 
     let rows = ledger(home);
@@ -998,4 +999,34 @@ fn a_bad_request_on_the_cheap_tier_moves_the_turn_up_and_the_next_turn_starts_ch
     let (n, _) = tg.wait_for(-100, "B:b-mid", n);
     tg.say(42, "private question");
     tg.wait_for(42, "A:a-two", n);
+}
+
+#[test]
+fn a_config_that_stops_reading_runs_on_the_last_good_copy_and_the_owner_hears_why() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let config = two(&a, &b, &telegram(&tg));
+    let dir = home(&config);
+    let home = dir.path();
+    let gw = gateway(home);
+    tg.say(42, "hello");
+    tg.wait_for(42, "A:a-one", 0);
+    drop(gw);
+    // The killed gateway's last getUpdates is still in the fake, which
+    // drains the queue 100 ms in; let it, or it swallows "still there?".
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(home.join("data/gateway/config.last-good.toml").exists());
+
+    // A typo, and a restart: no crash loop, the last good config answers.
+    std::fs::write(
+        home.join("ferrule.toml"),
+        config.replace("default_provider = \"a\"", "default_provider = a"),
+    )
+    .unwrap();
+    let n = tg.sent.lock().unwrap().len();
+    let _gw = gateway(home);
+    let (_, said) = tg.wait_for(42, "doesn't read", n);
+    assert!(said.contains("running on the last one that did"), "{said}");
+    tg.say(42, "still there?");
+    tg.wait_for(42, "A:a-one", n);
 }

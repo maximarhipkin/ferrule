@@ -3,7 +3,7 @@ use ferrule_providers::{Api, DriverOptions, Thinking};
 use ferrule_tools::search::{SafeSearch, SearchProvider, SearchSettings};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
@@ -658,6 +658,32 @@ pub struct Config {
     /// M35: the subscriptions' settings (docs/subscriptions.md).
     #[serde(default)]
     pub plans: PlansConfig,
+    /// M36: updating ferrule and the `claude` CLI (docs/updates.md).
+    #[serde(default)]
+    pub update: UpdateConfig,
+}
+
+/// `[update]` (docs/updates.md).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateConfig {
+    /// Install new releases by themselves. Unset: on when setup installed
+    /// the update units, else off (the owner is told a release is out).
+    pub auto: Option<bool>,
+    /// `stable`, or `prerelease` to take release candidates too.
+    pub channel: crate::update::Channel,
+    /// Keep the `claude` CLI current (the Claude plan needs a recent one).
+    pub claude: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        UpdateConfig {
+            auto: None,
+            channel: crate::update::Channel::Stable,
+            claude: true,
+        }
+    }
 }
 
 /// `[telemetry]` (docs/otel.md).
@@ -1450,6 +1476,12 @@ profile = "openai"
 # content = false            # true: prompts, replies and tool I/O too, scrubbed.
 # service_name = "ferrule"
 
+# [update]                  # Updates (docs/updates.md). A service set up by
+# auto = true                # `ferrule setup` checks daily and installs a new,
+#                            # signed release when idle; false: ask first.
+# channel = "stable"         # "prerelease": release candidates too.
+# claude = true              # keep the `claude` CLI current too.
+
 # [extensions]              # Self-extension: the agent installs MCP servers,
 # enabled = false            # skills and WASM plugins mid-run (mcp_add,
 # allow = []                 # skill_install, plugin_add…). Installable without
@@ -1610,14 +1642,25 @@ impl Config {
         let Some(path) = config_path()? else {
             bail!("no config found. Run `ferrule setup` first.")
         };
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        match Self::from_file(&path) {
+            Ok(cfg) => Ok((cfg, path)),
+            // M36 §6.3: a gateway started on the last good copy keeps
+            // reading it until the file reads again.
+            Err(e) => match crate::last_good::on_copy() {
+                Some(copy) => Ok((Self::from_file(copy).map_err(|_| e)?, path)),
+                None => Err(e),
+            },
+        }
+    }
+
+    /// One config file, read, parsed and checked.
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        let cfg = cfg
-            .finish()
-            .with_context(|| format!("in {}", path.display()))?;
-        Ok((cfg, path))
+        cfg.finish()
+            .with_context(|| format!("in {}", path.display()))
     }
 
     /// Checks what parsing can't, and fills in what other settings imply:
@@ -1722,21 +1765,23 @@ impl Config {
 /// `$FERRULE_DATA_DIR` if set (the system service's), else `ferrule` in
 /// the platform's data dir.
 pub fn data_dir() -> Result<PathBuf> {
+    let dir = data_dir_path().ok_or_else(|| anyhow!("no data dir"))?;
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Where [`data_dir`] is, without creating it.
+pub fn data_dir_path() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("FERRULE_DATA_DIR").filter(|d| !d.is_empty()) {
-        let dir = PathBuf::from(dir);
-        std::fs::create_dir_all(&dir)?;
-        return Ok(dir);
+        return Some(PathBuf::from(dir));
     }
     // Windows: the local AppData, so saved keys don't roam with a profile.
     let dir = if cfg!(windows) {
         dirs::data_local_dir()
     } else {
         dirs::data_dir()
-    }
-    .ok_or_else(|| anyhow!("no data dir"))?
-    .join("ferrule");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    }?;
+    Some(dir.join("ferrule"))
 }
 
 #[cfg(test)]

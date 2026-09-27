@@ -18,6 +18,9 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 url = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [features]
 # A mock issuer and Codex backend for tests, here and in the CLI.
 mock = []

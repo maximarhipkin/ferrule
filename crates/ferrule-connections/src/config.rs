@@ -12,7 +12,7 @@ pub struct ConnectionsConfig {
     /// None: no relay, so a quick tunnel or paste-back.
     pub relay_url: Option<String>,
     /// `cloudflared` for the quick-tunnel fallback: a path, or "off".
-    /// Unset: looked up on PATH.
+    /// Unset: looked up on PATH, the usual install dirs, and `bin_dir`.
     pub cloudflared: Option<String>,
     /// The redirect for paste-back and terminal flows. Google's client
     /// must list it.
@@ -22,6 +22,10 @@ pub struct ConnectionsConfig {
     pub gate_writes: bool,
     /// Services beyond the catalog, or a built-in one changed.
     pub custom: Vec<Service>,
+    /// `<data>/bin`, where the dashboard fetches cloudflared to; set by
+    /// the process, never read from the file.
+    #[serde(skip)]
+    pub bin_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for ConnectionsConfig {
@@ -32,6 +36,7 @@ impl Default for ConnectionsConfig {
             loopback_redirect: DEFAULT_LOOPBACK.into(),
             gate_writes: true,
             custom: Vec::new(),
+            bin_dir: None,
         }
     }
 }

@@ -716,6 +716,29 @@ that convention yet — ask before introducing one).
       plan checks, `status`/`/status`/dashboard windows, ledger rows at $0
       with `plan` and `notional_usd`.
     - **Decisions for Max and open edges:** see the M35 session-log entry.
+  - **M36 self-update and self-repair**: **built** (2026-09-27, branch
+    `m36-self-update`, PR to main open, not merged). Design and as-built
+    notes are in `docs/m36-self-update.md`; the user guide is
+    `docs/updates.md`.
+    - The ChatGPT plan's Codex client version is learned (npm, then
+      GitHub, then the compiled-in one), cached a day, and refreshed at
+      once when the backend says it's too old.
+    - `ferrule update [--check|--to TAG]`: GitHub releases verified by
+      sha256 and a minisign signature against a compiled-in key; a
+      privileged apply unit (systemd timer + path unit, launchd agent)
+      installs when idle, restarts, and rolls back and pins a version that
+      doesn't come up healthy. The release workflow signs.
+    - The `claude` CLI is kept current by its own install's updater, daily
+      and at once when a turn fails because it's too old (retried once).
+    - Self-repair: a failure classifier; every provider error falls back;
+      plain words plus the raw error in the chat; a last-good config; a
+      15-minute self-check that tells the owner about changes only; a
+      repair log in doctor and the dashboard.
+    - `/dashboard` downloads a checksum-verified `cloudflared` into
+      `<data>/bin` when none is found, so the tunnel link works on a
+      service with a pinned `PATH` and nothing installed.
+    - v0.5.x installs need the install one-liner once.
+    - **Decisions for Max and open edges:** see the M36 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -4682,3 +4705,75 @@ by me.
   binary (`target/debug/ferrule`), all SVGs parse as XML, and the file was
   re-read end to end. Windows-sandbox wording stays accurate (restricted
   token + job object, Git Bash caveat).
+
+### 2026-09-27 — M36 self-update and self-repair (Devi, Opus 5.5)
+
+**Scope.** Max's bot went silent on a ChatGPT plan when OpenAI raised a
+model's minimum Codex client version; v0.5.1 fixed it by hand. M36 makes
+Ferrule keep itself, `claude` and the ChatGPT client identity current, and
+repair what it recognises. Design and as-built notes:
+`docs/m36-self-update.md`. User guide: `docs/updates.md`, linked from
+`docs/subscriptions.md`, `docs/m33-ops.md` and `docs/egress.md`. Branch
+`m36-self-update`, one commit per part (design, 1–4).
+
+**What was built.**
+- 1: `ferrule-core::failure` (a `Kind` per known failure, structure first,
+  then text; its repair, how long the model stays down, the plain words;
+  `CoreError::Failed`). The Codex client version from npm, then GitHub,
+  then 0.157.1, cached a day; a "requires a newer version" 400 refreshes
+  and retries once. UA `codex_cli_rs/<v> (<os>; <arch>) ferrule/<v>`.
+- 2: `ferrule update [--check|--to TAG [--unsigned]|--apply]`: GitHub
+  releases, sha256 then minisign against a compiled-in key; installed only
+  while idle; atomic swap keeping `ferrule.previous`; restart; rollback and
+  pin within 180 s. Setup installs the apply unit, timer and path unit
+  (launchd: one agent); `setup --refresh-service` and `install.sh` upgrade
+  an old install. The release workflow signs. One owner line per update or
+  rollback; the state in status, `/status`, doctor, dashboard.
+- 3: `claude` kept current by its install's own updater (native,
+  Homebrew, WinGet, npm, pnpm), as the files' owner, daily and after a
+  too-old turn (retried once).
+- 4: every provider error falls back; plain words plus the raw error in
+  the chat; the last-good config; the 15-minute self-check; the repair
+  log.
+
+**Decisions taken alone (for Max to overrule).**
+- minisign, with the public key compiled in and the secret in an Actions
+  secret; a compromised GitHub account can still sign (design §2.4).
+- A root oneshot apply unit rather than sudo, polkit or setuid.
+- `--unsigned` exists (with `--to` only) so a signed build can go back to
+  v0.5.x.
+- A 401 falls back too, and the owner hears "its key was refused" once.
+- Running on the last-good config applies to every later `Config::load()`
+  in the process; a supervised gateway exits 0 to restart onto the fixed
+  file.
+- The self-check's first round reports what's already wrong; a check that
+  has never succeeded isn't "failing for 3 days"; it tries a `claude`
+  update only when the problem is new.
+- No `/update` chat command (the consent button covers the owner's case).
+
+**Not verified live.** A real signed release installing and rolling back
+under systemd and launchd (no release was cut; the hermetic tests use a
+mock GitHub and a test key); a real `claude` update (only the fake; the
+`claude` here is the one this run uses); the ChatGPT backend's refusal
+(mocked from the reported body). Live `#[ignore]`d tests: the Codex version
+from the real npm and GitHub, and the real release list.
+
+**Follow-up before the merge: the dashboard's `cloudflared`.** Max's
+v0.6.0 service answered `/dashboard` with a `127.0.0.1` link and an
+`ssh -L` line: `cloudflared` wasn't on the unit's pinned `PATH`, and the
+dashboard falls back to local without saying why.
+`ferrule-connections::cloudflared` now looks in the usual install dirs
+and `<data>/bin` too, and when it finds none the first `/dashboard`
+downloads Cloudflare's build for the platform into `<data>/bin`,
+sha256-checked against GitHub's asset digest (see the as-built notes).
+The live `#[ignore]`d test fails here only on the container's TLS proxy;
+the same check by hand (curl) matched the real 2026.9.3 linux-amd64
+digest, and the binary ran. After it: 1356 passed, 0 failed, 23 ignored.
+
+**Checks.** 1349 tests passed, 0 failed, 22 ignored (after merging main). fmt and clippy
+`-D warnings` are clean. The starter eval against the mock through the
+real binary: engineered 20/20, naive 11/20, $0.98.
+
+**Follow-ups.** A `/update` chat command; a Windows service (so unattended
+updates there); the first signed release (v0.7.0; v0.6.0 was cut unsigned before this merged) proves the chain; README
+lines (listed in the PR). v0.5.x installs run the install one-liner once.

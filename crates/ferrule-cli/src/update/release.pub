@@ -1,0 +1,4 @@
+# Ferrule's release signing keys (minisign, docs/m36-self-update.md §2.2).
+# One key per line; lines starting with # are comments. A release is
+# accepted when any key here verifies its signature.
+RWQuQSUKVuXdUNW+OOQ8yx0ZqCzHtFZfYPBIFW0z0IFoXzfz3aVdh/BC

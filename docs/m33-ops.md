@@ -2,6 +2,8 @@
 
 **Status:** built, 2026-09-26 (branch `m33-ops`; as-built notes inline). User guides:
 [`egress.md`](egress.md), [`otel.md`](otel.md), [`migrate.md`](migrate.md).
+Updates and self-repair, including the hosts they reach, are M36:
+[`updates.md`](updates.md).
 
 This milestone covers three items from `research-number-one-harness-strategy.md` §4:
 - **17**: an egress domain policy in the credential proxy, plus a unix-socket

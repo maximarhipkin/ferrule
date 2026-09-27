@@ -181,3 +181,6 @@ Doctor checks:
 - Claude: `claude` found and its version, whether it's signed in (asked of
   `claude auth status`, never with a model call), which credential is
   active, the setup-token's age, and any variable that outranks the plan.
+
+Ferrule keeps `claude` current for the Claude plan, and the ChatGPT plan's
+Codex client version current, by itself: see [updates.md](updates.md).

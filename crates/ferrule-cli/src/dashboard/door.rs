@@ -72,7 +72,8 @@ impl ferrule_gateway::Interceptor for DashboardDoor {
         } else {
             " I'll send it to your private chat.".into()
         };
-        let remote = self.dash.settings().remote == "tunnel" && self.dash.ctx.cloudflared.is_some();
+        let remote =
+            self.dash.settings().remote == "tunnel" && self.dash.ctx.cloudflared.possible();
         if !remote {
             let text = match self.dash.local_link() {
                 Ok(link) => link_text(&self.dash, &link, false),
@@ -109,8 +110,12 @@ impl ferrule_gateway::Interceptor for DashboardDoor {
             };
             hub.tell_owner(text);
         });
-        Some(format!(
-            "Opening the dashboard's tunnel, the link follows in a moment.{where_}"
-        ))
+        Some(if self.dash.ctx.cloudflared.needs_fetch() {
+            format!(
+                "Fetching cloudflared (Cloudflare's tunnel program) the first time, then opening the dashboard's tunnel; the link follows in a minute.{where_}"
+            )
+        } else {
+            format!("Opening the dashboard's tunnel, the link follows in a moment.{where_}")
+        })
     }
 }

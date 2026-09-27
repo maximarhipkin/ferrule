@@ -3,8 +3,9 @@
 //! (`chatgpt.com/backend-api/codex`) with a signed-in account's token
 //! instead of an API key.
 //!
-//! The protocol is the Codex CLI's, read from `openai/codex` at commit
-//! 67a709665ac7b50311b93e32612c9a8281684787. It isn't a published API.
+//! The protocol is the Codex CLI's, read from `openai/codex` at tag
+//! `rust-v0.157.1`, commit 36650394c5b38c2990ccf2a3457165ca3e9d9726. It
+//! isn't a published API.
 //!
 //! The token comes from a [`PlanAuth`] (`ferrule-plans` keeps it sealed and
 //! refreshes it); a 401 asks it to refresh once. The `x-codex-*` rate-limit
@@ -15,6 +16,7 @@ use crate::common;
 use crate::responses::{read_stream, reasoning_rejected, ResponsesProvider};
 use crate::DriverOptions;
 use ferrule_core::error::CoreError;
+use ferrule_core::failure::{requires_newer_client, Failure, Kind};
 use ferrule_core::provider::{CompletionRequest, CompletionResponse, DeltaSink, Provider};
 use serde_json::{json, Value};
 use std::hash::{Hash, Hasher};
@@ -29,16 +31,15 @@ pub const ORIGINATOR: &str = "codex_cli_rs";
 /// listing models (the catalog filters on each model's
 /// `minimal_client_version`) and as the `version` header on every request,
 /// where the backend reads it as the client's version and refuses a model
-/// newer than it. `FERRULE_CODEX_CLIENT_VERSION` overrides it.
+/// newer than it. Since M36 this is only the floor: the version in use is
+/// learned ([`version`]), and `FERRULE_CODEX_CLIENT_VERSION` overrides it.
 pub const CLIENT_VERSION: &str = "0.157.1";
 
-/// [`CLIENT_VERSION`], or its override.
+pub mod version;
+
+/// The client version in use now: learned, overridden, or [`CLIENT_VERSION`].
 pub fn client_version() -> String {
-    std::env::var("FERRULE_CODEX_CLIENT_VERSION")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| CLIENT_VERSION.to_string())
+    version::global().current()
 }
 
 /// What to send as the account's credentials on one request.
@@ -96,6 +97,7 @@ pub struct CodexProvider {
     base_url: String,
     auth: Arc<dyn PlanAuth>,
     client: reqwest::Client,
+    identity: Arc<version::ClientIdentity>,
 }
 
 impl CodexProvider {
@@ -118,7 +120,14 @@ impl CodexProvider {
             },
             auth,
             client: common::client(),
+            identity: version::global(),
         }
+    }
+
+    /// Speak as `identity`'s version instead of the process's.
+    pub fn with_identity(mut self, identity: Arc<version::ClientIdentity>) -> Self {
+        self.identity = identity;
+        self
     }
 
     fn request(
@@ -126,14 +135,15 @@ impl CodexProvider {
         method: reqwest::Method,
         url: &str,
         creds: &PlanCredentials,
+        version: &str,
     ) -> reqwest::RequestBuilder {
         let mut rb = self
             .client
             .request(method, url)
             .bearer_auth(&creds.access_token)
             .header("originator", ORIGINATOR)
-            .header(reqwest::header::USER_AGENT, user_agent())
-            .header("version", client_version());
+            .header(reqwest::header::USER_AGENT, user_agent(version))
+            .header("version", version);
         if let Some(id) = &creds.account_id {
             rb = rb.header("ChatGPT-Account-ID", id);
         }
@@ -144,15 +154,19 @@ impl CodexProvider {
     }
 
     /// Send `body` and read the stream to its final response object. A 401
-    /// refreshes once; a 429 is read for the plan's limit.
+    /// refreshes the sign-in once; a 429 is read for the plan's limit; a
+    /// "requires a newer version" refusal learns the client version now
+    /// and, if it moved, retries once (docs/m36-self-update.md §1.4).
     async fn post(&self, body: &Value, sink: Option<&DeltaSink>) -> Result<Value, CoreError> {
         let url = format!("{}/responses", self.base_url);
         let session = body["prompt_cache_key"].as_str().unwrap_or("").to_string();
         let mut refreshed = false;
+        let mut relearned = false;
         loop {
             let creds = self.auth.credentials().await?;
+            let version = self.identity.current();
             let rb = self
-                .request(reqwest::Method::POST, &url, &creds)
+                .request(reqwest::Method::POST, &url, &creds, &version)
                 .header(reqwest::header::ACCEPT, "text/event-stream")
                 .header("session-id", &session)
                 .json(body);
@@ -178,7 +192,23 @@ impl CodexProvider {
                 self.auth.observe(&limits);
             }
             let quiet = DeltaSink::new(|_| {});
-            let reply = match common::opened_as_stream(resp).await? {
+            let opened = match common::opened_as_stream(resp).await {
+                Err(CoreError::Provider(m)) if requires_newer_client(&m) => {
+                    if !relearned {
+                        relearned = true;
+                        if let Some(newer) = self.identity.refresh_past(&version).await {
+                            warn!(
+                                provider = %self.name, from = %version, to = %newer,
+                                "the backend wants a newer Codex client; retrying once as {newer}"
+                            );
+                            continue;
+                        }
+                    }
+                    return Err(too_old(&version, &m));
+                }
+                other => other?,
+            };
+            let reply = match opened {
                 common::Opened::Events(events) => {
                     return read_stream(events, sink.unwrap_or(&quiet)).await
                 }
@@ -195,17 +225,25 @@ impl CodexProvider {
     /// order (by `priority`), hidden ones left out.
     pub async fn list_models(&self) -> Result<Vec<String>, CoreError> {
         let creds = self.auth.credentials().await?;
+        let version = self.identity.current();
         let url = format!(
             "{}/models?client_version={}",
             self.base_url,
-            client_version()
+            version::triple(&version)
         );
-        let reply = common::send(self.request(reqwest::Method::GET, &url, &creds)).await?;
+        let reply =
+            common::send(self.request(reqwest::Method::GET, &url, &creds, &version)).await?;
         let mut models: Vec<(i64, String)> = reply.body["models"]
             .as_array()
             .into_iter()
             .flatten()
             .filter(|m| m["visibility"].as_str() != Some("hide"))
+            // Offered only to a newer client: the backend would refuse it.
+            .filter(|m| {
+                m["minimal_client_version"]
+                    .as_str()
+                    .is_none_or(|min| !version::newer(min, &version))
+            })
             .filter_map(|m| {
                 Some((
                     m["priority"].as_i64().unwrap_or(i64::MAX),
@@ -216,6 +254,22 @@ impl CodexProvider {
         models.sort();
         Ok(models.into_iter().map(|(_, s)| s).collect())
     }
+}
+
+/// A refusal that learning a newer client version didn't cure.
+fn too_old(version: &str, message: &str) -> CoreError {
+    let words = match message.find('{') {
+        Some(at) => &message[at..],
+        None => message,
+    };
+    Failure {
+        kind: Kind::ClientTooOld,
+        message: format!(
+            "HTTP 400: the ChatGPT backend wants a newer Codex client than {version} for this model: {words}"
+        ),
+        retry_after: None,
+    }
+    .into()
 }
 
 pub const SIGN_IN_AGAIN: &str =
@@ -302,12 +356,15 @@ fn cache_key(req: &CompletionRequest, model: &str) -> String {
     format!("ferrule-{:016x}", h.finish())
 }
 
-fn user_agent() -> String {
+/// The Codex CLI's shape with its version, then ferrule's own name: the
+/// backend reads the client version here too, and it's still honest about
+/// what is calling.
+fn user_agent(version: &str) -> String {
     format!(
-        "ferrule/{} ({}; {})",
-        env!("CARGO_PKG_VERSION"),
+        "{ORIGINATOR}/{version} ({}; {}) ferrule/{}",
         std::env::consts::OS,
-        std::env::consts::ARCH
+        std::env::consts::ARCH,
+        env!("CARGO_PKG_VERSION"),
     )
 }
 

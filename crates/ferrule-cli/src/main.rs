@@ -13,6 +13,7 @@ mod filewrite;
 mod health;
 mod hooks_cli;
 mod import;
+mod last_good;
 mod learn;
 mod ledger;
 mod local;
@@ -27,6 +28,7 @@ mod probe;
 mod remote;
 mod secrets;
 mod self_extend;
+mod selfcheck;
 mod service;
 mod settings_admin;
 mod settings_door;
@@ -35,6 +37,7 @@ mod subscription;
 mod tasks_admin;
 mod telemetry;
 mod trust;
+mod update;
 mod web_search;
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -88,6 +91,10 @@ enum Cmd {
         /// A service run as you, even as root (it warns)
         #[arg(long)]
         user: bool,
+        /// Write the installed service's units again, update units
+        /// included, without questions (install.sh runs it after an upgrade)
+        #[arg(long)]
+        refresh_service: bool,
     },
     /// Check the config, keys, Telegram, sandbox and service, and say what to fix
     Doctor {
@@ -97,6 +104,24 @@ enum Cmd {
         /// Also make one real call to every connected model (costs a few tokens each)
         #[arg(long, conflicts_with = "offline")]
         ping_models: bool,
+    },
+    /// Install the newest signed release (docs/updates.md)
+    Update {
+        /// Say what's available; change nothing
+        #[arg(long, conflicts_with_all = ["to", "apply"])]
+        check: bool,
+        /// Install this release, even an older one (`v0.6.0`); unpins it
+        #[arg(long, value_name = "TAG")]
+        to: Option<String>,
+        /// With --to: take a release from before signing, checked by its checksum only
+        #[arg(long, requires = "to")]
+        unsigned: bool,
+        /// Don't ask to confirm
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Run by the update units, not by hand
+        #[arg(long, hide = true)]
+        apply: bool,
     },
     /// Run a one-shot task
     Run {
@@ -548,8 +573,17 @@ fn main() -> Result<()> {
     if let Some(path) = &cli.config {
         std::env::set_var("FERRULE_CONFIG", std::path::absolute(path)?);
     }
-    if let Cmd::Setup { system, user } = cli.cmd {
+    if let Cmd::Setup {
+        system,
+        user,
+        refresh_service,
+    } = cli.cmd
+    {
         let linux = cfg!(target_os = "linux");
+        // A refresh keeps the service where it is: root with only a user
+        // service refreshes that one.
+        let user =
+            user || (refresh_service && !system && !Path::new(service::SYSTEM_UNIT_PATH).exists());
         service::set_scope(
             service::decide_scope(linux, service::is_root(), system, user)
                 .map_err(|e| anyhow!(e))?,
@@ -558,7 +592,9 @@ fn main() -> Result<()> {
     // Root on Linux sets up, and checks, the system service's files.
     let system_files = match cli.cmd {
         Cmd::Setup { .. } => true,
-        Cmd::Doctor { .. } | Cmd::Config { .. } => Path::new(service::SYSTEM_CONFIG).exists(),
+        Cmd::Doctor { .. } | Cmd::Config { .. } | Cmd::Update { .. } => {
+            Path::new(service::SYSTEM_CONFIG).exists()
+        }
         _ => false,
     };
     if system_files && service::scope() == service::Scope::System {
@@ -572,6 +608,8 @@ fn main() -> Result<()> {
         }
     }
     secrets::load_into_env();
+    // M36: the Codex client version is learned and cached in the data dir.
+    ferrule_providers::codex::version::configure(config::data_dir_path().as_deref(), true);
     // The command's future is polled on this thread. Windows gives a main
     // thread 1 MiB of stack where Linux gives 8, and an agent turn's
     // future (streaming, a parallel tool batch) outgrew 1 MiB in a debug
@@ -599,8 +637,14 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
     match cmd {
         // Handled in `main`, before anything else starts.
         Cmd::ClaudeMcp => unreachable!("claude-mcp runs before dispatch"),
-        Cmd::Setup { .. } => {
-            let done = setup::run().await;
+        Cmd::Setup {
+            refresh_service, ..
+        } => {
+            let done = if refresh_service {
+                setup::refresh_service()
+            } else {
+                setup::run().await
+            };
             // Whatever root wrote there, the service's user must own.
             if service::scope() == service::Scope::System {
                 if let Err(e) = service::own_system_files(None) {
@@ -710,6 +754,22 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         } => {
             let workspace = remote::workspace(workspace, true).await?;
             run_gateway(provider, workspace, max_iterations).await?;
+        }
+        Cmd::Update {
+            check,
+            to,
+            unsigned,
+            yes,
+            apply,
+        } => {
+            update::cli(update::Args {
+                check,
+                to,
+                unsigned,
+                yes,
+                apply,
+            })
+            .await?
         }
         Cmd::Status => {
             if !health::status_cmd()? {
@@ -2034,7 +2094,9 @@ async fn run_gateway(
     workspace: PathBuf,
     max_iterations: usize,
 ) -> Result<()> {
-    let (cfg, _) = config::Config::load()?;
+    // M36 §6.3: a config that stopped reading runs on its last good copy.
+    let loaded = last_good::load(&config::data_dir()?).await?;
+    let cfg = loaded.config().clone();
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let (agent_factory, sup) =
@@ -2116,6 +2178,25 @@ async fn run_gateway(
     hub.set_notifier((!chat_channels.is_empty()).then(|| {
         Arc::new(trust::ChannelNotifier(chat_channels.clone())) as Arc<dyn ferrule_trust::Notifier>
     }));
+    if let last_good::Loaded::LastGood { path, why, .. } = &loaded {
+        hub.tell_owner(last_good::owner_line(path, why));
+        let hub = hub.clone();
+        last_good::watch(path.clone(), move |text| hub.tell_owner(text));
+    }
+    // M36 §7: the self-check, telling the owner what changed.
+    selfcheck::spawn(
+        selfcheck::Check::new(&cfg, config::data_dir()?, adapters.clone()),
+        Arc::new(update::notice::HubOwner(hub.clone())),
+    );
+    // M36: a line per update or rollback, and what's out (docs/updates.md).
+    update::notice::spawn(
+        update::notice::Watch::new(
+            config::data_dir()?,
+            &cfg.update,
+            update::claude::Claude::from_config(&cfg, &config::data_dir()?),
+        ),
+        Arc::new(update::notice::HubOwner(hub.clone())),
+    );
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = Arc::new(learn::register(
         &cfg,
@@ -2428,7 +2509,9 @@ async fn tasks_run_now(
     workspace: PathBuf,
     max_iterations: usize,
 ) -> Result<()> {
-    let (cfg, _) = config::Config::load()?;
+    // M36 §6.3: a config that stopped reading runs on its last good copy.
+    let loaded = last_good::load(&config::data_dir()?).await?;
+    let cfg = loaded.config().clone();
     let sessions_dir = config::data_dir()?.join("sessions");
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     let task = store

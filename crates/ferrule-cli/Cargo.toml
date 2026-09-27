@@ -3,6 +3,7 @@ name = "ferrule-cli"
 version = "0.6.0"
 edition = "2021"
 description = "ferrule binary: run, chat, memory, config"
+build = "build.rs"
 
 [[bin]]
 name = "ferrule"
@@ -62,12 +63,22 @@ reqwest = { workspace = true }
 inquire = "0.9"
 toml_edit = "0.22"
 libc = { workspace = true }
+# M36: the updater — the release's signature, its sha256, and its archive.
+minisign-verify = "0.3"
+ring = "0.17"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+semver = "1"
+tempfile = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+# M36: the tests sign releases as the release job does.
+blake2 = "0.10"
+base64 = "0.22"
 # M35: the mock issuer and Codex backend.
 ferrule-plans = { path = "../ferrule-plans", features = ["mock"] }
 # M32: the plugin fixture is WAT, assembled in the test.
@@ -79,7 +90,6 @@ http = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
-ring = "0.17"
 # M31: the gateway crate's Discord and Slack mocks, through `#[path]`.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

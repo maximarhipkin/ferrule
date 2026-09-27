@@ -147,24 +147,40 @@ case ":$PATH:" in
 esac
 
 # An upgrade: the gateway service keeps the old binary until it restarts.
+# `setup --refresh-service` rewrites its units, adding the update units a
+# 0.5.x install lacks, and restarts it; a plain restart is the fallback.
+refresh() {
+    "$BIN" setup --refresh-service && return 0
+    say "Couldn't refresh the service's units; restarting it as it is."
+    "$@" && say "Restarted the gateway service."
+}
 if [ "$(uname -s)" = Darwin ]; then
     unit=$HOME/Library/LaunchAgents/ai.ferrule.gateway.plist
     if [ -f "$unit" ] && launchctl print "gui/$(id -u)/ai.ferrule.gateway" >/dev/null 2>&1; then
-        launchctl kickstart -k "gui/$(id -u)/ai.ferrule.gateway" && say "Restarted the gateway service."
+        active=1
     fi
+    restart="launchctl kickstart -k gui/$(id -u)/ai.ferrule.gateway"
 elif [ "$(id -u)" = 0 ] && [ -f /etc/systemd/system/ferrule.service ]; then
     unit=/etc/systemd/system/ferrule.service
     if systemctl is-active --quiet ferrule.service 2>/dev/null; then
-        systemctl restart ferrule.service && say "Restarted the gateway service."
+        active=1
     fi
+    restart="systemctl restart ferrule.service"
 else
     unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ferrule.service
     if [ -f "$unit" ] && systemctl --user is-active --quiet ferrule.service 2>/dev/null; then
-        systemctl --user restart ferrule.service && say "Restarted the gateway service."
+        active=1
     fi
+    restart="systemctl --user restart ferrule.service"
 fi
 if [ -f "$unit" ] && ! grep -q "$BIN" "$unit"; then
     say "Note: the gateway service runs a ferrule from elsewhere; \`ferrule setup\` → service points it at this one."
+    if [ "${active:-}" = 1 ]; then
+        $restart && say "Restarted the gateway service."
+    fi
+elif [ "${active:-}" = 1 ]; then
+    # shellcheck disable=SC2086
+    refresh $restart
 fi
 
 if "$BIN" config path 2>/dev/null | grep -q '^config *none yet'; then

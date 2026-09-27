@@ -2679,6 +2679,7 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
         config: std::path::absolute(&t.path)?,
         path_env,
     };
+    update_step(t)?;
     let notes = service::install(&spec)?;
     t.changed = false;
     ok(if system {
@@ -2694,6 +2695,65 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
         }
     }
     info(format!("Logs: {}", service::logs_hint()));
+    Ok(())
+}
+
+/// M36: a service installs updates by itself unless the owner says no
+/// (docs/updates.md).
+fn update_step(t: &mut Target) -> Result<()> {
+    if t.config()?.update.auto == Some(false) {
+        info("Updates: checked daily, and you're asked in chat before one goes in ([update] auto = false).");
+        return Ok(());
+    }
+    info("Updates install by themselves: checked daily, signature-checked, put in while nothing runs, and rolled back if the new version doesn't start.");
+    if !Confirm::new("Keep automatic updates on?")
+        .with_default(true)
+        .prompt()?
+    {
+        put(table(t.root(), &["update"])?, "auto", false);
+        t.save()?;
+        ok("off: you're asked in chat when a release is out ([update] auto = false)");
+    }
+    Ok(())
+}
+
+/// `ferrule setup --refresh-service`: write the installed service's units
+/// again, update units included, from what it runs now. No questions, so
+/// install.sh can run it after an upgrade.
+pub fn refresh_service() -> Result<()> {
+    match service::status() {
+        service::Status::Installed { .. } => {}
+        service::Status::NotInstalled => {
+            info("No background service is installed, so there's nothing to refresh.");
+            return Ok(());
+        }
+        service::Status::Unsupported(why) => bail!("no background service here: {why}"),
+    }
+    let (config, workspace) = service::installed().context(
+        "the service's unit doesn't name its config and workspace; \
+         `ferrule setup` → Background service → Reinstall writes it again",
+    )?;
+    let exe = match service::installed_exe() {
+        Some(exe) => exe,
+        None => dunce::canonicalize(std::env::current_exe()?)?,
+    };
+    let mut path_env = std::env::var("PATH").unwrap_or_default();
+    if let Some(dir) = exe.parent() {
+        if !std::env::split_paths(&path_env).any(|p| p == dir) {
+            path_env = format!("{}:{path_env}", dir.display());
+        }
+    }
+    let spec = service::Spec {
+        exe,
+        workspace,
+        config,
+        path_env,
+    };
+    let notes = service::install(&spec)?;
+    ok("the service's units are current, and updates install by themselves");
+    for note in notes {
+        info(note);
+    }
     Ok(())
 }
 

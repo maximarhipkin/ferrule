@@ -3,6 +3,7 @@
 //! outside the model's view. See `docs/m20-connections.md`.
 
 pub mod catalog;
+pub mod cloudflared;
 pub mod config;
 pub mod credential;
 pub mod keyform;

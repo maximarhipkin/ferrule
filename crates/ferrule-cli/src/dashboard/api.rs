@@ -264,6 +264,39 @@ pub fn health(ctx: &Ctx) -> Value {
             }));
         }
     }
+    // M36: the update state; what went wrong is a problem too.
+    if let Some(data) = ctx.data.as_deref() {
+        let auto = crate::config::Config::load()
+            .ok()
+            .and_then(|(c, _)| c.update.auto);
+        let report = crate::update::report(data, auto, crate::update::units_installed());
+        for (_, line) in report
+            .iter()
+            .filter(|(t, _)| *t == crate::update::Tone::Warn)
+        {
+            problems.push(json!({
+                "what": ctx.redactor.redact(line),
+                "fix": "`ferrule doctor` shows the update state; docs/updates.md explains it.",
+                "section": "health",
+            }));
+        }
+        out["updates"] = json!(report.into_iter().map(|(_, l)| l).collect::<Vec<_>>());
+        // M36 §7: the self-check's problems and the last ten repairs.
+        if let Some((_, found)) = crate::selfcheck::last(data) {
+            for line in found.values() {
+                problems.push(json!({
+                    "what": ctx.redactor.redact(line),
+                    "fix": "The self-check tells the owner when it's fixed; `ferrule doctor` shows it too.",
+                    "section": "health",
+                }));
+            }
+        }
+        out["repairs"] = json!(ferrule_core::repairs::recent(data, 10)
+            .iter()
+            .rev()
+            .map(|r| ctx.redactor.redact(&ferrule_core::repairs::line(r)))
+            .collect::<Vec<_>>());
+    }
     out["problems"] = json!(problems);
     out
 }

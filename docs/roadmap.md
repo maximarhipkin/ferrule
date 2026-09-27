@@ -759,6 +759,33 @@ Ollama either works or says exactly which window or template to fix.
 through setup and chats, in the terminal and in Telegram, with no API key,
 and every Claude-plan model request comes from Claude Code itself.
 
+### M36 — self-update and self-repair
+
+**Status.** Built (`docs/m36-self-update.md`; user guide
+`docs/updates.md`). PR to `main` open, not merged.
+- **The ChatGPT client identity stays current.** The Codex client version
+  is learned from npm (then GitHub, then a compiled-in one), cached a day,
+  and refreshed at once when the backend refuses a model as "requires a
+  newer version of Codex"; the turn is retried once.
+- **`ferrule update`.** Signed GitHub releases (sha256 plus minisign
+  against a compiled-in key; the release workflow signs). A service gets a
+  privileged apply unit that installs when no turn runs, restarts the
+  gateway, and rolls back and pins a release that doesn't come up healthy.
+  The owner hears one line per update or rollback. Without a service, the
+  owner is told a release is out.
+- **`claude` stays current** through its own install's updater (native,
+  Homebrew, WinGet, npm, pnpm), daily and when a turn fails because it's
+  too old.
+- **Self-repair.** Every failure is classified; every provider error tries
+  the escalation and the fallbacks before the chat gets plain words and
+  the raw error. A broken config runs on the last good copy. A 15-minute
+  self-check tells the owner about new and cleared problems, and a repair
+  log shows in doctor and the dashboard.
+
+**Done means.** When OpenAI, Anthropic or Ferrule moves on, Max's bot keeps
+answering with no SSH and no terminal; what it can't fix, it says in plain
+words once. Existing v0.5.x installs run the install one-liner once.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
