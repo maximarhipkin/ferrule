@@ -89,7 +89,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
     if get {
         return match path {
             "health" => ok(health(ctx)),
-            "connections" => connections(ctx),
+            "connections" => connections(ctx).await,
+            "connections/checklist" => connections_checklist(ctx).await,
             "models" => models(ctx),
             "routing" => routing(ctx, req),
             "catalog" => catalog_list(ctx, req).await,
@@ -114,6 +115,13 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "catalog/add" => catalog_add(ctx, body).await,
         "catalog/fill-prices" => fill_prices(ctx).await,
         "connections/connect" | "connections/disconnect" => connection_op(ctx, path, body).await,
+        "connections/key" | "connections/test" | "connections/cancel" => {
+            connection_key_op(ctx, path, body).await
+        }
+        "connections/relay/deploy"
+        | "connections/relay/use"
+        | "connections/relay/check"
+        | "connections/google-client" => connection_setup_op(ctx, path, body).await,
         "tasks/pause" | "tasks/resume" | "tasks/run" | "tasks/delete" => task_op(ctx, path, body),
         "tasks/schedule" | "tasks/model" => task_edit(ctx, path, body),
         "settings/caps" | "mcp/disable" | "mcp/enable" | "mcp/remove" | "skills/disable"
@@ -326,6 +334,18 @@ pub fn health(ctx: &Ctx) -> Value {
             .rev()
             .map(|r| ctx.redactor.redact(&ferrule_core::repairs::line(r)))
             .collect::<Vec<_>>());
+    }
+    // M37 §3.5: a connection that stopped, or whose key is about to.
+    if let Some(c) = &ctx.connections {
+        for a in c.attention(7) {
+            problems.push(json!({
+                "id": format!("connection:{}", a.name),
+                "what": ctx.redactor.redact(&a.text),
+                "fix": "Connections has its guide and a Test button.",
+                "section": "connections",
+                "fixes": [{ "label": format!("Reconnect {}", a.title), "section": "connections", "tile": a.tile }],
+            }));
+        }
     }
     // M37 §1: every strip closes but two, and one closed less than a day
     // ago while still true is under `hidden`.
@@ -604,20 +624,208 @@ fn kill(ctx: &Ctx, on: bool, body: &Value) -> Answer {
 
 // ---- Connections --------------------------------------------------------
 
-fn connections(ctx: &Ctx) -> Answer {
+/// Connections: what's connected, the flows waiting, what needs
+/// attention, the relay, and the catalog as tiles, each way in with its
+/// guide and fields (never a value) and, when it can't work yet, why.
+async fn connections(ctx: &Ctx) -> Answer {
     let Some(c) = &ctx.connections else {
         return ok(json!({ "available": false }));
     };
-    match c.snapshot() {
-        Ok(s) => ok(json!({
-            "available": true,
-            "connections": s.connections,
-            "pending": s.pending,
-            "asked": s.asked,
-            "relay": s.relay.is_some(),
-            "services": c.catalog().names(),
-        })),
-        Err(e) => bad(500, format!("{e:#}")),
+    let s = match c.snapshot() {
+        Ok(s) => s,
+        Err(e) => return bad(500, format!("{e:#}")),
+    };
+    let relay_live = c.live_relay().await.is_some();
+    let mut tiles: Vec<Value> = Vec::new();
+    for svc in c.catalog().services() {
+        let connected = s.connections.iter().any(|x| x.service == svc.name);
+        let blocked = c.blocked(svc, relay_live).map(|r| r.text);
+        let option = json!({
+            "name": svc.name,
+            "title": svc.title(),
+            "option": svc.option,
+            "covers": svc.covers,
+            "guide": svc.guide,
+            "auth": svc.auth,
+            "fields": svc.key_fields(),
+            "preview": svc.preview,
+            "fixed_callback": svc.fixed_callback,
+            "connected": connected,
+            "blocked": blocked,
+        });
+        match tiles.iter_mut().find(|t| t["tile"] == svc.tile()) {
+            Some(t) => t["options"].as_array_mut().unwrap().push(option),
+            None => tiles.push(json!({
+                "tile": svc.tile(),
+                "title": svc.title(),
+                "options": [option],
+            })),
+        }
+    }
+    for t in &mut tiles {
+        let any = t["options"]
+            .as_array()
+            .is_some_and(|o| o.iter().any(|x| x["connected"] == true));
+        t["connected"] = json!(any);
+    }
+    let callbacks: Vec<Value> = crate::connections_setup::callbacks(c)
+        .into_iter()
+        .map(|(service, how)| json!({ "service": service, "callback": how }))
+        .collect();
+    let relay_url = c.relay_url();
+    ok(json!({
+        "available": true,
+        "connections": s.connections,
+        "pending": s.pending,
+        "pending_flows": s.pending_flows,
+        "asked": s.asked,
+        "relay": s.relay.is_some(),
+        "relay_url": relay_url,
+        "relay_live": relay_live,
+        "callback": relay_url.as_deref().map(|u| format!("{}/cb", u.trim_end_matches('/'))),
+        "callbacks": callbacks,
+        "attention": c.attention(7),
+        "services": c.catalog().names(),
+        "tiles": tiles,
+    }))
+}
+
+async fn connections_checklist(ctx: &Ctx) -> Answer {
+    let Some(c) = &ctx.connections else {
+        return missing("connections");
+    };
+    ok(serde_json::to_value(c.checklist().await).unwrap_or_default())
+}
+
+/// Where setup from the page writes: this process's config and secrets.
+fn setup_place(ctx: &Ctx) -> Result<crate::connections_setup::Place, Answer> {
+    match (&ctx.config_path, &ctx.data) {
+        (Some(config), Some(data)) => Ok(crate::connections_setup::Place {
+            config: config.clone(),
+            secrets: data.join("private").join("secrets.env"),
+        }),
+        _ => Err(missing("the config file")),
+    }
+}
+
+/// A key-based way in (write-only: the values go in, only the outcome
+/// comes back), a connection's test, a waiting flow cancelled.
+async fn connection_key_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
+    let Some(c) = &ctx.connections else {
+        return missing("connections");
+    };
+    match path {
+        "connections/key" => {
+            let service = need!(arg(body, "service"));
+            let write = body.get("write").and_then(Value::as_bool) == Some(true);
+            let fields: std::collections::BTreeMap<String, String> = body
+                .get("fields")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect();
+            match c.connect_key(service, fields, write, "dashboard").await {
+                Ok(said) => ok(json!({ "ok": true, "said": said })),
+                Err(why) => bad(400, ctx.redactor.redact(&why)),
+            }
+        }
+        "connections/test" => {
+            let name = need!(arg(body, "name"));
+            match c.test(name).await {
+                Ok(said) => ok(json!({ "ok": true, "said": said })),
+                Err(why) => ok(json!({ "ok": false, "said": ctx.redactor.redact(&why) })),
+            }
+        }
+        _ => {
+            let id = need!(arg(body, "id"));
+            match c.cancel(id) {
+                Ok(said) => ok(json!({ "ok": true, "said": said })),
+                Err(e) => bad(404, format!("{e:#}")),
+            }
+        }
+    }
+}
+
+/// The fixed callback address (deploy a relay, use one, check it) and
+/// Google's OAuth client. Tokens and keys go in; none comes back.
+async fn connection_setup_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
+    use crate::connections_setup as setup;
+    let Some(c) = &ctx.connections else {
+        return missing("connections");
+    };
+    let place = need!(setup_place(ctx));
+    let text = |k: &str| body.get(k).and_then(Value::as_str).map(str::trim);
+    let steps_json = |steps: &[(String, bool)]| -> Value {
+        json!(steps
+            .iter()
+            .map(|(s, ok)| json!({ "step": s, "ok": ok }))
+            .collect::<Vec<_>>())
+    };
+    let done = match path {
+        "connections/relay/deploy" => {
+            match setup::deploy_relay(
+                c,
+                &place,
+                &ctx.cf_api,
+                text("token"),
+                text("account"),
+                "ferrule-relay",
+                5,
+            )
+            .await
+            {
+                Ok(setup::Deployed::Done {
+                    url,
+                    callback,
+                    steps,
+                }) => Ok(json!({
+                    "ok": true,
+                    "said": format!("The relay is at {url} and works."),
+                    "relay_url": url,
+                    "callback": callback,
+                    "steps": steps_json(&steps),
+                })),
+                Ok(setup::Deployed::ChooseAccount { accounts }) => Ok(json!({
+                    "ok": false,
+                    "choose": accounts,
+                    "said": "The token reaches several Cloudflare accounts: pick the one the relay goes in.",
+                })),
+                Err(e) => Err(e),
+            }
+        }
+        "connections/relay/use" => {
+            let url = need!(arg(body, "url"));
+            let key = need!(arg(body, "key"));
+            setup::use_relay(c, &place, url, key)
+                .await
+                .map(|(callback, steps)| {
+                    json!({
+                        "ok": true,
+                        "said": "The relay works and is used from now on.",
+                        "callback": callback,
+                        "steps": steps_json(&steps),
+                    })
+                })
+        }
+        "connections/relay/check" => setup::check_relay(c, &place).await.map(|steps| {
+            let all = steps.iter().all(|(_, ok)| *ok);
+            json!({
+                "ok": all,
+                "said": if all { "The relay works." } else { "The relay doesn't work: the failed step is marked." },
+                "steps": steps_json(&steps),
+            })
+        }),
+        _ => {
+            let id = need!(arg(body, "id"));
+            let secret = need!(arg(body, "secret"));
+            setup::save_google_client(c, &place, id, secret)
+                .map(|said| json!({ "ok": true, "said": said }))
+        }
+    };
+    match done {
+        Ok(v) => ok(v),
+        Err(e) => bad(400, ctx.redactor.redact(&format!("{e:#}"))),
     }
 }
 
@@ -638,14 +846,20 @@ async fn connection_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     }
     let service = need!(arg(body, "service"));
     let write = body.get("write").and_then(Value::as_bool) == Some(true);
-    if c.catalog()
-        .resolve(service)
-        .is_ok_and(|s| s.auth == ferrule_connections::AuthKind::ApiKey)
-    {
-        return bad(
-            400,
-            format!("{service} takes an API key, which the page never handles: run `ferrule connections add {service}` on the server"),
-        );
+    if let Ok(svc) = c.catalog().resolve(service) {
+        if svc.auth == ferrule_connections::AuthKind::ApiKey {
+            return bad(
+                400,
+                format!(
+                    "{} takes a key: fill in its form (it's sent once and never shown again)",
+                    svc.title()
+                ),
+            );
+        }
+        // Never a sign-in bound to fail: say why and what to do first.
+        if let Some(why) = c.blocked(&svc, c.live_relay().await.is_some()) {
+            return bad(400, why.text);
+        }
     }
     // As the owner in their chat: the flow's outcome goes there too.
     let actor = match &ctx.owner_chat {
@@ -1949,10 +2163,7 @@ command = "echo hi"
         )
         .await;
         assert_eq!(s, 400);
-        assert!(v["error"]
-            .as_str()
-            .unwrap()
-            .contains("ferrule connections add keyed"));
+        assert!(v["error"].as_str().unwrap().contains("takes a key"));
 
         let (s, v) = call(&ctx, "POST connections/connect", json!({"service": "mock"})).await;
         assert_eq!(s, 200, "{v}");
@@ -2106,5 +2317,240 @@ command = "echo hi"
         assert_eq!(s, 503);
         let (s, _) = call(&ctx, "run?id=nope", json!({})).await;
         assert_eq!(s, 404);
+    }
+
+    /// Connections that read their secrets from `file`, as the process
+    /// does from the secrets file.
+    fn conns_reading(
+        dir: &Path,
+        file: std::path::PathBuf,
+        relay: Option<String>,
+    ) -> Arc<Connections> {
+        Connections::new(
+            &dir.join("private"),
+            ConnectionsConfig {
+                relay_url: relay,
+                cloudflared: Some("off".into()),
+                ..Default::default()
+            },
+            Arc::new(move |name: &str| {
+                crate::secrets::read(&file)
+                    .ok()?
+                    .into_iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v)
+            }),
+            Arc::new(Recorder::default()),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_page_sets_up_a_relay_and_a_google_client_and_never_gets_a_secret_back() {
+        const KEY: &str = "relay-key-for-tests-0123456789";
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("data/private/secrets.env");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "# mine\n[connections]\ngate_writes = true\n").unwrap();
+        let conns = conns_reading(dir.path(), file.clone(), None);
+        let mut ctx = bare(dir.path());
+        ctx.connections = Some(conns.clone());
+        ctx.config_path = Some(config.clone());
+
+        // Nothing set up: the checklist says so, each with its next step.
+        let (_, v) = call(&ctx, "connections/checklist", json!({})).await;
+        assert_eq!(v["checks"][0]["id"], "relay", "{v}");
+        assert_eq!(v["checks"][0]["state"], "missing");
+        assert_eq!(v["checks"][0]["action"]["action"], "relay_setup");
+        // …and Atlassian's sign-in isn't offered as a button bound to fail.
+        let (s, v) = call(
+            &ctx,
+            "POST connections/connect",
+            json!({"service": "atlassian"}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(!v.to_string().contains("/connect atlassian"), "{v}");
+        let (_, v) = call(&ctx, "connections", json!({})).await;
+        let tile = v["tiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["tile"] == "atlassian")
+            .expect("the Atlassian tile")
+            .clone();
+        let names: Vec<&str> = tile["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["jira", "atlassian_token", "atlassian"], "{tile}");
+        assert!(tile["options"][2]["blocked"].is_string());
+        assert!(tile["options"][0]["blocked"].is_null());
+        assert_eq!(tile["options"][0]["fields"][0]["name"], "site", "{tile}");
+
+        // A wrong relay key: checked first, nothing saved.
+        let relay = MockRelay::start(KEY).await;
+        let (s, v) = call(
+            &ctx,
+            "POST connections/relay/use",
+            json!({"url": relay.url, "key": "not-the-key"}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("nothing was saved"),
+            "{v}"
+        );
+        assert!(
+            !file.exists()
+                || !std::fs::read_to_string(&file)
+                    .unwrap()
+                    .contains("not-the-key")
+        );
+        assert!(conns.relay_url().is_none());
+
+        let (s, v) = call(
+            &ctx,
+            "POST connections/relay/use",
+            json!({"url": format!("{}/cb", relay.url), "key": KEY}),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["callback"], format!("{}/cb", relay.url));
+        assert!(!v.to_string().contains(KEY));
+        assert_eq!(conns.relay_url().as_deref(), Some(relay.url.as_str()));
+        let written = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            written.starts_with("# mine\n") && written.contains(&relay.url),
+            "{written}"
+        );
+        let (_, v) = call(&ctx, "POST connections/relay/check", json!({})).await;
+        assert_eq!(v["ok"], true, "{v}");
+        let (_, v) = call(&ctx, "connections", json!({})).await;
+        assert_eq!(v["relay_live"], true, "{v}");
+        assert_eq!(v["callback"], format!("{}/cb", relay.url));
+
+        // Google's client: checked for shape, stored, never echoed.
+        let (s, v) = call(
+            &ctx,
+            "POST connections/google-client",
+            json!({"id": "123", "secret": "shh"}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        let (s, v) = call(
+            &ctx,
+            "POST connections/google-client",
+            json!({"id": "123-abc.apps.googleusercontent.com", "secret": "GOCSPX-test-only"}),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert!(
+            v["said"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("{}/cb", relay.url)),
+            "{v}"
+        );
+        assert!(!v.to_string().contains("GOCSPX"));
+        let (_, v) = call(&ctx, "connections/checklist", json!({})).await;
+        let google = v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "google_client")
+            .unwrap()
+            .clone();
+        assert_eq!(google["state"], "ready", "{v}");
+        let (_, v) = call(&ctx, "connections", json!({})).await;
+        assert!(!v.to_string().contains("GOCSPX"));
+        assert!(!v.to_string().contains(KEY));
+    }
+
+    #[tokio::test]
+    async fn a_relay_deploy_asks_which_account_and_a_refused_token_says_what_to_do() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("data/private/secrets.env");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        let api = mock::serve(Arc::new(|r: mock::Req| {
+            let good = r.headers.get("authorization").map(String::as_str) == Some("Bearer cf-good");
+            match (good, r.path.as_str()) {
+                (false, _) => mock::Resp::json(
+                    401,
+                    json!({"success": false, "errors": [{"code": 10000, "message": "Authentication error"}]}),
+                ),
+                (true, "/client/v4/accounts") => mock::Resp::json(
+                    200,
+                    json!({"success": true, "result": [
+                        {"id": "a1", "name": "Max"}, {"id": "a2", "name": "Work"}
+                    ]}),
+                ),
+                _ => mock::Resp::status(404),
+            }
+        }))
+        .await;
+        let mut ctx = bare(dir.path());
+        ctx.connections = Some(conns_reading(dir.path(), file.clone(), None));
+        ctx.config_path = Some(config);
+        ctx.cf_api = format!("{api}/client/v4");
+
+        let (s, v) = call(
+            &ctx,
+            "POST connections/relay/deploy",
+            json!({"token": "cf-bad"}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        let why = v["error"].as_str().unwrap();
+        assert!(
+            why.contains("Edit Cloudflare Workers") && !why.contains("cf-bad"),
+            "{v}"
+        );
+        assert!(!file.exists(), "a refused token isn't kept");
+
+        let (s, v) = call(
+            &ctx,
+            "POST connections/relay/deploy",
+            json!({"token": "cf-good"}),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["choose"][1]["name"], "Work", "{v}");
+        assert!(!v.to_string().contains("cf-good"));
+    }
+
+    #[tokio::test]
+    async fn a_key_form_is_checked_before_anything_is_saved_and_its_values_never_come_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("data/private/secrets.env");
+        let mut ctx = bare(dir.path());
+        let conns = conns_reading(dir.path(), file, None);
+        ctx.connections = Some(conns.clone());
+        let (s, v) = call(
+            &ctx,
+            "POST connections/key",
+            json!({"service": "jira", "fields": {"site": "acme.atlassian.net", "token": "ATATT-page-secret"}}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("required"), "{v}");
+        assert!(!v.to_string().contains("ATATT-page-secret"));
+        let (s, v) = call(
+            &ctx,
+            "POST connections/key",
+            json!({"service": "jira", "fields": {"site": "not a site", "email": "max@example.com", "token": "ATATT-page-secret"}}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(!v.to_string().contains("ATATT-page-secret"));
+        assert!(conns.snapshot().unwrap().connections.is_empty());
+        let (s, _) = call(&ctx, "POST connections/cancel", json!({"id": "nope"})).await;
+        assert_eq!(s, 404);
+        let (_, v) = call(&ctx, "POST connections/test", json!({"name": "nope"})).await;
+        assert_eq!(v["ok"], false, "{v}");
     }
 }

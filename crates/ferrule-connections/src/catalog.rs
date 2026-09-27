@@ -31,6 +31,9 @@ pub enum ReadOnly {
     Scope,
     Header,
     Endpoint,
+    /// M37: a native connection lists its write tools only when connected
+    /// for writing.
+    Tools,
     #[default]
     None,
 }
@@ -90,6 +93,107 @@ pub struct Service {
     /// Said on disconnect when there's no revocation endpoint.
     #[serde(default)]
     pub revoke_note: Option<String>,
+    /// M37: tools that run inside ferrule instead of on an MCP server:
+    /// "jira", "gmail" or "google" (see `native`). `url` is then only a
+    /// label.
+    #[serde(default)]
+    pub native: Option<String>,
+    /// M37: what a key-based way in asks for. An `api_key` service with
+    /// none asks for one secret `key`; an OAuth service with some also
+    /// takes a key (Atlassian's API token, next to its sign-in).
+    #[serde(default)]
+    pub fields: Vec<Field>,
+    /// M37: the Connections page's tile this is an option of (default: its
+    /// name), the option's label, and what it covers.
+    #[serde(default)]
+    pub tile: Option<String>,
+    #[serde(default)]
+    pub option: Option<String>,
+    #[serde(default)]
+    pub covers: Option<String>,
+    /// M37: the steps to follow, short enough for a phone.
+    #[serde(default)]
+    pub guide: Vec<String>,
+    /// M37: the sign-in only works with a fixed callback address (the
+    /// relay): a quick tunnel's address changes every run, and the service
+    /// wants it registered.
+    #[serde(default)]
+    pub fixed_callback: bool,
+    /// M37: a vendor preview the owner's project must be enrolled in.
+    #[serde(default)]
+    pub preview: bool,
+}
+
+/// One input of a key-based way in. A `secret` one is write-only: the page
+/// never gets it back.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Field {
+    pub name: String,
+    pub label: String,
+    #[serde(default)]
+    pub secret: bool,
+    /// "text", "email", "password", "textarea", "date".
+    #[serde(default = "text")]
+    pub kind: String,
+    #[serde(default)]
+    pub optional: bool,
+    #[serde(default)]
+    pub hint: Option<String>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+}
+
+fn text() -> String {
+    "text".into()
+}
+
+impl Field {
+    fn key() -> Self {
+        Self {
+            name: "key".into(),
+            label: "API key".into(),
+            secret: true,
+            kind: "password".into(),
+            optional: false,
+            hint: None,
+            placeholder: None,
+        }
+    }
+}
+
+/// `header_value` with the fields filled in: `{name}` is a field, and
+/// `{basic:a:b}` is `Basic base64(a:b)`, or `Bearer b` when `a` is empty
+/// (Atlassian: a personal token with its email, or a service account's
+/// key alone).
+pub fn fill(template: &str, fields: &BTreeMap<String, String>) -> String {
+    use base64::Engine;
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find('}') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let inner = &rest[open + 1..open + close];
+        let get = |n: &str| fields.get(n).map(String::as_str).unwrap_or("");
+        match inner.strip_prefix("basic:").and_then(|p| p.split_once(':')) {
+            Some((a, b)) if !get(a).is_empty() => {
+                let pair = format!("{}:{}", get(a), get(b));
+                out.push_str("Basic ");
+                out.push_str(&base64::engine::general_purpose::STANDARD.encode(pair));
+            }
+            Some((_, b)) => {
+                out.push_str("Bearer ");
+                out.push_str(get(b));
+            }
+            None => out.push_str(get(inner)),
+        }
+        rest = &rest[open + close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn yes() -> bool {
@@ -102,6 +206,24 @@ struct File {
 }
 
 impl Service {
+    /// The inputs its key-based way in asks for; none when it has none.
+    pub fn key_fields(&self) -> Vec<Field> {
+        match (self.auth, self.fields.is_empty()) {
+            (_, false) => self.fields.clone(),
+            (AuthKind::ApiKey, true) => vec![Field::key()],
+            (AuthKind::Oauth, true) => Vec::new(),
+        }
+    }
+
+    /// Takes a key (alone, or next to its sign-in).
+    pub fn takes_key(&self) -> bool {
+        !self.key_fields().is_empty()
+    }
+
+    pub fn tile(&self) -> &str {
+        self.tile.as_deref().unwrap_or(&self.name)
+    }
+
     pub fn title(&self) -> &str {
         if self.title.is_empty() {
             &self.name
@@ -192,6 +314,14 @@ impl Service {
             docs: None,
             note: None,
             revoke_note: None,
+            native: None,
+            fields: Vec::new(),
+            tile: None,
+            option: None,
+            covers: None,
+            guide: Vec::new(),
+            fixed_callback: false,
+            preview: false,
         })
     }
 
@@ -211,7 +341,30 @@ impl Service {
         if url.scheme() != "https" && !is_loopback(&url) {
             bail!("{}: the url must be https", self.name);
         }
+        if let Some(n) = &self.native {
+            if !crate::native::KINDS.contains(&n.as_str()) {
+                bail!("{}: native = \"{n}\" isn't one ferrule has", self.name);
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for f in &self.fields {
+            if !seen.insert(f.name.as_str()) {
+                bail!("{}: the field `{}` is there twice", self.name, f.name);
+            }
+        }
         match self.auth {
+            AuthKind::ApiKey if self.native.is_some() => {}
+            AuthKind::ApiKey if !self.fields.is_empty() => {
+                let template = self.header_value.as_deref().unwrap_or("Bearer {key}");
+                for name in placeholders(template) {
+                    if !self.fields.iter().any(|f| f.name == name) {
+                        bail!(
+                            "{}: header_value uses `{name}`, which isn't a field",
+                            self.name
+                        );
+                    }
+                }
+            }
             AuthKind::ApiKey => {
                 if !self
                     .header_value
@@ -237,6 +390,24 @@ impl Service {
         }
         Ok(())
     }
+}
+
+/// The field names `template` refers to (`{a}`, `{basic:a:b}`).
+fn placeholders(template: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}') else {
+            break;
+        };
+        let inner = &rest[open + 1..open + close];
+        match inner.strip_prefix("basic:") {
+            Some(pair) => out.extend(pair.split(':')),
+            None => out.push(inner),
+        }
+        rest = &rest[open + close + 1..];
+    }
+    out
 }
 
 pub(crate) fn is_loopback(url: &url::Url) -> bool {
@@ -315,16 +486,25 @@ mod tests {
         assert_eq!(
             cat.names(),
             [
+                "jira",
+                "atlassian_token",
                 "atlassian",
                 "attio",
                 "gmail",
-                "gdrive",
+                "google",
+                "google_oauth",
+                "gmail_mcp",
+                "gdrive_mcp",
                 "github",
                 "notion",
-                "linear"
+                "linear",
+                "linear_key",
+                "stripe",
+                "huggingface",
+                "sentry"
             ]
         );
-        let gmail = cat.get("gmail").unwrap();
+        let gmail = cat.get("gmail_mcp").unwrap();
         assert_eq!(gmail.client, ClientKind::Owner);
         assert!(!gmail.resource_param);
         assert_eq!(
@@ -333,6 +513,45 @@ mod tests {
         );
         assert_eq!(cat.get("linear").unwrap().scopes(true), ["read", "write"]);
         assert_eq!(cat.get("github").unwrap().auth, AuthKind::ApiKey);
+        // M37: every tile's options, simplest first.
+        let tile = |t: &str| -> Vec<String> {
+            cat.services()
+                .iter()
+                .filter(|s| s.tile() == t)
+                .map(|s| s.name.clone())
+                .collect()
+        };
+        assert_eq!(tile("atlassian"), ["jira", "atlassian_token", "atlassian"]);
+        assert_eq!(
+            tile("google"),
+            ["gmail", "google", "google_oauth", "gmail_mcp", "gdrive_mcp"]
+        );
+        let jira = cat.get("jira").unwrap();
+        assert_eq!(jira.native.as_deref(), Some("jira"));
+        assert!(jira
+            .key_fields()
+            .iter()
+            .any(|f| f.name == "token" && f.secret));
+        assert!(!jira
+            .key_fields()
+            .iter()
+            .any(|f| f.name == "site" && f.secret));
+        assert!(cat.get("atlassian").unwrap().fixed_callback);
+        assert!(cat.get("gdrive_mcp").unwrap().preview);
+        for s in cat.services() {
+            assert!(
+                s.covers.is_some() || s.tile.is_none(),
+                "{} says what it covers",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_fields_template_must_name_its_fields() {
+        let mut s = Catalog::built_in().get("atlassian_token").unwrap().clone();
+        s.header_value = Some("{basic:mail:token}".into());
+        assert!(Catalog::with_custom(&[s]).is_err());
     }
 
     #[test]
@@ -347,7 +566,7 @@ mod tests {
         );
         assert!(cat.resolve("http://example.com/mcp").is_err(), "https only");
         let err = cat.resolve("nope").unwrap_err().to_string();
-        assert!(err.contains("known: atlassian"), "{err}");
+        assert!(err.contains("known: jira, atlassian_token"), "{err}");
         assert_eq!(cat.resolve("Linear").unwrap().name, "linear");
     }
 

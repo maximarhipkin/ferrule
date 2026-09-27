@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(q["resource"], "https://mcp.linear.app/mcp");
         assert!(!url.contains(&pkce.verifier));
 
-        let gmail = cat.get("gmail").unwrap();
+        let gmail = cat.get("gmail_mcp").unwrap();
         let url = authorize_url(&AuthorizeRequest {
             service: gmail,
             scopes: gmail.scopes(false),

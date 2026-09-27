@@ -9,7 +9,9 @@
 use crate::catalog::{AuthKind, Catalog, ClientKind, Service};
 use crate::config::ConnectionsConfig;
 use crate::credential::{header_for, Broken, StoreCredential};
+use crate::explain::{self, Explained};
 use crate::keyform::KeyForm;
+use crate::native;
 use crate::oauth::{self, Client, Endpoints, Pkce};
 use crate::relay::{Poll, Relay, Slot, RELAY_KEY_ENV};
 use crate::seal::{b64, random};
@@ -20,7 +22,7 @@ use async_trait::async_trait;
 use ferrule_mcp::{Auth, McpClient, McpServerConfig, ServerHost};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -128,6 +130,9 @@ struct Flow {
     kind: Kind,
     done: Option<oneshot::Sender<Result<String, String>>>,
     driver: Option<tokio::task::AbortHandle>,
+    started: Instant,
+    /// What the page cancels it by; never the `state`.
+    handle: String,
 }
 
 #[derive(Default)]
@@ -136,7 +141,137 @@ struct Inner {
     flows: HashMap<String, Flow>,
     asks: HashMap<String, Ask>,
     declined: HashMap<String, Instant>,
+    /// The last try at each service that didn't work.
+    last: HashMap<String, Attempt>,
 }
+
+/// A try that didn't work, for the setup checklist: when, why in words,
+/// and which known symptom it was.
+#[derive(Debug, Clone, Serialize)]
+pub struct Attempt {
+    pub at: u64,
+    pub text: String,
+    pub symptom: Option<&'static str>,
+    pub switch_to: Option<&'static str>,
+}
+
+/// A sign-in or key form waiting on the owner, for the page's list.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingFlow {
+    pub id: String,
+    pub service: String,
+    pub title: String,
+    pub via: String,
+    pub age_secs: u64,
+    pub expires_in: u64,
+}
+
+/// A connection that stopped or is about to.
+#[derive(Debug, Clone, Serialize)]
+pub struct Attention {
+    pub name: String,
+    pub title: String,
+    pub tile: String,
+    pub expired: bool,
+    pub days_left: Option<u64>,
+    pub text: String,
+}
+
+/// One line of the setup checklist: what, its state in words, and the
+/// next step when it isn't ready (`action` is for the page: `relay_setup`,
+/// `relay_use`, `relay_check`, `google_client`, `connect` with a service,
+/// `cancel` with a pending flow's id).
+#[derive(Debug, Clone, Serialize)]
+pub struct Check {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub state: &'static str,
+    pub text: String,
+    pub action: Option<CheckAction>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckAction {
+    pub action: &'static str,
+    pub label: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+impl Check {
+    fn new(id: &'static str, title: &'static str, state: &'static str) -> Self {
+        Self {
+            id,
+            title,
+            state,
+            text: String::new(),
+            action: None,
+        }
+    }
+
+    fn says(mut self, text: &str) -> Self {
+        self.text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        self
+    }
+
+    fn next(mut self, action: &'static str, label: &'static str) -> Self {
+        self.action = Some(CheckAction {
+            action,
+            label,
+            service: None,
+            id: None,
+        });
+        self
+    }
+
+    fn next_service(
+        mut self,
+        action: &'static str,
+        label: &'static str,
+        service: &'static str,
+    ) -> Self {
+        self.action = Some(CheckAction {
+            action,
+            label,
+            service: Some(service),
+            id: None,
+        });
+        self
+    }
+
+    fn next_id(mut self, action: &'static str, label: &'static str, id: &str) -> Self {
+        self.action = Some(CheckAction {
+            action,
+            label,
+            service: None,
+            id: Some(id.to_string()),
+        });
+        self
+    }
+}
+
+/// The checklist, with the relay's callback address when there is one.
+#[derive(Debug, Clone, Serialize)]
+pub struct Checklist {
+    pub callback: Option<String>,
+    pub relay_ready: bool,
+    pub checks: Vec<Check>,
+}
+
+/// A flow's failure that has a plain explanation (and maybe a simpler way
+/// in to offer).
+#[derive(Debug)]
+struct Refused(Explained);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.text)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// A flow that started: what to show, and its outcome (the terminal waits
 /// on it; the gateway doesn't).
@@ -149,6 +284,8 @@ pub struct Started {
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub name: String,
+    /// The catalog entry it was made from (its tile's option).
+    pub service: String,
     pub title: String,
     pub state: State,
     pub write: bool,
@@ -157,6 +294,9 @@ pub struct Status {
     pub tools: Option<usize>,
     pub connected_at: u64,
     pub expires_at: Option<u64>,
+    /// When the key stops working, if the owner said.
+    pub key_expires: Option<u64>,
+    pub hosts: Vec<String>,
     pub refreshed_at: Option<u64>,
     pub last_error: Option<String>,
 }
@@ -169,6 +309,8 @@ pub struct Snapshot {
     /// Services the agent asked for, waiting on the owner's tap.
     pub asked: Vec<String>,
     pub relay: Option<String>,
+    /// The flows behind `pending`, with an id to cancel each by.
+    pub pending_flows: Vec<PendingFlow>,
 }
 
 const DECLINE_QUIET: Duration = Duration::from_secs(600);
@@ -184,6 +326,10 @@ pub struct Connections {
     inner: Mutex<Inner>,
     changed: Arc<watch::Sender<u64>>,
     creds: Mutex<HashMap<String, Auth>>,
+    /// `[connections] relay_url`, changed live by the dashboard.
+    relay_url: Mutex<Option<String>>,
+    /// Where native connections go (tests: local mocks).
+    native: native::Endpoints,
     /// How long a started flow waits for the owner.
     pub flow_ttl: Duration,
     /// How often a relay slot is polled.
@@ -202,7 +348,10 @@ impl Connections {
         host: Option<ServerHost>,
     ) -> Result<Arc<Self>> {
         let catalog = Catalog::with_custom(&cfg.custom)?;
+        let relay_url = Mutex::new(cfg.relay_url.clone());
         Ok(Arc::new(Self {
+            relay_url,
+            native: native::Endpoints::default(),
             store: Arc::new(Store::new(private)),
             cfg,
             catalog,
@@ -224,6 +373,25 @@ impl Connections {
         me.flow_ttl = ttl;
         me.poll_every = poll;
         self
+    }
+
+    /// Tests point the native connections at local mocks.
+    pub fn with_native(mut self: Arc<Self>, ep: native::Endpoints) -> Arc<Self> {
+        Arc::get_mut(&mut self)
+            .expect("set endpoints before sharing")
+            .native = ep;
+        self
+    }
+
+    /// The relay's address now (the config's, or one the page set since).
+    pub fn relay_url(&self) -> Option<String> {
+        self.relay_url.lock().unwrap().clone()
+    }
+
+    /// Use a relay from now on, without a restart (the key is read from
+    /// the secrets on every use).
+    pub fn set_relay_url(&self, url: Option<String>) {
+        *self.relay_url.lock().unwrap() = url;
     }
 
     pub fn store(&self) -> &Store {
@@ -254,9 +422,281 @@ impl Connections {
     }
 
     fn relay(&self) -> Option<Relay> {
-        let url = self.cfg.relay_url.as_deref()?;
+        let url = self.relay_url()?;
         let key = (self.secrets)(RELAY_KEY_ENV)?;
-        Some(Relay::new(url, &key))
+        Some(Relay::new(&url, &key))
+    }
+
+    /// The relay, if one is set up and answering.
+    pub async fn live_relay(&self) -> Option<Relay> {
+        let relay = self.relay()?;
+        relay.healthy().await.then_some(relay)
+    }
+
+    /// Whether the owner's own OAuth client for `service` is saved.
+    pub fn has_client(&self, service: &Service) -> bool {
+        if service.client != ClientKind::Owner {
+            return true;
+        }
+        let env = service
+            .client_env
+            .as_deref()
+            .unwrap_or("FERRULE_OAUTH_CLIENT");
+        (self.secrets)(&format!("{env}_ID")).is_some()
+            && (self.secrets)(&format!("{env}_SECRET")).is_some()
+    }
+
+    pub fn last_attempt(&self, service: &str) -> Option<Attempt> {
+        self.inner.lock().unwrap().last.get(service).cloned()
+    }
+
+    fn remember(&self, service: &str, e: Option<&Explained>) {
+        let mut inner = self.inner.lock().unwrap();
+        match e {
+            Some(e) => {
+                inner.last.insert(
+                    service.to_string(),
+                    Attempt {
+                        at: now(),
+                        text: e.text.clone(),
+                        symptom: e.symptom,
+                        switch_to: e.switch_to,
+                    },
+                );
+            }
+            None => {
+                inner.last.remove(service);
+            }
+        }
+    }
+
+    /// Why a sign-in for `service` can't work right now, with the ways in
+    /// that can: a button is never offered that is bound to fail. `None`:
+    /// go ahead.
+    pub fn blocked(&self, service: &Service, relay_live: bool) -> Option<Reply> {
+        if service.auth != AuthKind::Oauth {
+            return None;
+        }
+        let google = explain::is_google(service);
+        let simple = |names: &[&str]| -> Vec<Button> {
+            names
+                .iter()
+                .filter_map(|n| self.catalog.get(n))
+                .filter(|s| s.auth != AuthKind::ApiKey || (relay_live && s.fields.is_empty()))
+                .map(|s| Button {
+                    text: s.option.clone().unwrap_or_else(|| s.title().to_string()),
+                    action: Action::Command(format!("/connect {}", s.name)),
+                })
+                .collect()
+        };
+        let no_relay_keys = " Those are entered on the dashboard's Connections page (or \
+             with `ferrule connections setup`), never in a chat.";
+        if !self.has_client(service) {
+            let env = service
+                .client_env
+                .as_deref()
+                .unwrap_or("FERRULE_OAUTH_CLIENT");
+            return Some(Reply {
+                text: format!(
+                    "{} signs in with your own OAuth client, and none is saved yet ({env}). \
+                     Set it up on the dashboard (Connections → {} → Set up), or run \
+                     `ferrule connections setup {}`. Simpler ways in need no client:{}{no_relay_keys}",
+                    service.title(),
+                    service.tile(),
+                    service.tile(),
+                    if google {
+                        " Gmail with an app password, or Drive/Sheets/Docs/Calendar with a \
+                         service account's key."
+                    } else {
+                        " an API key."
+                    }
+                ),
+                buttons: simple(if google { &["gmail", "google"] } else { &[] }),
+            });
+        }
+        if service.fixed_callback && !relay_live {
+            let text = if explain::is_atlassian(service) {
+                format!(
+                    "Atlassian only lets a sign-in come back to domains your admin listed, and \
+                     without the relay ferrule's callback address is a new quick-tunnel domain \
+                     every time, so the sign-in would be refused. Use an API token (email + \
+                     token + site: nothing for the admin to allow), or set up the relay for a \
+                     fixed address (dashboard → Connections → Fixed callback address, or \
+                     `ferrule connections setup relay`).{no_relay_keys}"
+                )
+            } else {
+                format!(
+                    "{} needs a callback address that stays the same (Google checks it against \
+                     the list in your OAuth client), and none is set up. Set up the relay \
+                     (dashboard → Connections → Fixed callback address, or `ferrule connections \
+                     setup relay`), or use a way in that needs no callback: Gmail with an app \
+                     password, or Drive/Sheets/Docs/Calendar with a service account's key.{no_relay_keys}",
+                    service.title()
+                )
+            };
+            return Some(Reply {
+                text,
+                buttons: simple(if google {
+                    &["gmail", "google"]
+                } else {
+                    &["jira"]
+                }),
+            });
+        }
+        None
+    }
+
+    /// Connections that stopped or are about to, for the doctor and the
+    /// banner: a grant that's gone, or a key whose end date is within
+    /// `days` (or past). Plain words; no secrets.
+    pub fn attention(&self, days: u64) -> Vec<Attention> {
+        attention(&self.store.load().unwrap_or_default(), days)
+    }
+
+    /// The setup checklist, from real checks: is the relay answering, is
+    /// Google's client saved, did the MCP preview work, where Atlassian
+    /// stands. Every line that isn't ready names its next step.
+    pub async fn checklist(&self) -> Checklist {
+        let relay = match (self.relay_url(), self.relay()) {
+            (None, _) => Check::new("relay", "Fixed callback address", "missing")
+                .says(
+                    "Not set up: sign-ins that need a fixed address (Google with your own \
+                       client, Atlassian's Rovo sign-in) can't work yet.",
+                )
+                .next("relay_setup", "Set up the relay"),
+            (Some(_), None) => Check::new("relay", "Fixed callback address", "missing")
+                .says("A relay address is set but its key isn't saved on this machine.")
+                .next("relay_use", "Enter the relay's key"),
+            (Some(url), Some(r)) if r.healthy().await => {
+                Check::new("relay", "Fixed callback address", "ready")
+                    .says(&format!("Answering at {url}."))
+            }
+            (Some(url), Some(_)) => Check::new("relay", "Fixed callback address", "unreachable")
+                .says(&format!(
+                    "{url} doesn't answer with this machine's key: it was removed, the key \
+                     changed, or this machine can't reach it."
+                ))
+                .next("relay_check", "Check it step by step"),
+        };
+        let callback = self.relay().map(|r| r.callback_url());
+        let relay_ready = relay.state == "ready";
+
+        let google_client = self.catalog.get("google_oauth").map(|g| {
+            if self.has_client(g) {
+                Check::new("google_client", "Google OAuth client", "ready")
+                    .says("Your own client is saved (write-only).")
+            } else {
+                Check::new("google_client", "Google OAuth client", "missing")
+                    .says(
+                        "Only needed for the advanced Google sign-in: Gmail with an app \
+                           password and Drive/Sheets/Docs/Calendar with a service account need \
+                           none.",
+                    )
+                    .next("google_client", "Add your client")
+            }
+        });
+
+        let records = self.store.load().unwrap_or_default();
+        let connected = |tile: &str| {
+            records
+                .iter()
+                .find(|r| r.service.tile() == tile && r.state == State::Connected)
+                .map(|r| r.service.title().to_string())
+        };
+        let pending = |tile: &str| {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .flows
+                .values()
+                .find(|f| f.service.tile() == tile)
+                .map(|f| f.handle.clone())
+        };
+
+        let previews: Vec<&Service> = self
+            .catalog
+            .services()
+            .iter()
+            .filter(|s| s.preview)
+            .collect();
+        let mcp_preview = (!previews.is_empty()).then(|| {
+            let works = previews.iter().find(|s| {
+                records
+                    .iter()
+                    .any(|r| r.service.name == s.name && r.state == State::Connected)
+            });
+            let off = previews.iter().find(|s| {
+                self.last_attempt(&s.name)
+                    .is_some_and(|a| a.symptom == Some("disabled"))
+            });
+            match (works, off) {
+                (Some(s), _) => Check::new("mcp_preview", "Google's MCP preview", "available")
+                    .says(&format!("{} is connected through it.", s.title())),
+                (None, Some(s)) => Check::new("mcp_preview", "Google's MCP preview", "not enabled")
+                    .says(&format!(
+                        "{} said the preview isn't on for your Google Cloud project. The \
+                         built-in Gmail and Google options don't need it.",
+                        s.title()
+                    ))
+                    .next_service("connect", "Use Gmail with an app password", "gmail"),
+                (None, None) => Check::new("mcp_preview", "Google's MCP preview", "unknown").says(
+                    "Not tried yet. It's a preview your project must be enrolled in; the \
+                           built-in Gmail and Google options don't need it.",
+                ),
+            }
+        });
+
+        let domain = callback
+            .as_deref()
+            .map(explain::atlassian_pattern)
+            .unwrap_or_else(|| "https://<your relay>.workers.dev/**".into());
+        let atlassian = self.catalog.get("atlassian").map(|_| {
+            let tried = ["atlassian", "atlassian_token"]
+                .iter()
+                .filter_map(|n| self.last_attempt(n))
+                .max_by_key(|a| a.at);
+            if let Some(t) = connected("atlassian") {
+                Check::new("atlassian", "Atlassian", "connected").says(&format!("{t} works."))
+            } else if let Some(id) = pending("atlassian") {
+                Check::new("atlassian", "Atlassian", "pending")
+                    .says(
+                        "A sign-in is waiting in a browser. If it's stuck, cancel it and use \
+                           the email + token option.",
+                    )
+                    .next_id("cancel", "Cancel it", &id)
+            } else if tried.as_ref().is_some_and(|a| a.symptom == Some("domain")) {
+                Check::new("atlassian", "Atlassian", "domain blocked")
+                    .says(&format!(
+                        "The site's admin hasn't allowed ferrule's callback domain. They add \
+                         {domain} under Rovo → Rovo MCP server → Domains, or use the email + \
+                         token option, which needs nothing from them."
+                    ))
+                    .next_service("connect", "Use email + token", "jira")
+            } else if tried
+                .as_ref()
+                .is_some_and(|a| a.symptom == Some("token-off"))
+            {
+                Check::new("atlassian", "Atlassian", "API-token auth off")
+                    .says(
+                        "The admin hasn't turned on API-token sign-in for Rovo MCP (Rovo → \
+                           Rovo MCP server → Authentication). The email + token + site option \
+                           doesn't need it.",
+                    )
+                    .next_service("connect", "Use email + token + site", "jira")
+            } else {
+                Check::new("atlassian", "Atlassian", "not connected")
+                    .says("Simplest: email + API token + site, straight to Jira and Confluence.")
+                    .next_service("connect", "Connect with a token", "jira")
+            }
+        });
+
+        Checklist {
+            callback,
+            checks: [Some(relay), google_client, mcp_preview, atlassian]
+                .into_iter()
+                .flatten()
+                .collect(),
+            relay_ready,
+        }
     }
 
     /// Only one already on the machine: a 40 MB download mid-sign-in
@@ -399,6 +839,12 @@ impl Connections {
                     )),
                     Some(what) => {
                         let write = args.get(1).is_some_and(|w| *w == "write");
+                        if let Ok(service) = self.catalog.resolve(what) {
+                            let live = self.live_relay().await.is_some();
+                            if let Some(reply) = self.blocked(&service, live) {
+                                return Some(reply);
+                            }
+                        }
                         match self.start(actor, what, write).await {
                             Ok(s) => s.reply,
                             Err(e) => Reply::text(format!("Couldn't start: {e}")),
@@ -483,7 +929,10 @@ impl Connections {
             .load()?
             .into_iter()
             .map(|r| Status {
+                key_expires: r.key_expires,
+                hosts: r.hosts,
                 title: r.service.title().to_string(),
+                service: r.service.name.clone(),
                 name: r.name,
                 state: r.state,
                 write: r.write,
@@ -496,6 +945,7 @@ impl Connections {
                 last_error: r.last_error,
             })
             .collect();
+        self.sweep();
         let inner = self.inner.lock().unwrap();
         let mut pending: Vec<String> = inner
             .flows
@@ -503,14 +953,82 @@ impl Connections {
             .map(|f| f.service.name.clone())
             .collect();
         pending.sort();
+        let mut pending_flows: Vec<PendingFlow> = inner
+            .flows
+            .values()
+            .map(|f| {
+                let age = f.started.elapsed();
+                PendingFlow {
+                    id: f.handle.clone(),
+                    service: f.service.name.clone(),
+                    title: f.service.title().to_string(),
+                    via: f.via.to_string(),
+                    age_secs: age.as_secs(),
+                    expires_in: self.flow_ttl.saturating_sub(age).as_secs(),
+                }
+            })
+            .collect();
+        pending_flows.sort_by(|a, b| a.service.cmp(&b.service));
         let mut asked: Vec<String> = inner.asks.keys().cloned().collect();
         asked.sort();
+        drop(inner);
         Ok(Snapshot {
             connections,
             pending,
             asked,
-            relay: self.cfg.relay_url.clone(),
+            relay: self.relay_url(),
+            pending_flows,
         })
+    }
+
+    /// Drops flows past their time whose driver didn't (a task that died):
+    /// nothing stays "pending" forever.
+    fn sweep(&self) {
+        let grace = self.flow_ttl + Duration::from_secs(60);
+        let mut inner = self.inner.lock().unwrap();
+        let stale: Vec<String> = inner
+            .flows
+            .iter()
+            .filter(|(_, f)| f.started.elapsed() > grace)
+            .map(|(s, _)| s.clone())
+            .collect();
+        for state in stale {
+            if let Some(mut f) = inner.flows.remove(&state) {
+                if let Some(d) = f.driver.take() {
+                    d.abort();
+                }
+                if let Some(done) = f.done.take() {
+                    let _ = done.send(Err("the link expired".into()));
+                }
+            }
+        }
+    }
+
+    /// Cancels a pending flow by its page id. The link stops working.
+    pub fn cancel(&self, id: &str) -> Result<String> {
+        let mut inner = self.inner.lock().unwrap();
+        let state = inner
+            .flows
+            .iter()
+            .find(|(_, f)| f.handle == id)
+            .map(|(s, _)| s.clone())
+            .context("that sign-in isn't pending any more")?;
+        let mut flow = inner.flows.remove(&state).expect("just found");
+        drop(inner);
+        if let Some(d) = flow.driver.take() {
+            d.abort();
+        }
+        if let Some(done) = flow.done.take() {
+            let _ = done.send(Err("cancelled".into()));
+        }
+        self.events.audit(
+            "connection_cancelled",
+            json!({"service": flow.service.name, "via": flow.via}),
+        );
+        Ok(format!(
+            "Cancelled connecting {}; its link no longer works.",
+            flow.service.title()
+        ))
     }
 
     // ---- flows ---------------------------------------------------------
@@ -560,10 +1078,20 @@ impl Connections {
             }
             None => None,
         };
+        if let Some(reply) = self.blocked(&service, relay.is_some()) {
+            bail!("{}", reply.text);
+        }
         let (done_tx, done_rx) = oneshot::channel();
         let title = service.title().to_string();
 
         if service.auth == AuthKind::ApiKey {
+            if !service.fields.is_empty() {
+                bail!(
+                    "{title} takes several fields, entered and tested on the dashboard's \
+                     Connections page, or at the terminal: `ferrule connections setup {}`",
+                    service.tile()
+                );
+            }
             let Some(relay) = relay else {
                 bail!(
                     "{title} takes an API key, and without a relay the only safe way in is \
@@ -588,6 +1116,8 @@ impl Connections {
                     },
                     done: Some(done_tx),
                     driver: None,
+                    started: Instant::now(),
+                    handle: b64(&random::<9>()),
                 },
             );
             self.drive_relay(relay, slot);
@@ -680,6 +1210,8 @@ impl Connections {
                 },
                 done: Some(done_tx),
                 driver: None,
+                started: Instant::now(),
+                handle: b64(&random::<9>()),
             },
         );
         match tunnel_parts {
@@ -838,7 +1370,11 @@ impl Connections {
         self.failed(flow, "the link expired").await;
     }
 
-    async fn failed(&self, mut flow: Flow, why: &str) {
+    async fn failed(&self, flow: Flow, why: &str) {
+        self.failed_with(flow, why, None).await
+    }
+
+    async fn failed_with(&self, mut flow: Flow, why: &str, switch_to: Option<&str>) {
         let title = flow.service.title().to_string();
         let name = flow.service.name.clone();
         self.events.audit(
@@ -851,13 +1387,18 @@ impl Connections {
         self.events
             .tell_owner(
                 &format!("Connecting {title} didn't work: {why}."),
-                vec![Button {
+                std::iter::once(Button {
                     text: "Try again".into(),
                     action: Action::Command(format!(
                         "/connect {name}{}",
                         if flow.write { " write" } else { "" }
                     )),
-                }],
+                })
+                .chain(switch_to.and_then(|s| self.catalog.get(s)).map(|s| Button {
+                    text: format!("Use {} instead", s.option.as_deref().unwrap_or(s.title())),
+                    action: Action::Command(format!("/connect {}", s.name)),
+                }))
+                .collect(),
             )
             .await;
     }
@@ -915,6 +1456,7 @@ impl Connections {
         let outcome = self.complete(&mut flow, v).await;
         match outcome {
             Ok(text) => {
+                self.remember(&flow.service.name, None);
                 if let Some(done) = done {
                     let _ = done.send(Ok(text.clone()));
                 }
@@ -925,7 +1467,15 @@ impl Connections {
             }
             Err(e) => {
                 flow.done = done;
-                self.failed(flow, &format!("{e:#}")).await;
+                let name = flow.service.name.clone();
+                match e.downcast_ref::<Refused>() {
+                    Some(Refused(ex)) => {
+                        self.remember(&name, Some(ex));
+                        let (text, switch) = (ex.text.clone(), ex.switch_to);
+                        self.failed_with(flow, &text, switch).await;
+                    }
+                    None => self.failed(flow, &format!("{e:#}")).await,
+                }
             }
         }
     }
@@ -961,7 +1511,14 @@ impl Connections {
                         .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
                         .take(40)
                         .collect();
-                    bail!("the service said {code}");
+                    let description = v["error_description"].as_str();
+                    return Err(Refused(explain::oauth_error(
+                        &service,
+                        &code,
+                        description,
+                        redirect,
+                    ))
+                    .into());
                 }
                 let code = v["code"].as_str().context("no code came back")?;
                 let resource = service.resource_param.then(|| service.url(flow.write));
@@ -969,7 +1526,14 @@ impl Connections {
                     &self.http, endpoints, client, code, verifier, redirect, resource,
                 )
                 .await
-                .map_err(|e| anyhow!("the code exchange was {e}"))?;
+                .map_err(|e| match e {
+                    oauth::TokenError::Refused(code) => anyhow::Error::new(Refused(Explained {
+                        text: explain::exchange_refused(&service, &code, redirect),
+                        switch_to: explain::is_atlassian(&service).then_some("jira"),
+                        symptom: (code == "redirect_uri_mismatch").then_some("redirect"),
+                    })),
+                    oauth::TokenError::Transient(why) => anyhow!("the code exchange failed: {why}"),
+                })?;
                 let meta = OauthMeta {
                     token_endpoint: endpoints.token.clone(),
                     revocation_endpoint: endpoints.revocation.clone(),
@@ -982,6 +1546,7 @@ impl Connections {
                         refresh_token: tokens.refresh_token,
                         client_secret: client.secret.clone(),
                         api_key: None,
+                        ..Default::default()
                     },
                     Some(meta),
                     tokens.scope,
@@ -1016,6 +1581,35 @@ impl Connections {
         granted: Option<String>,
         expires_at: Option<u64>,
     ) -> Result<String> {
+        self.save_record(
+            service,
+            write,
+            via,
+            requested_by,
+            secret,
+            oauth,
+            granted,
+            expires_at,
+            None,
+            Vec::new(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn save_record(
+        &self,
+        service: &Service,
+        write: bool,
+        via: &str,
+        requested_by: &str,
+        secret: Secret,
+        oauth: Option<OauthMeta>,
+        granted: Option<String>,
+        expires_at: Option<u64>,
+        key_expires: Option<u64>,
+        hosts: Vec<String>,
+    ) -> Result<String> {
         let name = service.name.clone();
         let mut record = Record {
             name: name.clone(),
@@ -1029,13 +1623,15 @@ impl Connections {
             refreshed_at: None,
             last_error: None,
             notice_sent: false,
+            key_expires,
+            hosts,
             tools: None,
             via: via.to_string(),
             requested_by: requested_by.to_string(),
             oauth,
             sealed: self.store.seal(&name, &secret)?,
         };
-        if header_for(&record, &secret).is_none() {
+        if service.native.is_none() && header_for(&record, &secret).is_none() {
             bail!("nothing to authenticate with came back");
         }
         let stored = record.clone();
@@ -1080,13 +1676,216 @@ impl Connections {
 
     async fn count_tools(&self, record: &Record) -> Option<usize> {
         let host = self.host.clone()?;
-        let cfg = self.server_config(record);
+        let cfg = self.server_config(record)?;
         let client = McpClient::new(cfg, host).ok()?;
         let got = tokio::time::timeout(Duration::from_secs(30), client.list_tools()).await;
         client.shutdown().await;
         match got {
             Ok(Ok(tools)) => Some(tools.len()),
             _ => None,
+        }
+    }
+
+    /// A key-based way in, from the page or the terminal: `fields` by name
+    /// (`key` for a plain API key). Checked, then tried once exactly as the
+    /// tools will use it, and saved only if that worked. `Err` is the plain
+    /// reason, never the server's text or the key.
+    pub async fn connect_key(
+        &self,
+        what: &str,
+        mut fields: BTreeMap<String, String>,
+        write: bool,
+        via: &str,
+    ) -> Result<String, String> {
+        let service = self.catalog.resolve(what).map_err(|e| format!("{e:#}"))?;
+        let title = service.title().to_string();
+        let wanted = service.key_fields();
+        if wanted.is_empty() {
+            return Err(format!("{title} signs in with OAuth, not a key"));
+        }
+        fields.retain(|k, _| wanted.iter().any(|f| &f.name == k));
+        for f in &wanted {
+            let v = fields.get(&f.name).map(|v| v.trim()).unwrap_or("");
+            if v.is_empty() && !f.optional {
+                return Err(format!("{} is required", f.label));
+            }
+            if f.kind != "json" && v.chars().any(char::is_control) {
+                return Err(format!("{} has characters a key never has", f.label));
+            }
+        }
+        fields.retain(|_, v| !v.trim().is_empty());
+        let key_expires = match fields.remove("expires") {
+            Some(day) => Some(parse_day(&day)?),
+            None => None,
+        };
+        let native_kind = service.native.clone();
+        let (secret, hosts) = if let Some(kind) = native_kind.as_deref() {
+            native::normalize(kind, &mut fields, &self.native)?;
+            let hosts = native::hosts(kind, &fields, &self.native);
+            match native::probe(kind, &service, &fields, &self.http, &self.native).await {
+                Ok(_) => {}
+                Err(why) => {
+                    self.remember(
+                        &service.name,
+                        Some(&Explained {
+                            text: why.clone(),
+                            switch_to: None,
+                            symptom: None,
+                        }),
+                    );
+                    return Err(why);
+                }
+            }
+            (
+                Secret {
+                    fields,
+                    ..Default::default()
+                },
+                hosts,
+            )
+        } else {
+            let secret = if service.fields.is_empty() {
+                Secret {
+                    api_key: fields.remove("key").map(|k| k.trim().to_string()),
+                    ..Default::default()
+                }
+            } else {
+                for v in fields.values_mut() {
+                    *v = v.trim().to_string();
+                }
+                Secret {
+                    fields,
+                    ..Default::default()
+                }
+            };
+            let hosts = vec![explain::host_of(service.url(write))];
+            if let Err(e) = self.try_key(&service, write, &secret).await {
+                self.remember(&service.name, Some(&e));
+                return Err(e.text);
+            }
+            (secret, hosts)
+        };
+        let expired = key_expires.is_some_and(|at| at <= now());
+        if expired {
+            return Err("that expiry date has passed: make a new key".into());
+        }
+        self.remember(&service.name, None);
+        self.save_record(
+            &service,
+            write,
+            via,
+            via,
+            secret,
+            None,
+            None,
+            None,
+            key_expires,
+            hosts,
+        )
+        .await
+        .map_err(|e| format!("{e:#}"))
+    }
+
+    /// Lists an MCP service's tools with a key that isn't saved yet.
+    async fn try_key(
+        &self,
+        service: &Service,
+        write: bool,
+        secret: &Secret,
+    ) -> Result<(), Explained> {
+        let Some(host) = self.host.clone() else {
+            return Ok(());
+        };
+        let record = Record {
+            name: service.name.clone(),
+            service: service.clone(),
+            write,
+            scopes: Vec::new(),
+            granted: None,
+            state: State::Connected,
+            connected_at: now(),
+            expires_at: None,
+            refreshed_at: None,
+            last_error: None,
+            notice_sent: false,
+            key_expires: None,
+            hosts: Vec::new(),
+            tools: None,
+            via: String::new(),
+            requested_by: String::new(),
+            oauth: None,
+            sealed: String::new(),
+        };
+        let (name, value) = header_for(&record, secret).ok_or_else(|| Explained {
+            text: "nothing to authenticate with".into(),
+            switch_to: None,
+            symptom: None,
+        })?;
+        let mut cfg = self.mcp_config(&record);
+        cfg.headers.insert(name, value);
+        list_with(service, cfg, host).await.map(|_| ())
+    }
+
+    /// Tries a saved connection once, the way its tools do. `Ok` says it
+    /// works (and who it is); `Err` says exactly what failed.
+    pub async fn test(&self, name: &str) -> Result<String, String> {
+        let records = self.store.load().map_err(|e| format!("{e:#}"))?;
+        let record = records
+            .into_iter()
+            .find(|r| r.name == name)
+            .ok_or_else(|| format!("nothing called `{name}` is connected"))?;
+        let service = record.service.clone();
+        let outcome = match (service.native.as_deref(), &record.oauth) {
+            (Some(kind), None) => {
+                let secret = self
+                    .store
+                    .open(&record)
+                    .map_err(|_| "the saved key can't be opened".to_string())?;
+                native::probe(kind, &service, &secret.fields, &self.http, &self.native)
+                    .await
+                    .map_err(|text| Explained {
+                        text,
+                        switch_to: None,
+                        symptom: None,
+                    })
+            }
+            _ => {
+                let host = self
+                    .host
+                    .clone()
+                    .ok_or_else(|| "connections can't be tested from here".to_string())?;
+                match self.server_config(&record) {
+                    Some(cfg) => list_with(&service, cfg, host)
+                        .await
+                        .map(|n| format!("{} answered with {n} tools", service.title())),
+                    None => Err(Explained {
+                        text: "the saved credential is incomplete: reconnect it".into(),
+                        switch_to: None,
+                        symptom: None,
+                    }),
+                }
+            }
+        };
+        let when = record
+            .key_expires
+            .map(|at| {
+                let days = at.saturating_sub(now()) / 86_400;
+                if at <= now() {
+                    " The key's expiry date has passed.".to_string()
+                } else {
+                    format!(" The key expires in {days} days.")
+                }
+            })
+            .unwrap_or_default();
+        match outcome {
+            Ok(text) => {
+                self.remember(&service.name, None);
+                Ok(format!("Works: {text}.{when}"))
+            }
+            Err(e) => {
+                self.remember(&service.name, Some(&e));
+                Err(format!("{}{when}", e.text))
+            }
         }
     }
 
@@ -1174,7 +1973,49 @@ impl Connections {
 
     // ---- what the MCP layer sees ---------------------------------------
 
-    fn server_config(&self, record: &Record) -> McpServerConfig {
+    /// The server for a connection. `None`: a native one whose credential
+    /// can't be read (logged; its tools are left out).
+    fn server_config(&self, record: &Record) -> Option<McpServerConfig> {
+        let Some(kind) = record.service.native.as_deref() else {
+            let mut cfg = self.mcp_config(record);
+            cfg.auth = Some(self.auth(record));
+            return Some(cfg);
+        };
+        let cred = if record.oauth.is_some() {
+            native::Cred::Source(self.auth(record).0)
+        } else {
+            match self.store.open(record) {
+                Ok(secret) => native::Cred::Fields(secret.fields),
+                Err(e) => {
+                    tracing::warn!("connection {}: {e:#}", record.name);
+                    return None;
+                }
+            }
+        };
+        let id = format!("{}:{}", record.name, record.connected_at);
+        match native::server(
+            kind,
+            &id,
+            &record.service,
+            cred,
+            record.write,
+            &self.http,
+            &self.native,
+        ) {
+            Ok(server) => Some(McpServerConfig {
+                name: record.name.clone(),
+                local: Some(ferrule_mcp::Local(server)),
+                ..Default::default()
+            }),
+            Err(e) => {
+                tracing::warn!("connection {}: {e}", record.name);
+                None
+            }
+        }
+    }
+
+    /// An MCP service's config, without its credential.
+    fn mcp_config(&self, record: &Record) -> McpServerConfig {
         let service = &record.service;
         let mut headers = HashMap::new();
         if !record.write && service.read_only == crate::catalog::ReadOnly::Header {
@@ -1189,7 +2030,6 @@ impl Connections {
             name: record.name.clone(),
             url: Some(service.url(record.write).to_string()),
             headers,
-            auth: Some(self.auth(record)),
             ..Default::default()
         }
     }
@@ -1262,7 +2102,7 @@ impl Connections {
         records
             .iter()
             .filter(|r| r.state == State::Connected)
-            .map(|r| self.server_config(r))
+            .filter_map(|r| self.server_config(r))
             .collect()
     }
 }
@@ -1272,6 +2112,70 @@ enum Path {
     Tunnel(tunnel::Listener, tunnel::Tunnel),
 }
 
+/// `YYYY-MM-DD` as the end of that day (UTC), for a key's expiry.
+fn parse_day(day: &str) -> Result<u64, String> {
+    let bad = || format!("`{day}` isn't a date like 2027-03-31");
+    let parts: Vec<&str> = day.trim().split('-').collect();
+    let [y, m, d] = parts.as_slice() else {
+        return Err(bad());
+    };
+    let (y, m, d): (i64, i64, i64) = (
+        y.parse().map_err(|_| bad())?,
+        m.parse().map_err(|_| bad())?,
+        d.parse().map_err(|_| bad())?,
+    );
+    if !(1970..=9999).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return Err(bad());
+    }
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Ok((days as u64 + 1) * 86_400 - 1)
+}
+
+/// Starts `cfg`, lists its tools and stops it; a failure in words.
+async fn list_with(
+    service: &Service,
+    cfg: McpServerConfig,
+    host: ServerHost,
+) -> Result<usize, Explained> {
+    let plain = |text: String| Explained {
+        text,
+        switch_to: None,
+        symptom: None,
+    };
+    let url = cfg.url.clone().unwrap_or_default();
+    let client = McpClient::new(cfg, host).map_err(|e| plain(format!("{e}")))?;
+    let got = tokio::time::timeout(Duration::from_secs(30), client.list_tools()).await;
+    client.shutdown().await;
+    match got {
+        Ok(Ok(tools)) => Ok(tools.len()),
+        Ok(Err(ferrule_mcp::McpError::Http(why))) => {
+            let status = why
+                .strip_prefix("HTTP ")
+                .and_then(|r| r.get(..3))
+                .and_then(|c| c.parse::<u16>().ok());
+            Err(match status {
+                Some(s) => explain::http(service, s, &why),
+                None => plain(explain::unreachable(service, &explain::host_of(&url))),
+            })
+        }
+        Ok(Err(_)) => Err(plain(format!(
+            "{} answered, but not like an MCP server",
+            service.title()
+        ))),
+        Err(_) => Err(plain(format!(
+            "{} didn't answer within 30 seconds",
+            service.title()
+        ))),
+    }
+}
+
 /// A key-form envelope from the relay: `{kind:"key", v, epk, iv, ct}`,
 /// bound to the slot id it was written to.
 fn open_envelope(form: KeyForm, slot: &str, v: &Value) -> Result<String> {
@@ -1279,4 +2183,64 @@ fn open_envelope(form: KeyForm, slot: &str, v: &Value) -> Result<String> {
         bail!("the relay brought something other than a key");
     }
     form.open(slot, v)
+}
+
+/// Connections that stopped or are about to (see
+/// [`Connections::attention`]), from the store's records: the doctor reads
+/// them without starting the service.
+pub fn attention(records: &[Record], days: u64) -> Vec<Attention> {
+    let now = now();
+    let mut out: Vec<Attention> = records
+        .iter()
+        .cloned()
+        .filter_map(|r| {
+            let title = r.service.title().to_string();
+            let tile = r.service.tile().to_string();
+            if r.state == State::NeedsReconnect {
+                return Some(Attention {
+                    text: format!(
+                        "{title} stopped working{} and needs reconnecting.",
+                        r.last_error
+                            .as_deref()
+                            .map(|e| format!(" ({e})"))
+                            .unwrap_or_default()
+                    ),
+                    name: r.name,
+                    title,
+                    tile,
+                    expired: true,
+                    days_left: None,
+                });
+            }
+            let end = r.key_expires?;
+            if end <= now {
+                return Some(Attention {
+                    text: format!("{title}'s key expired: make a new one and enter it."),
+                    name: r.name,
+                    title,
+                    tile,
+                    expired: true,
+                    days_left: Some(0),
+                });
+            }
+            let left = (end - now).div_ceil(86_400);
+            (left <= days).then(|| Attention {
+                text: format!(
+                    "{title}'s key expires in {left} day{}: make a new one and enter it \
+                     before then.",
+                    if left == 1 { "" } else { "s" }
+                )
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+                name: r.name,
+                title,
+                tile,
+                expired: false,
+                days_left: Some(left),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.expired.cmp(&a.expired).then(a.name.cmp(&b.name)));
+    out
 }

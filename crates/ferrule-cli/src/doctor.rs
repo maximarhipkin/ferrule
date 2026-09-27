@@ -347,7 +347,11 @@ fn editing_check(r: &mut Report, cfg: &config::Config) {
 
 /// M20: what's connected and whether logins have a relay to come back by.
 fn connections_check(r: &mut Report, cfg: &config::Config) {
-    r.ok("connect", crate::connections::doctor_line(cfg));
+    let (line, attention) = crate::connections::doctor_line(cfg);
+    r.ok("connect", line);
+    for a in attention {
+        r.warn("connect", a);
+    }
 }
 
 /// M18: hooks run as the owner, outside the sandbox; say which will, and

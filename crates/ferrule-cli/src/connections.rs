@@ -44,6 +44,16 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<Connections>> {
         .clone()
 }
 
+/// The config changed: use its relay from now on. Doesn't make the
+/// service if nothing has used it yet.
+pub fn follow_config(cfg: &config::Config) {
+    if let Some(Some(conns)) = SHARED.get() {
+        if conns.relay_url() != cfg.connections.relay_url {
+            conns.set_relay_url(cfg.connections.relay_url.clone());
+        }
+    }
+}
+
 fn make(cfg: &config::Config) -> Result<Arc<Connections>> {
     let data = config::data_dir()?;
     let state_dir = data.join("mcp").join("connections");
@@ -334,8 +344,16 @@ pub fn status_lines(conns: &Connections) -> Vec<String> {
             format!("{}: {state}, {access}{tools}, via {}", s.name, s.via)
         })
         .collect();
-    if !snap.pending.is_empty() {
-        lines.push(format!("waiting on a login: {}", snap.pending.join(", ")));
+    for f in &snap.pending_flows {
+        lines.push(format!(
+            "waiting on a login: {} ({} min old, expires in {} min)",
+            f.title,
+            f.age_secs / 60,
+            f.expires_in.div_ceil(60)
+        ));
+    }
+    for a in conns.attention(7) {
+        lines.push(a.text);
     }
     if !snap.asked.is_empty() {
         lines.push(format!("asked for: {}", snap.asked.join(", ")));
@@ -350,16 +368,27 @@ pub fn status_lines(conns: &Connections) -> Vec<String> {
     lines
 }
 
-/// `ferrule doctor`'s line.
-pub fn doctor_line(cfg: &config::Config) -> String {
+/// `ferrule doctor`'s line, and the connections that stopped or whose
+/// key ends within a week (each a warning with its fix).
+pub fn doctor_line(cfg: &config::Config) -> (String, Vec<String>) {
     let store = match secrets::private_dir() {
         Ok(p) => ferrule_connections::Store::new(&p),
-        Err(e) => return format!("unavailable: {e:#}"),
+        Err(e) => return (format!("unavailable: {e:#}"), Vec::new()),
     };
-    let n = match store.load() {
-        Ok(r) => r.len(),
-        Err(e) => return format!("the store doesn't read: {e:#}"),
+    let records = match store.load() {
+        Ok(r) => r,
+        Err(e) => return (format!("the store doesn't read: {e:#}"), Vec::new()),
     };
+    let n = records.len();
+    let attention = ferrule_connections::service::attention(&records, 7)
+        .into_iter()
+        .map(|a| {
+            format!(
+                "{} Fix: Connections on the dashboard, or `ferrule connections setup {}`",
+                a.text, a.tile
+            )
+        })
+        .collect();
     let relay = match &cfg.connections.relay_url {
         Some(url) if crate::config_follow::secret_value(relay::RELAY_KEY_ENV).is_some() => {
             format!("relay {url}")
@@ -374,7 +403,7 @@ pub fn doctor_line(cfg: &config::Config) -> String {
         Cloudflared::Fetch(_) => "cloudflared fetched on the first /dashboard".into(),
         Cloudflared::Missing => "no cloudflared".into(),
     };
-    format!("{n} connected, {relay}, {tunnel}")
+    (format!("{n} connected, {relay}, {tunnel}"), attention)
 }
 
 #[derive(Subcommand)]
@@ -397,6 +426,19 @@ pub enum ConnectionsCmd {
     Relay {
         #[command(subcommand)]
         op: RelayCmd,
+    },
+    /// Set a service up step by step: no service prints the checklist
+    /// (relay, Google client, previews, Atlassian); `relay` sets up the
+    /// fixed callback address; a tile (jira, google, gmail…) asks which way
+    /// in and then for its fields, hidden where secret
+    Setup {
+        service: Option<String>,
+        /// Ask for write access too (read-only by default)
+        #[arg(long)]
+        write: bool,
+        /// Cloudflare's API (tests point it elsewhere)
+        #[arg(long, hide = true, default_value = crate::connections_setup::CF_API)]
+        api: String,
     },
 }
 
@@ -440,13 +482,31 @@ pub async fn run(op: ConnectionsCmd) -> Result<()> {
         }
         ConnectionsCmd::Remove { name } => println!("{}", conns.disconnect(&name).await?),
         ConnectionsCmd::Add { service, write } => add(&conns, &service, write).await?,
+        ConnectionsCmd::Setup {
+            service,
+            write,
+            api,
+        } => {
+            crate::connections_setup::run(
+                &conns,
+                &crate::connections_setup::Place::here(&path)?,
+                service.as_deref(),
+                write,
+                &api,
+            )
+            .await?
+        }
         ConnectionsCmd::Relay { .. } => unreachable!(),
     }
     Ok(())
 }
 
-async fn add(conns: &Arc<Connections>, what: &str, write: bool) -> Result<()> {
+pub(crate) async fn add(conns: &Arc<Connections>, what: &str, write: bool) -> Result<()> {
     let service = conns.catalog().resolve(what)?;
+    if service.auth == ferrule_connections::AuthKind::ApiKey && !service.fields.is_empty() {
+        // Several fields (a site, an email, a JSON file…): the guided setup.
+        return crate::connections_setup::connect_with_fields(conns, &service, write).await;
+    }
     if service.auth == ferrule_connections::AuthKind::ApiKey {
         let key = inquire::Password::new(&format!("{} API key:", service.title()))
             .without_confirmation()
@@ -507,54 +567,36 @@ async fn relay_cmd(op: RelayCmd, cfg: &config::Config, path: &std::path::Path) -
             println!("the relay at {url} works");
         }
         RelayCmd::Deploy { name, api } => {
-            let token = secret("CLOUDFLARE_API_TOKEN")
-                .context("CLOUDFLARE_API_TOKEN isn't set (a token with Workers Scripts: Edit)")?;
-            let account =
-                secret("CLOUDFLARE_ACCOUNT_ID").context("CLOUDFLARE_ACCOUNT_ID isn't set")?;
-            // One relay key per install, kept across deploys.
-            let relay_key = match secret(relay::RELAY_KEY_ENV) {
-                Some(k) => k,
-                None => {
-                    let k =
-                        ferrule_connections::seal::b64(&ferrule_connections::seal::random::<32>());
-                    secrets::set(&secrets::path()?, relay::RELAY_KEY_ENV, &k)?;
-                    k
+            let conns = shared(cfg).ok_or_else(|| anyhow!("connections are unavailable here"))?;
+            match crate::connections_setup::deploy_relay(
+                &conns,
+                &crate::connections_setup::Place::here(path)?,
+                &api,
+                None,
+                None,
+                &name,
+                5,
+            )
+            .await?
+            {
+                crate::connections_setup::Deployed::Done { url, callback, .. } => println!(
+                    "the relay is at {url} and works; {} has relay_url set. OAuth services come \
+                     back to {callback}",
+                    path.display()
+                ),
+                crate::connections_setup::Deployed::ChooseAccount { accounts } => {
+                    for a in &accounts {
+                        println!("{}  {}", a.id, a.name);
+                    }
+                    bail!(
+                        "the token reaches several Cloudflare accounts: set CLOUDFLARE_ACCOUNT_ID \
+                         to one of these, or run `ferrule connections setup relay`"
+                    );
                 }
-            };
-            let url = relay::deploy(&relay::Deploy {
-                api: &api,
-                token: &token,
-                account: &account,
-                name: &name,
-                relay_key: &relay_key,
-            })
-            .await?;
-            set_relay_url(path, &url)?;
-            println!(
-                "the relay is at {url}; {} has relay_url set",
-                path.display()
-            );
+            }
         }
     }
     Ok(())
-}
-
-/// `[connections] relay_url = <url>`, comments and the rest kept.
-fn set_relay_url(path: &std::path::Path, url: &str) -> Result<()> {
-    let mut t = crate::setup::Target::load(path.to_path_buf())?;
-    let root = t.root();
-    if !root.contains_key("connections") {
-        root.insert(
-            "connections",
-            toml_edit::Item::Table(toml_edit::Table::new()),
-        );
-    }
-    let table = root
-        .get_mut("connections")
-        .and_then(|i| i.as_table_like_mut())
-        .context("[connections] in the config isn't a table")?;
-    table.insert("relay_url", toml_edit::value(url));
-    t.save()
 }
 
 #[cfg(test)]

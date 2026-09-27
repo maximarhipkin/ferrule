@@ -59,6 +59,8 @@ pub struct Ctx {
     pub evals: Arc<crate::model_eval::Jobs>,
     /// `ferrule` commands started from the page (M37: doctor, the console).
     pub runs: Arc<runs::Runs>,
+    /// Cloudflare's API, for deploying the relay (a mock in tests).
+    pub cf_api: String,
 }
 
 impl Ctx {
@@ -81,6 +83,7 @@ impl Ctx {
             config_path: crate::config::config_path().ok().flatten(),
             workspace: std::env::current_dir().ok(),
             evals: Arc::default(),
+            cf_api: crate::connections_setup::CF_API.to_string(),
             runs: Arc::default(),
         }
     }
@@ -101,6 +104,7 @@ impl Ctx {
             config_path: None,
             workspace: None,
             evals: Arc::default(),
+            cf_api: crate::connections_setup::CF_API.to_string(),
             runs: Arc::default(),
         }
     }

@@ -4,6 +4,7 @@ mod browser;
 mod config;
 mod config_follow;
 mod connections;
+mod connections_setup;
 mod dashboard;
 mod doctor;
 mod egress;

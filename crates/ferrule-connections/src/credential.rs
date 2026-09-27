@@ -29,6 +29,19 @@ pub struct StoreCredential {
 
 /// The header for `record`'s credential.
 pub(crate) fn header_for(record: &Record, secret: &Secret) -> Option<(String, String)> {
+    if !secret.fields.is_empty() {
+        let name = record
+            .service
+            .header
+            .clone()
+            .unwrap_or_else(|| "Authorization".into());
+        let template = record
+            .service
+            .header_value
+            .as_deref()
+            .unwrap_or("Bearer {key}");
+        return Some((name, crate::catalog::fill(template, &secret.fields)));
+    }
     if let Some(key) = &secret.api_key {
         let name = record
             .service
@@ -85,7 +98,7 @@ impl StoreCredential {
         let (record, secret) = self.find()?;
         let header = header_for(&record, &secret).ok_or_else(|| self.gone())?;
         let stale = rejected == Some(header.1.as_str());
-        if secret.api_key.is_some() {
+        if secret.api_key.is_some() || !secret.fields.is_empty() {
             // A key has nothing to refresh: a rejected one is a dead one.
             return if stale {
                 self.mark_broken("the service refused the key").await;
@@ -161,7 +174,7 @@ impl StoreCredential {
             }
             Err(TokenError::Refused(code)) => {
                 drop(guard);
-                self.mark_broken(&format!("the refresh was refused ({code})"))
+                self.mark_broken(&crate::explain::refresh_refused(&record.service, &code))
                     .await;
                 Err(self.gone())
             }

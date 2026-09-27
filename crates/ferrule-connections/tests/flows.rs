@@ -817,3 +817,32 @@ async fn a_relay_value_of_the_wrong_kind_is_not_a_sign_in() {
     );
     assert!(w.conns.snapshot().unwrap().connections.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stuck_sign_in_is_listed_with_an_id_and_cancelled_from_the_page() {
+    let w = world(RelayMode::Up).await;
+    w.conns
+        .intercept(&Actor::Owner(w.owner.clone()), "/connect mock")
+        .await
+        .expect("a connect reply");
+    let snap = w.conns.snapshot().unwrap();
+    assert_eq!(snap.pending, ["mock"]);
+    let flow = &snap.pending_flows[0];
+    assert_eq!(flow.service, "mock");
+    assert!(flow.expires_in > 0 && flow.expires_in <= 20);
+    // The page's id is never the OAuth state or the relay slot.
+    let json = serde_json::to_string(&snap).unwrap();
+    assert!(!json.contains("state="), "{json}");
+    assert!(w.conns.cancel("not-an-id").is_err());
+    let said = w.conns.cancel(&flow.id).unwrap();
+    assert!(said.contains("Cancelled connecting Mock"), "{said}");
+    assert!(w.conns.snapshot().unwrap().pending_flows.is_empty());
+    assert!(w
+        .events
+        .audits
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(k, _)| k == "connection_cancelled"));
+    assert!(w.conns.cancel(&flow.id).is_err(), "only once");
+}
