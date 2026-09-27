@@ -4894,7 +4894,10 @@ consent, and reqwest refuses its TLS proxy.
   are tested against mock servers.
 - Live checks are `#[ignore]`d.
 
-**Checks.** CHECKS_PLACEHOLDER
+**Checks.** 1411 tests passed, 0 failed, 23 ignored. fmt and clippy
+`-D warnings` are clean. The browser check passed 10 of 10 steps. The
+starter eval against the mock through the real binary gave engineered
+20/20, naive 11/20, $0.98. origin/main had nothing new to merge.
 
 **Follow-ups.**
 - A real Atlassian site, a Gmail app password, a service account and a
