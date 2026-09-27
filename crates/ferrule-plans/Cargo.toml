@@ -8,6 +8,7 @@ description = "M35 subscription plans: ChatGPT sign-in and its sealed tokens, th
 ferrule-core = { path = "../ferrule-core" }
 ferrule-connections = { path = "../ferrule-connections" }
 ferrule-providers = { path = "../ferrule-providers" }
+ferrule-sandbox = { path = "../ferrule-sandbox" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -24,3 +25,11 @@ mock = []
 [dev-dependencies]
 tempfile = { workspace = true }
 ferrule-plans = { path = ".", features = ["mock"] }
+
+# The engine tests' stand-in for `claude`. Not shipped: releases build
+# ferrule-cli only.
+[[bin]]
+name = "ferrule-fake-claude"
+path = "src/bin/fake-claude.rs"
+test = false
+doc = false

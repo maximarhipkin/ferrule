@@ -324,6 +324,7 @@ impl AnthropicProvider {
                 output_tokens: n("output_tokens"),
                 cached_input_tokens: read,
                 cache_write_input_tokens: write,
+                notional_usd: None,
             },
         })
     }

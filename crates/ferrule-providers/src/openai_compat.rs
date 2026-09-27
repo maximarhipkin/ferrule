@@ -147,6 +147,7 @@ impl OpenAiCompatProvider {
                     .unwrap_or(0),
                 cached_input_tokens: cached,
                 cache_write_input_tokens: 0,
+                notional_usd: None,
             },
         })
     }

@@ -4,6 +4,9 @@
 //!   loopback callback, a pasted redirect), the sealed tokens in
 //!   `private/plans/`, refresh under a cross-process lock, and the
 //!   `PlanAuth` the Codex driver asks for a token.
+//! - `claude`: the Claude plan through the unmodified `claude` binary:
+//!   the setup-token's store, the child's environment, the stream-json
+//!   events, the tool bridge and the `ClaudeCode` engine.
 //! - `usage`: the plans' usage windows, in a file that status, doctor and
 //!   the dashboard read.
 //! - `mock` (feature `mock`): a mock issuer and Codex backend for tests.
@@ -11,6 +14,7 @@
 //! The design is `docs/m35-subscriptions.md`.
 
 pub mod chatgpt;
+pub mod claude;
 mod jwt;
 mod lock;
 #[cfg(feature = "mock")]

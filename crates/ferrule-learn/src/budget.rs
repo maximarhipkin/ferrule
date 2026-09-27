@@ -226,6 +226,7 @@ mod tests {
             output_tokens: o,
             cached_input_tokens: 0,
             cache_write_input_tokens: 0,
+            notional_usd: None,
         }
     }
 

@@ -674,7 +674,12 @@ impl Agent {
                 sink.send(Delta::Reset);
                 req.stream = Some(self.timed(sink.clone(), start));
             }
-            let (served, result) = self.provider.complete_routed(req).await;
+            let ctx = crate::provider::CallContext {
+                guard: self.guard.clone(),
+                workspace: Some(self.tool_ctx.workspace.clone()),
+            };
+            let (served, result) =
+                crate::provider::with_call_context(ctx, self.provider.complete_routed(req)).await;
             let latency_ms = start.elapsed().as_millis() as u64;
             let retry_in = match &result {
                 Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
@@ -857,7 +862,7 @@ impl Agent {
             tree: None,
             route,
             plan: None,
-            notional_usd: None,
+            notional_usd: result.as_ref().ok().and_then(|r| r.usage.notional_usd),
             speed: Some(std::mem::take(&mut *self.speed.lock().unwrap())).filter(|s| !s.is_empty()),
         };
         ledger.sink.record(record);
@@ -2301,6 +2306,7 @@ mod tests {
                     output_tokens: 5,
                     cached_input_tokens: 0,
                     cache_write_input_tokens: 0,
+                    notional_usd: None,
                 },
             })
         }
@@ -2628,6 +2634,7 @@ mod tests {
                     output_tokens: 10,
                     cached_input_tokens: 20,
                     cache_write_input_tokens: 0,
+                    notional_usd: None,
                 },
             ),
             (
@@ -2637,6 +2644,7 @@ mod tests {
                     output_tokens: 8,
                     cached_input_tokens: 30,
                     cache_write_input_tokens: 40,
+                    notional_usd: None,
                 },
             ),
         ];

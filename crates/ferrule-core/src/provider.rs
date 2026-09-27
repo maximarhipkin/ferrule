@@ -127,6 +127,42 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// What a provider may know about the run calling it (M35). The agent
+/// sets it around each model call; a provider that runs tools of its own
+/// (the Claude Code engine) asks the run's guard before them and works in
+/// the run's workspace. Read it at the start of the call: a task the
+/// provider spawns doesn't inherit it.
+#[derive(Clone, Default)]
+pub struct CallContext {
+    /// The run's guard (M19): approval gates, plan mode, the kill switch.
+    pub guard: Option<std::sync::Arc<dyn crate::guard::Guard>>,
+    /// The run's workspace (a sub-agent's worktree, say).
+    pub workspace: Option<std::path::PathBuf>,
+}
+
+impl std::fmt::Debug for CallContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallContext")
+            .field("guard", &self.guard.is_some())
+            .field("workspace", &self.workspace)
+            .finish()
+    }
+}
+
+tokio::task_local! {
+    static CALL_CONTEXT: CallContext;
+}
+
+/// The calling run's context, or an empty one outside a run.
+pub fn call_context() -> CallContext {
+    CALL_CONTEXT.try_with(Clone::clone).unwrap_or_default()
+}
+
+/// Run `fut` with `ctx` as its [`call_context`].
+pub async fn with_call_context<F: std::future::Future>(ctx: CallContext, fut: F) -> F::Output {
+    CALL_CONTEXT.scope(ctx, fut).await
+}
+
 /// What [`Provider::fail_over`] switched to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailOver {
