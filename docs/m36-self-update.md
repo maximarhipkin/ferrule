@@ -1,6 +1,6 @@
 # M36 — Self-update and self-repair (design)
 
-Status: in progress, 2026-09-27, branch `m36-self-update`. Written before
+Status: built, 2026-09-27, branch `m36-self-update`. Written before
 the code; where the build departs from it, see **As built** at the end.
 User guide: [updates.md](updates.md).
 
@@ -522,3 +522,56 @@ injectable base URL.
   offline signing (§2.4).
 - Updating MCP servers, plugins or the local model runtime.
 - A Ferrule-managed `claude` (§5.4).
+
+---
+
+## As built
+
+Where the code departs from the design above, or settles what it left
+open:
+
+- **Parts 1–3 as designed**, plus: `ferrule update --to <tag> --unsigned`
+  installs a release from before signing, checked by its checksum only
+  (the way back to v0.5.x); a glibc build updates to the musl archive,
+  the only Linux one released; `systemctl`, `loginctl` and `launchctl` no
+  longer inherit `NOTIFY_SOCKET` (a systemd tool reported `ERRNO=` on the
+  gateway's watchdog socket).
+- **No `/update` chat command.** The request file is written by the
+  consent button (an M19 approval when `auto = false`) and by the claude
+  repair. A chat command is a follow-up.
+- **Every provider error falls back (§6.2), a refused key included**: a 401
+  on one provider shouldn't silence the bot when a fallback has its own
+  key. The owner is told once, "its key was refused". Local errors from the
+  provider path (`disk_full`, `data_unwritable`) don't fall over: no other
+  model fixes them. The chat's last words are
+  `I couldn't reply: <plain words>\n\nThe error: <raw, 400 chars>`
+  (`failure::chat_text`); an unknown local error reads "something went
+  wrong."
+- **Repairs wired**: `client_too_old` (Codex refresh and one retry, §1),
+  `claude_too_old` and a broken `claude_missing` (update and one retry;
+  a `claude` that isn't there at all is looked for again on the next
+  spawn, not updated). `model_gone` has no repair of its own: the model is
+  down a day and the fallback answers. Each repair is one line in the
+  repair log, which lives in `ferrule-core` (`repairs.rs`) so the providers
+  can write it; the file is cut in batches (at 550 lines, back to 500).
+- **Last-good config (§6.3)**: `gateway/config.last-good.toml` is written
+  (mode 600, it can hold secrets' names) after every start that read the
+  config. Running on the copy also applies to every later
+  `Config::load()` in that process, not just the gateway's first read,
+  since 38 call sites (self-extension, the dashboard, tools) reload it. A
+  file that reads again makes a **supervised** gateway (systemd's
+  `INVOCATION_ID`, launchd's `XPC_SERVICE_NAME`) exit 0 so its manager
+  restarts it onto the fixed file; an unsupervised one tells the owner to
+  restart it.
+- **Self-check (§7)**: its first round tells the problems already present
+  (after a restart, the owner hears them once, not never). An update check
+  that has never succeeded isn't "failing for 3 days" (`last_ok` unset).
+  The Claude sign-in is read from the plan's saved state, not asked of
+  `claude`. It tries a `claude` update only when the problem is new, then
+  reports it. The Codex refresh stays reactive (a turn's 400), not a
+  self-check action. A channel counts as down when it polls and its last
+  good poll is over 10 minutes old; push channels (webhooks) aren't
+  judged.
+- **Disk space**: `statvfs` on Unix, `GetDiskFreeSpaceExW` on Windows.
+- **Windows** has no supervised gateway, so a config that reads again
+  only gets the "restart ferrule" line there.

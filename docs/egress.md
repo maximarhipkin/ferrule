@@ -123,6 +123,8 @@ check it, and sends the name on. Two consequences:
 - **Stdio MCP servers** get the same proxy variables as a command.
 - **Model providers aren't proxied.** Their keys are ferrule's, not the
   model's.
+- **Ferrule's own updates aren't either**: the hosts they reach are in
+  [updates.md](updates.md#network).
 
 **The proxy is advisory for shell commands.** `curl`, `pip`, `npm`, `git` and
 most HTTP clients honour `HTTPS_PROXY`; a program that ignores it (or `ssh`, a
