@@ -37,23 +37,23 @@ pub struct Live {
     pub restarts: Arc<ferrule_gateway::ChannelRestarts>,
 }
 
-type Answer = Option<(u16, Value)>;
+pub(super) type Answer = Option<(u16, Value)>;
 
-fn ok(v: Value) -> Answer {
+pub(super) fn ok(v: Value) -> Answer {
     Some((200, v))
 }
 
-fn bad(status: u16, why: impl std::fmt::Display) -> Answer {
+pub(super) fn bad(status: u16, why: impl std::fmt::Display) -> Answer {
     Some((status, json!({ "error": why.to_string() })))
 }
 
-fn missing(what: &str) -> Answer {
+pub(super) fn missing(what: &str) -> Answer {
     bad(503, format!("{what} isn't available in this process"))
 }
 
 /// A destructive operation's second step: `409` with the question until
 /// the body says `"confirm": true`.
-fn confirmed(body: &Value, question: String) -> Result<(), Answer> {
+pub(super) fn confirmed(body: &Value, question: String) -> Result<(), Answer> {
     if body.get("confirm").and_then(Value::as_bool) == Some(true) {
         Ok(())
     } else {
@@ -61,7 +61,7 @@ fn confirmed(body: &Value, question: String) -> Result<(), Answer> {
     }
 }
 
-fn arg<'a>(body: &'a Value, key: &str) -> Result<&'a str, Answer> {
+pub(super) fn arg<'a>(body: &'a Value, key: &str) -> Result<&'a str, Answer> {
     body.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
@@ -83,6 +83,7 @@ macro_rules! need {
         }
     };
 }
+pub(super) use need;
 
 pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer {
     let path = req.path.strip_prefix("/api/")?;
@@ -92,6 +93,9 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "connections" => connections(ctx).await,
             "connections/checklist" => connections_checklist(ctx).await,
             "models" => models(ctx),
+            "models/choices" => super::models_page::choices(ctx),
+            "models/provider/list" => super::models_page::provider_list(ctx, req).await,
+            "plans/chatgpt/poll" => super::models_page::chatgpt_poll(ctx),
             "routing" => routing(ctx, req),
             "catalog" => catalog_list(ctx, req).await,
             "recommend" => recommend(ctx).await,
@@ -111,6 +115,10 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "kill/on" | "kill/off" => kill(ctx, path == "kill/on", body),
         "models/default" | "models/pin" | "models/unpin" | "models/fallback" | "models/add"
         | "models/remove" | "models/test" => model_op(ctx, path, body).await,
+        "models/provider" => super::models_page::provider_save(ctx, body).await,
+        "plans/chatgpt/start" => super::models_page::chatgpt_start(ctx).await,
+        "plans/chatgpt/cancel" => super::models_page::chatgpt_cancel(ctx),
+        "plans/claude" => super::models_page::claude_token(ctx, body),
         "routing/set" | "routing/unset" => routing_op(ctx, path, body),
         "catalog/add" => catalog_add(ctx, body).await,
         "catalog/fill-prices" => fill_prices(ctx).await,
@@ -698,7 +706,7 @@ async fn connections_checklist(ctx: &Ctx) -> Answer {
 }
 
 /// Where setup from the page writes: this process's config and secrets.
-fn setup_place(ctx: &Ctx) -> Result<crate::connections_setup::Place, Answer> {
+pub(super) fn setup_place(ctx: &Ctx) -> Result<crate::connections_setup::Place, Answer> {
     match (&ctx.config_path, &ctx.data) {
         (Some(config), Some(data)) => Ok(crate::connections_setup::Place {
             config: config.clone(),
@@ -1089,7 +1097,7 @@ fn models(ctx: &Ctx) -> Answer {
     }))
 }
 
-fn retire(ctx: &Ctx, session: Option<&str>) {
+pub(super) fn retire(ctx: &Ctx, session: Option<&str>) {
     if let Some(live) = &ctx.live {
         (live.retire)(session);
     }
@@ -1140,6 +1148,9 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                         .collect()
                 })
                 .unwrap_or_default();
+            if let Err(e) = super::models_page::check_fallback(&m.catalog(), &words) {
+                return bad(400, e);
+            }
             m.set_fallback(&words, BY)
         }
         "models/add" => {
@@ -1236,7 +1247,7 @@ fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     }
 }
 
-fn config(ctx: &Ctx) -> Option<Config> {
+pub(super) fn config(ctx: &Ctx) -> Option<Config> {
     let text = std::fs::read_to_string(ctx.config_path.as_ref()?).ok()?;
     toml::from_str(&text).ok()
 }
@@ -2552,5 +2563,243 @@ command = "echo hi"
         assert_eq!(s, 404);
         let (_, v) = call(&ctx, "POST connections/test", json!({"name": "nope"})).await;
         assert_eq!(v["ok"], false, "{v}");
+    }
+
+    /// A models page over a config with one provider, `a`, whose model
+    /// list is the mock at `base` (a key `good-key-for-tests-01` works).
+    fn models_ctx(dir: &Path, base: &str, extra: &str) -> Ctx {
+        let mut ctx = bare(dir);
+        let config = dir.join("ferrule.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "default_provider = \"a\"\n\n[providers.a]\nbase_url = \"{base}/v1\"\n\
+                 api_key_env = \"M37_TEST_A_KEY\"\nmodel = \"a-one\"\n\
+                 [providers.a.models.a-two]\n[providers.a.models.a-three]\n{extra}"
+            ),
+        )
+        .unwrap();
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        ctx.models = Some(Arc::new(crate::models::Models::new(
+            config.clone(),
+            Some(dir.join("data/pins.json")),
+            &cfg,
+        )));
+        ctx.config_path = Some(config);
+        ctx
+    }
+
+    async fn model_list_mock() -> String {
+        mock::serve(Arc::new(|r: mock::Req| {
+            let auth = r.headers.get("authorization").cloned().unwrap_or_default();
+            match r.path.as_str() {
+                "/v1/models" if auth == "Bearer good-key-for-tests-01" => mock::Resp::json(
+                    200,
+                    json!({"data": [{"id": "a-one"}, {"id": "a-two"}, {"id": "a-four"}]}),
+                ),
+                "/v1/models" => mock::Resp::json(401, json!({"error": "bad key"})),
+                _ => mock::Resp::status(404),
+            }
+        }))
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_fallback_list_refuses_an_unknown_model_a_repeat_and_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = models_ctx(dir.path(), "http://127.0.0.1:9", "");
+        let (s, v) = call(&ctx, "models/choices", json!({})).await;
+        assert_eq!(s, 200, "{v}");
+        let refs: Vec<&str> = v["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["reference"].as_str().unwrap())
+            .collect();
+        assert_eq!(refs.len(), 3, "{v}");
+        assert!(refs.contains(&"a/a-two"), "{v}");
+        assert_eq!(v["default"], "a/a-one");
+        let names: Vec<&str> = v["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"openai") && names.contains(&"chatgpt"),
+            "{v}"
+        );
+
+        for (list, why) in [
+            (json!(["a/nope"]), "can't be a fallback"),
+            (json!(["a/a-two", "a/a-two"]), "twice"),
+            (json!(["a/a-one"]), "is the default"),
+        ] {
+            let (s, v) = call(&ctx, "POST models/fallback", json!({ "models": list })).await;
+            assert_eq!(s, 400, "{v}");
+            assert!(v["error"].as_str().unwrap().contains(why), "{v}");
+        }
+        let text = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+        assert!(!text.contains("fallback"), "nothing written: {text}");
+        let (s, v) = call(
+            &ctx,
+            "POST models/fallback",
+            json!({ "models": ["a/a-three", "a/a-two"] }),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["view"]["fallback"], json!(["a/a-three", "a/a-two"]));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_provider_key_is_tested_before_it_is_saved_and_never_comes_back() {
+        const GOOD: &str = "good-key-for-tests-01";
+        let dir = tempfile::tempdir().unwrap();
+        let base = model_list_mock().await;
+        let mut ctx = models_ctx(dir.path(), &base, "");
+        ctx.redactor = Arc::new(Redactor::new([SECRET.to_string()]));
+        let secrets = dir.path().join("data/private/secrets.env");
+
+        let (s, v) = call(
+            &ctx,
+            "POST models/provider",
+            json!({"provider": "a", "key": "wrong-key-for-tests"}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("nothing was saved"),
+            "{v}"
+        );
+        assert!(!v.to_string().contains("wrong-key"), "{v}");
+        assert!(!secrets.exists(), "a refused key isn't written");
+
+        let (s, v) = call(
+            &ctx,
+            "POST models/provider",
+            json!({"provider": "a", "key": "two words"}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+
+        let (s, v) = call(
+            &ctx,
+            "POST models/provider",
+            json!({"provider": "a", "key": GOOD}),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert!(!v.to_string().contains(GOOD), "{v}");
+        assert_eq!(v["models"], json!(["a-four", "a-one", "a-two"]));
+        let file = std::fs::read_to_string(&secrets).unwrap();
+        assert!(file.contains(&format!("M37_TEST_A_KEY={GOOD}")), "{file}");
+        let config = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+        assert!(!config.contains(GOOD), "the key never goes in the config");
+        // The running process uses it at once: the model is ready.
+        let a_one = v["view"]["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["reference"] == "a/a-one")
+            .cloned()
+            .unwrap();
+        assert_eq!(a_one["key_present"], true, "{a_one}");
+
+        // The list, with the key saved, and what's connected already.
+        let (s, v) = call(&ctx, "models/provider/list?provider=a", json!({})).await;
+        assert_eq!(s, 200, "{v}");
+        assert!(v["models"].as_array().unwrap().contains(&json!("a-four")));
+        assert!(v["connected"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("a-three")));
+
+        // A new OpenAI-compatible server: its address and the key's name
+        // go in the config, the key in the secrets file.
+        let (s, v) = call(
+            &ctx,
+            "POST models/provider",
+            json!({"provider": "lan", "key": GOOD, "base_url": format!("{base}/v1")}),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["added"], "lan/a-four", "the first listed: {v}");
+        let config = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+        assert!(config.contains("[providers.lan]"), "{config}");
+        assert!(config.contains("LAN_API_KEY"), "{config}");
+        assert!(!config.contains(GOOD), "{config}");
+
+        // A plan takes no key; an unknown name without an address is said.
+        let (s, v) = call(
+            &ctx,
+            "POST models/provider",
+            json!({"provider": "chatgpt", "key": GOOD}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("Sign in"), "{v}");
+        let (s, v) = call(
+            &ctx,
+            "POST models/provider",
+            json!({"provider": "zz", "key": GOOD}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("give its address"),
+            "{v}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_chatgpt_plan_signs_in_from_the_page_and_a_claude_token_is_checked() {
+        use ferrule_plans::mock as plans;
+        let dir = tempfile::tempdir().unwrap();
+        let state = plans::Shared::default();
+        state.lock().unwrap().device_pending = 1;
+        let issuer = plans::serve(state.clone()).await;
+        let ctx = models_ctx(
+            dir.path(),
+            "http://127.0.0.1:9",
+            &format!("\n[plans.chatgpt]\nissuer = \"{issuer}\"\n"),
+        );
+        let (_, v) = call(&ctx, "plans/chatgpt/poll", json!({})).await;
+        assert_eq!(v["state"], "none");
+        let (s, v) = call(&ctx, "POST plans/chatgpt/start", json!({})).await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["user_code"], "ABCD-1234");
+        assert_eq!(v["page"], format!("{issuer}/codex/device"));
+        let mut v = json!({});
+        for _ in 0..100 {
+            v = call(&ctx, "plans/chatgpt/poll", json!({})).await.1;
+            if v["state"] != "waiting" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(v["state"], "done", "{v}");
+        assert!(v["said"].as_str().unwrap().contains("ChatGPT plan"), "{v}");
+        let config = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+        assert!(config.contains("plan = \"chatgpt\""), "{config}");
+
+        let (s, v) = call(
+            &ctx,
+            "POST plans/claude",
+            json!({"token": "sk-ant-api03-NOTAKEY"}),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("API key"), "{v}");
+        assert!(!v.to_string().contains("NOTAKEY"), "{v}");
+        let token = "sk-ant-oat01-NOTAKEY-for-tests";
+        let (s, v) = call(&ctx, "POST plans/claude", json!({ "token": token })).await;
+        assert_eq!(s, 200, "{v}");
+        assert!(!v.to_string().contains(token), "{v}");
+        for f in std::fs::read_dir(dir.path().join("data/private")).unwrap() {
+            let text = std::fs::read_to_string(f.unwrap().path()).unwrap_or_default();
+            assert!(!text.contains(token), "sealed on disk");
+        }
+        let config = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+        assert!(config.contains("plan = \"claude-code\""), "{config}");
     }
 }

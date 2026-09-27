@@ -634,7 +634,7 @@ pub(crate) fn no_shape(_: &str) -> Option<&'static str> {
 // ── Model provider ─────────────────────────────────────────────────────
 
 pub(crate) struct Preset {
-    label: &'static str,
+    pub(crate) label: &'static str,
     pub(crate) name: &'static str,
     pub(crate) base_url: &'static str,
     pub(crate) key_env: &'static str,
@@ -642,7 +642,7 @@ pub(crate) struct Preset {
     /// Empty: pick from the provider's list.
     pub(crate) model: &'static str,
     /// Where to get a key. Empty: none needed (a local server).
-    key_url: &'static str,
+    pub(crate) key_url: &'static str,
 }
 
 const PRESETS: &[Preset] = &[
@@ -719,6 +719,11 @@ const PRESETS: &[Preset] = &[
         key_url: "",
     },
 ];
+
+/// Every preset, in the order setup offers them.
+pub(crate) fn presets() -> &'static [Preset] {
+    PRESETS
+}
 
 /// The preset called `name`.
 pub(crate) fn preset(name: &str) -> Option<&'static Preset> {

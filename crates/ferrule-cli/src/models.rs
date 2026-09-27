@@ -105,13 +105,17 @@ impl Entry {
         }
     }
 
-    /// The key from the env. A plan has none and needs none (`""`): its
+    /// The key from the env, or one saved from the page since the process
+    /// started (M37). A plan has none and needs none (`""`): its
     /// credential is read per call from its own store.
     pub fn key(&self) -> Option<String> {
         if self.plan.is_some() {
             return Some(String::new());
         }
-        std::env::var(&self.key_env).ok()
+        std::env::var(&self.key_env)
+            .ok()
+            .filter(|k| !k.is_empty())
+            .or_else(|| saved_key(&self.key_env))
     }
 
     /// A call has what it needs: the key is set, or the plan is signed in.
@@ -454,6 +458,29 @@ pub struct Models {
 }
 
 static SHARED: OnceLock<Arc<Models>> = OnceLock::new();
+
+/// Provider keys saved to the secrets file while the process runs (the
+/// dashboard's key form): `set_var` isn't safe once threads run, so they
+/// are kept here, in memory only, and read by [`Entry::key`].
+static SAVED_KEYS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+/// A key just written to the secrets file, for this process's next calls.
+pub fn remember_key(name: &str, value: &str) {
+    SAVED_KEYS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(name.to_string(), value.to_string());
+}
+
+fn saved_key(name: &str) -> Option<String> {
+    SAVED_KEYS
+        .get()?
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(name)
+        .cloned()
+}
 
 /// This process's models, from the config `Config::load` finds.
 pub fn shared() -> anyhow::Result<Arc<Models>> {

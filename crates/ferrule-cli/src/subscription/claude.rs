@@ -166,7 +166,7 @@ pub async fn login(paste_token: bool) -> Result<()> {
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     if paste_token {
         let token = read_token()?;
-        TokenStore::new(&crate::secrets::private_dir()?).save(&token, super::now())?;
+        save_setup_token(&crate::secrets::private_dir()?, &token)?;
         println!(
             "Saved the setup-token, sealed. Only the claude process gets it, as \
              CLAUDE_CODE_OAUTH_TOKEN; ferrule itself never uses it. It lasts a year: \
@@ -214,6 +214,16 @@ pub async fn login(paste_token: bool) -> Result<()> {
     if let Some(line) = super::login::add_provider(Plan::ClaudeCode, MODEL)? {
         println!("{line}");
     }
+    Ok(())
+}
+
+/// Checks a setup-token's shape and stores it, sealed, in `private` (the
+/// terminal's `--token` and the dashboard's form). Errors never echo it.
+pub fn save_setup_token(private: &Path, token: &str) -> Result<()> {
+    let t = token.trim();
+    token::check_setup_token(t)?;
+    TokenStore::new(private).save(t, super::now())?;
+    forget_status();
     Ok(())
 }
 

@@ -53,7 +53,7 @@ impl Place {
     }
 
     /// The environment first, then the secrets file.
-    fn get(&self, name: &str) -> Option<String> {
+    pub(crate) fn get(&self, name: &str) -> Option<String> {
         if let Some(v) = std::env::var(name).ok().filter(|v| !v.is_empty()) {
             return Some(v);
         }

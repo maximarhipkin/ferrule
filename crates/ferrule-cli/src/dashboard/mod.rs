@@ -8,6 +8,7 @@ pub mod auth;
 pub mod cli;
 pub mod door;
 pub mod http;
+pub mod models_page;
 pub mod notices;
 pub mod runs;
 #[cfg(test)]
@@ -61,6 +62,8 @@ pub struct Ctx {
     pub runs: Arc<runs::Runs>,
     /// Cloudflare's API, for deploying the relay (a mock in tests).
     pub cf_api: String,
+    /// Plan sign-ins started from the page (M37).
+    pub plans: Arc<models_page::PlanFlows>,
 }
 
 impl Ctx {
@@ -84,6 +87,7 @@ impl Ctx {
             workspace: std::env::current_dir().ok(),
             evals: Arc::default(),
             cf_api: crate::connections_setup::CF_API.to_string(),
+            plans: Arc::default(),
             runs: Arc::default(),
         }
     }
@@ -105,6 +109,7 @@ impl Ctx {
             workspace: None,
             evals: Arc::default(),
             cf_api: crate::connections_setup::CF_API.to_string(),
+            plans: Arc::default(),
             runs: Arc::default(),
         }
     }

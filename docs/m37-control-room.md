@@ -263,9 +263,55 @@ redacted) or the status and the vendor's error message, clipped.
 
 ### 3.5 Services
 
-To be filled in from the research (hosted MCP URL, OAuth discovery and
-DCR, key kinds, header, whoami) — one table per service, only services
-that can be described exactly.
+Only services whose hosted MCP server, sign-in and key header are
+documented by the vendor are shipped. "DCR" means the server publishes
+OAuth discovery and dynamic client registration, so "Sign in" works with no
+app of the owner's; "own client" means the owner registers an OAuth app
+once (the page takes its id and secret, write-only). The test is the
+vendor's own REST "who am I", with the same key, never the MCP endpoint.
+
+**Key alternatives on existing services**
+
+| service | key fields | MCP header | test | account |
+|---|---|---|---|---|
+| github | token | `Authorization: Bearer {token}` | `GET api.github.com/user` | `/login` |
+| linear | key | `Authorization: Bearer {key}` | `POST api.linear.app/graphql {viewer{id name}}`, header `Authorization: {key}` | `/data/viewer/name` |
+| atlassian | email, token, site | `Authorization: Basic b64(email:token)` (the site admin must allow API-token auth) | `GET {site}.atlassian.net/rest/api/3/myself` | `/displayName` |
+
+**New services**
+
+| service | hosted MCP | sign-in | key | test |
+|---|---|---|---|---|
+| airtable | `mcp.airtable.com/mcp` | DCR | PAT, `Bearer` | `GET api.airtable.com/v0/meta/whoami` |
+| sentry | `mcp.sentry.dev/mcp` | DCR | user token, `Sentry-Bearer` on MCP, `Bearer` on REST | `GET sentry.io/api/0/`, `/user` non-null |
+| supabase | `mcp.supabase.com/mcp` | DCR | PAT, `Bearer` | `GET api.supabase.com/v1/projects` |
+| cloudflare | `mcp.cloudflare.com/mcp` | DCR | API token, `Bearer` | `GET api.cloudflare.com/client/v4/user/tokens/verify`, `/result/status` = active |
+| monday | `mcp.monday.com/mcp` | DCR | API token, `Bearer` on MCP, raw on REST | `POST api.monday.com/v2 {me{id name}}` |
+| stripe | `mcp.stripe.com` | DCR | restricted key, `Bearer` | `GET api.stripe.com/v1/balance` |
+| intercom | `mcp.intercom.com/mcp` (US workspaces) | DCR | access token, `Bearer` | `GET api.intercom.io/me` |
+| todoist | `ai.todoist.net/mcp` | DCR | — | — |
+| canva | `mcp.canva.com/mcp` | DCR | — | — |
+| webflow | `mcp.webflow.com/mcp` | DCR | — | — |
+| dropbox | `mcp.dropbox.com/mcp` (beta) | DCR | — | — |
+| gcalendar | `calendarmcp.googleapis.com/mcp/v1` | own client, `calendar.readonly` | — | — |
+| gsheets | `sheetsmcp.googleapis.com/mcp/v1` | own client, `spreadsheets.readonly` | — | — |
+
+**Not shipped (follow-ups), and why**
+
+- Notion and Attio keys: their hosted MCP servers take OAuth only, or a key
+  there isn't documented.
+- Slack: needs a registered app; a bot token on its MCP server isn't
+  documented.
+- HubSpot, Asana, Box, Figma, ClickUp, Vercel: no DCR, or allow-listed
+  clients only.
+- Zendesk: a server per subdomain, in early access.
+- PayPal: its key is a client-credentials token that expires; it needs a
+  refresher.
+- Trello: no token auth on its server.
+- Square: only an SSE URL.
+- CIMD: the MCP spec of 2026-07-28 deprecates DCR in favour of client ID
+  metadata documents; Ferrule still registers with DCR where the server
+  offers it.
 
 ### 3.6 Tiles
 
