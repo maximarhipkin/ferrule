@@ -329,49 +329,112 @@ No CDN, no remote images.
 
 Every `ferrule` subcommand, and where it lives on the page. "console" means
 the command console (§4.2) runs it; "page" means a first-class control.
-"terminal only" carries the reason.
+"terminal only" carries the reason. The class is the command as typed:
+**read** runs, **change** confirms, **destructive** confirms with the red
+button, **refused** says what does it instead. Flags move some (`update
+--check` reads, `update --yes` is destructive, `learn run --dry-run` reads).
+The table is `PARITY` in `dashboard/console.rs`, copied here.
 
-| command | page | notes |
-|---|---|---|
-| `setup` | terminal only | the wizard; `setup --refresh-service` runs from the console |
-| `doctor` | page (Run doctor) + console | §1.5 |
-| `config show / path / check` | page (Config) + console | |
-| `config edit` | page (the raw editor) | an editor isn't a web thing |
-| `config set` | page (forms) + console | |
-| `update` / `--check` | page (fix buttons) + console | `--yes` implied by the page's confirm |
-| `update claude` | page + console | |
-| `undo` | console | confirm |
-| `login` / `logout` (plans) | page (§2.4) | |
-| `chat` | page (Chat) | a REPL isn't a console command |
-| `gateway` | terminal only | it *is* the running service |
-| `dashboard link / off` | page (session menu: "log out everywhere") | `link --remote` is terminal only (it holds a terminal open) |
-| `models *` | page (Models) + console | |
-| `models route *` | page (Routing) + console | |
-| `models eval` | page (Eval) + console | |
-| `catalog *` | page (Catalog) + console | |
-| `connections list / catalog / add / remove / test` | page (Connections) + console | `add` for OAuth hands the link to the page |
-| `tasks list / add / pause / resume / run / delete / runs / edit` | page (Tasks) + console | `tasks add --gate` is terminal only (a gate is a shell command) |
-| `agents list / close` | page (Agents) + console | |
-| `memory *` | page (Memory) + console | `memory model download` runs with `--yes` after the page's confirm |
-| `learn *` | console | |
-| `skills *` | page (Extensions) + console | |
-| `mcp list / enable / disable / remove` | page + console | |
-| `mcp add` | console, without `--no-sandbox` | a command-bearing MCP entry is a shell; `--no-sandbox` is terminal only |
-| `hooks list / trust / untrust` | page + console | trusting a hook runs its command later: confirm |
-| `extensions pending / approve / deny / resume` | page + console | |
-| `plugins list / add / remove` | console | `add` confirms |
-| `trust status / audit / caps` | page + console | raising a cap confirms |
-| `ledger` | page (Usage) + console | |
-| `ssh list / add / test / trust / remove` | console | `trust` needs `--fingerprint` from the page |
-| `relay deploy / check` | console (`check`); terminal only (`deploy`, it runs wrangler) | |
-| `import` | console | |
-| `plan *` | console | |
-| `suite eval run / report` | console | |
-| `sandbox -- CMD` | terminal only | it runs an arbitrary command: a shell by another name |
-| `claude-mcp` | terminal only | hidden; spoken to by `claude` over stdio |
+| command | page | class | notes |
+|---|---|---|---|
+| `setup` | terminal only | refused | `--refresh-service` from the console; the wizard asks at the terminal; `setup --refresh-service` runs here |
+| `doctor` | Home (Run doctor) + console | read |  |
+| `update` | fix buttons + console | change | needs `--yes` (the page's confirm is the yes) or `--check` |
+| `run` | console | change | one agent turn, with its tools |
+| `chat` | Chat | refused | a REPL isn't a console command: use the Chat page |
+| `memory add` | console | change |  |
+| `memory search` | console | read |  |
+| `memory reindex` | console | change |  |
+| `memory model download` | console | change | needs `--yes` |
+| `memory recent` | console | read |  |
+| `memory forget` | console | destructive |  |
+| `config path` | Config + console | read |  |
+| `config edit` | Config (the raw editor) | refused | an editor isn't a web thing: use the Config page's editor |
+| `config example` | console | read |  |
+| `config init` | terminal only | refused | the service already has its config: change it on the Config page |
+| `gateway` | terminal only | refused | it is the running service |
+| `status` | Home + console | read |  |
+| `dashboard link` | console | change | `--remote` is terminal only (it holds a terminal open) |
+| `dashboard off` | session menu + console | destructive | logs out every browser, this one too |
+| `model list` | Models + console | read |  |
+| `model default` | Models + console | change |  |
+| `model test` | Models + console | read |  |
+| `model add` | Models + console | change |  |
+| `model remove` | Models + console | destructive |  |
+| `model alias` | Models + console | change |  |
+| `model pin` | Models + console | change |  |
+| `model unpin` | Models + console | change |  |
+| `model fallback` | Models + console | change |  |
+| `model catalog` | Models + console | read |  |
+| `model recommend` | console | read |  |
+| `model fill-prices` | console | change |  |
+| `model eval` | Eval + console | change | needs `--yes` (it spends money) |
+| `model route set` | Routing + console | change |  |
+| `model route off` | Routing + console | change |  |
+| `tasks add` | Tasks + console | change | `--gate` is terminal only (a gate is a shell command) |
+| `tasks list` | Tasks + console | read |  |
+| `tasks model` | Tasks + console | change |  |
+| `tasks schedule` | Tasks + console | change |  |
+| `tasks pause` | Tasks + console | change |  |
+| `tasks resume` | Tasks + console | change |  |
+| `tasks delete` | Tasks + console | destructive |  |
+| `tasks runs` | Tasks + console | read |  |
+| `tasks run-now` | Tasks + console | change |  |
+| `learn run` | console | change | `--dry-run` only reads |
+| `learn show` | console | read |  |
+| `learn diff` | console | read |  |
+| `learn revert` | console | destructive |  |
+| `ledger` | Usage + console | read |  |
+| `agents list` | Agents + console | read |  |
+| `agents close` | Agents + console | destructive |  |
+| `skills disable` | Extensions + console | change |  |
+| `skills enable` | Extensions + console | change |  |
+| `hooks list` | console | read |  |
+| `hooks trust` | terminal only | refused | no flag skips its question, on purpose; trusting hooks lets their commands run as you later, and it asks at the terminal |
+| `hooks untrust` | console | change |  |
+| `extensions list` | Extensions + console | read |  |
+| `extensions pending` | Extensions + console | read |  |
+| `extensions approve` | Extensions + console | change |  |
+| `extensions deny` | Extensions + console | change |  |
+| `extensions remove` | Extensions + console | destructive |  |
+| `extensions resume` | Extensions + console | change |  |
+| `ssh list` | console | read |  |
+| `ssh trust` | console | change | needs `--fingerprint` |
+| `ssh test` | console | read |  |
+| `import openclaw` | console | read | `--apply` changes |
+| `import hermes` | console | read | `--apply` changes |
+| `plugins add` | console | change |  |
+| `plugins list` | console | read |  |
+| `plugins remove` | console | destructive |  |
+| `mcp add` | console | change | needs `-y`; `--no-sandbox` is terminal only |
+| `mcp list` | Extensions + console | read |  |
+| `mcp remove` | Extensions + console | destructive |  |
+| `mcp disable` | Extensions + console | change |  |
+| `mcp enable` | Extensions + console | change |  |
+| `connections list` | Connections + console | read |  |
+| `connections add` | Connections | refused | keys and sign-ins go in on the Connections page, where a key never lands in a log |
+| `connections remove` | Connections + console | destructive |  |
+| `connections catalog` | Connections + console | read |  |
+| `connections relay deploy` | Connections (callback address card) | refused | it asks for a Cloudflare token: use the callback address card on Connections |
+| `connections relay check` | Connections + console | read |  |
+| `connections setup` | Connections (the checklist) | refused | the page's checklist is the same list; it asks at the terminal |
+| `eval run` | Eval + console | change | it spends money; `--dry-run` only reads |
+| `eval report` | Eval + console | read |  |
+| `stop` | Home + console | change | `--status` only reads |
+| `undo` | console | change |  |
+| `trust status` | console | read |  |
+| `trust audit` | console | read |  |
+| `trust caps` | console | read | `--set` needs `--yes` and confirms |
+| `login` | Models (§2.4) | refused | sign in from the Models page (Sign in) |
+| `logout` | Models + console | destructive |  |
+| `plan list` | console | read |  |
+| `plan approve` | console | change |  |
+| `plan reject` | console | change |  |
+| `sandbox` | terminal only | refused | it runs any command: a shell by another name |
+| `claude-mcp` | terminal only | refused | internal: claude speaks to it over stdio |
 
 A unit test walks the clap tree (`Cli::command()`) and fails when a leaf
-subcommand has no entry here: every new subcommand has to be given a
+subcommand has no entry in `PARITY` or no row in this table: every new subcommand has to be given a
 route, or "terminal only" with a reason.
 
 ### 4.2 The command console

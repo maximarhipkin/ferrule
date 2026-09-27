@@ -62,6 +62,11 @@ impl Run {
         s.why = why;
     }
 
+    /// The exit code once it has ended.
+    pub fn code(&self) -> Option<i32> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).code
+    }
+
     pub fn done(&self) -> bool {
         self.state
             .lock()
@@ -144,6 +149,50 @@ impl Runs {
         args: Vec<OsString>,
         env: Vec<(String, OsString)>,
     ) -> std::io::Result<Arc<Run>> {
+        self.start_then(label, args, env, |_| {})
+    }
+
+    /// A run that's over before it starts: `--help`, or a line clap
+    /// refused, answered in-process.
+    pub fn finished(&self, label: String, text: &str, code: i32) -> Arc<Run> {
+        let run = Arc::new(Run {
+            id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
+            label,
+            started: SystemTime::now(),
+            state: Mutex::default(),
+            cancel: tokio::sync::Notify::new(),
+        });
+        run.push(text);
+        run.end(code, None);
+        self.keep(run.clone());
+        run
+    }
+
+    /// Whether a run is still going.
+    pub fn busy(&self) -> bool {
+        let list = self.list.lock().unwrap_or_else(|e| e.into_inner());
+        list.iter().any(|r| !r.done())
+    }
+
+    fn keep(&self, run: Arc<Run>) {
+        let mut list = self.list.lock().unwrap_or_else(|e| e.into_inner());
+        while list.len() >= KEEP {
+            match list.iter().position(|r| r.done()) {
+                Some(at) => drop(list.remove(at)),
+                None => break,
+            }
+        }
+        list.push_back(run);
+    }
+
+    /// [`Runs::start`], and `after` once it has ended (the audit line).
+    pub fn start_then(
+        &self,
+        label: String,
+        args: Vec<OsString>,
+        env: Vec<(String, OsString)>,
+        after: impl FnOnce(&Run) + Send + 'static,
+    ) -> std::io::Result<Arc<Run>> {
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(&args)
             .envs(env)
@@ -162,16 +211,7 @@ impl Runs {
             state: Mutex::default(),
             cancel: tokio::sync::Notify::new(),
         });
-        {
-            let mut list = self.list.lock().unwrap_or_else(|e| e.into_inner());
-            while list.len() >= KEEP {
-                match list.iter().position(|r| r.done()) {
-                    Some(at) => drop(list.remove(at)),
-                    None => break,
-                }
-            }
-            list.push_back(run.clone());
-        }
+        self.keep(run.clone());
         let readers: Vec<_> = [
             child.stdout.take().map(|o| Box::new(o) as Box<dyn Reader>),
             child.stderr.take().map(|e| Box::new(e) as Box<dyn Reader>),
@@ -224,6 +264,7 @@ impl Runs {
                 let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
             }
             run.end(code, why);
+            after(&run);
         });
         Ok(run)
     }

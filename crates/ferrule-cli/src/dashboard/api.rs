@@ -107,6 +107,9 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "eval" => ok(ctx.evals.view()),
             "run" => run_view(ctx, req),
             "runs" => ok(json!({ "runs": ctx.runs.list() })),
+            "console/job" => super::console::job(ctx, req),
+            "console/complete" => super::console::complete(ctx, req),
+            "console/parity" => super::console::parity(),
             _ => None,
         };
     }
@@ -138,6 +141,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "eval/cancel" => eval_cancel(ctx, body),
         "notices/dismiss" | "notices/restore" => notices_op(ctx, path, body),
         "doctor/run" => doctor_run(ctx, body),
+        "console/run" => super::console::run(ctx, body),
+        "console/cancel" => super::console::cancel(ctx, body),
         "run/cancel" => {
             let id = need!(arg(body, "id"));
             ok(json!({ "ok": ctx.runs.cancel(id) }))
@@ -899,7 +904,7 @@ async fn connection_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
 // ---- Fixes (M37 §1.3) ----------------------------------------------------
 
 /// The env a child `ferrule` needs to read this process's config.
-fn child_env(ctx: &Ctx) -> Vec<(String, std::ffi::OsString)> {
+pub(super) fn child_env(ctx: &Ctx) -> Vec<(String, std::ffi::OsString)> {
     let mut env = Vec::new();
     if let Some(c) = &ctx.config_path {
         env.push(("FERRULE_CONFIG".to_string(), c.clone().into_os_string()));
@@ -1913,6 +1918,73 @@ mod tests {
         let (status, mut v) = route(ctx, get, &req, &body).await.expect("an endpoint");
         super::super::redact_value(&mut v, &ctx.redactor);
         (status, v)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_console_runs_a_parsed_line_confirms_changes_and_audits_each_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        // `echo` stands in for ferrule: the output is the argv it was given.
+        ctx.runs = Arc::new(super::super::runs::Runs::new("/bin/echo".into()));
+        let h = hub(dir.path());
+        ctx.hub = Some(h.clone());
+
+        let (s, v) = call(&ctx, "POST console/run", json!({ "line": "doctor; rm -rf ~" })).await;
+        assert_eq!(s, 400, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("not a shell"), "{v}");
+        let (s, v) = call(&ctx, "POST console/run", json!({ "line": "sandbox -- sh" })).await;
+        assert_eq!(s, 403, "{v}");
+        let (s, v) = call(&ctx, "POST console/run", json!({ "line": "doctor --config /etc/x" })).await;
+        assert_eq!(s, 400, "{v}");
+        let (s, v) = call(&ctx, "POST console/run", json!({ "line": "tasks delete 3" })).await;
+        assert_eq!(s, 409, "{v}");
+        assert_eq!(v["class"], "destructive");
+
+        let (s, v) = call(&ctx, "POST console/run", json!({ "line": "ferrule model --help" })).await;
+        assert_eq!(s, 200, "{v}");
+        assert!(v["job"]["text"].as_str().unwrap().contains("Usage"));
+        assert_eq!(v["job"]["code"], 0);
+
+        let (s, v) = call(&ctx, "POST console/run", json!({ "line": "memory search 'a b'" })).await;
+        assert_eq!(s, 200, "{v}");
+        let id = v["job"]["id"].as_str().unwrap().to_string();
+        let mut job = json!({});
+        for _ in 0..400 {
+            job = call(&ctx, &format!("console/job?id={id}&from=0"), json!({})).await.1;
+            if job["done"] == true {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(job["code"], 0, "{job}");
+        assert_eq!(job["text"], "memory search a b\n");
+
+        let (s, _) = call(&ctx, "POST console/run", json!({ "line": "tasks delete 3", "confirm": true })).await;
+        assert_eq!(s, 200);
+        for _ in 0..400 {
+            if !ctx.runs.busy() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let events: Vec<_> = h.audit().read(None).unwrap();
+        let kinds: Vec<&str> = events.iter().map(|e| e.event.as_str()).collect();
+        assert_eq!(kinds.iter().filter(|k| **k == "console_refused").count(), 3, "{kinds:?}");
+        assert_eq!(kinds.iter().filter(|k| **k == "console_run").count(), 2, "{kinds:?}");
+        assert_eq!(kinds.iter().filter(|k| **k == "console_done").count(), 2, "{kinds:?}");
+        let done = events.iter().rev().find(|e| e.event == "console_done").unwrap();
+        assert_eq!(done.detail["by"], "dashboard");
+        assert_eq!(done.detail["code"], 0);
+        assert_eq!(done.detail["class"], "destructive");
+
+        let (_, v) = call(&ctx, "console/complete?line=model%20ro", json!({})).await;
+        assert_eq!(v["items"][0]["word"], "route", "{v}");
+        let (_, v) = call(&ctx, "console/complete?line=update%20--ch", json!({})).await;
+        assert_eq!(v["items"][0]["word"], "--check", "{v}");
+        let (_, v) = call(&ctx, "console/parity", json!({})).await;
+        assert!(v["rows"].as_array().unwrap().len() > 80);
     }
 
     #[tokio::test]
