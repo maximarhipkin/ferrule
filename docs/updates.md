@@ -33,7 +33,7 @@ ferrule update --to v0.6.0 --unsigned   # a release from before signing: checksu
 
 A release is installed only when:
 
-- its archive matches the release's `SHA256SUMS`, and
+- its archive matches its `.sha256` file in the release, and
 - its `.minisig` signature verifies against the key compiled into the
   running binary (`release.pub` in the repository), with a trusted comment
   naming that exact tag and archive, and
