@@ -110,6 +110,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "console/job" => super::console::job(ctx, req),
             "console/complete" => super::console::complete(ctx, req),
             "console/parity" => super::console::parity(),
+            "chat" => super::chat::view(ctx, req),
+            "approvals" => super::chat::approvals(ctx),
             _ => None,
         };
     }
@@ -143,6 +145,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "doctor/run" => doctor_run(ctx, body),
         "console/run" => super::console::run(ctx, body),
         "console/cancel" => super::console::cancel(ctx, body),
+        "chat/send" => super::chat::send(ctx, body).await,
+        "approvals/answer" => super::chat::answer(ctx, body),
         "run/cancel" => {
             let id = need!(arg(body, "id"));
             ok(json!({ "ok": ctx.runs.cancel(id) }))
@@ -1918,6 +1922,104 @@ mod tests {
         let (status, mut v) = route(ctx, get, &req, &body).await.expect("an endpoint");
         super::super::redact_value(&mut v, &ctx.redactor);
         (status, v)
+    }
+
+    #[tokio::test]
+    async fn the_page_chats_in_its_own_session_and_answers_any_waiting_question() {
+        use super::super::chat::DashboardChannel;
+        use ferrule_gateway::Channel;
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        // Outside the gateway the page says so instead of offering a box
+        // that can't work.
+        let (s, v) = call(&ctx, "chat?from=0", json!({})).await;
+        assert_eq!((s, v["listening"].clone()), (200, json!(false)));
+        let (s, _) = call(&ctx, "POST chat/send", json!({ "text": "hi" })).await;
+        assert_eq!(s, 503);
+
+        let ch = Arc::new(DashboardChannel::default());
+        ctx.chat = Some(ch.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let run = {
+            let ch = ch.clone();
+            tokio::spawn(async move { ch.run(tx).await })
+        };
+        while !ch.listening() {
+            tokio::task::yield_now().await;
+        }
+        let (s, _) = call(&ctx, "POST chat/send", json!({ "text": "  " })).await;
+        assert_eq!(s, 400);
+        let long = "x".repeat(super::super::chat::MAX_TEXT + 1);
+        let (s, _) = call(&ctx, "POST chat/send", json!({ "text": long })).await;
+        assert_eq!(s, 413);
+        let (s, _) = call(&ctx, "POST chat/send", json!({ "text": "מה קורה?" })).await;
+        assert_eq!(s, 200);
+        let got = rx.recv().await.unwrap();
+        assert_eq!(
+            ferrule_gateway::session::session_id(&got.channel, &got.chat_id),
+            "dashboard__owner"
+        );
+        assert!(matches!(
+            crate::trust::route_for("dashboard__owner"),
+            ferrule_trust::Route::Owner { .. }
+        ));
+        ch.send(ferrule_gateway::OutboundMessage {
+            channel: "dashboard".into(),
+            chat_id: "owner".into(),
+            text: format!("the key is {SECRET}"),
+            reply_to: None,
+            attachments: vec![],
+        })
+        .await
+        .unwrap();
+        let (_, v) = call(&ctx, "chat?from=0", json!({})).await;
+        let e = v["entries"].as_array().unwrap();
+        assert_eq!(e.len(), 2);
+        assert_eq!(e[0]["text"], "מה קורה?");
+        assert!(
+            !v.to_string().contains(SECRET),
+            "redacted on the way out: {v}"
+        );
+        let next = v["next"].as_u64().unwrap();
+        let (_, v) = call(&ctx, &format!("chat?from={next}"), json!({})).await;
+        assert!(v["entries"].as_array().unwrap().is_empty());
+
+        // A question asked in Telegram is answered from the page.
+        let h = hub(dir.path());
+        ctx.hub = Some(h.clone());
+        let (code, mut answer) = h.approvals().open(
+            ferrule_trust::ChatRef::new("telegram", "5"),
+            "run `rm -rf build`",
+        );
+        let (_, v) = call(&ctx, "approvals", json!({})).await;
+        assert_eq!(v["approvals"][0]["code"], json!(code));
+        assert_eq!(v["approvals"][0]["chat"], "telegram:5");
+        let (s, _) = call(&ctx, "POST approvals/answer", json!({ "code": code })).await;
+        assert_eq!(s, 400, "allow or refuse, never a guess");
+        let (s, v) = call(
+            &ctx,
+            "POST approvals/answer",
+            json!({ "code": code, "allow": false }),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert!(matches!(
+            answer.try_recv().unwrap(),
+            ferrule_trust::approval::Answer::No(_)
+        ));
+        let (s, _) = call(
+            &ctx,
+            "POST approvals/answer",
+            json!({ "code": code, "allow": true }),
+        )
+        .await;
+        assert_eq!(s, 404, "answered once");
+        let events = h.audit().read(None).unwrap();
+        assert!(events
+            .iter()
+            .any(|e| e.event == "approval_refused" && e.detail["by"] == "dashboard"));
+        drop(rx);
+        run.await.unwrap().unwrap();
     }
 
     #[cfg(unix)]

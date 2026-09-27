@@ -157,6 +157,12 @@ pub fn route_for(tree: &str) -> Route {
             "this is scheduled task `{task}`, which runs unattended"
         ));
     }
+    // M37 §4.3: the page's own chat; whoever is logged in is the owner.
+    if tree == "dashboard__owner" {
+        return Route::Owner {
+            chat_label: "the dashboard's chat".into(),
+        };
+    }
     if let Some(chat) = tree.strip_prefix("telegram__") {
         return Route::Owner {
             chat_label: format!("Telegram chat {chat}"),
