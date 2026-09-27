@@ -453,6 +453,18 @@ async fn providers(
             ));
             continue;
         };
+        if ferrule_providers::anthropic::is_subscription_token(&value) {
+            broken(
+                r,
+                format!(
+                    "{label}: ${} {}",
+                    p.api_key_env,
+                    ferrule_providers::anthropic::SUBSCRIPTION_TOKEN_REFUSED
+                        .trim_start_matches("this ")
+                ),
+            );
+            continue;
+        }
         let from = match secrets::source(&p.api_key_env) {
             secrets::Source::Env => "key from your shell",
             _ => "saved key",
@@ -509,6 +521,11 @@ async fn plan_check(
             r.warn("provider", text)
         }
     };
+    if plan == config::Plan::ClaudeCode {
+        claude_check(r, label, is_default).await;
+        plan_usage(r, plan);
+        return;
+    }
     let state = subscription::state(plan);
     match &state {
         SignIn::In { .. } => {}
@@ -561,14 +578,53 @@ async fn plan_check(
         }
     }
     r.ok("provider", text);
+    plan_usage(r, plan);
+}
+
+/// The plan's last usage reading, when there is one.
+fn plan_usage(r: &mut Report, plan: config::Plan) {
     if let Some(reading) = config::data_dir()
         .ok()
         .and_then(|d| ferrule_plans::UsageFile::new(&d).get(plan.as_str()))
     {
         r.note(
             "plan",
-            format!("{plan}: {}", reading.line(subscription::now())),
+            format!("{plan}: {}", reading.line(crate::subscription::now())),
         );
+    }
+}
+
+/// M35: the Claude plan through Claude Code — asked of claude itself
+/// (`--version`, `auth status`), never by a model call.
+async fn claude_check(r: &mut Report, label: &str, is_default: bool) {
+    use crate::subscription::claude;
+    let settings = claude::settings();
+    let now = crate::subscription::now();
+    let c = match tokio::task::spawn_blocking(move || claude::check(&settings, now)).await {
+        Ok(c) => c,
+        Err(e) => {
+            r.warn("provider", format!("{label}: the check failed: {e}"));
+            return;
+        }
+    };
+    for text in c.ok {
+        r.ok("provider", format!("{label} · {text}"));
+    }
+    for (text, hint) in c.warn {
+        r.warn("provider", format!("{label}: {text}"));
+        if let Some(h) = hint {
+            r.hint(h);
+        }
+    }
+    for (text, hint) in c.fail {
+        if is_default {
+            r.fail("provider", format!("{label}: {text}"));
+        } else {
+            r.warn("provider", format!("{label}: {text}"));
+        }
+        if let Some(h) = hint {
+            r.hint(h);
+        }
     }
 }
 

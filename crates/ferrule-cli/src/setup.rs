@@ -245,7 +245,7 @@ fn settle(result: Result<()>) -> Result<Flow> {
 
 /// Ctrl-C while waiting on the network ends setup, the way it does at a
 /// prompt.
-async fn interruptible<T>(fut: impl Future<Output = T>) -> Result<T> {
+pub(crate) async fn interruptible<T>(fut: impl Future<Output = T>) -> Result<T> {
     tokio::select! {
         out = fut => Ok(out),
         _ = tokio::signal::ctrl_c() => Err(InquireError::OperationInterrupted.into()),
@@ -606,6 +606,9 @@ pub(crate) fn ask_secret(
             }
         } else if value.contains(char::is_whitespace) {
             Validation::Invalid("it can't contain spaces".into())
+        } else if ferrule_providers::anthropic::is_subscription_token(value) {
+            // M35: never an API key, whatever the provider.
+            Validation::Invalid(ferrule_providers::anthropic::SUBSCRIPTION_TOKEN_REFUSED.into())
         } else if let Some(why) = shape(value) {
             Validation::Invalid(why.into())
         } else {
@@ -1340,7 +1343,7 @@ async fn ask_provider_key(
 
 /// Pick from the provider's list, or type a name when there's no list or
 /// the model isn't on it.
-fn pick_model(models: &[String], current: &str) -> Result<String> {
+pub(crate) fn pick_model(models: &[String], current: &str) -> Result<String> {
     const TYPE: &str = "Type a model name…";
     if !models.is_empty() {
         let mut options: Vec<String> = models.to_vec();

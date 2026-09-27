@@ -105,6 +105,62 @@ impl std::fmt::Display for Plan {
 #[serde(default, deny_unknown_fields)]
 pub struct PlansConfig {
     pub chatgpt: ChatGptPlanConfig,
+    pub claude_code: ClaudeCodePlanConfig,
+}
+
+/// `[plans.claude_code]`: how the Claude Code engine runs `claude`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClaudeCodePlanConfig {
+    /// Found on `PATH`; an absolute path works.
+    pub binary: String,
+    /// `""` is `<data>/claude-code`; `"~/.claude"` reuses claude's own
+    /// login (and its settings, which doctor then checks).
+    pub config_dir: String,
+    pub turn_timeout_minutes: u64,
+    pub max_output_mb: u64,
+    /// Claude Code strips its credentials from its Bash commands' env
+    /// (needs bubblewrap on Linux, else the turn fails).
+    pub scrub_subprocess_env: bool,
+}
+
+impl Default for ClaudeCodePlanConfig {
+    fn default() -> Self {
+        Self {
+            binary: "claude".into(),
+            config_dir: String::new(),
+            turn_timeout_minutes: 20,
+            max_output_mb: 16,
+            scrub_subprocess_env: false,
+        }
+    }
+}
+
+impl ClaudeCodePlanConfig {
+    /// The engine's `CLAUDE_CONFIG_DIR`.
+    pub fn config_dir(&self, data: &std::path::Path) -> PathBuf {
+        let dir = self.config_dir.trim();
+        if dir.is_empty() {
+            return data.join("claude-code");
+        }
+        match dir
+            .strip_prefix("~/")
+            .or(if dir == "~" { Some("") } else { None })
+        {
+            Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+            None => PathBuf::from(dir),
+        }
+    }
+
+    /// `binary` found on `PATH`, else as written (so "not found" names it).
+    pub fn binary(&self) -> PathBuf {
+        let raw = PathBuf::from(if self.binary.trim().is_empty() {
+            "claude"
+        } else {
+            self.binary.trim()
+        });
+        ferrule_plans::claude::cli::find(&raw).unwrap_or(raw)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1541,6 +1597,15 @@ pub fn config_path() -> Result<Option<PathBuf>> {
 }
 
 impl Config {
+    /// M35: whether any provider runs through Claude Code, which widens
+    /// egress to Anthropic's hosts and hides claude's credentials from
+    /// commands.
+    pub fn uses_claude_code(&self) -> bool {
+        self.providers
+            .values()
+            .any(|p| p.plan == Some(Plan::ClaudeCode))
+    }
+
     pub fn load() -> Result<(Self, PathBuf)> {
         let Some(path) = config_path()? else {
             bail!("no config found. Run `ferrule setup` first.")

@@ -59,6 +59,9 @@ pub struct Entry {
     pub issuer: String,
 }
 
+/// The window ferrule assumes for a model run through Claude Code.
+pub const CLAUDE_CODE_WINDOW: usize = 1_000_000;
+
 impl Entry {
     /// A driver for this model with `key`.
     pub fn client(&self, key: impl Into<String>) -> Arc<dyn Provider> {
@@ -343,7 +346,11 @@ fn entry(
         base_url: p.endpoint(),
         key_env: p.api_key_env.clone(),
         profile: mc.profile.clone().unwrap_or_else(|| p.profile.clone()),
-        context_window: mc.context_window,
+        // M35: claude keeps (and compacts) the conversation itself; ferrule's
+        // compaction would drop the session it resumes, so it waits long.
+        context_window: mc
+            .context_window
+            .or((p.plan == Some(crate::config::Plan::ClaudeCode)).then_some(CLAUDE_CODE_WINDOW)),
         pricing,
         price_source: mc.price_source.clone(),
         aliases: Vec::new(),

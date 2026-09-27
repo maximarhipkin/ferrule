@@ -15,8 +15,8 @@ use std::sync::Arc;
 pub const EGRESS_PROVIDER: &str = "egress";
 
 /// `[egress]` with every endpoint the config names let through the private
-/// guard (and `default = "deny"`) on its own port: model servers, the
-/// embedder, MCP servers, the search backend, the telemetry collector.
+/// guard (and `default = "deny"`) on its own port: model servers (and
+/// Anthropic's hosts for the Claude plan's engine), the embedder, MCP servers, the search backend, the telemetry collector.
 pub fn policy(cfg: &Config) -> Result<EgressPolicy> {
     let mut policy = cfg.egress.policy()?;
     for (host, port) in endpoints(cfg) {
@@ -41,6 +41,15 @@ pub fn endpoints(cfg: &Config) -> Vec<(String, u16)> {
         urls.push(t);
     }
     let mut out: Vec<(String, u16)> = urls.iter().filter_map(|u| host_port(u)).collect();
+    // M35: claude, run as the Claude plan's engine, goes through the proxy
+    // to Anthropic's own hosts.
+    if cfg.uses_claude_code() {
+        out.extend(
+            crate::subscription::claude::ANTHROPIC_HOSTS
+                .iter()
+                .map(|h| (h.to_string(), 443)),
+        );
+    }
     out.sort();
     out.dedup();
     out

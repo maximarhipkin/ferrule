@@ -12,6 +12,7 @@
 //! - `engine`: the `ClaudeCode` provider.
 
 pub mod bridge;
+pub mod cli;
 pub mod engine;
 pub mod env;
 pub mod stream;

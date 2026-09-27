@@ -3,6 +3,7 @@
 //! `ferrule-plans`; this is where the CLI builds a plan's driver, and the
 //! lines status and doctor print.
 
+pub mod claude;
 pub mod login;
 
 use crate::config::Plan;
@@ -67,9 +68,8 @@ pub async fn chatgpt_models(issuer: &str) -> Vec<String> {
 pub const CLAUDE_CODE_MODELS: &[&str] = &["sonnet", "opus", "haiku"];
 
 /// Setup's Claude plan choice.
-pub async fn claude_setup_step(_t: &mut crate::setup::Target) -> anyhow::Result<()> {
-    crate::setup::warn("the Claude Code engine isn't available in this build");
-    Ok(())
+pub async fn claude_setup_step(t: &mut crate::setup::Target) -> anyhow::Result<()> {
+    claude::setup_step(t).await
 }
 
 /// The plan's models at the pinned Codex commit.
@@ -90,10 +90,7 @@ pub fn client(
             Ok(auth) => Arc::new(CodexProvider::new(name, base_url, model, options, auth)),
             Err(e) => unavailable(name, format!("the ChatGPT plan: {e:#}")),
         },
-        Plan::ClaudeCode => unavailable(
-            name,
-            "the Claude Code engine isn't available in this build".into(),
-        ),
+        Plan::ClaudeCode => claude::client(name, model),
     }
 }
 
@@ -184,7 +181,7 @@ pub fn state(plan: Plan) -> SignIn {
             Ok(private) => chatgpt_state_at(&private),
             Err(e) => SignIn::Unreadable(format!("{e:#}")),
         },
-        Plan::ClaudeCode => SignIn::Out,
+        Plan::ClaudeCode => claude::state(),
     }
 }
 

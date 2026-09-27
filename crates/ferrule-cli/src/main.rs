@@ -286,7 +286,15 @@ enum Cmd {
         /// ChatGPT: paste the address the browser ended on (no listener)
         #[arg(long, conflicts_with = "browser")]
         paste: bool,
+        /// Claude: paste a setup-token from `claude setup-token` (hidden
+        /// input, or one line from a pipe) instead of claude's own sign-in
+        #[arg(long, conflicts_with_all = ["browser", "paste"])]
+        token: bool,
     },
+    /// Internal (M35): claude's MCP server for ferrule's tools, a relay to
+    /// the running turn's bridge
+    #[command(hide = true)]
+    ClaudeMcp,
     /// Sign out of a subscription: revoke what can be revoked, delete what
     /// ferrule stored
     Logout { which: subscription::login::Which },
@@ -504,7 +512,22 @@ fn main() -> Result<()> {
     // On Windows, ferrule is also the sandbox's launcher (M26): run as
     // `ferrule __sandbox-launch <program> <args…>`, it never gets here.
     ferrule_sandbox::launch::intercept();
+    // M35: an exported Claude plan token goes to the claude child only, not
+    // to hooks, MCP servers or commands, which inherit this environment.
+    ferrule_plans::claude::token::take_exported();
     let cli = Cli::parse();
+    // M35: claude's MCP server for ferrule's tools, started by claude. It
+    // only relays; nothing else of ferrule runs in it.
+    if let Cmd::ClaudeMcp = cli.cmd {
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(ferrule_plans::claude::bridge::relay_from_env(
+                tokio::io::stdin(),
+                tokio::io::stdout(),
+            ))
+            .context("relaying claude's MCP calls");
+    }
     // Printed as RUST_LOG says; warnings and errors are also kept for
     // the gateway's `/status` (M19b).
     use tracing_subscriber::prelude::*;
@@ -574,6 +597,8 @@ fn main() -> Result<()> {
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
     match cmd {
+        // Handled in `main`, before anything else starts.
+        Cmd::ClaudeMcp => unreachable!("claude-mcp runs before dispatch"),
         Cmd::Setup { .. } => {
             let done = setup::run().await;
             // Whatever root wrote there, the service's user must own.
@@ -724,6 +749,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             which,
             browser,
             paste,
+            token,
         } => {
             use subscription::login::Flow;
             let flow = match (browser, paste) {
@@ -731,7 +757,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 (true, _) => Flow::Browser,
                 _ => Flow::Device,
             };
-            subscription::login::login(which, flow).await?
+            subscription::login::login(which, flow, token).await?
         }
         Cmd::Logout { which } => subscription::login::logout(which).await?,
         Cmd::Skills {
@@ -1278,6 +1304,18 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     // Commands get these back as placeholders, from the credential proxy.
     policy.secret_vars.extend(cfg.secrets.keys().cloned());
     policy.hidden.extend(hidden_paths());
+    // M35: claude's login (its config dir, and ~/.claude when that's the
+    // one in use) is out of reach of ferrule's commands; only the engine's
+    // own sandbox (`engine_sandbox`) leaves it readable, to claude.
+    if cfg.uses_claude_code() {
+        if let Ok(dir) = subscription::claude::config_dir(&cfg.plans.claude_code) {
+            policy.hidden.push(dir);
+        }
+        if let Some(home) = dirs::home_dir() {
+            policy.hidden.push(home.join(".claude"));
+            policy.hidden.push(home.join(".claude.json"));
+        }
+    }
     policy.state_dir = config::data_dir().ok().map(|d| d.join("sandbox"));
     policy
 }
@@ -1372,6 +1410,32 @@ fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
             .with_egress(Some(tool_egress(broker)?));
     }
     Ok(SANDBOX.get_or_init(|| Arc::new(sandbox)).clone())
+}
+
+/// The Claude Code engine's sandbox (M35): ferrule's policy without the
+/// hide on claude's own config dir, and egress through the proxy, which
+/// lets Anthropic's hosts through when a claude-code provider exists. The
+/// engine adds the config dir as writable itself.
+pub(crate) fn engine_sandbox(cfg: &config::Config, config_dir: &Path) -> Result<Sandbox> {
+    static SANDBOX: OnceLock<Sandbox> = OnceLock::new();
+    if let Some(sandbox) = SANDBOX.get() {
+        return Ok(sandbox.clone());
+    }
+    let mut policy = sandbox_policy(cfg);
+    let home_claude = dirs::home_dir().map(|h| (h.join(".claude"), h.join(".claude.json")));
+    policy.hidden.retain(|p| {
+        p != config_dir
+            && !home_claude
+                .as_ref()
+                .is_some_and(|(d, f)| config_dir == d && (p == d || p == f))
+    });
+    let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
+    if let Some(broker) = shared_broker(cfg)? {
+        sandbox = sandbox
+            .with_env(broker.child_env())
+            .with_egress(Some(tool_egress(broker)?));
+    }
+    Ok(SANDBOX.get_or_init(|| sandbox).clone())
 }
 
 /// What ferrule's own clients acting for the model (`web_fetch`, search,

@@ -94,11 +94,49 @@ impl Mcp {
     }
 }
 
+/// `--version` and `auth status|login|logout`: a login is a file here.
+fn not_a_turn(args: &[String], fake: &std::path::Path) -> Option<i32> {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let marker = fake.join("logged-in");
+    match words.as_slice() {
+        ["--version"] => println!("2.1.283 (Claude Code)"),
+        ["auth", "status", ..] => {
+            let token = std::env::var_os("CLAUDE_CODE_OAUTH_TOKEN").is_some();
+            let login = marker.exists();
+            let method = match (token, login) {
+                (true, _) => "oauth_token",
+                (_, true) => "claude.ai",
+                _ => "none",
+            };
+            println!(
+                "{}",
+                json!({"loggedIn": token || login, "authMethod": method,
+                    "email": if login { Some("owner@example.com") } else { None },
+                    "subscriptionType": if login { Some("max") } else { None }})
+            );
+            return Some(if token || login { 0 } else { 1 });
+        }
+        ["auth", "login", ..] => {
+            std::fs::write(&marker, "").unwrap();
+            println!("Login successful.");
+        }
+        ["auth", "logout"] => {
+            let _ = std::fs::remove_file(&marker);
+            println!("Successfully logged out from your Anthropic account.");
+        }
+        _ => return None,
+    }
+    Some(0)
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config = PathBuf::from(std::env::var("CLAUDE_CONFIG_DIR").expect("CLAUDE_CONFIG_DIR"));
     let fake = config.join("fake");
     std::fs::create_dir_all(fake.join("sessions")).unwrap();
+    if let Some(code) = not_a_turn(&args, &fake) {
+        std::process::exit(code);
+    }
     let mut prompt = String::new();
     std::io::stdin().read_to_string(&mut prompt).unwrap();
 

@@ -620,3 +620,41 @@ fn ids_are_sanitized_the_same_way_on_both_sides() {
     assert_eq!(sanitize_id("toolu_01-A"), "toolu_01-A");
     assert_eq!(sanitize_id(""), "call");
 }
+
+#[tokio::test]
+async fn a_subscription_token_is_refused_on_every_call_without_a_request() {
+    // Port 9 (discard): a request would fail with a connection error, not
+    // with the refusal.
+    let url = "http://127.0.0.1:9/v1";
+    let direct = AnthropicProvider::new(
+        "anthropic",
+        url,
+        "sk-ant-oat01-NOTAKEY",
+        MODEL,
+        DriverOptions::default(),
+    );
+    assert!(direct.api_key.is_empty(), "the token isn't kept");
+    // Whatever `api` a config names, the key picks the refusing driver.
+    let built = crate::build(
+        crate::Api::Chat,
+        "anthropic",
+        url,
+        " sk-ant-oat01-NOTAKEY",
+        MODEL,
+        DriverOptions::default(),
+    );
+    for p in [&direct as &dyn Provider, built.as_ref()] {
+        for _ in 0..2 {
+            let err = p
+                .complete(req(vec![Message::user("hi")]))
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(SUBSCRIPTION_TOKEN_REFUSED),
+                "{err}"
+            );
+        }
+    }
+    assert!(is_subscription_token("sk-ant-oat01-x"));
+    assert!(!is_subscription_token("sk-ant-api03-x"));
+}

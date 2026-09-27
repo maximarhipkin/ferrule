@@ -176,7 +176,9 @@ pub struct DriverOptions {
     pub max_tokens: Option<u32>,
 }
 
-/// The driver for `api`. `name` is the provider's name in config.
+/// The driver for `api`. `name` is the provider's name in config. A
+/// Claude subscription token as the key gets the Anthropic driver whatever
+/// `api` says, which refuses it on every call (M35).
 pub fn build(
     api: Api,
     name: impl Into<String>,
@@ -185,6 +187,12 @@ pub fn build(
     model: impl Into<String>,
     options: DriverOptions,
 ) -> Arc<dyn Provider> {
+    let api_key = api_key.into();
+    let api = if anthropic::is_subscription_token(&api_key) {
+        Api::Anthropic
+    } else {
+        api
+    };
     match api {
         Api::Chat => Arc::new(OpenAiCompatProvider::new(name, base_url, api_key, model)),
         Api::Anthropic => Arc::new(AnthropicProvider::new(

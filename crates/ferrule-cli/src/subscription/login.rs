@@ -47,11 +47,15 @@ fn issuer() -> String {
         .unwrap_or_default()
 }
 
-pub async fn login(which: Which, flow: Flow) -> Result<()> {
+/// `paste_token`: `ferrule login claude --token`.
+pub async fn login(which: Which, flow: Flow, paste_token: bool) -> Result<()> {
+    if paste_token && which != Which::Claude {
+        bail!("--token is for `ferrule login claude`");
+    }
     match which {
         Which::Chatgpt => {
             println!("{}.", sign_in_chatgpt(&issuer(), flow).await?);
-            if let Some(line) = add_provider()? {
+            if let Some(line) = add_provider(Plan::Chatgpt, CHATGPT_MODEL)? {
                 println!("{line}");
             }
             println!(
@@ -60,7 +64,7 @@ pub async fn login(which: Which, flow: Flow) -> Result<()> {
             );
             Ok(())
         }
-        Which::Claude => bail!("`ferrule login claude` comes with the Claude Code engine"),
+        Which::Claude => super::claude::login(paste_token).await,
     }
 }
 
@@ -71,7 +75,7 @@ pub async fn logout(which: Which) -> Result<()> {
             println!("{}", logged_out_words(out));
             Ok(())
         }
-        Which::Claude => bail!("`ferrule logout claude` comes with the Claude Code engine"),
+        Which::Claude => super::claude::logout().await,
     }
 }
 
@@ -185,19 +189,16 @@ async fn pasted(state: &str) -> Result<String> {
 /// After a sign-in: `[providers.chatgpt]` in the config if no provider is
 /// on the plan yet. The default model isn't changed (setup or `/model`
 /// does that).
-fn add_provider() -> Result<Option<String>> {
+pub(crate) fn add_provider(plan: Plan, model: &str) -> Result<Option<String>> {
+    let base = plan.as_str();
     let Some(path) = config::config_path()? else {
         return Ok(Some(format!(
             "There's no config yet: `ferrule setup` picks the plan as the model, \
-             or add [providers.chatgpt] with plan = \"chatgpt\" and model = \"{CHATGPT_MODEL}\"."
+             or add [providers.{base}] with plan = \"{base}\" and model = \"{model}\"."
         )));
     };
     if let Ok((cfg, _)) = config::Config::load() {
-        if cfg
-            .providers
-            .values()
-            .any(|p| p.plan == Some(Plan::Chatgpt))
-        {
+        if cfg.providers.values().any(|p| p.plan == Some(plan)) {
             return Ok(None);
         }
     }
@@ -212,15 +213,15 @@ fn add_provider() -> Result<Option<String>> {
         .get_mut("providers")
         .and_then(|i| i.as_table_like_mut())
         .context("[providers] in the config isn't a table")?;
-    let name = if providers.contains_key("chatgpt") {
-        "chatgpt-plan"
+    let name = if providers.contains_key(base) {
+        format!("{base}-plan")
     } else {
-        "chatgpt"
+        base.to_string()
     };
     let mut table = toml_edit::Table::new();
-    table.insert("plan", toml_edit::value("chatgpt"));
-    table.insert("model", toml_edit::value(CHATGPT_MODEL));
-    providers.insert(name, toml_edit::Item::Table(table));
+    table.insert("plan", toml_edit::value(base));
+    table.insert("model", toml_edit::value(model));
+    providers.insert(&name, toml_edit::Item::Table(table));
     t.save()?;
     Ok(Some(format!(
         "Added [providers.{name}] to {}; `/model default {name}` (or `ferrule setup`) makes it the default.",

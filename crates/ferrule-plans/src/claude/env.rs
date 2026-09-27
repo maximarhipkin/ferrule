@@ -115,6 +115,11 @@ impl ChildSpec {
     }
 
     pub fn apply(&self, cmd: &mut tokio::process::Command) {
+        self.apply_std(cmd.as_std_mut());
+    }
+
+    /// [`ChildSpec::apply`] on a std `Command`: the environment only.
+    pub fn apply_std(&self, cmd: &mut std::process::Command) {
         for name in &self.remove {
             cmd.env_remove(name);
         }
@@ -165,6 +170,22 @@ pub fn spec(launch: &Launch, parent_vars: impl IntoIterator<Item = String>) -> C
         args.push(launch.disallowed.join(","));
     }
 
+    let mut spec = command(args, &launch.config_dir, launch.token.as_ref(), parent_vars);
+    if launch.scrub_subprocess_env {
+        spec.set
+            .push(("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB".into(), "1".into()));
+    }
+    spec
+}
+
+/// Any other `claude` run (`--version`, `auth status`, `auth login`): the
+/// same environment as a turn's, with `args`.
+pub fn command(
+    args: Vec<String>,
+    config_dir: &Path,
+    token: Option<&Token>,
+    parent_vars: impl IntoIterator<Item = String>,
+) -> ChildSpec {
     let mut remove: Vec<String> = REMOVED.iter().map(|s| s.to_string()).collect();
     for name in parent_vars {
         if REMOVED_PREFIXES.iter().any(|p| name.starts_with(p)) && !remove.contains(&name) {
@@ -174,7 +195,7 @@ pub fn spec(launch: &Launch, parent_vars: impl IntoIterator<Item = String>) -> C
     let mut set = vec![
         (
             "CLAUDE_CONFIG_DIR".to_string(),
-            launch.config_dir.display().to_string(),
+            config_dir.display().to_string(),
         ),
         ("DISABLE_AUTOUPDATER".into(), "1".into()),
         (
@@ -182,10 +203,7 @@ pub fn spec(launch: &Launch, parent_vars: impl IntoIterator<Item = String>) -> C
             "1".into(),
         ),
     ];
-    if launch.scrub_subprocess_env {
-        set.push(("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB".into(), "1".into()));
-    }
-    if let Some(t) = &launch.token {
+    if let Some(t) = token {
         set.push((TOKEN_VAR.into(), t.expose().to_string()));
     }
     ChildSpec { args, remove, set }
