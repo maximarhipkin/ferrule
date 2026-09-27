@@ -110,12 +110,13 @@ existing or new POST endpoint; nothing runs a shell.
 | no fallback while the default is flaky | Set a fallback | the chain editor (§2.1) |
 | models without prices | Fill prices | `catalog/fill-prices` (exists) |
 | channel problem or stale | Restart `<channel>` | `channels/restart` (new, §1.4) |
-| config didn't load / reverted | Reload from last-good | `config/restore` (new, §4.4) |
-| update check failed / update available | Check for updates; Update now | `update/check`, `update/apply` (console jobs, §4.2) |
-| `claude` outdated / missing | Update claude | `update/claude` (console job) |
-| tunnel lost | Re-open the tunnel | `tunnel/reopen` (new) |
+| config didn't load / reverted | Restore the last good config | `config/restore` (new, asks first, §4.4) |
+| update check failed / update available | Check for an update | `console/run {line: "update --check"}` (a console job, §4.2); installing is `update --yes` in the console, which confirms |
+| `claude` outdated / missing | Run doctor | `doctor/run`; there is no separate `update claude` command: `[update] claude = true` has `ferrule update` keep it current |
+| tunnel lost | none on the page | a page reached through a lost tunnel can't be clicked; `/dashboard` in the owner's chat opens a new one |
 | a stuck turn | Stop it | `turn/stop` (exists) |
 | a connection needs reconnecting | Reconnect | `connections/connect` (exists, fixed §3) |
+| a service keeps the gateway and it needs a restart | Restart the gateway | `gateway/restart` (only under a service) |
 
 ### 1.4 Restarting a channel
 
