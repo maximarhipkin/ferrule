@@ -83,7 +83,8 @@ fn a_failed_update_says_why() {
     let e = update::update(&install, tmp.path(), Duration::from_secs(60)).unwrap_err();
     let text = format!("{e:#}");
     assert!(
-        text.contains("claude update failed") && text.contains("EACCES"),
+        // `claude.exe update failed` on Windows.
+        text.contains(" update failed") && text.contains("EACCES"),
         "{text}"
     );
 }

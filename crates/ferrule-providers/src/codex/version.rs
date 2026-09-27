@@ -411,8 +411,9 @@ mod tests {
         format!("{base}/{path}")
     }
 
+    /// Up to 30 s: Windows takes about 2 s to refuse each connection.
     async fn settled(id: &Arc<ClientIdentity>) {
-        for _ in 0..200 {
+        for _ in 0..3000 {
             if !id.refreshing.load(Ordering::Acquire) {
                 return;
             }
