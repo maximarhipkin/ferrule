@@ -178,7 +178,7 @@ impl CodexProvider {
                 self.auth.observe(&limits);
             }
             let quiet = DeltaSink::new(|_| {});
-            let reply = match common::opened(resp).await? {
+            let reply = match common::opened_as_stream(resp).await? {
                 common::Opened::Events(events) => {
                     return read_stream(events, sink.unwrap_or(&quiet)).await
                 }

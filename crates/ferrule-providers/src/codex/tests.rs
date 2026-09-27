@@ -165,6 +165,24 @@ async fn a_turn_goes_to_the_codex_backend_in_its_shape() {
 }
 
 #[tokio::test]
+async fn a_stream_is_read_as_one_whatever_its_content_type() {
+    // The live backend streams under a type that isn't
+    // `text/event-stream`; Codex reads any 2xx as events.
+    for headers in [
+        "",
+        "content-type: application/json\r\n",
+        "content-type: text/plain\r\n",
+    ] {
+        let wire = stream("pong");
+        let mut reply = sse(&refs(&wire));
+        reply.headers = headers;
+        let (url, _seen) = serve(vec![reply]);
+        let resp = provider(&url, fake()).complete(req()).await.unwrap();
+        assert_eq!(resp.message.content.as_deref(), Some("pong"), "{headers:?}");
+    }
+}
+
+#[tokio::test]
 async fn the_cache_key_is_stable_across_a_conversation() {
     let p = provider("http://127.0.0.1:1/v1", fake());
     let mut r = req();
