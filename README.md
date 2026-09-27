@@ -147,8 +147,11 @@ channels today (WhatsApp included; ferrule has Telegram, Discord and
 Slack), and their ecosystems are bigger by years. What ferrule won't
 compromise: the sandbox and the credential proxy are **on by default, not
 opt-in**; every run ends in a **status you can trust**, with a verify
-loop behind it; spend is **capped by you**, not hoped for. And the claims
-are measurable — the repo ships its own harness benchmark
+loop behind it; spend is **capped by you**, not hoped for. And it stays
+**one process**: every chat, every scheduled task, every sub-agent with
+its own budget and worktree, the dashboard, the proxy — ferrule is all
+the agents you'll need, not a container per agent to babysit. The claims
+are measurable too — the repo ships its own harness benchmark
 (`ferrule eval run evals/starter --variant ab`), where ferrule's harness
 beat its naive twin on the same model: +10 points overall, and 9/12 vs
 1/12 on the verify-graded tasks.
