@@ -26,8 +26,8 @@
 
   <rect x="356" y="88" width="280" height="160" rx="12" fill="#17191c" stroke="#c4764a" stroke-width="1.5"/>
   <text x="372" y="116" class="h c">2 · ferrule setup</text>
-  <text x="372" y="142" class="s">tests your key live, then offers</text>
-  <text x="372" y="160" class="s">the models the key can use</text>
+  <text x="372" y="142" class="s">plan sign-in or a key, tested live,</text>
+  <text x="372" y="160" class="s">then offers the models it can use</text>
   <text x="372" y="182" class="s">Telegram bot + chat allow-list</text>
   <text x="372" y="200" class="s">tool credentials bound to hosts</text>
   <text x="372" y="218" class="s">sandbox policy · background service</text>
@@ -39,8 +39,8 @@
   <text x="692" y="120" class="h" style="font-size:13px">ferrule chat</text>
   <text x="692" y="137" class="s l">one-shot or interactive, terminal</text>
   <rect x="676" y="156" width="252" height="48" rx="10" class="b"/>
-  <text x="692" y="176" class="h" style="font-size:13px">Telegram</text>
-  <text x="692" y="193" class="s l">one session lane per chat</text>
+  <text x="692" y="176" class="h" style="font-size:13px">Telegram · Discord · Slack</text>
+  <text x="692" y="193" class="s l">one lane per chat · button approvals</text>
   <rect x="676" y="212" width="252" height="48" rx="10" class="b"/>
   <text x="692" y="232" class="h" style="font-size:13px">cron + one-shot tasks</text>
   <text x="692" y="249" class="s l">gate scripts · truthful status</text>

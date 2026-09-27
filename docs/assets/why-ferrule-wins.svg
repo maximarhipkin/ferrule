@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="512" viewBox="0 0 960 512" role="img" aria-label="Why ferrule wins: a for-loop around an API call versus the ferrule harness — per-model harness profiles, structured compaction, verify_command as judge, never-stuck recovery and a per-call ledger; OpenAI measured the same model at 13.3% versus 38.3% on ARC-AGI-3 depending on the harness">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="512" viewBox="0 0 960 512" role="img" aria-label="Why ferrule wins: a do-it-yourself loop around an API call versus the ferrule harness — per-model harness profiles, structured compaction, verify_command as judge, never-stuck recovery and a per-call ledger; OpenAI measured the same model at 13.3% versus 38.3% on ARC-AGI-3 depending on the harness">
   <defs>
     <style>
       text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #cdd4da; font-size: 12px; }
@@ -17,8 +17,8 @@
   <text x="32" y="66" class="s" style="font-size:13px">Same model, same prompt. The harness around the call is the difference.</text>
 
   <rect x="32" y="88" width="424" height="308" rx="12" fill="#17191c" stroke="#2a2e33"/>
-  <text x="52" y="118" class="h s">A for-loop around an API call</text>
-  <text x="52" y="136" class="m l">the do-it-yourself agent loop</text>
+  <text x="52" y="118" class="h s">The do-it-yourself loop</text>
+  <text x="52" y="136" class="m l">one API call, repeated until the model stops</text>
   <text x="52" y="172" class="m">✗</text><text x="76" y="172" class="s">one prompt shape for every model</text>
   <text x="52" y="208" class="m">✗</text><text x="76" y="208" class="s">reasoning thrown away after each turn</text>
   <text x="52" y="244" class="m">✗</text><text x="76" y="244" class="s">history truncated at ~95% of the window</text>

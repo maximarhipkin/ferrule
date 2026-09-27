@@ -18,48 +18,50 @@
 <p align="center">
   <a href="#60-seconds-to-your-first-agent-run">60-second start</a> ·
   <a href="#why-ferrule-wins">Why ferrule wins</a> ·
+  <a href="#ferrule-vs-the-field">vs the field</a> ·
   <a href="#secure-by-default">Secure by default</a> ·
   <a href="#install">Install</a> ·
-  <a href="#configuration">Configuration</a> ·
-  <a href="#credential-gateway">Credential gateway</a> ·
-  <a href="#ferrule-vs-the-field">vs the field</a> ·
+  <a href="#documentation">Documentation</a> ·
   <a href="PLAN.md">PLAN.md</a>
 </p>
 
 ---
 
-## The pitch
+## What is ferrule?
 
-Ferrule runs a coding and operations agent against any model — API keys,
-a ChatGPT or Claude plan, or a local Ollama — from the terminal, Telegram,
-Discord, Slack, a cron schedule, or its own web dashboard. It's one
-binary (a download of about 10 MB, about 30 MB unpacked) with nothing to install beside it (the Linux builds
-are fully static): `ferrule --version` starts in about 4 ms, and the idle
-gateway daemon uses about 9 MB of RAM. All state lives in files you can
-read: SQLite for memory and tasks, JSONL for transcripts and the cost
-ledger.
+Ferrule is an AI agent that runs on your machine, on your terms. Give it a
+model — an API key, a ChatGPT or Claude plan you already pay for, or a
+local Ollama — and it works where you are: the terminal, Telegram, Discord
+and Slack, a cron schedule, or its own web dashboard. It can edit code,
+run commands, browse and search the web, drive your installed Chrome, work
+in a directory on another machine over SSH, connect Jira, Gmail, Notion
+and friends, and split big jobs across sub-agents — inside an OS sandbox,
+and without your API tokens ever reaching the commands it runs.
 
-Three reasons to pick ferrule over a for-loop around an API call:
+It's one Rust binary, a ~10 MB download with nothing to install beside it
+(the Linux builds are fully static): `ferrule --version` starts in about
+4 ms and the idle gateway daemon uses about 9 MB of RAM. Everything it
+remembers or spends lives in files you can read — SQLite for memory and
+tasks, JSONL for transcripts and the cost ledger.
 
-1. **The harness is the performance lever — ferrule is the harness.** In
-   OpenAI's 2026 ARC-AGI-3 runs, the *same* model scored 13.3% with a
-   default harness and 38.3% with an engineered one, on ~6× fewer output
-   tokens. Ferrule is built around that result: per-model harness profiles,
-   structured compaction, a verifier that won't let the agent stop early,
-   and a loop that never gets stuck. [The evidence.](#why-ferrule-wins)
-2. **Safe by default, not by configuration.** Every shell command the
-   agent runs sits inside an OS sandbox, and API tokens reach commands only
-   as same-shaped placeholders — a local proxy swaps in the real value on
-   the wire, only for the hosts you allow. [The layers.](#secure-by-default)
-3. **The easiest runtime to actually run.** One-line install, a setup
-   wizard that tests your keys live and offers the models they can use, and
-   `ferrule doctor` to re-check everything later and say what to fix.
-   [See for yourself.](#60-seconds-to-your-first-agent-run)
+## Why ferrule
+
+- **Better answers from the same model.** The runtime wrapped around a
+  model measurably changes how well it does — ferrule's is engineered, and
+  the benchmark ships in the repo: +10 points on our own task suite against
+  a naive loop driving the same model. [The numbers.](#why-ferrule-wins)
+- **Safe by default.** Every command the agent runs is sandboxed, and API
+  tokens reach commands only as same-shaped placeholders — a local proxy
+  swaps in the real value on the wire, only for the hosts you allow.
+  [The layers.](#secure-by-default)
+- **Easy to run.** One line installs it, a setup wizard signs you in and
+  tests everything live, and `ferrule doctor` re-checks it all later and
+  says what to fix. [See for yourself.](#60-seconds-to-your-first-agent-run)
 
 ## 60 seconds to your first agent run
 
 <p align="center">
-  <img src="docs/assets/quickstart-flow.svg" alt="Quick start: one-line install, the ferrule setup wizard, then chat in the terminal, Telegram or cron; ferrule doctor checks it all" width="860">
+  <img src="docs/assets/quickstart-flow.svg" alt="Quick start: one-line install, the ferrule setup wizard, then chat in the terminal, Telegram, Discord or Slack, or cron tasks; ferrule doctor checks it all" width="860">
 </p>
 
 ```bash
@@ -70,24 +72,24 @@ ferrule run "list the files here and summarise the project"
 
 On Windows it's `irm … install.ps1 | iex`.
 
-And this is what you get: real output, unedited (macOS build; on Linux the
-sandbox rows read Landlock + seccomp instead of Seatbelt). Here the
-provider is a local model, so no cloud key was involved:
+And this is what you get — real output, unedited, from the macOS build (on
+Linux the sandbox rows read Landlock + seccomp instead of Seatbelt); the
+provider here is a local model, so no cloud key was involved:
 
 <table align="center">
   <tr>
-    <td><img src="docs/assets/term-doctor.png" alt="ferrule doctor: config, keys, provider, sandbox, mcp, proxy, binary — all checks green, 'All good.'" width="440"></td>
-    <td><img src="docs/assets/term-sandbox.png" alt="ferrule sandbox: seatbelt backend, workspace-write mode, secret env vars withheld, GITHUB_TOKEN bound to its hosts through the proxy, every check ok" width="560"></td>
+    <td><img src="docs/assets/term-doctor.png" alt="ferrule doctor: config, keys, provider, channels, sandbox, mcp, proxy, egress, trust, editing, binary and browser checks — one warning with its fix, nothing broken" width="440"></td>
+    <td><img src="docs/assets/term-sandbox.png" alt="ferrule sandbox: seatbelt backend, workspace-write mode, secret env vars withheld, ferrule's own keys unreadable, GITHUB_TOKEN bound to its hosts through the proxy, every check ok" width="560"></td>
   </tr>
 </table>
 
-`ferrule doctor` checks the config, the saved keys' file permissions, the
-provider key **live**, Telegram, the sandbox, the credential-proxy path,
-MCP servers, an installed Chrome and the background service — and each red
-line comes with the exact fix. `ferrule sandbox` doesn't just print the
-policy, it runs the promises: write inside the workspace works, write
-outside is refused, the saved keys are unreadable, secret env vars are
-withheld.
+`ferrule doctor` checks the config, the saved keys' file permissions, every
+connected model **live**, the channels, the sandbox, the credential-proxy
+and egress path, MCP servers, sub-agent limits, spend caps, an installed
+Chrome and the background service — and anything that needs it comes with
+the exact fix. `ferrule sandbox` doesn't just print the policy, it runs
+the promises: write inside the workspace works, write outside is refused,
+the saved keys are unreadable, secret env vars are withheld.
 
 ## Why ferrule wins
 
@@ -110,7 +112,7 @@ engineered one, on ~6× fewer output tokens. Ferrule is that engineered
 harness, for every model it drives:
 
 <p align="center">
-  <img src="docs/assets/why-ferrule-wins.svg" alt="A for-loop around an API call versus the ferrule harness: per-model profiles, structured compaction, verify_command, never-stuck recovery, per-call ledger" width="860">
+  <img src="docs/assets/why-ferrule-wins.svg" alt="A do-it-yourself agent loop versus the ferrule harness: per-model profiles, structured compaction, verify_command, never-stuck recovery, per-call ledger" width="860">
 </p>
 
 - **A harness profile per model.** Context window, when to compact (at
@@ -262,15 +264,6 @@ installs it and starts `ferrule setup`. Nothing to export, no file to edit.
 Run it again to upgrade: your settings stay, and on Linux and macOS a
 running background service is restarted on the new binary.
 
-**Running 0.1.0 as a Telegram bot? Upgrade.** 0.1.0 can go silently deaf:
-a dropped long-poll connection hangs forever while the process looks alive.
-0.2.0 fixes that, and adds `/status` and `/stop` that answer even in the
-middle of a turn, a watchdog message when a turn stops making progress, a
-systemd watchdog for a wedged process and an optional outbound heartbeat
-([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). After the
-upgrade, `ferrule doctor` tells you if your service unit predates the
-watchdog and how to rewrite it.
-
 | | Installs to | Prebuilt for |
 |---|---|---|
 | Linux | `~/.local/bin/ferrule` | x86-64, arm64 (static, any distro) |
@@ -371,7 +364,7 @@ ferrule's own data directory.
 The full command surface, from the binary itself:
 
 <p align="center">
-  <img src="docs/assets/term-help.png" alt="ferrule --help: setup, doctor, run, chat, memory, config, gateway, tasks, ledger, skills, sandbox" width="820">
+  <img src="docs/assets/term-help.png" alt="ferrule --help: setup, doctor, run, chat, model, tasks, dashboard, eval, plugins, mcp, ssh, import, login, sandbox and more" width="820">
 </p>
 
 | | Linux | macOS | Windows |
@@ -615,35 +608,66 @@ and keep `cargo clippy --workspace --all-targets` clean.
 [`PLAN.md`](PLAN.md) is the shared working log: current state, open gaps
 and a dated entry for every session.
 
+## Documentation
 
-## Docs
+**Getting started**
+
+- Install, the setup wizard, Windows notes and `ferrule doctor` are in
+  this README: [Install](#install) · [Setup](#setup) ·
+  [Windows](#windows).
+- [`docs/subscriptions.md`](docs/subscriptions.md) — run on a ChatGPT or
+  Claude plan you already pay for, no API key.
+- [`docs/local-models.md`](docs/local-models.md) — run on Ollama,
+  llama.cpp, LM Studio or vLLM, with the context-window pitfalls handled.
+- [`docs/migrate.md`](docs/migrate.md) — move over from OpenClaw or Hermes
+  (`ferrule import`, a dry run until `--apply`).
+
+**Guides**
+
+- Models: [`models.md`](docs/models.md) (several at once, `/model`,
+  fallback) · [`routing.md`](docs/routing.md) (cheap-first escalation) ·
+  [`speed.md`](docs/speed.md) (streaming, parallel reads, prompt-cache
+  discipline).
+- The agent's reach: [`skills.md`](docs/skills.md) (Agent Skills, keyword
+  triggers) · [`plugins.md`](docs/plugins.md) (WASM, capability-gated) ·
+  [`m17-mcp-add.md`](docs/m17-mcp-add.md) (add an MCP server without a
+  restart) · [`m13-self-extension.md`](docs/m13-self-extension.md) (the
+  agent installing vetted extensions itself) ·
+  [`browser.md`](docs/browser.md) · [`web-search.md`](docs/web-search.md) ·
+  [`m20-connections.md`](docs/m20-connections.md) (Jira, Gmail, Notion…) ·
+  [`ssh.md`](docs/ssh.md) (workspaces on other machines).
+- How it works on your code: [`editing.md`](docs/editing.md)
+  (search/replace edits, repo map, lint, auto-commit with undo) ·
+  [`memory.md`](docs/memory.md) · [`agents.md`](docs/agents.md)
+  (sub-agents) · [`eval.md`](docs/eval.md) (benchmark harness changes
+  yourself) · [`m16-learning-loop.md`](docs/m16-learning-loop.md) (failed
+  runs become playbook lessons).
+- Running it day to day: [`dashboard.md`](docs/dashboard.md) ·
+  [`discord.md`](docs/discord.md) · [`slack.md`](docs/slack.md) ·
+  [`m18-hooks.md`](docs/m18-hooks.md) ·
+  [`m19-trust-cost.md`](docs/m19-trust-cost.md) (caps, approvals, kill
+  switch, plan mode) · [`m19b-reliability.md`](docs/m19b-reliability.md)
+  and [`m19c-live-fixes.md`](docs/m19c-live-fixes.md) (never silently
+  deaf).
+- Security and ops: [`sandbox.md`](docs/sandbox.md) ·
+  [`windows-sandbox.md`](docs/windows-sandbox.md) ·
+  [`egress.md`](docs/egress.md) · [`otel.md`](docs/otel.md).
+
+**Design and research**
 
 - [`docs/research-report.md`](docs/research-report.md): why the harness
-  matters, and the design behind Ferrule
-- [`docs/research-routing-and-local-models.md`](docs/research-routing-and-local-models.md):
-  multi-provider routing and local fine-tuning, phases and open decisions
-- [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md):
-  the credential gateway's design, threat model and limits
-- [`docs/research-autonomy-and-self-extension.md`](docs/research-autonomy-and-self-extension.md):
-  never stuck, the browser, self-extension and speed
-- [`docs/research-deployment-and-isolation.md`](docs/research-deployment-and-isolation.md):
-  deployment shapes and isolation, from a process to a container
-- [`docs/research-windows-sandbox.md`](docs/research-windows-sandbox.md):
-  a native Windows sandbox, tiered by what needs admin
-- Milestone docs: [`agents.md`](docs/agents.md) (sub-agents),
-  [`browser.md`](docs/browser.md), [`eval.md`](docs/eval.md),
-  [`m13-self-extension.md`](docs/m13-self-extension.md),
-  [`m15-memory.md`](docs/m15-memory.md),
-  [`m16-learning-loop.md`](docs/m16-learning-loop.md),
-  [`m17-mcp-add.md`](docs/m17-mcp-add.md), [`m18-hooks.md`](docs/m18-hooks.md),
-  [`m19-trust-cost.md`](docs/m19-trust-cost.md),
-  [`m19b-reliability.md`](docs/m19b-reliability.md),
-  [`m20-connections.md`](docs/m20-connections.md),
-  [`models.md`](docs/models.md) and [`m21-models.md`](docs/m21-models.md)
-- [`docs/ssh.md`](docs/ssh.md), [`docs/local-models.md`](docs/local-models.md):
-  SSH workspaces, and running on a local model
-- [`docs/egress.md`](docs/egress.md), [`docs/otel.md`](docs/otel.md),
-  [`docs/migrate.md`](docs/migrate.md): the egress policy, OpenTelemetry
-  export, and importing from OpenClaw or Hermes
-- [`docs/roadmap.md`](docs/roadmap.md): every milestone's design and status
-- [`PLAN.md`](PLAN.md): current state and session log
+  matters, and the design behind ferrule.
+- [`docs/research-number-one-harness-strategy.md`](docs/research-number-one-harness-strategy.md):
+  the competitor analysis behind the roadmap.
+- [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md),
+  [`docs/research-autonomy-and-self-extension.md`](docs/research-autonomy-and-self-extension.md),
+  [`docs/research-deployment-and-isolation.md`](docs/research-deployment-and-isolation.md),
+  [`docs/research-routing-and-local-models.md`](docs/research-routing-and-local-models.md),
+  [`docs/research-windows-sandbox.md`](docs/research-windows-sandbox.md):
+  the credential gateway, autonomy, isolation, routing and Windows-sandbox
+  investigations.
+- [`docs/roadmap.md`](docs/roadmap.md): every milestone's design and
+  status. The per-milestone design notes live next to it
+  (`docs/m12-multi-agent.md` … `docs/m35-subscriptions.md`).
+- [`PLAN.md`](PLAN.md): the shared working log — current state, open gaps
+  and a dated entry for every session.

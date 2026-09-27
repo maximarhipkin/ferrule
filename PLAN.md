@@ -4638,3 +4638,47 @@ same model), and the `ferrule import openclaw|hermes` line. The pitch now
 names the current surfaces (Telegram/Discord/Slack/dashboard, plans and
 local models). The three term-*.png captures regenerated earlier today
 against the current binary land in the same commit.
+
+### 2026-09-27 — README rebuilt for clarity (Kimi Code)
+
+Owner feedback on the v0.5.2 README: the "pitch" title was irrelevant, and
+parts were irrelevant or not understandable. Rebuilt the file top to
+bottom; the working tree was clean at `6f38497` and nothing was committed
+by me.
+
+- **Opening.** `## The pitch` is gone. `## What is ferrule?` describes the
+  product in plain language for a newcomer (surfaces, capabilities, the
+  footprint numbers), and `## Why ferrule` is three one-line strengths with
+  links to their sections: better answers from the same model (+10 pts on
+  the in-repo A/B), safe by default, easy to run. The "for-loop around an
+  API call" phrase is gone from text, alt texts and the
+  `why-ferrule-wins.svg` panel (now "The do-it-yourself loop — one API
+  call, repeated until the model stops").
+- **Cut.** The "Running 0.1.0 as a Telegram bot? Upgrade." notice in
+  Install (stale at v0.5.2; the substance lives in m19b-reliability.md).
+- **Fixed as stale.** `term-doctor.png`/`term-help.png` regenerated from
+  the v0.5.2 binary (the old ones still said v0.3.0 and predated
+  `login`/`logout`); `term-sandbox.png` was content-identical (only the
+  ephemeral proxy port differs) and is kept byte-for-byte. Same scratch
+  HOME + mock `/v1/models` + Pillow pipeline; the doctor run is all-green
+  but for the honest no-prices warning. `architecture.svg` captions:
+  Channels now read Telegram · Discord · Slack · local, the sandbox row
+  names the Windows restricted token, Providers says 3 drivers /
+  cheap-first routing. `quickstart-flow.svg`: wizard step mentions plan
+  sign-in, the channel card covers Discord/Slack. Alt texts for the three
+  terminal captures rewritten to match their real content (the old doctor
+  alt still described the M10 board).
+- **Documentation section.** The loose Docs list is now an index:
+  Getting started (README anchors + subscriptions, local-models, migrate),
+  Guides (models/routing/speed; skills/plugins/MCP/self-extension/browser/
+  web-search/connections/ssh; editing/memory/agents/eval/learning loop;
+  dashboard/discord/slack/hooks/trust&cost/reliability; sandbox/windows/
+  egress/otel), Design & research (all 7 research docs, roadmap.md, the
+  m12–m35 milestone notes, PLAN.md). Every entry exists on disk.
+- Verified: all 11 images resolve, all 58 doc/PLAN links resolve, all
+  anchors match headers (`#documentation` added to the nav), every quoted
+  `ferrule` command and subcommand form (`model …`, `tasks add --model`,
+  `login chatgpt`, `import openclaw`, `eval run`, …) exists in the v0.5.2
+  binary (`target/debug/ferrule`), all SVGs parse as XML, and the file was
+  re-read end to end. Windows-sandbox wording stays accurate (restricted
+  token + job object, Git Bash caveat).
