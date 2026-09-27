@@ -107,6 +107,9 @@ def step(c, pattern, send=None, pause=0.15):
 
 # ── Run 1: the guided first run ──────────────────────────────────────
 c = spawn()
+step(c, "How should ferrule reach a model", "API key")
+time.sleep(0.3)
+c.send("\r")
 step(c, "Which model provider", "Another")
 step(c, "Another OpenAI", "\r")
 step(c, "A short name for it", "Bad Name\r")

@@ -4554,5 +4554,8 @@ token); a spent Claude usage limit; Windows and macOS against a real
 `-D warnings` are clean. The starter eval against the mock through the
 real binary: engineered 20/20, naive 11/20, $0.98.
 
+**CI fix.** The e2e wizard answers the new "How should ferrule reach a
+model?" question (API key) before the provider list.
+
 **Follow-ups.** The OTel exporter doesn't send `plan`/`notional_usd`; a
 ChatGPT live turn once someone signs in; README lines (listed in the PR).
