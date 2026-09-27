@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-ssh"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 description = "Remote workspaces over the system OpenSSH client: the shell and file tools on another machine"
 
