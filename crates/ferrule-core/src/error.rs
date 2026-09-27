@@ -51,6 +51,16 @@ impl CoreError {
                     .into(),
             );
         }
+        // A subscription plan's own limit (M35): the drivers word it
+        // `usage_limit_reached: <what, and when it resets>`, and the reset
+        // time is the part the owner needs.
+        if let Some(at) = text.find("usage_limit_reached: ") {
+            let what = &text[at + "usage_limit_reached: ".len()..];
+            let what = what.rfind(" (tried ").map_or(what, |end| &what[..end]);
+            return Some(format!(
+                "{what}. Set `[models] fallback` so another model answers until then."
+            ));
+        }
         let free_pool = [
             "free-models-per",
             ":free",
@@ -247,6 +257,22 @@ mod tests {
             .plain_words()
             .is_none());
         assert!(CoreError::MaxIterations(3).plain_words().is_none());
+    }
+
+    #[test]
+    fn a_plans_usage_limit_keeps_its_reset_time() {
+        let words = transient(
+            "HTTP 429 usage_limit_reached: the ChatGPT plan's usage limit is reached (plus); \
+             it resets in 2 h 4 min (15:10 UTC)",
+        )
+        .after_attempts(1)
+        .plain_words()
+        .unwrap();
+        assert_eq!(
+            words,
+            "the ChatGPT plan's usage limit is reached (plus); it resets in 2 h 4 min (15:10 UTC). \
+             Set `[models] fallback` so another model answers until then."
+        );
     }
 
     #[test]

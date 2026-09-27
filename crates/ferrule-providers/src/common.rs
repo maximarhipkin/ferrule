@@ -103,7 +103,12 @@ pub(crate) enum Opened {
 /// [`send`] for a request that asked to stream. A non-2xx reply fails
 /// exactly as it does there, `Retry-After` included.
 pub(crate) async fn open(request: reqwest::RequestBuilder) -> Result<Opened, CoreError> {
-    let resp = connect(request).await?;
+    opened(connect(request).await?).await
+}
+
+/// [`open`] for a response already in hand (a caller that looked at its
+/// status or headers first).
+pub(crate) async fn opened(resp: reqwest::Response) -> Result<Opened, CoreError> {
     let is_stream = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -116,7 +121,9 @@ pub(crate) async fn open(request: reqwest::RequestBuilder) -> Result<Opened, Cor
     }
 }
 
-async fn connect(request: reqwest::RequestBuilder) -> Result<reqwest::Response, CoreError> {
+pub(crate) async fn connect(
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, CoreError> {
     // `without_url()`: the URL isn't secret here, but some gateways put
     // a key in it, and these errors end up in logs and chats.
     match request.send().await.map_err(|e| e.without_url()) {

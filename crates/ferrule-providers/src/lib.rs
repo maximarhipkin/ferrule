@@ -4,11 +4,14 @@
 //! - `anthropic` (`api = "anthropic"`, M23): the native Messages API, with
 //!   prompt caching and thinking carried through a tool loop;
 //! - `responses` (`api = "responses"`, M23): OpenAI's Responses API,
-//!   stateless, with encrypted reasoning carried through a tool loop.
+//!   stateless, with encrypted reasoning carried through a tool loop;
+//! - `codex` (M35): the same body sent to the ChatGPT plan's Codex backend
+//!   with a signed-in account's token.
 //!
 //! [`build`] is the one place a caller turns config into a driver.
 
 pub mod anthropic;
+pub mod codex;
 mod common;
 pub mod openai_compat;
 pub mod responses;
@@ -16,6 +19,7 @@ pub mod responses;
 mod stream_tests;
 
 pub use anthropic::AnthropicProvider;
+pub use codex::{CodexProvider, PlanAuth, PlanCredentials, RateLimits};
 pub use openai_compat::OpenAiCompatProvider;
 pub use responses::ResponsesProvider;
 

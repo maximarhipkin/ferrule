@@ -28,12 +28,15 @@ pub struct ResponsesProvider {
     model: String,
     options: DriverOptions,
     client: reqwest::Client,
+    /// M35: the ChatGPT plan's Codex backend, whose request type has no
+    /// output cap and always streams (see `codex`).
+    codex: bool,
 }
 
-struct Payload {
-    body: Value,
+pub(crate) struct Payload {
+    pub body: Value,
     /// Reasoning items were replayed: the retry after a 400 leaves them out.
-    replayed: bool,
+    pub replayed: bool,
 }
 
 impl ResponsesProvider {
@@ -51,12 +54,26 @@ impl ResponsesProvider {
             model: model.into(),
             options,
             client: common::client(),
+            codex: false,
         }
+    }
+
+    /// The body builder and parser for the Codex backend: no key, and no
+    /// HTTP of its own (`codex::CodexProvider` sends).
+    pub(crate) fn for_codex(name: String, model: String, options: DriverOptions) -> Self {
+        Self {
+            codex: true,
+            ..Self::new(name, "", "", model, options)
+        }
+    }
+
+    pub(crate) fn model(&self) -> &str {
+        &self.model
     }
 
     /// The request body. `plain` is the retry after a reasoning 400: no
     /// native items.
-    fn payload(&self, req: &CompletionRequest, plain: bool) -> Payload {
+    pub(crate) fn payload(&self, req: &CompletionRequest, plain: bool) -> Payload {
         let msgs = &req.messages;
         let lead = msgs.iter().take_while(|m| m.role == Role::System).count();
         let instructions: Vec<&str> = msgs[..lead]
@@ -113,10 +130,17 @@ impl ResponsesProvider {
         }
         if !req.tools.is_empty() {
             body["tools"] = json!(tools_to_wire(&req.tools));
-            body["parallel_tool_calls"] = json!(true);
+            body["parallel_tool_calls"] = json!(!self.codex);
+            if self.codex {
+                body["tool_choice"] = json!("auto");
+            }
         }
         if let Some(e) = &self.options.effort {
             body["reasoning"] = json!({ "effort": e });
+        }
+        if self.codex {
+            body["stream"] = json!(true);
+            return Payload { body, replayed };
         }
         if let Some(mut cap) = req.max_output_tokens.or(self.options.max_tokens) {
             if self.options.effort.as_deref() != Some("none") {
@@ -155,7 +179,7 @@ impl ResponsesProvider {
         Ok(reply.body)
     }
 
-    fn parse_response(&self, body: &Value) -> Result<CompletionResponse, CoreError> {
+    pub(crate) fn parse_response(&self, body: &Value) -> Result<CompletionResponse, CoreError> {
         let output = body
             .get("output")
             .and_then(Value::as_array)
@@ -284,7 +308,10 @@ impl Provider for ResponsesProvider {
 /// A Responses stream: text deltas go to the sink, and the final event
 /// (`response.completed`, `.incomplete` or `.failed`) carries the whole
 /// response object, which the plain parser then reads, status included.
-async fn read_stream(mut events: common::Events, sink: &DeltaSink) -> Result<Value, CoreError> {
+pub(crate) async fn read_stream(
+    mut events: common::Events,
+    sink: &DeltaSink,
+) -> Result<Value, CoreError> {
     while let Some(event) = events.next().await? {
         let data = event.json()?;
         let kind = data
@@ -308,7 +335,7 @@ async fn read_stream(mut events: common::Events, sink: &DeltaSink) -> Result<Val
     Err(common::ended_early(events.seen()))
 }
 
-fn reasoning_rejected(message: &str) -> bool {
+pub(crate) fn reasoning_rejected(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     (m.starts_with("http 400") || m.starts_with("http 404"))
         && (m.contains("reasoning") || m.contains("encrypted") || m.contains("rs_"))
