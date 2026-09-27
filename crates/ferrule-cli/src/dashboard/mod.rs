@@ -6,9 +6,9 @@
 pub mod api;
 pub mod auth;
 pub mod cli;
+pub mod console;
 pub mod door;
 pub mod http;
-pub mod console;
 pub mod models_page;
 pub mod notices;
 pub mod runs;

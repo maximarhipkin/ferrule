@@ -50,11 +50,26 @@ const PROMPTS: &str = "it asks at the terminal";
 /// Every `ferrule` subcommand, and where it lives on the page. A unit test
 /// walks `Cli::command()` and fails on a leaf that isn't here.
 pub const PARITY: &[Leaf] = &[
-    leaf("setup", Refused("the wizard asks at the terminal; `setup --refresh-service` runs here"), "terminal only", "`--refresh-service` from the console"),
+    leaf(
+        "setup",
+        Refused("the wizard asks at the terminal; `setup --refresh-service` runs here"),
+        "terminal only",
+        "`--refresh-service` from the console",
+    ),
     leaf("doctor", Read, "Home (Run doctor) + console", ""),
-    leaf("update", Change, "fix buttons + console", "needs `--yes` (the page's confirm is the yes) or `--check`"),
+    leaf(
+        "update",
+        Change,
+        "fix buttons + console",
+        "needs `--yes` (the page's confirm is the yes) or `--check`",
+    ),
     leaf("run", Change, "console", "one agent turn, with its tools"),
-    leaf("chat", Refused("a REPL isn't a console command: use the Chat page"), "Chat", ""),
+    leaf(
+        "chat",
+        Refused("a REPL isn't a console command: use the Chat page"),
+        "Chat",
+        "",
+    ),
     leaf("memory add", Change, "console", ""),
     leaf("memory search", Read, "console", ""),
     leaf("memory reindex", Change, "console", ""),
@@ -62,13 +77,38 @@ pub const PARITY: &[Leaf] = &[
     leaf("memory recent", Read, "console", ""),
     leaf("memory forget", Destructive, "console", ""),
     leaf("config path", Read, "Config + console", ""),
-    leaf("config edit", Refused("an editor isn't a web thing: use the Config page's editor"), "Config (the raw editor)", ""),
+    leaf(
+        "config edit",
+        Refused("an editor isn't a web thing: use the Config page's editor"),
+        "Config (the raw editor)",
+        "",
+    ),
     leaf("config example", Read, "console", ""),
-    leaf("config init", Refused("the service already has its config: change it on the Config page"), "terminal only", ""),
-    leaf("gateway", Refused("it is the running service"), "terminal only", ""),
+    leaf(
+        "config init",
+        Refused("the service already has its config: change it on the Config page"),
+        "terminal only",
+        "",
+    ),
+    leaf(
+        "gateway",
+        Refused("it is the running service"),
+        "terminal only",
+        "",
+    ),
     leaf("status", Read, "Home + console", ""),
-    leaf("dashboard link", Change, "console", "`--remote` is terminal only (it holds a terminal open)"),
-    leaf("dashboard off", Destructive, "session menu + console", "logs out every browser, this one too"),
+    leaf(
+        "dashboard link",
+        Change,
+        "console",
+        "`--remote` is terminal only (it holds a terminal open)",
+    ),
+    leaf(
+        "dashboard off",
+        Destructive,
+        "session menu + console",
+        "logs out every browser, this one too",
+    ),
     leaf("model list", Read, "Models + console", ""),
     leaf("model default", Change, "Models + console", ""),
     leaf("model test", Read, "Models + console", ""),
@@ -81,10 +121,20 @@ pub const PARITY: &[Leaf] = &[
     leaf("model catalog", Read, "Models + console", ""),
     leaf("model recommend", Read, "console", ""),
     leaf("model fill-prices", Change, "console", ""),
-    leaf("model eval", Change, "Eval + console", "needs `--yes` (it spends money)"),
+    leaf(
+        "model eval",
+        Change,
+        "Eval + console",
+        "needs `--yes` (it spends money)",
+    ),
     leaf("model route set", Change, "Routing + console", ""),
     leaf("model route off", Change, "Routing + console", ""),
-    leaf("tasks add", Change, "Tasks + console", "`--gate` is terminal only (a gate is a shell command)"),
+    leaf(
+        "tasks add",
+        Change,
+        "Tasks + console",
+        "`--gate` is terminal only (a gate is a shell command)",
+    ),
     leaf("tasks list", Read, "Tasks + console", ""),
     leaf("tasks model", Change, "Tasks + console", ""),
     leaf("tasks schedule", Change, "Tasks + console", ""),
@@ -103,7 +153,12 @@ pub const PARITY: &[Leaf] = &[
     leaf("skills disable", Change, "Extensions + console", ""),
     leaf("skills enable", Change, "Extensions + console", ""),
     leaf("hooks list", Read, "console", ""),
-    leaf("hooks trust", Refused("trusting hooks lets their commands run as you later, and it asks at the terminal"), "terminal only", "no flag skips its question, on purpose"),
+    leaf(
+        "hooks trust",
+        Refused("trusting hooks lets their commands run as you later, and it asks at the terminal"),
+        "terminal only",
+        "no flag skips its question, on purpose",
+    ),
     leaf("hooks untrust", Change, "console", ""),
     leaf("extensions list", Read, "Extensions + console", ""),
     leaf("extensions pending", Read, "Extensions + console", ""),
@@ -119,32 +174,84 @@ pub const PARITY: &[Leaf] = &[
     leaf("plugins add", Change, "console", ""),
     leaf("plugins list", Read, "console", ""),
     leaf("plugins remove", Destructive, "console", ""),
-    leaf("mcp add", Change, "console", "needs `-y`; `--no-sandbox` is terminal only"),
+    leaf(
+        "mcp add",
+        Change,
+        "console",
+        "needs `-y`; `--no-sandbox` is terminal only",
+    ),
     leaf("mcp list", Read, "Extensions + console", ""),
     leaf("mcp remove", Destructive, "Extensions + console", ""),
     leaf("mcp disable", Change, "Extensions + console", ""),
     leaf("mcp enable", Change, "Extensions + console", ""),
     leaf("connections list", Read, "Connections + console", ""),
-    leaf("connections add", Refused("keys and sign-ins go in on the Connections page, where a key never lands in a log"), "Connections", ""),
-    leaf("connections remove", Destructive, "Connections + console", ""),
+    leaf(
+        "connections add",
+        Refused(
+            "keys and sign-ins go in on the Connections page, where a key never lands in a log",
+        ),
+        "Connections",
+        "",
+    ),
+    leaf(
+        "connections remove",
+        Destructive,
+        "Connections + console",
+        "",
+    ),
     leaf("connections catalog", Read, "Connections + console", ""),
-    leaf("connections relay deploy", Refused("it asks for a Cloudflare token: use the callback address card on Connections"), "Connections (callback address card)", ""),
+    leaf(
+        "connections relay deploy",
+        Refused("it asks for a Cloudflare token: use the callback address card on Connections"),
+        "Connections (callback address card)",
+        "",
+    ),
     leaf("connections relay check", Read, "Connections + console", ""),
-    leaf("connections setup", Refused(PROMPTS), "Connections (the checklist)", "the page's checklist is the same list"),
-    leaf("eval run", Change, "Eval + console", "it spends money; `--dry-run` only reads"),
+    leaf(
+        "connections setup",
+        Refused(PROMPTS),
+        "Connections (the checklist)",
+        "the page's checklist is the same list",
+    ),
+    leaf(
+        "eval run",
+        Change,
+        "Eval + console",
+        "it spends money; `--dry-run` only reads",
+    ),
     leaf("eval report", Read, "Eval + console", ""),
     leaf("stop", Change, "Home + console", "`--status` only reads"),
     leaf("undo", Change, "console", ""),
     leaf("trust status", Read, "console", ""),
     leaf("trust audit", Read, "console", ""),
-    leaf("trust caps", Read, "console", "`--set` needs `--yes` and confirms"),
-    leaf("login", Refused("sign in from the Models page (Sign in)"), "Models (§2.4)", ""),
+    leaf(
+        "trust caps",
+        Read,
+        "console",
+        "`--set` needs `--yes` and confirms",
+    ),
+    leaf(
+        "login",
+        Refused("sign in from the Models page (Sign in)"),
+        "Models (§2.4)",
+        "",
+    ),
     leaf("logout", Destructive, "Models + console", ""),
     leaf("plan list", Read, "console", ""),
     leaf("plan approve", Change, "console", ""),
     leaf("plan reject", Change, "console", ""),
-    leaf("sandbox", Refused("it runs any command: a shell by another name"), "terminal only", ""),
-    leaf("claude-mcp", Refused("internal: claude speaks to it over stdio"), "terminal only", ""),
+    leaf(
+        "sandbox",
+        Refused("it runs any command: a shell by another name"),
+        "terminal only",
+        "",
+    ),
+    leaf(
+        "claude-mcp",
+        Refused("internal: claude speaks to it over stdio"),
+        "terminal only",
+        "",
+    ),
 ];
 
 /// Splits a line into words: single quotes are literal, double quotes and
@@ -327,12 +434,12 @@ pub fn parse(line: &str) -> Result<Parsed, String> {
     }
     for w in &words {
         if w == "--config" || w.starts_with("--config=") {
-            return Err(
-                "--config: the page runs commands on the service's own config only".into(),
-            );
+            return Err("--config: the page runs commands on the service's own config only".into());
         }
         if w == "--workspace" || w.starts_with("--workspace=") {
-            return Err("--workspace: the page runs commands in the service's own workspace".into());
+            return Err(
+                "--workspace: the page runs commands in the service's own workspace".into(),
+            );
         }
     }
     let cmd = crate::Cli::command().color(clap::ColorChoice::Never);
@@ -545,7 +652,11 @@ pub fn complete(ctx: &Ctx, req: &Request) -> Answer {
         _ => Vec::new(),
     };
     if !partial.starts_with('-') {
-        for v in values.into_iter().filter(|v| v.starts_with(&partial)).take(50) {
+        for v in values
+            .into_iter()
+            .filter(|v| v.starts_with(&partial))
+            .take(50)
+        {
             items.push(json!({ "word": v, "help": "", "kind": "value" }));
         }
     }
@@ -648,7 +759,10 @@ mod tests {
             assert!(split(bad).is_err(), "{bad:?} should be refused");
         }
         // Quoted, a glob is a value.
-        assert_eq!(split("memory search '*'").unwrap(), vec!["memory", "search", "*"]);
+        assert_eq!(
+            split("memory search '*'").unwrap(),
+            vec!["memory", "search", "*"]
+        );
     }
 
     fn class(line: &str) -> Class {
@@ -673,7 +787,9 @@ mod tests {
         assert!(matches!(class("gateway"), Refused(_)));
         assert!(matches!(class("chat"), Refused(_)));
         assert!(matches!(class("config edit"), Refused(_)));
-        assert!(matches!(class("mcp add x --no-sandbox -y -- node s.js"), Refused(w) if w.contains("sandbox")));
+        assert!(
+            matches!(class("mcp add x --no-sandbox -y -- node s.js"), Refused(w) if w.contains("sandbox"))
+        );
         assert!(matches!(class("mcp add x -- node s.js"), Refused(w) if w.contains("-y")));
         assert_eq!(class("mcp add x -y -- node s.js"), Change);
         assert!(matches!(class("ssh trust host"), Refused(w) if w.contains("--fingerprint")));
@@ -682,7 +798,10 @@ mod tests {
             Refused(w) if w.contains("--gate")
         ));
         assert_eq!(class("trust caps"), Read);
-        assert!(matches!(class("trust caps --set max_usd_per_day=10"), Refused(_)));
+        assert!(matches!(
+            class("trust caps --set max_usd_per_day=10"),
+            Refused(_)
+        ));
         assert_eq!(class("trust caps --set max_usd_per_day=10 --yes"), Change);
         assert_eq!(class("stop --status"), Read);
         assert_eq!(class("stop"), Change);
