@@ -169,6 +169,29 @@ impl ferrule_plans::claude::Repairer for Fixer {
             *last = Some(Instant::now());
         }
         tracing::info!(why = %super::release::clip(why, 200), "claude looks outdated; updating it");
+        let done = self.update(why).await;
+        let detail = match &done {
+            Ok(()) => {
+                let st = State::load(&super::state_dir(&self.data));
+                st.claude_installed
+                    .map(|v| format!("claude is {v} now"))
+                    .unwrap_or_default()
+            }
+            Err(e) => format!("{e:#}"),
+        };
+        ferrule_core::repairs::log(
+            &self.data,
+            "claude_too_old",
+            "updated claude after a turn failed",
+            done.is_ok(),
+            &detail,
+        );
+        done
+    }
+}
+
+impl Fixer {
+    async fn update(&self, why: &str) -> Result<()> {
         let state_dir = super::state_dir(&self.data);
         let binary = self.claude.binary.clone();
         let install = tokio::task::spawn_blocking(move || update::detect(&binary)).await??;

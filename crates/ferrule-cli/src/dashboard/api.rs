@@ -281,6 +281,21 @@ pub fn health(ctx: &Ctx) -> Value {
             }));
         }
         out["updates"] = json!(report.into_iter().map(|(_, l)| l).collect::<Vec<_>>());
+        // M36 §7: the self-check's problems and the last ten repairs.
+        if let Some((_, found)) = crate::selfcheck::last(data) {
+            for line in found.values() {
+                problems.push(json!({
+                    "what": ctx.redactor.redact(line),
+                    "fix": "The self-check tells the owner when it's fixed; `ferrule doctor` shows it too.",
+                    "section": "health",
+                }));
+            }
+        }
+        out["repairs"] = json!(ferrule_core::repairs::recent(data, 10)
+            .iter()
+            .rev()
+            .map(|r| ctx.redactor.redact(&ferrule_core::repairs::line(r)))
+            .collect::<Vec<_>>());
     }
     out["problems"] = json!(problems);
     out

@@ -101,6 +101,9 @@ impl Apply<'_> {
         let found = self.find(&mut state, want).await;
         state.last_check = Some(super::state::now());
         state.last_check_ok = Some(found.is_ok());
+        if found.is_ok() {
+            state.last_ok = state.last_check;
+        }
         state.last_error = found.as_ref().err().map(|e| format!("{e:#}"));
         // `ferrule update --check` as a user who can't write the system
         // state still gets its answer.

@@ -685,20 +685,21 @@ impl Agent {
                 Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
                 Ok(_) => None,
             };
-            // Out of retries on an outage: the next model in the owner's
-            // fallback list, if the provider has one, from a fresh start.
-            let fell_over = match (&result, retry_in) {
-                (Err(e @ CoreError::Transient { .. }), None) if fallbacks < 8 => {
-                    self.provider.fail_over(served.as_ref(), e)
-                }
-                _ => None,
-            };
             // M25: a failure a stronger model may not repeat moves the turn
             // up a tier, and the same request goes again there.
             let route = self.provider.route_tag();
-            let escalated = match (&result, retry_in, &fell_over) {
-                (Err(e), None, None) if self.provider.routes() => crate::routing::escalates_on(e)
+            let escalated = match (&result, retry_in) {
+                (Err(e), None) if self.provider.routes() => crate::routing::escalates_on(e)
                     .and_then(|class| self.provider.escalate(&Signal::CallFailed(class))),
+                _ => None,
+            };
+            // Out of retries, and no tier up: the next model in the owner's
+            // fallback list, if the provider has one, from a fresh start.
+            // M36 §6.2: any provider error, not only an outage.
+            let fell_over = match (&result, retry_in, &escalated) {
+                (Err(e), None, None) if fallbacks < 8 && crate::failure::falls_back(e) => {
+                    self.provider.fail_over(served.as_ref(), e)
+                }
                 _ => None,
             };
             self.record_completion(
@@ -3066,29 +3067,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_key_is_not_an_outage() {
-        let sink = Arc::new(RecordingSink {
-            records: Mutex::new(Vec::new()),
-        });
-        let (mut agent, provider) = routing_agent(
-            || CoreError::Provider("HTTP 401: invalid api key".into()),
-            sink.clone(),
-        );
-        let (tx, _rx) = events();
-        let err = agent.run("hi", tx).await.unwrap_err();
-        assert!(err.to_string().contains("401"), "{err}");
-        assert_eq!(
-            *provider.asked.lock().unwrap(),
-            0,
-            "never asked to fall over"
-        );
-        let rows = sink.records.lock().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            (rows[0].provider.as_str(), rows[0].model.as_str()),
-            ("a", "one")
-        );
-        assert_eq!(rows[0].outcome, "error");
+    async fn a_refused_key_asks_to_fall_over_but_a_local_error_does_not() {
+        // M36 §6.2: any provider error may fall back; the machine's own
+        // errors (here a full disk) don't.
+        fn refused() -> CoreError {
+            CoreError::Provider("HTTP 401: invalid api key".into())
+        }
+        fn disk_full() -> CoreError {
+            CoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::StorageFull,
+                "no space left on device",
+            ))
+        }
+        for (make, asked) in [(refused as fn() -> CoreError, 1), (disk_full, 0)] {
+            let sink = Arc::new(RecordingSink {
+                records: Mutex::new(Vec::new()),
+            });
+            let message = make().to_string();
+            let (mut agent, provider) = routing_agent(make, sink.clone());
+            let (tx, _rx) = events();
+            let _ = agent.run("hi", tx).await;
+            assert_eq!(*provider.asked.lock().unwrap(), asked, "{message}");
+            let rows = sink.records.lock().unwrap();
+            assert_eq!(
+                (rows[0].provider.as_str(), rows[0].model.as_str()),
+                ("a", "one")
+            );
+            assert_ne!(rows[0].outcome, "ok");
+        }
     }
 
     #[tokio::test]

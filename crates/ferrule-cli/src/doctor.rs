@@ -141,6 +141,7 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     trust_check(&mut r, &cfg, chat_on);
     service_check(&mut r, &path, chat_on)?;
     update_check(&mut r, &cfg, offline).await;
+    repairs_check(&mut r);
     health_check(&mut r, &cfg, chat_on);
     connections_check(&mut r, &cfg);
     editing_check(&mut r, &cfg);
@@ -1792,6 +1793,27 @@ async fn update_check(r: &mut Report, cfg: &config::Config, offline: bool) {
             crate::update::Tone::Note => r.note("updates", line),
             crate::update::Tone::Warn => r.warn("updates", line),
         }
+    }
+}
+
+/// M36 §7: what the gateway's self-check saw last, and the last repairs.
+fn repairs_check(r: &mut Report) {
+    let Some(data) = config::data_dir_path() else {
+        return;
+    };
+    if let Some((at, problems)) = crate::selfcheck::last(&data) {
+        let ago = ferrule_gateway::health::human(std::time::Duration::from_secs(
+            crate::update::state::now().saturating_sub(at),
+        ));
+        if problems.is_empty() {
+            r.ok("self-check", format!("nothing wrong {ago} ago"));
+        }
+        for line in problems.values() {
+            r.warn("self-check", format!("{line} ({ago} ago)"));
+        }
+    }
+    for repair in ferrule_core::repairs::recent(&data, 10) {
+        r.note("repairs", ferrule_core::repairs::line(&repair));
     }
 }
 

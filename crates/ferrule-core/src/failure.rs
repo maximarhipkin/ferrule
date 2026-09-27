@@ -223,6 +223,54 @@ pub fn classify(e: &CoreError) -> Kind {
     }
 }
 
+/// The call failed at the model provider (or its driver), not in a tool,
+/// the loop or the machine.
+pub fn provider_origin(e: &CoreError) -> bool {
+    matches!(
+        e,
+        CoreError::Provider(_)
+            | CoreError::Transient { .. }
+            | CoreError::MalformedResponse(_)
+            | CoreError::Failed(_)
+    )
+}
+
+/// M36 §6.2: whether another model may answer instead. Every provider
+/// error falls back, except a full disk or an unwritable data dir, which
+/// no other model fixes.
+pub fn falls_back(e: &CoreError) -> bool {
+    provider_origin(e) && !matches!(classify(e), Kind::DiskFull | Kind::DataUnwritable)
+}
+
+/// How long the server asked us to wait, if it said.
+pub fn retry_after(e: &CoreError) -> Option<Duration> {
+    match e {
+        CoreError::Transient { retry_after, .. } => *retry_after,
+        CoreError::Failed(f) => f.retry_after,
+        _ => None,
+    }
+}
+
+/// What the chat reads when a turn failed: the plain words, then the raw
+/// error cut to 400 characters.
+pub fn chat_text(e: &CoreError) -> String {
+    let kind = classify(e);
+    let words = e.plain_words().unwrap_or_else(|| {
+        if kind == Kind::Unknown && !provider_origin(e) {
+            "something went wrong.".to_string()
+        } else {
+            kind.chat_words().to_string()
+        }
+    });
+    let raw = e.to_string();
+    let mut chars = raw.chars();
+    let mut raw: String = chars.by_ref().take(400).collect();
+    if chars.next().is_some() {
+        raw.push('…');
+    }
+    format!("I couldn't reply: {words}\n\nThe error: {raw}")
+}
+
 /// An I/O error that is about the machine, not the call.
 pub fn classify_io(e: &std::io::Error) -> Option<Kind> {
     use std::io::ErrorKind as E;
@@ -560,5 +608,43 @@ mod tests {
             r#"HTTP 400 Bad Request: {"error":{"code":"invalid_value","message":"bad"}}"#
         ));
         assert!(!requires_newer_client("HTTP 400, not JSON: <html>"));
+    }
+
+    #[test]
+    fn the_chat_reads_plain_words_then_the_raw_error_cut_short() {
+        let limit = CoreError::Failed(Failure {
+            kind: Kind::UsageLimit,
+            message: "usage_limit_reached".into(),
+            retry_after: None,
+        });
+        let text = chat_text(&limit);
+        assert!(text.starts_with("I couldn't reply: "), "{text}");
+        assert!(
+            text.contains(Kind::UsageLimit.chat_words()) || text.contains("usage"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("The error: provider error: usage_limit_reached"),
+            "{text}"
+        );
+
+        let odd = CoreError::ToolFailed {
+            tool: "shell".into(),
+            message: "x".repeat(1000),
+        };
+        let text = chat_text(&odd);
+        assert!(
+            text.starts_with("I couldn't reply: something went wrong.\n\nThe error: "),
+            "{text}"
+        );
+        assert!(text.ends_with('…') && text.chars().count() < 500, "{text}");
+
+        assert!(falls_back(&CoreError::Provider("HTTP 401".into())));
+        assert!(!falls_back(&CoreError::ToolNotFound("nope".into())));
+        assert!(!falls_back(&CoreError::Failed(Failure {
+            kind: Kind::DiskFull,
+            message: "no space left on device".into(),
+            retry_after: None,
+        })));
     }
 }

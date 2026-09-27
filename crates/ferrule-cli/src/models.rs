@@ -643,7 +643,8 @@ impl Models {
         served: &Served,
         error: &CoreError,
     ) -> Option<FailOver> {
-        if !error.is_transient() || self.catalog().fallback.is_empty() {
+        // M36 §6.2: any provider error falls back, not only an outage.
+        if !ferrule_core::failure::falls_back(error) || self.catalog().fallback.is_empty() {
             return None;
         }
         let from = served.reference();
@@ -819,20 +820,28 @@ const DOWN_AT_MOST: Duration = Duration::from_secs(8 * 24 * 3600);
 /// [`DOWN_FOR`], or longer when the error says when to come back (M35: a
 /// plan's usage limit, until it resets).
 fn down_for(error: &CoreError) -> (Duration, String) {
-    match error {
-        CoreError::Transient {
-            retry_after: Some(wait),
-            ..
-        } if *wait > DOWN_FOR => {
-            let wait = (*wait).min(DOWN_AT_MOST);
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            let at = ferrule_providers::codex::describe_reset(now + wait.as_secs(), now);
-            (wait, format!("when it resets, {at}"))
-        }
-        _ => (DOWN_FOR, format!("in {} minutes", DOWN_FOR.as_secs() / 60)),
+    use ferrule_core::failure;
+    let kind = failure::classify(error);
+    let wait = kind
+        .down_for(failure::retry_after(error))
+        .or(failure::retry_after(error))
+        .unwrap_or(DOWN_FOR)
+        .max(DOWN_FOR)
+        .min(DOWN_AT_MOST);
+    if wait > DOWN_FOR && failure::retry_after(error).is_some_and(|w| w >= wait) {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let at = ferrule_providers::codex::describe_reset(now + wait.as_secs(), now);
+        return (wait, format!("when it resets, {at}"));
     }
+    let minutes = wait.as_secs() / 60;
+    let words = if minutes >= 120 && minutes.is_multiple_of(60) {
+        format!("in {} hours", minutes / 60)
+    } else {
+        format!("in {minutes} minutes")
+    };
+    (wait, words)
 }
 
 /// "HTTP 503 after its retries", "no connection", "the ChatGPT plan's
@@ -840,7 +849,13 @@ fn down_for(error: &CoreError) -> (Duration, String) {
 fn short_reason(error: &CoreError) -> String {
     let msg = match error {
         CoreError::Transient { message, .. } => message.as_str(),
-        _ => return error.to_string(),
+        _ => {
+            let kind = ferrule_core::failure::classify(error);
+            if kind == ferrule_core::failure::Kind::Unknown {
+                return error.to_string().chars().take(120).collect();
+            }
+            return kind.short_reason().to_string();
+        }
     };
     if let Some((_, rest)) = msg.split_once("usage_limit_reached: ") {
         return rest.split(';').next().unwrap_or(rest).trim().to_string();
@@ -1249,9 +1264,9 @@ profile = "kimi"
             retry_after: None,
         };
         assert_eq!(
-            m.fail_over(&s, &a, &CoreError::Provider("HTTP 401".into())),
+            m.fail_over(&s, &a, &CoreError::Io(std::io::Error::other("x"))),
             None,
-            "a refused key isn't an outage"
+            "not the provider's"
         );
         assert!(m.down().is_empty());
         let over = m.fail_over(&s, &a, &outage).unwrap();

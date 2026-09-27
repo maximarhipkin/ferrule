@@ -166,7 +166,22 @@ impl ClientIdentity {
             }
         }
         let now = self.current_quiet();
-        newer(&now, sent).then_some(now)
+        let found = newer(&now, sent);
+        // M36 §7: the repair log, next to the cache.
+        if let Some(data) = self.cache.as_deref().and_then(Path::parent) {
+            ferrule_core::repairs::log(
+                data,
+                "client_too_old",
+                "refreshed the Codex client version",
+                found,
+                &if found {
+                    format!("{sent} → {now}")
+                } else {
+                    format!("nothing newer than {sent} to learn")
+                },
+            );
+        }
+        found.then_some(now)
     }
 
     /// [`Self::current`] without starting a refresh.

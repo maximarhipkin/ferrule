@@ -794,19 +794,9 @@ fn rate_limited(error: &str) -> bool {
 }
 
 /// What the chat sees when a run fails outright, instead of silence: the
-/// plain words for the failures a real bot hits most, then the raw error.
+/// classifier's plain words (M36 §6), then the raw error.
 fn failure_text(e: &CoreError) -> String {
-    if let Some(words) = e.plain_words() {
-        return format!(
-            "I couldn't reply: {words}\n\nThe error: {}",
-            crate::health::clip(&e.to_string(), 400)
-        );
-    }
-    if e.is_transient() {
-        format!("The model provider isn't answering right now, so I couldn't reply ({e}). Please try again in a few minutes.")
-    } else {
-        format!("Something went wrong and I couldn't reply: {e}")
-    }
+    ferrule_core::failure::chat_text(e)
 }
 
 #[cfg(test)]
@@ -1349,7 +1339,9 @@ mod tests {
         router.dispatch(inbound("chat-1", "ping")).await.unwrap();
         wait_until(|| recorder.texts().len() == 1).await;
         assert!(
-            recorder.texts()[0].starts_with("Something went wrong and I couldn't reply"),
+            recorder.texts()[0].starts_with(
+                "I couldn't reply: something went wrong on the way to the model.\n\nThe error: provider error: simulated provider outage"
+            ),
             "{:?}",
             recorder.texts()
         );

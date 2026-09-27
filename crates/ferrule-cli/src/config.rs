@@ -3,7 +3,7 @@ use ferrule_providers::{Api, DriverOptions, Thinking};
 use ferrule_tools::search::{SafeSearch, SearchProvider, SearchSettings};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProviderConfig {
@@ -1642,14 +1642,25 @@ impl Config {
         let Some(path) = config_path()? else {
             bail!("no config found. Run `ferrule setup` first.")
         };
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        match Self::from_file(&path) {
+            Ok(cfg) => Ok((cfg, path)),
+            // M36 §6.3: a gateway started on the last good copy keeps
+            // reading it until the file reads again.
+            Err(e) => match crate::last_good::on_copy() {
+                Some(copy) => Ok((Self::from_file(copy).map_err(|_| e)?, path)),
+                None => Err(e),
+            },
+        }
+    }
+
+    /// One config file, read, parsed and checked.
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        let cfg = cfg
-            .finish()
-            .with_context(|| format!("in {}", path.display()))?;
-        Ok((cfg, path))
+        cfg.finish()
+            .with_context(|| format!("in {}", path.display()))
     }
 
     /// Checks what parsing can't, and fills in what other settings imply:

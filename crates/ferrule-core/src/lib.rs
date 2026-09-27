@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod message;
 pub mod profile;
 pub mod provider;
+pub mod repairs;
 pub mod routing;
 pub mod stuck;
 pub mod tool;

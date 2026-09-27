@@ -53,6 +53,9 @@ pub struct State {
     pub last_check_ok: Option<bool>,
     /// Why the last check failed.
     pub last_error: Option<String>,
+    /// Unix seconds of the last check that worked (the self-check's "failing
+    /// for days").
+    pub last_ok: Option<u64>,
     /// The newest release the last check saw (`v0.6.0`), installed or not.
     pub latest: Option<String>,
     /// A signed release has been seen.

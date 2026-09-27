@@ -13,6 +13,7 @@ mod filewrite;
 mod health;
 mod hooks_cli;
 mod import;
+mod last_good;
 mod learn;
 mod ledger;
 mod local;
@@ -27,6 +28,7 @@ mod probe;
 mod remote;
 mod secrets;
 mod self_extend;
+mod selfcheck;
 mod service;
 mod settings_admin;
 mod settings_door;
@@ -2092,7 +2094,9 @@ async fn run_gateway(
     workspace: PathBuf,
     max_iterations: usize,
 ) -> Result<()> {
-    let (cfg, _) = config::Config::load()?;
+    // M36 §6.3: a config that stopped reading runs on its last good copy.
+    let loaded = last_good::load(&config::data_dir()?).await?;
+    let cfg = loaded.config().clone();
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let (agent_factory, sup) =
@@ -2174,6 +2178,16 @@ async fn run_gateway(
     hub.set_notifier((!chat_channels.is_empty()).then(|| {
         Arc::new(trust::ChannelNotifier(chat_channels.clone())) as Arc<dyn ferrule_trust::Notifier>
     }));
+    if let last_good::Loaded::LastGood { path, why, .. } = &loaded {
+        hub.tell_owner(last_good::owner_line(path, why));
+        let hub = hub.clone();
+        last_good::watch(path.clone(), move |text| hub.tell_owner(text));
+    }
+    // M36 §7: the self-check, telling the owner what changed.
+    selfcheck::spawn(
+        selfcheck::Check::new(&cfg, config::data_dir()?, adapters.clone()),
+        Arc::new(update::notice::HubOwner(hub.clone())),
+    );
     // M36: a line per update or rollback, and what's out (docs/updates.md).
     update::notice::spawn(
         update::notice::Watch::new(
@@ -2495,7 +2509,9 @@ async fn tasks_run_now(
     workspace: PathBuf,
     max_iterations: usize,
 ) -> Result<()> {
-    let (cfg, _) = config::Config::load()?;
+    // M36 §6.3: a config that stopped reading runs on its last good copy.
+    let loaded = last_good::load(&config::data_dir()?).await?;
+    let cfg = loaded.config().clone();
     let sessions_dir = config::data_dir()?.join("sessions");
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     let task = store
