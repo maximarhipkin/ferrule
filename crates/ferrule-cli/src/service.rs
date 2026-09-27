@@ -26,7 +26,14 @@ pub const SYSTEM_CONFIG: &str = "/etc/ferrule/config.toml";
 pub const SYSTEM_HOME: &str = "/var/lib/ferrule";
 pub const SYSTEM_DATA: &str = "/var/lib/ferrule/data";
 pub const SYSTEM_WORKSPACE: &str = "/var/lib/ferrule/workspace";
-const SYSTEM_UNIT_PATH: &str = "/etc/systemd/system/ferrule.service";
+pub const SYSTEM_UNIT_PATH: &str = "/etc/systemd/system/ferrule.service";
+/// M36: the apply unit, its daily timer and the path unit the gateway's
+/// requests start it through (docs/m36-self-update.md §3.1).
+pub const UPDATE_SERVICE: &str = "ferrule-update.service";
+pub const UPDATE_TIMER: &str = "ferrule-update.timer";
+pub const UPDATE_PATH: &str = "ferrule-update.path";
+pub const UPDATE_LABEL: &str = "ai.ferrule.update";
+const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
 
 /// Whose service this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,7 +173,7 @@ pub fn status() -> Status {
     if !unit.exists() {
         return Status::NotInstalled;
     }
-    let running = Command::new("systemctl")
+    let running = manager("systemctl")
         .args(scope_flag())
         .args(["is-active", "--quiet", SYSTEMD_UNIT])
         .status()
@@ -207,6 +214,11 @@ fn parse_unit(text: &str) -> Option<(PathBuf, PathBuf)> {
 /// The binary an installed unit runs.
 pub fn installed_exe() -> Option<PathBuf> {
     parse_exe(&std::fs::read_to_string(unit_path().ok()?).ok()?)
+}
+
+/// The binary the unit at `unit` runs.
+pub fn installed_exe_at(unit: &Path) -> Option<PathBuf> {
+    parse_exe(&std::fs::read_to_string(unit).ok()?)
 }
 
 fn parse_exe(text: &str) -> Option<PathBuf> {
@@ -293,7 +305,7 @@ fn main_pid() -> Option<u32> {
             .parse()
             .ok()?
     } else {
-        let out = Command::new("systemctl")
+        let out = manager("systemctl")
             .args(scope_flag())
             .args(["show", "--property=MainPID", "--value", SYSTEMD_UNIT])
             .output()
@@ -333,6 +345,7 @@ pub fn install(spec: &Spec) -> Result<Vec<String>> {
             &format!("gui/{}", uid()),
             &unit.to_string_lossy(),
         ])?;
+        install_update_units(spec, &crate::config::data_dir()?)?;
         return Ok(notes);
     }
     if !cfg!(target_os = "linux") {
@@ -351,14 +364,14 @@ pub fn install(spec: &Spec) -> Result<Vec<String>> {
     }
     std::fs::write(&unit, systemd_unit(spec))
         .with_context(|| format!("writing {}", unit.display()))?;
-    systemctl(&["daemon-reload"])?;
+    install_update_units(spec, &crate::config::data_dir()?)?;
     systemctl(&["enable", SYSTEMD_UNIT])?;
     systemctl(&["restart", SYSTEMD_UNIT])?;
     // Without lingering, user services stop at logout and don't start at
     // boot — which is the whole point on a server.
     if !lingering() {
         let user = std::env::var("USER").unwrap_or_default();
-        let ok = Command::new("loginctl")
+        let ok = manager("loginctl")
             .args(["enable-linger", &user])
             .status()
             .is_ok_and(|s| s.success());
@@ -384,6 +397,7 @@ pub fn restart() -> Result<()> {
 /// Stop, disable and delete the unit.
 pub fn uninstall() -> Result<()> {
     let unit = unit_path()?;
+    uninstall_update_units()?;
     if cfg!(target_os = "macos") {
         let _ = launchctl(&["bootout", &launchd_target()]);
     } else {
@@ -401,6 +415,267 @@ pub fn uninstall() -> Result<()> {
     Ok(())
 }
 
+/// Where the update units go: beside the gateway's.
+fn update_unit_dir() -> Result<PathBuf> {
+    if scope() == Scope::System {
+        return Ok(PathBuf::from(SYSTEM_UNIT_DIR));
+    }
+    Ok(unit_path()?
+        .parent()
+        .context("unit path has no parent")?
+        .to_path_buf())
+}
+
+/// Are the update units installed, the system's or this user's? The
+/// gateway asks as the service's user, not as root.
+pub fn update_units_installed() -> bool {
+    let name = if cfg!(target_os = "macos") {
+        format!("{UPDATE_LABEL}.plist")
+    } else {
+        UPDATE_TIMER.to_string()
+    };
+    (cfg!(target_os = "linux") && Path::new(SYSTEM_UNIT_DIR).join(&name).exists())
+        || update_unit_dir().is_ok_and(|dir| dir.join(&name).exists())
+}
+
+/// Write, then turn on, the apply unit with its timer and path unit
+/// (launchd: one agent with a calendar and a watched path). Called with the
+/// gateway's unit already written, so one `daemon-reload` covers both.
+pub fn install_update_units(spec: &Spec, data: &Path) -> Result<()> {
+    let dir = update_unit_dir()?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(data.join("update"))?;
+    let request = data.join("update").join("request");
+    if cfg!(target_os = "macos") {
+        let plist = dir.join(format!("{UPDATE_LABEL}.plist"));
+        let log = log_path()
+            .context("no home dir for the log")?
+            .with_file_name("update.log");
+        // A random minute of the night, so installs don't all ask at once.
+        let slot = uuid::Uuid::new_v4().as_u128() as u32;
+        let (hour, minute) = (2 + slot % 4, (slot >> 8) % 60);
+        std::fs::write(
+            &plist,
+            launchd_update_plist(spec, &request, &log, hour, minute),
+        )
+        .with_context(|| format!("writing {}", plist.display()))?;
+        let target = format!("gui/{}/{UPDATE_LABEL}", uid());
+        let _ = launchctl(&["bootout", &target]);
+        launchctl(&[
+            "bootstrap",
+            &format!("gui/{}", uid()),
+            &plist.to_string_lossy(),
+        ])?;
+        return Ok(());
+    }
+    if request.to_string_lossy().contains(['\n', '\r']) {
+        bail!("a path with a line break can't go in a systemd unit");
+    }
+    let system = scope() == Scope::System;
+    if system {
+        // Root's: the service's user reads it, only root writes it.
+        let state = Path::new(SYSTEM_HOME).join("update");
+        std::fs::create_dir_all(&state)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755))?;
+        }
+        let owner = format!("{SYSTEM_USER}:{SYSTEM_USER}");
+        let _ = run(Command::new("chown").arg(&owner).arg(data.join("update")));
+    }
+    let service = if system {
+        system_update_unit(spec, data)
+    } else {
+        user_update_unit(spec)
+    };
+    for (name, text) in [
+        (UPDATE_SERVICE, service),
+        (UPDATE_TIMER, update_timer()),
+        (UPDATE_PATH, update_path_unit(&request, system)),
+    ] {
+        std::fs::write(dir.join(name), text)
+            .with_context(|| format!("writing {}", dir.join(name).display()))?;
+    }
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", "--now", UPDATE_TIMER, UPDATE_PATH])?;
+    Ok(())
+}
+
+/// Stop and delete the update units; none there is fine.
+pub fn uninstall_update_units() -> Result<()> {
+    let dir = update_unit_dir()?;
+    if cfg!(target_os = "macos") {
+        let _ = launchctl(&["bootout", &format!("gui/{}/{UPDATE_LABEL}", uid())]);
+        remove_if_there(&dir.join(format!("{UPDATE_LABEL}.plist")))?;
+        return Ok(());
+    }
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    if [UPDATE_TIMER, UPDATE_PATH, UPDATE_SERVICE]
+        .iter()
+        .any(|n| dir.join(n).exists())
+    {
+        let _ = systemctl(&["disable", "--now", UPDATE_TIMER, UPDATE_PATH]);
+    }
+    for name in [UPDATE_TIMER, UPDATE_PATH, UPDATE_SERVICE] {
+        remove_if_there(&dir.join(name))?;
+    }
+    Ok(())
+}
+
+fn remove_if_there(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("removing {}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The system apply unit: root, since it replaces a root-owned binary and
+/// restarts the service; everything it doesn't need is closed off. The
+/// idle wait is up to 6 h, hence the long start timeout.
+pub fn system_update_unit(spec: &Spec, data: &Path) -> String {
+    let arg = |p: &Path| systemd_quote(&p.to_string_lossy(), true);
+    let env = |name: &str, value: &str| systemd_quote(&format!("{name}={value}"), false);
+    format!(
+        "# Written by `ferrule setup` as root; `ferrule setup --refresh-service` rewrites it.\n\
+         [Unit]\n\
+         Description=ferrule update (signed releases, rolled back if they don't start)\n\
+         Wants=network-online.target\n\
+         After=network-online.target\n\
+         \n\
+         [Service]\n\
+         Type=oneshot\n\
+         ExecStart={} update --apply\n\
+         Environment={}\n\
+         Environment={}\n\
+         Environment={}\n\
+         TimeoutStartSec=7h\n\
+         Nice=10\n\
+         NoNewPrivileges=yes\n\
+         PrivateTmp=yes\n\
+         ProtectHome=read-only\n\
+         ProtectKernelTunables=yes\n\
+         ProtectControlGroups=yes\n\
+         RestrictSUIDSGID=yes\n",
+        arg(&spec.exe),
+        env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
+        env("FERRULE_DATA_DIR", &data.to_string_lossy()),
+        env("PATH", &spec.path_env),
+    )
+}
+
+/// The user apply unit: the same, as the user who owns the binary.
+pub fn user_update_unit(spec: &Spec) -> String {
+    let arg = |p: &Path| systemd_quote(&p.to_string_lossy(), true);
+    let env = |name: &str, value: &str| systemd_quote(&format!("{name}={value}"), false);
+    format!(
+        "# Written by `ferrule setup`; `ferrule setup --refresh-service` rewrites it.\n\
+         [Unit]\n\
+         Description=ferrule update (signed releases, rolled back if they don't start)\n\
+         \n\
+         [Service]\n\
+         Type=oneshot\n\
+         ExecStart={} update --apply\n\
+         Environment={}\n\
+         Environment={}\n\
+         TimeoutStartSec=7h\n\
+         Nice=10\n",
+        arg(&spec.exe),
+        env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
+        env("PATH", &spec.path_env),
+    )
+}
+
+/// Daily, at a random time within six hours of midnight; a day missed while
+/// the machine was off runs at the next boot.
+pub fn update_timer() -> String {
+    "# Written by `ferrule setup`.\n\
+     [Unit]\n\
+     Description=ferrule daily update check\n\
+     \n\
+     [Timer]\n\
+     OnCalendar=daily\n\
+     RandomizedDelaySec=6h\n\
+     Persistent=true\n\
+     \n\
+     [Install]\n\
+     WantedBy=timers.target\n"
+        .into()
+}
+
+/// Starts the apply unit when the gateway leaves a request.
+pub fn update_path_unit(request: &Path, system: bool) -> String {
+    format!(
+        "# Written by `ferrule setup`.\n\
+         [Unit]\n\
+         Description=ferrule update requests from the gateway\n\
+         \n\
+         [Path]\n\
+         PathExists={}\n\
+         Unit={UPDATE_SERVICE}\n\
+         \n\
+         [Install]\n\
+         WantedBy={}\n",
+        request.to_string_lossy().replace('%', "%%"),
+        if system {
+            "paths.target"
+        } else {
+            "default.target"
+        },
+    )
+}
+
+pub fn launchd_update_plist(
+    spec: &Spec,
+    request: &Path,
+    log: &Path,
+    hour: u32,
+    minute: u32,
+) -> String {
+    let s = |text: &str| format!("<string>{}</string>", xml_escape(text));
+    let p = |path: &Path| s(&path.to_string_lossy());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by `ferrule setup`; `ferrule setup --refresh-service` rewrites it. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>{label}
+  <key>ProgramArguments</key>
+  <array>{exe}{update}{apply}</array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FERRULE_CONFIG</key>{config}
+    <key>PATH</key>{path}
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>{hour}</integer>
+    <key>Minute</key><integer>{minute}</integer>
+  </dict>
+  <key>WatchPaths</key>
+  <array>{request}</array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key>{log}
+  <key>StandardErrorPath</key>{log}
+</dict>
+</plist>
+"#,
+        label = s(UPDATE_LABEL),
+        exe = p(&spec.exe),
+        update = s("update"),
+        apply = s("--apply"),
+        config = p(&spec.config),
+        path = s(&spec.path_env),
+        request = p(request),
+        log = p(log),
+    )
+}
+
 /// The system unit: create the account if needed, hand it its data dir and
 /// workspace, and let it read (only read) the config.
 fn install_system(spec: &Spec, data: &Path) -> Result<Vec<String>> {
@@ -409,11 +684,11 @@ fn install_system(spec: &Spec, data: &Path) -> Result<Vec<String>> {
         bail!("{}", problems.join("; "));
     }
     let created = ensure_system_user()?;
-    std::fs::create_dir_all(data)?;
+    std::fs::create_dir_all(data.join("update"))?;
     own_system_files(Some(&spec.workspace))?;
     std::fs::write(SYSTEM_UNIT_PATH, system_unit(spec, data))
         .with_context(|| format!("writing {SYSTEM_UNIT_PATH}"))?;
-    systemctl(&["daemon-reload"])?;
+    install_update_units(spec, data)?;
     systemctl(&["enable", SYSTEMD_UNIT])?;
     systemctl(&["restart", SYSTEMD_UNIT])?;
     let mut notes = Vec::new();
@@ -743,7 +1018,7 @@ fn xml_unescape(text: &str) -> String {
 /// Is there a systemd user manager to talk to? Containers, WSL without
 /// systemd and plain SSH sessions without a user bus often have none.
 fn systemd_available() -> std::result::Result<(), String> {
-    let out = Command::new("systemctl")
+    let out = manager("systemctl")
         .args(scope_flag())
         .arg("show-environment")
         .output()
@@ -773,7 +1048,7 @@ fn scope_flag() -> &'static [&'static str] {
 }
 
 fn systemctl(args: &[&str]) -> Result<()> {
-    let out = Command::new("systemctl")
+    let out = manager("systemctl")
         .args(scope_flag())
         .args(args)
         .output()?;
@@ -794,7 +1069,7 @@ fn systemctl(args: &[&str]) -> Result<()> {
 
 fn lingering() -> bool {
     let user = std::env::var("USER").unwrap_or_default();
-    Command::new("loginctl")
+    manager("loginctl")
         .args(["show-user", &user, "--property=Linger", "--value"])
         .output()
         .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "yes")
@@ -816,8 +1091,19 @@ fn launchd_target() -> String {
     format!("gui/{}/{LAUNCHD_LABEL}", uid())
 }
 
+/// `systemctl`, `loginctl` or `launchctl`, without the gateway's own
+/// `NOTIFY_SOCKET`: a systemd tool that inherits it reports its exit status
+/// there (`ERRNO=…`) as if it were the service.
+fn manager(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env_remove("NOTIFY_SOCKET")
+        .env_remove("WATCHDOG_USEC")
+        .env_remove("WATCHDOG_PID");
+    cmd
+}
+
 fn launchctl(args: &[&str]) -> Result<String> {
-    let out = Command::new("launchctl").args(args).output()?;
+    let out = manager("launchctl").args(args).output()?;
     if !out.status.success() {
         bail!(
             "launchctl {} failed: {}",

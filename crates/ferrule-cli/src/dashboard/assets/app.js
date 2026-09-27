@@ -194,6 +194,7 @@
           ["gateway", h.gateway ? "running" : tag("not in this process", "warn")],
           h.uptime && ["uptime", h.uptime + " (since " + h.started + ")"],
           h.last_start && ["last start", text(h.last_start)],
+          (h.updates || []).length && ["updates", el("div", {}, ...h.updates.map((l) => el("div", { class: "msg", dir: "auto", text: l })))],
           h.watchdog && ["watchdog", h.watchdog.ok ? tag("ok", "ok") : el("span", { class: "bad msg", dir: "auto", text: h.watchdog.why })],
           ["kill switch", kill.on ? el("span", {}, tag("on", "bad"), " by " + kill.by + " " + (kill.at || ""), kill.reason ? text(" — " + kill.reason) : null) : tag("off", "ok")],
           hb ? ["heartbeat", el("span", {}, hb.host + " every " + secs(hb.every_secs) + ", last " + ago(hb.last_at), hb.last_error ? el("div", { class: "bad msg", dir: "auto", text: hb.last_error }) : null)] : ["heartbeat", "not set"],

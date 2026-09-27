@@ -96,6 +96,27 @@ jobs:
           pattern: dist-*
           path: dist
           merge-multiple: true
+      # M36: a minisign signature beside each archive, which `ferrule
+      # update` checks against the key built into it. Without the secret
+      # (a fork) the release goes out unsigned, and updaters refuse it.
+      - name: Sign
+        env:
+          FERRULE_SIGNING_KEY: ${{ secrets.FERRULE_SIGNING_KEY }}
+        run: |
+          if [ -z "$FERRULE_SIGNING_KEY" ]; then
+            echo "::notice::FERRULE_SIGNING_KEY isn't set: the release is unsigned, and ferrule update won't install it"
+            exit 0
+          fi
+          umask 077
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$FERRULE_SIGNING_KEY" >"$key"
+          # The key must be the one the binaries trust.
+          pub=$(sh .github/scripts/minisign.sh pub "$key")
+          grep -qx "$pub" crates/ferrule-cli/src/update/release.pub \
+            || { echo "::error::the signing key doesn't match crates/ferrule-cli/src/update/release.pub"; exit 1; }
+          sh .github/scripts/minisign.sh sign "$key" "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip
+          ls -l dist
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

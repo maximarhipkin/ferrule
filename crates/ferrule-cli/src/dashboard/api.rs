@@ -264,6 +264,24 @@ pub fn health(ctx: &Ctx) -> Value {
             }));
         }
     }
+    // M36: the update state; what went wrong is a problem too.
+    if let Some(data) = ctx.data.as_deref() {
+        let auto = crate::config::Config::load()
+            .ok()
+            .and_then(|(c, _)| c.update.auto);
+        let report = crate::update::report(data, auto, crate::update::units_installed());
+        for (_, line) in report
+            .iter()
+            .filter(|(t, _)| *t == crate::update::Tone::Warn)
+        {
+            problems.push(json!({
+                "what": ctx.redactor.redact(line),
+                "fix": "`ferrule doctor` shows the update state; docs/updates.md explains it.",
+                "section": "health",
+            }));
+        }
+        out["updates"] = json!(report.into_iter().map(|(_, l)| l).collect::<Vec<_>>());
+    }
     out["problems"] = json!(problems);
     out
 }

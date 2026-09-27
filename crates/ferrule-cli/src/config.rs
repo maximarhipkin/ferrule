@@ -658,6 +658,32 @@ pub struct Config {
     /// M35: the subscriptions' settings (docs/subscriptions.md).
     #[serde(default)]
     pub plans: PlansConfig,
+    /// M36: updating ferrule and the `claude` CLI (docs/updates.md).
+    #[serde(default)]
+    pub update: UpdateConfig,
+}
+
+/// `[update]` (docs/updates.md).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateConfig {
+    /// Install new releases by themselves. Unset: on when setup installed
+    /// the update units, else off (the owner is told a release is out).
+    pub auto: Option<bool>,
+    /// `stable`, or `prerelease` to take release candidates too.
+    pub channel: crate::update::Channel,
+    /// Keep the `claude` CLI current (the Claude plan needs a recent one).
+    pub claude: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        UpdateConfig {
+            auto: None,
+            channel: crate::update::Channel::Stable,
+            claude: true,
+        }
+    }
 }
 
 /// `[telemetry]` (docs/otel.md).
@@ -1449,6 +1475,12 @@ profile = "openai"
 #                            # a key; a secret-looking one is bound to the endpoint.
 # content = false            # true: prompts, replies and tool I/O too, scrubbed.
 # service_name = "ferrule"
+
+# [update]                  # Updates (docs/updates.md). A service set up by
+# auto = true                # `ferrule setup` checks daily and installs a new,
+#                            # signed release when idle; false: ask first.
+# channel = "stable"         # "prerelease": release candidates too.
+# claude = true              # keep the `claude` CLI current too.
 
 # [extensions]              # Self-extension: the agent installs MCP servers,
 # enabled = false            # skills and WASM plugins mid-run (mcp_add,

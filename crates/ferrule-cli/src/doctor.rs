@@ -140,6 +140,7 @@ pub async fn run(offline: bool, ping_models: bool) -> Result<bool> {
     hooks_check(&mut r, &cfg, &path);
     trust_check(&mut r, &cfg, chat_on);
     service_check(&mut r, &path, chat_on)?;
+    update_check(&mut r, &cfg);
     health_check(&mut r, &cfg, chat_on);
     connections_check(&mut r, &cfg);
     editing_check(&mut r, &cfg);
@@ -1771,6 +1772,21 @@ fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Resul
         }
     }
     Ok(())
+}
+
+/// M36: how updates happen here, the last check and update, what's pinned.
+fn update_check(r: &mut Report, cfg: &config::Config) {
+    let Some(data) = config::data_dir_path() else {
+        return;
+    };
+    let units = crate::update::units_installed();
+    for (tone, line) in crate::update::report(&data, cfg.update.auto, units) {
+        match tone {
+            crate::update::Tone::Ok => r.ok("updates", line),
+            crate::update::Tone::Note => r.note("updates", line),
+            crate::update::Tone::Warn => r.warn("updates", line),
+        }
+    }
 }
 
 /// M19c: two gateways polling one bot token take turns getting its
