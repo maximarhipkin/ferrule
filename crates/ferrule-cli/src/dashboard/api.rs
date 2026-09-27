@@ -112,6 +112,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "console/parity" => super::console::parity(),
             "chat" => super::chat::view(ctx, req),
             "approvals" => super::chat::approvals(ctx),
+            "config" => super::config_page::get(ctx),
             _ => None,
         };
     }
@@ -147,6 +148,10 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "console/cancel" => super::console::cancel(ctx, body),
         "chat/send" => super::chat::send(ctx, body).await,
         "approvals/answer" => super::chat::answer(ctx, body),
+        "config/check" => super::config_page::check(ctx, body),
+        "config/save" => super::config_page::save(ctx, body),
+        "config/set" => super::config_page::set(ctx, body),
+        "config/undo" => super::config_page::undo(ctx),
         "run/cancel" => {
             let id = need!(arg(body, "id"));
             ok(json!({ "ok": ctx.runs.cancel(id) }))
@@ -1922,6 +1927,106 @@ mod tests {
         let (status, mut v) = route(ctx, get, &req, &body).await.expect("an endpoint");
         super::super::redact_value(&mut v, &ctx.redactor);
         (status, v)
+    }
+
+    #[tokio::test]
+    async fn the_config_is_edited_from_the_page_checked_guarded_and_undone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        let file = dir.path().join("config.toml");
+        let first = format!(
+            "# mine\n[agent]\nstream = true\nauto_commit_author = \"{SECRET}\"\n\n[[mcp.servers]]\nname = \"fs\"\ncommand = \"npx\"\nargs = [\"server\"]\n"
+        );
+        std::fs::write(&file, &first).unwrap();
+        ctx.config_path = Some(file.clone());
+        ctx.hub = Some(hub(dir.path()));
+
+        let (s, v) = call(&ctx, "config", json!({})).await;
+        assert_eq!(s, 200);
+        let text = v["text"].as_str().unwrap().to_string();
+        assert!(!text.contains(SECRET) && text.contains("# mine"), "{text}");
+        assert_eq!(v["prev"], false);
+        let stream = v["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == "agent.stream")
+            .unwrap()
+            .clone();
+        assert_eq!(stream["value"], true);
+
+        // A file that doesn't read is never saved, and the line is named.
+        let broken = "[agent]\nstream = \"yes\"\n";
+        let (s, v) = call(&ctx, "POST config/check", json!({ "text": broken })).await;
+        assert_eq!(
+            (s, v["ok"].clone(), v["line"].clone()),
+            (200, json!(false), json!(2))
+        );
+        let (s, _) = call(&ctx, "POST config/save", json!({ "text": broken })).await;
+        assert_eq!(s, 422);
+        let (s, _) = call(&ctx, "POST config/save", json!({ "text": "[agent" })).await;
+        assert_eq!(s, 422);
+
+        // A command-bearing change is refused with the field named.
+        let raw = std::fs::read_to_string(&file).unwrap();
+        let args = raw.replace("[\"server\"]", "[\"server\", \"--evil\"]");
+        let (s, v) = call(&ctx, "POST config/save", json!({ "text": args })).await;
+        assert_eq!(s, 403, "{v}");
+        assert!(v["field"].as_str().unwrap().contains("args"));
+        let (s, v) = call(
+            &ctx,
+            "POST config/set",
+            json!({ "key": "agent.verify_command", "value": "x" }),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+
+        // The form sets one field; the editor saves the rest.
+        let (s, v) = call(
+            &ctx,
+            "POST config/set",
+            json!({ "key": "agent.stream", "value": "no" }),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        let (s, v) = call(
+            &ctx,
+            "POST config/set",
+            json!({ "key": "agent.stream", "value": false }),
+        )
+        .await;
+        assert_eq!((s, v["restart"].clone()), (200, json!(true)), "{v}");
+        let now = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            now.contains("stream = false") && now.contains("# mine"),
+            "{now}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(crate::dashboard::config_prev(&file)).unwrap(),
+            first
+        );
+        let edited = text.replace("stream = true", "stream = true\nparallel_tools = 2");
+        let (s, v) = call(&ctx, "POST config/save", json!({ "text": edited })).await;
+        assert_eq!(s, 200, "{v}");
+        let now = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            now.contains("parallel_tools = 2") && now.contains(SECRET),
+            "the hidden value came back"
+        );
+
+        // Undo puts the file before the last save back.
+        let (s, _) = call(&ctx, "POST config/undo", json!({})).await;
+        assert_eq!(s, 200);
+        let now = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            now.contains("stream = false") && !now.contains("parallel_tools"),
+            "{now}"
+        );
+        let events = ctx.hub.as_ref().unwrap().audit().read(None).unwrap();
+        assert_eq!(
+            events.iter().filter(|e| e.event == "config_saved").count(),
+            3
+        );
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ pub mod api;
 pub mod auth;
 pub mod chat;
 pub mod cli;
+pub mod config_page;
 pub mod console;
 pub mod door;
 pub mod http;

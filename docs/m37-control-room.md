@@ -499,6 +499,19 @@ approvals, added in `ferrule-trust`.
 Edge: with no owner chat configured at all, `ask_owner` has nowhere to
 send, and the page's list is the only place an approval can be answered.
 
+As built: the page's chat is added to the router's channels and to the
+owner's notifier only when `[dashboard] enabled`, and appended **last** to
+the hub's owners, so it becomes the primary chat (the one questions and
+warnings go to) only when no other owner chat is configured. It is not one
+of `/connect`'s or the plan chats' channels. The log keeps the last 300
+entries, polled by revision (`?from=REV` returns only what changed since,
+an edited message whole again); a message is capped at 16 KB. Outside the
+gateway (`ferrule dashboard` on its own) `GET /api/chat` says
+`listening: false` and the page shows why instead of a box that can't
+work. `POST /api/approvals/answer {code, allow}` answers through the
+hub's approvals (`decide`) and writes `approval_allowed` /
+`approval_refused` (`by=dashboard`) to the audit log.
+
 ### 4.4 Config
 
 - **A form per section** for the fields the page can safely change:
@@ -526,6 +539,26 @@ send, and the page's list is the only place an approval can be answered.
   secret (secrets live in `secrets.env`); any `*_key`, `token`, or
   `secret` field found in it is redacted on the way out and must stay
   unchanged on the way in.
+
+As built (`dashboard/config_page.rs`): `GET /api/config` returns the
+text, the form's fields with their values, and whether an undo copy and a
+last good copy exist; `POST /api/config/check`, `/save {text}`, `/set
+{key, value}` (one form field, from a fixed list, typed), `/undo`; the
+last good copy is `config/restore` from §1.3, which asks first. A change
+is compared leaf by leaf (a table in an array is named by its `name`, so
+reordering MCP servers isn't one) and refused when it touches a whole
+section that runs something or decides where a secret goes (`[sandbox]`,
+`[hooks]`, `[extensions]`, `[ssh]`, `[secrets]`, `[egress]`, `[browser]`,
+`[plans]`, `[plugins]`) or any field whose name holds `command`, `gate`,
+`hook`, `path`, `allowed`, `owner`, `workspace`, `relay`, `roots`, or is
+`args`, `env`, `binary`, `program`, `cloudflared`, `endpoint`, `issuer`,
+`*_env` or `*url`: stricter than the list above, on purpose (an allowed
+chat lets someone in; a changed `*_url` or `*_env` moves where a key is
+sent). Undo is guarded the same way (a terminal edit made after the page's
+save isn't undone from the page); restoring the last good copy is not,
+because it is the way out of a file a terminal broke. A value the
+redactor hid on the way out comes back as the file's value when it's
+returned unchanged.
 
 ### 4.5 No raw shell (a decision for Max)
 
