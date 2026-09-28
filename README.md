@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.9.1-c4764a" alt="release v0.9.1"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/download-~10_MB-8a929a" alt="download: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-1435-8a929a" alt="1435 workspace tests">
+  <img src="https://img.shields.io/badge/tests-1454-8a929a" alt="1454 workspace tests">
 </p>
 
 <p align="center">
@@ -67,8 +67,13 @@ tasks, JSONL for transcripts and the cost ledger.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/maximarhipkin/ferrule/main/install.sh | sh
 ferrule setup        # model (ChatGPT/Claude plan, API key or local), Telegram, credentials, sandbox, service
+mkdir ~/ferrule-workspace && cd ~/ferrule-workspace   # the agent's room: its file tools and shell writes stay in here
 ferrule run "list the files here and summarise the project"
 ```
+
+Run it from a folder you're happy for the agent to work in — with no
+`--workspace` it takes the current directory as its room, and `$HOME` is a
+bad room.
 
 On Windows it's `irm … install.ps1 | iex`.
 
@@ -596,7 +601,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 1225 tests on Linux; macOS and Windows cfg out the platform-only ones
+cargo test --workspace                     # 1454 tests; a few platform-only ones are cfg'd out per OS
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -678,3 +683,12 @@ and a dated entry for every session.
   (`docs/m12-multi-agent.md` … `docs/m35-subscriptions.md`).
 - [`PLAN.md`](PLAN.md): the shared working log — current state, open gaps
   and a dated entry for every session.
+
+## Contributing, security, license
+
+Contributions are welcome — [CONTRIBUTING.md](CONTRIBUTING.md) is the short
+guide (read [PLAN.md](PLAN.md) first). Vulnerabilities are reported
+privately, per [SECURITY.md](SECURITY.md).
+
+Ferrule is dual-licensed under [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE), at your option.

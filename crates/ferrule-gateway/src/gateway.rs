@@ -1111,12 +1111,15 @@ mod tests {
         release.add_permits(1);
     }
 
-    /// Polls "successfully" while `fresh`; runs until `stop`.
+    /// Polls "successfully" while `fresh`; runs until `stop`. Only the
+    /// Linux-only systemd-watchdog test below uses it.
+    #[cfg(target_os = "linux")]
     struct PollingChannel {
         last_ok: std::sync::Mutex<std::time::SystemTime>,
         fresh: std::sync::atomic::AtomicBool,
         stop: tokio::sync::Notify,
     }
+    #[cfg(target_os = "linux")]
     #[async_trait]
     impl Channel for PollingChannel {
         fn name(&self) -> &str {

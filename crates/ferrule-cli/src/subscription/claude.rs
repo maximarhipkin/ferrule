@@ -281,8 +281,10 @@ pub async fn logout() -> Result<()> {
 }
 
 /// Setup's Claude plan choice: the feature table, then a sign-in if
-/// there's none, then the model.
-pub async fn setup_step(t: &mut crate::setup::Target) -> Result<()> {
+/// there's none, then the model. `false`: nothing was set up — the claude
+/// CLI isn't there, or no sign-in was wanted — so the caller can offer
+/// another way instead of going on with no provider.
+pub async fn setup_step(t: &mut crate::setup::Target) -> Result<bool> {
     use crate::setup::{info, ok, warn};
     info("The Claude plan runs through Claude Code, Anthropic's own CLI. Some ferrule features work differently:");
     println!("{FEATURES}");
@@ -290,11 +292,9 @@ pub async fn setup_step(t: &mut crate::setup::Target) -> Result<()> {
     let binary = s.binary();
     match cli::find(&binary) {
         None => {
-            warn(format!(
-                "Claude Code isn't installed: {}  (then run setup again)",
-                cli::INSTALL
-            ));
-            return Ok(());
+            warn(format!("Claude Code isn't installed: {}", cli::INSTALL));
+            info("Back to the model choices — once it's installed, this way works.");
+            return Ok(false);
         }
         Some(path) => {
             let dir = config_dir(&s)?;
@@ -317,7 +317,7 @@ pub async fn setup_step(t: &mut crate::setup::Target) -> Result<()> {
                 .index;
             match way {
                 0 | 1 => crate::setup::interruptible(login(way == 1)).await??,
-                _ => return Ok(()),
+                _ => return Ok(false),
             }
         }
     }
@@ -343,7 +343,7 @@ pub async fn setup_step(t: &mut crate::setup::Target) -> Result<()> {
     crate::setup::ask_default(t, &cfg, &name, &model)?;
     t.save()?;
     ok(format!("saved `{name}` · {model} on the Claude plan"));
-    Ok(())
+    Ok(true)
 }
 
 /// Doctor's lines for the Claude plan: the binary and its version, which

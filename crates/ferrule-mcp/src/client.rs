@@ -580,12 +580,54 @@ pub struct ContentPart {
     pub text: Option<String>,
     #[serde(default, rename = "mimeType")]
     pub mime_type: Option<String>,
+    /// base64 payload of an `image` or `audio` part.
+    #[serde(default)]
+    pub data: Option<String>,
+    /// An embedded `resource` part's contents.
+    #[serde(default)]
+    pub resource: Option<ResourceContents>,
+}
+
+/// The `resource` object of an embedded-resource part: text, or a base64
+/// blob, plus what it is and where it came from.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ResourceContents {
+    #[serde(default)]
+    pub uri: String,
+    #[serde(default, rename = "mimeType")]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub blob: Option<String>,
+}
+
+/// Where [`CallToolResult::text_saving_media`] writes non-text parts:
+/// `.ferrule/mcp-content/` under the workspace — inside the room, so
+/// `read_file` and `shell` can open what was saved. Files stay until the
+/// owner cleans the dir; nothing prunes them yet.
+pub const MEDIA_DIR: &str = ".ferrule/mcp-content";
+/// The most one saved part may hold after decoding: 16 MiB. A screenshot
+/// is a few hundred KB; this refuses a server that streams garbage.
+pub const MAX_PART_BYTES: usize = 16 * 1024 * 1024;
+/// The most one tool result may save across all its parts: 64 MiB.
+pub const MAX_RESULT_BYTES: usize = 64 * 1024 * 1024;
+
+/// A non-text part written to disk: where it landed (absolute), its MIME
+/// type, and its decoded size.
+#[derive(Debug, Clone)]
+pub struct SavedContent {
+    pub path: PathBuf,
+    pub mime_type: String,
+    pub size_bytes: usize,
 }
 
 impl CallToolResult {
-    /// Every `text` content part, joined. The model only sees text from a
-    /// tool so far, so any other part (an image, audio, a resource) becomes
-    /// a line saying it was left out, rather than vanishing.
+    /// Every `text` content part, joined. Any other part (an image, audio,
+    /// a resource) becomes a line saying it was left out, rather than
+    /// vanishing. Used for error results; successful calls go through
+    /// [`text_saving_media`](Self::text_saving_media), which saves the
+    /// parts that carry bytes.
     pub fn text(&self) -> String {
         self.content
             .iter()
@@ -600,6 +642,265 @@ impl CallToolResult {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Like [`text`](Self::text), but a part that carries bytes — an
+    /// `image`/`audio` `data` payload, a `resource` blob — is decoded and
+    /// written under `<workspace>/.ferrule/mcp-content/`, and its stand-in
+    /// line names the file, MIME type and size so the model can open the
+    /// file. A resource's *text* is text, so it is inlined like any other.
+    /// Text parts come out byte-for-byte as in [`text`](Self::text); a
+    /// part without bytes, over the caps, or that fails to decode or write
+    /// keeps a "left out" line saying why. Saving is best-effort: a write
+    /// failure never fails the tool call.
+    pub fn text_saving_media(&self, workspace: &Path) -> (String, Vec<SavedContent>) {
+        self.text_saving_media_within(workspace, MAX_PART_BYTES, MAX_RESULT_BYTES)
+    }
+
+    /// `text_saving_media` with the caps as arguments, so tests can use
+    /// small ones.
+    fn text_saving_media_within(
+        &self,
+        workspace: &Path,
+        max_part: usize,
+        max_result: usize,
+    ) -> (String, Vec<SavedContent>) {
+        let mut saved = Vec::new();
+        let mut saved_bytes = 0usize;
+        let lines = self
+            .content
+            .iter()
+            .map(|c| {
+                c.line(
+                    workspace,
+                    max_part,
+                    max_result,
+                    &mut saved,
+                    &mut saved_bytes,
+                )
+            })
+            .collect::<Vec<_>>();
+        (lines.join("\n"), saved)
+    }
+}
+
+impl ContentPart {
+    /// The part's line for the model, saving its bytes under the workspace
+    /// when it carries any (see [`CallToolResult::text_saving_media`]).
+    fn line(
+        &self,
+        workspace: &Path,
+        max_part: usize,
+        max_result: usize,
+        saved: &mut Vec<SavedContent>,
+        saved_bytes: &mut usize,
+    ) -> String {
+        if let Some(text) = &self.text {
+            if self.kind == "text" || self.kind.is_empty() {
+                return text.clone();
+            }
+        }
+        // A resource's text is text too: inline it rather than naming it.
+        if let Some(text) = self.resource.as_ref().and_then(|r| r.text.as_ref()) {
+            return text.clone();
+        }
+        let Some((bytes64, mime)) = self.payload() else {
+            let what = self
+                .mime_type
+                .as_deref()
+                .or(self.resource.as_ref().and_then(|r| r.mime_type.as_deref()))
+                .unwrap_or(&self.kind);
+            return format!("[{what} content left out: it has no data to save]");
+        };
+        match save_media(
+            workspace,
+            &self.kind,
+            mime,
+            bytes64,
+            *saved_bytes,
+            max_part,
+            max_result,
+        ) {
+            Ok(one) => {
+                *saved_bytes += one.size_bytes;
+                let rel = one
+                    .path
+                    .strip_prefix(workspace)
+                    .unwrap_or(&one.path)
+                    .to_path_buf();
+                let line = format!(
+                    "[{mime} saved to {} ({} bytes)]",
+                    rel.display(),
+                    one.size_bytes
+                );
+                saved.push(one);
+                line
+            }
+            Err(why) => format!("[{mime} content left out: {why}]"),
+        }
+    }
+
+    /// The part's bytes and MIME type, if it carries any: an
+    /// `image`/`audio` `data` payload, or a `resource`'s blob. An empty
+    /// payload is none.
+    fn payload(&self) -> Option<(&str, &str)> {
+        if let Some(data) = self.data.as_deref().filter(|d| !d.is_empty()) {
+            return Some((
+                data,
+                self.mime_type
+                    .as_deref()
+                    .unwrap_or("application/octet-stream"),
+            ));
+        }
+        let resource = self.resource.as_ref()?;
+        let blob = resource.blob.as_deref().filter(|b| !b.is_empty())?;
+        let mime = resource
+            .mime_type
+            .as_deref()
+            .or(self.mime_type.as_deref())
+            .unwrap_or("application/octet-stream");
+        Some((blob, mime))
+    }
+}
+
+/// Decode `bytes64` (base64) and write it under
+/// `<workspace>/.ferrule/mcp-content/`, within the per-part cap and the
+/// per-result cap (`already` bytes saved so far). The filename is ours —
+/// kind, clock and a counter — never anything the server sent.
+fn save_media(
+    workspace: &Path,
+    kind: &str,
+    mime: &str,
+    bytes64: &str,
+    already: usize,
+    max_part: usize,
+    max_result: usize,
+) -> Result<SavedContent, String> {
+    use base64::Engine;
+    // ~3/4 of the base64 length: refuse a monster before decoding it. The
+    // estimate can exceed the real size by the padding, so a part exactly
+    // at the cap may be refused here — a cap is a guardrail, not a quota.
+    let estimate = bytes64.len() / 4 * 3;
+    if estimate > max_part {
+        return Err(format!(
+            "{} is over the {} per-file limit",
+            human_bytes(estimate),
+            human_bytes(max_part)
+        ));
+    }
+    if already + estimate > max_result {
+        return Err(format!(
+            "the {} per-result limit is reached",
+            human_bytes(max_result)
+        ));
+    }
+    let clean: String = bytes64
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(clean)
+        .map_err(|_| "the base64 payload would not decode".to_string())?;
+    if bytes.len() > max_part {
+        return Err(format!(
+            "{} is over the {} per-file limit",
+            human_bytes(bytes.len()),
+            human_bytes(max_part)
+        ));
+    }
+    let dir = workspace.join(MEDIA_DIR);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let path = dir.join(media_file_name(kind, mime));
+    std::fs::write(&path, &bytes)
+        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    Ok(SavedContent {
+        path,
+        mime_type: mime.to_string(),
+        size_bytes: bytes.len(),
+    })
+}
+
+static MEDIA_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// `image-1759056123456-7.png`: the part's kind, the clock and a
+/// process-wide counter, so two calls — or two ferrule processes sharing a
+/// workspace — never pick the same name.
+fn media_file_name(kind: &str, mime: &str) -> String {
+    let kind = sanitize(kind);
+    let kind = if kind.is_empty() { "part".into() } else { kind };
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let seq = MEDIA_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{kind}-{millis}-{seq}.{}", extension_for(mime))
+}
+
+/// Lowercase ASCII alphanumerics only, length-capped.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .take(24)
+        .collect()
+}
+
+/// The file extension for a MIME type. Common types map by hand; anything
+/// else falls back to its sanitized subtype (`image/x-icon` → `xicon`,
+/// `application/xhtml+xml` → `xhtml`), or `bin`.
+fn extension_for(mime: &str) -> String {
+    let mime = mime
+        .split(';')
+        .next()
+        .unwrap_or(mime)
+        .trim()
+        .to_ascii_lowercase();
+    let known = match mime.as_str() {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        "image/tiff" => "tiff",
+        "image/x-icon" => "ico",
+        "audio/mpeg" => "mp3",
+        "audio/wav" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/webm" => "webm",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "application/pdf" => "pdf",
+        "application/json" => "json",
+        "text/html" => "html",
+        "text/css" => "css",
+        "text/csv" => "csv",
+        "text/markdown" => "md",
+        "text/plain" => "txt",
+        _ => "",
+    };
+    if !known.is_empty() {
+        return known.to_string();
+    }
+    let subtype = mime.rsplit('/').next().unwrap_or("");
+    let subtype = subtype.split('+').next().map(sanitize).unwrap_or_default();
+    if subtype.is_empty() {
+        "bin".into()
+    } else {
+        subtype
+    }
+}
+
+fn human_bytes(n: usize) -> String {
+    const MIB: usize = 1 << 20;
+    const KIB: usize = 1 << 10;
+    if n >= MIB {
+        format!("{:.1} MiB", n as f64 / MIB as f64)
+    } else if n >= KIB {
+        format!("{:.1} KiB", n as f64 / KIB as f64)
+    } else {
+        format!("{n} bytes")
     }
 }
 

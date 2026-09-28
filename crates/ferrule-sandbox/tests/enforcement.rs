@@ -507,6 +507,7 @@ fn unix_sockets_outside_the_allowlist_are_refused() {
     let foreign = wsp.join("foreign.sock");
     let _l3 = UnixListener::bind(&foreign).unwrap();
 
+    #[allow(unused_mut)] // Linux pushes two abstract-socket targets below.
     let mut targets = vec![
         format!("allowed={}", ok.display()),
         format!("denied={}", no.display()),

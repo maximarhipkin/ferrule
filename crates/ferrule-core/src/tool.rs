@@ -13,11 +13,31 @@ pub struct ToolDefinition {
     pub parameters: serde_json::Value,
 }
 
+/// A non-text part of a tool result that was saved to a file rather than
+/// inlined: an MCP image, audio clip or blob resource. The text in
+/// [`ToolOutput::content`] names the file in prose; this is the same fact
+/// as data, for the UI and the transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolOutputFile {
+    /// Where the bytes landed — workspace-relative when under the workspace.
+    pub path: PathBuf,
+    /// The MIME type the tool reported for the part.
+    pub mime_type: String,
+    /// Bytes on disk, after decoding.
+    pub size_bytes: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub content: String,
     /// True when the output was cut to protect the context window.
     pub truncated: bool,
+    /// Non-text parts saved to files (an MCP image under
+    /// `.ferrule/mcp-content/`). Empty for a plain text result, and left
+    /// out of the serialized form then, so a text-only result keeps its
+    /// exact old shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ToolOutputFile>,
 }
 
 impl ToolOutput {
@@ -25,6 +45,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             truncated: false,
+            files: Vec::new(),
         }
     }
     /// Enforce a hard size cap — verbose tool output is the #1 source of
@@ -34,6 +55,7 @@ impl ToolOutput {
             return Self {
                 content,
                 truncated: false,
+                files: Vec::new(),
             };
         }
         let mut cut = content.chars().take(max_chars).collect::<String>();
@@ -41,7 +63,13 @@ impl ToolOutput {
         Self {
             content: cut,
             truncated: true,
+            files: Vec::new(),
         }
+    }
+    /// Attach saved-file references (see [`ToolOutputFile`]).
+    pub fn with_files(mut self, files: Vec<ToolOutputFile>) -> Self {
+        self.files = files;
+        self
     }
 }
 
@@ -280,5 +308,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.content, "static");
+    }
+
+    #[test]
+    fn a_text_only_output_serializes_exactly_as_before_files() {
+        let out = ToolOutput::ok("hi");
+        assert_eq!(
+            serde_json::to_string(&out).unwrap(),
+            r#"{"content":"hi","truncated":false}"#
+        );
+        assert!(out.files.is_empty());
+    }
+
+    #[test]
+    fn stored_output_without_files_still_loads() {
+        let out: ToolOutput = serde_json::from_str(r#"{"content":"hi","truncated":true}"#).unwrap();
+        assert_eq!(out.content, "hi");
+        assert!(out.truncated);
+        assert!(out.files.is_empty());
+    }
+
+    #[test]
+    fn saved_files_roundtrip() {
+        let out = ToolOutput::ok("[image/png saved to .ferrule/mcp-content/image-1.png (4 bytes)]")
+            .with_files(vec![ToolOutputFile {
+                path: PathBuf::from(".ferrule/mcp-content/image-1.png"),
+                mime_type: "image/png".into(),
+                size_bytes: 4,
+            }]);
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(json["files"][0]["mime_type"], "image/png");
+        let back: ToolOutput = serde_json::from_value(json).unwrap();
+        assert_eq!(back.files, out.files);
     }
 }

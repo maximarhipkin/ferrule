@@ -165,6 +165,12 @@ pub struct Catalog {
     pub default: Option<String>,
     pub default_provider: Option<String>,
     pub fallback: Vec<String>,
+    /// `[models] deny`, as written.
+    pub deny: Vec<String>,
+    /// `[models.exact]`, as written: the ref, and the id it must be.
+    pub exact: BTreeMap<String, String>,
+    /// `exact` resolved: a connected model's reference → the id it must be.
+    pinned: BTreeMap<String, String>,
     /// M25: `[routing]`, its tiers resolved.
     pub routing: routing::Routing,
 }
@@ -187,12 +193,27 @@ impl Catalog {
             default: cfg.models.default.clone(),
             default_provider: cfg.default_provider.clone(),
             fallback: cfg.models.fallback.clone(),
+            deny: cfg.models.deny.clone(),
+            exact: cfg.models.exact.clone(),
+            pinned: BTreeMap::new(),
             routing: routing::Routing::default(),
         };
+        cat.pinned = cat
+            .exact
+            .iter()
+            .filter_map(|(word, id)| {
+                let id = id.trim();
+                if id.is_empty() {
+                    return None;
+                }
+                let reference = cat.resolve_unchecked(word).ok()?.reference();
+                Some((reference, id.to_string()))
+            })
+            .collect();
         let named: Vec<(String, String)> = cat
             .aliases
             .keys()
-            .filter_map(|a| Some((a.clone(), cat.resolve(a).ok()?.reference())))
+            .filter_map(|a| Some((a.clone(), cat.resolve_unchecked(a).ok()?.reference())))
             .collect();
         for (alias, target) in named {
             if let Some(e) = cat.entries.iter_mut().find(|e| e.reference() == target) {
@@ -206,8 +227,19 @@ impl Catalog {
     /// The connected model `word` names (docs/m21-models.md §1): an alias,
     /// then a provider (its primary), then `provider/model`, then a model
     /// id only one provider has. M25: a tier ref (`tier:strong`) is that
-    /// tier's model.
+    /// tier's model. A model `[models]` denies, or whose `exact` pin the
+    /// connected id doesn't match, is refused with the reason.
     pub fn resolve(&self, word: &str) -> Result<&Entry, String> {
+        let e = self.resolve_unchecked(word)?;
+        if let Some(why) = self.forbidden(e) {
+            return Err(format!("`{}` is {why}", e.reference()));
+        }
+        Ok(e)
+    }
+
+    /// [`resolve`] without the `[models] deny`/`exact` check: for listing
+    /// what's connected, and for changing or removing a denied model.
+    pub fn resolve_unchecked(&self, word: &str) -> Result<&Entry, String> {
         let word = word.trim();
         if let Some(tier) = self.routing.tier_of(word) {
             return tier.map(|i| &self.routing.tiers[i].entry);
@@ -218,6 +250,56 @@ impl Catalog {
                 .map_err(|e| format!("the alias `{word}` points at `{target}`, but {e}"));
         }
         self.resolve_plain(word)
+    }
+
+    /// Why `e` may not run, when `[models]` forbids it: it matches a `deny`
+    /// word (its `provider/model`, its bare model id, its provider, or an
+    /// alias for it), or an `exact` pin names it but the connected id
+    /// isn't the pinned one. Phrased to follow "`ref` is …".
+    pub fn forbidden(&self, e: &Entry) -> Option<String> {
+        self.denied(e).or_else(|| self.mispinned(e))
+    }
+
+    /// Why `e` is denied, when a `[models] deny` word names it (its
+    /// `provider/model`, its bare model id, its provider, or an alias for
+    /// it). Phrased to follow "`ref` is …".
+    pub fn denied(&self, e: &Entry) -> Option<String> {
+        let reference = e.reference();
+        for w in &self.deny {
+            let w = w.trim();
+            if w.is_empty() {
+                continue;
+            }
+            let hit = w == reference
+                || w == e.model
+                || w == e.provider
+                || self
+                    .aliases
+                    .get(w)
+                    .and_then(|t| self.resolve_plain(t).ok())
+                    .is_some_and(|t| t.reference() == reference);
+            if hit {
+                return Some(format!("denied by [models] deny (`{w}`)"));
+            }
+        }
+        None
+    }
+
+    /// Why `e` is mis-pinned, when `[models.exact]` names it but the
+    /// connected id isn't the pinned one. Phrased to follow "`ref` is …".
+    fn mispinned(&self, e: &Entry) -> Option<String> {
+        let id = self.exact_pin(e)?;
+        (e.model != id).then(|| {
+            format!(
+                "pinned to `{id}` by [models] exact, but `{}` is connected; connect the pinned id and use it instead",
+                e.model
+            )
+        })
+    }
+
+    /// The exact id `[models] exact` pins `e` to, when it does.
+    pub fn exact_pin(&self, e: &Entry) -> Option<&str> {
+        self.pinned.get(&e.reference()).map(String::as_str)
     }
 
     fn resolve_plain(&self, word: &str) -> Result<&Entry, String> {
@@ -288,10 +370,18 @@ impl Catalog {
                 .find(|e| e.primary && e.provider == *p)
                 .map(|e| (e, note))
                 .ok_or_else(|| format!("provider `{p}` not in config")),
-            None => Err(
-                "no default model: run `ferrule model default <ref>`, or set default_provider"
-                    .into(),
-            ),
+            None => {
+                if self.entries.is_empty() {
+                    // Nothing is connected at all: `model default` can't
+                    // help, setup can.
+                    Err("no model is connected yet — run `ferrule setup` to add one".into())
+                } else {
+                    Err(
+                        "no default model: run `ferrule model default <ref>`, or set default_provider"
+                            .into(),
+                    )
+                }
+            }
         }
     }
 
@@ -1080,6 +1170,120 @@ model = "vendor/shared"
         assert!(r("nope").unwrap_err().contains("isn't a connected model"));
         assert!(r("").is_err());
         assert_eq!(cat.resolve("b/b-small").unwrap().aliases, vec!["fast"]);
+    }
+
+    /// `[models] deny`: a word is a `provider/model`, a bare id (every
+    /// provider), a provider, or an alias — and a denied model stays
+    /// visible to `resolve_unchecked` (listing, removing).
+    #[test]
+    fn deny_refuses_by_ref_id_provider_and_alias() {
+        let text = r#"
+default_provider = "a"
+
+[models]
+deny = ["b/b-large", "b-small", "c", "old"]
+
+[models.aliases]
+old = "a/a-two"
+fast = "a/a-one"
+
+[providers.a]
+base_url = "http://127.0.0.1:1/v1"
+api_key_env = "PATH"
+model = "a-one"
+
+[providers.a.models."a-two"]
+
+[providers.b]
+base_url = "http://127.0.0.1:2/v1"
+api_key_env = "PATH"
+model = "b-large"
+
+[providers.b.models."b-small"]
+
+[providers.c]
+base_url = "http://127.0.0.1:3/v1"
+api_key_env = "PATH"
+model = "c-one"
+"#;
+        let cat = Catalog::from_config(&cfg(text));
+        let denied = |w: &str| {
+            let e = cat.resolve(w).unwrap_err();
+            assert!(e.contains("denied by [models] deny"), "{w}: {e}");
+            e
+        };
+        // By `provider/model`, by bare id, by provider, by an alias for it.
+        assert!(denied("b/b-large").contains("`b/b-large`"));
+        assert!(denied("b/b-small").contains("`b-small`"));
+        assert!(denied("c").contains("`c`"));
+        assert!(denied("c/c-one").contains("`c`"));
+        assert!(denied("a/a-two").contains("`old`"));
+        assert!(denied("old").contains("`old`"));
+        // Not denied: the other provider's model, and an alias for a
+        // model nobody denies.
+        assert_eq!(cat.resolve("a/a-one").unwrap().reference(), "a/a-one");
+        assert_eq!(cat.resolve("fast").unwrap().reference(), "a/a-one");
+        // Unchecked still sees a denied model.
+        assert_eq!(
+            cat.resolve_unchecked("b/b-large").unwrap().reference(),
+            "b/b-large"
+        );
+        // The default falls back to default_provider, with a note.
+        let text_d = text.replace("deny = [", "default = \"b/b-large\"\ndeny = [");
+        let cat = Catalog::from_config(&cfg(&text_d));
+        let (e, note) = cat.default_entry().unwrap();
+        assert_eq!(e.reference(), "a/a-one");
+        assert!(note.unwrap().contains("denied by [models] deny"));
+    }
+
+    /// `[models.exact]`: the connected id must be the pinned one; a
+    /// provider that silently retargets is refused, not run.
+    #[test]
+    fn an_exact_pin_refuses_a_retargeted_id() {
+        let text = |id: &str| {
+            format!(
+                r#"
+default_provider = "a"
+
+[models.exact]
+"a/a-one" = "{id}"
+
+[providers.a]
+base_url = "http://127.0.0.1:1/v1"
+api_key_env = "PATH"
+model = "a-one"
+"#
+            )
+        };
+        // The pin matches the connected id: resolves, and the pin shows.
+        let cat = Catalog::from_config(&cfg(&text("a-one")));
+        let e = cat.resolve("a/a-one").unwrap();
+        assert_eq!(cat.exact_pin(e), Some("a-one"));
+        assert!(cat.forbidden(e).is_none());
+        // The provider retargeted: refused, by ref and by alias-word.
+        let cat = Catalog::from_config(&cfg(&text("a-one-2026-01-01")));
+        let err = cat.resolve("a").unwrap_err();
+        assert!(
+            err.contains("pinned to `a-one-2026-01-01` by [models] exact")
+                && err.contains("`a-one` is connected"),
+            "{err}"
+        );
+        // Unchecked still sees it (so it can be changed or removed).
+        let e = cat.resolve_unchecked("a/a-one").unwrap();
+        assert_eq!(cat.exact_pin(e), Some("a-one-2026-01-01"));
+        // An empty pin pins nothing.
+        let cat = Catalog::from_config(&cfg(&text("  ")));
+        assert!(cat.resolve("a/a-one").is_ok());
+        assert_eq!(cat.exact_pin(cat.resolve_unchecked("a").unwrap()), None);
+    }
+
+    /// Nothing connected at all: the error points at `ferrule setup`, not
+    /// at `model default` (which needs a model to point at).
+    #[test]
+    fn with_no_providers_the_error_says_setup() {
+        let cat = Catalog::from_config(&cfg(""));
+        let e = cat.default_entry().unwrap_err();
+        assert!(e.contains("run `ferrule setup`"), "{e}");
     }
 
     /// M23: a v0.3.0 config (no `api` anywhere) loads as it did, except

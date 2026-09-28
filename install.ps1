@@ -7,8 +7,12 @@
 # `ferrule setup` — the wizard that asks for the provider and key, Telegram
 # and the rest. Running it again upgrades in place and keeps your settings.
 #
-# Native Windows has no OS sandbox in ferrule yet: shell commands the agent
-# runs have your own permissions. For full isolation, run the Linux build
+# Native Windows has a real OS sandbox in ferrule (no admin needed): the
+# agent's commands run under a restricted token in a job object — writes
+# stay in the workspace and temp, ferrule's saved keys are unreadable, and
+# the process tree dies with the command. The network isn't confined there,
+# and Git Bash can't run under the token (use PowerShell:
+# `setx FERRULE_SHELL powershell`). For full isolation, run the Linux build
 # under WSL2 (curl -fsSL .../install.sh | sh inside it).
 #
 # Optional environment:

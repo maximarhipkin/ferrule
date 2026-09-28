@@ -69,6 +69,27 @@ pub async fn run() -> Result<()> {
     if !cfg.providers.is_empty() {
         println!("  ferrule chat      talk to the agent in this terminal");
     }
+    let gw = &cfg.gateway;
+    let channels = gw.telegram_token_env.is_some()
+        || gw.discord_token_env.is_some()
+        || gw.slack_bot_token_env.is_some();
+    if channels {
+        if !matches!(
+            service::status(),
+            service::Status::Installed { running: true, .. }
+        ) {
+            println!("  ferrule gateway   run it to answer your chats (setup → Background service installs it)");
+        }
+        if gw.telegram_token_env.is_some() {
+            println!("  Telegram          message your bot to talk to the agent");
+        }
+        if gw.discord_token_env.is_some() {
+            println!("  Discord           DM your bot, or @mention it in an allowed channel");
+        }
+        if gw.slack_bot_token_env.is_some() {
+            println!("  Slack             DM your bot, or @mention it in an allowed channel");
+        }
+    }
     println!("  ferrule doctor    check that everything works");
     let flag = crate::instance::flag(crate::instance::current().as_deref());
     println!("  ferrule {flag}setup     change any of this later");
@@ -883,14 +904,21 @@ const MODEL_WAYS: [&str; 4] = [
 ];
 
 async fn add_provider(t: &mut Target, http: &reqwest::Client) -> Result<()> {
-    let way = Select::new("How should ferrule reach a model?", MODEL_WAYS.to_vec())
-        .raw_prompt()?
-        .index;
-    match way {
-        0 => chatgpt_plan_step(t).await,
-        1 => crate::subscription::claude_setup_step(t).await,
-        2 => add_keyed_provider(t, http, false).await,
-        _ => add_keyed_provider(t, http, true).await,
+    // A way that can't finish (the Claude plan without the claude CLI)
+    // says so, and the picker comes back instead of saving nothing.
+    loop {
+        let way = Select::new("How should ferrule reach a model?", MODEL_WAYS.to_vec())
+            .raw_prompt()?
+            .index;
+        let done = match way {
+            0 => chatgpt_plan_step(t).await.map(|_| true)?,
+            1 => crate::subscription::claude_setup_step(t).await?,
+            2 => add_keyed_provider(t, http, false).await.map(|_| true)?,
+            _ => add_keyed_provider(t, http, true).await.map(|_| true)?,
+        };
+        if done {
+            return Ok(());
+        }
     }
 }
 
@@ -977,11 +1005,24 @@ pub(crate) fn ask_default(
 async fn add_keyed_provider(t: &mut Target, http: &reqwest::Client, local: bool) -> Result<()> {
     let cfg = t.config()?;
     // M34: local servers running here come first, with what they serve.
-    let servers = if local {
+    let mut servers = if local {
         interruptible(local::found(http, &cfg)).await?
     } else {
         Vec::new()
     };
+    // Nothing answered: say how a server gets on this machine, and offer
+    // another look once it's started.
+    while local && servers.is_empty() {
+        info("No local model server answered. The easiest way in is Ollama: https://ollama.com/download,");
+        info("then `ollama pull qwen3-coder` (llama.cpp, LM Studio and vLLM work too).");
+        if !Confirm::new("Look for one again?")
+            .with_default(true)
+            .prompt()?
+        {
+            break;
+        }
+        servers = interruptible(local::found(http, &cfg)).await?;
+    }
     let presets: Vec<&Preset> = PRESETS
         .iter()
         .filter(|p| p.key_url.is_empty() == local)
@@ -1510,7 +1551,9 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
                 .await??;
                 ok(who);
             }
-            _ => crate::subscription::claude_setup_step(t).await?,
+            _ => {
+                crate::subscription::claude_setup_step(t).await?;
+            }
         },
         "Replace the API key" => {
             let (key, _) = ask_provider_key(http, &NewProvider::from_config(name, &p)).await?;
@@ -1798,11 +1841,11 @@ async fn allow_chats(t: &mut Target, tg: &probe::Telegram<'_>, bot: &str) -> Res
     }
     if busy {
         warn("something else is reading this bot's messages, probably a ferrule gateway that's running already");
-        if allowed.is_empty() {
-            info("Message the bot anyway: while no chat is allowed, it answers with the chat id to type here.");
-        }
     } else {
         info("No chat was added.");
+    }
+    if allowed.is_empty() {
+        info("Message the bot anyway: while no chat is allowed, it answers with the chat id to type here.");
     }
     let id = Text::new("Chat id to allow (Enter to skip)")
         .with_validator(|v: &str| -> Result<Validation, CustomUserError> {
@@ -2348,9 +2391,11 @@ fn web_search_step(t: &mut Target, guided: bool) -> Result<()> {
 
 fn sandbox_step(t: &mut Target, guided: bool) -> Result<()> {
     if cfg!(windows) {
-        warn("Windows has no OS sandbox in ferrule yet: shell commands the agent runs have your own permissions.");
-        info("Saved keys stay out of its file tools and out of the commands' environment either way.");
-        info("For full isolation, run the Linux build under WSL2 instead.");
+        // M26: not "no sandbox" — a restricted token in a job object.
+        info("On Windows, shell commands the agent runs go under a restricted token in a job object:");
+        info("writes land only in the workspace and temp dirs, the saved keys can't be read, and the");
+        info("whole process tree dies with the command. `network = false` isn't enforced there.");
+        warn("Git Bash can't start under that token, so with Git Bash commands run unsandboxed, behind a warning; set FERRULE_SHELL=powershell to get the sandbox (docs/windows-sandbox.md).");
         return Ok(());
     }
     let cfg = t.config()?;

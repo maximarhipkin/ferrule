@@ -12,6 +12,7 @@ use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use crate::routing::Signal;
 use crate::stuck::{Step, Stuck};
+use crate::textcall;
 use crate::tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
 use crate::transcript::Transcript;
 use crate::triggers::{PromptTriggers, TriggerLoad};
@@ -28,6 +29,11 @@ use tracing::{info, warn};
 /// to do X" loses exactly the detail the skill exists to provide.
 pub const SKILL_CONTENT_OPEN: &str = "<skill_content name=\"";
 pub const SKILL_CONTENT_CLOSE: &str = "</skill_content>";
+
+/// Rescues a run gets for tool calls the model wrote as text
+/// ([`crate::textcall`]); past the cap the text stands as the answer, so a
+/// model that only writes them as text can't loop.
+const MAX_TEXT_CALL_SALVAGES: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -1060,6 +1066,9 @@ impl Agent {
 
         let mut steps: Vec<Step> = Vec::new();
         let mut nudged = false;
+        // Tool calls the model wrote as text and the loop rescued or
+        // nudged about this run; capped so it can't loop.
+        let mut salvaged = 0;
         // A tool that changes files succeeded, so the check has to pass
         // before the run may finish.
         let mut unverified = false;
@@ -1097,7 +1106,45 @@ impl Agent {
             };
             self.add_usage(&tx, &resp.usage).await;
 
-            let msg = resp.message;
+            let mut msg = resp.message;
+            // A model without reliable native tool calling sometimes writes
+            // the call as text (`<function=…>` markup, a `<tool_call>` block,
+            // a bare JSON object), and the turn would end right here on it.
+            // Salvage the call while the cap lasts; when the markup won't
+            // parse, nudge the model to re-emit it structured. A message with
+            // native blocks is replayed verbatim by its own driver (M23), so
+            // one is never rewritten.
+            let mut finished = msg.tool_calls.is_empty();
+            let mut nudge = false;
+            if finished
+                && salvaged < MAX_TEXT_CALL_SALVAGES
+                && msg.native.is_none()
+                && !self.tools.definitions().is_empty()
+            {
+                match msg.content.as_deref().and_then(textcall::salvage) {
+                    Some(textcall::Salvage::Calls { calls, rest }) => {
+                        salvaged += 1;
+                        info!(calls = calls.len(), "tool call read out of assistant text");
+                        let at = self.messages.len();
+                        msg.tool_calls = calls
+                            .into_iter()
+                            .enumerate()
+                            .map(|(k, call)| ToolCall {
+                                id: format!("salvaged-{at}-{k}"),
+                                name: call.name,
+                                arguments: call.arguments,
+                            })
+                            .collect();
+                        msg.content = (!rest.is_empty()).then_some(rest);
+                        finished = false;
+                    }
+                    Some(textcall::Salvage::LooksLikeCall) => {
+                        salvaged += 1;
+                        nudge = true;
+                    }
+                    None => {}
+                }
+            }
             if let Some(text) = &msg.content {
                 if !text.is_empty() {
                     self.emit(&tx, AgentEvent::AssistantText { text: text.clone() })
@@ -1111,8 +1158,12 @@ impl Agent {
                 }
             }
 
-            let finished = msg.tool_calls.is_empty();
             self.push(msg.clone());
+            if nudge {
+                warn!("a tool call arrived as text but wouldn't parse");
+                self.push(Message::user(textcall::NUDGE));
+                continue;
+            }
 
             if finished {
                 if needs_check {
@@ -3343,6 +3394,109 @@ mod tests {
         let (tx, _rx) = events();
         assert_eq!(agent.run("loop", tx).await.unwrap(), "done");
         assert_eq!(agent.incomplete, None);
+    }
+
+    /// The failure the eval kept showing: the model writes its call as
+    /// `<function=…>` text, and the run ends on it. Salvaged, it runs.
+    #[tokio::test]
+    async fn a_tool_call_written_as_text_runs_as_a_real_call() {
+        let script = vec![
+            say("<function=echo><parameter=text>hi</parameter></function>"),
+            say("done"),
+        ];
+        let mut agent = make_agent(script);
+        let (tx, mut rx) = events();
+        let answer = agent.run("go", tx).await.unwrap();
+        assert_eq!(answer, "done");
+
+        // The history holds a structured call, its markup gone, and the
+        // call's result — as if the model had sent it structured.
+        let call = &agent.messages[1];
+        assert_eq!(call.tool_calls.len(), 1);
+        assert_eq!(call.tool_calls[0].name, "echo");
+        assert_eq!(
+            call.tool_calls[0].arguments,
+            serde_json::json!({"text": "hi"})
+        );
+        assert!(call.tool_calls[0].id.starts_with("salvaged-"));
+        assert_eq!(call.content, None);
+        assert_eq!(agent.messages[2].content.as_deref(), Some("hi"));
+        assert_eq!(
+            agent.messages[2].tool_call_id.as_deref(),
+            Some(call.tool_calls[0].id.as_str())
+        );
+        assert!(drain(&mut rx).iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallFinished { name, ok: true, .. } if name == "echo"
+        )));
+    }
+
+    #[tokio::test]
+    async fn prose_around_a_text_call_survives_the_salvage() {
+        let script = vec![
+            say("Checking first.\n<function=echo><parameter=text>hi</parameter></function>"),
+            say("done"),
+        ];
+        let mut agent = make_agent(script);
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("go", tx).await.unwrap(), "done");
+        assert_eq!(
+            agent.messages[1].content.as_deref(),
+            Some("Checking first.")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_text_call_gets_a_nudge_not_an_answer() {
+        let script = vec![say("<tool_call>{oops</tool_call>"), say("ok")];
+        let mut agent = make_agent(script);
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("go", tx).await.unwrap(), "ok");
+        let nudges = agent
+            .messages
+            .iter()
+            .filter(|m| m.content.as_deref() == Some(crate::textcall::NUDGE))
+            .count();
+        assert_eq!(nudges, 1);
+    }
+
+    #[tokio::test]
+    async fn text_call_salvage_is_capped_so_it_cant_loop() {
+        let junk = "<tool_call>{oops</tool_call>";
+        let script = vec![say(junk), say(junk), say(junk), say(junk)];
+        let mut agent = make_agent(script);
+        let (tx, _rx) = events();
+        // Past the cap the text stands as the answer.
+        assert_eq!(agent.run("go", tx).await.unwrap(), junk);
+        let nudges = agent
+            .messages
+            .iter()
+            .filter(|m| m.content.as_deref() == Some(crate::textcall::NUDGE))
+            .count();
+        assert_eq!(nudges, MAX_TEXT_CALL_SALVAGES);
+    }
+
+    #[tokio::test]
+    async fn without_tools_offered_text_stands_as_the_answer() {
+        let mut agent = Agent::new(
+            Arc::new(ScriptProvider {
+                responses: Mutex::new(vec![say(
+                    "<function=echo><parameter=text>hi</parameter></function>",
+                )]),
+            }),
+            ToolRegistry::new(),
+            HarnessProfile::generic(),
+            AgentConfig::default(),
+            ToolContext::default(),
+            None,
+        );
+        let (tx, _rx) = events();
+        let answer = agent.run("go", tx).await.unwrap();
+        assert_eq!(
+            answer,
+            "<function=echo><parameter=text>hi</parameter></function>"
+        );
+        assert!(agent.messages[1].tool_calls.is_empty());
     }
 
     /// Answers from a script and counts its runs.

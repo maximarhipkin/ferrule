@@ -3,6 +3,7 @@ name = "ferrule-core"
 version = "0.9.1"
 edition = "2021"
 description = "Agent loop, provider trait, harness profiles, transcripts"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 tokio = { workspace = true }

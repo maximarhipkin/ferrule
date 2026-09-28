@@ -379,10 +379,15 @@ impl Models {
     }
 
     /// Disconnect a model that isn't a provider's own; it leaves the
-    /// fallback list and its aliases go.
+    /// fallback list and its aliases go. Unchecked: a `[models]`-denied or
+    /// mis-pinned model has to stay removable (that's half of why `deny`
+    /// exists).
     pub fn remove_model(&self, word: &str, by: &str) -> anyhow::Result<Done> {
         let (reference, dropped) = self.edit_config(|t, cat| {
-            let e = cat.resolve(word).map_err(anyhow::Error::msg)?.clone();
+            let e = cat
+                .resolve_unchecked(word)
+                .map_err(anyhow::Error::msg)?
+                .clone();
             let reference = e.reference();
             if e.primary {
                 anyhow::bail!(
@@ -402,7 +407,10 @@ impl Models {
             let fallback: Vec<String> = cat
                 .fallback
                 .iter()
-                .filter(|f| cat.resolve(f).map(Entry::reference).ok() != Some(reference.clone()))
+                .filter(|f| {
+                    cat.resolve_unchecked(f).map(Entry::reference).ok()
+                        != Some(reference.clone())
+                })
                 .cloned()
                 .collect();
             if fallback.len() != cat.fallback.len() {

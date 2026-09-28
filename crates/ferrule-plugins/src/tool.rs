@@ -133,6 +133,7 @@ impl Tool for PluginTool {
                 inner.content
             ),
             truncated: inner.truncated,
+            files: Vec::new(),
         })
     }
 

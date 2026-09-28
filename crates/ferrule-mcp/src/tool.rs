@@ -2,7 +2,7 @@ use crate::client::{McpClient, McpToolInfo, ServerHost};
 use crate::config::McpServerConfig;
 use crate::error::McpError;
 use ferrule_core::error::CoreError;
-use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
+use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput, ToolOutputFile};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,7 +75,23 @@ impl Tool for McpRemoteTool {
                 let cap = self
                     .cap
                     .map_or(ctx.max_output_chars, |c| c.min(ctx.max_output_chars));
-                Ok(ToolOutput::capped(result.text(), cap))
+                // Non-text parts (a screenshot) are saved under the
+                // workspace; the text names each file, and `files` carries
+                // the same fact as data.
+                let (text, saved) = result.text_saving_media(&ctx.workspace);
+                let files = saved
+                    .into_iter()
+                    .map(|s| ToolOutputFile {
+                        path: s
+                            .path
+                            .strip_prefix(&ctx.workspace)
+                            .unwrap_or(&s.path)
+                            .to_path_buf(),
+                        mime_type: s.mime_type,
+                        size_bytes: s.size_bytes,
+                    })
+                    .collect();
+                Ok(ToolOutput::capped(text, cap).with_files(files))
             }
             Err(e) => Err(CoreError::ToolFailed {
                 tool: self.full_name.clone(),

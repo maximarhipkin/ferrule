@@ -3,6 +3,7 @@ name = "ferrule-codemap"
 version = "0.9.1"
 edition = "2021"
 description = "Tree-sitter repo map (ranked outline) and code_search"
+license = "MIT OR Apache-2.0"
 
 [features]
 default = ["lang-rust", "lang-python", "lang-typescript", "lang-go", "lang-java"]

@@ -75,15 +75,17 @@ that convention yet — ask before introducing one).
   credentials, the sandbox and a systemd/launchd service. Keys live in
   `<data_dir>/private/secrets.env`, hidden from the shell sandbox and the
   file tools. `ferrule doctor` checks everything, `ferrule config
-  path|edit|example` covers hand edits. **Windows builds and runs**, with
-  no OS sandbox (Git Bash or PowerShell as the shell). CI
+  path|edit|example` covers hand edits. **Windows builds and runs**, and
+  since M26 with a native OS sandbox (a restricted token in a job object,
+  no admin — `docs/windows-sandbox.md`; Git Bash can't start under the
+  token, so the confined shell there is PowerShell). CI
   (`.github/workflows/ci.yml`) tests Linux, macOS and Windows, all three
   green since `cee5de1`;
   `release.yml` builds 5 targets on a `v*` tag. **`v0.1.0` is released**
   (2026-09-24, msg 3074) and the Linux one-liner was run for real against
-  it while the repo was public. **The repo is private again** (msg 3076,
-  "for now"), so installing needs `GITHUB_TOKEN` (README) and CI minutes
-  count.
+  it while the repo was public. **The repo is public again** (it spent a
+  while private after msg 3076), so installing needs no `GITHUB_TOKEN`
+  and CI minutes no longer count.
 - **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
   apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
   (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
@@ -122,25 +124,25 @@ that convention yet — ask before introducing one).
   AI-generated pass could replace these with something more polished; keep
   the same metal-band-binding-a-bundle motif and dark/steel/copper palette if
   you do, so the brand doesn't drift session to session.
-- **Open architectural gaps vs. the "replace NanoClaw and OpenClaw" goal:**
-  see the dated session-log entries below for the full writeup; short
-  version: channels/messaging now has two working adapters (Telegram,
-  local) reachable via `ferrule gateway`, a task scheduler (M3) and a
-  stdio MCP client (M4), Agent Skills (M5), but still no plugin
-  (code-extension) system, no multi-provider
-  routing (Phase 1 of `docs/research-routing-and-local-models.md`, blocked
-  on Max's decisions there; Phases 2–3, the learned router and local LoRA,
-  were dropped by Max on 2026-09-24, msg 3070). These are the largest deltas. (The
-  cost/observability ledger gap closed 2026-09-24, Phase 0; the skills
-  half of "skills/plugin system" closed the same day, M5; OS sandboxing
-  for the shell tool closed the same day too, M6; M10 put MCP servers
-  under it. Reads are its open edge; the macOS backend passed on a real
-  Mac in CI. The credential-injection gateway closed the same day, M7;
-  M10 routed `web_fetch` and MCP servers by URL through it. Its open
-  edges are HTTP/2 and websockets on bound hosts, body injection, plain
-  HTTP (never proxied) and a real-Mac run. The Telegram sender
-  allow-list closed with M8. Native Windows has no sandbox backend;
-  AppContainer or a restricted token is the research item.)
+- **Architectural gaps vs. the "replace NanoClaw and OpenClaw" goal:** the
+  2026-09-24 gap list (see the dated session-log entries below for the
+  full writeup) has essentially all closed since. Channels then were
+  Telegram and local; Discord and Slack shipped as M31 (WhatsApp is still
+  unbuilt — `docs/m31-channels.md` §9). Phase-1 multi-provider routing
+  shipped as M25 (`docs/routing.md`; Phases 2–3, the learned router and
+  local LoRA, were dropped by Max on 2026-09-24, msg 3070). The plugin
+  (code-extension) system shipped as M32 (WASM tools, `docs/plugins.md`).
+  (The cost/observability ledger gap closed 2026-09-24, Phase 0; the
+  skills half of "skills/plugin system" closed the same day, M5; OS
+  sandboxing for the shell tool closed the same day too, M6; M10 put MCP
+  servers under it, and M26 closed the reads side and added the native
+  Windows backend — a restricted token, as the research recommended, not
+  AppContainer; the macOS backend passed on a real Mac in CI. The
+  credential-injection gateway closed the same day, M7; M10 routed
+  `web_fetch` and MCP servers by URL through it, and M26 added plain HTTP.
+  Its remaining open edges are HTTP/2 and websockets on bound hosts, body
+  injection and a real-Mac run. The Telegram sender allow-list closed with
+  M8.)
 - **M9 never stuck is done** (2026-09-24, Session Log): transient provider
   errors are retried with backoff, a loop gets one warning and then the
   run stops, every stop (step limit, loop, a check that keeps failing)
@@ -5019,3 +5021,105 @@ top harness fix); MCP image content blocks the browser's screenshots;
 ZeroClaw is now the direct competitor (the Sept-24 doc mischaracterized
 it); a launch-readiness checklist with the phase-0 blockers. Also fixed
 while writing: nothing else in the repo (read-only investigations).
+
+### 2026-09-28 — Round-2 follow-through: launch blockers, text-call salvage, MCP media, model governance, friction top-9 (Kimi Code, finished in Kimi Work)
+
+Works through `docs/research-round2-improvements.md`'s recommended order,
+items 1, 3 (the §2 halves) and 4, plus the doc drift the research flagged.
+
+- **Credibility blockers (§7 phase 0).** Dual LICENSE-MIT/LICENSE-APACHE
+  at the root, SECURITY.md (private reporting via GitHub advisories, the
+  trust-boundary contract), CONTRIBUTING.md (read PLAN.md first, build,
+  test, style), `license = "MIT OR Apache-2.0"` on every crate, and the
+  plugin-sdk's `publish = false` comment rewritten (the license was the
+  blocker; publishing is still a decision, not a default). README gained a
+  Contributing/security/license footer and its stale Development test
+  count was corrected.
+- **Text-formatted tool calls (§2.3, the eval's top harness failure —
+  13/120 runs ended on one).** `ferrule-core/src/textcall.rs` reads calls
+  a model wrote as text — `<function=…><parameter=…>` markup, a
+  `<tool_call>` JSON block, a bare `{"name", "arguments"}` object — and
+  the loop runs them as structured calls (the surrounding prose survives
+  as the message's content). Markers that won't parse earn one nudge to
+  re-emit structured; the whole rescue is capped at 3 per run so a
+  text-only model can't loop, and a message with native blocks (M23
+  drivers replay them verbatim) is never rewritten. Prior art:
+  OpenHands' NonNativeToolCallingMixin.
+- **MCP image/audio/resource content (§2.1 — this blocked the browser's
+  screenshots).** Non-text parts are base64-decoded and saved under
+  `<workspace>/.ferrule/mcp-content/` (16 MiB a part, 64 MiB a result),
+  inside the room so `read_file` and `shell` can open them; the tool
+  result names each file, type and size, and `ToolOutput.files` carries
+  the same fact as data for the UI and transcript. A text-only result
+  serializes byte-for-byte as before. Saving is best-effort — a write
+  failure never fails the call. `docs/browser.md`'s Limits bullet
+  rewritten to match.
+- **Model governance (§2 item 7).** `[models] deny` (a `provider/model`,
+  a bare id on every provider, a whole provider, or an alias) and
+  `[models.exact]` (the connected id must be the pinned one — a provider
+  that silently retargets is refused, not run), enforced in
+  `Catalog::resolve`, so every pick point (default, pin, task, tier,
+  `--model`) is covered at once. `ferrule doctor` says what deny refuses
+  and fails on a mispin, with the fix. `resolve_unchecked` keeps a denied
+  or mispinned model listable, changeable and removable (`model remove`
+  uses it; so does its fallback-list sweep). `docs/models.md` gained the
+  governance section and the example config shows both knobs.
+- **Friction (§5, items 1–9).** install.sh offers to put itself on PATH
+  in the shell's rc file (idempotent, `FERRULE_NO_RC=1` opts out, the note
+  is re-printed after the wizard so it isn't buried); the Claude plan
+  step returns "nothing was set up" when the `claude` CLI is missing and
+  the picker comes back instead of saving nothing; the local-model step
+  points at Ollama and offers a re-scan; setup's outro names the
+  configured channels and says to message the bot / run `ferrule
+  gateway`; the chat-id hint prints whether or not the bot looks busy;
+  `ferrule mcp add` takes the command as trailing words without `--`, and
+  a bad `--url` fails in plain words; `config init`'s example config is
+  fully commented (no more live Kimi/OpenAI providers pointing at keys
+  nobody has); a run with no provider at all says "run `ferrule setup`";
+  the README's 60-second block makes a workspace dir and says $HOME is a
+  bad room. Item 10 (the "60 seconds" framing) left for Max.
+- **Telegram channel.** A button tap marks its choice (the keyboard gives
+  way to "→ <label>", as Discord and Slack already do) so a question
+  can't be answered twice; long messages split at Telegram's 4096 UTF-16
+  limit at safe boundaries, a fenced code block is closed and reopened
+  across pieces, reply-to rides the first piece and the buttons the last.
+- **Doc drift (§1.2).** roadmap.md's M13–M38 moved out of "Next" into the
+  Done table (the roadmap had listed shipped milestones as open); PLAN's
+  architectural-gaps paragraph rewritten — the 2026-09-24 gap list has
+  essentially all closed; vs-field.svg gained the ZeroClaw column, with
+  the corrections found while building it recorded in the research doc;
+  install.ps1/setup/agents.md's stale "Windows has no sandbox" strings
+  corrected to the M26 restricted-token reality.
+- **The owner's own git config broke tests on this Mac** (§3's class of
+  bug, live): `commit.gpgsign=true` with 1Password made every test-repo
+  commit fail or hang. The agents crate's internal `git` now passes
+  `commit.gpgsign=false`/`tag.gpgsign=false` — a product fix too:
+  ferrule's own worktree/snapshot commits never sign — and the worktree
+  test helper isolates with `GIT_CONFIG_GLOBAL=/dev/null` like
+  ferrule-extensions' tests already did. Two macOS-only clippy findings
+  fixed along the way (a Linux-only `mut`, the Linux-only
+  `PollingChannel` helper now cfg-gated).
+
+**Verified live vs only against fakes.** The salvage path runs through
+the real agent loop against a scripted provider; deny/exact and the
+doctor lines are unit-tested; install.sh's rc flow runs against the
+stubbed machine; MCP media saving is unit-tested at the caps. Not run
+end-to-end: a real MCP server returning an image through a live gateway,
+and a real model that writes its calls as text.
+
+**Checks.** 1454 tests passed, 0 failed, 23 ignored (was 1435). fmt and
+clippy `-D warnings` are clean on macOS.
+
+**Follow-ups.**
+- §3 eval-suite fixes: the progress heartbeat, `run.json` checkpointing
+  with `--resume`, timeouts in the report table, a verify-loop isolation
+  task, a `--variant routing` run on a real model pair, and a full eval
+  rerun on v0.9.0 (README numbers then cite the run id).
+- The git-fix-commit fixture's `.ferrule/` pollution (.gitignore in
+  `git_init`) and `GIT_CONFIG_GLOBAL` isolation there, as done here for
+  the worktree tests.
+- §4 consolidation, slotted before the next user-facing milestone.
+- Phase-0 leftovers: the demo GIF and the first-person origin note; then
+  the growth sequence (§7). ferrule-plugin-sdk publishes when Max says
+  so (drop `publish = false`).
+- Friction item 10: reframe the "60 seconds" copy, or trim guided setup.

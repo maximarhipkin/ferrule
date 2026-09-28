@@ -1059,6 +1059,7 @@ name = "ferrule-mcp"
 version = "0.9.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "dunce",
  "ferrule-core",
  "ferrule-sandbox",

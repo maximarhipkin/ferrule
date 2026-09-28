@@ -20,6 +20,7 @@ pub mod provider;
 pub mod repairs;
 pub mod routing;
 pub mod stuck;
+pub mod textcall;
 pub mod tool;
 pub mod transcript;
 pub mod triggers;
@@ -42,7 +43,7 @@ pub use provider::{
     CompletionRequest, CompletionResponse, Delta, DeltaSink, FailOver, Provider, Served,
 };
 pub use routing::{Escalation, Ladder, Policy, RouteTag, Signal, Tier, Tiered};
-pub use tool::{Tool, ToolContext, ToolOutput, ToolRegistry, ToolSource};
+pub use tool::{Tool, ToolContext, ToolOutput, ToolOutputFile, ToolRegistry, ToolSource};
 pub use transcript::Transcript;
 pub use triggers::{PromptTriggers, TriggerLoad, Triggered};
 pub use verify::Verifier;

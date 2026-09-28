@@ -24,6 +24,7 @@ use crate::channel::{Button, ButtonAction, Channel, ChannelCapabilities};
 use crate::error::GatewayError;
 use crate::health::human;
 use crate::message::{InboundMessage, OutboundMessage};
+use crate::stream::chunks;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -45,6 +46,9 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 pub const CONFLICT_AFTER: Duration = Duration::from_secs(60);
 /// A chat that isn't allowed is logged at most this often.
 const IGNORED_WARN_EVERY: Duration = Duration::from_secs(3600);
+/// The most a `sendMessage` text may hold, in UTF-16 units as Telegram
+/// counts (its documented limit; Discord has 2000, Slack 4000).
+pub const MESSAGE_LIMIT: usize = 4096;
 
 /// Why a poll failed: `Retry` heals by itself (network, Telegram's own 5xx,
 /// a rate limit, a bad body); `Conflict` is a 409, which needs the owner if
@@ -289,6 +293,9 @@ impl TelegramChannel {
                 if !self.admits(&parsed.msg).await {
                     continue;
                 }
+                if let Some(q) = update.get("callback_query") {
+                    self.mark_choice(q).await;
+                }
                 if let Some(kind) = parsed.unread.filter(|_| parsed.msg.text.is_empty()) {
                     self.cannot_read(&parsed, kind).await;
                     continue;
@@ -489,6 +496,60 @@ impl TelegramChannel {
         });
     }
 
+    /// A tap marks its choice, as on Discord and Slack: the message's
+    /// buttons give way to "→ <the tapped button's label>", so a question
+    /// can't be answered twice and the chat shows what was picked. Best
+    /// effort — the tap is forwarded even when the edit fails.
+    async fn mark_choice(&self, q: &Value) {
+        let Some(message) = q.get("message") else {
+            return;
+        };
+        let Some(rows) = message["reply_markup"]["inline_keyboard"].as_array() else {
+            return;
+        };
+        let (Some(chat_id), Some(message_id)) = (
+            message["chat"]["id"].as_i64(),
+            message["message_id"].as_i64(),
+        ) else {
+            return;
+        };
+        // Telegram's callback carries only the button's data, not its
+        // label; the label is found on the message's keyboard.
+        let data = q["data"].as_str().unwrap_or("");
+        let label = rows
+            .iter()
+            .flat_map(|row| row.as_array().into_iter().flatten())
+            .find(|b| b["callback_data"].as_str() == Some(data))
+            .and_then(|b| b["text"].as_str())
+            .unwrap_or("done");
+        let no_buttons = json!({ "inline_keyboard": [] });
+        let result = match message["text"].as_str() {
+            Some(text) => {
+                let marker = format!("\n→ {label}");
+                let room = MESSAGE_LIMIT.saturating_sub(marker.encode_utf16().count());
+                let base = chunks(text, room).into_iter().next().unwrap_or_default();
+                self.deliver(
+                    "editMessageText",
+                    &json!({ "chat_id": chat_id, "message_id": message_id,
+                             "text": format!("{base}{marker}"), "reply_markup": no_buttons }),
+                )
+                .await
+            }
+            // The message has no text to mark (a caption, say): the
+            // keyboard still gives way.
+            None => {
+                self.deliver(
+                    "editMessageReplyMarkup",
+                    &json!({ "chat_id": chat_id, "message_id": message_id, "reply_markup": no_buttons }),
+                )
+                .await
+            }
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "telegram: couldn't mark a tapped button");
+        }
+    }
+
     fn parse_update(update: &Value) -> Option<Parsed> {
         if let Some(q) = update.get("callback_query") {
             return Self::parse_callback(q).map(|msg| Parsed {
@@ -583,6 +644,93 @@ fn conflict_notice(description: &str, lasted: Duration) -> String {
         human(lasted),
         crate::health::clip(description, 200)
     )
+}
+
+/// The fence line (```` ``` ```` or `~~~`, with its info string) open at
+/// `upto`, given the fence open at the text's start. Toggled by any line
+/// that is one: a close has no info string.
+fn fence_at(text: &str, upto: usize, mut open: Option<String>) -> Option<String> {
+    for line in text[..upto].split('\n') {
+        let line = line.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            open = match open {
+                None => Some(line.to_string()),
+                Some(_) => None,
+            };
+        }
+    }
+    open
+}
+
+/// `text` cut into pieces Telegram takes (at most [`MESSAGE_LIMIT`] UTF-16
+/// units each), at safe boundaries: a blank line in the piece's second
+/// half, else a line end or a space near its end, else a hard cut. A
+/// piece that ends inside a fenced code block closes the fence and the
+/// next piece reopens it, so a long `/plan` renders whole in every piece.
+/// Never empty: an empty text is one empty piece.
+fn split(text: &str) -> Vec<String> {
+    let units = |s: &str| s.encode_utf16().count();
+    if units(text) <= MESSAGE_LIMIT {
+        return vec![text.to_string()];
+    }
+    let mut pieces = Vec::new();
+    let mut rest = text.to_string();
+    // The fence open at the start of `rest` (a piece cut inside a code
+    // block reopens it here).
+    let mut fence: Option<String> = None;
+    loop {
+        // Room to close a fence ("\n```") should the cut land inside one.
+        let budget = MESSAGE_LIMIT - 4;
+        let mut used = 0;
+        let hard = rest
+            .char_indices()
+            .find_map(|(i, c)| {
+                used += c.len_utf16();
+                (used > budget).then_some(i)
+            })
+            .expect("rest is longer than the budget");
+        let head = &rest[..hard];
+        let half = head
+            .char_indices()
+            .nth(head.chars().count() / 2)
+            .map_or(0, |(i, _)| i);
+        let fifth = head
+            .char_indices()
+            .nth(head.chars().count() * 4 / 5)
+            .map_or(0, |(i, _)| i);
+        let cut = head[half..]
+            .rfind("\n\n")
+            .map(|i| half + i + 2)
+            .or_else(|| head[fifth..].rfind('\n').map(|i| fifth + i + 1))
+            .or_else(|| head[fifth..].rfind(' ').map(|i| fifth + i + 1))
+            .unwrap_or(hard);
+        let mut piece = rest[..cut].trim_end().to_string();
+        let (cut, in_fence) = if piece.is_empty() {
+            // Nothing but whitespace before the cut: keep the text.
+            (hard, fence_at(&rest, hard, fence.clone()))
+        } else {
+            (cut, fence_at(&rest, cut, fence.clone()))
+        };
+        if piece.is_empty() {
+            piece = rest[..cut].to_string();
+        }
+        rest = match in_fence {
+            Some(open) => {
+                piece.push_str("\n```");
+                fence = None;
+                format!("{open}\n{}", &rest[cut.min(rest.len())..])
+            }
+            None => {
+                fence = None;
+                rest[cut..].to_string()
+            }
+        };
+        pieces.push(piece);
+        if units(&rest) <= MESSAGE_LIMIT {
+            pieces.push(rest);
+            return pieces;
+        }
+    }
 }
 
 impl TelegramChannel {
@@ -680,14 +828,36 @@ impl TelegramChannel {
         )))
     }
 
-    fn payload(msg: &OutboundMessage) -> Value {
-        let mut payload = json!({ "chat_id": msg.chat_id, "text": msg.text });
-        if let Some(reply_to) = &msg.reply_to {
-            if let Ok(id) = reply_to.parse::<i64>() {
-                payload["reply_to_message_id"] = json!(id);
+    /// `sendMessage` for each piece of `msg` ([`split`] at
+    /// [`MESSAGE_LIMIT`], as Discord and Slack do for their caps): a
+    /// reply-to rides the first piece, the buttons the last, and the last
+    /// piece's id is the answer (the one a streamed reply edits).
+    async fn deliver_message(
+        &self,
+        msg: &OutboundMessage,
+        buttons: Option<&[Button]>,
+    ) -> Result<Option<String>, GatewayError> {
+        let keyboard = buttons.map(Self::keyboard).transpose()?;
+        let pieces = split(&msg.text);
+        let last = pieces.len() - 1;
+        let mut id = None;
+        for (i, piece) in pieces.iter().enumerate() {
+            let mut payload = json!({ "chat_id": msg.chat_id, "text": piece });
+            if i == 0 {
+                if let Some(reply_to) = &msg.reply_to {
+                    if let Ok(reply_id) = reply_to.parse::<i64>() {
+                        payload["reply_to_message_id"] = json!(reply_id);
+                    }
+                }
             }
+            if i == last {
+                if let Some(keyboard) = &keyboard {
+                    payload["reply_markup"] = keyboard.clone();
+                }
+            }
+            id = self.post_message(payload).await?;
         }
-        payload
+        Ok(id)
     }
 }
 
@@ -772,11 +942,11 @@ impl Channel for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError> {
-        self.post_message(Self::payload(&msg)).await.map(|_| ())
+        self.deliver_message(&msg, None).await.map(|_| ())
     }
 
     async fn post(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
-        self.post_message(Self::payload(&msg)).await
+        self.deliver_message(&msg, None).await
     }
 
     async fn send_buttons(
@@ -784,9 +954,7 @@ impl Channel for TelegramChannel {
         msg: OutboundMessage,
         buttons: &[Button],
     ) -> Result<(), GatewayError> {
-        let mut payload = Self::payload(&msg);
-        payload["reply_markup"] = Self::keyboard(buttons)?;
-        self.post_message(payload).await.map(|_| ())
+        self.deliver_message(&msg, Some(buttons)).await.map(|_| ())
     }
 
     /// `setMessageReaction`: the 👀 receipt (M19b).

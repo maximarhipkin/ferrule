@@ -3,6 +3,7 @@ name = "ferrule-otel"
 version = "0.9.1"
 edition = "2021"
 description = "M33: the agent's work as OpenTelemetry traces (GenAI semantic conventions), exported as OTLP/JSON over HTTP from the ledger seam"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 ferrule-core = { path = "../ferrule-core" }

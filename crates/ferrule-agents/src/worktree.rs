@@ -33,6 +33,10 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .arg(dir)
         .args(["-c", "core.fsmonitor=false", "-c"])
         .arg(format!("core.hooksPath={}", no_hooks().display()))
+        // ferrule's own commits (worktree snapshots, close-out) are never
+        // signed: the owner's global gpgsign would otherwise kick off a
+        // 1Password/gpg prompt for a commit that isn't theirs.
+        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
         .args(args)
         .stdin(Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")
