@@ -81,6 +81,16 @@ pub fn flag(instance: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+/// The relay Worker an instance deploys by default: `ferrule-relay`, or
+/// `ferrule-relay-<name>`, so a second instance never re-keys the first's
+/// (§6).
+pub fn relay_worker(instance: Option<&str>) -> String {
+    match instance {
+        None => "ferrule-relay".into(),
+        Some(name) => format!("ferrule-relay-{name}"),
+    }
+}
+
 /// Where every instance's config and data dirs sit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Roots {
@@ -217,6 +227,8 @@ mod tests {
         assert_eq!(flag(None), "");
         assert_eq!(flag(Some("work")), "--instance work ");
         assert_eq!(label(None), "default");
+        assert_eq!(relay_worker(None), "ferrule-relay");
+        assert_eq!(relay_worker(Some("work")), "ferrule-relay-work");
     }
 
     #[test]
