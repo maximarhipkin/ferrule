@@ -90,6 +90,7 @@ pub struct Spec {
 pub const CARDS: &[&Spec] = &[
     &super::whatsapp::SPEC,
     &super::matrix::SPEC,
+    &super::mattermost::SPEC,
     &super::email::SPEC,
     &super::signal::SPEC,
 ];

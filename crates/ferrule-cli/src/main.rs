@@ -2065,6 +2065,17 @@ fn build_channels(
         named_channels.insert(mx.name().to_string(), mx);
     }
 
+    if let Some(m) = &g.mattermost {
+        let mm =
+            ferrule_gateway::MattermostChannel::new(channels::mattermost::config(m, workspace)?)
+                .with_allowed(
+                    with_owner(cfg, "mattermost", &m.allowed_users),
+                    m.allowed_channels.clone(),
+                );
+        let mm: Arc<dyn Channel> = Arc::new(mm);
+        named_channels.insert(mm.name().to_string(), mm);
+    }
+
     if let Some(e) = &g.email {
         let mail = ferrule_gateway::EmailChannel::new(channels::email::config(e, workspace)?)
             .with_allowed(with_owner(cfg, "email", &e.allowed_senders));

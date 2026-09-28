@@ -99,6 +99,12 @@ impl Access {
         self.users.read().unwrap().contains(user)
     }
 
+    /// M39: allows one more user (Mattermost's usernames, resolved to ids
+    /// at start).
+    pub fn allow(&self, user: &str) {
+        self.users.write().unwrap().insert(user.trim().to_string());
+    }
+
     pub fn channel_allowed(&self, channel: &str) -> bool {
         self.channels.contains(channel)
     }

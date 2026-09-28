@@ -1929,6 +1929,10 @@ async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bo
         matrix(r, cfg, m, offline).await;
         on = true;
     }
+    if let Some(m) = &cfg.gateway.mattermost {
+        mattermost(r, cfg, m, offline).await;
+        on = true;
+    }
     if let Some(e) = &cfg.gateway.email {
         email(r, cfg, e, offline).await;
         on = true;
@@ -1939,7 +1943,7 @@ async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bo
     }
     // The M39 channels this build doesn't run yet.
     for c in crate::channels::CHANNELS.iter().skip(3) {
-        if ["whatsapp", "matrix", "email", "signal"].contains(&c.name) {
+        if ["whatsapp", "matrix", "mattermost", "email", "signal"].contains(&c.name) {
             continue;
         }
         if crate::channels::configured(cfg, c.name) {
@@ -2103,6 +2107,75 @@ async fn matrix(
     if allowed == 0 && rooms == 0 {
         r.warn("matrix", "no user or room is allowed, so it answers no one");
         r.hint("`ferrule setup` → Matrix pairs you with a code");
+    }
+}
+
+/// Mattermost: the bot account, and whether it's in the channels it's
+/// allowed to answer in.
+async fn mattermost(
+    r: &mut Report,
+    cfg: &config::Config,
+    m: &crate::channels::settings::Mattermost,
+    offline: bool,
+) {
+    use ferrule_gateway::channels::mattermost as mm;
+    let mc = match crate::channels::mattermost::config(m, None) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("mattermost", format!("{e:#}"));
+            return;
+        }
+    };
+    let allowed = m.allowed_users.len() + usize::from(cfg.trust.mattermost_owner.is_some());
+    let chans = m.allowed_channels.len();
+    let lists = format!("{allowed} user(s), {chans} channel(s) allowed");
+    if offline {
+        r.ok(
+            "mattermost",
+            format!("{} · token set, not checked · {lists}", m.server_url),
+        );
+    } else {
+        match mm::probe(mc.clone()).await {
+            Ok(p) => {
+                r.ok("mattermost", format!("{} · {lists}", p.summary()));
+                if !p.is_bot {
+                    r.hint("a bot account (Integrations → Bot Accounts) keeps its posts marked as a bot's and apart from a person's");
+                }
+            }
+            Err(why) => {
+                r.fail("mattermost", why);
+                r.hint("make a new token under Integrations → Bot Accounts, then `ferrule setup` → Mattermost or the dashboard's Mattermost card");
+                return;
+            }
+        }
+        if chans > 0 {
+            if let Ok(joined) = mm::channels(mc).await {
+                let missing: Vec<&str> = m
+                    .allowed_channels
+                    .iter()
+                    .filter(|c| !joined.iter().any(|j| &j.id == *c))
+                    .map(String::as_str)
+                    .collect();
+                if !missing.is_empty() {
+                    r.warn(
+                        "mattermost",
+                        format!(
+                            "the bot isn't a member of {} allowed channel(s): {}",
+                            missing.len(),
+                            missing.join(", ")
+                        ),
+                    );
+                    r.hint("invite it there: /invite @<bot> in the channel");
+                }
+            }
+        }
+    }
+    if allowed == 0 && chans == 0 {
+        r.warn(
+            "mattermost",
+            "no user or channel is allowed, so it answers no one",
+        );
+        r.hint("`ferrule setup` → Mattermost pairs you with a code");
     }
 }
 

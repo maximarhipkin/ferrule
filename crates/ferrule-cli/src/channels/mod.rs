@@ -6,6 +6,7 @@
 pub mod card;
 pub mod email;
 pub mod matrix;
+pub mod mattermost;
 pub mod settings;
 pub mod signal;
 pub mod whatsapp;
@@ -271,6 +272,17 @@ pub fn account(
             ))
         }),
         "signal" => g.signal.as_ref().map(|s| s.account.trim().to_string()),
+        // The server and the bot's token fingerprint (its user id needs a
+        // call): one bot in two instances.
+        "mattermost" => g.mattermost.as_ref().and_then(|m| {
+            let token = secret(&m.token_env)?;
+            let hash = ferrule_gateway::channels::hmac::sha256(token.trim().as_bytes());
+            let short = ferrule_gateway::channels::hmac::hex(&hash[..4]);
+            Some(format!(
+                "{}, token {short}…",
+                m.server_url.trim_end_matches('/').to_ascii_lowercase()
+            ))
+        }),
         _ => None,
     }
 }
@@ -282,6 +294,7 @@ pub fn account_clash(channel: &str, id: &str, other: &str) -> String {
         "matrix" => format!("the same Matrix bot account ({id}) as the instance `{other}`: both would answer every message, and each moves the other's read position. Give each instance its own bot account"),
         "email" => format!("the same mailbox ({id}) as the instance `{other}`: whichever looks first takes a mail and marks it read, so each answers about half. Give each instance its own mailbox"),
         "signal" => format!("the same Signal number ({id}) as the instance `{other}`: signal-cli locks its data for one daemon, so the second one fails to start, and a number's messages reach only one of them. Link another number, or run one instance on it"),
+        "mattermost" => format!("the same Mattermost bot ({id}) as the instance `{other}`: both would answer every message. Give each instance its own bot account (Integrations → Bot Accounts)"),
         "signal-port" => format!("port {id} for its own signal-cli daemon, like the instance `{other}`: the second gateway would find the first's daemon and talk to its number. Set another `[gateway.signal] port`"),
         _ => format!("the same {channel} account ({id}) as the instance `{other}`: give one of them its own"),
     }

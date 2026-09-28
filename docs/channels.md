@@ -30,6 +30,7 @@ channels added in M39. The design, and the reasons behind it, are in
 | An open, self-hostable chat, or a room shared with a team | Matrix (unencrypted rooms only) |
 | Nothing new to install: write to it like a colleague, or get task results in your inbox | Email (a mailbox of its own) |
 | End-to-end encryption to your phone, with no company account or webhook | Signal (a spare number, and signal-cli on the machine) |
+| The team chat your company already runs itself | Mattermost (a bot account on your server) |
 
 ## WhatsApp
 
@@ -676,3 +677,125 @@ cargo test -p ferrule-gateway --test signal -- --ignored
 ```
 
 It prints the probe and sends `…_TO` one message.
+
+## Mattermost
+
+Ferrule joins a Mattermost server (self-hosted or Mattermost Cloud) as a
+**bot account**. It listens on the server's WebSocket and answers through
+the REST API (v4), so nothing has to reach your machine: no webhook, no
+relay, no open port. It needs Mattermost 5.x or newer.
+
+### What you need
+
+1. **Bot accounts turned on.** A system admin enables them once: System
+   Console → Integrations → Bot Accounts → **Enable Bot Account Creation**
+   ([docs](https://docs.mattermost.com/configure/integrations-configuration-settings.html#bot-accounts)).
+2. **A bot account and its token.** Integrations → Bot Accounts → **Add
+   Bot Account**, then **Create New Token** and copy it; it's shown once
+   ([how](https://developers.mattermost.com/integrate/reference/bot-accounts/)).
+   A person's personal access token works too, but ferrule then answers as
+   that person; doctor says so.
+3. **The bot in your team**, and in each channel it should answer in
+   (`/invite @ferrule` in the channel).
+4. **Your own Mattermost account**, to talk to it.
+
+### Steps
+
+The short way is **`ferrule setup` → Mattermost**, or the dashboard's
+Mattermost card. Setup:
+
+1. asks the server's address (`chat.example.com` becomes
+   `https://chat.example.com`);
+2. takes the token and checks it right away: it shows the bot's
+   `@username`, and says when the token is a person's rather than a bot's;
+3. saves the token to the secrets file and the server to the config;
+4. pairs you: send the bot a direct message with the code setup shows. If
+   that doesn't arrive, type your username; setup looks up its id.
+
+**Allow a channel** in setup lists the channels the bot is in, across its
+teams, and adds the ones you pick. Invite the bot first.
+
+On the dashboard, fill in the card (server, token, users and channels),
+**Save**, then **Test**.
+
+By hand, in `config.toml`:
+
+```toml
+[gateway.mattermost]
+server_url = "https://chat.example.com"
+# token_env = "MATTERMOST_TOKEN"         # the default; the value goes in secrets.env
+allowed_users = ["@max"]                 # usernames or user ids: whose DMs reach it
+allowed_channels = ["c9x3…"]             # channel ids (the channel's menu → View Info)
+# stream = true                          # default: [agent] stream
+# max_file_mb = 20
+```
+
+Usernames in `allowed_users` are looked up when the gateway starts; setup
+writes ids.
+
+### Who gets an answer
+
+- **DMs.** An allowed user's direct messages. The chat is known by their
+  user id, so an owner notice or a scheduled task's report reaches them
+  even before they've written: ferrule opens the DM.
+- **Channels.** In an allowed channel, anyone in it can reach ferrule, but
+  only by @-mentioning the bot. Ferrule answers **in a thread** under that
+  message, and the thread is its own chat: a follow-up in a thread ferrule
+  has answered in needs no mention.
+- **Strangers get nothing.** A channel that isn't allowed is ignored, even
+  with a mention; so are other bots, webhooks and system messages. While
+  no one is allowed at all, a stranger's DM is answered once with their id,
+  to paste into `allowed_users`.
+
+### What works
+
+- **Text** both ways, up to 16 383 characters per post; a longer answer is
+  split. Markdown is Mattermost's own, so it's sent as is.
+- **Streaming**: the answer is edited in place every 2 seconds while it's
+  written (`stream = false` turns it off).
+- **Approvals** as reactions. The post lists each choice with its emoji
+  (`:+1:` allow, `:-1:` refuse, then `:one:` `:two:` …), and ferrule adds
+  each one so you only click. Only an allowed user's reaction counts, once.
+  You can also send the keyword (`yes a1b2`).
+- **👀** (`:eyes:`) on your message when ferrule starts on it, and the
+  channel is marked read.
+- **Files in:** any file posted with the message, into the workspace's
+  inbox, up to `max_file_mb` (default 20). A bigger one is refused with a
+  reply, and never downloaded.
+- **Files out:** uploaded to the channel and attached to the post, five per
+  post.
+
+### Limits and errors
+
+- **Rate limits.** On a 429, ferrule waits as long as the server says
+  (`X-Ratelimit-Reset`, up to 30 seconds) and retries three times.
+- **A token that stops working** (revoked, or the bot deactivated) stops
+  the channel, shows in `/status` and fails doctor with "make a new
+  token". The other channels keep running.
+- **Not a member.** Posting where the bot isn't a member fails with "is
+  the bot a member of the channel?"; doctor warns about allowed channels
+  the bot isn't in.
+- **The server's own limits** apply: the file size limit (System Console →
+  File Storage) and whether file sharing is on at all. Ferrule says which
+  one refused an upload.
+- **Messages sent while the gateway was off** aren't read afterwards: the
+  WebSocket only delivers what happens while it's open.
+- **One bot, one instance.** Two instances (M38) with one bot token would
+  both answer. Doctor and setup name the instance that already has it.
+
+### Checking it
+
+`ferrule doctor` checks the token (`/users/me`), says whether it's a bot
+account, and lists allowed channels the bot isn't a member of. It warns
+when nobody is allowed. `ferrule doctor --offline` skips the network.
+
+A live round trip, not run in CI:
+
+```sh
+FERRULE_LIVE_MATTERMOST_URL=https://chat.example.com \
+FERRULE_LIVE_MATTERMOST_TOKEN=… \
+FERRULE_LIVE_MATTERMOST_TO=@you \
+cargo test -p ferrule-gateway --test mattermost -- --ignored
+```
+
+It prints the probe, then sends `…_TO` a message, edits it and reacts 👀.

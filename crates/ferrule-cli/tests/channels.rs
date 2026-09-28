@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::{discord, email, matrix, signal, slack, wait, whatsapp};
+use support::{discord, email, matrix, mattermost, signal, slack, wait, whatsapp};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -604,6 +604,126 @@ stream = false
         "{mx:?}"
     );
     assert!(!out.contains(matrix::TOKEN), "{out}");
+}
+
+#[test]
+fn mattermost_answers_its_allowed_user_and_a_mention_in_a_thread() {
+    let (url, log) = model_server();
+    let mm = mattermost::start();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway.mattermost]
+server_url = "{server}"
+allowed_users = ["@max"]
+allowed_channels = ["{town}"]
+stream = false
+"#,
+            server = mm.url,
+            town = mattermost::CHANNEL,
+        ),
+    )
+    .unwrap();
+    let with_token = |mut cmd: Command| {
+        cmd.env("MATTERMOST_TOKEN", mattermost::TOKEN);
+        cmd
+    };
+    let mut cmd = with_token(command(home, &["gateway"], discord::TOKEN));
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the socket's challenge", LIMIT, || {
+        mm.state()
+            .frames
+            .iter()
+            .any(|f| f["action"] == "authentication_challenge")
+    });
+    // Before the challenge the username was resolved; the socket may
+    // still be opening its reader, so send until one lands.
+    mm.send(mattermost::dm(
+        "q0000000000000000000000001",
+        mattermost::STRANGER,
+        "STRANGER-MM",
+    ));
+    mm.send(mattermost::dm(
+        "q0000000000000000000000002",
+        mattermost::MAX,
+        "hello from mattermost",
+    ));
+    wait("the Mattermost answer", LIMIT, || {
+        mm.state().posts_in(mattermost::DM).iter().any(|p| {
+            p["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("ECHO hello from mattermost"))
+        })
+    });
+    mm.send(mattermost::said(
+        "q0000000000000000000000003",
+        mattermost::CHANNEL,
+        mattermost::STRANGER,
+        "in the channel",
+        None,
+        true,
+    ));
+    wait("the thread's answer", LIMIT, || {
+        mm.state().posts_in(mattermost::CHANNEL).iter().any(|p| {
+            p["root_id"] == "q0000000000000000000000003"
+                && p["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("ECHO in the channel"))
+        })
+    });
+    assert!(!asked(&log, "STRANGER-MM"));
+    // 👀 on arrival.
+    assert!(mm
+        .state()
+        .reactions()
+        .contains(&("q0000000000000000000000002".to_string(), "eyes".to_string())));
+
+    let o = with_token(command(
+        home,
+        &["doctor", "--offline", "--json"],
+        discord::TOKEN,
+    ))
+    .output()
+    .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    let lines: Vec<&Value> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "mattermost")
+        .collect();
+    assert!(
+        lines.iter().any(|l| l["level"] == "ok"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("1 user(s), 1 channel(s) allowed")),
+        "{lines:?}"
+    );
+    assert!(!out.contains(mattermost::TOKEN), "{out}");
 }
 
 #[test]
