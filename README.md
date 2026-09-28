@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.8.0-c4764a" alt="release v0.8.0"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.9.1-c4764a" alt="release v0.9.1"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/download-~10_MB-8a929a" alt="download: about 10 MB">
   <img src="https://img.shields.io/badge/tests-1435-8a929a" alt="1435 workspace tests">
@@ -99,7 +99,7 @@ tasks, the same tools: ferrule's harness against a deliberately naive one
 that truncates history at the limit and never verifies:
 
 <p align="center">
-  <img src="docs/assets/eval-ab.svg" alt="ferrule eval A/B: ferrule's harness 57% vs the naive harness's 47% over 60 runs, and 75% vs 8% on verify-graded tasks — same model, same tasks" width="860">
+  <img src="docs/assets/eval-ab.svg" alt="ferrule eval A/B: ferrule's harness 57% vs the naive harness's 47% over 60 runs, and 75% vs 25% on verify-graded tasks — same model, same tasks" width="860">
 </p>
 
 Reproduce it: `ferrule eval run evals/starter --variant ab` — the suite,
@@ -161,7 +161,7 @@ the agents you'll need, not a container per agent to babysit. The claims
 are measurable too — the repo ships its own harness benchmark
 (`ferrule eval run evals/starter --variant ab`), where ferrule's harness
 beat its naive twin on the same model: +10 points overall, and 9/12 vs
-1/12 on the verify-graded tasks.
+3/12 on the verify-graded tasks.
 
 Moving over is one command: `ferrule import openclaw` (or `hermes`)
 brings your memories, skills, channel allowlists and providers — a dry
@@ -274,7 +274,7 @@ from v0.6.0 or older runs the one-liner once to get there.
 | macOS | `~/.local/bin/ferrule` | Apple silicon, Intel |
 | Windows | `%LOCALAPPDATA%\Programs\ferrule\ferrule.exe`, added to your PATH | x86-64 (ARM64 runs it under emulation) |
 
-Both scripts read `FERRULE_VERSION` (a tag such as `v0.8.0`; default the
+Both scripts read `FERRULE_VERSION` (a tag such as `v0.9.1`; default the
 latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 
 ### Setup

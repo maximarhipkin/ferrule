@@ -5020,6 +5020,21 @@ real binary gave engineered 20/20, naive 11/20, $0.98.
   recording it.
 - README lines (listed in the PR).
 
+### 2026-09-28 — Round-2 improvement research (Kimi Code)
+
+Six parallel investigations at v0.9.0 (PLAN/roadmap mining, codebase
+health, fresh competitive scan, eval-data analysis, adoption research,
+new-user friction audit). Synthesis: `docs/research-round2-improvements.md`.
+Headline findings: no LICENSE (existential for adoption); planning docs
+have drifted from reality (roadmap's open tracks list shipped features);
+the README's verify-task figure contradicted the saved run (fixed in
+`d51e8fb` — naive was 3/12, not 1/12); the eval data shows 13/120 runs
+ended on text-formatted tool calls (all failed — a repair path is the
+top harness fix); MCP image content blocks the browser's screenshots;
+ZeroClaw is now the direct competitor (the Sept-24 doc mischaracterized
+it); a launch-readiness checklist with the phase-0 blockers. Also fixed
+while writing: nothing else in the repo (read-only investigations).
+
 ### 2026-09-28 — M39 more channels (Devi, Opus 5.5)
 
 **Scope.** Reach the agent from WhatsApp, Matrix, email, Signal,

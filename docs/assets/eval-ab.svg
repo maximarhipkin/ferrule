@@ -24,9 +24,9 @@
   <text x="348" y="132" class="s" text-anchor="middle" font-size="14" style="fill:#cdd4da;font-weight:600">all 60 task runs</text>
 
   <!-- verify tasks: naive 8% (17px), engineered 75% (157px) -->
-  <rect x="608" y="313" width="90" height="17" rx="4" fill="#3a3f46"/>
+  <rect x="608" y="278" width="90" height="52" rx="4" fill="#3a3f46"/>
   <rect x="718" y="173" width="90" height="157" rx="4" fill="#c4764a"/>
-  <text x="653" y="301" class="v" fill="#8a929a" text-anchor="middle">8%</text>
+  <text x="653" y="266" class="v" fill="#8a929a" text-anchor="middle">25%</text>
   <text x="763" y="161" class="v" fill="#e09668" text-anchor="middle">75%</text>
   <text x="653" y="352" class="k" text-anchor="middle">naive harness</text>
   <text x="763" y="352" class="k" text-anchor="middle">ferrule</text>
