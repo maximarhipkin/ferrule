@@ -228,10 +228,20 @@ pub fn html_to_text(html: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
+/// An attached file: in a mail read ([`files`]) or one to send
+/// ([`Outgoing::files`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct File {
+    pub name: String,
+    /// `application/pdf`; empty when the mail didn't say.
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
 struct Parts {
     plain: Option<String>,
     html: Option<String>,
-    attachments: Vec<String>,
+    attachments: Vec<File>,
 }
 
 fn walk(raw: &[u8], parts: &mut Parts, depth: usize) {
@@ -261,11 +271,15 @@ fn walk(raw: &[u8], parts: &mut Parts, depth: usize) {
         }
         return;
     }
-    let name = param(disposition, "filename").or_else(|| param(ctype, "name"));
+    let name = param_2231(disposition, "filename")
+        .or_else(|| param(disposition, "filename"))
+        .or_else(|| param(ctype, "name"));
     if disposition.to_ascii_lowercase().starts_with("attachment") || name.is_some() {
-        parts
-            .attachments
-            .push(decode_words(&name.unwrap_or_else(|| "(unnamed)".into())));
+        parts.attachments.push(File {
+            name: decode_words(&name.unwrap_or_else(|| "(unnamed)".into())),
+            content_type: ctype_l.split(';').next().unwrap_or("").trim().to_string(),
+            bytes: transfer_decode(body, get(&h, "content-transfer-encoding")),
+        });
         return;
     }
     let charset = param(ctype, "charset").unwrap_or_else(|| "utf-8".into());
@@ -314,8 +328,51 @@ pub fn parse(raw: &[u8]) -> Message {
         message_id: get(&h, "message-id").to_string(),
         references: get(&h, "references").to_string(),
         text: text.replace("\r\n", "\n").trim().to_string(),
-        attachments: parts.attachments,
+        attachments: parts.attachments.into_iter().map(|f| f.name).collect(),
     }
+}
+
+/// The files attached to a mail, with their bytes.
+pub fn files(raw: &[u8]) -> Vec<File> {
+    let mut parts = Parts {
+        plain: None,
+        html: None,
+        attachments: Vec::new(),
+    };
+    walk(raw, &mut parts, 0);
+    parts.attachments
+}
+
+/// RFC 2231's `filename*=UTF-8''caf%C3%A9.pdf`.
+fn param_2231(value: &str, name: &str) -> Option<String> {
+    let want = format!("{name}*");
+    for part in value.split(';').skip(1) {
+        let (k, v) = part.split_once('=')?;
+        if k.trim().eq_ignore_ascii_case(&want) {
+            let v = v.trim().trim_matches('"');
+            let (charset, rest) = v.split_once('\'').unwrap_or(("utf-8", v));
+            let text = rest.split_once('\'').map_or(rest, |(_, t)| t);
+            let mut bytes = Vec::new();
+            let b = text.as_bytes();
+            let mut i = 0;
+            while i < b.len() {
+                if b[i] == b'%' {
+                    if let Some(v) = b
+                        .get(i + 1..i + 3)
+                        .and_then(|h| u8::from_str_radix(&String::from_utf8_lossy(h), 16).ok())
+                    {
+                        bytes.push(v);
+                        i += 3;
+                        continue;
+                    }
+                }
+                bytes.push(b[i]);
+                i += 1;
+            }
+            return Some(decode_charset(&bytes, charset));
+        }
+    }
+    None
 }
 
 /// A header value safe to send: non-ASCII becomes one encoded word.
@@ -359,6 +416,10 @@ pub struct Outgoing<'a> {
     /// `<…@host>`; made up when `None`.
     pub message_id: Option<String>,
     pub date: String,
+    /// More headers (`Auto-Submitted`), values encoded when not ASCII.
+    pub headers: &'a [(&'a str, String)],
+    /// Sent as `multipart/mixed` when there are any.
+    pub files: &'a [File],
 }
 
 /// The whole message, CRLF line ends, body base64 so any text is safe.
@@ -398,16 +459,87 @@ pub fn build(m: &Outgoing) -> String {
         };
         h("References", &encode_header(&refs));
     }
+    for (name, value) in m.headers {
+        let name: String = name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        h(&name, &encode_header(value));
+    }
     h("MIME-Version", "1.0");
-    h("Content-Type", "text/plain; charset=utf-8");
-    h("Content-Transfer-Encoding", "base64");
+    if m.files.is_empty() {
+        h("Content-Type", "text/plain; charset=utf-8");
+        h("Content-Transfer-Encoding", "base64");
+        out.push_str("\r\n");
+        base64_lines(&mut out, m.body.as_bytes());
+        return out;
+    }
+    let r: [u8; 12] = crate::seal::random();
+    let boundary = format!(
+        "ferrule-{}",
+        r.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
+    h(
+        "Content-Type",
+        &format!("multipart/mixed; boundary=\"{boundary}\""),
+    );
     out.push_str("\r\n");
-    let body = base64::engine::general_purpose::STANDARD.encode(m.body.as_bytes());
+    out.push_str(&format!(
+        "--{boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+    ));
+    base64_lines(&mut out, m.body.as_bytes());
+    for f in m.files {
+        let ctype: String = f
+            .content_type
+            .chars()
+            .filter(|c| c.is_ascii_graphic() && !matches!(c, ';' | '"'))
+            .collect();
+        let ctype = if ctype.contains('/') {
+            ctype
+        } else {
+            "application/octet-stream".into()
+        };
+        let plain: String = f
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_graphic() && !matches!(c, '"' | '\\') || c == ' ' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let mut disposition = format!("attachment; filename=\"{plain}\"");
+        if !f.name.is_ascii() {
+            let pct: String = f
+                .name
+                .bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                        (b as char).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    }
+                })
+                .collect();
+            disposition.push_str(&format!("; filename*=UTF-8''{pct}"));
+        }
+        out.push_str(&format!(
+            "--{boundary}\r\nContent-Type: {ctype}\r\nContent-Disposition: {disposition}\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+        ));
+        base64_lines(&mut out, &f.bytes);
+    }
+    out.push_str(&format!("--{boundary}--\r\n"));
+    out
+}
+
+fn base64_lines(out: &mut String, bytes: &[u8]) {
+    let body = base64::engine::general_purpose::STANDARD.encode(bytes);
     for chunk in body.as_bytes().chunks(76) {
         out.push_str(std::str::from_utf8(chunk).unwrap_or(""));
         out.push_str("\r\n");
     }
-    out
 }
 
 /// RFC 5322 date for now, in UTC.
@@ -493,13 +625,54 @@ mod tests {
             references: None,
             message_id: Some("<2@x>".into()),
             date: date_now(),
+            headers: &[("Auto-Submitted", "auto-replied".into())],
+            files: &[],
         });
         assert!(!text.contains("\r\nBcc:"), "{text}");
         let m = parse(text.as_bytes());
         assert_eq!(m.subject, "שלום");
         assert_eq!(m.text, "גוף ההודעה");
         assert!(text.contains("In-Reply-To: <1@x>\r\nReferences: <1@x>\r\n"));
+        assert!(text.contains("\r\nAuto-Submitted: auto-replied\r\n"));
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(20_723), (2026, 9, 27));
+    }
+
+    #[test]
+    fn files_go_out_and_come_back_with_their_bytes_and_names() {
+        let to = vec!["x@y.z".to_string()];
+        let files = [
+            File {
+                name: "report.pdf".into(),
+                content_type: "application/pdf".into(),
+                bytes: b"%PDF-1.4 \x00\xff".to_vec(),
+            },
+            File {
+                name: "דוח.txt".into(),
+                content_type: String::new(),
+                bytes: b"hi".to_vec(),
+            },
+        ];
+        let text = build(&Outgoing {
+            from: "a@b.c",
+            to: &to,
+            cc: &[],
+            subject: "files",
+            body: "see attached",
+            in_reply_to: None,
+            references: None,
+            message_id: None,
+            date: date_now(),
+            headers: &[],
+            files: &files,
+        });
+        let m = parse(text.as_bytes());
+        assert_eq!(m.text, "see attached");
+        assert_eq!(m.attachments, ["report.pdf", "דוח.txt"]);
+        let back = super::files(text.as_bytes());
+        assert_eq!(back[0].bytes, files[0].bytes);
+        assert_eq!(back[0].content_type, "application/pdf");
+        assert_eq!(back[1].content_type, "application/octet-stream");
+        assert_eq!(back[1].bytes, b"hi");
     }
 }

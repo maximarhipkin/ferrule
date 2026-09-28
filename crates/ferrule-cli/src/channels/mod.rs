@@ -4,6 +4,7 @@
 //! the dashboard) asks here, so a new channel can't be half wired.
 
 pub mod card;
+pub mod email;
 pub mod matrix;
 pub mod settings;
 pub mod whatsapp;
@@ -253,6 +254,21 @@ pub fn account(
                 ))
             })
         }),
+        // The login and the IMAP server. A connection's address is sealed
+        // in each instance's own store: a mailbox named only that way isn't
+        // compared.
+        "email" => g.email.as_ref().and_then(|e| {
+            let user = e.username.as_ref().or(e.address.as_ref())?;
+            let host = e
+                .imap_host
+                .clone()
+                .or_else(|| email::provider(e.address.as_deref()?).map(|p| p.0 .0.to_string()))?;
+            Some(format!(
+                "{} on {}",
+                user.to_ascii_lowercase(),
+                host.to_ascii_lowercase()
+            ))
+        }),
         _ => None,
     }
 }
@@ -262,6 +278,7 @@ pub fn account_clash(channel: &str, id: &str, other: &str) -> String {
     match channel {
         "whatsapp" => format!("the same WhatsApp number (phone number id {id}) as the instance `{other}`: Meta sends its webhooks to one callback URL, so one of them hears nothing (or both take turns). Give one of them a number of its own"),
         "matrix" => format!("the same Matrix bot account ({id}) as the instance `{other}`: both would answer every message, and each moves the other's read position. Give each instance its own bot account"),
+        "email" => format!("the same mailbox ({id}) as the instance `{other}`: whichever looks first takes a mail and marks it read, so each answers about half. Give each instance its own mailbox"),
         _ => format!("the same {channel} account ({id}) as the instance `{other}`: give one of them its own"),
     }
 }

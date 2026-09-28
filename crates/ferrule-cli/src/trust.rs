@@ -87,6 +87,11 @@ pub fn owners(cfg: &Config) -> Vec<ChatRef> {
                 .into_iter()
                 .next()
         });
+        // An email chat is the address in lower case.
+        let who = who.map(|u| match c.name {
+            "email" => u.trim().to_ascii_lowercase(),
+            _ => u,
+        });
         out.extend(who.map(|u| ChatRef::new(c.name, u)));
     }
     if let Some(first) = &cfg.trust.owner_channel {

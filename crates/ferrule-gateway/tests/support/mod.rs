@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 pub mod discord;
+pub mod email;
 pub mod http;
 pub mod matrix;
 pub mod slack;

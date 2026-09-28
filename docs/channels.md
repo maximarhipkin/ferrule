@@ -28,6 +28,7 @@ channels added in M39. The design, and the reasons behind it, are in
 | The quickest start, on your phone | Telegram |
 | Ferrule in the chat app your customers or family already use | WhatsApp (a business number, from Meta) |
 | An open, self-hostable chat, or a room shared with a team | Matrix (unencrypted rooms only) |
+| Nothing new to install: write to it like a colleague, or get task results in your inbox | Email (a mailbox of its own) |
 
 ## WhatsApp
 
@@ -355,3 +356,165 @@ cargo test -p ferrule-gateway --test matrix -- --ignored
 ```
 
 It prints the probe, then sends `…_TO` a message, edits it and reacts 👀.
+
+## Email
+
+Ferrule reads a mailbox over IMAP and answers over SMTP, like any mail
+program. It works with Gmail, iCloud, Yahoo, Fastmail, a company server,
+or anything else that speaks IMAP and SMTP with a password. It never
+needs a webhook or an open port.
+
+**Give it a mailbox of its own** (`yourname.agent@gmail.com`). Ferrule
+only reads mail from the senders you allow and leaves everything else
+unread, but a separate mailbox keeps your own mail out of its reach
+entirely.
+
+### What you need
+
+1. **A mailbox**, best a new one just for the agent.
+2. **An app password** for it, not the account's normal password. Most
+   providers refuse a normal password over IMAP.
+   - **Gmail:** turn on 2-Step Verification, then make one at
+     <https://myaccount.google.com/apppasswords>. Google shows 16 letters
+     in four groups; paste them with or without the spaces. IMAP is on
+     for new accounts; to check, see Settings → Forwarding and POP/IMAP
+     (<https://mail.google.com/mail/u/0/#settings/fwdandpop>).
+   - **iCloud:** <https://support.apple.com/en-us/102654>.
+   - **Yahoo:** Account security → Generate app password
+     (<https://login.yahoo.com/account/security>).
+   - **Fastmail:** Settings → Privacy & Security → App passwords
+     (<https://app.fastmail.com/settings/security/devicekeys>).
+   - **Anything else:** your provider's help pages name its IMAP and SMTP
+     servers and ports.
+3. **Your own address**, to write from.
+
+If you already connected Gmail as a tool (the dashboard's Connections,
+M37), setup offers to use that connection: the same address and app
+password, stored once.
+
+### Steps
+
+The short way is **`ferrule setup` → Email**, or the dashboard's Email
+card. Setup:
+
+1. offers the Gmail connection if there is one. Otherwise it asks the
+   address and fills in the servers for Gmail, iCloud, Yahoo and Fastmail.
+   For any other address it asks for the IMAP and SMTP servers;
+2. asks the app password and checks it right away. It logs in to both
+   servers, opens the inbox read-only and says whether the server has
+   IDLE (push);
+3. saves the settings to the config and the password to the secrets file;
+4. asks your own address to allow (`@example.com` allows a whole domain),
+   then offers to send you a test mail. Reply to it and the agent answers
+   in the thread.
+
+On the dashboard, fill in the card (address, app password, allowed
+senders, and the servers if your provider isn't one of the four),
+**Save**, then **Test**.
+
+By hand, in `config.toml`:
+
+```toml
+[gateway.email]
+address = "max.agent@gmail.com"
+password_env = "EMAIL_PASSWORD"          # the value goes in secrets.env
+allowed_senders = ["max@example.com", "@mycompany.com"]
+# For providers other than Gmail, iCloud, Yahoo and Fastmail:
+# imap_host = "imap.example.com"
+# imap_port = 993                        # 993 is TLS; 143 is STARTTLS
+# smtp_host = "smtp.example.com"
+# smtp_port = 465                        # 465 is TLS; 587 is STARTTLS
+# username = "max"                       # default: the address
+# Or instead of address and password_env, M37's Gmail connection:
+# use_connection = "gmail"
+# require_auth_results = true            # see "Who gets an answer"
+# poll_secs = 60                         # without IDLE: 10 to 240
+# max_file_mb = 20
+```
+
+The first address on `allowed_senders` is the owner, the one who can
+approve tool calls. To name another, set `email_owner = "max@example.com"`
+under `[trust]`.
+
+### Who gets an answer
+
+- **Allowed senders only.** A mail from an address on `allowed_senders`,
+  or from a domain listed as `@domain`, reaches the agent. Everyone
+  else's mail is left unread, without a word back.
+- **A chat is one sender.** The conversation follows the person's address,
+  whatever the subject, so the agent remembers what you wrote last time.
+- **Only new mail.** On its first start, ferrule remembers where the
+  inbox ends and answers only what arrives afterwards. After a restart it
+  picks up where it stopped, and nothing is answered twice.
+- **Never a list, a bounce or a robot.** Ferrule never answers mail that
+  looks automatic: mailing lists (`List-Id`, `List-Unsubscribe`),
+  `Precedence: bulk`, bounces (an empty `Return-Path`, `MAILER-DAEMON`),
+  out-of-office replies (`Auto-Submitted`, `X-Autoreply`), `noreply@`
+  senders, and its own mail (`X-Ferrule-Loop`). This holds even when the
+  sender is allowed. On top of that, it sends at most 10 mails an hour to
+  one address. Past that it stops and says so in `/status`, in case
+  something loops anyway.
+- **Forged senders.** A mail's `From:` can say anything. The server
+  that received the mail checks it (DMARC, SPF, DKIM) and writes the
+  verdict in `Authentication-Results`. With `require_auth_results` on,
+  ferrule drops mail whose sender wasn't vouched for. It is on by default
+  for Gmail, iCloud, Yahoo and Fastmail, which always write that header.
+  For other servers it is off unless you turn it on, because some
+  servers don't write the header at all.
+
+### What works
+
+- **Text** both ways. HTML mail is read as text. Quoted history (`On …
+  wrote:`, `>` lines, signatures, Outlook's "Original Message") is cut, so
+  the agent sees only what you wrote. A new thread's subject is passed
+  along as `Subject: …`.
+- **Threads.** Answers go in your thread (`In-Reply-To`, `References`,
+  `Re: <your subject>`). Mail that ferrule starts itself, such as a
+  scheduled task's result, opens a new thread with the subject
+  `ferrule: <first line>`.
+- **Approvals by reply.** The question lists the choices ("send `yes a1`
+  to allow"). Reply with the keyword as the first line; the quoted
+  question below it doesn't matter. An approval only counts when the
+  receiving server vouched for your address, even with
+  `require_auth_results` off. Otherwise ferrule says it can't take an
+  approval from that mail.
+- **Files in:** attachments are saved to the workspace's inbox, up to
+  `max_file_mb` (default 20) each. A mail too big to take gets a short
+  answer instead of being downloaded.
+- **Files out:** the agent's files are attached to its answer.
+
+### Limits and errors
+
+- **No push without IDLE.** Most servers have IDLE, so mail is seen within
+  seconds. Without it, ferrule looks every `poll_secs` (default 60).
+- **A refused login** (a wrong or revoked app password, or IMAP turned
+  off) shows in `/status` and fails doctor. Ferrule then waits 10 minutes
+  before it tries again, so that a wrong password doesn't get the
+  account locked.
+- **Outlook.com and Microsoft 365** no longer accept passwords over IMAP;
+  they need OAuth, which this channel doesn't do yet.
+- **No reactions, no streaming, no buttons.** Email has none of them. The
+  answer is sent once, when it's done.
+- **One mailbox, one instance.** Two instances (M38) reading the same
+  mailbox would each take about half of the mail. Doctor and setup name
+  the instance that already has it.
+
+### Checking it
+
+`ferrule doctor` logs in to IMAP and SMTP, reads nothing and marks
+nothing read. It says whether the server has IDLE and how many senders
+are allowed, and warns when nobody is. `ferrule doctor --offline` skips
+the network.
+
+A live round trip, not run in CI:
+
+```sh
+FERRULE_LIVE_EMAIL_ADDRESS=max.agent@gmail.com \
+FERRULE_LIVE_EMAIL_PASSWORD='abcd efgh ijkl mnop' \
+FERRULE_LIVE_EMAIL_IMAP=imap.gmail.com:993 \
+FERRULE_LIVE_EMAIL_SMTP=smtp.gmail.com:465 \
+FERRULE_LIVE_EMAIL_TO=you@example.com \
+cargo test -p ferrule-gateway --test email -- --ignored
+```
+
+It logs in, prints the probe and sends `…_TO` one mail.

@@ -4,6 +4,7 @@
 
 pub mod access;
 pub mod discord;
+pub mod email;
 pub mod files;
 pub mod hmac;
 pub mod local;
@@ -14,6 +15,7 @@ pub mod whatsapp;
 pub mod ws;
 
 pub use discord::DiscordChannel;
+pub use email::EmailChannel;
 pub use local::LocalChannel;
 pub use matrix::MatrixChannel;
 pub use slack::SlackChannel;

@@ -8,6 +8,7 @@
 //! comments and layout.
 
 mod channels;
+mod email;
 mod local;
 mod matrix;
 mod remote;
@@ -158,6 +159,10 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(matrix::step(t, true).await)?.quit() {
         return Ok(false);
     }
+    heading("Email");
+    if settle(email::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
     heading("Tool credentials");
     if settle(credentials_step(t, http, true).await)?.quit() {
         return Ok(false);
@@ -213,6 +218,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Slack                {}", channels::slack_summary(&cfg)),
             format!("WhatsApp             {}", whatsapp::summary(&cfg)),
             format!("Matrix               {}", matrix::summary(&cfg)),
+            format!("Email                {}", email::summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Web search           {}", web_search_summary(&cfg)),
             format!("Memory recall        {}", memory_summary(&cfg)),
@@ -247,16 +253,17 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             3 => channels::slack_step(t, false).await,
             4 => whatsapp::step(t, false).await,
             5 => matrix::step(t, false).await,
-            6 => credentials_step(t, http, false).await,
-            7 => web_search_step(t, false),
-            8 => memory_step(t, false).await,
-            9 => sandbox_step(t, false),
-            10 => network_step(t, false),
-            11 => browser_step(t),
-            12 => crate::mcp_add::setup_step(t, false).await,
-            13 => crate::import::setup_step(t, false).await,
-            14 => remote::step(t).await,
-            15 => service_step(t, false),
+            6 => email::step(t, false).await,
+            7 => credentials_step(t, http, false).await,
+            8 => web_search_step(t, false),
+            9 => memory_step(t, false).await,
+            10 => sandbox_step(t, false),
+            11 => network_step(t, false),
+            12 => browser_step(t),
+            13 => crate::mcp_add::setup_step(t, false).await,
+            14 => crate::import::setup_step(t, false).await,
+            15 => remote::step(t).await,
+            16 => service_step(t, false),
             n if Some(n) == another => another_instance(),
             _ => break,
         };

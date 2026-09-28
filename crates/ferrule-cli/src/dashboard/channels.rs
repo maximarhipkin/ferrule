@@ -256,6 +256,7 @@ mod tests {
         assert_eq!(by("telegram")["form"], false);
         assert_eq!(by("signal")["configured"], true);
         assert_eq!(by("matrix")["state"], "off");
+        assert_eq!(by("email")["form"], true);
         for c in cards {
             assert!(!c["icon"].as_str().unwrap().is_empty());
         }

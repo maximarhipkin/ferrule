@@ -998,6 +998,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "croner",
+ "ferrule-connections",
  "ferrule-core",
  "ferrule-sandbox",
  "ferrule-tools",

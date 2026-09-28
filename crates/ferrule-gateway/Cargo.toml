@@ -31,6 +31,8 @@ webpki-roots = "1"
 # M39: HMAC-SHA256 for webhook signatures, and the relay mailbox's name.
 ring = "0.17"
 base64 = "0.22"
+# M39 §5: email reuses M37's IMAP, SMTP and MIME (no mail crates).
+ferrule-connections = { path = "../ferrule-connections" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -109,3 +109,18 @@ pub async fn connect(addr: &Addr) -> Result<Box<dyn Stream>, String> {
     .map_err(|_| format!("couldn't make a secure connection to {}", addr.host))?;
     Ok(Box::new(tls))
 }
+
+/// STARTTLS: the same connection, secured after the plain greeting (IMAP on
+/// 143, SMTP on 587).
+pub async fn upgrade(stream: Box<dyn Stream>, host: &str) -> Result<Box<dyn Stream>, String> {
+    let name = rustls_pki_types::ServerName::try_from(host.to_string())
+        .map_err(|_| format!("{host} isn't a host name"))?;
+    let tls = tokio::time::timeout(
+        TIMEOUT,
+        tokio_rustls::TlsConnector::from(tls_config()).connect(name, stream),
+    )
+    .await
+    .map_err(|_| format!("couldn't reach {host}"))?
+    .map_err(|_| format!("couldn't make a secure connection to {host}"))?;
+    Ok(Box::new(tls))
+}

@@ -2065,6 +2065,13 @@ fn build_channels(
         named_channels.insert(mx.name().to_string(), mx);
     }
 
+    if let Some(e) = &g.email {
+        let mail = ferrule_gateway::EmailChannel::new(channels::email::config(e, workspace)?)
+            .with_allowed(with_owner(cfg, "email", &e.allowed_senders));
+        let mail: Arc<dyn Channel> = Arc::new(mail);
+        named_channels.insert(mail.name().to_string(), mail);
+    }
+
     Ok(named_channels)
 }
 

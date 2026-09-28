@@ -87,7 +87,11 @@ pub struct Spec {
 
 /// The channels with a form on the dashboard; each channel's part adds
 /// its own. Telegram, Discord and Slack keep `ferrule setup`'s flow.
-pub const CARDS: &[&Spec] = &[&super::whatsapp::SPEC, &super::matrix::SPEC];
+pub const CARDS: &[&Spec] = &[
+    &super::whatsapp::SPEC,
+    &super::matrix::SPEC,
+    &super::email::SPEC,
+];
 
 /// `name`'s card.
 pub fn spec(name: &str) -> Option<&'static Spec> {
@@ -136,6 +140,14 @@ pub fn merge(
         let value = match f.kind {
             Kind::Text => toml::Value::String(v.to_string()),
             Kind::Secret { env } => {
+                // A Google app password comes in four groups of four.
+                let joined;
+                let v = if spec.name == "email" {
+                    joined = super::email::app_password(v);
+                    joined.as_str()
+                } else {
+                    v
+                };
                 if v.chars().any(char::is_whitespace) {
                     return Err(format!(
                         "{} has spaces or line breaks in it; paste it as one line. Nothing was saved.",

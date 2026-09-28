@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::{discord, matrix, slack, wait, whatsapp};
+use support::{discord, email, matrix, slack, wait, whatsapp};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -604,4 +604,101 @@ stream = false
         "{mx:?}"
     );
     assert!(!out.contains(matrix::TOKEN), "{out}");
+}
+
+#[test]
+fn email_answers_its_allowed_sender_in_the_thread_and_the_doctor_reads_it() {
+    let (url, log) = model_server();
+    let p = email::Provider::start(true);
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway.email]
+address = "{bot}"
+imap_host = "127.0.0.1"
+imap_port = {imap}
+smtp_host = "127.0.0.1"
+smtp_port = {smtp}
+password_env = "EMAIL_PASSWORD"
+allowed_senders = ["{max}"]
+"#,
+            bot = email::ADDRESS,
+            max = email::MAX,
+            imap = p.imap_port,
+            smtp = p.smtp_port,
+        ),
+    )
+    .unwrap();
+    let with_password = |mut cmd: Command| {
+        cmd.env("EMAIL_PASSWORD", email::PASSWORD);
+        cmd
+    };
+    let mut cmd = with_password(command(home, &["gateway"], discord::TOKEN));
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the first IDLE", LIMIT, || p.state().idles > 0);
+    let stranger = p.deliver(email::mail("someone@else.test", "hi", "STRANGER-MAIL", &[]));
+    let max = p.deliver(email::mail(
+        email::MAX,
+        "a question",
+        "hello by mail",
+        &[("Message-ID", "<q1@example.com>")],
+    ));
+    wait("the email answer", LIMIT, || p.sent() > 0);
+    let data = p.sent_data(0);
+    let reply = ferrule_connections::native::mime::parse(data.as_bytes());
+    assert!(reply.text.contains("ECHO"), "{data}");
+    assert!(reply.text.contains("hello by mail"), "{data}");
+    assert!(data.contains("In-Reply-To: <q1@example.com>"), "{data}");
+    assert!(data.contains("Subject: Re: a question"), "{data}");
+    assert!(!asked(&log, "STRANGER-MAIL"));
+    assert!(p.seen(max));
+    assert!(!p.seen(stranger), "a stranger's mail stays unread");
+    // The last UID seen is the instance's own.
+    assert!(home.join("data/gateway/email/state.json").exists());
+
+    let o = with_password(command(
+        home,
+        &["doctor", "--offline", "--json"],
+        discord::TOKEN,
+    ))
+    .output()
+    .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    let lines: Vec<&Value> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "email")
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["level"] == "ok"
+                && l["text"].as_str().unwrap().contains("1 sender(s) allowed")),
+        "{lines:?}"
+    );
+    assert!(!out.contains(email::PASSWORD), "{out}");
 }

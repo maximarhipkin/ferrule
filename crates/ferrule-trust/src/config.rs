@@ -113,11 +113,13 @@ impl TrustConfig {
         self.owner_chat
             .map(ChatRef::from)
             .into_iter()
-            .chain(
-                OWNER_CHANNELS
-                    .iter()
-                    .filter_map(|c| self.owner_on(c).map(|u| ChatRef::new(*c, u.clone()))),
-            )
+            .chain(OWNER_CHANNELS.iter().filter_map(|c| {
+                self.owner_on(c).map(|u| match *c {
+                    // An email chat is the address in lower case.
+                    "email" => ChatRef::new(*c, u.trim().to_ascii_lowercase()),
+                    _ => ChatRef::new(*c, u.clone()),
+                })
+            }))
             .collect()
     }
 

@@ -1929,7 +1929,11 @@ async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bo
         matrix(r, cfg, m, offline).await;
         on = true;
     }
-    for c in crate::channels::CHANNELS.iter().skip(5) {
+    if let Some(e) = &cfg.gateway.email {
+        email(r, cfg, e, offline).await;
+        on = true;
+    }
+    for c in crate::channels::CHANNELS.iter().skip(6) {
         if crate::channels::configured(cfg, c.name) {
             r.fail(c.name, "configured, but this build doesn't run it");
             on = true;
@@ -2091,6 +2095,55 @@ async fn matrix(
     if allowed == 0 && rooms == 0 {
         r.warn("matrix", "no user or room is allowed, so it answers no one");
         r.hint("`ferrule setup` → Matrix pairs you with a code");
+    }
+}
+
+/// Email: logs in to IMAP and SMTP (reads nothing, marks nothing read),
+/// whether the server has IDLE, and who may write.
+async fn email(
+    r: &mut Report,
+    cfg: &config::Config,
+    e: &crate::channels::settings::Email,
+    offline: bool,
+) {
+    let ec = match crate::channels::email::config(e, None) {
+        Ok(c) => c,
+        Err(err) => {
+            r.fail("email", format!("{err:#}"));
+            return;
+        }
+    };
+    let owner = cfg.trust.email_owner.is_some();
+    let lists = format!(
+        "{} sender(s) allowed",
+        e.allowed_senders.len() + usize::from(owner)
+    );
+    let vouching = if ec.require_auth {
+        ""
+    } else {
+        " · unvouched mail accepted"
+    };
+    if offline {
+        r.ok(
+            "email",
+            format!(
+                "{} via {} · password set, not checked · {lists}{vouching}",
+                ec.address, ec.imap.host
+            ),
+        );
+    } else {
+        match ferrule_gateway::channels::email::probe(ec).await {
+            Ok(p) => r.ok("email", format!("{} · {lists}{vouching}", p.summary())),
+            Err(why) => {
+                r.fail("email", why);
+                r.hint("`ferrule setup` → Email, or the dashboard's Email card → Test");
+                return;
+            }
+        }
+    }
+    if e.allowed_senders.is_empty() && !owner {
+        r.warn("email", "no sender is allowed, so it answers no one");
+        r.hint("add your address to [gateway.email] allowed_senders, or `ferrule setup` → Email");
     }
 }
 

@@ -1,5 +1,5 @@
 //! Just enough SMTP to send one message: EHLO, AUTH PLAIN, MAIL, RCPT,
-//! DATA, QUIT, over implicit TLS (465).
+//! DATA, QUIT, over implicit TLS (465) or STARTTLS (587).
 
 use super::net::{Stream, TIMEOUT};
 use base64::Engine;
@@ -29,6 +29,22 @@ impl Smtp {
             io: BufReader::new(stream),
         };
         me.expect(220).await?;
+        me.send("EHLO ferrule").await?;
+        me.expect(250).await?;
+        Ok(me)
+    }
+
+    /// STARTTLS after the plain greeting, then EHLO again (RFC 3207).
+    pub async fn starttls(mut self, host: &str) -> Result<Self, Error> {
+        self.send("STARTTLS").await?;
+        self.expect(220).await?;
+        let plain = self.io.into_inner();
+        let secure = super::net::upgrade(plain, host)
+            .await
+            .map_err(|text| Error { text, auth: false })?;
+        let mut me = Self {
+            io: BufReader::new(secure),
+        };
         me.send("EHLO ferrule").await?;
         me.expect(250).await?;
         Ok(me)

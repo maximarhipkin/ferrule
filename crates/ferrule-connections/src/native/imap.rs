@@ -233,6 +233,135 @@ impl Imap {
         Ok(out)
     }
 
+    /// The server's capabilities, upper-cased (`IDLE`, `STARTTLS`, …).
+    pub async fn capabilities(&mut self) -> Result<Vec<String>, Error> {
+        let lines = self.command(&[Part::Atom("CAPABILITY")]).await?;
+        Ok(lines
+            .iter()
+            .filter_map(|l| l.text.strip_prefix("* CAPABILITY"))
+            .flat_map(|r| r.split_whitespace().map(|c| c.to_ascii_uppercase()))
+            .collect())
+    }
+
+    /// STARTTLS on a plain connection: the same session, secured.
+    pub async fn starttls(mut self, host: &str) -> Result<Self, Error> {
+        self.command(&[Part::Atom("STARTTLS")]).await?;
+        // Nothing may follow the OK before the handshake, so the buffer is
+        // empty.
+        let plain = self.io.into_inner();
+        let secure = super::net::upgrade(plain, host)
+            .await
+            .map_err(Error::Broken)?;
+        Ok(Self {
+            io: BufReader::new(secure),
+            tag: self.tag,
+        })
+    }
+
+    /// Opens `mailbox` read-write: its `(UIDVALIDITY, UIDNEXT)`.
+    pub async fn select(&mut self, mailbox: &str) -> Result<(u32, u32), Error> {
+        let name = utf7_imap(mailbox);
+        let lines = self
+            .command(&[Part::Atom("SELECT"), Part::Str(&name)])
+            .await?;
+        let code = |key: &str| {
+            lines.iter().find_map(|l| {
+                let at = l.text.find(&format!("[{key} "))?;
+                l.text[at + key.len() + 2..]
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+        };
+        Ok((
+            code("UIDVALIDITY").unwrap_or(0),
+            code("UIDNEXT").unwrap_or(0),
+        ))
+    }
+
+    /// UIDs above `after`, oldest first (`UID n:*` names the newest mail
+    /// even when it's older than `n`, so that one is left out).
+    pub async fn uids_after(&mut self, after: u32) -> Result<Vec<u32>, Error> {
+        let range = format!("{}:*", after.saturating_add(1));
+        let lines = self
+            .command(&[Part::Atom("UID SEARCH UID"), Part::Atom(&range)])
+            .await?;
+        let mut uids: Vec<u32> = lines
+            .iter()
+            .filter_map(|l| l.text.strip_prefix("* SEARCH"))
+            .flat_map(|r| r.split_whitespace().filter_map(|n| n.parse().ok()))
+            .filter(|&u| u > after)
+            .collect();
+        uids.sort_unstable();
+        Ok(uids)
+    }
+
+    /// Marks `uid` read.
+    pub async fn mark_seen(&mut self, uid: u32) -> Result<(), Error> {
+        let uid = uid.to_string();
+        self.command(&[
+            Part::Atom("UID STORE"),
+            Part::Atom(&uid),
+            Part::Atom("+FLAGS.SILENT (\\Seen)"),
+        ])
+        .await
+        .map(|_| ())
+    }
+
+    /// `NOOP`: keeps the session and asks for news.
+    pub async fn noop(&mut self) -> Result<(), Error> {
+        self.command(&[Part::Atom("NOOP")]).await.map(|_| ())
+    }
+
+    /// RFC 2177 IDLE for at most `max`: `true` when new mail arrived
+    /// (`* n EXISTS`), `false` when the time ran out.
+    pub async fn idle(&mut self, max: std::time::Duration) -> Result<bool, Error> {
+        self.tag += 1;
+        let tag = format!("a{}", self.tag);
+        self.write(format!("{tag} IDLE\r\n").as_bytes()).await?;
+        let go = self.line().await?;
+        if !go.text.starts_with('+') {
+            return Err(Error::No(tagged_text(
+                go.text.strip_prefix(&format!("{tag} ")).unwrap_or(&go.text),
+            )));
+        }
+        let until = tokio::time::Instant::now() + max;
+        let mut woke = false;
+        // Outside the loop: a line cut off by the timeout isn't lost.
+        let mut buf = Vec::new();
+        while !woke {
+            buf.clear();
+            let read = tokio::time::timeout_at(until, self.io.read_until(b'\n', &mut buf)).await;
+            match read {
+                Err(_) => break,
+                Ok(Err(_)) | Ok(Ok(0)) => {
+                    return Err(Error::Broken(
+                        "the mail server closed the connection".into(),
+                    ))
+                }
+                Ok(Ok(_)) => {
+                    let line = String::from_utf8_lossy(&buf);
+                    woke = line.starts_with("* ") && line.trim_end().ends_with("EXISTS");
+                }
+            }
+        }
+        self.write(b"DONE\r\n").await?;
+        loop {
+            let line = self.line().await?;
+            if let Some(rest) = line.text.strip_prefix(&format!("{tag} ")) {
+                return if rest.starts_with("OK") {
+                    Ok(woke)
+                } else {
+                    Err(Error::No(tagged_text(rest)))
+                };
+            }
+            if line.text.starts_with("* ") && line.text.ends_with("EXISTS") {
+                woke = true;
+            }
+        }
+    }
+
     pub async fn logout(mut self) {
         let _ = self.command(&[Part::Atom("LOGOUT")]).await;
     }
