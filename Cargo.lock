@@ -777,7 +777,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "ferrule-agents"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "dunce",
@@ -794,7 +794,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-codemap"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "dunce",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-connections"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-embed"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-eval"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -966,7 +966,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-extensions"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-gateway"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-hooks"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-learn"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-mcp"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "dunce",
@@ -1074,7 +1074,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-memory"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ferrule-embed",
  "rusqlite",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-otel"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "ferrule-core",
@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-plans"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-plugins"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "ferrule-core",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-providers"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "ferrule-core",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-proxy"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-sandbox"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "dunce",
  "libc",
@@ -1211,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-skills"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "dirs",
@@ -1226,7 +1226,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-ssh"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "ferrule-core",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-tools"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "dunce",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "ferrule-trust"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
