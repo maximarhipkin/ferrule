@@ -1691,7 +1691,7 @@ impl Agent {
 
     fn request(&self) -> CompletionRequest {
         CompletionRequest {
-            messages: self.rendered_messages(),
+            messages: paired(self.rendered_messages()),
             tools: self.tools.definitions(),
             max_output_tokens: self.config.max_output_tokens,
             temperature: self.config.temperature,
@@ -1883,7 +1883,9 @@ impl Agent {
         if self.messages.len() <= keep + 1 {
             return Ok(()); // nothing foldable
         }
-        let split = self.messages.len() - keep;
+        let Some(split) = self.fold_point(self.messages.len() - keep) else {
+            return Ok(()); // nothing foldable
+        };
         let head = &self.messages[..split];
         let folded_refs = shortened_refs(head);
 
@@ -2003,6 +2005,33 @@ impl Agent {
             self.push(Message::user(format!("[hook: PostCompact]\n{note}")));
         }
         Ok(())
+    }
+
+    /// Where the summary ends and the verbatim tail starts, near `want`.
+    /// Never between a call and its results: a tail that opens with a tool
+    /// result whose call went into the summary is refused by the provider,
+    /// on this turn and every later one. The cut moves back to the call,
+    /// or forward past the results when that leaves nothing to fold.
+    fn fold_point(&self, want: usize) -> Option<usize> {
+        use crate::message::Role;
+        let first = usize::from(
+            self.messages
+                .first()
+                .is_some_and(|m| m.role == Role::System),
+        );
+        let is_result = |i: usize| self.messages[i].role == Role::Tool;
+        let mut back = want;
+        while back > first && is_result(back) {
+            back -= 1;
+        }
+        if back > first {
+            return Some(back);
+        }
+        let mut forward = want;
+        while forward < self.messages.len() && is_result(forward) {
+            forward += 1;
+        }
+        (forward < self.messages.len()).then_some(forward)
     }
 
     /// [`ContextOverflow::Truncate`]: drop the oldest messages after the
@@ -2152,6 +2181,47 @@ impl Agent {
             }
         }
     }
+}
+
+/// The messages with every call answered right after it, and no result
+/// without its call. Providers refuse either orphan with a 400, and since
+/// the history doesn't change by itself, every later turn fails the same
+/// way (28.09: a compaction cut between a call and its results). A result
+/// whose call is gone is left out; a call left without a result (a run
+/// halted mid-tools) gets a placeholder where its results end.
+fn paired(messages: Vec<Message>) -> Vec<Message> {
+    use crate::message::Role;
+    fn answer_rest(out: &mut Vec<Message>, open: &mut Vec<String>) {
+        for id in open.drain(..) {
+            warn!(call = %id, "a tool call without a result; sending a placeholder");
+            out.push(Message::tool_result(
+                id,
+                "[ferrule: no result for this call is left in the history]",
+            ));
+        }
+    }
+    let mut out = Vec::with_capacity(messages.len());
+    let mut open: Vec<String> = Vec::new();
+    for m in messages {
+        if m.role == Role::Tool {
+            let id = m.tool_call_id.as_deref().unwrap_or("");
+            match open.iter().position(|c| c == id) {
+                Some(i) => {
+                    open.remove(i);
+                    out.push(m);
+                }
+                None => warn!(call = %id, "a tool result without its call; left out"),
+            }
+            continue;
+        }
+        answer_rest(&mut out, &mut open);
+        if m.role == Role::Assistant {
+            open = m.tool_calls.iter().map(|c| c.id.clone()).collect();
+        }
+        out.push(m);
+    }
+    answer_rest(&mut out, &mut open);
+    out
 }
 
 /// How a shortened tool result starts: `[ferrule: an older tool result (`
@@ -3451,6 +3521,118 @@ mod tests {
         // Thinking signed under the old prefix can't follow the summary.
         assert!(agent.messages.iter().all(|m| m.native.is_none()));
         assert!(agent.messages[2].content.as_deref().unwrap().ends_with('3'));
+    }
+
+    fn call(ids: &[&str]) -> Message {
+        let calls = ids
+            .iter()
+            .map(|id| crate::message::ToolCall {
+                id: (*id).into(),
+                name: "echo".into(),
+                arguments: serde_json::json!({}),
+            })
+            .collect();
+        Message::assistant(Some(format!("CALL {}", "x".repeat(300))), calls, None)
+    }
+
+    async fn compacted(messages: Vec<Message>) -> Vec<Message> {
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 1_000;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 0.1;
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider,
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        );
+        agent.messages = messages;
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        agent.messages
+    }
+
+    #[tokio::test]
+    async fn compaction_never_cuts_between_a_call_and_its_results() {
+        let filler = |tag: &str| format!("{tag} {}", "x".repeat(300));
+        // Two kept messages would start at c2's result: the cut moves back
+        // to the call, which stays whole.
+        let kept = compacted(vec![
+            Message::system("SYSTEM PROMPT"),
+            Message::user(filler("GOAL")),
+            Message::assistant(Some(filler("EARLIER")), vec![], None),
+            call(&["c1", "c2"]),
+            Message::tool_result("c1", filler("R1")),
+            Message::tool_result("c2", filler("R2")),
+            Message::user(filler("LAST")),
+        ])
+        .await;
+        let roles: Vec<_> = kept.iter().map(|m| m.role).collect();
+        use crate::message::Role::*;
+        assert_eq!(roles, [System, User, Assistant, Tool, Tool, User]);
+        assert_eq!(kept[2].tool_calls.len(), 2);
+
+        // With nothing before the call to fold, the cut moves forward past
+        // its results instead: the call and its results go into the summary.
+        let kept = compacted(vec![
+            Message::system("SYSTEM PROMPT"),
+            call(&["c1", "c2"]),
+            Message::tool_result("c1", filler("R1")),
+            Message::tool_result("c2", filler("R2")),
+            Message::user(filler("LAST")),
+        ])
+        .await;
+        let roles: Vec<_> = kept.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [System, User, User]);
+        assert!(kept[2].content.as_deref().unwrap().starts_with("LAST"));
+    }
+
+    #[test]
+    fn a_request_never_carries_an_orphan_call_or_result() {
+        use crate::message::Role::*;
+        let sent = paired(vec![
+            Message::system("SYSTEM PROMPT"),
+            Message::user("[Compaction summary of earlier session]"),
+            // A kept tail that opened on a result (28.09): its call was folded.
+            Message::tool_result("gone", "orphan"),
+            call(&["a", "b"]),
+            Message::tool_result("a", "A"),
+            // The run was halted before b ran.
+            Message::assistant(Some("stopped".into()), vec![], None),
+            Message::user("next"),
+            call(&["c"]),
+            Message::tool_result("c", "C"),
+        ]);
+        let shape: Vec<_> = sent
+            .iter()
+            .map(|m| (m.role, m.tool_call_id.clone().unwrap_or_default()))
+            .collect();
+        let s = |r, id: &str| (r, id.to_string());
+        assert_eq!(
+            shape,
+            [
+                s(System, ""),
+                s(User, ""),
+                s(Assistant, ""),
+                s(Tool, "a"),
+                s(Tool, "b"),
+                s(Assistant, ""),
+                s(User, ""),
+                s(Assistant, ""),
+                s(Tool, "c"),
+            ]
+        );
+        assert!(sent[4].content.as_deref().unwrap().contains("no result"));
+        assert_eq!(sent[8].content.as_deref(), Some("C"));
     }
 
     #[tokio::test]
