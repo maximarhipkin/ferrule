@@ -298,7 +298,21 @@ impl Gateway {
                 )
                 .await;
             }
-            Err(e) => tracing::error!(error = %e, "failed to dispatch inbound message"),
+            Err(e) => {
+                // The 👀 is already there: say why nothing follows it,
+                // rather than leave the sender waiting on silence.
+                tracing::error!(error = %e, "failed to dispatch inbound message");
+                let text = match &e {
+                    GatewayError::Core(core) => self
+                        .redactor
+                        .redact(&ferrule_core::failure::chat_text(core)),
+                    other => format!(
+                        "I couldn't start on this message: {}",
+                        self.redactor.redact(&other.to_string())
+                    ),
+                };
+                self.reply_directly(&reply, text).await;
+            }
         }
     }
 
@@ -615,6 +629,43 @@ mod tests {
         }
         assert_eq!(scripted.sent.lock().unwrap().len(), 1);
         assert_eq!(scripted.sent.lock().unwrap()[0].text, "echo: hello");
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_cant_start_is_told_in_the_chat_not_only_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripted = Arc::new(ScriptedChannel {
+            script: vec![msg("c1", "hello")],
+            sent: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("scripted".into(), scripted.clone());
+        let factory: crate::router::AgentFactory =
+            Arc::new(|_sid, _t| Err(GatewayError::Channel("tasks.db is locked".into())));
+        let router = Arc::new(Router::new(dir.path(), factory, channels));
+        let mut gateway = Gateway::new(router);
+        gateway.add_channel(scripted.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+        let sent = scripted.sent.lock().unwrap();
+        assert_eq!(
+            sent.len(),
+            1,
+            "{:?}",
+            sent.iter().map(|m| &m.text).collect::<Vec<_>>()
+        );
+        assert!(
+            sent[0].text.contains("I couldn't start on this message"),
+            "{}",
+            sent[0].text
+        );
+        assert!(
+            sent[0].text.contains("tasks.db is locked"),
+            "{}",
+            sent[0].text
+        );
     }
 
     /// Counts its starts, then waits for ever, like a polling adapter.
