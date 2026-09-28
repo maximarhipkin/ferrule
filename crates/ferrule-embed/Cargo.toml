@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-embed"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Text embedders for memory recall: a local static model (no key, no network after one verified download) and any OpenAI-compatible /v1/embeddings endpoint"
 
