@@ -12,7 +12,7 @@
   <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.8.0-c4764a" alt="release v0.8.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/download-~10_MB-8a929a" alt="download: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-1411-8a929a" alt="1411 workspace tests">
+  <img src="https://img.shields.io/badge/tests-1435-8a929a" alt="1435 workspace tests">
 </p>
 
 <p align="center">
@@ -241,6 +241,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Ledger** | Every model call is logged: tokens, cache hits, latency, errors, cost, time to first token and first reply, and parallel batch time. `ferrule ledger` shows the cache-hit %. |
 | **OpenTelemetry** | Optional OTLP/HTTP traces to Jaeger, Honeycomb, Grafana and the like: session, turn, model-call and tool-call spans with the GenAI attributes (model, tokens, cost). Off by default, no prompt or output text unless you opt in, and a bounded queue that never slows the agent ([`docs/otel.md`](docs/otel.md)). |
 | **Self-update and self-repair** | Ferrule installs its own signed releases (SHA-256 plus a minisign signature against a key built into the binary) when idle, restarts, and rolls back and pins a release that doesn't come up healthy. It keeps the `claude` CLI and the ChatGPT plan's client version current, moves to the fallback model (if set) on any provider error and says why in plain words, runs on the last config that loaded when the current one breaks, and checks itself every 15 minutes ([`docs/updates.md`](docs/updates.md)). |
+| **Several agents** | `ferrule instances new work` sets up a second agent on the same machine with its own config, keys, bot, service and dashboard; `ferrule --instance work …` runs any command for it. Doctor catches two agents sharing a bot, port, workspace or relay, and instances on one binary update and roll back together ([`docs/instances.md`](docs/instances.md)). |
 | **Trust & cost** | Token and dollar caps per run, per day and per scheduled task, with an 80% warning; a kill switch (`ferrule stop`, `/stop`, `/resume`); approvals for destructive actions; plan mode ([`docs/m19-trust-cost.md`](docs/m19-trust-cost.md)). |
 | **Hooks** | Ten lifecycle events (SessionStart, PreToolUse, PostToolUse, Stop, PreCompact and more) with Claude Code's JSON payload and exit-code contract ([`docs/m18-hooks.md`](docs/m18-hooks.md)). |
 | **Eval** | `ferrule eval run`: task suites through the real agent loop, graded by commands and LLM rubrics, with a naive-vs-engineered A/B on the same model ([`docs/eval.md`](docs/eval.md)). |
@@ -648,6 +649,7 @@ and a dated entry for every session.
   runs become playbook lessons).
 - Running it day to day: [`dashboard.md`](docs/dashboard.md) ·
   [`updates.md`](docs/updates.md) (self-update, rollback, self-repair) ·
+  [`instances.md`](docs/instances.md) (several agents on one machine) ·
   [`discord.md`](docs/discord.md) · [`slack.md`](docs/slack.md) ·
   [`m18-hooks.md`](docs/m18-hooks.md) ·
   [`m19-trust-cost.md`](docs/m19-trust-cost.md) (caps, approvals, kill
