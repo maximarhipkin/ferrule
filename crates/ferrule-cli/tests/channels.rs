@@ -951,3 +951,124 @@ allowed_users = ["{max}"]
         "no one allowed: {lines:?}"
     );
 }
+
+/// One HTTP/1.1 request to the API on 127.0.0.1; the status and body.
+fn api_call(port: u16, method: &str, path: &str, key: &str, body: &str) -> (u16, String) {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(LIMIT)).unwrap();
+    write!(
+        s,
+        "{method} {path} HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer {key}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    let status = out
+        .split(' ')
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    let body = out.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    (status, body.to_string())
+}
+
+#[test]
+fn the_http_api_answers_a_key_made_on_the_command_line_until_it_is_revoked() {
+    let (url, log) = model_server();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway.http]
+port = {port}
+"#
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let o = command(home, args, discord::TOKEN).output().unwrap();
+        assert!(o.status.success(), "{args:?}: {o:?}");
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    let made = run(&["channels", "keys", "add", "n8n"]);
+    let key = made
+        .split_whitespace()
+        .find(|w| w.starts_with("frk_"))
+        .unwrap_or_else(|| panic!("{made}"))
+        .to_string();
+    // Only the key's hash is kept.
+    let stored = std::fs::read_to_string(home.join("data/gateway/http/clients.json")).unwrap();
+    assert!(!stored.contains(&key), "{stored}");
+    assert!(run(&["channels", "keys", "list"]).contains("n8n"));
+
+    let _gw = gateway(home, discord::TOKEN);
+    wait("the API", LIMIT, || {
+        TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let (status, body) = api_call(
+        port,
+        "POST",
+        "/v1/messages",
+        "frk_wrong",
+        r#"{"text":"STRANGER-HTTP"}"#,
+    );
+    assert_eq!(status, 401, "{body}");
+    let (status, body) = api_call(
+        port,
+        "POST",
+        "/v1/messages",
+        &key,
+        r#"{"text":"hello from a program"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("ECHO hello from a program"), "{body}");
+    assert!(!asked(&log, "STRANGER-HTTP"));
+
+    // doctor sees the gateway's API on its port.
+    let o = command(home, &["doctor", "--json"], discord::TOKEN)
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    assert!(
+        report["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["what"] == "http"
+                && i["level"] == "ok"
+                && i["text"].as_str().unwrap().contains("answering on")
+                && i["text"].as_str().unwrap().contains("1 key")),
+        "{report}"
+    );
+
+    // Revoked on the command line, refused by the running gateway.
+    run(&["channels", "keys", "revoke", "n8n"]);
+    let (status, _) = api_call(port, "POST", "/v1/messages", &key, r#"{"text":"again"}"#);
+    assert_eq!(status, 401);
+    assert!(!run(&["channels", "keys", "list"]).contains("n8n"));
+}

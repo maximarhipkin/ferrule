@@ -9,6 +9,7 @@
 
 mod channels;
 mod email;
+mod http_api;
 mod local;
 mod matrix;
 mod mattermost;
@@ -173,6 +174,10 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(signal::step(t, true).await)?.quit() {
         return Ok(false);
     }
+    heading("HTTP API");
+    if settle(http_api::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
     heading("Tool credentials");
     if settle(credentials_step(t, http, true).await)?.quit() {
         return Ok(false);
@@ -231,6 +236,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Mattermost           {}", mattermost::summary(&cfg)),
             format!("Email                {}", email::summary(&cfg)),
             format!("Signal               {}", signal::summary(&cfg)),
+            format!("HTTP API             {}", http_api::summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Web search           {}", web_search_summary(&cfg)),
             format!("Memory recall        {}", memory_summary(&cfg)),
@@ -268,16 +274,17 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             6 => mattermost::step(t, false).await,
             7 => email::step(t, false).await,
             8 => signal::step(t, false).await,
-            9 => credentials_step(t, http, false).await,
-            10 => web_search_step(t, false),
-            11 => memory_step(t, false).await,
-            12 => sandbox_step(t, false),
-            13 => network_step(t, false),
-            14 => browser_step(t),
-            15 => crate::mcp_add::setup_step(t, false).await,
-            16 => crate::import::setup_step(t, false).await,
-            17 => remote::step(t).await,
-            18 => service_step(t, false),
+            9 => http_api::step(t, false).await,
+            10 => credentials_step(t, http, false).await,
+            11 => web_search_step(t, false),
+            12 => memory_step(t, false).await,
+            13 => sandbox_step(t, false),
+            14 => network_step(t, false),
+            15 => browser_step(t),
+            16 => crate::mcp_add::setup_step(t, false).await,
+            17 => crate::import::setup_step(t, false).await,
+            18 => remote::step(t).await,
+            19 => service_step(t, false),
             n if Some(n) == another => another_instance(),
             _ => break,
         };
@@ -371,7 +378,7 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
+pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 

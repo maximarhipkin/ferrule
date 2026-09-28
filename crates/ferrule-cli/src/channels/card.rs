@@ -93,6 +93,7 @@ pub const CARDS: &[&Spec] = &[
     &super::mattermost::SPEC,
     &super::email::SPEC,
     &super::signal::SPEC,
+    &super::http::SPEC,
 ];
 
 /// `name`'s card.

@@ -469,6 +469,10 @@ The table is `PARITY` in `dashboard/console.rs`, copied here.
 | `instances list` | console | read |  |
 | `instances new` | terminal only | refused | it runs another instance's setup wizard, which asks at the terminal |
 | `instances remove` | terminal only | refused | it removes another instance: run it at the terminal |
+| `channels keys list` | Channels (HTTP API card) + console | read |  |
+| `channels keys add` | Channels (HTTP API card) | refused | it prints a key once: make it on the HTTP API card, where it isn't kept in the console's output |
+| `channels keys webhook` | terminal only | refused | it prints a signing secret once: run it at the terminal |
+| `channels keys revoke` | Channels (HTTP API card) + console | destructive |  |
 | `connections list` | Connections + console | read |  |
 | `connections add` | Connections | refused | keys and sign-ins go in on the Connections page, where a key never lands in a log |
 | `connections remove` | Connections + console | destructive |  |

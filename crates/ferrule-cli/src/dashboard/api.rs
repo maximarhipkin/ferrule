@@ -161,6 +161,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "channels/test" => super::channels::test(ctx, body).await,
         "channels/save" => super::channels::save(ctx, body),
         "channels/remove" => super::channels::remove(ctx, body),
+        "channels/keys/add" => super::channels::key_add(ctx, body),
+        "channels/keys/revoke" => super::channels::key_revoke(ctx, body),
         "config/restore" => config_restore(ctx, body),
         "gateway/restart" => gateway_restart(ctx, body),
         _ => None,

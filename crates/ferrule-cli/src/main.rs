@@ -282,6 +282,11 @@ enum Cmd {
         #[command(subcommand)]
         op: connections::ConnectionsCmd,
     },
+    /// The HTTP API's keys, one per program that calls it (docs/channels.md)
+    Channels {
+        #[command(subcommand)]
+        op: channels::http::ChannelsCmd,
+    },
     /// Several agents on one machine: list them, set up another, remove one
     /// (docs/instances.md)
     Instances {
@@ -869,6 +874,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Ssh { op } => remote::run(op).await?,
         Cmd::Connections { op } => connections::run(op).await?,
         Cmd::Instances { op } => instances::run(op).await?,
+        Cmd::Channels { op } => channels::http::run(op)?,
         Cmd::Sandbox {
             probe_net: true, ..
         } => probe_net(),
@@ -2074,6 +2080,13 @@ fn build_channels(
                 );
         let mm: Arc<dyn Channel> = Arc::new(mm);
         named_channels.insert(mm.name().to_string(), mm);
+    }
+
+    if let Some(h) = &g.http {
+        let api: Arc<dyn Channel> = Arc::new(ferrule_gateway::HttpChannel::new(
+            channels::http::config(h, cfg, workspace)?,
+        ));
+        named_channels.insert(api.name().to_string(), api);
     }
 
     if let Some(e) = &g.email {

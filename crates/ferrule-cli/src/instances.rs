@@ -275,6 +275,9 @@ impl Facts {
         if let Some(s) = cfg.gateway.signal.as_ref().filter(|s| s.url.is_none()) {
             facts.accounts.push(("signal-port", s.port.to_string()));
         }
+        if let Some(h) = cfg.gateway.http.as_ref().filter(|h| h.port != 0) {
+            facts.accounts.push(("http-port", h.port.to_string()));
+        }
         facts
     }
 }

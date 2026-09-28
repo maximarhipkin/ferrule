@@ -699,6 +699,9 @@ impl Health {
             if let Some(problem) = c.problem() {
                 out.push(format!("    {problem}"));
             }
+            if let Some(note) = c.note() {
+                out.push(format!("    {note}"));
+            }
         }
         out.push(String::new());
         out.push("recent warnings and errors:".into());

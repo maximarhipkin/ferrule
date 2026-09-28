@@ -1566,11 +1566,48 @@
               g.text, g.url ? frag(" ", el("a", { href: g.url, target: "_blank", rel: "noopener", text: g.url.replace(/^https?:\/\//, "") })) : null)))));
         }
         body.append(this.form(x));
+        if (x.keys) body.append(this.keys(x));
       }
       body.append(el("p", { class: "muted small m0" }, "More in ", el("code", { text: x.doc }), "."));
       return el("div", { class: "card tile", id: "channel-" + x.name },
         el("div", { class: "head" }, s, el("h3", { class: "grow", text: x.title }), tag(st[0], st[1])),
         body);
+    },
+
+    // The HTTP API's keys: a list with Revoke, and a form whose new key is
+    // shown once (kept in this page only until "Copied").
+    keys(x) {
+      const box = el("div", { class: "stack" });
+      const when = (t) => t ? new Date(t * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "never";
+      const made = this.madeKey;
+      if (made) {
+        const done = el("button", { text: "Copied, hide it" });
+        done.onclick = () => { this.madeKey = null; this.load(); };
+        box.append(el("div", { class: "said ok stack" },
+          el("div", { text: "The key for " + made.name + ", shown once:" }),
+          el("code", { class: "msg", text: made.key }),
+          made.webhook_secret ? el("div", { text: "Its webhook's signing secret:" }) : null,
+          made.webhook_secret ? el("code", { class: "msg", text: made.webhook_secret }) : null,
+          el("div", { class: "row" }, done)));
+      }
+      box.append(el("h4", { class: "mt0", text: "Keys" }),
+        x.keys.length ? el("div", { class: "stack" }, x.keys.map((k) => el("div", { class: "row" },
+          el("b", { text: k.name }),
+          el("span", { class: "muted small grow", text: "made " + when(k.created) + " · last used " + when(k.last_used) + (k.webhook ? " · webhook " + k.webhook : "") }),
+          btn("Revoke", "channels/keys/revoke", { name: k.name }, "danger")))) :
+          el("p", { class: "muted small", text: "No key yet, so nothing can call it." }));
+      const name = el("input", { type: "text", placeholder: "n8n", "aria-label": "the new key's name", autocomplete: "off" });
+      const hook = el("input", { type: "url", placeholder: "webhook for task results (optional, https://…)", "aria-label": "webhook", autocomplete: "off" });
+      const add = el("button", { class: "primary", text: "Create a key" });
+      add.onclick = async () => {
+        const r = await act("channels/keys/add", { name: name.value.trim(), webhook: hook.value.trim() }, add);
+        if (!r || !r.key) return;
+        this.madeKey = { name: name.value.trim(), key: r.key, webhook_secret: r.webhook_secret };
+        this.load();
+      };
+      box.append(el("div", { class: "row" }, name, hook, add),
+        el("p", { class: "muted small", text: "A key works at once, no restart; only its hash is kept. Revoke takes it away at once." }));
+      return box;
     },
 
     input(f) {

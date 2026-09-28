@@ -147,6 +147,23 @@ pub trait Channel: Send + Sync {
         None
     }
 
+    /// Something `/status` shows under the channel that isn't a problem
+    /// (M39 §8: the HTTP API's public address).
+    fn note(&self) -> Option<String> {
+        None
+    }
+
+    /// Whether the gateway tells a chat it's still busy with the previous
+    /// message. A program's request (the HTTP API) just waits its turn.
+    fn busy_notices(&self) -> bool {
+        true
+    }
+
+    /// Everything answering `message_id` has been sent: the turn's reply,
+    /// a command's, or the error that stopped it. A channel that pairs
+    /// requests with answers (the HTTP API) closes the request here.
+    async fn answered(&self, _chat_id: &str, _message_id: &str) {}
+
     /// Optional: edit a previously sent message in place.
     async fn edit(
         &self,

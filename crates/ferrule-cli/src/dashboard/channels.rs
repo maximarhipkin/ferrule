@@ -107,6 +107,8 @@ pub fn list(ctx: &Ctx) -> Answer {
                 "fields": fields,
                 "guide": spec.map(|s| s.guide).unwrap_or_default().iter().map(|g| json!({"text": g.text, "url": g.url})).collect::<Vec<_>>(),
                 "doc": format!("docs/channels.md#{}", c.name),
+                // The HTTP API's keys: what they are, never a key.
+                "keys": (c.name == "http").then(|| keys_dir(ctx).map(|d| channels::http::keys_json(&d))).flatten(),
             })
         })
         .collect();
@@ -214,6 +216,68 @@ pub fn remove(ctx: &Ctx, body: &Value) -> Answer {
             }))
         }
         Err(e) => bad(500, format!("{e:#}")),
+    }
+}
+
+/// The HTTP API's keys dir for this instance.
+fn keys_dir(ctx: &Ctx) -> Option<std::path::PathBuf> {
+    ctx.data.as_deref().map(channels::http::dir_in)
+}
+
+/// A new key for the HTTP API: shown in this answer, once.
+pub fn key_add(ctx: &Ctx, body: &Value) -> Answer {
+    let name = need!(arg(body, "name"));
+    let Some(dir) = keys_dir(ctx) else {
+        return missing("the data dir");
+    };
+    let webhook = body
+        .get("webhook")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|w| !w.is_empty());
+    match ferrule_gateway::channels::http::clients::add(&dir, name.trim(), webhook) {
+        Ok(made) => {
+            audit_key(ctx, "channel.key_added", name);
+            ok(json!({
+                "ok": true,
+                "said": format!("The key for {name}. Copy it now: it isn't shown again."),
+                "key": made.key,
+                "webhook_secret": made.webhook_secret,
+            }))
+        }
+        Err(e) => bad(400, e),
+    }
+}
+
+/// Takes a key away; its next request gets 401.
+pub fn key_revoke(ctx: &Ctx, body: &Value) -> Answer {
+    let name = need!(arg(body, "name"));
+    let Some(dir) = keys_dir(ctx) else {
+        return missing("the data dir");
+    };
+    need!(confirmed(
+        body,
+        format!("Revoke the key {name}? The program using it gets 401 from its next request.")
+    ));
+    match ferrule_gateway::channels::http::clients::revoke(&dir, name) {
+        Ok(true) => {
+            audit_key(ctx, "channel.key_revoked", name);
+            ok(json!({ "ok": true, "said": format!("{name} is revoked.") }))
+        }
+        Ok(false) => bad(404, format!("there's no key {name}")),
+        Err(e) => bad(500, e),
+    }
+}
+
+fn audit_key(ctx: &Ctx, event: &str, key: &str) {
+    if let Some(hub) = &ctx.hub {
+        hub.audit().record(
+            chrono::Utc::now(),
+            event,
+            None,
+            None,
+            json!({ "channel": "http", "key": key, "by": super::api::BY }),
+        );
     }
 }
 

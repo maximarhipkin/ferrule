@@ -7,6 +7,7 @@ pub mod discord;
 pub mod email;
 pub mod files;
 pub mod hmac;
+pub mod http;
 pub mod local;
 pub mod matrix;
 pub mod mattermost;
@@ -18,6 +19,7 @@ pub mod ws;
 
 pub use discord::DiscordChannel;
 pub use email::EmailChannel;
+pub use http::HttpChannel;
 pub use local::LocalChannel;
 pub use matrix::MatrixChannel;
 pub use mattermost::MattermostChannel;

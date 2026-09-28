@@ -1941,17 +1941,73 @@ async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bo
         signal(r, cfg, s, offline).await;
         on = true;
     }
-    // The M39 channels this build doesn't run yet.
-    for c in crate::channels::CHANNELS.iter().skip(3) {
-        if ["whatsapp", "matrix", "mattermost", "email", "signal"].contains(&c.name) {
-            continue;
-        }
-        if crate::channels::configured(cfg, c.name) {
-            r.fail(c.name, "configured, but this build doesn't run it");
-            on = true;
-        }
+    if let Some(h) = &cfg.gateway.http {
+        http(r, cfg, h, offline).await;
+        on = true;
     }
     on
+}
+
+/// The HTTP API: its keys, what answers on its port, and the tunnel.
+async fn http(
+    r: &mut Report,
+    cfg: &config::Config,
+    h: &crate::channels::settings::HttpApi,
+    offline: bool,
+) {
+    use crate::channels::http::{self as api, Listening};
+    let dir = match api::dir() {
+        Ok(d) => d,
+        Err(e) => {
+            r.fail("http", format!("{e:#}"));
+            return;
+        }
+    };
+    let clients = match ferrule_gateway::channels::http::clients::load(&dir) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("http", format!("{e}: no key works until it's fixed"));
+            r.hint("remove the file and make the keys again: `ferrule channels keys add <name>`");
+            return;
+        }
+    };
+    let keys = api::keys_said(&dir);
+    let hooks = clients.iter().filter(|c| c.webhook.is_some()).count();
+    let hooks = if hooks > 0 {
+        format!(" · {hooks} with a webhook")
+    } else {
+        String::new()
+    };
+    let public = if h.public.is_some() {
+        " · public through a tunnel"
+    } else {
+        " · this machine only"
+    };
+    let at = format!("127.0.0.1:{}", h.port);
+    if offline {
+        r.ok("http", format!("{at} · {keys}{hooks}{public}"));
+    } else {
+        match api::listening(h.port).await {
+            Listening::Ours => r.ok("http", format!("answering on {at} · {keys}{hooks}{public}")),
+            Listening::Free => r.ok(
+                "http",
+                format!("{at} is free: it opens with the gateway · {keys}{hooks}{public}"),
+            ),
+            Listening::Other(why) => {
+                r.fail("http", format!("something else is on {at} ({why})"));
+                r.hint("set another `[gateway.http] port`");
+            }
+        }
+    }
+    if clients.is_empty() {
+        r.warn("http", "no key yet, so nothing can call it");
+        r.hint("`ferrule channels keys add <name>`, or the HTTP API card on the dashboard");
+    }
+    if h.public.is_some() {
+        if let Err(e) = api::config(h, cfg, None) {
+            r.fail("http", format!("{e:#}"));
+        }
+    }
 }
 
 /// WhatsApp: the token and number, where webhooks come from, and messages

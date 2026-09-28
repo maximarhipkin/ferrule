@@ -31,6 +31,7 @@ channels added in M39. The design, and the reasons behind it, are in
 | Nothing new to install: write to it like a colleague, or get task results in your inbox | Email (a mailbox of its own) |
 | End-to-end encryption to your phone, with no company account or webhook | Signal (a spare number, and signal-cli on the machine) |
 | The team chat your company already runs itself | Mattermost (a bot account on your server) |
+| A script, n8n, Zapier or another service talking to it, or task results pushed to a URL | The HTTP API (a key per program) |
 
 ## WhatsApp
 
@@ -799,3 +800,165 @@ cargo test -p ferrule-gateway --test mattermost -- --ignored
 ```
 
 It prints the probe, then sends `…_TO` a message, edits it and reacts 👀.
+
+## HTTP API
+
+For programs rather than people: a script, a shortcut, n8n, Zapier, a CI
+job. They POST a message and get the answer back, as one JSON response or
+as it's written (server-sent events). What ferrule sends on its own, such
+as a scheduled task's result or an approval ask, waits in the program's
+**outbox**, and can be POSTed to a **webhook** of its own.
+
+It's **off by default**. When on, it listens on **127.0.0.1 only**
+(port 8788). Nothing outside the machine reaches it unless you turn on
+`public = "tunnel"` or put your own reverse proxy in front.
+
+### What you need
+
+Nothing outside ferrule. For access from elsewhere: cloudflared, which
+setup fetches for you (the same one as the dashboard's remote access), or
+your own proxy.
+
+### Steps
+
+The short way is **`ferrule setup` → HTTP API**. It picks the port (and
+says when something else has it), creates the first key and prints it
+**once** with a `curl` to try, and offers the tunnel.
+
+On the dashboard: the **HTTP API** card. **Save** turns it on; **Create a
+key** shows the new key once, with a copy button. The card lists every key,
+when it was last used, and a **Revoke** button.
+
+By hand, in `config.toml`:
+
+```toml
+[gateway.http]
+# port = 8788
+# requests_per_minute = 30     # per key; over it: 429 and Retry-After
+# public = "tunnel"            # a Cloudflare quick tunnel; its URL is in /status
+# stream = true                # default: [agent] stream
+```
+
+Keys, on the command line:
+
+```sh
+ferrule channels keys add n8n                                 # prints the key once
+ferrule channels keys add ci --webhook https://ci.example.com/hook   # and a signing secret
+ferrule channels keys list                                    # --json for scripts
+ferrule channels keys webhook ci https://…    # a new URL and secret; --off clears it
+ferrule channels keys revoke n8n              # its next request gets 401
+```
+
+A key looks like `frk_…`. Ferrule keeps only its SHA-256, in
+`<data>/gateway/http/clients.json`, so a lost key can't be shown again:
+revoke it and make another. Keys made or revoked while the gateway runs
+count at once; only turning the API on or changing its port needs a
+restart.
+
+### Sending a message
+
+```sh
+curl http://127.0.0.1:8788/v1/messages \
+  -H "Authorization: Bearer $FERRULE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "What changed in the repo today?", "conversation": "daily"}'
+```
+
+The answer:
+
+```json
+{"id": "r12", "conversation": "daily", "text": "…", "files": []}
+```
+
+- **`conversation`** (optional; 1–64 letters, digits and `. _ : -`) is a
+  session of its own. Without it, each key has one conversation, named after
+  the key.
+- **One turn at a time per conversation.** A second request queues behind
+  the first.
+- **A plain request waits up to 30 minutes.** After that it answers 504,
+  and the answer lands in the outbox. It also lands there when the program
+  hangs up first: nothing is lost.
+- **Files in:** `"files": [{"name": "report.pdf", "data": "<base64>",
+  "mime": "application/pdf"}]`, within the 64 KiB body. They're saved to
+  the workspace's `inbox/http/`, and the agent is told where.
+- **Files out:** `"files": [{"name": "…", "url": "/v1/files/<token>"}]`.
+  Fetch the URL with the same key within an hour.
+
+**Streaming:** send `Accept: text/event-stream` and read the events:
+
+| event | data |
+|---|---|
+| `accepted` | `{"id", "conversation"}` |
+| `delta` | `{"id", "text"}`: the **whole** answer so far (an edit can change what came before) |
+| `message` | anything else sent to the conversation meanwhile, such as an approval ask |
+| `done` | the same object as a plain request's answer, and the stream ends |
+
+A `: keepalive` comment comes every 15 seconds.
+
+### The outbox and the webhook
+
+`GET /v1/events?after=<n>&wait=<seconds>` returns
+`{"events": [...], "last": n}`: what ferrule sent this key that no request
+was waiting for. That covers task results, notices, approval asks and late
+answers. Each event has `n`, `id`, `conversation`, `text`, `files`,
+`choices`, `reply_to` (the request it answers, if any) and `ts`. Pass the
+last `n` you saw as `after`. `wait` (at most 60) holds the request open
+until something arrives. The last 200 are kept per key, across restarts.
+
+With a **webhook**, every outbox event is also POSTed to it as JSON (with
+`"client"` added), signed:
+
+```
+X-Ferrule-Signature: sha256=<hex HMAC-SHA256 of the raw body, keyed with the webhook secret>
+```
+
+The secret (`frw_…`) is printed once when the webhook is set, and it isn't
+the API key, so the receiver can check signatures without being able to
+call ferrule. Delivery is tried at once, then after 1, 5 and 30 seconds. A
+delivery that still fails shows as a problem in `/status` and on the card,
+and the event stays in the outbox. The URL must be `https://`, or `http://`
+to this machine.
+
+### Who gets an answer
+
+Anyone with a key. There's no allowlist beyond the keys: each key is one
+program, and its name is who it is. **Revoke** a key to shut a program out.
+
+**The owner.** `[trust] http_owner = "<key name>"` makes that program the
+owner on this channel. Its own conversation (no `conversation` field) can
+then run owner commands, and approvals and owner notices go to its outbox
+and webhook. It's unset by default: a program is never the owner unless
+you say so.
+
+**Approvals:** an ask comes with
+`"choices": [{"label": "Allow", "reply": "yes a1b2"}, …]`. Answer by POSTing
+the `reply` as the text.
+
+### Limits and errors
+
+| Status | When |
+|---|---|
+| 400 | not JSON, empty `text`, a bad `conversation`, a file that isn't base64 |
+| 401 | an unknown or revoked key (`WWW-Authenticate: Bearer realm="ferrule"`) |
+| 404 | an unknown path, or a file link that's expired or another key's |
+| 405 | a wrong method on `/v1/messages` or `/v1/events` |
+| 413 | a body over 64 KiB |
+| 429 | over `requests_per_minute` for this key; `Retry-After` says when |
+| 504 | no answer within 30 minutes; it will come in the outbox |
+
+- **A port in use** stops only this channel, with a problem naming
+  `[gateway.http] port`. The other channels keep running.
+- **A broken `clients.json`** refuses every key (401) and shows as a
+  problem until it's fixed.
+- **Public.** The tunnel's URL changes on each start. It's a quick tunnel,
+  meant for trying things out. For a fixed address, use a named Cloudflare
+  tunnel or your own proxy to `127.0.0.1:<port>`.
+- **One port, one instance.** Two instances (M38) on one port: the second
+  can't listen. Doctor and setup name the instance that already has it.
+
+### Checking it
+
+`ferrule doctor` says whether the gateway answers on the port (a 401 with
+ferrule's realm), whether the port is free, or what else is on it. It
+counts the keys and webhooks, and warns when there's no key. With
+`public = "tunnel"`, it says whether cloudflared is here.

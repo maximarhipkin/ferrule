@@ -564,6 +564,9 @@ async fn run_lane(
                 tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
             }
         }
+        if let (Some(ch), false) = (&channel, inbound.message_id.is_empty()) {
+            ch.answered(&inbound.chat_id, &inbound.message_id).await;
+        }
         if let Some(reply_tx) = reply {
             let outcome = run_result
                 .map(|text| Reply {

@@ -5,6 +5,7 @@
 
 pub mod card;
 pub mod email;
+pub mod http;
 pub mod matrix;
 pub mod mattermost;
 pub mod settings;
@@ -295,6 +296,7 @@ pub fn account_clash(channel: &str, id: &str, other: &str) -> String {
         "email" => format!("the same mailbox ({id}) as the instance `{other}`: whichever looks first takes a mail and marks it read, so each answers about half. Give each instance its own mailbox"),
         "signal" => format!("the same Signal number ({id}) as the instance `{other}`: signal-cli locks its data for one daemon, so the second one fails to start, and a number's messages reach only one of them. Link another number, or run one instance on it"),
         "mattermost" => format!("the same Mattermost bot ({id}) as the instance `{other}`: both would answer every message. Give each instance its own bot account (Integrations → Bot Accounts)"),
+        "http-port" => format!("port {id} for the HTTP API, like the instance `{other}`: the second gateway can't listen there, and a program with the first's key would reach the first. Set another `[gateway.http] port`"),
         "signal-port" => format!("port {id} for its own signal-cli daemon, like the instance `{other}`: the second gateway would find the first's daemon and talk to its number. Set another `[gateway.signal] port`"),
         _ => format!("the same {channel} account ({id}) as the instance `{other}`: give one of them its own"),
     }
