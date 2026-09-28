@@ -87,7 +87,9 @@ pub struct Matrix {
     /// The env var holding an access token (`syt_…`).
     #[serde(default)]
     pub access_token_env: Option<String>,
-    /// Or log in with a password: the bot's `@user:server`…
+    /// Or log in with a password: the bot's `@user:server`… (beside a
+    /// token, only whose token it is: setup writes it, and the instance
+    /// clash check compares it)
     #[serde(default)]
     pub user: Option<String>,
     /// …and the env var holding its password.

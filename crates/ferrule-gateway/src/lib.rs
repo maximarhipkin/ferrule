@@ -23,7 +23,9 @@ pub mod tools;
 pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
 };
-pub use channels::{DiscordChannel, LocalChannel, SlackChannel, TelegramChannel, WhatsAppChannel};
+pub use channels::{
+    DiscordChannel, LocalChannel, MatrixChannel, SlackChannel, TelegramChannel, WhatsAppChannel,
+};
 pub use error::GatewayError;
 pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI};
 pub use health::{

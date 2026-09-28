@@ -268,7 +268,7 @@ impl Facts {
         }
         facts.accounts = crate::channels::CHANNELS
             .iter()
-            .filter_map(|c| Some((c.name, crate::channels::account(cfg, c.name)?)))
+            .filter_map(|c| Some((c.name, crate::channels::account(cfg, c.name, &secret)?)))
             .collect();
         facts
     }

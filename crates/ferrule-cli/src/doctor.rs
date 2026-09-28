@@ -1925,7 +1925,11 @@ async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bo
         whatsapp(r, cfg, w, offline).await;
         on = true;
     }
-    for c in crate::channels::CHANNELS.iter().skip(4) {
+    if let Some(m) = &cfg.gateway.matrix {
+        matrix(r, cfg, m, offline).await;
+        on = true;
+    }
+    for c in crate::channels::CHANNELS.iter().skip(5) {
         if crate::channels::configured(cfg, c.name) {
             r.fail(c.name, "configured, but this build doesn't run it");
             on = true;
@@ -2024,6 +2028,69 @@ async fn whatsapp(
     if allowed == 0 {
         r.warn("whatsapp", "no number is allowed, so it answers no one");
         r.hint("`ferrule setup` → WhatsApp pairs you with a code");
+    }
+}
+
+/// Matrix: the login, the joined rooms, and the encrypted ones it refuses.
+async fn matrix(
+    r: &mut Report,
+    cfg: &config::Config,
+    m: &crate::channels::settings::Matrix,
+    offline: bool,
+) {
+    use ferrule_gateway::channels::matrix as mx;
+    let mc = match crate::channels::matrix::config(m, None) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("matrix", format!("{e:#}"));
+            return;
+        }
+    };
+    let allowed = m.allowed_users.len() + usize::from(cfg.trust.matrix_owner.is_some());
+    let rooms = m.allowed_rooms.len();
+    let lists = format!("{allowed} user(s), {rooms} room(s) allowed");
+    let state_dir = mc.state_dir.clone();
+    if offline {
+        r.ok(
+            "matrix",
+            format!("{} · login set, not checked · {lists}", m.homeserver),
+        );
+    } else {
+        // The gateway's own session when it has one (a password login made
+        // just for this would be one more device).
+        let probe_cfg = match (&mc.login, &state_dir) {
+            (mx::Login::Password { .. }, Some(_)) => mc,
+            _ => mx::MatrixConfig {
+                state_dir: None,
+                ..mc
+            },
+        };
+        match mx::probe(probe_cfg).await {
+            Ok(p) => r.ok("matrix", format!("{} · {lists}", p.summary())),
+            Err(why) => {
+                r.fail("matrix", why);
+                r.hint("log in again with `ferrule setup` → Matrix, or the dashboard's Matrix card → Test");
+                return;
+            }
+        }
+    }
+    if let Some(dir) = &state_dir {
+        let encrypted = mx::encrypted_on_disk(dir);
+        if !encrypted.is_empty() {
+            r.note(
+                "matrix",
+                format!(
+                    "refuses {} encrypted room(s) it was invited to: {}",
+                    encrypted.len(),
+                    encrypted.join(", ")
+                ),
+            );
+            r.hint("ferrule can't read end-to-end encrypted rooms; make one with encryption off and invite the bot there");
+        }
+    }
+    if allowed == 0 && rooms == 0 {
+        r.warn("matrix", "no user or room is allowed, so it answers no one");
+        r.hint("`ferrule setup` → Matrix pairs you with a code");
     }
 }
 

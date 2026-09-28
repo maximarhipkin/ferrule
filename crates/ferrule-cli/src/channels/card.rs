@@ -87,7 +87,7 @@ pub struct Spec {
 
 /// The channels with a form on the dashboard; each channel's part adds
 /// its own. Telegram, Discord and Slack keep `ferrule setup`'s flow.
-pub const CARDS: &[&Spec] = &[&super::whatsapp::SPEC];
+pub const CARDS: &[&Spec] = &[&super::whatsapp::SPEC, &super::matrix::SPEC];
 
 /// `name`'s card.
 pub fn spec(name: &str) -> Option<&'static Spec> {

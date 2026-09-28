@@ -6,6 +6,7 @@
 
 pub mod discord;
 pub mod http;
+pub mod matrix;
 pub mod slack;
 pub mod whatsapp;
 

@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::{discord, slack, wait, whatsapp};
+use support::{discord, matrix, slack, wait, whatsapp};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -516,4 +516,92 @@ allowed_users = ["{max}"]
         "{wa:?}"
     );
     assert!(!out.contains(whatsapp::TOKEN), "{out}");
+}
+
+#[test]
+fn matrix_answers_its_allowed_user_in_a_dm_and_the_doctor_reads_it() {
+    let (url, log) = model_server();
+    let hs = matrix::start();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway.matrix]
+homeserver = "{hs}"
+access_token_env = "MATRIX_ACCESS_TOKEN"
+user = "{bot}"
+allowed_users = ["{max}"]
+stream = false
+"#,
+            hs = hs.url,
+            bot = matrix::BOT,
+            max = matrix::MAX,
+        ),
+    )
+    .unwrap();
+    let with_token = |mut cmd: Command| {
+        cmd.env("MATRIX_ACCESS_TOKEN", matrix::TOKEN);
+        cmd
+    };
+    let mut cmd = with_token(command(home, &["gateway"], discord::TOKEN));
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the first long-poll", LIMIT, || {
+        hs.state().sinces.iter().any(Option::is_some)
+    });
+    hs.timeline(
+        matrix::DM,
+        vec![
+            matrix::text("$s1", matrix::STRANGER, "STRANGER-MX"),
+            matrix::text("$m1", matrix::MAX, "hello from matrix"),
+        ],
+    );
+    wait("the Matrix answer", LIMIT, || {
+        any_has(&hs.bodies(matrix::DM), "ECHO hello from matrix")
+    });
+    assert!(!asked(&log, "STRANGER-MX"));
+    // The sync position is the instance's own.
+    assert!(home.join("data/gateway/matrix/state.json").exists());
+
+    let o = with_token(command(
+        home,
+        &["doctor", "--offline", "--json"],
+        discord::TOKEN,
+    ))
+    .output()
+    .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    let mx: Vec<&Value> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "matrix")
+        .collect();
+    assert!(
+        mx.iter()
+            .any(|l| l["level"] == "ok" && l["text"].as_str().unwrap().contains("1 user(s)")),
+        "{mx:?}"
+    );
+    assert!(!out.contains(matrix::TOKEN), "{out}");
 }

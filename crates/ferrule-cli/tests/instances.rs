@@ -150,7 +150,7 @@ fn instances_are_listed_made_and_removed() {
 fn two_instances_with_one_bot_are_a_doctor_failure() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let config = "[gateway]\ntelegram_token_env = \"TELEGRAM_BOT_TOKEN\"\n\n[gateway.whatsapp]\nphone_number_id = \"1110001\"\ninbound = \"listen\"\n\n[dashboard]\nport = 18765\n";
+    let config = "[gateway]\ntelegram_token_env = \"TELEGRAM_BOT_TOKEN\"\n\n[gateway.whatsapp]\nphone_number_id = \"1110001\"\ninbound = \"listen\"\n\n[gateway.matrix]\nhomeserver = \"https://m.org\"\naccess_token_env = \"MATRIX_ACCESS_TOKEN\"\nuser = \"@bot:m.org\"\n\n[dashboard]\nport = 18765\n";
     for inst in ["ferrule", "ferrule-work"] {
         let c = root.join("config").join(inst);
         std::fs::create_dir_all(&c).unwrap();
@@ -196,6 +196,14 @@ fn two_instances_with_one_bot_are_a_doctor_failure() {
                 .as_str()
                 .unwrap()
                 .contains("WhatsApp number (phone number id 1110001)")),
+        "{texts:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l["level"] == "fail"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("Matrix bot account (@bot:m.org)")),
         "{texts:?}"
     );
     // The token itself is never shown.

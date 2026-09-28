@@ -4,6 +4,7 @@
 //! the dashboard) asks here, so a new channel can't be half wired.
 
 pub mod card;
+pub mod matrix;
 pub mod settings;
 pub mod whatsapp;
 
@@ -229,11 +230,29 @@ pub fn streams(cfg: &Config, name: &str) -> bool {
 }
 
 /// M39 (M38's collision check): the account `name` is on, when two
-/// instances can't share it. Never a secret.
-pub fn account(cfg: &Config, name: &str) -> Option<String> {
+/// instances can't share it. Never a secret. `secret`: the instance's
+/// secrets, by env name.
+pub fn account(
+    cfg: &Config,
+    name: &str,
+    secret: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
     let g = &cfg.gateway;
     match name {
         "whatsapp" => g.whatsapp.as_ref().map(|w| w.phone_number_id.clone()),
+        // The bot's user id (setup writes it beside a token too), else a
+        // fingerprint of the token: one token in two instances.
+        "matrix" => g.matrix.as_ref().and_then(|m| {
+            m.user.clone().or_else(|| {
+                let token = secret(m.access_token_env.as_deref()?)?;
+                let hash = ferrule_gateway::channels::hmac::sha256(token.trim().as_bytes());
+                let short = ferrule_gateway::channels::hmac::hex(&hash[..4]);
+                Some(format!(
+                    "{}, token {short}…",
+                    m.homeserver.trim_end_matches('/')
+                ))
+            })
+        }),
         _ => None,
     }
 }
@@ -242,6 +261,7 @@ pub fn account(cfg: &Config, name: &str) -> Option<String> {
 pub fn account_clash(channel: &str, id: &str, other: &str) -> String {
     match channel {
         "whatsapp" => format!("the same WhatsApp number (phone number id {id}) as the instance `{other}`: Meta sends its webhooks to one callback URL, so one of them hears nothing (or both take turns). Give one of them a number of its own"),
+        "matrix" => format!("the same Matrix bot account ({id}) as the instance `{other}`: both would answer every message, and each moves the other's read position. Give each instance its own bot account"),
         _ => format!("the same {channel} account ({id}) as the instance `{other}`: give one of them its own"),
     }
 }

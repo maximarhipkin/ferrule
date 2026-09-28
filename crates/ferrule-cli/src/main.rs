@@ -2055,6 +2055,16 @@ fn build_channels(
         named_channels.insert(wa.name().to_string(), wa);
     }
 
+    if let Some(m) = &g.matrix {
+        let mx = ferrule_gateway::MatrixChannel::new(channels::matrix::config(m, workspace)?)
+            .with_allowed(
+                with_owner(cfg, "matrix", &m.allowed_users),
+                m.allowed_rooms.clone(),
+            );
+        let mx: Arc<dyn Channel> = Arc::new(mx);
+        named_channels.insert(mx.name().to_string(), mx);
+    }
+
     Ok(named_channels)
 }
 

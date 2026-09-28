@@ -27,6 +27,7 @@ channels added in M39. The design, and the reasons behind it, are in
 |---|---|
 | The quickest start, on your phone | Telegram |
 | Ferrule in the chat app your customers or family already use | WhatsApp (a business number, from Meta) |
+| An open, self-hostable chat, or a room shared with a team | Matrix (unencrypted rooms only) |
 
 ## WhatsApp
 
@@ -214,3 +215,143 @@ It sends a message with buttons to `…_TO`. With
 `FERRULE_LIVE_WHATSAPP_RELAY_URL`, `FERRULE_LIVE_RELAY_KEY`,
 `FERRULE_LIVE_WHATSAPP_APP_SECRET` and `FERRULE_LIVE_WHATSAPP_VERIFY_TOKEN`
 set too, it also waits for your reply through the relay.
+
+## Matrix
+
+Ferrule joins Matrix as an ordinary user account: its own bot account on
+any homeserver (matrix.org, your own Synapse, Conduit or Dendrite). It
+reads with the client-server API's `/sync` long-poll, so nothing has to
+reach your machine: no webhook, no relay, no open port.
+
+**Encrypted rooms are refused.** Ferrule doesn't do end-to-end encryption,
+so it can't read an encrypted room. When it's invited to one, or a message
+arrives encrypted, it says once, in the room, that it won't answer there
+and how to make an unencrypted room. Then it stays quiet. Doctor lists
+those rooms. See [m39-channels.md](m39-channels.md) §4 for why.
+
+### What you need
+
+1. **A separate account for the bot.** Register one at
+   <https://app.element.io/#/register> (matrix.org), or on your own
+   homeserver. Don't use your own account: ferrule answers from it.
+2. **An access token, or the bot's password.** Setup can log in with the
+   password for you, and then keeps only the token. To get a token by
+   hand, sign in to Element as the bot: Settings → Help & About → Access
+   token. Then close the tab **without logging out**, because logging out
+   ends that token.
+3. **Your own Matrix account**, to talk to it.
+
+### Steps
+
+The short way is **`ferrule setup` → Matrix**, or the dashboard's Matrix
+card. Setup:
+
+1. asks the homeserver. `matrix.org`, `@bot:matrix.org` or a URL all work.
+   It follows the server's `.well-known`, so `matrix.org` becomes
+   `https://matrix-client.matrix.org`;
+2. logs in with the bot's user id and password, or takes a pasted token,
+   and checks it right away. It shows the account and its rooms, and warns
+   about encrypted ones;
+3. saves the token to the secrets file and the bot's user id to the
+   config. The password is never stored;
+4. pairs you: start a direct chat with the bot from your own account. The
+   bot joins by itself. Then send it the code setup shows. If that
+   doesn't arrive, type your user id instead.
+
+**Allow a room** in setup adds a room where a mention reaches ferrule. To
+find its id in Element: Room settings → Advanced → Internal room ID
+(`!abc123:matrix.org`). Invite the bot to the room first. To make a room
+for it, turn off **Enable end-to-end encryption** when you create the
+room. Element turns it on by default for private rooms, and it can't be
+turned off afterwards.
+
+On the dashboard, fill in the card (homeserver, token, users and rooms),
+**Save**, then **Test**.
+
+By hand, in `config.toml`:
+
+```toml
+[gateway.matrix]
+homeserver = "https://matrix-client.matrix.org"
+access_token_env = "MATRIX_ACCESS_TOKEN"   # the value goes in secrets.env
+user = "@mybot:matrix.org"                 # whose token it is
+# or, instead of a token, a password login (the session is kept):
+# user = "@mybot:matrix.org"
+# password_env = "MATRIX_PASSWORD"
+allowed_users = ["@max:matrix.org"]        # whose DMs reach it
+allowed_rooms = ["!abc123:matrix.org"]     # where a mention reaches it
+# stream = true                            # default: [agent] stream
+# max_file_mb = 20
+```
+
+With `password_env`, ferrule logs in once, keeps the session in the data
+directory (`gateway/matrix/session.json`, readable only by you), and logs
+in again if the server ends it.
+
+### Who gets an answer
+
+- **DMs.** An allowed user's direct chat. The chat is known by their user
+  id (`@max:matrix.org`), not the room's, so it stays the same chat if
+  the DM room changes. If there's no DM yet (a scheduled task's report,
+  say), ferrule opens an unencrypted one, unless the homeserver forces
+  encryption on every room.
+- **Rooms.** In an allowed room, anyone in it can reach ferrule, but only
+  by mentioning the bot: a pill (Element's @-completion), its user id, or
+  its name at the start of the message. A reply to one of ferrule's
+  messages counts too. This is Slack's rule, too.
+- **Invites.** Ferrule joins an invite from an allowed user, and ignores
+  the rest. While setup is pairing, it joins any invite.
+- **Strangers get nothing.** A room that isn't allowed is ignored, even
+  with a mention.
+
+### What works
+
+- **Text** both ways, up to 16 000 characters per message; a longer answer
+  is split. Markdown is sent as Matrix HTML (bold, italic, code, links,
+  lists, quotes, headings), with the Markdown itself as the plain body.
+- **Streaming**: the answer is edited in place every 3 seconds while it's
+  written (`stream = false` turns it off).
+- **Approvals** as reactions. The message lists each choice with its
+  reaction (👍 allow, 👎 refuse, then 1️⃣ 2️⃣ …), and ferrule reacts with
+  each one so you only tap. Only an allowed user's reaction counts. You
+  can also reply with the keyword (`yes a1b2`).
+- **👀** on your message when ferrule starts on it, and a read receipt at
+  the same time.
+- **Files in:** images, audio, video and files, into the workspace's inbox,
+  up to `max_file_mb` (default 20). An image's caption is its text.
+- **Files out:** uploaded to the homeserver's media store and sent as an
+  image, audio, video or file.
+
+### Limits and errors
+
+- **No end-to-end encryption**, as above. That includes encrypted DMs:
+  Element encrypts a new DM by default, so let ferrule open the DM
+  (pairing does), or turn encryption off when you start it.
+- **Rate limits.** When the homeserver says `M_LIMIT_EXCEEDED`, ferrule
+  waits as long as it asks (up to 30 seconds) and retries three times.
+- **A token that stops working** (`M_UNKNOWN_TOKEN`: logged out in
+  Element, or revoked) shows in `/status` and fails doctor with "log in
+  again". With a password login, ferrule logs in again by itself once.
+- **Messages sent while the gateway was off.** On a fresh start (no saved
+  sync position), ferrule skips what was said before and only answers new
+  messages. After a restart, it picks up where it stopped.
+- **One bot account, one instance.** Two instances (M38) on one bot account
+  would both answer and move each other's position. Doctor and setup name
+  the instance that already has it.
+
+### Checking it
+
+`ferrule doctor` logs in, lists the joined rooms and checks which are
+encrypted. It also warns when nobody is allowed. `ferrule doctor
+--offline` skips the network.
+
+A live round trip, not run in CI:
+
+```sh
+FERRULE_LIVE_MATRIX_URL=https://matrix-client.matrix.org \
+FERRULE_LIVE_MATRIX_TOKEN=syt_… \
+FERRULE_LIVE_MATRIX_TO=@you:matrix.org \
+cargo test -p ferrule-gateway --test matrix -- --ignored
+```
+
+It prints the probe, then sends `…_TO` a message, edits it and reacts 👀.
