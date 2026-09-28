@@ -4,6 +4,8 @@
 
 pub mod access;
 pub mod discord;
+pub mod files;
+pub mod hmac;
 pub mod local;
 pub mod slack;
 pub mod telegram;

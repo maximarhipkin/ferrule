@@ -80,6 +80,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Relay Worker tests
+        run: node --test relay/worker.test.js
       - name: Dashboard browser check
         shell: bash
         run: |

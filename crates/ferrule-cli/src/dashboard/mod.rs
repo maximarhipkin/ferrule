@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod channels;
 pub mod chat;
 pub mod cli;
 pub mod config_page;

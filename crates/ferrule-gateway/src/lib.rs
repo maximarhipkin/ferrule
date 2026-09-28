@@ -18,6 +18,7 @@ pub mod scheduler;
 pub mod sdnotify;
 pub mod session;
 pub mod stream;
+pub mod tools;
 
 pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,

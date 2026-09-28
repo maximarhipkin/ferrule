@@ -276,8 +276,8 @@ impl Events for GatewayEvents {
 /// `/connect`, `/connections`, `/disconnect`, `/decline` and pasted
 /// redirects, before any chat turn. Only the owner's chat on a channel (or
 /// the gateway's own console) manages connections; a button tap is no more
-/// trusted than typing its command. `owner` is Telegram's; Discord's and
-/// Slack's come from the trust hub.
+/// trusted than typing its command. `owner` is Telegram's; every other
+/// channel's comes from the trust hub.
 pub struct ConnectionsDoor {
     pub conns: Arc<Connections>,
     pub owner: Option<i64>,
@@ -295,8 +295,9 @@ impl ConnectionsDoor {
             }
             // The gateway's stdin: someone at the server itself.
             "local" => Actor::Terminal,
-            "discord" | "slack"
-                if trust::existing_hub().is_some_and(|h| {
+            c if c != "telegram"
+                && trust::is_chat_channel(c)
+                && trust::existing_hub().is_some_and(|h| {
                     h.owner_on(&msg.channel)
                         .is_some_and(|o| o.chat == msg.chat_id)
                 }) =>

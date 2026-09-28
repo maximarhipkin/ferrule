@@ -130,16 +130,7 @@ impl Hub {
             audit: Audit::new(data.join("trust").join("audit.jsonl")),
             stop: KillSwitch::new(data.join("trust").join("stop")),
             owners: RwLock::new(crate::config::order_owners(
-                cfg.owner_chat
-                    .map(ChatRef::from)
-                    .into_iter()
-                    .chain(
-                        cfg.discord_owner
-                            .clone()
-                            .map(|u| ChatRef::new("discord", u)),
-                    )
-                    .chain(cfg.slack_owner.clone().map(|u| ChatRef::new("slack", u)))
-                    .collect(),
+                cfg.named_owners(),
                 cfg.owner_channel.as_deref(),
             )),
             cfg: RwLock::new(cfg),

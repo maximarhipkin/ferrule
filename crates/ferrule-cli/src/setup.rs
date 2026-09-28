@@ -177,9 +177,11 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
         return Ok(false);
     }
     let gw = t.config()?.gateway;
+    let cfg = t.config()?;
     if gw.telegram_token_env.is_some()
         || gw.discord_token_env.is_some()
         || gw.slack_bot_token_env.is_some()
+        || !crate::channels::configured_names(&cfg).is_empty()
     {
         heading("Background service");
         if settle(service_step(t, true))?.quit() {
@@ -443,10 +445,7 @@ impl Target {
     fn forget_secret(&mut self, name: &str) -> Result<()> {
         let cfg = self.config()?;
         let used = cfg.providers.values().any(|p| p.api_key_env == name)
-            || cfg.gateway.telegram_token_env.as_deref() == Some(name)
-            || cfg.gateway.discord_token_env.as_deref() == Some(name)
-            || cfg.gateway.slack_bot_token_env.as_deref() == Some(name)
-            || cfg.gateway.slack_app_token_env.as_deref() == Some(name)
+            || crate::channels::reads_env(&cfg, name)
             || cfg.secrets.contains_key(name);
         if !used {
             secrets::remove(&secrets::path()?, name)?;

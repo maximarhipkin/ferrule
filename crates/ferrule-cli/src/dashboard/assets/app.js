@@ -254,6 +254,7 @@
     health: "M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6",
     chat: "M4 5h16v11H9l-5 4z",
     models: "M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4",
+    channels: "M4 5h11v8H8l-4 3zM9 16v1h7l4 3v-9h-3",
     connections: "M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1",
     more: "M5 12h.01M12 12h.01M19 12h.01",
     console: "M4 6l6 6-6 6M12 18h8",
@@ -1520,6 +1521,108 @@
 
   // ---- console: a ferrule line, never a shell (M37 §4.2) -----------------
 
+  // ---- channels (M39 §9) -------------------------------------------------
+  // A card per chat channel: its state from the running gateway, a form
+  // (secrets write-only: a card only says whether each is set), Test
+  // against the service with what's typed, Save, Remove, and the guide
+  // with direct links. Telegram, Discord and Slack stay with `ferrule setup`.
+  const CHANNEL_STATE = {
+    on: ["running", "ok"], problem: ["problem", "bad"], stale: ["not polling", "bad"],
+    restart: ["restart needed", "warn"], set: ["set up", "ok"], off: ["off", null],
+  };
+
+  sections.channels = {
+    title: "Channels",
+    every: 15,
+    said: {},
+    mount(root) { this.box = el("div"); root.append(this.box); },
+    async load() {
+      let c;
+      try { c = await api("/api/channels"); } catch (e) { return sectionError(this.box, e); }
+      const on = c.channels.filter((x) => x.configured).length;
+      const restart = c.gateway && c.channels.some((x) => x.state === "restart");
+      setKids(this.box,
+        secHead("Channels", on + " of " + c.channels.length + " set up"),
+        restart ? el("div", { class: "alert warn" }, el("div", { class: "body" },
+          el("div", { class: "what", text: "A channel's settings changed since the gateway started." }),
+          el("div", { class: "row" }, btn("Restart the gateway", "gateway/restart", {}, "primary")))) : null,
+        el("div", { class: "tiles" }, c.channels.map((x) => this.card(x))));
+    },
+
+    card(x) {
+      const st = CHANNEL_STATE[x.state] || [x.state, null];
+      const s = el("svg", { class: "ico", viewBox: "0 0 24 24", "aria-hidden": "true" });
+      s.append(el("path", { d: x.icon }));
+      const body = el("div", { class: "stack" });
+      if (x.why) body.append(el("div", { class: "said " + (st[1] === "bad" ? "bad" : "") + " msg", dir: "auto", text: x.why }));
+      if (!x.form) {
+        body.append(el("p", { class: "muted small", text: x.configured
+          ? "Set up. Change it with `ferrule setup` on the machine."
+          : "Run `ferrule setup` on the machine to add it." }));
+      } else {
+        if ((x.guide || []).length) {
+          body.append(disc("chguide:" + x.name, null, x.configured ? "How it was set up" : "How to set it up",
+            el("ol", { class: "guide" }, x.guide.map((g) => el("li", { class: "msg", dir: "auto" },
+              g.text, g.url ? frag(" ", el("a", { href: g.url, target: "_blank", rel: "noopener", text: g.url.replace(/^https?:\/\//, "") })) : null)))));
+        }
+        body.append(this.form(x));
+      }
+      body.append(el("p", { class: "muted small m0" }, "More in ", el("code", { text: x.doc }), "."));
+      return el("div", { class: "card tile", id: "channel-" + x.name },
+        el("div", { class: "head" }, s, el("h3", { class: "grow", text: x.title }), tag(st[0], st[1])),
+        body);
+    },
+
+    input(f) {
+      if (f.choices) {
+        const sel = el("select", { name: f.name }, (f.optional ? [""] : []).concat(f.choices).map((w) =>
+          el("option", { value: w, text: w || "(default)", selected: w === f.value })));
+        return el("label", { class: "field" }, el("span", { text: f.label + (f.optional ? " (optional)" : "") }), sel,
+          f.hint ? el("span", { class: "hint msg", dir: "auto", text: f.hint }) : null);
+      }
+      const shown = Object.assign({}, f, {
+        kind: f.kind === "list" ? "textarea" : null,
+        placeholder: f.secret ? (f.set ? "saved (" + f.env + "): type to replace" : f.env) : null,
+      });
+      return field(shown, f.secret ? null : f.value);
+    },
+
+    form(x) {
+      const box = el("div", { class: "stack" });
+      const fields = el("div", {}, x.fields.map((f) => this.input(f)));
+      const said = this.said[x.name];
+      const test = el("button", { text: "Test" });
+      test.onclick = async () => {
+        test.disabled = true; test.textContent = "Testing…";
+        try {
+          const r = await api("/api/channels/test", { name: x.name, values: values(fields) });
+          this.said[x.name] = { ok: r.ok, said: r.said };
+        } catch (e) { this.said[x.name] = { ok: false, said: e.message }; }
+        test.disabled = false; test.textContent = "Test";
+        const old = box.querySelector(".said.test");
+        const now = this.said[x.name];
+        const node = el("div", { class: "said test " + (now.ok ? "ok" : "bad") + " msg", dir: "auto", text: now.said });
+        if (old) old.replaceWith(node); else box.insertBefore(node, box.lastChild);
+      };
+      const save = el("button", { class: "primary", text: x.configured ? "Save" : "Save and turn on" });
+      save.onclick = async () => {
+        const vals = values(fields);
+        const r = await act("channels/save", { name: x.name, values: vals }, save);
+        if (!r) return;
+        wipeSecrets(box);
+        box.querySelectorAll("[data-dirty]").forEach((i) => { delete i.dataset.dirty; });
+        this.said[x.name] = null;
+        this.load();
+      };
+      box.append(fields,
+        said ? el("div", { class: "said test " + (said.ok ? "ok" : "bad") + " msg", dir: "auto", text: said.said }) : null,
+        el("div", { class: "row" }, test, save,
+          x.configured ? btn("Remove", "channels/remove", { name: x.name }, "danger") : null),
+        el("p", { class: "muted small", text: "Tokens go to the secrets file, never back to this page, and the model never sees them." }));
+      return box;
+    },
+  };
+
   sections.console = {
     title: "Console",
     live: true,
@@ -1682,11 +1785,11 @@
   // A phone gets a bottom bar of five (the rest in a sheet under "More");
   // from 900 px, a sidebar with everything. Same sections, same URLs.
 
-  const order = ["health", "chat", "models", "connections", "console", "config", "routing", "usage", "tasks", "logs", "extensions", "agents"];
+  const order = ["health", "chat", "models", "connections", "channels", "console", "config", "routing", "usage", "tasks", "logs", "extensions", "agents"];
   const TABS = ["health", "chat", "models", "connections"];
-  const RUN = ["health", "chat", "models", "connections", "console", "config"];
+  const RUN = ["health", "chat", "models", "connections", "channels", "console", "config"];
   const ICON_OF = { health: "health" };
-  const SUB = { console: "ferrule commands", config: "the file, secrets hidden", routing: "which model for what", usage: "spend and caps", tasks: "scheduled runs", logs: "what happened", extensions: "skills, tools, MCP", agents: "sub-agents" };
+  const SUB = { channels: "where people reach the agent", console: "ferrule commands", config: "the file, secrets hidden", routing: "which model for what", usage: "spend and caps", tasks: "scheduled runs", logs: "what happened", extensions: "skills, tools, MCP", agents: "sub-agents" };
   let current = "health";
   let timer = null;
   let banner = null;

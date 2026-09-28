@@ -490,6 +490,24 @@ pub struct GatewayConfig {
     pub slack_allowed_channels: Vec<String>,
     #[serde(default)]
     pub slack_stream: Option<bool>,
+    /// M39: `[gateway.whatsapp]`, the WhatsApp Cloud API. Absent = off.
+    #[serde(default)]
+    pub whatsapp: Option<crate::channels::settings::WhatsApp>,
+    /// M39: `[gateway.matrix]`.
+    #[serde(default)]
+    pub matrix: Option<crate::channels::settings::Matrix>,
+    /// M39: `[gateway.email]`, IMAP in and SMTP out.
+    #[serde(default)]
+    pub email: Option<crate::channels::settings::Email>,
+    /// M39: `[gateway.signal]`, through a signal-cli daemon.
+    #[serde(default)]
+    pub signal: Option<crate::channels::settings::Signal>,
+    /// M39: `[gateway.mattermost]`.
+    #[serde(default)]
+    pub mattermost: Option<crate::channels::settings::Mattermost>,
+    /// M39: `[gateway.http]`, `POST /v1/messages` for your own programs.
+    #[serde(default)]
+    pub http: Option<crate::channels::settings::HttpApi>,
 }
 
 fn default_telegram_base_url() -> String {

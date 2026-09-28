@@ -169,7 +169,8 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     let discord_on = discord(&mut r, &cfg, offline).await;
     let slack_on = slack(&mut r, &cfg, offline).await;
     // Any chat channel makes this a gateway that should be running.
-    let chat_on = telegram_on || discord_on || slack_on;
+    let chat_on =
+        telegram_on || discord_on || slack_on || m39_channels(&mut r, &cfg, offline).await;
     let backend = sandbox(&mut r, &cfg, &secrets_path);
     let confined = backend != Backend::None;
     mcp(&mut r, &cfg, backend);
@@ -1914,6 +1915,20 @@ impl Report {
             }
         }
     }
+}
+
+/// M39: a line per configured WhatsApp, Matrix, email, Signal, Mattermost
+/// and HTTP API channel. Whether any of them runs.
+async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bool {
+    let mut on = false;
+    for c in crate::channels::CHANNELS.iter().skip(3) {
+        if crate::channels::configured(cfg, c.name) {
+            let _ = offline;
+            r.fail(c.name, "configured, but this build doesn't run it");
+            on = true;
+        }
+    }
+    on
 }
 
 /// M38: what this instance shares with another one that it mustn't: a bot,

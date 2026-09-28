@@ -39,6 +39,13 @@ pub struct Access {
     /// `ferrule setup`'s one-time code, and who sent it.
     pairing: Option<String>,
     paired: Mutex<Option<(String, String)>>,
+    /// The config keys named in the log and the stranger's reply
+    /// (M39's sub-tables: `[gateway.matrix] allowed_users`).
+    users_key: String,
+    chats_key: String,
+    /// Whether a stranger is told their id at all (M39: not on WhatsApp,
+    /// where a reply opens a billed conversation, nor by email).
+    tell: bool,
 }
 
 impl Access {
@@ -57,7 +64,24 @@ impl Access {
             ignored: Mutex::new(HashMap::new()),
             pairing: None,
             paired: Mutex::new(None),
+            users_key: format!("{channel}_allowed_users"),
+            chats_key: format!("{channel}_allowed_channels"),
+            tell: true,
         }
+    }
+
+    /// M39: the config keys to name, e.g. `[gateway.matrix] allowed_users`
+    /// and `[gateway.matrix] allowed_rooms`.
+    pub fn with_keys(mut self, users: impl Into<String>, chats: impl Into<String>) -> Self {
+        self.users_key = users.into();
+        self.chats_key = chats.into();
+        self
+    }
+
+    /// M39: a stranger is never told anything.
+    pub fn silent(mut self) -> Self {
+        self.tell = false;
+        self
     }
 
     /// Setup only: the first DM that is exactly `code` pairs its author.
@@ -99,10 +123,14 @@ impl Access {
         }
         self.ignore(user, name, "DM");
         let empty = self.users.read().unwrap().is_empty();
-        if empty && self.pairing.is_none() && self.told.lock().unwrap().insert(user.to_string()) {
+        if self.tell
+            && empty
+            && self.pairing.is_none()
+            && self.told.lock().unwrap().insert(user.to_string())
+        {
             return Dm::Tell(format!(
-                "This bot is private. Your {} is {user} — add it to {}_allowed_users in the ferrule config, or run `ferrule setup`.",
-                self.id_name, self.channel
+                "This bot is private. Your {} is {user} — add it to {} in the ferrule config, or run `ferrule setup`.",
+                self.id_name, self.users_key
             ));
         }
         Dm::Drop
@@ -124,12 +152,15 @@ impl Access {
             due
         };
         if due {
-            let list = if what == "DM" { "users" } else { "channels" };
+            let list = if what == "DM" {
+                &self.users_key
+            } else {
+                &self.chats_key
+            };
             tracing::warn!(
                 sender = %sender,
-                "{}: ignored a {what} from {chat}: it isn't in {}_allowed_{list} — add it there if it should reach the agent (logged once an hour per chat)",
+                "{}: ignored a {what} from {chat}: it isn't in {list} — add it there if it should reach the agent (logged once an hour per chat)",
                 self.channel,
-                self.channel
             );
         }
     }
@@ -138,10 +169,20 @@ impl Access {
 /// Removes the leading address to the bot (`<@123>`, `<@!123>`) from
 /// `text`, so `@Ferrule /status` is `/status`.
 pub fn strip_mention(text: &str, bot: &str) -> String {
+    strip_leading(text, &[format!("<@{bot}>"), format!("<@!{bot}>")])
+}
+
+/// Removes the first of `forms` that `text` starts with (case-blind), and
+/// the `:`/`,` after it (M39: `@ferrule`, a Matrix id or display name).
+pub fn strip_leading(text: &str, forms: &[String]) -> String {
     let t = text.trim_start();
-    for form in [format!("<@{bot}>"), format!("<@!{bot}>")] {
-        if let Some(rest) = t.strip_prefix(&form) {
-            return rest.trim_start_matches([' ', ':', ',']).trim().to_string();
+    for form in forms.iter().filter(|f| !f.is_empty()) {
+        let n = form.len();
+        if t.len() >= n && t.is_char_boundary(n) && t[..n].eq_ignore_ascii_case(form) {
+            return t[n..]
+                .trim_start_matches([' ', ':', ','])
+                .trim()
+                .to_string();
         }
     }
     text.trim().to_string()
