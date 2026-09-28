@@ -99,7 +99,7 @@ tasks, the same tools: ferrule's harness against a deliberately naive one
 that truncates history at the limit and never verifies:
 
 <p align="center">
-  <img src="docs/assets/eval-ab.svg" alt="ferrule eval A/B: ferrule's harness 57% vs the naive harness's 47% over 60 runs, and 75% vs 8% on verify-graded tasks — same model, same tasks" width="860">
+  <img src="docs/assets/eval-ab.svg" alt="ferrule eval A/B: ferrule's harness 57% vs the naive harness's 47% over 60 runs, and 75% vs 25% on verify-graded tasks — same model, same tasks" width="860">
 </p>
 
 Reproduce it: `ferrule eval run evals/starter --variant ab` — the suite,
@@ -161,7 +161,7 @@ the agents you'll need, not a container per agent to babysit. The claims
 are measurable too — the repo ships its own harness benchmark
 (`ferrule eval run evals/starter --variant ab`), where ferrule's harness
 beat its naive twin on the same model: +10 points overall, and 9/12 vs
-1/12 on the verify-graded tasks.
+3/12 on the verify-graded tasks.
 
 Moving over is one command: `ferrule import openclaw` (or `hermes`)
 brings your memories, skills, channel allowlists and providers — a dry
