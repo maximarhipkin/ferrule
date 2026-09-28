@@ -197,12 +197,20 @@ pub(crate) fn add_provider(plan: Plan, model: &str) -> Result<Option<String>> {
              or add [providers.{base}] with plan = \"{base}\" and model = \"{model}\"."
         )));
     };
-    if let Ok((cfg, _)) = config::Config::load() {
-        if cfg.providers.values().any(|p| p.plan == Some(plan)) {
-            return Ok(None);
-        }
+    add_provider_at(&path, plan, model)
+}
+
+/// [`add_provider`] in the config at `path` (the dashboard's).
+pub(crate) fn add_provider_at(
+    path: &std::path::Path,
+    plan: Plan,
+    model: &str,
+) -> Result<Option<String>> {
+    let base = plan.as_str();
+    let mut t = crate::setup::Target::load(path.to_path_buf())?;
+    if t.config()?.providers.values().any(|p| p.plan == Some(plan)) {
+        return Ok(None);
     }
-    let mut t = crate::setup::Target::load(path.clone())?;
     let root = t.root();
     if !root.contains_key("providers") {
         let mut providers = toml_edit::Table::new();

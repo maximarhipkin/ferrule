@@ -93,6 +93,14 @@ impl McpClient {
     /// that isn't set. Nothing is started yet.
     pub fn new(cfg: McpServerConfig, host: ServerHost) -> Result<Self, McpError> {
         let http = match (cfg.url.as_deref(), cfg.command.is_empty()) {
+            _ if cfg.local.is_some() => {
+                if cfg.url.is_some() || !cfg.command.is_empty() {
+                    return Err(McpError::Config(
+                        "a built-in connection has no `command` or `url`".into(),
+                    ));
+                }
+                None
+            }
             (Some(_), false) => {
                 return Err(McpError::Config("set `command` or `url`, not both".into()))
             }
@@ -145,7 +153,7 @@ impl McpClient {
     /// at a time (M27): a timeout counts from the send, and a server that
     /// reads one request at a time would time out the second.
     pub fn is_stdio(&self) -> bool {
-        self.http.is_none()
+        self.http.is_none() && self.cfg.local.is_none()
     }
 
     /// Wakes whenever the server sends `notifications/tools/list_changed`.
@@ -173,6 +181,7 @@ impl McpClient {
     /// a server reached by URL, which runs nowhere near this machine.
     pub fn sandbox_degraded(&self) -> Option<&str> {
         match self.http {
+            _ if self.cfg.local.is_some() => None,
             Some(_) => None,
             None => self.sandbox.degraded(),
         }
@@ -181,7 +190,7 @@ impl McpClient {
     /// Whether the OS keeps this server out of the read denies, even when
     /// it's otherwise unconfined.
     pub fn hides_reads(&self) -> bool {
-        self.http.is_none() && self.sandbox.hides_reads()
+        self.is_stdio() && self.sandbox.hides_reads()
     }
 
     /// Ensure a live connection exists (spawning + handshaking if needed),
@@ -194,6 +203,11 @@ impl McpClient {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, McpError> {
+        if let Some(local) = &self.cfg.local {
+            return tokio::time::timeout(timeout, local.request(method, params))
+                .await
+                .map_err(|_| McpError::Timeout)?;
+        }
         if let Some(http) = &self.http {
             let resp = http.request(&self.next_id, method, params, timeout).await?;
             return extract_result(resp);
@@ -326,7 +340,7 @@ impl McpClient {
     /// with no stdio attached. A failure is only logged: the tool call
     /// that follows reports what is wrong.
     async fn warm_up(&self) {
-        if self.cfg.warm_up.is_empty() || self.http.is_some() {
+        if self.cfg.warm_up.is_empty() || !self.is_stdio() {
             return;
         }
         let run = async {

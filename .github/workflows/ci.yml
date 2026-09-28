@@ -75,6 +75,24 @@ jobs:
           cd "$RUNNER_TEMP/ws"
           "$GITHUB_WORKSPACE/target/debug/ferrule" sandbox
 
+      # The control room in a real browser: dismiss a notice, pick a
+      # fallback, connect with a key, run a console command, chat once.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Dashboard browser check
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) chrome=google-chrome ;;
+            macOS) chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ;;
+            Windows) chrome="C:/Program Files/Google/Chrome/Application/chrome.exe" ;;
+          esac
+          cargo build --locked -p ferrule-cli
+          bin=target/debug/ferrule
+          [ "$RUNNER_OS" = Windows ] && bin=$bin.exe
+          node scripts/dashboard_browser_check.mjs --bin "$bin" --chromium "$chrome"
+
       - name: End-to-end (setup wizard, saved keys out of the agent's reach)
         if: runner.os == 'Linux'
         run: |

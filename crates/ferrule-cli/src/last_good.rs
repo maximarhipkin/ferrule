@@ -126,7 +126,7 @@ pub fn owner_line(path: &Path, why: &str) -> String {
 }
 
 /// Under a service manager that restarts on exit.
-fn supervised() -> bool {
+pub fn supervised() -> bool {
     std::env::var_os("INVOCATION_ID").is_some()
         || std::env::var("XPC_SERVICE_NAME").is_ok_and(|v| !v.is_empty() && v != "0")
 }

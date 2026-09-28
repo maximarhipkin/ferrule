@@ -24,7 +24,7 @@ pub use channel::{
 };
 pub use channels::{DiscordChannel, LocalChannel, SlackChannel, TelegramChannel};
 pub use error::GatewayError;
-pub use gateway::{Gateway, Interceptor, ACK_EMOJI};
+pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI};
 pub use health::{
     Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, RunningMarker,
     StallHook,

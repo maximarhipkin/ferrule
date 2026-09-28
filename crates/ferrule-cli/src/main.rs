@@ -4,6 +4,7 @@ mod browser;
 mod config;
 mod config_follow;
 mod connections;
+mod connections_setup;
 mod dashboard;
 mod doctor;
 mod egress;
@@ -104,6 +105,9 @@ enum Cmd {
         /// Also make one real call to every connected model (costs a few tokens each)
         #[arg(long, conflicts_with = "offline")]
         ping_models: bool,
+        /// Print the checks as one JSON object (the dashboard reads it)
+        #[arg(long)]
+        json: bool,
     },
     /// Install the newest signed release (docs/updates.md)
     Update {
@@ -592,7 +596,7 @@ fn main() -> Result<()> {
     // Root on Linux sets up, and checks, the system service's files.
     let system_files = match cli.cmd {
         Cmd::Setup { .. } => true,
-        Cmd::Doctor { .. } | Cmd::Config { .. } | Cmd::Update { .. } => {
+        Cmd::Doctor { .. } | Cmd::Config { .. } | Cmd::Update { .. } | Cmd::Connections { .. } => {
             Path::new(service::SYSTEM_CONFIG).exists()
         }
         _ => false,
@@ -656,8 +660,9 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Doctor {
             offline,
             ping_models,
+            json,
         } => {
-            if !doctor::run(offline, ping_models).await? {
+            if !doctor::run(offline, ping_models, json).await? {
                 std::process::exit(1);
             }
         }
@@ -1951,6 +1956,10 @@ fn streaming_channels(cfg: &config::Config) -> Vec<String> {
     .into_iter()
     .filter(|(_, on)| on.unwrap_or(cfg.agent.stream))
     .map(|(name, _)| name.to_string())
+    // The page's chat streams whenever the agent does.
+    .chain(
+        (cfg.dashboard.enabled && cfg.agent.stream).then(|| dashboard::chat::CHANNEL.to_string()),
+    )
     .collect()
 }
 
@@ -2133,13 +2142,31 @@ async fn run_gateway(
              Run `ferrule setup` or add the id to [gateway] telegram_allowed_chats"
         );
     }
-    let adapters: Vec<Arc<dyn Channel>> = named_channels.values().cloned().collect();
     // The chat channels the owner can be reached on (M31).
     let chat_channels: HashMap<String, Arc<dyn Channel>> = named_channels
         .iter()
         .filter(|(name, _)| trust::is_chat_channel(name))
         .map(|(name, ch)| (name.clone(), ch.clone()))
         .collect();
+    // M37 §4.3: the page's chat, one more channel for the router and the
+    // owner's questions, but not for `/connect` or plan chats.
+    let mut named_channels = named_channels;
+    let page_chat = cfg.dashboard.enabled.then(|| {
+        let ch = Arc::new(dashboard::chat::DashboardChannel::default());
+        named_channels.insert(
+            dashboard::chat::CHANNEL.to_string(),
+            ch.clone() as Arc<dyn Channel>,
+        );
+        ch
+    });
+    let adapters: Vec<Arc<dyn Channel>> = named_channels.values().cloned().collect();
+    let mut notified = chat_channels.clone();
+    if let Some(ch) = &page_chat {
+        notified.insert(
+            dashboard::chat::CHANNEL.to_string(),
+            ch.clone() as Arc<dyn Channel>,
+        );
+    }
 
     // Arc'd so the same router serves both the gateway's channel adapters
     // and the scheduler's task-triggered turns — one router, two front
@@ -2175,9 +2202,20 @@ async fn run_gateway(
             .ok()
             .map(Arc::new),
     )?);
-    hub.set_notifier((!chat_channels.is_empty()).then(|| {
-        Arc::new(trust::ChannelNotifier(chat_channels.clone())) as Arc<dyn ferrule_trust::Notifier>
-    }));
+    if page_chat.is_some() {
+        // Last, so it's the primary chat only when there's no other.
+        let mut owners = hub.owners();
+        owners.push(ferrule_trust::ChatRef::new(
+            dashboard::chat::CHANNEL,
+            dashboard::chat::CHAT,
+        ));
+        hub.set_owners(owners);
+    }
+    hub.set_notifier(
+        (!notified.is_empty()).then(|| {
+            Arc::new(trust::ChannelNotifier(notified)) as Arc<dyn ferrule_trust::Notifier>
+        }),
+    );
     if let last_good::Loaded::LastGood { path, why, .. } = &loaded {
         hub.tell_owner(last_good::owner_line(path, why));
         let hub = hub.clone();
@@ -2233,6 +2271,8 @@ async fn run_gateway(
         })
     };
     let lanes = Arc::downgrade(&router);
+    // M37: the page restarts a channel's loop.
+    let restarts = Arc::new(ferrule_gateway::ChannelRestarts::default());
     // M22: the page on 127.0.0.1, and `/dashboard` before every other door.
     let dash = if cfg.dashboard.enabled {
         let dash = dashboard::Dashboard::new(
@@ -2245,7 +2285,9 @@ async fn run_gateway(
                     channels: adapters.clone(),
                     fixed: provider.clone(),
                     retire: retirer(lanes.clone()),
+                    restarts: restarts.clone(),
                 }),
+                chat: page_chat.clone(),
                 ..dashboard::Ctx::from_config(&cfg)
             },
         );
@@ -2270,6 +2312,7 @@ async fn run_gateway(
         None
     };
     let mut gateway = Gateway::new(router)
+        .with_restarts(restarts)
         .with_health(health.clone())
         .with_redactor(Arc::new(health::redactor(&cfg)));
     if let Some(dash) = &dash {

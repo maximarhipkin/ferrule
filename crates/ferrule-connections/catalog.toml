@@ -11,17 +11,111 @@
 #              <client_env>_SECRET in the secrets file)
 #   scopes     asked for by default; write_scopes by `/connect <name> write`
 #   read_only  how read-only is enforced: "scope" | "header" | "endpoint" |
-#              "none" (then every tool without readOnlyHint asks the owner)
+#              "tools" (a native connection lists write tools only when
+#              connected for writing) | "none" (then every tool without
+#              readOnlyHint asks the owner)
+#   native     M37: the tools run inside ferrule ("jira", "gmail", "google")
+#   fields     M37: what a key-based way in asks for (write-only secrets)
+#   tile, option, covers, guide: M37's Connections page — which tile it
+#              sits on, its option's name, what it covers, the steps
+#   fixed_callback  M37: sign-in only through the relay's fixed address
+#   preview    M37: a vendor preview, offered last
+
+# ── Atlassian: three ways in, simplest first (M37 §3.5). ──
+
+[[service]]
+name = "jira"
+title = "Jira & Confluence (email + API token)"
+url = "https://api.atlassian.com"
+auth = "api_key"
+native = "jira"
+read_only = "tools"
+tile = "atlassian"
+option = "Email + API token"
+covers = "Jira issues (search, read, create, update, comment, move) and Confluence pages (search, read), with your own permissions. Works on any site, no admin switch needed."
+key_url = "https://id.atlassian.com/manage-profile/security/api-tokens"
+docs = "https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/"
+revoke_note = "Revoke the token at https://id.atlassian.com/manage-profile/security/api-tokens to cut it off at Atlassian too."
+guide = [
+  "Open https://id.atlassian.com/manage-profile/security/api-tokens (signed in as you).",
+  "Press Create API token, name it ferrule, pick how long it lasts (up to a year), and copy it.",
+  "Below: your site (the address you open Jira at, like acme.atlassian.net), the email you sign in with, and the token.",
+  "Test checks it against your site; Save keeps it sealed. Nothing leaves this server except to your site.",
+]
+[[service.fields]]
+name = "site"
+label = "Site"
+placeholder = "yourcompany.atlassian.net"
+[[service.fields]]
+name = "email"
+label = "Atlassian email"
+kind = "email"
+[[service.fields]]
+name = "token"
+label = "API token"
+secret = true
+kind = "password"
+[[service.fields]]
+name = "expires"
+label = "Token expires on"
+kind = "date"
+optional = true
+hint = "Atlassian tokens last 1 to 365 days; ferrule warns you a week before."
+
+[[service]]
+name = "atlassian_token"
+title = "Atlassian Rovo MCP (API token)"
+url = "https://mcp.atlassian.com/v2/mcp"
+auth = "api_key"
+header = "Authorization"
+header_value = "{basic:email:token}"
+read_only = "none"
+tile = "atlassian"
+option = "Rovo MCP with an API token"
+covers = "Atlassian's own MCP server: Jira, Confluence and Compass tools as Atlassian ships them."
+key_url = "https://id.atlassian.com/manage-profile/security/api-tokens"
+docs = "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/configuring-authentication-via-api-token/"
+note = "Needs your Atlassian admin to allow API-token sign-in: admin.atlassian.com → Rovo → Rovo MCP server → Authentication."
+guide = [
+  "Ask your Atlassian admin to turn on API tokens at admin.atlassian.com → Rovo → Rovo MCP server → Authentication (it's off by default).",
+  "Make a token at https://id.atlassian.com/manage-profile/security/api-tokens (a scoped token works too).",
+  "Enter your email and the token. A service account's key goes in alone: leave the email empty.",
+]
+[[service.fields]]
+name = "email"
+label = "Atlassian email"
+kind = "email"
+optional = true
+hint = "Leave empty for a service account's key."
+[[service.fields]]
+name = "token"
+label = "API token"
+secret = true
+kind = "password"
+[[service.fields]]
+name = "expires"
+label = "Token expires on"
+kind = "date"
+optional = true
 
 [[service]]
 name = "atlassian"
-title = "Atlassian (Jira, Confluence)"
+title = "Atlassian Rovo MCP (sign in)"
 url = "https://mcp.atlassian.com/v2/mcp"
 auth = "oauth"
 client = "dcr"
 read_only = "none"
+fixed_callback = true
+tile = "atlassian"
+option = "Rovo MCP with Atlassian sign-in"
+covers = "Atlassian's own MCP server, signed in as you in the browser."
 docs = "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/"
-note = "An Atlassian admin can limit which sites may sign in; the relay's address may need adding there."
+note = "Your Atlassian admin must allow the callback's domain (admin.atlassian.com → Rovo → Rovo MCP server → Domains), so it needs the fixed callback address (the relay)."
+guide = [
+  "Set up the fixed callback address first (the card at the top).",
+  "Ask your Atlassian admin to add the relay's domain under admin.atlassian.com → Rovo → Rovo MCP server → Domains, as the exact pattern shown here.",
+  "Press Sign in and approve in the browser.",
+]
 
 [[service]]
 name = "attio"
@@ -34,9 +128,101 @@ read_only = "none"
 docs = "https://docs.attio.com/mcp/overview"
 revoke_note = "Attio has no way to revoke a token from outside: remove ferrule under Workspace settings → Apps if you want it cut off at Attio too."
 
+# ── Google: the simple ways first (M37 §3.5). ──
+
 [[service]]
 name = "gmail"
-title = "Gmail"
+title = "Gmail (app password)"
+url = "https://mail.google.com"
+auth = "api_key"
+native = "gmail"
+read_only = "tools"
+tile = "google"
+option = "Gmail with an app password"
+covers = "Gmail: search and read mail; send (a write, which asks you first). Not Drive, Sheets, Docs or Calendar."
+key_url = "https://myaccount.google.com/apppasswords"
+docs = "https://support.google.com/mail/answer/185833"
+revoke_note = "Delete the app password at https://myaccount.google.com/apppasswords to cut it off at Google too."
+guide = [
+  "The account needs 2-Step Verification: https://myaccount.google.com/signinoptions/twosv",
+  "Open https://myaccount.google.com/apppasswords, name it ferrule, press Create.",
+  "Copy the 16 letters Google shows (spaces don't matter) and paste them below with your Gmail address.",
+  "Work accounts: if the page says app passwords aren't available, your admin turned them off; use the OAuth option.",
+]
+[[service.fields]]
+name = "email"
+label = "Gmail address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+placeholder = "abcd efgh ijkl mnop"
+
+[[service]]
+name = "google"
+title = "Google Drive, Sheets, Docs, Calendar (service account)"
+url = "https://www.googleapis.com"
+auth = "api_key"
+native = "google"
+read_only = "tools"
+tile = "google"
+option = "Drive, Sheets, Docs & Calendar with a service account"
+covers = "Drive search and read, Sheets read and write, Docs read, Calendar list and create — for what you share with the service account. Not Gmail."
+key_url = "https://console.cloud.google.com/iam-admin/serviceaccounts"
+docs = "https://cloud.google.com/iam/docs/service-accounts-create"
+revoke_note = "Delete the key in Google Cloud (Service accounts → Keys) to cut it off at Google too."
+guide = [
+  "Open https://console.cloud.google.com/projectcreate and make a project (or pick one).",
+  "Turn on the APIs: https://console.cloud.google.com/flows/enableapi?apiid=drive.googleapis.com,sheets.googleapis.com,docs.googleapis.com,calendar-json.googleapis.com",
+  "Open https://console.cloud.google.com/iam-admin/serviceaccounts, press Create service account, name it ferrule, skip the roles.",
+  "Open it → Keys → Add key → Create new key → JSON. A file downloads.",
+  "Open the file and paste all of it below. It's sealed on this server and never shown again.",
+  "Share the files, folders, sheets and calendars ferrule should see with the service account's email (like an ordinary person).",
+  "Work accounts made after May 2024 may block key creation (iam.disableServiceAccountKeyCreation): an admin can allow it, or use the OAuth option.",
+]
+[[service.fields]]
+name = "key"
+label = "Service account JSON key"
+secret = true
+kind = "json"
+placeholder = "{ \"type\": \"service_account\", … }"
+
+[[service]]
+name = "google_oauth"
+title = "Google (sign in with your own app)"
+url = "https://www.googleapis.com"
+auth = "oauth"
+client = "owner"
+client_env = "FERRULE_GOOGLE_CLIENT"
+native = "google"
+scopes = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/calendar.readonly"]
+write_scopes = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/documents", "https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/calendar.readonly"]
+read_only = "scope"
+resource_param = false
+fixed_callback = true
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+revoke_url = "https://oauth2.googleapis.com/revoke"
+extra_params = { access_type = "offline", prompt = "consent" }
+tile = "google"
+option = "Advanced: sign in with your own Google OAuth app"
+covers = "The same Drive, Sheets, Docs and Calendar tools, acting as you (everything you can see, no sharing needed)."
+docs = "https://developers.google.com/workspace/guides/create-credentials#oauth-client-id"
+note = "Leave the app in Testing and sign-ins stop after 7 days: publish it."
+guide = [
+  "Set up the fixed callback address first (the card at the top).",
+  "In Google Cloud: https://console.cloud.google.com/auth/overview → Get started; audience External; your email as support and contact.",
+  "Turn on the APIs (the link in the service-account option).",
+  "Clients → Create client → Web application. Under Authorized redirect URIs add the relay's /cb address shown here, exactly.",
+  "Copy the client id and secret into Set up Google OAuth below.",
+  "Audience → Publish app. In Testing, Google ends sign-ins after 7 days. A personal app doesn't need verification: on the warning page press Advanced → Go to (your app).",
+]
+
+[[service]]
+name = "gmail_mcp"
+title = "Gmail MCP (Google preview)"
 url = "https://gmailmcp.googleapis.com/mcp/v1"
 auth = "oauth"
 client = "owner"
@@ -45,16 +231,21 @@ scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
 write_scopes = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"]
 read_only = "scope"
 resource_param = false
+fixed_callback = true
+preview = true
 authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
 token_url = "https://oauth2.googleapis.com/token"
 revoke_url = "https://oauth2.googleapis.com/revoke"
 extra_params = { access_type = "offline", prompt = "consent" }
+tile = "google"
+option = "Preview: Google's Gmail MCP server"
+covers = "Google's own Gmail MCP tools. A Developer Preview: your project must be enrolled."
 docs = "https://developers.google.com/workspace/gmail/api/guides/mcp"
-note = "Google's MCP servers are a Developer Preview."
+note = "Google's MCP servers are a Developer Preview that needs enrolment."
 
 [[service]]
-name = "gdrive"
-title = "Google Drive"
+name = "gdrive_mcp"
+title = "Drive MCP (Google preview)"
 url = "https://drivemcp.googleapis.com/mcp/v1"
 auth = "oauth"
 client = "owner"
@@ -63,12 +254,17 @@ scopes = ["https://www.googleapis.com/auth/drive.readonly"]
 write_scopes = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"]
 read_only = "scope"
 resource_param = false
+fixed_callback = true
+preview = true
 authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
 token_url = "https://oauth2.googleapis.com/token"
 revoke_url = "https://oauth2.googleapis.com/revoke"
 extra_params = { access_type = "offline", prompt = "consent" }
+tile = "google"
+option = "Preview: Google's Drive MCP server"
+covers = "Google's own Drive MCP tools. A Developer Preview: your project must be enrolled."
 docs = "https://developers.google.com/workspace/drive/api/guides/mcp"
-note = "Google's MCP servers are a Developer Preview."
+note = "Google's MCP servers are a Developer Preview that needs enrolment."
 
 [[service]]
 name = "github"
@@ -80,6 +276,13 @@ header_value = "Bearer {key}"
 read_only = "header"
 read_only_headers = { "X-MCP-Readonly" = "true" }
 key_url = "https://github.com/settings/personal-access-tokens/new"
+option = "Personal access token"
+covers = "Repositories, issues, pull requests and Actions, as GitHub's MCP server offers them."
+guide = [
+  "Open https://github.com/settings/personal-access-tokens/new (a fine-grained token).",
+  "Pick the repositories and the permissions it needs (read-only is enough to look), set an expiry, and generate it.",
+  "Paste it below. Read-only connections also send GitHub's read-only header.",
+]
 docs = "https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md"
 revoke_note = "Delete the token at https://github.com/settings/personal-access-tokens to cut it off at GitHub too."
 
@@ -101,4 +304,64 @@ client = "dcr"
 scopes = ["read"]
 write_scopes = ["read", "write"]
 read_only = "scope"
+tile = "linear"
+option = "Sign in"
+covers = "Linear's MCP tools: issues, projects, cycles and comments."
 docs = "https://linear.app/docs/mcp"
+
+[[service]]
+name = "linear_key"
+title = "Linear (API key)"
+url = "https://mcp.linear.app/mcp"
+auth = "api_key"
+read_only = "none"
+tile = "linear"
+option = "API key"
+key_url = "https://linear.app/settings/account/security"
+docs = "https://linear.app/docs/mcp"
+covers = "Linear's MCP tools with a personal API key, no browser sign-in."
+guide = [
+  "Open Linear → Settings → Security & access → Personal API keys, and create one.",
+  "Paste it below.",
+]
+
+[[service]]
+name = "stripe"
+title = "Stripe"
+url = "https://mcp.stripe.com"
+auth = "api_key"
+read_only = "none"
+key_url = "https://dashboard.stripe.com/apikeys"
+docs = "https://docs.stripe.com/mcp"
+option = "Restricted API key"
+covers = "Stripe's MCP tools (customers, payments, invoices…), limited to what the key allows."
+guide = [
+  "Open https://dashboard.stripe.com/apikeys and create a restricted key with only the permissions ferrule needs (read-only to look).",
+  "Paste it below. Never use the secret key.",
+]
+
+[[service]]
+name = "huggingface"
+title = "Hugging Face"
+url = "https://huggingface.co/mcp"
+auth = "api_key"
+read_only = "none"
+key_url = "https://huggingface.co/settings/tokens"
+docs = "https://huggingface.co/docs/hub/hf-mcp-server"
+option = "Access token"
+covers = "Search models, datasets, Spaces and papers."
+guide = [
+  "Open https://huggingface.co/settings/tokens and create a Read token.",
+  "Paste it below.",
+]
+
+[[service]]
+name = "sentry"
+title = "Sentry"
+url = "https://mcp.sentry.dev/mcp"
+auth = "oauth"
+client = "dcr"
+read_only = "none"
+docs = "https://docs.sentry.io/product/sentry-mcp/"
+option = "Sign in"
+covers = "Issues, events and releases from your Sentry organisation."

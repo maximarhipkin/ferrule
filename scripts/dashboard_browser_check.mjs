@@ -1,0 +1,335 @@
+#!/usr/bin/env node
+// The control room's browser check (docs/m37-control-room.md §6): drives
+// a real Chromium over the DevTools protocol against `ferrule gateway` on
+// a temp config and data dir, with the starter suite's mock model, a fake
+// Telegram Bot API (for the /dashboard link) and a local MCP server that
+// takes a key. It dismisses a notice, picks a fallback model, connects a
+// service with a key, runs a console command and chats once, failing on
+// any script error on the page. `--shots DIR` also saves the screenshots
+// at 390 and 1280 px. Node 22+ (its built-in WebSocket), no packages; it
+// never touches the owner's own config or data dir, and needs no key.
+//
+//     node scripts/dashboard_browser_check.mjs --bin target/debug/ferrule [--chromium PATH] [--shots docs/assets/m37]
+
+import { spawn, spawnSync } from "node:child_process";
+import { createServer, get as httpGet } from "node:http";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const OWNER = 42;
+// Made up for the test: the local MCP server accepts only this.
+const KEY = "browser-check-key-0000";
+const PROXY_VARS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
+
+// NODE_USE_ENV_PROXY sends even loopback through a proxy unless NO_PROXY
+// says otherwise, and it's read at startup: go again with it set.
+if (process.env.NODE_USE_ENV_PROXY && !/127\.0\.0\.1/.test(process.env.NO_PROXY || process.env.no_proxy || "")) {
+  const r = spawnSync(process.execPath, process.argv.slice(1), { stdio: "inherit", env: { ...process.env, NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1" } });
+  process.exit(r.status ?? 1);
+}
+
+const argv = process.argv.slice(2);
+const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : null; };
+const BIN = opt("--bin") && resolve(opt("--bin"));
+const SHOTS = opt("--shots") && resolve(opt("--shots"));
+const CHROMIUM = opt("--chromium") || ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"].find((c) => spawnSync(c, ["--version"]).status === 0);
+if (!BIN) { console.error("usage: dashboard_browser_check.mjs --bin <ferrule> [--chromium PATH] [--shots DIR]"); process.exit(2); }
+if (!CHROMIUM) { console.error("no Chromium found: pass --chromium"); process.exit(2); }
+
+const results = [];
+function step(name, ok, detail) {
+  results.push([name, ok]);
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? " — " + detail : ""}`);
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function until(what, fn, secs = 20) {
+  const end = Date.now() + secs * 1000;
+  let last;
+  while (Date.now() < end) {
+    try { last = await fn(); if (last) return last; } catch (e) { last = e; }
+    await sleep(150);
+  }
+  throw new Error(`timed out: ${what}${last instanceof Error ? " (" + last.message + ")" : ""}`);
+}
+function listen(handler) {
+  return new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok(s)); });
+}
+const bodyOf = (req) => new Promise((ok) => { const b = []; req.on("data", (c) => b.push(c)); req.on("end", () => ok(Buffer.concat(b).toString())); });
+const json = (res, v, code = 200) => { const d = JSON.stringify(v); res.writeHead(code, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(d) }); res.end(d); };
+
+const tmp = mkdtempSync(join(tmpdir(), "ferrule-browser-check-"));
+for (const d of ["work", "data", "home", "chrome"]) mkdirSync(join(tmp, d));
+const procs = [];
+const servers = [];
+const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !PROXY_VARS.includes(k)));
+env.NO_PROXY = "localhost,127.0.0.1,::1";
+
+async function main() {
+  // The mock model.
+  const mock = spawn(process.platform === "win32" ? "python" : "python3", [join(ROOT, "evals/starter/mock/model.py"), "--port", "0"], { env, stdio: ["ignore", "pipe", "ignore"] });
+  procs.push(mock);
+  const modelUrl = await until("the mock model", () => new Promise((ok) => mock.stdout.once("data", (d) => ok((String(d).match(/(http:\/\/127\.0\.0\.1:\d+\/v1)/) || [])[1]))));
+
+  // The fake Telegram: the owner asks for /dashboard, the link comes back.
+  const updates = [];
+  const sent = [];
+  let nextUpdate = 0;
+  const tg = await listen(async (req, res) => {
+    const raw = await bodyOf(req);
+    if (req.url.includes("/getUpdates")) {
+      await sleep(updates.length ? 0 : 400);
+      return json(res, { ok: true, result: updates.splice(0) });
+    }
+    try { sent.push(JSON.parse(raw || "{}")); } catch (_) { sent.push({}); }
+    json(res, { ok: true, result: { message_id: 1000 + sent.length } });
+  });
+  servers.push(tg);
+
+  // A local MCP server that answers only with the key.
+  const mcp = await listen(async (req, res) => {
+    const raw = await bodyOf(req);
+    if (req.headers.authorization !== "Bearer " + KEY) return json(res, { error: "unauthorized" }, 401);
+    if (req.method !== "POST") { res.writeHead(405); return res.end(); }
+    const m = JSON.parse(raw || "{}");
+    if (m.id === undefined) { res.writeHead(202); return res.end(); }
+    const result = m.method === "initialize"
+      ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "browser-check", version: "1" } }
+      : m.method === "tools/list"
+        ? { tools: [{ name: "lookup", description: "Look something up", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }] }
+        : {};
+    json(res, { jsonrpc: "2.0", id: m.id, result });
+  });
+  servers.push(mcp);
+  const port = (s) => s.address().port;
+
+  writeFileSync(join(tmp, "ferrule.toml"), `default_provider = "mock"
+
+[providers.mock]
+base_url = "${modelUrl}"
+api_key_env = "FERRULE_CHECK_KEY"
+model = "mock"
+
+[providers.spare]
+base_url = "${modelUrl}"
+api_key_env = "FERRULE_CHECK_KEY"
+model = "mock-spare"
+
+[gateway]
+telegram_token_env = "FERRULE_CHECK_TG"
+telegram_base_url = "http://127.0.0.1:${port(tg)}"
+telegram_allowed_chats = [${OWNER}]
+
+[trust]
+owner_chat = ${OWNER}
+
+[dashboard]
+remote = "off"
+
+[connections]
+cloudflared = "off"
+
+[[connections.custom]]
+name = "localcheck"
+title = "Local check"
+url = "http://127.0.0.1:${port(mcp)}/mcp"
+auth = "api_key"
+header = "Authorization"
+header_value = "Bearer {key}"
+covers = "A local MCP server, for the browser check."
+guide = ["Paste the key.", "Press Check and connect."]
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[egress]
+private_allow = ["127.0.0.1:${port(mcp)}"]
+`);
+  Object.assign(env, {
+    FERRULE_CONFIG: join(tmp, "ferrule.toml"),
+    FERRULE_DATA_DIR: join(tmp, "data"),
+    FERRULE_CHECK_KEY: "not-a-key",
+    FERRULE_CHECK_TG: "CHECKTOKEN",
+  });
+  for (const v of ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "APPDATA", "LOCALAPPDATA"]) env[v] = join(tmp, "home");
+
+  const gw = spawn(BIN, ["gateway"], { cwd: join(tmp, "work"), env, stdio: ["ignore", "ignore", "ignore"] });
+  procs.push(gw);
+  const marker = join(tmp, "data/gateway/dashboard.json");
+  await until("the gateway's dashboard", () => existsSync(marker) && readFileSync(marker, "utf8").length > 0, 60);
+  updates.push({ update_id: ++nextUpdate, message: { message_id: nextUpdate, chat: { id: OWNER, type: "private" }, from: { id: OWNER, username: "owner" }, text: "/dashboard", date: Math.floor(Date.now() / 1000) } });
+  const link = await until("the /dashboard link", () => {
+    const m = sent.map((s) => String(s.text || "").match(/Dashboard: (\S+)/)).find(Boolean);
+    return m && m[1];
+  }, 30);
+  step("gateway and link", true, link.split("#")[0]);
+
+  // Chromium, headless, on its own profile.
+  const chrome = spawn(CHROMIUM, ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + join(tmp, "chrome"),
+    "--no-first-run", "--no-default-browser-check", "--disable-gpu", "--no-sandbox", "--no-proxy-server", "--hide-scrollbars", "about:blank"], { stdio: "ignore" });
+  procs.push(chrome);
+  const devtools = join(tmp, "chrome", "DevToolsActivePort");
+  const [cdpPort] = (await until("Chromium's DevTools port", () => existsSync(devtools) && readFileSync(devtools, "utf8").trim().includes("\n") && readFileSync(devtools, "utf8").split("\n"), 30));
+  const list = () => new Promise((ok, no) => httpGet(`http://127.0.0.1:${cdpPort}/json/list`, (r) => bodyOf(r).then((b) => ok(JSON.parse(b)))).on("error", no));
+  const page = await until("Chromium's page", async () => (await list()).find((t) => t.type === "page"), 30);
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((ok, no) => { ws.onopen = ok; ws.onerror = no; });
+  let id = 0;
+  const waiting = new Map();
+  const errors = [];
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.id && waiting.has(msg.id)) { const [ok, no] = waiting.get(msg.id); waiting.delete(msg.id); msg.error ? no(new Error(msg.error.message)) : ok(msg.result); }
+    if (msg.method === "Runtime.exceptionThrown") errors.push(msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text);
+    if (msg.method === "Log.entryAdded" && msg.params.entry.level === "error" && !/status of 4\d\d/.test(msg.params.entry.text)) errors.push(msg.params.entry.text);
+  };
+  const cdp = (method, params = {}) => new Promise((ok, no) => { const n = ++id; waiting.set(n, [ok, no]); ws.send(JSON.stringify({ id: n, method, params })); });
+  const js = async (expr) => {
+    const r = await cdp("Runtime.evaluate", { expression: `(async () => { ${expr} })()`, awaitPromise: true, returnByValue: true });
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+    return r.result.value;
+  };
+  const size = (w, h) => cdp("Emulation.setDeviceMetricsOverride", { width: w, height: h, deviceScaleFactor: w < 600 ? 2 : 1, mobile: w < 600 });
+  await cdp("Runtime.enable");
+  await cdp("Log.enable");
+  await cdp("Page.enable");
+  await size(1280, 900);
+  await cdp("Page.navigate", { url: link });
+  await until("the page to sign in", () => js(`return !document.getElementById("rail").hidden && !!document.querySelector("#main .card, #main .alert")`), 20);
+  step("sign in", true, "the rail and Home are up");
+
+  // In-page helpers: click a button by its text inside a selector.
+  const click = (sel, label) => js(`
+    const b = [...document.querySelectorAll(${JSON.stringify(sel)} + " button")].find((b) => b.textContent.trim() === ${JSON.stringify(label)} && !b.disabled);
+    if (!b) return false; b.click(); return true;`);
+  const get = (path) => js(`return await window.ferrule.api(${JSON.stringify(path)})`);
+  const run = async (name, fn) => { try { step(name, true, await fn()); } catch (e) { step(name, false, e.message); } };
+
+  await run("dismiss a notice", async () => {
+    const before = await get("/api/health");
+    const target = (before.problems || []).find((p) => p.id && p.closable);
+    if (!target) throw new Error("no closable notice: " + JSON.stringify(before.problems));
+    await until("its × on the page", () => js(`return !!document.querySelector('[data-notice="${target.id}"] .x')`));
+    await js(`document.querySelector('[data-notice="${target.id}"] .x').click()`);
+    await until("it to leave the page", () => js(`return !document.querySelector('[data-notice="${target.id}"]')`));
+    const after = await get("/api/health");
+    if (!(after.hidden || []).some((p) => p.id === target.id)) throw new Error("not in the hidden list");
+    await until("the hidden list on Home", () => js(`return [...document.querySelectorAll("details summary")].some((s) => /hidden/.test(s.textContent))`));
+    return target.id + " hidden, listed with Show again";
+  });
+
+  await run("pick a fallback", async () => {
+    await js(`window.ferrule.show("models")`);
+    await until("the fallback picker", () => click("#main", "Add one"));
+    await until("a new fallback row", () => js(`return !!document.querySelector("#main .fallback select")`));
+    const ref = await js(`
+      const s = document.querySelector("#main .fallback select");
+      const o = [...s.options].find((o) => /spare/.test(o.value) && !o.disabled);
+      if (!o) return null;
+      s.value = o.value; s.dispatchEvent(new Event("change", { bubbles: true })); return o.value;`);
+    if (!ref) throw new Error("the spare model isn't offered: " + JSON.stringify((await get("/api/models/choices")).models.map((m) => [m.reference, m.ready])));
+    if (!(await click("#main", "Save the fallback list"))) throw new Error("no Save button");
+    await until("the saved list", async () => ((await get("/api/models/choices")).fallback || []).includes(ref));
+    return ref + " is the fallback";
+  });
+
+  await run("connect with a key", async () => {
+    await js(`window.ferrule.show("connections", { tile: "localcheck" })`);
+    await until("its tile, open", () => js(`return !!document.querySelector('#tile-localcheck details[open] input[name="key"]')`)).catch(async (e) => {
+      throw new Error(e.message + "; tiles: " + JSON.stringify((await get("/api/connections")).tiles.map((t) => [t.tile, t.options.map((o) => o.name + ":" + o.auth + ":" + (o.fields || []).map((f) => f.name))])).slice(0, 600));
+    });
+    await js(`const i = document.querySelector('#tile-localcheck input[name="key"]'); i.focus(); i.value = ${JSON.stringify(KEY)}; i.dispatchEvent(new Event("input", { bubbles: true }));`);
+    if (!(await click("#tile-localcheck", "Check and connect"))) throw new Error("no Check and connect button");
+    await sleep(1500);
+    const said = await js(`return document.getElementById("toast").innerText`);
+    await until("the connection", async () => (await get("/api/connections")).connections.some((c) => c.name === "localcheck"), 30).catch(async (e) => {
+      throw new Error(e.message + "; the page said: " + said);
+    });
+    const leaks = await js(`
+      const typed = [...document.querySelectorAll("input")].some((i) => i.value === ${JSON.stringify(KEY)});
+      const shown = document.body.innerText.includes(${JSON.stringify(KEY)});
+      const said = JSON.stringify(await window.ferrule.api("/api/connections")).includes(${JSON.stringify(KEY)});
+      return { typed, shown, said };`);
+    if (leaks.typed || leaks.shown || leaks.said) throw new Error("the key is still visible: " + JSON.stringify(leaks));
+    await until("its Test button", () => click("#main", "Test"));
+    await until("the test's answer", () => js(`return !!document.querySelector("#main .said.ok")`), 30);
+    return "connected; the key is gone from the page and the API; Test says it works";
+  });
+
+  await run("run a console command", async () => {
+    await js(`window.ferrule.show("console")`);
+    await until("the console", () => js(`return !!document.querySelector(".console-line input")`));
+    await until("completion chips", () => js(`return document.querySelectorAll(".complete button").length > 3`));
+    await js(`const i = document.querySelector(".console-line input"); i.value = "status"; i.dispatchEvent(new Event("input", { bubbles: true }));`);
+    await click("#main", "Run");
+    const head = await until("the command to finish", () => js(`const h = document.querySelector("#main pre.out"); return h && !h.hidden && /done|exit/.test(h.previousElementSibling.textContent) && h.previousElementSibling.textContent`), 30);
+    const out = await js(`return document.querySelector("#main pre.out").textContent`);
+    if (!out.trim()) throw new Error("no output: " + head);
+    return head.trim();
+  });
+
+  await run("chat once", async () => {
+    await js(`window.ferrule.show("chat")`);
+    await until("the composer, enabled", () => js(`const t = document.querySelector(".composer textarea"); return t && !t.disabled`), 20);
+    await js(`const t = document.querySelector(".composer textarea"); t.value = "hello from the browser check"; t.dispatchEvent(new Event("input", { bubbles: true }));`);
+    await click(".composer", "Send");
+    await until("an answer", () => js(`return document.querySelectorAll(".bubble:not(.you)").length > 0`), 45);
+    return "the agent answered on the page";
+  });
+
+  if (SHOTS) {
+    mkdirSync(SHOTS, { recursive: true });
+    const shots = [];
+    for (const [w, h] of [[390, 844], [1280, 860]]) {
+      await size(w, h);
+      for (const s of ["health", "connections", "models", "chat", "console"]) {
+        await js(`window.ferrule.show(${JSON.stringify(s)})`);
+        await sleep(1200);
+        if (s === "console") {
+          await js(`const i = document.querySelector(".console-line input"); i.value = "status"; i.dispatchEvent(new Event("input", { bubbles: true }));`);
+          await click("#main", "Run");
+          await until("status to finish", () => js(`const h = document.querySelector("#main pre.out"); return h && !h.hidden && /done|exit/.test(h.previousElementSibling.textContent)`), 30);
+        }
+        const r = await cdp("Page.captureScreenshot", { format: "png" });
+        const file = join(SHOTS, `${s === "health" ? "home" : s}-${w}.png`);
+        writeFileSync(file, Buffer.from(r.data, "base64"));
+        shots.push(file.slice(ROOT.length + 1));
+      }
+    }
+    step("screenshots", true, shots.length + " in " + SHOTS.slice(ROOT.length + 1));
+  }
+
+  // Every section once: a stray null, undefined or [object …] is a
+  // renderer that appended a value it meant to drop.
+  await run("every section renders clean", async () => {
+    const bad = [];
+    for (const name of await js(`return Object.keys(window.ferrule.sections)`)) {
+      await js(`window.ferrule.show(${JSON.stringify(name)})`);
+      await sleep(900);
+      const t = await js(`return document.getElementById("main").innerText`);
+      const m = t.match(/(^|\s)(null|undefined|NaN)(\s|$)|\[object \w+\]/);
+      if (m) bad.push(name + ": " + JSON.stringify(t.slice(Math.max(0, m.index - 40), m.index + 30)));
+    }
+    if (bad.length) throw new Error(bad.join(" | "));
+    return "no null/undefined/[object] on any section";
+  });
+
+  step("no script errors", errors.length === 0, errors.slice(0, 5).join(" | "));
+  ws.close();
+}
+
+main().catch((e) => step("check", false, e.message)).finally(() => {
+  for (const p of procs.reverse()) { try { p.kill(); } catch (_) { /* gone */ } }
+  for (const s of servers) s.close();
+  setTimeout(() => {
+    if (!argv.includes("--keep")) rmSync(tmp, { recursive: true, force: true }); else console.log("kept " + tmp);
+    const failed = results.filter(([, ok]) => !ok).length;
+    console.log(`\n${results.length - failed} passed, ${failed} failed`);
+    process.exit(failed || !results.length ? 1 : 0);
+  }, 800);
+});

@@ -52,6 +52,13 @@ pub struct Record {
     /// The reconnect notice for the current break was sent.
     #[serde(default)]
     pub notice_sent: bool,
+    /// M37: the day a key stops working, when the owner said (an Atlassian
+    /// API token lasts 1 to 365 days). Not the OAuth access token's expiry.
+    #[serde(default)]
+    pub key_expires: Option<u64>,
+    /// M37: the hosts a key-based connection's credential is sent to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
     #[serde(default)]
     pub tools: Option<usize>,
     /// "relay", "tunnel", "paste" or "terminal".
@@ -75,6 +82,10 @@ pub struct Secret {
     pub client_secret: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
+    /// M37: a key-based way in with several fields (a site, an email and a
+    /// token; an app password; a service account's JSON), by field name.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fields: std::collections::BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for Secret {
@@ -261,6 +272,8 @@ mod tests {
             refreshed_at: None,
             last_error: None,
             notice_sent: false,
+            key_expires: None,
+            hosts: Vec::new(),
             tools: None,
             via: "relay".into(),
             requested_by: "owner".into(),

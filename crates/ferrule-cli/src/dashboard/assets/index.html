@@ -2,17 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
 <title>ferrule</title>
-<script>
-// Paper or forge before the first paint: the saved choice, else the system's.
-try {
-  var t = localStorage.getItem("ferrule-theme");
-  if (t !== "paper" && t !== "forge") t = matchMedia("(prefers-color-scheme: dark)").matches ? "forge" : "paper";
-  document.documentElement.setAttribute("data-theme", t);
-} catch (e) { /* no storage: the CSS default (paper) stands */ }
-</script>
+<script src="/theme.js"></script>
+<link rel="preload" href="/fonts/plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
@@ -25,14 +20,16 @@ try {
   </div>
   <div class="top-right">
     <span id="live" class="live" hidden><span class="led ok pulse" id="live-led"></span><span id="uptime"></span></span>
-    <button id="theme" class="ghost" title="paper / forge">forge</button>
-    <button id="logout" class="ghost" hidden>log out</button>
+    <button id="theme" class="ghost" type="button" title="Theme: follows the system until you pick one">auto</button>
+    <button id="logout" class="ghost" type="button" hidden>Log out</button>
   </div>
 </header>
 <div id="shell">
-  <nav id="rail" aria-label="sections" hidden></nav>
+  <nav id="rail" aria-label="Sections" hidden></nav>
   <main id="main"><p class="muted">Loading…</p></main>
 </div>
-<div id="toast"></div>
+<nav id="tabs" aria-label="Sections" hidden></nav>
+<div id="sheet" hidden></div>
+<div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

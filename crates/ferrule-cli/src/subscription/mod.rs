@@ -20,19 +20,24 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// The process's ChatGPT sign-in for `issuer` ("" is OpenAI's): one per
 /// store, so a refused refresh is seen by every lane.
 pub fn chatgpt(issuer: &str) -> anyhow::Result<Arc<ChatGpt>> {
+    let private = crate::secrets::private_dir()?;
+    let data = crate::config::data_dir()?;
+    Ok(chatgpt_at(&private, &data, issuer))
+}
+
+/// [`chatgpt`] with this private dir and data dir (the dashboard's).
+pub fn chatgpt_at(private: &std::path::Path, data: &std::path::Path, issuer: &str) -> Arc<ChatGpt> {
     /// Keyed by the private dir and the issuer.
     type SignIns = HashMap<(PathBuf, String), Arc<ChatGpt>>;
     static SHARED: OnceLock<Mutex<SignIns>> = OnceLock::new();
-    let private = crate::secrets::private_dir()?;
-    let data = crate::config::data_dir()?;
+    let private = private.to_path_buf();
     let mut all = SHARED
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    Ok(all
-        .entry((private.clone(), issuer.to_string()))
-        .or_insert_with(|| Arc::new(ChatGpt::new(&private, Some(&data), Issuer::new(issuer))))
-        .clone())
+    all.entry((private.clone(), issuer.to_string()))
+        .or_insert_with(|| Arc::new(ChatGpt::new(&private, Some(data), Issuer::new(issuer))))
+        .clone()
 }
 
 /// Models on the ChatGPT plan: the account's own list when signed in

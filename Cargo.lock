@@ -897,14 +897,18 @@ dependencies = [
  "hyper-util",
  "reqwest",
  "ring",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tar",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "toml",
  "tracing",
  "url",
+ "webpki-roots",
 ]
 
 [[package]]

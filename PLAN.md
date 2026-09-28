@@ -739,6 +739,38 @@ that convention yet — ask before introducing one).
       service with a pinned `PATH` and nothing installed.
     - v0.5.x installs need the install one-liner once.
     - **Decisions for Max and open edges:** see the M36 session-log entry.
+  - **M37 the control room**: **built** (2026-09-27, branch
+    `m37-control-room`, PR to main open, not merged). The design and
+    as-built notes are in `docs/m37-control-room.md`. The user guides are
+    `docs/dashboard.md` and `docs/connections.md`.
+    - Notices have ids and fix buttons, and close for a day. The kill
+      switch and "no model can answer" never close. There's a hidden list
+      with Show again.
+    - Model pickers are selects. The fallback chain is checked. A provider
+      key is tested before it's saved. Plan sign-in works from the page.
+    - Connections is the one place for credentials:
+      - Atlassian: email + token (native Jira/Confluence), then a Rovo MCP
+        token, then Rovo OAuth.
+      - Google: a Gmail app password (IMAP/SMTP), a service account
+        (Drive/Sheets/Docs/Calendar), then your own OAuth app.
+      - The fixed-callback relay: deployed with a Cloudflare token, or an
+        existing one.
+      - A checklist from real checks, with next actions.
+      - Stuck sign-ins cancelled, and expired after 15 min.
+      - OAuth errors in plain words, with a switch to a key.
+      - Expiring keys in doctor and the banner.
+      - `ferrule connections setup [service]`.
+    - Terminal parity:
+      - a console that runs `ferrule` lines with no shell (classed,
+        audited, the parity matrix tested against every subcommand);
+      - chat in session `dashboard__owner`, with approvals;
+      - the config with secrets hidden, a typed form, check/save/undo.
+
+      No raw shell: a recorded decision for Max.
+    - The UI rebuilt: IBM Plex from the binary, a phone bottom bar and a
+      desktop sidebar, and themes that follow the system. A Node browser
+      check runs in CI on all three OSes.
+    - **Decisions for Max and open edges:** see the M37 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -4777,3 +4809,101 @@ real binary: engineered 20/20, naive 11/20, $0.98.
 **Follow-ups.** A `/update` chat command; a Windows service (so unattended
 updates there); the first signed release (v0.7.0; v0.6.0 was cut unsigned before this merged) proves the chain; README
 lines (listed in the PR). v0.5.x installs run the install one-liner once.
+
+### 2026-09-27 — M37 the control room (Devi, Opus 5.5)
+
+**Scope.** Max, from his phone through the tunnel, asked for five things:
+- notices that close;
+- model pickers instead of typing;
+- connections that work, with keys when OAuth fails;
+- a better font;
+- "anything I can do in the terminal, from the dashboard".
+
+Two addenda made connections the priority: Atlassian's three ways in,
+Google's paths, the fixed callback relay, a checklist, stuck flows, and
+plain errors. The design and as-built notes are in
+`docs/m37-control-room.md`. The user guides are `docs/dashboard.md` and
+`docs/connections.md` (new). Branch `m37-control-room`, from v0.7.0, with
+one commit per part.
+
+**What was built.**
+- **Notices:**
+  - `problems[{id, fixes, closable}]`;
+  - closing is server-side, for a day;
+  - `ferrule doctor --json` from the page;
+  - fix buttons: restart a channel, restore the last good config,
+    restart the gateway (user or system service).
+- **Models:** selects everywhere a model is named, a checked fallback
+  chain, a key tested before `secrets.env`, and plan sign-in from the
+  page.
+- **Connections:**
+  - native `jira`, `gmail` and `google`, with sealed keys bound to their
+    hosts and tested first;
+  - `atlassian_token` (Rovo MCP, Basic) and `google_oauth` (the owner's
+    client);
+  - the relay card (deploy by CF token via `GET /accounts`, or URL + key
+    checked before saving; `<relay>/cb` with Copy);
+  - the checklist;
+  - pending flows with Cancel and a 15-minute expiry;
+  - `explain.rs`: statuses, OAuth errors, handshakes and the egress
+    policy in plain words, with no codes, state or secrets; plus
+    consent-page symptoms for Google and Atlassian;
+  - `blocked()`: no button that can't work, `/connect` included;
+  - doctor and the banner for expiring keys;
+  - `ferrule connections setup`.
+- **Parity:**
+  - the console (split without a shell, clap parse, read/change/destructive/
+    refused, child with stdin closed, audited, completion from the clap
+    tree, the parity matrix walked by a test);
+  - chat (a dashboard channel, revision polling, streamed edits, buttons,
+    approvals from any chat);
+  - config (placeholders for secrets, a typed form, the loader's line,
+    an atomic save keeping `.prev`, undo, dangerous fields refused by
+    name).
+- **UI:**
+  - Plex Sans, Hebrew and Mono as woff2 from the binary (≈129 KB,
+    ≈60 KB for a Latin page), `/fonts/OFL.txt`;
+  - type scale 13–30;
+  - bottom bar and ≥900 px sidebar;
+  - system theme with a manual toggle, set before paint by `theme.js`;
+  - `textContent` only, `dir="auto"`;
+  - screenshots at 390/1280 px in `docs/assets/m37/`.
+
+  `scripts/dashboard_browser_check.mjs` (Node 22, CDP, no packages) is
+  in CI on Linux, macOS and Windows.
+
+**Decisions taken alone (for Max to overrule).**
+- No raw shell or PTY on the page (design §4.5). The console runs argv
+  only, so an opt-in could come later as a new class.
+- Each way in is its own catalog entry on a shared tile, not a
+  `[service.key]` table.
+- Jira, Gmail and Google run natively (REST, IMAP/SMTP) because no vendor
+  MCP server takes those keys.
+- No default relay URL: the relay runs on the owner's own Cloudflare
+  account, and the CF token is used once and not kept.
+- Notices close for a day rather than until their cause changes.
+- The browser check uses CDP from Node rather than agent-browser.
+- Services with no documented key or DCR were left out (the §3.5 list).
+
+**Verified live vs only against docs/mocks.** Everything was verified
+against mocks or the vendors' docs. The container can't do a real OAuth
+consent, and reqwest refuses its TLS proxy.
+- The browser check connected a local MCP server with a key through the
+  real page.
+- The Jira, Gmail, Google-service-account, relay-deploy and Rovo paths
+  are tested against mock servers.
+- Live checks are `#[ignore]`d.
+
+**Checks.** 1411 tests passed, 0 failed, 23 ignored. fmt and clippy
+`-D warnings` are clean. The browser check passed 10 of 10 steps. The
+starter eval against the mock through the real binary gave engineered
+20/20, naive 11/20, $0.98. origin/main had nothing new to merge.
+
+**Follow-ups.**
+- A real Atlassian site, a Gmail app password, a service account and a
+  relay deploy on Max's server.
+- Airtable, Supabase, Cloudflare, Monday and Intercom keys.
+- A "before" screenshot set.
+- An opt-in shell if Max wants one.
+- README lines (listed in the PR).
+

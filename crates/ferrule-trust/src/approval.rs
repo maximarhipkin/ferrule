@@ -29,7 +29,19 @@ struct Pending {
     code: String,
     chat: ChatRef,
     what: String,
+    asked: Instant,
     tx: oneshot::Sender<Answer>,
+}
+
+/// A question still waiting, as the dashboard lists it (M37).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waiting {
+    pub code: String,
+    /// The chat it was asked in.
+    pub chat: ChatRef,
+    pub what: String,
+    /// Seconds since it was asked.
+    pub secs: u64,
 }
 
 #[derive(Default)]
@@ -97,6 +109,7 @@ impl Approvals {
             code: code.clone(),
             chat,
             what: what.to_string(),
+            asked: Instant::now(),
             tx,
         });
         (code, rx)
@@ -116,6 +129,37 @@ impl Approvals {
             .is_some_and(|(_, _, at)| at.elapsed() > REMEMBER)
         {
             inner.expired.pop_front();
+        }
+    }
+
+    /// Every question still waiting, from any chat, oldest first.
+    pub fn list(&self) -> Vec<Waiting> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .pending
+            .iter()
+            .map(|p| Waiting {
+                code: p.code.clone(),
+                chat: p.chat.clone(),
+                what: p.what.clone(),
+                secs: p.asked.elapsed().as_secs(),
+            })
+            .collect()
+    }
+
+    /// Answers the question `code` whichever chat it was asked in, as its
+    /// Allow/Refuse button would (M37: the dashboard). `None`: no such
+    /// question is waiting.
+    pub fn decide(&self, code: &str, allow: bool, said: &str) -> Option<String> {
+        let mut inner = self.inner.lock().unwrap();
+        let i = inner.pending.iter().position(|p| p.code == code)?;
+        let p = inner.pending.remove(i);
+        if allow {
+            let _ = p.tx.send(Answer::Yes);
+            Some(format!("Approved ({}): {}", p.code, p.what))
+        } else {
+            let _ = p.tx.send(Answer::No(said.to_string()));
+            Some(format!("Refused ({}): {}", p.code, p.what))
         }
     }
 
@@ -216,6 +260,29 @@ impl Approvals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_page_lists_every_question_and_answers_one_by_its_code() {
+        let a = Approvals::default();
+        let (c1, mut r1) = a.open(1, "one");
+        let (c2, mut r2) = a.open(ChatRef::new("discord", "9"), "two");
+        let list = a.list();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].code, c1);
+        assert_eq!(list[1].chat, ChatRef::new("discord", "9"));
+        assert!(a.decide(&c2, true, "").unwrap().starts_with("Approved"));
+        assert_eq!(r2.try_recv().unwrap(), Answer::Yes);
+        assert!(a.decide(&c2, true, "").is_none(), "answered once");
+        assert!(a
+            .decide(&c1, false, "refused on the page")
+            .unwrap()
+            .starts_with("Refused"));
+        assert_eq!(
+            r1.try_recv().unwrap(),
+            Answer::No("refused on the page".into())
+        );
+        assert!(a.list().is_empty());
+    }
 
     #[test]
     fn a_bare_yes_approves_the_only_question() {

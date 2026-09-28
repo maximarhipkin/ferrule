@@ -786,6 +786,32 @@ and every Claude-plan model request comes from Claude Code itself.
 answering with no SSH and no terminal; what it can't fix, it says in plain
 words once. Existing v0.5.x installs run the install one-liner once.
 
+### M37 — the control room
+
+**Status.** Built (`docs/m37-control-room.md`; user guides
+`docs/dashboard.md`, `docs/connections.md`). PR to `main` open, not merged.
+- **Notices close** (for a day), each with its fix buttons; hidden ones
+  are listed with Show again.
+- **Models are picked, not typed.** The fallback chain is checked, and a
+  provider key is tested before it's saved.
+- **Connections work.**
+  - Atlassian's three ways in, in order.
+  - Google's app password, service account and own-OAuth paths.
+  - A fixed callback relay deployed from the page.
+  - A checklist, stuck flows cancelled and expired.
+  - Plain errors with a switch to a key.
+  - Expiring keys named in doctor.
+  - `ferrule connections setup`.
+- **Terminal parity:** a console of `ferrule` commands (no shell), chat
+  with approvals, and the config with secrets hidden.
+- **A UI for a phone:** IBM Plex, a bottom bar, a desktop sidebar, and a
+  system theme. A browser check runs in CI on three OSes.
+
+**Done means.** Max runs his agent from his phone: he closes what he's
+read, fixes what's broken with a button, connects Jira and Google with a
+key when OAuth won't, and does anything the terminal does. The exception
+is a raw shell, which is his decision.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

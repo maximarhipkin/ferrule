@@ -153,27 +153,56 @@ pub struct Deploy<'a> {
     pub relay_key: &'a str,
 }
 
-/// Upload the Worker (idempotent), turn on its `workers.dev` route, and
-/// return its URL. Credentials never appear in an error.
-pub async fn deploy(d: &Deploy<'_>) -> Result<String> {
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    let api = d.api.trim_end_matches('/');
-    let base = format!("{api}/accounts/{}/workers", d.account);
-    let call = |r: reqwest::RequestBuilder| async move {
-        let resp = r
-            .bearer_auth(d.token)
-            .send()
-            .await
-            .map_err(|_| anyhow!("Cloudflare's API didn't answer"))?;
+/// Where to make the API token the relay is deployed with.
+pub const CF_TOKEN_URL: &str = "https://dash.cloudflare.com/profile/api-tokens";
+
+/// Cloudflare's API with one token. Errors say what to do, never the token.
+struct Cloudflare<'a> {
+    http: reqwest::Client,
+    api: &'a str,
+    token: &'a str,
+}
+
+impl<'a> Cloudflare<'a> {
+    fn new(api: &'a str, token: &'a str) -> Result<Self> {
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(60))
+                .build()?,
+            api: api.trim_end_matches('/'),
+            token: token.trim(),
+        })
+    }
+
+    async fn call(&self, r: reqwest::RequestBuilder) -> Result<Value> {
+        let resp = r.bearer_auth(self.token).send().await.map_err(|_| {
+            anyhow!(
+                "Cloudflare's API didn't answer; check this machine can reach api.cloudflare.com"
+            )
+        })?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
+        if status.as_u16() == 401
+            || body["errors"][0]["code"]
+                .as_u64()
+                .is_some_and(|c| c == 10000 || c == 9109)
+        {
+            bail!(
+                "Cloudflare refused the API token: it's mistyped, expired or lacks Workers \
+                 permissions. Make one at {CF_TOKEN_URL} from the \"Edit Cloudflare Workers\" \
+                 template"
+            );
+        }
+        if status.as_u16() == 403 {
+            bail!(
+                "the API token can't do this on that account: make one from the \"Edit \
+                 Cloudflare Workers\" template at {CF_TOKEN_URL}, for the account the relay goes in"
+            );
+        }
         if !status.is_success() || body["success"] == false {
             let why = body["errors"][0]["message"]
                 .as_str()
                 .map(|m| m.chars().take(200).collect::<String>())
-                .or_else(|| body["error"].as_str().map(String::from))
                 .unwrap_or_default();
             bail!(
                 "Cloudflare refused (HTTP {}){}{}",
@@ -182,8 +211,48 @@ pub async fn deploy(d: &Deploy<'_>) -> Result<String> {
                 why
             );
         }
-        Ok::<Value, anyhow::Error>(body)
-    };
+        Ok(body)
+    }
+
+    fn get(&self, path: &str) -> reqwest::RequestBuilder {
+        self.http.get(format!("{}{path}", self.api))
+    }
+}
+
+/// A Cloudflare account the token can reach.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Account {
+    pub id: String,
+    pub name: String,
+}
+
+/// The accounts `token` can deploy to (`GET /accounts`).
+pub async fn accounts(api: &str, token: &str) -> Result<Vec<Account>> {
+    let cf = Cloudflare::new(api, token)?;
+    let body = cf.call(cf.get("/accounts?per_page=50")).await?;
+    Ok(body["result"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| {
+            Some(Account {
+                id: a["id"].as_str()?.to_string(),
+                name: a["name"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect())
+}
+
+/// Upload the Worker (idempotent), make sure the account has a
+/// `workers.dev` subdomain (creating one if it never had), turn on the
+/// Worker's route there, and return its URL. Credentials never appear in
+/// an error.
+pub async fn deploy(d: &Deploy<'_>) -> Result<String> {
+    let cf = Cloudflare::new(d.api, d.token)?;
+    let http = &cf.http;
+    let api = cf.api;
+    let base = format!("{api}/accounts/{}/workers", d.account);
+    let call = |r: reqwest::RequestBuilder| cf.call(r);
 
     // Is the migration there already? Cloudflare refuses a repeated tag.
     let list = call(http.get(format!("{base}/scripts"))).await?;
@@ -192,6 +261,34 @@ pub async fn deploy(d: &Deploy<'_>) -> Result<String> {
         .into_iter()
         .flatten()
         .any(|s| s["id"] == d.name && s["migration_tag"] == MIGRATION_TAG);
+    // The account's workers.dev subdomain: a new account has none until
+    // Workers is opened once in the dashboard, so make one.
+    let sub = match call(http.get(format!("{base}/subdomain"))).await {
+        Ok(v) => v["result"]["subdomain"].as_str().map(String::from),
+        Err(_) => None,
+    };
+    let sub = match sub {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            let want = format!(
+                "ferrule-{}",
+                b64(&random::<6>())
+                    .to_ascii_lowercase()
+                    .replace(|c: char| !c.is_ascii_alphanumeric(), "")
+            );
+            let made = call(
+                http.put(format!("{base}/subdomain"))
+                    .json(&json!({ "subdomain": want })),
+            )
+            .await
+            .context("the account has no workers.dev subdomain and ferrule couldn't make one")?;
+            made["result"]["subdomain"]
+                .as_str()
+                .map(String::from)
+                .unwrap_or(want)
+        }
+    };
+
     let mut metadata = json!({
         "main_module": "worker.js",
         "compatibility_date": "2025-09-01",
@@ -237,10 +334,6 @@ pub async fn deploy(d: &Deploy<'_>) -> Result<String> {
             .json(&json!({"enabled": true, "previews_enabled": false})),
     )
     .await?;
-    let sub = call(http.get(format!("{base}/subdomain"))).await?;
-    let sub = sub["result"]["subdomain"].as_str().context(
-        "the account has no workers.dev subdomain yet: open Workers once in the dashboard",
-    )?;
     Ok(format!("https://{}.{sub}.workers.dev", d.name))
 }
 

@@ -142,6 +142,8 @@ impl Follower {
             }
         };
         self.apply_secrets(&manager, &cfg);
+        // M37: a relay set up (or changed) in the file is used from now on.
+        crate::connections::follow_config(&cfg);
         // M24: skills turned off or on, and new caps, without a restart.
         if let Some(skills) = manager.skills() {
             if skills.set_disabled(cfg.skills.disabled.clone()) {
