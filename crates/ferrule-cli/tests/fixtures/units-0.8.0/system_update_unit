@@ -1,0 +1,20 @@
+# Written by `ferrule setup` as root; `ferrule setup --refresh-service` rewrites it.
+[Unit]
+Description=ferrule update (signed releases, rolled back if they don't start)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart="/usr/local/bin/ferrule" update --apply
+Environment="FERRULE_CONFIG=/etc/ferrule/config.toml"
+Environment="FERRULE_DATA_DIR=/var/lib/ferrule/data"
+Environment="PATH=/usr/local/bin:/usr/bin"
+TimeoutStartSec=7h
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

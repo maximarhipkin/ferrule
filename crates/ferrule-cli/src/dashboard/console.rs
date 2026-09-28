@@ -184,6 +184,19 @@ pub const PARITY: &[Leaf] = &[
     leaf("mcp remove", Destructive, "Extensions + console", ""),
     leaf("mcp disable", Change, "Extensions + console", ""),
     leaf("mcp enable", Change, "Extensions + console", ""),
+    leaf("instances list", Read, "console", ""),
+    leaf(
+        "instances new",
+        Refused("it runs another instance's setup wizard, which asks at the terminal"),
+        "terminal only",
+        "",
+    ),
+    leaf(
+        "instances remove",
+        Refused("it removes another instance: run it at the terminal"),
+        "terminal only",
+        "",
+    ),
     leaf("connections list", Read, "Connections + console", ""),
     leaf(
         "connections add",
@@ -435,6 +448,9 @@ pub fn parse(line: &str) -> Result<Parsed, String> {
     for w in &words {
         if w == "--config" || w.starts_with("--config=") {
             return Err("--config: the page runs commands on the service's own config only".into());
+        }
+        if w == "--instance" || w.starts_with("--instance=") {
+            return Err("--instance: the page runs commands on its own instance only".into());
         }
         if w == "--workspace" || w.starts_with("--workspace=") {
             return Err(
@@ -808,6 +824,8 @@ mod tests {
         assert!(matches!(class("dashboard link --remote"), Refused(_)));
         assert!(parse("doctor --config /etc/x.toml").is_err());
         assert!(parse("doctor --config=/etc/x.toml").is_err());
+        assert!(parse("doctor --instance work").is_err());
+        assert!(parse("--instance=work doctor").is_err());
         assert!(parse("undo --workspace /").is_err());
         assert!(parse("").is_err());
     }

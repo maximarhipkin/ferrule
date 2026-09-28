@@ -146,42 +146,72 @@ case ":$PATH:" in
         ;;
 esac
 
-# An upgrade: the gateway service keeps the old binary until it restarts.
-# `setup --refresh-service` rewrites its units, adding the update units a
-# 0.5.x install lacks, and restarts it; a plain restart is the fallback.
-refresh() {
-    "$BIN" setup --refresh-service && return 0
-    say "Couldn't refresh the service's units; restarting it as it is."
-    "$@" && say "Restarted the gateway service."
-}
+# An upgrade: each gateway service keeps the old binary until it restarts —
+# the default instance's and every named one's (`ferrule@<name>`,
+# `ai.ferrule.gateway.<name>`; docs/instances.md). `setup --refresh-service`
+# rewrites an instance's units, adding the update units a 0.5.x install
+# lacks, and restarts it; a plain restart is the fallback.
 if [ "$(uname -s)" = Darwin ]; then
-    unit=$HOME/Library/LaunchAgents/ai.ferrule.gateway.plist
-    if [ -f "$unit" ] && launchctl print "gui/$(id -u)/ai.ferrule.gateway" >/dev/null 2>&1; then
-        active=1
-    fi
-    restart="launchctl kickstart -k gui/$(id -u)/ai.ferrule.gateway"
-elif [ "$(id -u)" = 0 ] && [ -f /etc/systemd/system/ferrule.service ]; then
-    unit=/etc/systemd/system/ferrule.service
-    if systemctl is-active --quiet ferrule.service 2>/dev/null; then
-        active=1
-    fi
-    restart="systemctl restart ferrule.service"
+    kind=launchd
+    units_dir=$HOME/Library/LaunchAgents
+elif [ "$(id -u)" = 0 ] && [ -n "$(ls /etc/systemd/system/ferrule.service /etc/systemd/system/ferrule@*.service 2>/dev/null)" ]; then
+    kind=system
+    units_dir=/etc/systemd/system
 else
-    unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ferrule.service
-    if [ -f "$unit" ] && systemctl --user is-active --quiet ferrule.service 2>/dev/null; then
-        active=1
-    fi
-    restart="systemctl --user restart ferrule.service"
+    kind=user
+    units_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 fi
-if [ -f "$unit" ] && ! grep -q "$BIN" "$unit"; then
-    say "Note: the gateway service runs a ferrule from elsewhere; \`ferrule setup\` → service points it at this one."
-    if [ "${active:-}" = 1 ]; then
-        $restart && say "Restarted the gateway service."
+
+# upgrade UNIT_FILE NAME: one instance's gateway ("" is the default).
+upgrade() {
+    unit=$1 name=$2 active=
+    if [ -n "$name" ]; then
+        who="the \`$name\` instance's gateway service"
+    else
+        who="the gateway service"
     fi
-elif [ "${active:-}" = 1 ]; then
-    # shellcheck disable=SC2086
-    refresh $restart
+    case $kind in
+        launchd)
+            label=ai.ferrule.gateway${name:+.$name}
+            if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then active=1; fi
+            restart="launchctl kickstart -k gui/$(id -u)/$label"
+            ;;
+        system | user)
+            svc=${unit##*/}
+            [ "$kind" = user ] && scope=--user || scope=
+            # shellcheck disable=SC2086
+            if systemctl $scope is-active --quiet "$svc" 2>/dev/null; then active=1; fi
+            restart="systemctl $scope restart $svc"
+            ;;
+    esac
+    if ! grep -q "$BIN" "$unit"; then
+        say "Note: $who runs a ferrule from elsewhere; \`ferrule${name:+ --instance $name} setup\` → service points it at this one."
+        if [ "$active" = 1 ] && $restart; then say "Restarted $who."; fi
+    elif [ "$active" = 1 ]; then
+        # shellcheck disable=SC2086
+        if ! "$BIN" ${name:+--instance "$name"} setup --refresh-service; then
+            say "Couldn't refresh the units of $who; restarting it as it is."
+            if $restart; then say "Restarted $who."; fi
+        fi
+    fi
+}
+# PREFIX SUFFIX DEFAULT: a named instance's unit file is PREFIX<name>SUFFIX.
+if [ "$kind" = launchd ]; then
+    set -- ai.ferrule.gateway. .plist ai.ferrule.gateway.plist
+else
+    set -- ferrule@ .service ferrule.service
 fi
+# The default's unit, then each named instance's.
+for unit in "$units_dir/$3" "$units_dir/$1"*"$2"; do
+    [ -f "$unit" ] || continue
+    name=
+    if [ "$unit" != "$units_dir/$3" ]; then
+        name=${unit#"$units_dir/$1"}
+        name=${name%"$2"}
+        [ -n "$name" ] || continue
+    fi
+    upgrade "$unit" "$name"
+done
 
 if "$BIN" config path 2>/dev/null | grep -q '^config *none yet'; then
     if [ "${FERRULE_NO_SETUP:-}" = 1 ]; then

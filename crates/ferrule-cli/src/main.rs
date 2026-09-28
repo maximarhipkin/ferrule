@@ -14,6 +14,8 @@ mod filewrite;
 mod health;
 mod hooks_cli;
 mod import;
+mod instance;
+mod instances;
 mod last_good;
 mod learn;
 mod ledger;
@@ -75,6 +77,10 @@ struct Cli {
     /// (also `$FERRULE_CONFIG`)
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
+    /// A named instance: its own config, data, bot and service beside the
+    /// default one (also `$FERRULE_INSTANCE`; docs/instances.md)
+    #[arg(long, global = true, value_name = "NAME")]
+    instance: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -274,6 +280,12 @@ enum Cmd {
     Connections {
         #[command(subcommand)]
         op: connections::ConnectionsCmd,
+    },
+    /// Several agents on one machine: list them, set up another, remove one
+    /// (docs/instances.md)
+    Instances {
+        #[command(subcommand)]
+        op: instances::InstancesCmd,
     },
     /// Evaluate the harness: run a task suite, as ferrule and as a naive
     /// baseline, and report pass rates, tokens and cost (docs/eval.md)
@@ -577,6 +589,13 @@ fn main() -> Result<()> {
     if let Some(path) = &cli.config {
         std::env::set_var("FERRULE_CONFIG", std::path::absolute(path)?);
     }
+    // M38: the instance, checked before anything reads a path from it.
+    if let Some(name) = &cli.instance {
+        instance::validate(name).map_err(|e| anyhow!(e))?;
+        std::env::set_var(instance::ENV, name);
+    }
+    instance::from_env().map_err(|e| anyhow!(e))?;
+    let svc_names = service::Svc::new(instance::current().as_deref(), service::Scope::System);
     if let Cmd::Setup {
         system,
         user,
@@ -586,8 +605,7 @@ fn main() -> Result<()> {
         let linux = cfg!(target_os = "linux");
         // A refresh keeps the service where it is: root with only a user
         // service refreshes that one.
-        let user =
-            user || (refresh_service && !system && !Path::new(service::SYSTEM_UNIT_PATH).exists());
+        let user = user || (refresh_service && !system && !svc_names.system_unit_path().exists());
         service::set_scope(
             service::decide_scope(linux, service::is_root(), system, user)
                 .map_err(|e| anyhow!(e))?,
@@ -597,14 +615,14 @@ fn main() -> Result<()> {
     let system_files = match cli.cmd {
         Cmd::Setup { .. } => true,
         Cmd::Doctor { .. } | Cmd::Config { .. } | Cmd::Update { .. } | Cmd::Connections { .. } => {
-            Path::new(service::SYSTEM_CONFIG).exists()
+            svc_names.system_config().exists()
         }
         _ => false,
     };
     if system_files && service::scope() == service::Scope::System {
         for (name, value) in [
-            ("FERRULE_CONFIG", service::SYSTEM_CONFIG),
-            ("FERRULE_DATA_DIR", service::SYSTEM_DATA),
+            ("FERRULE_CONFIG", svc_names.system_config()),
+            ("FERRULE_DATA_DIR", svc_names.system_data()),
         ] {
             if std::env::var_os(name).is_none() {
                 std::env::set_var(name, value);
@@ -849,6 +867,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Plugins { op } => plugins_cli::run(op).await?,
         Cmd::Ssh { op } => remote::run(op).await?,
         Cmd::Connections { op } => connections::run(op).await?,
+        Cmd::Instances { op } => instances::run(op).await?,
         Cmd::Sandbox {
             probe_net: true, ..
         } => probe_net(),
@@ -3049,6 +3068,10 @@ fn probe_net() {
 
 /// `ferrule config path`: where everything setup writes lives.
 fn config_path_cmd() -> Result<()> {
+    println!(
+        "instance  {}",
+        instance::label(instance::current().as_deref())
+    );
     match config::config_path()? {
         Some(path) => println!("config    {}", path.display()),
         None => println!(

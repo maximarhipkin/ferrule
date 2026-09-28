@@ -1605,23 +1605,36 @@ profile = "openai"
 # ssh_config = "~/.ssh/ferrule_config"  # used instead of ~/.ssh/config (ssh -F)
 "#;
 
-/// `~/.config/ferrule/config.toml` (or the platform's equivalent).
+/// `~/.config/ferrule/config.toml` (or the platform's equivalent); a named
+/// instance's is `~/.config/ferrule-<name>/config.toml` (M38).
 pub fn global_config_path() -> Result<PathBuf> {
-    Ok(dirs::config_dir()
+    Ok(crate::instance::Roots::get()
         .ok_or_else(|| anyhow!("no config dir"))?
-        .join("ferrule")
-        .join("config.toml"))
+        .config_file(crate::instance::current().as_deref()))
+}
+
+/// No config to load: the default's words are 0.8.0's; a named instance
+/// (M38) is named, since a typo in `--instance` lands here too.
+pub fn no_config() -> anyhow::Error {
+    match crate::instance::current() {
+        None => anyhow!("no config found. Run `ferrule setup` first."),
+        Some(name) => anyhow!(
+            "no config for the instance `{name}`. Run `ferrule --instance {name} setup` to set it up; `ferrule instances list` shows the ones there are."
+        ),
+    }
 }
 
 /// The file `Config::load` reads: `$FERRULE_CONFIG` (what `--config` sets),
 /// else `./ferrule.toml`, else the global one. `None` when none exists;
-/// `$FERRULE_CONFIG` is returned even if missing, so the error names it.
+/// `$FERRULE_CONFIG` is returned even if missing, so the error names it. A
+/// named instance never reads `./ferrule.toml`: it describes itself, not
+/// the project it's run from.
 pub fn config_path() -> Result<Option<PathBuf>> {
     if let Some(path) = std::env::var_os("FERRULE_CONFIG").filter(|p| !p.is_empty()) {
         return Ok(Some(PathBuf::from(path)));
     }
     let local = PathBuf::from("ferrule.toml");
-    if local.exists() {
+    if crate::instance::current().is_none() && local.exists() {
         return Ok(Some(local));
     }
     let global = global_config_path()?;
@@ -1640,7 +1653,7 @@ impl Config {
 
     pub fn load() -> Result<(Self, PathBuf)> {
         let Some(path) = config_path()? else {
-            bail!("no config found. Run `ferrule setup` first.")
+            return Err(no_config());
         };
         match Self::from_file(&path) {
             Ok(cfg) => Ok((cfg, path)),
@@ -1770,18 +1783,13 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Where [`data_dir`] is, without creating it.
+/// Where [`data_dir`] is, without creating it: `$FERRULE_DATA_DIR`, else
+/// `<data>/ferrule` (`<data>/ferrule-<name>` for a named instance).
 pub fn data_dir_path() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("FERRULE_DATA_DIR").filter(|d| !d.is_empty()) {
         return Some(PathBuf::from(dir));
     }
-    // Windows: the local AppData, so saved keys don't roam with a profile.
-    let dir = if cfg!(windows) {
-        dirs::data_local_dir()
-    } else {
-        dirs::data_dir()
-    }?;
-    Some(dir.join("ferrule"))
+    Some(crate::instance::Roots::get()?.data_dir(crate::instance::current().as_deref()))
 }
 
 #[cfg(test)]

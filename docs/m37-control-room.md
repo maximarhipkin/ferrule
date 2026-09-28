@@ -466,6 +466,9 @@ The table is `PARITY` in `dashboard/console.rs`, copied here.
 | `mcp remove` | Extensions + console | destructive |  |
 | `mcp disable` | Extensions + console | change |  |
 | `mcp enable` | Extensions + console | change |  |
+| `instances list` | console | read |  |
+| `instances new` | terminal only | refused | it runs another instance's setup wizard, which asks at the terminal |
+| `instances remove` | terminal only | refused | it removes another instance: run it at the terminal |
 | `connections list` | Connections + console | read |  |
 | `connections add` | Connections | refused | keys and sign-ins go in on the Connections page, where a key never lands in a log |
 | `connections remove` | Connections + console | destructive |  |

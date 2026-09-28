@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use toml_edit::{DocumentMut, Item, TableLike, Value};
 
-const HEADER: &str = "\
+pub(crate) const HEADER: &str = "\
 # ferrule configuration, written by `ferrule setup`. Re-run it to change any
 # part, or edit this file by hand (`ferrule config edit`). API keys aren't
 # in here: setup keeps them in a private file of their own.
@@ -44,7 +44,13 @@ pub async fn run() -> Result<()> {
     let mut t = Target::load(path)?;
     let http = probe::client();
     let first = t.config()?.providers.is_empty();
-    println!("ferrule setup · config: {}", tilde(&t.path));
+    match crate::instance::current() {
+        Some(name) => println!(
+            "ferrule setup · instance {name} · config: {}",
+            tilde(&t.path)
+        ),
+        None => println!("ferrule setup · config: {}", tilde(&t.path)),
+    }
     println!("Esc skips a question, Ctrl-C stops. Each answer is saved once you confirm it.");
     let finished = if first {
         guided(&mut t, &http).await?
@@ -58,13 +64,56 @@ pub async fn run() -> Result<()> {
         return Ok(());
     }
     let cfg = t.config()?;
+    clash_warnings(&cfg);
     println!("\nAll set. Config: {}", tilde(&t.path));
     if !cfg.providers.is_empty() {
         println!("  ferrule chat      talk to the agent in this terminal");
     }
     println!("  ferrule doctor    check that everything works");
-    println!("  ferrule setup     change any of this later");
+    let flag = crate::instance::flag(crate::instance::current().as_deref());
+    println!("  ferrule {flag}setup     change any of this later");
     Ok(())
+}
+
+/// M38: what this instance now shares with another one that it mustn't.
+fn clash_warnings(cfg: &config::Config) {
+    let (clashes, _) = crate::instances::my_clashes(cfg);
+    if clashes.is_empty() {
+        return;
+    }
+    heading("Other instances");
+    for c in clashes {
+        match c.severity {
+            crate::instances::Severity::Fail => warn(c.message),
+            crate::instances::Severity::Note => info(c.message),
+        }
+    }
+}
+
+/// M38: another agent beside this one, with its own config, data, bot and
+/// service; its own setup runs next.
+fn another_instance() -> Result<()> {
+    let places = crate::instances::Places::here()?;
+    let taken: Vec<String> = crate::instances::discover(&places)
+        .iter()
+        .filter_map(|f| f.name.clone())
+        .collect();
+    if !taken.is_empty() {
+        info(format!(
+            "instances here already: default, {}",
+            taken.join(", ")
+        ));
+    }
+    let name = Text::new("Its name (lower-case letters, digits and -):")
+        .with_validator(|n: &str| {
+            Ok(match crate::instance::validate(n.trim()) {
+                Ok(()) => inquire::validator::Validation::Valid,
+                Err(e) => inquire::validator::Validation::Invalid(e.into()),
+            })
+        })
+        .prompt()?;
+    let system = service::scope() == service::Scope::System;
+    crate::instances::new(&places, name.trim(), system, !system, false)
 }
 
 /// Is there a terminal to ask on? inquire reads `/dev/tty` when stdin
@@ -145,7 +194,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     loop {
         let cfg = t.config()?;
         let service = service::status();
-        let items = vec![
+        let mut items = vec![
             format!("Model provider       {}", provider_summary(&cfg)),
             format!("Telegram             {}", telegram_summary(&cfg)),
             format!("Discord              {}", channels::discord_summary(&cfg)),
@@ -160,8 +209,13 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Import               {}", crate::import::setup_summary()),
             format!("Remote workspace     {}", remote::summary(&cfg)),
             format!("Background service   {}", service_summary(&service)),
-            "Done".to_string(),
         ];
+        // M38: from the default instance, another one beside it.
+        let another = crate::instance::current().is_none().then(|| {
+            items.push("Another instance     a second agent beside this one: its own bot, config and service".to_string());
+            items.len() - 1
+        });
+        items.push("Done".to_string());
         let done = items.len() - 1;
         let pick = match Select::new("What do you want to change?", items)
             .with_page_size(done + 1)
@@ -187,6 +241,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             11 => crate::import::setup_step(t, false).await,
             12 => remote::step(t).await,
             13 => service_step(t, false),
+            n if Some(n) == another => another_instance(),
             _ => break,
         };
         if settle(result)?.quit() {
@@ -2539,7 +2594,7 @@ fn service_step(t: &mut Target, guided: bool) -> Result<()> {
             if service::scope() == service::Scope::System {
                 info(format!(
                     "As root, it's a system service run as a user of its own, `{}`: no login, no sudo,",
-                    service::SYSTEM_USER
+                    service::Svc::current().system_user()
                 ));
                 info("and it can write only its data dir and workspace.");
             }
@@ -2622,9 +2677,16 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
     let default = workspace.map_or_else(
         || {
             if system {
-                service::SYSTEM_WORKSPACE.to_string()
+                service::Svc::current()
+                    .system_workspace()
+                    .to_string_lossy()
+                    .into_owned()
             } else {
-                "~/ferrule-workspace".to_string()
+                // M38: each instance its own, so two never share one.
+                format!(
+                    "~/{}-workspace",
+                    crate::instance::dir_name(crate::instance::current().as_deref())
+                )
             }
         },
         tilde,
@@ -2683,6 +2745,7 @@ fn install_service(t: &mut Target, workspace: Option<&Path>) -> Result<()> {
         workspace,
         config: std::path::absolute(&t.path)?,
         path_env,
+        instance: crate::instance::current(),
     };
     update_step(t)?;
     let notes = service::install(&spec)?;
@@ -2753,6 +2816,7 @@ pub fn refresh_service() -> Result<()> {
         workspace,
         config,
         path_env,
+        instance: crate::instance::current(),
     };
     let notes = service::install(&spec)?;
     ok("the service's units are current, and updates install by themselves");

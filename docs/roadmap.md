@@ -812,6 +812,29 @@ read, fixes what's broken with a button, connects Jira and Google with a
 key when OAuth won't, and does anything the terminal does. The exception
 is a raw shell, which is his decision.
 
+### M38 — named instances
+
+**Status.** Built (`docs/m38-instances.md`; user guide
+`docs/instances.md`). PR to `main` open, not merged.
+- **Several agents, one machine.** `ferrule --instance work …` (or
+  `FERRULE_INSTANCE`) gives an agent its own config, data, secrets, bot,
+  service and dashboard. The default instance stays exactly as it was.
+- **`ferrule instances list | new | remove`.** `new` runs the setup;
+  `remove` keeps the files unless `--purge`, which asks first. Setup on an
+  existing install offers "Another instance".
+- **Collisions caught.** Doctor and setup fail on a shared bot (naming the
+  other instance), dashboard port, workspace, SSH workspace or relay.
+- **Updates stay safe.** Instances on one binary update together; a pin
+  or `auto = false` in any of them holds the rest, and a rollback covers
+  all.
+- **Everything is per instance:** the service and update units, doctor,
+  status, the dashboard's console, fix buttons and restart, the relay
+  Worker's name, and the install one-liner's upgrade.
+
+**Done means.** Max runs a second agent beside his own on the same server,
+with its own bot and dashboard, in one command, and neither one's update,
+restart or removal touches the other.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

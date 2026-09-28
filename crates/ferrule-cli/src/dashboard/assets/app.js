@@ -1786,6 +1786,12 @@
       if (name !== current) return;
       document.getElementById("uptime").textContent = lastHealth.uptime ? "up " + lastHealth.uptime : "";
       if (lastHealth.version) document.getElementById("ver").textContent = "v" + lastHealth.version;
+      if (lastHealth.instance) {
+        // A named instance (M38): which agent this page runs, in the header and the tab.
+        document.getElementById("inst").textContent = lastHealth.instance;
+        document.getElementById("inst").hidden = false;
+        document.title = "ferrule · " + lastHealth.instance;
+      }
       document.getElementById("live-led").className = "led ok pulse";
       document.body.classList.toggle("running",
         (lastHealth.turns || []).some((t) => t.busy_secs !== null && t.busy_secs !== undefined));

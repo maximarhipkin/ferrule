@@ -652,6 +652,7 @@ fn a_link_signs_in_once_for_the_owner_only_and_dashboard_off_revokes_it() {
     let health = page.read("health");
     assert_eq!(health["gateway"], true);
     assert_eq!(health["kill"]["on"], false);
+    assert!(health.get("instance").is_none(), "the default names none");
 
     // A POST without the CSRF header, or from another origin, is refused.
     let o = origin(port);
@@ -768,6 +769,27 @@ fn a_session_survives_a_restart_and_so_do_revocation_and_a_used_link() {
     let _gw = gateway(home, &[]);
     let port = restarted_port(home);
     assert_eq!(Page { port, ..page }.get("health").0, 401);
+}
+
+#[test]
+fn a_named_instances_page_says_which_and_its_console_runs_there() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let dir = home(&two(&a, &b, "", &telegram(&tg)));
+    let home = dir.path();
+    let _gw = gateway(home, &[("FERRULE_INSTANCE", "work")]);
+    let (_, page) = sign_in(&tg, 0);
+    assert_eq!(page.read("health")["instance"], "work");
+
+    // A console line runs as the same instance, never the default.
+    let (s, v) = page.post("console/run", json!({ "line": "config path" }));
+    assert_eq!(s, 200, "{v}");
+    let id = v["job"]["id"].as_str().unwrap().to_string();
+    let job = page.until(&format!("console/job?id={id}&from=0"), |j| {
+        j["done"] == true
+    });
+    let out = job["text"].as_str().unwrap();
+    assert!(out.contains("instance  work"), "{job}");
 }
 
 /// The port of a freshly started gateway's page, from `ferrule dashboard

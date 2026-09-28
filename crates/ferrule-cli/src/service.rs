@@ -9,6 +9,10 @@
 //! system user (no login, no sudo) that owns only its data dir and
 //! workspace, under systemd's own hardening — a wall under the sandbox,
 //! since otherwise every command the agent runs would start as root.
+//!
+//! M38: every name here belongs to an instance ([`Svc`]). The default's are
+//! the constants below, unchanged; a named instance's are derived from its
+//! name (docs/m38-instances.md §2).
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -33,7 +37,7 @@ pub const UPDATE_SERVICE: &str = "ferrule-update.service";
 pub const UPDATE_TIMER: &str = "ferrule-update.timer";
 pub const UPDATE_PATH: &str = "ferrule-update.path";
 pub const UPDATE_LABEL: &str = "ai.ferrule.update";
-const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
+pub const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
 
 /// Whose service this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +105,8 @@ pub struct Spec {
     pub workspace: PathBuf,
     pub config: PathBuf,
     pub path_env: String,
+    /// M38: the instance the units belong to; `None` is the default.
+    pub instance: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,77 +120,705 @@ pub enum Status {
     },
 }
 
-/// Where the unit file goes.
-pub fn unit_path() -> Result<PathBuf> {
-    if scope() == Scope::System {
-        return Ok(PathBuf::from(SYSTEM_UNIT_PATH));
+/// One instance's service in one scope (M38): every name and path that
+/// names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Svc {
+    pub instance: Option<String>,
+    pub scope: Scope,
+}
+
+impl Svc {
+    /// This process's instance, in this process's scope.
+    pub fn current() -> Self {
+        Svc {
+            instance: crate::instance::current(),
+            scope: scope(),
+        }
     }
-    let home = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?;
-    Ok(if cfg!(target_os = "macos") {
-        home.join("Library/LaunchAgents")
-            .join(format!("{LAUNCHD_LABEL}.plist"))
-    } else {
-        dirs::config_dir()
-            .unwrap_or_else(|| home.join(".config"))
-            .join("systemd/user")
-            .join(SYSTEMD_UNIT)
-    })
-}
 
-/// Where launchd sends the gateway's output; systemd has the journal.
-pub fn log_path() -> Option<PathBuf> {
-    cfg!(target_os = "macos")
-        .then(dirs::home_dir)
-        .flatten()
-        .map(|home| home.join("Library/Logs/ferrule/gateway.log"))
-}
-
-/// How to read the gateway's logs, for messages.
-pub fn logs_hint() -> String {
-    match log_path() {
-        Some(path) => format!("tail -f {}", path.display()),
-        None if scope() == Scope::System => "journalctl -u ferrule -f".into(),
-        None => "journalctl --user -u ferrule -f".into(),
+    pub fn new(instance: Option<&str>, scope: Scope) -> Self {
+        Svc {
+            instance: instance.map(str::to_string),
+            scope,
+        }
     }
-}
 
-pub fn status() -> Status {
-    let unit = match unit_path() {
-        Ok(unit) => unit,
-        Err(e) => return Status::Unsupported(e.to_string()),
-    };
-    if cfg!(target_os = "macos") {
+    fn name(&self) -> Option<&str> {
+        self.instance.as_deref()
+    }
+
+    /// `ferrule`, or `ferrule@<name>`: what `systemctl` and `journalctl -u`
+    /// take.
+    pub fn short(&self) -> String {
+        match self.name() {
+            None => "ferrule".into(),
+            Some(n) => format!("ferrule@{n}"),
+        }
+    }
+
+    pub fn systemd_unit(&self) -> String {
+        match self.name() {
+            None => SYSTEMD_UNIT.into(),
+            Some(n) => format!("ferrule@{n}.service"),
+        }
+    }
+
+    pub fn launchd_label(&self) -> String {
+        label(LAUNCHD_LABEL, self.name())
+    }
+
+    /// `ferrule-update.<kind>`, or `ferrule-update@<name>.<kind>`.
+    pub fn update_unit(&self, kind: &str) -> String {
+        update_unit_name(kind, self.name())
+    }
+
+    pub fn update_label(&self) -> String {
+        label(UPDATE_LABEL, self.name())
+    }
+
+    pub fn system_user(&self) -> String {
+        match self.name() {
+            None => SYSTEM_USER.into(),
+            Some(n) => format!("ferrule-{n}"),
+        }
+    }
+
+    pub fn system_config(&self) -> PathBuf {
+        match self.name() {
+            None => SYSTEM_CONFIG.into(),
+            Some(n) => format!("/etc/ferrule-{n}/config.toml").into(),
+        }
+    }
+
+    pub fn system_home(&self) -> PathBuf {
+        match self.name() {
+            None => SYSTEM_HOME.into(),
+            Some(n) => format!("/var/lib/ferrule-{n}").into(),
+        }
+    }
+
+    pub fn system_data(&self) -> PathBuf {
+        match self.name() {
+            None => SYSTEM_DATA.into(),
+            Some(_) => self.system_home().join("data"),
+        }
+    }
+
+    pub fn system_workspace(&self) -> PathBuf {
+        match self.name() {
+            None => SYSTEM_WORKSPACE.into(),
+            Some(_) => self.system_home().join("workspace"),
+        }
+    }
+
+    pub fn system_unit_path(&self) -> PathBuf {
+        match self.name() {
+            None => SYSTEM_UNIT_PATH.into(),
+            Some(_) => Path::new(SYSTEM_UNIT_DIR).join(self.systemd_unit()),
+        }
+    }
+
+    /// Where the unit file goes.
+    pub fn unit_path(&self) -> Result<PathBuf> {
+        if self.scope == Scope::System {
+            return Ok(self.system_unit_path());
+        }
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("no home dir"))?;
+        Ok(if cfg!(target_os = "macos") {
+            launch_agents(&home).join(format!("{}.plist", self.launchd_label()))
+        } else {
+            user_unit_dir(&home).join(self.systemd_unit())
+        })
+    }
+
+    /// Where launchd sends the gateway's output; systemd has the journal.
+    pub fn log_path(&self) -> Option<PathBuf> {
+        cfg!(target_os = "macos")
+            .then(dirs::home_dir)
+            .flatten()
+            .map(|home| {
+                home.join("Library/Logs")
+                    .join(crate::instance::dir_name(self.name()))
+                    .join("gateway.log")
+            })
+    }
+
+    /// How to read the gateway's logs, for messages.
+    pub fn logs_hint(&self) -> String {
+        match self.log_path() {
+            Some(path) => format!("tail -f {}", path.display()),
+            None if self.scope == Scope::System => format!("journalctl -u {} -f", self.short()),
+            None => format!("journalctl --user -u {} -f", self.short()),
+        }
+    }
+
+    /// The command that restarts the service, for messages.
+    pub fn restart_hint(&self) -> String {
+        if cfg!(target_os = "macos") {
+            format!(
+                "launchctl kickstart -k gui/$(id -u)/{}",
+                self.launchd_label()
+            )
+        } else if self.scope == Scope::System {
+            format!("sudo systemctl restart {}", self.short())
+        } else {
+            format!("systemctl --user restart {}", self.short())
+        }
+    }
+
+    pub fn status(&self) -> Status {
+        let unit = match self.unit_path() {
+            Ok(unit) => unit,
+            Err(e) => return Status::Unsupported(e.to_string()),
+        };
+        if cfg!(target_os = "macos") {
+            if !unit.exists() {
+                return Status::NotInstalled;
+            }
+            let running = launchctl(&["print", &self.launchd_target()])
+                .map(|out| out.contains("state = running"))
+                .unwrap_or(false);
+            return Status::Installed { running, unit };
+        }
+        if !cfg!(target_os = "linux") {
+            return Status::Unsupported(
+                "background services are set up on Linux and macOS only for now".into(),
+            );
+        }
+        if let Err(why) = self.systemd_available() {
+            return Status::Unsupported(why);
+        }
         if !unit.exists() {
             return Status::NotInstalled;
         }
-        let running = launchctl(&["print", &launchd_target()])
-            .map(|out| out.contains("state = running"))
-            .unwrap_or(false);
-        return Status::Installed { running, unit };
+        let running = manager("systemctl")
+            .args(self.scope_flag())
+            .args(["is-active", "--quiet", &self.systemd_unit()])
+            .status()
+            .is_ok_and(|s| s.success());
+        Status::Installed { running, unit }
     }
-    if !cfg!(target_os = "linux") {
-        return Status::Unsupported(
-            "background services are set up on Linux and macOS only for now".into(),
-        );
+
+    /// The config and workspace the installed unit pins.
+    pub fn installed(&self) -> Option<(PathBuf, PathBuf)> {
+        parse_unit(&std::fs::read_to_string(self.unit_path().ok()?).ok()?)
     }
-    if let Err(why) = systemd_available() {
-        return Status::Unsupported(why);
+
+    /// The binary the installed unit runs.
+    pub fn installed_exe(&self) -> Option<PathBuf> {
+        installed_exe_at(&self.unit_path().ok()?)
     }
-    if !unit.exists() {
-        return Status::NotInstalled;
+
+    /// Has the service's binary been replaced since the service started —
+    /// an upgrade it hasn't picked up? `None` when that can't be told (not
+    /// running, or no `ps`).
+    pub fn binary_changed_since_start(&self) -> Option<bool> {
+        let exe = self.installed_exe()?;
+        let pid = self.main_pid()?;
+        #[cfg(target_os = "linux")]
+        if let Ok(link) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+            if link.to_string_lossy().ends_with(" (deleted)") {
+                return Some(true);
+            }
+        }
+        let out = Command::new("ps")
+            .args(["-o", "etime=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        let running_for = parse_etime(String::from_utf8_lossy(&out.stdout).trim())?;
+        let modified = std::fs::metadata(&exe).ok()?.modified().ok()?;
+        let age = modified.elapsed().unwrap_or_default().as_secs();
+        Some(changed_since_start(age, running_for))
     }
-    let running = manager("systemctl")
-        .args(scope_flag())
-        .args(["is-active", "--quiet", SYSTEMD_UNIT])
-        .status()
-        .is_ok_and(|s| s.success());
-    Status::Installed { running, unit }
+
+    /// The running service's process id.
+    pub fn main_pid(&self) -> Option<u32> {
+        let pid = if cfg!(target_os = "macos") {
+            let out = launchctl(&["print", &self.launchd_target()]).ok()?;
+            out.lines()
+                .find_map(|l| l.trim().strip_prefix("pid = "))?
+                .trim()
+                .parse()
+                .ok()?
+        } else {
+            let out = manager("systemctl")
+                .args(self.scope_flag())
+                .args([
+                    "show",
+                    "--property=MainPID",
+                    "--value",
+                    &self.systemd_unit(),
+                ])
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&out.stdout).trim().parse().ok()?
+        };
+        (pid != 0).then_some(pid)
+    }
+
+    /// Write the unit, then enable and start it (restarting it if it was
+    /// already running, so a changed unit takes effect).
+    pub fn install(&self, spec: &Spec) -> Result<Vec<String>> {
+        let unit = self.unit_path()?;
+        let dir = unit.parent().context("unit path has no parent")?;
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let mut notes = Vec::new();
+        let data = crate::config::data_dir()?;
+        if cfg!(target_os = "macos") {
+            let log = self.log_path().context("no home dir for the log")?;
+            std::fs::create_dir_all(log.parent().context("log path has no parent")?)?;
+            std::fs::write(&unit, launchd_plist(spec, &log))
+                .with_context(|| format!("writing {}", unit.display()))?;
+            // bootstrap refuses a label that's already loaded; bootout first.
+            let _ = launchctl(&["bootout", &self.launchd_target()]);
+            launchctl(&[
+                "bootstrap",
+                &format!("gui/{}", uid()),
+                &unit.to_string_lossy(),
+            ])?;
+            self.install_update_units(spec, &data)?;
+            return Ok(notes);
+        }
+        if !cfg!(target_os = "linux") {
+            bail!("background services are set up on Linux and macOS only");
+        }
+        self.systemd_available().map_err(|why| anyhow!(why))?;
+        if self.scope == Scope::System {
+            return self.install_system(spec, &data);
+        }
+        let paths = [&spec.exe, &spec.workspace, &spec.config];
+        if paths
+            .iter()
+            .any(|p| p.to_string_lossy().contains(['\n', '\r']))
+        {
+            bail!("a path with a line break can't go in a systemd unit");
+        }
+        std::fs::write(&unit, systemd_unit(spec))
+            .with_context(|| format!("writing {}", unit.display()))?;
+        self.install_update_units(spec, &data)?;
+        let name = self.systemd_unit();
+        self.systemctl(&["enable", &name])?;
+        self.systemctl(&["restart", &name])?;
+        // Without lingering, user services stop at logout and don't start at
+        // boot — which is the whole point on a server.
+        if !lingering() {
+            let user = std::env::var("USER").unwrap_or_default();
+            let ok = manager("loginctl")
+                .args(["enable-linger", &user])
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                notes.push(format!(
+                    "couldn't turn on lingering, so the service stops when you log out. \
+                     To keep it running: sudo loginctl enable-linger {user}"
+                ));
+            }
+        }
+        Ok(notes)
+    }
+
+    pub fn restart(&self) -> Result<()> {
+        if cfg!(target_os = "macos") {
+            launchctl(&["kickstart", "-k", &self.launchd_target()])?;
+            Ok(())
+        } else {
+            self.systemctl(&["restart", &self.systemd_unit()])
+        }
+    }
+
+    /// Stop, disable and delete the unit.
+    pub fn uninstall(&self) -> Result<()> {
+        let unit = self.unit_path()?;
+        self.uninstall_update_units()?;
+        if cfg!(target_os = "macos") {
+            let _ = launchctl(&["bootout", &self.launchd_target()]);
+        } else {
+            let _ = self.systemctl(&["disable", "--now", &self.systemd_unit()]);
+        }
+        remove_if_there(&unit)?;
+        if !cfg!(target_os = "macos") {
+            let _ = self.systemctl(&["daemon-reload"]);
+        }
+        Ok(())
+    }
+
+    /// Where the update units go: beside the gateway's.
+    fn update_unit_dir(&self) -> Result<PathBuf> {
+        if self.scope == Scope::System {
+            return Ok(PathBuf::from(SYSTEM_UNIT_DIR));
+        }
+        Ok(self
+            .unit_path()?
+            .parent()
+            .context("unit path has no parent")?
+            .to_path_buf())
+    }
+
+    /// Are this instance's update units installed, the system's or this
+    /// user's? The gateway asks as the service's user, not as root.
+    pub fn update_units_installed(&self) -> bool {
+        let name = if cfg!(target_os = "macos") {
+            format!("{}.plist", self.update_label())
+        } else {
+            self.update_unit("timer")
+        };
+        (cfg!(target_os = "linux") && Path::new(SYSTEM_UNIT_DIR).join(&name).exists())
+            || self
+                .update_unit_dir()
+                .is_ok_and(|dir| dir.join(&name).exists())
+    }
+
+    /// Write, then turn on, the apply unit with its timer and path unit
+    /// (launchd: one agent with a calendar and a watched path). Called with
+    /// the gateway's unit already written, so one `daemon-reload` covers
+    /// both.
+    pub fn install_update_units(&self, spec: &Spec, data: &Path) -> Result<()> {
+        let dir = self.update_unit_dir()?;
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::create_dir_all(data.join("update"))?;
+        let request = data.join("update").join("request");
+        if cfg!(target_os = "macos") {
+            let label = self.update_label();
+            let plist = dir.join(format!("{label}.plist"));
+            let log = self
+                .log_path()
+                .context("no home dir for the log")?
+                .with_file_name("update.log");
+            // A random minute of the night, so installs don't all ask at once.
+            let slot = uuid::Uuid::new_v4().as_u128() as u32;
+            let (hour, minute) = (2 + slot % 4, (slot >> 8) % 60);
+            std::fs::write(
+                &plist,
+                launchd_update_plist(spec, &request, &log, hour, minute),
+            )
+            .with_context(|| format!("writing {}", plist.display()))?;
+            let target = format!("gui/{}/{label}", uid());
+            let _ = launchctl(&["bootout", &target]);
+            launchctl(&[
+                "bootstrap",
+                &format!("gui/{}", uid()),
+                &plist.to_string_lossy(),
+            ])?;
+            return Ok(());
+        }
+        if request.to_string_lossy().contains(['\n', '\r']) {
+            bail!("a path with a line break can't go in a systemd unit");
+        }
+        let system = self.scope == Scope::System;
+        if system {
+            // Root's: the service's user reads it, only root writes it.
+            let state = self.system_home().join("update");
+            std::fs::create_dir_all(&state)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755))?;
+            }
+            let user = self.system_user();
+            let owner = format!("{user}:{user}");
+            let _ = run(Command::new("chown").arg(&owner).arg(data.join("update")));
+        }
+        let service = if system {
+            system_update_unit(spec, data)
+        } else {
+            user_update_unit(spec)
+        };
+        let (timer, path) = (self.update_unit("timer"), self.update_unit("path"));
+        for (name, text) in [
+            (self.update_unit("service"), service),
+            (timer.clone(), update_timer()),
+            (
+                path.clone(),
+                update_path_unit(&request, system, self.name()),
+            ),
+        ] {
+            std::fs::write(dir.join(&name), text)
+                .with_context(|| format!("writing {}", dir.join(&name).display()))?;
+        }
+        self.systemctl(&["daemon-reload"])?;
+        self.systemctl(&["enable", "--now", &timer, &path])?;
+        Ok(())
+    }
+
+    /// Stop and delete the update units; none there is fine.
+    pub fn uninstall_update_units(&self) -> Result<()> {
+        let dir = self.update_unit_dir()?;
+        if cfg!(target_os = "macos") {
+            let label = self.update_label();
+            let _ = launchctl(&["bootout", &format!("gui/{}/{label}", uid())]);
+            remove_if_there(&dir.join(format!("{label}.plist")))?;
+            return Ok(());
+        }
+        if !cfg!(target_os = "linux") {
+            return Ok(());
+        }
+        let names = [
+            self.update_unit("timer"),
+            self.update_unit("path"),
+            self.update_unit("service"),
+        ];
+        if names.iter().any(|n| dir.join(n).exists()) {
+            let _ = self.systemctl(&["disable", "--now", &names[0], &names[1]]);
+        }
+        for name in &names {
+            remove_if_there(&dir.join(name))?;
+        }
+        Ok(())
+    }
+
+    /// The system unit: create the account if needed, hand it its data dir
+    /// and workspace, and let it read (only read) the config.
+    fn install_system(&self, spec: &Spec, data: &Path) -> Result<Vec<String>> {
+        let problems = system_problems(spec, data);
+        if !problems.is_empty() {
+            bail!("{}", problems.join("; "));
+        }
+        let created = self.ensure_system_user()?;
+        std::fs::create_dir_all(data.join("update"))?;
+        self.own_system_files(Some(&spec.workspace))?;
+        let unit = self.system_unit_path();
+        std::fs::write(&unit, system_unit(spec, data))
+            .with_context(|| format!("writing {}", unit.display()))?;
+        self.install_update_units(spec, data)?;
+        let name = self.systemd_unit();
+        self.systemctl(&["enable", &name])?;
+        self.systemctl(&["restart", &name])?;
+        let mut notes = Vec::new();
+        if created {
+            notes.push(format!(
+                "created the system user `{}` (no login, no sudo); it owns {} and {}",
+                self.system_user(),
+                data.display(),
+                spec.workspace.display()
+            ));
+        }
+        Ok(notes)
+    }
+
+    /// Create the system user if it doesn't exist; `true` if it was
+    /// created. An existing one must be a system account nobody can log in
+    /// as, outside every admin group.
+    fn ensure_system_user(&self) -> Result<bool> {
+        let user = self.system_user();
+        let out = Command::new("getent")
+            .args(["passwd", &user])
+            .output()
+            .context("running getent")?;
+        if out.status.success() {
+            let groups = Command::new("id")
+                .args(["-nG", &user])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+            check_existing_user(&user, &String::from_utf8_lossy(&out.stdout), &groups)
+                .map_err(|why| anyhow!(why))?;
+            return Ok(false);
+        }
+        let shell = ["/usr/sbin/nologin", "/sbin/nologin"]
+            .into_iter()
+            .find(|p| Path::new(p).exists())
+            .unwrap_or("/bin/false");
+        let home = self.system_home();
+        run(Command::new("useradd")
+            .args(["--system", "--user-group", "--home-dir"])
+            .arg(&home)
+            .args(["--no-create-home", "--shell", shell, "--comment"])
+            .arg(match self.name() {
+                None => "ferrule agent".to_string(),
+                Some(n) => format!("ferrule agent {n}"),
+            })
+            .arg(&user))?;
+        Ok(true)
+    }
+
+    /// After root wrote them: the service's user owns its home, data dir
+    /// and workspace; the config stays root's, readable by its group. A
+    /// no-op while the account doesn't exist yet.
+    pub fn own_system_files(&self, workspace: Option<&Path>) -> Result<()> {
+        let user = self.system_user();
+        let exists = Command::new("getent")
+            .args(["passwd", &user])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !exists {
+            return Ok(());
+        }
+        let owner = format!("{user}:{user}");
+        let home = self.system_home();
+        std::fs::create_dir_all(&home)?;
+        run(Command::new("chown").arg(&owner).arg(&home))?;
+        run(Command::new("chmod").arg("750").arg(&home))?;
+        let data = crate::config::data_dir()?;
+        let mut mine = vec![data.as_path()];
+        mine.extend(workspace);
+        for dir in mine {
+            run(Command::new("chown").arg("-R").arg(&owner).arg(dir))?;
+        }
+        let config = self.system_config();
+        let group = format!("root:{user}");
+        if let Some(dir) = config.parent().filter(|d| d.exists()) {
+            run(Command::new("chown").arg(&group).arg(dir))?;
+            run(Command::new("chmod").arg("750").arg(dir))?;
+        }
+        if config.exists() {
+            run(Command::new("chown").arg(&group).arg(&config))?;
+            run(Command::new("chmod").arg("640").arg(&config))?;
+        }
+        Ok(())
+    }
+
+    /// Is there a systemd manager to talk to? Containers, WSL without
+    /// systemd and plain SSH sessions without a user bus often have none.
+    fn systemd_available(&self) -> std::result::Result<(), String> {
+        let out = manager("systemctl")
+            .args(self.scope_flag())
+            .arg("show-environment")
+            .output()
+            .map_err(|_| "systemctl isn't installed".to_string())?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            let err = String::from_utf8_lossy(&out.stderr);
+            Err(format!(
+                "no systemd {} ({})",
+                if self.scope == Scope::System {
+                    "running"
+                } else {
+                    "user session"
+                },
+                err.lines().next().unwrap_or("systemctl failed").trim()
+            ))
+        }
+    }
+
+    /// `--user`, except for the system unit.
+    fn scope_flag(&self) -> &'static [&'static str] {
+        match self.scope {
+            Scope::User => &["--user"],
+            Scope::System => &[],
+        }
+    }
+
+    fn systemctl(&self, args: &[&str]) -> Result<()> {
+        let out = manager("systemctl")
+            .args(self.scope_flag())
+            .args(args)
+            .output()?;
+        if !out.status.success() {
+            bail!(
+                "systemctl {} failed: {}",
+                self.scope_flag()
+                    .iter()
+                    .chain(args)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    fn launchd_target(&self) -> String {
+        format!("gui/{}/{}", uid(), self.launchd_label())
+    }
+}
+
+/// `base`, or `base.<name>`: a launchd label (a name has no dots).
+fn label(base: &str, instance: Option<&str>) -> String {
+    match instance {
+        None => base.into(),
+        Some(n) => format!("{base}.{n}"),
+    }
+}
+
+fn update_unit_name(kind: &str, instance: Option<&str>) -> String {
+    match (instance, kind) {
+        (None, "service") => UPDATE_SERVICE.into(),
+        (None, "timer") => UPDATE_TIMER.into(),
+        (None, "path") => UPDATE_PATH.into(),
+        (None, _) => format!("ferrule-update.{kind}"),
+        (Some(n), _) => format!("ferrule-update@{n}.{kind}"),
+    }
+}
+
+fn launch_agents(home: &Path) -> PathBuf {
+    home.join("Library/LaunchAgents")
+}
+
+fn user_unit_dir(home: &Path) -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| home.join(".config"))
+        .join("systemd/user")
+}
+
+/// The named instances with a gateway unit in `scope` here:
+/// `ferrule@<name>.service`, or `ai.ferrule.gateway.<name>.plist`.
+pub fn unit_names(scope: Scope) -> Vec<String> {
+    let dir = match (scope, dirs::home_dir()) {
+        (Scope::System, _) => PathBuf::from(SYSTEM_UNIT_DIR),
+        (Scope::User, Some(home)) if cfg!(target_os = "macos") => launch_agents(&home),
+        (Scope::User, Some(home)) => user_unit_dir(&home),
+        (Scope::User, None) => return Vec::new(),
+    };
+    names_in_units(&dir, cfg!(target_os = "macos") && scope == Scope::User)
+}
+
+/// The instance names in a unit dir's file names.
+pub fn names_in_units(dir: &Path, launchd: bool) -> Vec<String> {
+    let (prefix, suffix) = if launchd {
+        ("ai.ferrule.gateway.", ".plist")
+    } else {
+        ("ferrule@", ".service")
+    };
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name();
+            let name = file.to_str()?.strip_prefix(prefix)?.strip_suffix(suffix)?;
+            crate::instance::validate(name)
+                .is_ok()
+                .then(|| name.to_string())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+// The current instance's service: what setup, doctor, status, stop and the
+// update flow use.
+
+/// How to read the gateway's logs, for messages.
+pub fn logs_hint() -> String {
+    Svc::current().logs_hint()
+}
+
+pub fn status() -> Status {
+    Svc::current().status()
 }
 
 /// The config and workspace an installed unit pins — for `ferrule doctor`
 /// to compare with what this shell sees, and for setup's defaults.
 pub fn installed() -> Option<(PathBuf, PathBuf)> {
-    parse_unit(&std::fs::read_to_string(unit_path().ok()?).ok()?)
+    Svc::current().installed()
+}
+
+/// The binary an installed unit runs.
+pub fn installed_exe() -> Option<PathBuf> {
+    Svc::current().installed_exe()
+}
+
+/// The binary the unit at `unit` runs.
+pub fn installed_exe_at(unit: &Path) -> Option<PathBuf> {
+    parse_exe(&std::fs::read_to_string(unit).ok()?)
+}
+
+/// The pinned config and workspace of the unit at `unit`.
+pub fn installed_at(unit: &Path) -> Option<(PathBuf, PathBuf)> {
+    parse_unit(&std::fs::read_to_string(unit).ok()?)
 }
 
 fn parse_unit(text: &str) -> Option<(PathBuf, PathBuf)> {
@@ -211,14 +845,15 @@ fn parse_unit(text: &str) -> Option<(PathBuf, PathBuf)> {
     ))
 }
 
-/// The binary an installed unit runs.
-pub fn installed_exe() -> Option<PathBuf> {
-    parse_exe(&std::fs::read_to_string(unit_path().ok()?).ok()?)
-}
-
-/// The binary the unit at `unit` runs.
-pub fn installed_exe_at(unit: &Path) -> Option<PathBuf> {
-    parse_exe(&std::fs::read_to_string(unit).ok()?)
+/// The data dir a system unit pins (`FERRULE_DATA_DIR`); user units don't.
+pub fn pinned_data(unit: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(unit).ok()?;
+    text.lines().find_map(|line| {
+        let value = line
+            .strip_prefix("Environment=\"FERRULE_DATA_DIR=")?
+            .strip_suffix('"')?;
+        Some(PathBuf::from(systemd_unescape(value)))
+    })
 }
 
 fn parse_exe(text: &str) -> Option<PathBuf> {
@@ -248,26 +883,9 @@ fn parse_exe(text: &str) -> Option<PathBuf> {
     )))
 }
 
-/// Has the service's binary been replaced since the service started — an
-/// upgrade it hasn't picked up? `None` when that can't be told (not
-/// running, or no `ps`).
+/// Has the service's binary been replaced since the service started?
 pub fn binary_changed_since_start() -> Option<bool> {
-    let exe = installed_exe()?;
-    let pid = main_pid()?;
-    #[cfg(target_os = "linux")]
-    if let Ok(link) = std::fs::read_link(format!("/proc/{pid}/exe")) {
-        if link.to_string_lossy().ends_with(" (deleted)") {
-            return Some(true);
-        }
-    }
-    let out = Command::new("ps")
-        .args(["-o", "etime=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    let running_for = parse_etime(String::from_utf8_lossy(&out.stdout).trim())?;
-    let modified = std::fs::metadata(&exe).ok()?.modified().ok()?;
-    let age = modified.elapsed().unwrap_or_default().as_secs();
-    Some(changed_since_start(age, running_for))
+    Svc::current().binary_changed_since_start()
 }
 
 /// A binary `binary_age` seconds old under a process `running_for`
@@ -295,234 +913,32 @@ pub fn parse_etime(text: &str) -> Option<u64> {
     Some(((days * 24 + h) * 60 + m) * 60 + s)
 }
 
-/// The running service's process id.
-fn main_pid() -> Option<u32> {
-    let pid = if cfg!(target_os = "macos") {
-        let out = launchctl(&["print", &launchd_target()]).ok()?;
-        out.lines()
-            .find_map(|l| l.trim().strip_prefix("pid = "))?
-            .trim()
-            .parse()
-            .ok()?
-    } else {
-        let out = manager("systemctl")
-            .args(scope_flag())
-            .args(["show", "--property=MainPID", "--value", SYSTEMD_UNIT])
-            .output()
-            .ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().parse().ok()?
-    };
-    (pid != 0).then_some(pid)
-}
-
 /// The command that restarts the service, for messages.
 pub fn restart_hint() -> String {
-    if cfg!(target_os = "macos") {
-        format!("launchctl kickstart -k gui/$(id -u)/{LAUNCHD_LABEL}")
-    } else if scope() == Scope::System {
-        "sudo systemctl restart ferrule".into()
-    } else {
-        "systemctl --user restart ferrule".into()
-    }
+    Svc::current().restart_hint()
 }
 
-/// Write the unit, then enable and start it (restarting it if it was
-/// already running, so a changed unit takes effect).
+/// Write the unit, then enable and start it.
 pub fn install(spec: &Spec) -> Result<Vec<String>> {
-    let unit = unit_path()?;
-    let dir = unit.parent().context("unit path has no parent")?;
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let mut notes = Vec::new();
-    if cfg!(target_os = "macos") {
-        let log = log_path().context("no home dir for the log")?;
-        std::fs::create_dir_all(log.parent().context("log path has no parent")?)?;
-        std::fs::write(&unit, launchd_plist(spec, &log))
-            .with_context(|| format!("writing {}", unit.display()))?;
-        // bootstrap refuses a label that's already loaded; bootout first.
-        let _ = launchctl(&["bootout", &launchd_target()]);
-        launchctl(&[
-            "bootstrap",
-            &format!("gui/{}", uid()),
-            &unit.to_string_lossy(),
-        ])?;
-        install_update_units(spec, &crate::config::data_dir()?)?;
-        return Ok(notes);
-    }
-    if !cfg!(target_os = "linux") {
-        bail!("background services are set up on Linux and macOS only");
-    }
-    systemd_available().map_err(|why| anyhow!(why))?;
-    if scope() == Scope::System {
-        return install_system(spec, &crate::config::data_dir()?);
-    }
-    let paths = [&spec.exe, &spec.workspace, &spec.config];
-    if paths
-        .iter()
-        .any(|p| p.to_string_lossy().contains(['\n', '\r']))
-    {
-        bail!("a path with a line break can't go in a systemd unit");
-    }
-    std::fs::write(&unit, systemd_unit(spec))
-        .with_context(|| format!("writing {}", unit.display()))?;
-    install_update_units(spec, &crate::config::data_dir()?)?;
-    systemctl(&["enable", SYSTEMD_UNIT])?;
-    systemctl(&["restart", SYSTEMD_UNIT])?;
-    // Without lingering, user services stop at logout and don't start at
-    // boot — which is the whole point on a server.
-    if !lingering() {
-        let user = std::env::var("USER").unwrap_or_default();
-        let ok = manager("loginctl")
-            .args(["enable-linger", &user])
-            .status()
-            .is_ok_and(|s| s.success());
-        if !ok {
-            notes.push(format!(
-                "couldn't turn on lingering, so the service stops when you log out. \
-                 To keep it running: sudo loginctl enable-linger {user}"
-            ));
-        }
-    }
-    Ok(notes)
+    Svc::current().install(spec)
 }
 
 pub fn restart() -> Result<()> {
-    if cfg!(target_os = "macos") {
-        launchctl(&["kickstart", "-k", &launchd_target()])?;
-        Ok(())
-    } else {
-        systemctl(&["restart", SYSTEMD_UNIT])
-    }
+    Svc::current().restart()
 }
 
 /// Stop, disable and delete the unit.
 pub fn uninstall() -> Result<()> {
-    let unit = unit_path()?;
-    uninstall_update_units()?;
-    if cfg!(target_os = "macos") {
-        let _ = launchctl(&["bootout", &launchd_target()]);
-    } else {
-        let _ = systemctl(&["disable", "--now", SYSTEMD_UNIT]);
-    }
-    match std::fs::remove_file(&unit) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            return Err(e).with_context(|| format!("removing {}", unit.display()))
-        }
-        _ => {}
-    }
-    if !cfg!(target_os = "macos") {
-        let _ = systemctl(&["daemon-reload"]);
-    }
-    Ok(())
+    Svc::current().uninstall()
 }
 
-/// Where the update units go: beside the gateway's.
-fn update_unit_dir() -> Result<PathBuf> {
-    if scope() == Scope::System {
-        return Ok(PathBuf::from(SYSTEM_UNIT_DIR));
-    }
-    Ok(unit_path()?
-        .parent()
-        .context("unit path has no parent")?
-        .to_path_buf())
-}
-
-/// Are the update units installed, the system's or this user's? The
-/// gateway asks as the service's user, not as root.
+/// Are the update units installed, the system's or this user's?
 pub fn update_units_installed() -> bool {
-    let name = if cfg!(target_os = "macos") {
-        format!("{UPDATE_LABEL}.plist")
-    } else {
-        UPDATE_TIMER.to_string()
-    };
-    (cfg!(target_os = "linux") && Path::new(SYSTEM_UNIT_DIR).join(&name).exists())
-        || update_unit_dir().is_ok_and(|dir| dir.join(&name).exists())
+    Svc::current().update_units_installed()
 }
 
-/// Write, then turn on, the apply unit with its timer and path unit
-/// (launchd: one agent with a calendar and a watched path). Called with the
-/// gateway's unit already written, so one `daemon-reload` covers both.
-pub fn install_update_units(spec: &Spec, data: &Path) -> Result<()> {
-    let dir = update_unit_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    std::fs::create_dir_all(data.join("update"))?;
-    let request = data.join("update").join("request");
-    if cfg!(target_os = "macos") {
-        let plist = dir.join(format!("{UPDATE_LABEL}.plist"));
-        let log = log_path()
-            .context("no home dir for the log")?
-            .with_file_name("update.log");
-        // A random minute of the night, so installs don't all ask at once.
-        let slot = uuid::Uuid::new_v4().as_u128() as u32;
-        let (hour, minute) = (2 + slot % 4, (slot >> 8) % 60);
-        std::fs::write(
-            &plist,
-            launchd_update_plist(spec, &request, &log, hour, minute),
-        )
-        .with_context(|| format!("writing {}", plist.display()))?;
-        let target = format!("gui/{}/{UPDATE_LABEL}", uid());
-        let _ = launchctl(&["bootout", &target]);
-        launchctl(&[
-            "bootstrap",
-            &format!("gui/{}", uid()),
-            &plist.to_string_lossy(),
-        ])?;
-        return Ok(());
-    }
-    if request.to_string_lossy().contains(['\n', '\r']) {
-        bail!("a path with a line break can't go in a systemd unit");
-    }
-    let system = scope() == Scope::System;
-    if system {
-        // Root's: the service's user reads it, only root writes it.
-        let state = Path::new(SYSTEM_HOME).join("update");
-        std::fs::create_dir_all(&state)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755))?;
-        }
-        let owner = format!("{SYSTEM_USER}:{SYSTEM_USER}");
-        let _ = run(Command::new("chown").arg(&owner).arg(data.join("update")));
-    }
-    let service = if system {
-        system_update_unit(spec, data)
-    } else {
-        user_update_unit(spec)
-    };
-    for (name, text) in [
-        (UPDATE_SERVICE, service),
-        (UPDATE_TIMER, update_timer()),
-        (UPDATE_PATH, update_path_unit(&request, system)),
-    ] {
-        std::fs::write(dir.join(name), text)
-            .with_context(|| format!("writing {}", dir.join(name).display()))?;
-    }
-    systemctl(&["daemon-reload"])?;
-    systemctl(&["enable", "--now", UPDATE_TIMER, UPDATE_PATH])?;
-    Ok(())
-}
-
-/// Stop and delete the update units; none there is fine.
-pub fn uninstall_update_units() -> Result<()> {
-    let dir = update_unit_dir()?;
-    if cfg!(target_os = "macos") {
-        let _ = launchctl(&["bootout", &format!("gui/{}/{UPDATE_LABEL}", uid())]);
-        remove_if_there(&dir.join(format!("{UPDATE_LABEL}.plist")))?;
-        return Ok(());
-    }
-    if !cfg!(target_os = "linux") {
-        return Ok(());
-    }
-    if [UPDATE_TIMER, UPDATE_PATH, UPDATE_SERVICE]
-        .iter()
-        .any(|n| dir.join(n).exists())
-    {
-        let _ = systemctl(&["disable", "--now", UPDATE_TIMER, UPDATE_PATH]);
-    }
-    for name in [UPDATE_TIMER, UPDATE_PATH, UPDATE_SERVICE] {
-        remove_if_there(&dir.join(name))?;
-    }
-    Ok(())
+pub fn own_system_files(workspace: Option<&Path>) -> Result<()> {
+    Svc::current().own_system_files(workspace)
 }
 
 fn remove_if_there(path: &Path) -> Result<()> {
@@ -534,6 +950,34 @@ fn remove_if_there(path: &Path) -> Result<()> {
     }
 }
 
+/// `Environment="FERRULE_INSTANCE=<name>"` and a line break, for a named
+/// instance's systemd units; nothing for the default's.
+fn instance_env(spec: &Spec) -> String {
+    spec.instance.as_deref().map_or_else(String::new, |n| {
+        format!(
+            "Environment={}\n",
+            systemd_quote(&format!("{}={n}", crate::instance::ENV), false)
+        )
+    })
+}
+
+/// The same for a launchd plist's `EnvironmentVariables`.
+fn instance_plist_env(spec: &Spec) -> String {
+    spec.instance.as_deref().map_or_else(String::new, |n| {
+        format!(
+            "\n    <key>{}</key><string>{n}</string>",
+            crate::instance::ENV
+        )
+    })
+}
+
+/// ` (<name>)` after a description, for a named instance.
+fn instance_suffix(spec: &Spec) -> String {
+    spec.instance
+        .as_deref()
+        .map_or_else(String::new, |n| format!(" ({n})"))
+}
+
 /// The system apply unit: root, since it replaces a root-owned binary and
 /// restarts the service; everything it doesn't need is closed off. The
 /// idle wait is up to 6 h, hence the long start timeout.
@@ -543,13 +987,14 @@ pub fn system_update_unit(spec: &Spec, data: &Path) -> String {
     format!(
         "# Written by `ferrule setup` as root; `ferrule setup --refresh-service` rewrites it.\n\
          [Unit]\n\
-         Description=ferrule update (signed releases, rolled back if they don't start)\n\
+         Description=ferrule update{} (signed releases, rolled back if they don't start)\n\
          Wants=network-online.target\n\
          After=network-online.target\n\
          \n\
          [Service]\n\
          Type=oneshot\n\
          ExecStart={} update --apply\n\
+         {}\
          Environment={}\n\
          Environment={}\n\
          Environment={}\n\
@@ -561,7 +1006,9 @@ pub fn system_update_unit(spec: &Spec, data: &Path) -> String {
          ProtectKernelTunables=yes\n\
          ProtectControlGroups=yes\n\
          RestrictSUIDSGID=yes\n",
+        instance_suffix(spec),
         arg(&spec.exe),
+        instance_env(spec),
         env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
         env("FERRULE_DATA_DIR", &data.to_string_lossy()),
         env("PATH", &spec.path_env),
@@ -575,16 +1022,19 @@ pub fn user_update_unit(spec: &Spec) -> String {
     format!(
         "# Written by `ferrule setup`; `ferrule setup --refresh-service` rewrites it.\n\
          [Unit]\n\
-         Description=ferrule update (signed releases, rolled back if they don't start)\n\
+         Description=ferrule update{} (signed releases, rolled back if they don't start)\n\
          \n\
          [Service]\n\
          Type=oneshot\n\
          ExecStart={} update --apply\n\
+         {}\
          Environment={}\n\
          Environment={}\n\
          TimeoutStartSec=7h\n\
          Nice=10\n",
+        instance_suffix(spec),
         arg(&spec.exe),
+        instance_env(spec),
         env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
         env("PATH", &spec.path_env),
     )
@@ -607,8 +1057,8 @@ pub fn update_timer() -> String {
         .into()
 }
 
-/// Starts the apply unit when the gateway leaves a request.
-pub fn update_path_unit(request: &Path, system: bool) -> String {
+/// Starts the instance's apply unit when its gateway leaves a request.
+pub fn update_path_unit(request: &Path, system: bool, instance: Option<&str>) -> String {
     format!(
         "# Written by `ferrule setup`.\n\
          [Unit]\n\
@@ -616,11 +1066,12 @@ pub fn update_path_unit(request: &Path, system: bool) -> String {
          \n\
          [Path]\n\
          PathExists={}\n\
-         Unit={UPDATE_SERVICE}\n\
+         Unit={}\n\
          \n\
          [Install]\n\
          WantedBy={}\n",
         request.to_string_lossy().replace('%', "%%"),
+        update_unit_name("service", instance),
         if system {
             "paths.target"
         } else {
@@ -650,7 +1101,7 @@ pub fn launchd_update_plist(
   <key>EnvironmentVariables</key>
   <dict>
     <key>FERRULE_CONFIG</key>{config}
-    <key>PATH</key>{path}
+    <key>PATH</key>{path}{instance}
   </dict>
   <key>StartCalendarInterval</key>
   <dict>
@@ -665,41 +1116,16 @@ pub fn launchd_update_plist(
 </dict>
 </plist>
 "#,
-        label = s(UPDATE_LABEL),
+        label = s(&label(UPDATE_LABEL, spec.instance.as_deref())),
         exe = p(&spec.exe),
         update = s("update"),
         apply = s("--apply"),
         config = p(&spec.config),
         path = s(&spec.path_env),
+        instance = instance_plist_env(spec),
         request = p(request),
         log = p(log),
     )
-}
-
-/// The system unit: create the account if needed, hand it its data dir and
-/// workspace, and let it read (only read) the config.
-fn install_system(spec: &Spec, data: &Path) -> Result<Vec<String>> {
-    let problems = system_problems(spec, data);
-    if !problems.is_empty() {
-        bail!("{}", problems.join("; "));
-    }
-    let created = ensure_system_user()?;
-    std::fs::create_dir_all(data.join("update"))?;
-    own_system_files(Some(&spec.workspace))?;
-    std::fs::write(SYSTEM_UNIT_PATH, system_unit(spec, data))
-        .with_context(|| format!("writing {SYSTEM_UNIT_PATH}"))?;
-    install_update_units(spec, data)?;
-    systemctl(&["enable", SYSTEMD_UNIT])?;
-    systemctl(&["restart", SYSTEMD_UNIT])?;
-    let mut notes = Vec::new();
-    if created {
-        notes.push(format!(
-            "created the system user `{SYSTEM_USER}` (no login, no sudo); it owns {} and {}",
-            data.display(),
-            spec.workspace.display()
-        ));
-    }
-    Ok(notes)
 }
 
 /// What would stop the system unit from working: `ProtectHome=` hides
@@ -748,100 +1174,31 @@ pub fn system_problems(spec: &Spec, data: &Path) -> Vec<String> {
     problems
 }
 
-/// Create [`SYSTEM_USER`] if it doesn't exist; `true` if it was created.
-/// An existing one must be a system account nobody can log in as, outside
-/// every admin group.
-fn ensure_system_user() -> Result<bool> {
-    let out = Command::new("getent")
-        .args(["passwd", SYSTEM_USER])
-        .output()
-        .context("running getent")?;
-    if out.status.success() {
-        let groups = Command::new("id")
-            .args(["-nG", SYSTEM_USER])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
-        check_existing_user(&String::from_utf8_lossy(&out.stdout), &groups)
-            .map_err(|why| anyhow!(why))?;
-        return Ok(false);
-    }
-    let shell = ["/usr/sbin/nologin", "/sbin/nologin"]
-        .into_iter()
-        .find(|p| Path::new(p).exists())
-        .unwrap_or("/bin/false");
-    run(Command::new("useradd").args([
-        "--system",
-        "--user-group",
-        "--home-dir",
-        SYSTEM_HOME,
-        "--no-create-home",
-        "--shell",
-        shell,
-        "--comment",
-        "ferrule agent",
-        SYSTEM_USER,
-    ]))?;
-    Ok(true)
-}
-
-/// The passwd line and group list of an existing [`SYSTEM_USER`]: fine
-/// only if it's no one's login and holds no admin rights.
-pub fn check_existing_user(passwd: &str, groups: &str) -> std::result::Result<(), String> {
+/// The passwd line and group list of an existing system `user`: fine only
+/// if it's no one's login and holds no admin rights.
+pub fn check_existing_user(
+    user: &str,
+    passwd: &str,
+    groups: &str,
+) -> std::result::Result<(), String> {
     let fields: Vec<&str> = passwd.trim().split(':').collect();
     let (Some(uid), Some(shell)) = (fields.get(2), fields.get(6)) else {
-        return Err(format!(
-            "can't read the `{SYSTEM_USER}` account: {passwd:?}"
-        ));
+        return Err(format!("can't read the `{user}` account: {passwd:?}"));
     };
     if *uid == "0" {
-        return Err(format!("the existing `{SYSTEM_USER}` account is uid 0"));
+        return Err(format!("the existing `{user}` account is uid 0"));
     }
     if !(shell.ends_with("/nologin") || shell.ends_with("/false")) {
         return Err(format!(
-            "an account `{SYSTEM_USER}` already exists and can log in ({shell}); \
+            "an account `{user}` already exists and can log in ({shell}); \
              it isn't safe to run the service as it"
         ));
     }
     let admin = ["root", "sudo", "wheel", "admin", "adm", "docker", "lxd"];
     if let Some(g) = groups.split_whitespace().find(|g| admin.contains(g)) {
         return Err(format!(
-            "the existing `{SYSTEM_USER}` account is in the `{g}` group; remove it from there first"
+            "the existing `{user}` account is in the `{g}` group; remove it from there first"
         ));
-    }
-    Ok(())
-}
-
-/// After root wrote them: the service's user owns its home, data dir and
-/// workspace; the config stays root's, readable by its group. A no-op while
-/// the account doesn't exist yet.
-pub fn own_system_files(workspace: Option<&Path>) -> Result<()> {
-    let exists = Command::new("getent")
-        .args(["passwd", SYSTEM_USER])
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !exists {
-        return Ok(());
-    }
-    let owner = format!("{SYSTEM_USER}:{SYSTEM_USER}");
-    std::fs::create_dir_all(SYSTEM_HOME)?;
-    run(Command::new("chown").args([&owner, SYSTEM_HOME]))?;
-    run(Command::new("chmod").args(["750", SYSTEM_HOME]))?;
-    let data = crate::config::data_dir()?;
-    let mut mine = vec![data.as_path()];
-    mine.extend(workspace);
-    for dir in mine {
-        run(Command::new("chown").arg("-R").arg(&owner).arg(dir))?;
-    }
-    let config = Path::new(SYSTEM_CONFIG);
-    let group = format!("root:{SYSTEM_USER}");
-    if let Some(dir) = config.parent().filter(|d| d.exists()) {
-        run(Command::new("chown").arg(&group).arg(dir))?;
-        run(Command::new("chmod").arg("750").arg(dir))?;
-    }
-    if config.exists() {
-        run(Command::new("chown").arg(&group).arg(config))?;
-        run(Command::new("chmod").arg("640").arg(config))?;
     }
     Ok(())
 }
@@ -862,18 +1219,20 @@ pub fn system_unit(spec: &Spec, data: &Path) -> String {
     let arg = |p: &Path| systemd_quote(&p.to_string_lossy(), true);
     let env = |name: &str, value: &str| systemd_quote(&format!("{name}={value}"), false);
     let path = |p: &Path| systemd_quote(&p.to_string_lossy(), false);
+    let user = crate::instance::dir_name(spec.instance.as_deref());
     format!(
         "# Written by `ferrule setup` as root — re-run it to change this service.\n\
          [Unit]\n\
-         Description=ferrule gateway\n\
+         Description=ferrule gateway{}\n\
          Wants=network-online.target\n\
          After=network-online.target\n\
          \n\
          [Service]\n\
-         User={SYSTEM_USER}\n\
-         Group={SYSTEM_USER}\n\
+         User={user}\n\
+         Group={user}\n\
          ExecStart={} gateway --workspace {}\n\
          WorkingDirectory={}\n\
+         {}\
          Environment={}\n\
          Environment={}\n\
          Environment={}\n\
@@ -889,9 +1248,11 @@ pub fn system_unit(spec: &Spec, data: &Path) -> String {
          \n\
          [Install]\n\
          WantedBy=multi-user.target\n",
+        instance_suffix(spec),
         arg(&spec.exe),
         arg(&spec.workspace),
         spec.workspace.to_string_lossy().replace('%', "%%"),
+        instance_env(spec),
         env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
         env("FERRULE_DATA_DIR", &data.to_string_lossy()),
         env("PATH", &spec.path_env),
@@ -906,11 +1267,12 @@ pub fn systemd_unit(spec: &Spec) -> String {
     format!(
         "# Written by `ferrule setup` — re-run it to change this service.\n\
          [Unit]\n\
-         Description=ferrule gateway\n\
+         Description=ferrule gateway{}\n\
          \n\
          [Service]\n\
          ExecStart={} gateway --workspace {}\n\
          WorkingDirectory={}\n\
+         {}\
          Environment={}\n\
          Environment={}\n\
          Restart=always\n\
@@ -920,10 +1282,12 @@ pub fn systemd_unit(spec: &Spec) -> String {
          \n\
          [Install]\n\
          WantedBy=default.target\n",
+        instance_suffix(spec),
         arg(&spec.exe),
         arg(&spec.workspace),
         // A bare path: this setting takes no quotes, only specifiers.
         spec.workspace.to_string_lossy().replace('%', "%%"),
+        instance_env(spec),
         env("FERRULE_CONFIG", &spec.config.to_string_lossy()),
         env("PATH", &spec.path_env),
     )
@@ -945,7 +1309,7 @@ pub fn launchd_plist(spec: &Spec, log: &Path) -> String {
   <key>EnvironmentVariables</key>
   <dict>
     <key>FERRULE_CONFIG</key>{config}
-    <key>PATH</key>{path}
+    <key>PATH</key>{path}{instance}
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -954,13 +1318,14 @@ pub fn launchd_plist(spec: &Spec, log: &Path) -> String {
 </dict>
 </plist>
 "#,
-        label = s(LAUNCHD_LABEL),
+        label = s(&label(LAUNCHD_LABEL, spec.instance.as_deref())),
         exe = p(&spec.exe),
         gateway = s("gateway"),
         flag = s("--workspace"),
         ws = p(&spec.workspace),
         config = p(&spec.config),
         path = s(&spec.path_env),
+        instance = instance_plist_env(spec),
         log = p(log),
     )
 }
@@ -1015,58 +1380,6 @@ fn xml_unescape(text: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Is there a systemd user manager to talk to? Containers, WSL without
-/// systemd and plain SSH sessions without a user bus often have none.
-fn systemd_available() -> std::result::Result<(), String> {
-    let out = manager("systemctl")
-        .args(scope_flag())
-        .arg("show-environment")
-        .output()
-        .map_err(|_| "systemctl isn't installed".to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let err = String::from_utf8_lossy(&out.stderr);
-        Err(format!(
-            "no systemd {} ({})",
-            if scope() == Scope::System {
-                "running"
-            } else {
-                "user session"
-            },
-            err.lines().next().unwrap_or("systemctl failed").trim()
-        ))
-    }
-}
-
-/// `--user`, except for the system unit.
-fn scope_flag() -> &'static [&'static str] {
-    match scope() {
-        Scope::User => &["--user"],
-        Scope::System => &[],
-    }
-}
-
-fn systemctl(args: &[&str]) -> Result<()> {
-    let out = manager("systemctl")
-        .args(scope_flag())
-        .args(args)
-        .output()?;
-    if !out.status.success() {
-        bail!(
-            "systemctl {} failed: {}",
-            scope_flag()
-                .iter()
-                .chain(args)
-                .copied()
-                .collect::<Vec<_>>()
-                .join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
 fn lingering() -> bool {
     let user = std::env::var("USER").unwrap_or_default();
     manager("loginctl")
@@ -1085,10 +1398,6 @@ fn uid() -> u32 {
 #[cfg(not(unix))]
 fn uid() -> u32 {
     0
-}
-
-fn launchd_target() -> String {
-    format!("gui/{}/{LAUNCHD_LABEL}", uid())
 }
 
 /// `systemctl`, `loginctl` or `launchctl`, without the gateway's own
@@ -1124,6 +1433,7 @@ mod tests {
             workspace: "/home/a b/ws $1 50%".into(),
             config: "/home/a b/.config/ferrule/100%\"x\".toml".into(),
             path_env: "/home/a b/.local/bin:/usr/bin:$HOME/bin".into(),
+            instance: None,
         }
     }
 
@@ -1180,6 +1490,7 @@ mod tests {
             workspace: SYSTEM_WORKSPACE.into(),
             config: SYSTEM_CONFIG.into(),
             path_env: "/usr/local/bin:/usr/bin".into(),
+            instance: None,
         }
     }
 
@@ -1255,21 +1566,27 @@ mod tests {
     #[test]
     fn an_existing_account_is_used_only_if_nobody_can_log_in_as_it() {
         let nologin = "ferrule:x:998:998:ferrule agent:/var/lib/ferrule:/usr/sbin/nologin\n";
-        assert_eq!(check_existing_user(nologin, "ferrule\n"), Ok(()));
+        assert_eq!(check_existing_user("ferrule", nologin, "ferrule\n"), Ok(()));
         assert_eq!(
-            check_existing_user("ferrule:x:999:999::/var/lib/ferrule:/bin/false", "ferrule"),
+            check_existing_user(
+                "ferrule",
+                "ferrule:x:999:999::/var/lib/ferrule:/bin/false",
+                "ferrule"
+            ),
             Ok(())
         );
         let bash = "ferrule:x:1001:1001::/home/ferrule:/bin/bash";
-        assert!(check_existing_user(bash, "ferrule")
+        assert!(check_existing_user("ferrule", bash, "ferrule")
             .unwrap_err()
             .contains("log in"));
-        assert!(check_existing_user(nologin, "ferrule sudo")
+        assert!(check_existing_user("ferrule", nologin, "ferrule sudo")
             .unwrap_err()
             .contains("`sudo`"));
-        assert!(check_existing_user(nologin, "ferrule docker").is_err());
-        assert!(check_existing_user("ferrule:x:0:0::/:/usr/sbin/nologin", "root").is_err());
-        assert!(check_existing_user("garbage", "").is_err());
+        assert!(check_existing_user("ferrule", nologin, "ferrule docker").is_err());
+        assert!(
+            check_existing_user("ferrule", "ferrule:x:0:0::/:/usr/sbin/nologin", "root").is_err()
+        );
+        assert!(check_existing_user("ferrule", "garbage", "").is_err());
     }
 
     #[test]
@@ -1322,5 +1639,200 @@ mod tests {
         assert!(!changed_since_start(86400, 3600));
         // Installed and started in the same second or two: not.
         assert!(!changed_since_start(100, 101));
+    }
+
+    /// The spec the 0.8.0 fixtures were written with.
+    fn golden_spec(instance: Option<&str>) -> Spec {
+        Spec {
+            exe: "/usr/local/bin/ferrule".into(),
+            workspace: "/srv/ws".into(),
+            config: "/etc/ferrule/config.toml".into(),
+            path_env: "/usr/local/bin:/usr/bin".into(),
+            instance: instance.map(str::to_string),
+        }
+    }
+
+    fn fixture(name: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/units-0.8.0")
+            .join(name);
+        // A Windows checkout may turn the line ends into CRLF.
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+            .replace("\r\n", "\n")
+    }
+
+    #[test]
+    fn the_default_instances_units_are_0_8_0s_byte_for_byte() {
+        let s = golden_spec(None);
+        let data = Path::new(SYSTEM_DATA);
+        for (name, text) in [
+            ("system_unit", system_unit(&s, data)),
+            ("systemd_unit", systemd_unit(&s)),
+            (
+                "launchd_plist",
+                launchd_plist(&s, Path::new("/Users/a/Library/Logs/ferrule/gateway.log")),
+            ),
+            ("system_update_unit", system_update_unit(&s, data)),
+            ("user_update_unit", user_update_unit(&s)),
+            ("update_timer", update_timer()),
+            (
+                "update_path_unit_sys",
+                update_path_unit(
+                    Path::new("/var/lib/ferrule/data/update/request"),
+                    true,
+                    None,
+                ),
+            ),
+            (
+                "update_path_unit_user",
+                update_path_unit(
+                    Path::new("/home/u/.local/share/ferrule/update/request"),
+                    false,
+                    None,
+                ),
+            ),
+            (
+                "launchd_update_plist",
+                launchd_update_plist(
+                    &s,
+                    Path::new("/Users/a/Library/Application Support/ferrule/update/request"),
+                    Path::new("/Users/a/Library/Logs/ferrule/update.log"),
+                    3,
+                    17,
+                ),
+            ),
+        ] {
+            assert_eq!(
+                text,
+                fixture(name),
+                "{name} changed for the default instance"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_instances_names_are_0_8_0s() {
+        for scope in [Scope::User, Scope::System] {
+            let svc = Svc::new(None, scope);
+            assert_eq!(svc.short(), "ferrule");
+            assert_eq!(svc.systemd_unit(), SYSTEMD_UNIT);
+            assert_eq!(svc.launchd_label(), LAUNCHD_LABEL);
+            assert_eq!(svc.update_unit("service"), UPDATE_SERVICE);
+            assert_eq!(svc.update_unit("timer"), UPDATE_TIMER);
+            assert_eq!(svc.update_unit("path"), UPDATE_PATH);
+            assert_eq!(svc.update_label(), UPDATE_LABEL);
+            assert_eq!(svc.system_user(), SYSTEM_USER);
+            assert_eq!(svc.system_config(), Path::new(SYSTEM_CONFIG));
+            assert_eq!(svc.system_home(), Path::new(SYSTEM_HOME));
+            assert_eq!(svc.system_data(), Path::new(SYSTEM_DATA));
+            assert_eq!(svc.system_workspace(), Path::new(SYSTEM_WORKSPACE));
+            assert_eq!(svc.system_unit_path(), Path::new(SYSTEM_UNIT_PATH));
+        }
+        assert_eq!(
+            Svc::new(None, Scope::System).restart_hint(),
+            if cfg!(target_os = "macos") {
+                "launchctl kickstart -k gui/$(id -u)/ai.ferrule.gateway"
+            } else {
+                "sudo systemctl restart ferrule"
+            }
+        );
+    }
+
+    #[test]
+    fn a_named_instance_gets_its_own_names_everywhere() {
+        let svc = Svc::new(Some("work"), Scope::System);
+        assert_eq!(svc.short(), "ferrule@work");
+        assert_eq!(svc.systemd_unit(), "ferrule@work.service");
+        assert_eq!(svc.launchd_label(), "ai.ferrule.gateway.work");
+        assert_eq!(svc.update_unit("timer"), "ferrule-update@work.timer");
+        assert_eq!(svc.update_label(), "ai.ferrule.update.work");
+        assert_eq!(svc.system_user(), "ferrule-work");
+        assert_eq!(
+            svc.system_config(),
+            Path::new("/etc/ferrule-work/config.toml")
+        );
+        assert_eq!(svc.system_data(), Path::new("/var/lib/ferrule-work/data"));
+        assert_eq!(
+            svc.system_workspace(),
+            Path::new("/var/lib/ferrule-work/workspace")
+        );
+        assert_eq!(
+            svc.system_unit_path(),
+            Path::new("/etc/systemd/system/ferrule@work.service")
+        );
+        if !cfg!(target_os = "macos") {
+            assert_eq!(svc.logs_hint(), "journalctl -u ferrule@work -f");
+            assert_eq!(svc.restart_hint(), "sudo systemctl restart ferrule@work");
+        }
+    }
+
+    #[test]
+    fn a_named_instances_units_carry_its_name() {
+        let s = golden_spec(Some("work"));
+        let data = Path::new("/var/lib/ferrule-work/data");
+        let env = "Environment=\"FERRULE_INSTANCE=work\"\n";
+        let unit = system_unit(&s, data);
+        assert!(
+            unit.contains("Description=ferrule gateway (work)\n"),
+            "{unit}"
+        );
+        assert!(
+            unit.contains("User=ferrule-work\nGroup=ferrule-work\n"),
+            "{unit}"
+        );
+        assert!(unit.contains(env), "{unit}");
+        // Everything else is the default's.
+        let without = unit
+            .replace(env, "")
+            .replace(" (work)", "")
+            .replace("ferrule-work", "ferrule");
+        assert_eq!(without, fixture("system_unit"));
+        for text in [
+            systemd_unit(&s),
+            system_update_unit(&s, data),
+            user_update_unit(&s),
+        ] {
+            assert!(text.contains(env), "{text}");
+            assert!(text.contains(" (work)"), "{text}");
+        }
+        assert_eq!(
+            parse_unit(&systemd_unit(&s)),
+            Some((s.config.clone(), s.workspace.clone()))
+        );
+        let path = update_path_unit(Path::new("/r"), true, Some("work"));
+        assert!(
+            path.contains("Unit=ferrule-update@work.service\n"),
+            "{path}"
+        );
+        let plist = launchd_plist(&s, Path::new("/l"));
+        assert!(plist.contains("<key>Label</key><string>ai.ferrule.gateway.work</string>"));
+        assert!(plist.contains("<key>FERRULE_INSTANCE</key><string>work</string>"));
+        assert_eq!(
+            parse_unit(&plist),
+            Some((s.config.clone(), s.workspace.clone()))
+        );
+        let plist = launchd_update_plist(&s, Path::new("/r"), Path::new("/l"), 3, 17);
+        assert!(plist.contains("<string>ai.ferrule.update.work</string>"));
+        assert!(plist.contains("<key>FERRULE_INSTANCE</key><string>work</string>"));
+    }
+
+    #[test]
+    fn named_units_are_found_by_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        for f in [
+            "ferrule.service",
+            "ferrule@work.service",
+            "ferrule@home.service",
+            "ferrule@Bad.service",
+            "ferrule-update@work.service",
+            "ferrule@x.timer",
+            "ai.ferrule.gateway.mac.plist",
+            "ai.ferrule.gateway.plist",
+        ] {
+            std::fs::write(dir.path().join(f), "").unwrap();
+        }
+        assert_eq!(names_in_units(dir.path(), false), ["home", "work"]);
+        assert_eq!(names_in_units(dir.path(), true), ["mac"]);
     }
 }

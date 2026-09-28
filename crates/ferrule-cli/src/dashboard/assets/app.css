@@ -102,6 +102,7 @@ code,pre,.mono{font-family:var(--mono);font-size:var(--t1)}
 .brand{display:flex;align-items:center;gap:8px}
 .word{font:600 var(--t3)/1 var(--sans);letter-spacing:.01em}
 .ver{font:var(--t1) var(--mono);color:var(--muted)}
+.inst{font:var(--t1) var(--mono);padding:1px 6px;border:var(--hair);border-radius:4px}
 #mark{display:inline-flex}
 .top-right{margin-left:auto;display:flex;align-items:center;gap:6px}
 .live{display:flex;align-items:center;gap:6px;font:var(--t1) var(--mono);color:var(--muted);white-space:nowrap}

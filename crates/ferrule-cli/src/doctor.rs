@@ -148,7 +148,10 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
         Err(e) => {
             r.fail("config", format!("{e:#}"));
             if config::config_path()?.is_none() {
-                r.hint("run `ferrule setup`");
+                r.hint(format!(
+                    "run `ferrule {}setup`",
+                    crate::instance::flag(crate::instance::current().as_deref())
+                ));
             }
             binary(&mut r);
             browser_check(&mut r, None);
@@ -179,6 +182,7 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     hooks_check(&mut r, &cfg, &path);
     trust_check(&mut r, &cfg, chat_on);
     service_check(&mut r, &path, chat_on)?;
+    instances_check(&mut r, &cfg);
     update_check(&mut r, &cfg, offline).await;
     repairs_check(&mut r);
     health_check(&mut r, &cfg, chat_on);
@@ -1788,7 +1792,12 @@ fn service_check(r: &mut Report, config_path: &Path, telegram_on: bool) -> Resul
     }
     if service::scope() == service::Scope::User
         && !service::is_root()
-        && Path::new("/etc/systemd/system/ferrule.service").exists()
+        && service::Svc::new(
+            crate::instance::current().as_deref(),
+            service::Scope::System,
+        )
+        .system_unit_path()
+        .exists()
     {
         r.note(
             "service",
@@ -1861,27 +1870,70 @@ fn repairs_check(r: &mut Report) {
 }
 
 /// M19c: two gateways polling one bot token take turns getting its
-/// messages, and Telegram answers each with 409 Conflict.
+/// messages, and Telegram answers each with 409 Conflict. M38: one per
+/// instance is fine (the collisions check catches a shared bot).
 fn gateways_check(r: &mut Report) {
     let pids = crate::health::running_gateways();
-    let list = pids
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    match pids.len() {
-        0 => r.note("gateway", "none running on this machine"),
-        1 => r.ok(
-            "gateway",
-            format!("one running on this machine (pid {list})"),
-        ),
-        n => {
-            r.warn(
+    let instances = crate::instances::Places::here()
+        .map(|p| crate::instances::discover(&p).len())
+        .unwrap_or(0)
+        .max(1);
+    r.push_gateways(&pids, instances);
+}
+
+impl Report {
+    fn push_gateways(&mut self, pids: &[u32], instances: usize) {
+        let list = pids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        match pids.len() {
+            0 => self.note("gateway", "none running on this machine"),
+            1 => self.ok(
                 "gateway",
-                format!("{n} running on this machine (pids {list}): with one bot token they take turns getting its messages, and Telegram refuses each of them some (409 Conflict)"),
-            );
-            r.hint("keep one: stop the other (Ctrl-C in its terminal, or `kill <pid>`); `ferrule status` shows which one this data directory's is");
+                format!("one running on this machine (pid {list})"),
+            ),
+            n if n <= instances => self.ok(
+                "gateway",
+                format!("{n} running on this machine (pids {list}), for {instances} instances"),
+            ),
+            n if instances > 1 => {
+                self.warn(
+                    "gateway",
+                    format!("{n} running on this machine (pids {list}), more than its {instances} instances: two of them serve one instance, and share its bot"),
+                );
+                self.hint("`ferrule instances list` shows each one's; stop the extra one (Ctrl-C in its terminal, or `kill <pid>`)");
+            }
+            n => {
+                self.warn(
+                    "gateway",
+                    format!("{n} running on this machine (pids {list}): with one bot token they take turns getting its messages, and Telegram refuses each of them some (409 Conflict)"),
+                );
+                self.hint("keep one: stop the other (Ctrl-C in its terminal, or `kill <pid>`); `ferrule status` shows which one this data directory's is");
+            }
         }
+    }
+}
+
+/// M38: what this instance shares with another one that it mustn't: a bot,
+/// a fixed dashboard port, a workspace, a relay. Silent with one instance.
+fn instances_check(r: &mut Report, cfg: &config::Config) {
+    let (clashes, unreadable) = crate::instances::my_clashes(cfg);
+    for c in &clashes {
+        match c.severity {
+            crate::instances::Severity::Fail => r.fail("instances", &c.message),
+            crate::instances::Severity::Note => r.note("instances", &c.message),
+        }
+    }
+    if !unreadable.is_empty() {
+        r.note(
+            "instances",
+            format!(
+                "couldn't read all of {}'s config or keys, so a clash with it may go unseen (a system instance's: `sudo ferrule doctor`)",
+                unreadable.join(", ")
+            ),
+        );
     }
 }
 
@@ -2146,5 +2198,19 @@ mod health_tests {
         let lines = health_lines(&h, None, false);
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[1].0, Level::Fail);
+    }
+
+    #[test]
+    fn one_gateway_per_instance_is_fine() {
+        let levels = |pids: &[u32], instances| {
+            let mut r = Report::new(true);
+            r.push_gateways(pids, instances);
+            r.json.unwrap()[0]["level"].as_str().unwrap().to_string()
+        };
+        assert_eq!(levels(&[], 1), "note");
+        assert_eq!(levels(&[1], 1), "ok");
+        assert_eq!(levels(&[1, 2], 1), "warn");
+        assert_eq!(levels(&[1, 2], 2), "ok");
+        assert_eq!(levels(&[1, 2, 3], 2), "warn");
     }
 }

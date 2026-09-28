@@ -1,0 +1,26 @@
+# Written by `ferrule setup` as root — re-run it to change this service.
+[Unit]
+Description=ferrule gateway
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=ferrule
+Group=ferrule
+ExecStart="/usr/local/bin/ferrule" gateway --workspace "/srv/ws"
+WorkingDirectory=/srv/ws
+Environment="FERRULE_CONFIG=/etc/ferrule/config.toml"
+Environment="FERRULE_DATA_DIR=/var/lib/ferrule/data"
+Environment="PATH=/usr/local/bin:/usr/bin"
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths="/var/lib/ferrule/data" "/srv/ws"
+Restart=always
+RestartSec=5
+WatchdogSec=120
+NotifyAccess=main
+
+[Install]
+WantedBy=multi-user.target

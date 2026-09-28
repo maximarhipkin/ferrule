@@ -174,6 +174,9 @@ pub fn health(ctx: &Ctx) -> Value {
         "version": env!("CARGO_PKG_VERSION"),
         "gateway": ctx.live.is_some(),
     });
+    if let Some(name) = crate::instance::current() {
+        out["instance"] = json!(name);
+    }
     if let Some(live) = &ctx.live {
         let h = &live.health;
         let lanes = live
@@ -814,7 +817,7 @@ async fn connection_setup_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 &ctx.cf_api,
                 text("token"),
                 text("account"),
-                "ferrule-relay",
+                &crate::instance::relay_worker(crate::instance::current().as_deref()),
                 5,
             )
             .await
@@ -942,6 +945,11 @@ pub(super) fn child_env(ctx: &Ctx) -> Vec<(String, std::ffi::OsString)> {
     }
     if let Some(d) = &ctx.data {
         env.push(("FERRULE_DATA_DIR".to_string(), d.clone().into_os_string()));
+    }
+    // The page's own instance: a fix button or a console line acts on it,
+    // never on the default (M38).
+    if let Some(name) = crate::instance::current() {
+        env.push((crate::instance::ENV.to_string(), name.into()));
     }
     env
 }

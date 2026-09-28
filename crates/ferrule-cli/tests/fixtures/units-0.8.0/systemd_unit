@@ -1,0 +1,16 @@
+# Written by `ferrule setup` — re-run it to change this service.
+[Unit]
+Description=ferrule gateway
+
+[Service]
+ExecStart="/usr/local/bin/ferrule" gateway --workspace "/srv/ws"
+WorkingDirectory=/srv/ws
+Environment="FERRULE_CONFIG=/etc/ferrule/config.toml"
+Environment="PATH=/usr/local/bin:/usr/bin"
+Restart=always
+RestartSec=5
+WatchdogSec=120
+NotifyAccess=main
+
+[Install]
+WantedBy=default.target

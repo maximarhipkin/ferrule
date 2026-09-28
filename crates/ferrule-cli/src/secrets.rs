@@ -42,6 +42,12 @@ pub fn source(name: &str) -> Source {
     }
 }
 
+/// The variables [`load_into_env`] set: a child for another instance
+/// mustn't inherit them (M38).
+pub fn loaded_names() -> &'static [String] {
+    LOADED.get().map_or(&[], Vec::as_slice)
+}
+
 /// Load the secrets file into the environment. Must run before the tokio
 /// runtime (or any other thread) starts: `set_var` isn't thread-safe.
 /// Problems are warnings — a broken secrets file shouldn't stop `ferrule

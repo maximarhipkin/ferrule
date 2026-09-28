@@ -493,7 +493,7 @@ async fn relay_wizard(conns: &Arc<Connections>, place: &Place, api: &str) -> Res
             api,
             token.as_deref(),
             account.as_deref(),
-            "ferrule-relay",
+            &crate::instance::relay_worker(crate::instance::current().as_deref()),
             5,
         )
         .await?

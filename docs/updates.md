@@ -90,6 +90,17 @@ the foreground. On Windows the running `ferrule.exe` is renamed aside
 its place; restart ferrule yourself. Nothing watches a hand-run gateway, so
 there is no rollback there.
 
+### Several instances on one binary
+
+With [named instances](instances.md), each instance has its own update
+units (`ferrule-update@<name>.*`, `ai.ferrule.update.<name>`) and its own
+state. The instances that run the same binary are updated together: every
+one's lock, pins and `auto = false` count, all of them must be idle, all
+restart, and a rollback pins the version in each. `ferrule update` in a
+terminal names the other instances it would restart and asks first
+(`--yes` answers). A named system instance's state is in
+`/var/lib/ferrule-<name>/update/state.json`.
+
 ### Where things are
 
 - The apply job's state, the last check, pinned versions and the last 20

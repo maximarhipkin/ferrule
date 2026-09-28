@@ -448,9 +448,10 @@ pub enum RelayCmd {
     /// set `[connections] relay_url`. Reads CLOUDFLARE_API_TOKEN and
     /// CLOUDFLARE_ACCOUNT_ID from the environment or the secrets file
     Deploy {
-        /// The Worker's name
-        #[arg(long, default_value = "ferrule-relay")]
-        name: String,
+        /// The Worker's name [default: ferrule-relay, or
+        /// ferrule-relay-<instance> for a named instance]
+        #[arg(long)]
+        name: Option<String>,
         /// Cloudflare's API (tests point it elsewhere)
         #[arg(
             long,
@@ -567,6 +568,9 @@ async fn relay_cmd(op: RelayCmd, cfg: &config::Config, path: &std::path::Path) -
             println!("the relay at {url} works");
         }
         RelayCmd::Deploy { name, api } => {
+            let name = name.unwrap_or_else(|| {
+                crate::instance::relay_worker(crate::instance::current().as_deref())
+            });
             let conns = shared(cfg).ok_or_else(|| anyhow!("connections are unavailable here"))?;
             match crate::connections_setup::deploy_relay(
                 &conns,

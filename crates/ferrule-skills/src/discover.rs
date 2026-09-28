@@ -120,8 +120,13 @@ pub fn default_roots(workspace: &Path, include_project: bool, extra: &[PathBuf])
         });
     }
     if let Some(config) = dirs::config_dir() {
+        // A named instance's own (M38): `ferrule-<name>/skills`.
+        let own = match std::env::var("FERRULE_INSTANCE") {
+            Ok(name) if !name.is_empty() => format!("ferrule-{name}"),
+            _ => "ferrule".to_string(),
+        };
         roots.push(SkillRoot {
-            dir: config.join("ferrule").join("skills"),
+            dir: config.join(own).join("skills"),
             scope: Scope::User,
         });
     }
