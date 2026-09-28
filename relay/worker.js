@@ -11,12 +11,24 @@
 // One Durable Object per slot: strongly consistent, so "first write wins"
 // and "one read, then gone" are exact (Workers KV is eventually
 // consistent and can't promise either).
+//
+// M39 adds a WhatsApp webhook mailbox (docs/m39-channels.md §3.2): Meta
+// posts to /wa/<box>, the Worker checks the X-Hub-Signature-256 HMAC and
+// keeps the body until ferrule takes it (at most 24 hours). <box> is
+// base64url(SHA-256("wa:" + RELAY_KEY)), so only the key's holder knows it.
+// ferrule gives the mailbox its verify token and app secret through
+// /wa/<box>/config, so turning WhatsApp on needs no redeploy.
 
 const OPEN_TTL_MS = 15 * 60 * 1000;
 const VALUE_TTL_MS = 5 * 60 * 1000;
 const MAX_CB_BYTES = 4096;
 const MAX_DROP_BYTES = 8192;
 const ID = /^[A-Za-z0-9_-]{43}$/;
+const WA_MAX_BODY = 256 * 1024;
+const WA_MAX_EVENTS = 1000;
+const WA_MAX_BYTES = 5 * 1024 * 1024;
+const WA_TTL_MS = 24 * 60 * 60 * 1000;
+const WA_TAKE = 100;
 
 export default {
   async fetch(request, env) {
@@ -24,8 +36,9 @@ export default {
     const path = url.pathname;
     try {
       if (request.method === "GET" && (path === "/" || path === "/health")) {
-        return json({ ok: true, relay: "ferrule-relay", v: 1 });
+        return json({ ok: true, relay: "ferrule-relay", v: 2, wa: true });
       }
+      if (path.startsWith("/wa/")) return await whatsapp(path.slice("/wa/".length), url, request, env);
       if (request.method === "POST" && path === "/poll") return await poll(request, env);
       if (request.method === "GET" && path === "/cb") return await callback(url, env);
       if (request.method === "GET" && path === "/key") return page(KEY_PAGE, "text/html");
@@ -103,6 +116,37 @@ async function drop(id, request, env) {
   return text(404, "expired");
 }
 
+// The WhatsApp mailbox: GET <box> (Meta's verify), POST <box> (an event),
+// POST <box>/take and <box>/config (ferrule, with the relay key).
+async function whatsapp(rest, url, request, env) {
+  const [box, op = "", extra] = rest.split("/");
+  if (extra !== undefined || !env.RELAY_KEY || !env.MAILBOXES) return text(404, "not found");
+  const want = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("wa:" + env.RELAY_KEY))));
+  if (!sameText(box, want)) return text(404, "not found");
+  const stub = env.MAILBOXES.get(env.MAILBOXES.idFromName(box));
+  const inner = (name, body, headers = {}) => stub.fetch("https://mailbox/" + name, { method: "POST", body, headers });
+  if (op === "" && request.method === "GET") {
+    const q = url.searchParams;
+    return inner("verify", JSON.stringify({
+      mode: q.get("hub.mode") || "",
+      token: q.get("hub.verify_token") || "",
+      challenge: q.get("hub.challenge") || "",
+    }));
+  }
+  if (op === "" && request.method === "POST") {
+    const body = await readCapped(request, WA_MAX_BODY);
+    if (body === null) return text(413, "too large");
+    return inner("put", body, { "x-hub-signature-256": request.headers.get("x-hub-signature-256") || "" });
+  }
+  if ((op === "take" || op === "config") && request.method === "POST") {
+    if (!sameText(bearer(request), env.RELAY_KEY)) return text(401, "relay key required");
+    const body = await readCapped(request, 4096);
+    if (body === null) return text(413, "too large");
+    return inner(op, body);
+  }
+  return text(404, "not found");
+}
+
 async function slot(env, id, op, value) {
   const stub = env.SLOTS.get(env.SLOTS.idFromName(id));
   return stub.fetch("https://slot/" + op, { method: "POST", body: value ?? "" });
@@ -150,6 +194,112 @@ export class Slot {
   async alarm() {
     await this.storage.deleteAll();
   }
+}
+
+// One per mailbox. Keys: "config" {verify_token, app_secret}, "seq" (the
+// last number given), "bytes", and "e:<seq, 12 digits>" per event.
+export class Mailbox {
+  constructor(state) {
+    this.storage = state.storage;
+  }
+
+  async fetch(request) {
+    const op = new URL(request.url).pathname.slice(1);
+    const config = await this.storage.get("config");
+    if (op === "config") {
+      let v;
+      try {
+        v = JSON.parse(await request.text());
+      } catch {
+        return text(400, "bad json");
+      }
+      if (typeof v.verify_token !== "string" || typeof v.app_secret !== "string" || !v.verify_token || !v.app_secret) {
+        return text(400, "verify_token and app_secret are required");
+      }
+      await this.storage.put("config", { verify_token: v.verify_token, app_secret: v.app_secret });
+      return json({ ok: true });
+    }
+    if (op === "verify") {
+      const v = JSON.parse(await request.text());
+      if (!config || v.mode !== "subscribe" || !sameText(v.token, config.verify_token)) return text(403, "forbidden");
+      return text(200, v.challenge);
+    }
+    if (op === "put") {
+      if (!config) return text(503, "not set up yet");
+      const body = await request.text();
+      const sig = request.headers.get("x-hub-signature-256") || "";
+      if (!(await validSignature(config.app_secret, body, sig))) return text(401, "bad signature");
+      const size = new TextEncoder().encode(body).length;
+      const count = await this.count();
+      const bytes = (await this.storage.get("bytes")) || 0;
+      if (count >= WA_MAX_EVENTS || bytes + size > WA_MAX_BYTES) return text(503, "mailbox full");
+      const seq = ((await this.storage.get("seq")) || 0) + 1;
+      const now = Date.now();
+      await this.storage.put("seq", seq);
+      await this.storage.put("bytes", bytes + size);
+      await this.storage.put(eventKey(seq), { seq, body, sig, at: now, size });
+      if ((await this.storage.getAlarm()) == null) await this.storage.setAlarm(now + WA_TTL_MS);
+      return text(200, "ok");
+    }
+    if (op === "take") {
+      let after = 0;
+      try {
+        after = Number(JSON.parse((await request.text()) || "{}").after) || 0;
+      } catch {
+        return text(400, "bad json");
+      }
+      const all = await this.events();
+      let bytes = (await this.storage.get("bytes")) || 0;
+      for (const e of all) {
+        if (e.seq > after) break;
+        await this.storage.delete(eventKey(e.seq));
+        bytes -= e.size;
+      }
+      await this.storage.put("bytes", Math.max(0, bytes));
+      const rest = all.filter((e) => e.seq > after).slice(0, WA_TAKE);
+      return json({ configured: !!config, events: rest.map(({ seq, body, sig, at }) => ({ seq, body, sig, at })) });
+    }
+    return text(404, "not found");
+  }
+
+  // Drops what nobody took within 24 hours, then waits for the next.
+  async alarm() {
+    const now = Date.now();
+    let bytes = (await this.storage.get("bytes")) || 0;
+    let next = null;
+    for (const e of await this.events()) {
+      if (e.at + WA_TTL_MS <= now) {
+        await this.storage.delete(eventKey(e.seq));
+        bytes -= e.size;
+      } else if (next === null) {
+        next = e.at + WA_TTL_MS;
+      }
+    }
+    await this.storage.put("bytes", Math.max(0, bytes));
+    if (next !== null) await this.storage.setAlarm(next);
+  }
+
+  async events() {
+    const map = await this.storage.list({ prefix: "e:" });
+    return [...map.values()].sort((a, b) => a.seq - b.seq);
+  }
+
+  async count() {
+    return (await this.storage.list({ prefix: "e:" })).size;
+  }
+}
+
+function eventKey(seq) {
+  return "e:" + String(seq).padStart(12, "0");
+}
+
+// Whether `header` is "sha256=" + hex HMAC-SHA256(secret, body).
+async function validSignature(secret, body, header) {
+  const m = /^sha256=([0-9a-f]{64})$/.exec(header.trim());
+  if (!m) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const sig = Uint8Array.from(m[1].match(/../g), (h) => parseInt(h, 16));
+  return crypto.subtle.verify("HMAC", key, sig, new TextEncoder().encode(body));
 }
 
 function bearer(request) {

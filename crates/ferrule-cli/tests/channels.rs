@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::{discord, slack, wait};
+use support::{discord, slack, wait, whatsapp};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -411,4 +411,109 @@ fn a_dead_discord_socket_shows_in_status_while_telegram_and_slack_keep_answering
         status.contains("rejected the bot token")
     });
     assert!(!status.contains(bad), "{status}");
+}
+
+/// M39: WhatsApp through the real binary: webhooks from the relay's
+/// mailbox, answers through the Graph API mock, a stranger never reaching
+/// the model, and the doctor's line.
+#[test]
+fn whatsapp_through_the_relay_mailbox_answers_only_its_allowed_number() {
+    let (url, log) = model_server();
+    let meta = whatsapp::start();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[connections]
+relay_url = "{relay}"
+
+[gateway.whatsapp]
+phone_number_id = "{phone}"
+api_url = "{relay}"
+allowed_users = ["{max}"]
+"#,
+            relay = meta.url,
+            phone = whatsapp::PHONE_ID,
+            max = whatsapp::MAX,
+        ),
+    )
+    .unwrap();
+    let with_keys = |mut cmd: Command| {
+        cmd.env("WHATSAPP_TOKEN", whatsapp::TOKEN)
+            .env("WHATSAPP_APP_SECRET", whatsapp::APP_SECRET)
+            .env("WHATSAPP_VERIFY_TOKEN", whatsapp::VERIFY)
+            .env("FERRULE_RELAY_KEY", whatsapp::RELAY_KEY);
+        cmd
+    };
+    let mut cmd = with_keys(command(home, &["gateway"], discord::TOKEN));
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the mailbox set up", LIMIT, || {
+        meta.state().config.is_some()
+    });
+    assert_eq!(
+        meta.state().config,
+        Some((whatsapp::VERIFY.into(), whatsapp::APP_SECRET.into()))
+    );
+    meta.deliver(
+        &whatsapp::text("wamid.s1", "15550000999", "STRANGER-WA"),
+        whatsapp::APP_SECRET,
+    );
+    meta.deliver(
+        &whatsapp::text("wamid.m1", whatsapp::MAX, "hello from whatsapp"),
+        whatsapp::APP_SECRET,
+    );
+    wait("the WhatsApp answer", LIMIT, || {
+        any_has(&meta.texts(), "ECHO hello from whatsapp")
+    });
+    assert!(!asked(&log, "STRANGER-WA"));
+    // Every send went to the allowed number; nothing to the stranger.
+    for b in meta.state().sent.iter() {
+        if let Some(to) = b["to"].as_str() {
+            assert_eq!(to, whatsapp::MAX, "{b}");
+        }
+    }
+
+    let o = with_keys(command(
+        home,
+        &["doctor", "--offline", "--json"],
+        discord::TOKEN,
+    ))
+    .output()
+    .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    let wa: Vec<&Value> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "whatsapp")
+        .collect();
+    assert!(
+        wa.iter().any(
+            |l| l["level"] == "ok" && l["text"].as_str().unwrap().contains("through the relay")
+        ),
+        "{wa:?}"
+    );
+    assert!(!out.contains(whatsapp::TOKEN), "{out}");
 }

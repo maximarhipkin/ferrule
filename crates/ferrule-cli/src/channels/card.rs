@@ -51,6 +51,9 @@ pub struct Step {
 pub struct Settings {
     pub table: toml::Table,
     pub secrets: BTreeMap<String, String>,
+    /// The instance's relay Worker and its key, when one is deployed (a
+    /// channel whose webhooks come through it tests that part too).
+    pub relay: Option<(String, String)>,
 }
 
 impl Settings {
@@ -84,7 +87,7 @@ pub struct Spec {
 
 /// The channels with a form on the dashboard; each channel's part adds
 /// its own. Telegram, Discord and Slack keep `ferrule setup`'s flow.
-pub const CARDS: &[&Spec] = &[];
+pub const CARDS: &[&Spec] = &[&super::whatsapp::SPEC];
 
 /// `name`'s card.
 pub fn spec(name: &str) -> Option<&'static Spec> {
@@ -190,6 +193,18 @@ pub fn current(cfg_path: &std::path::Path, name: &str) -> Option<toml::Table> {
     doc.get("gateway")?.get(name)?.as_table().cloned()
 }
 
+/// `[connections] relay_url` in `cfg_path`.
+fn relay_of(cfg_path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(cfg_path).ok()?;
+    let doc: toml::Table = toml::from_str(&text).ok()?;
+    Some(
+        doc.get("connections")?
+            .get("relay_url")?
+            .as_str()?
+            .to_string(),
+    )
+}
+
 /// Test's settings: the merged table, with each secret typed now or else
 /// the stored one.
 pub fn settings(spec: &Spec, place: &Place, values: &Values) -> Result<Settings, String> {
@@ -221,7 +236,15 @@ fn gather(
             return Err(format!("paste the {}.", f.label.to_lowercase()));
         }
     }
-    Ok((Settings { table, secrets }, typed))
+    let relay = relay_of(&place.config).zip(place.get(ferrule_connections::relay::RELAY_KEY_ENV));
+    Ok((
+        Settings {
+            table,
+            secrets,
+            relay,
+        },
+        typed,
+    ))
 }
 
 /// Save: the secrets typed now first (so a config that names them never

@@ -3,10 +3,9 @@
 //! sandbox's secret names, streaming, setup's forgetting, the doctor and
 //! the dashboard) asks here, so a new channel can't be half wired.
 
-// Until the first channel adds its card (M39 part 3).
-#[allow(dead_code)]
 pub mod card;
 pub mod settings;
+pub mod whatsapp;
 
 use crate::config::Config;
 
@@ -227,6 +226,24 @@ pub fn streams(cfg: &Config, name: &str) -> bool {
         _ => return false,
     };
     own.unwrap_or(cfg.agent.stream)
+}
+
+/// M39 (M38's collision check): the account `name` is on, when two
+/// instances can't share it. Never a secret.
+pub fn account(cfg: &Config, name: &str) -> Option<String> {
+    let g = &cfg.gateway;
+    match name {
+        "whatsapp" => g.whatsapp.as_ref().map(|w| w.phone_number_id.clone()),
+        _ => None,
+    }
+}
+
+/// Why two instances on one account is wrong, in words.
+pub fn account_clash(channel: &str, id: &str, other: &str) -> String {
+    match channel {
+        "whatsapp" => format!("the same WhatsApp number (phone number id {id}) as the instance `{other}`: Meta sends its webhooks to one callback URL, so one of them hears nothing (or both take turns). Give one of them a number of its own"),
+        _ => format!("the same {channel} account ({id}) as the instance `{other}`: give one of them its own"),
+    }
 }
 
 /// The session id prefix and title of a chat session (`whatsapp__…`).

@@ -91,18 +91,20 @@ fn cloudflare(st: &Mutex<Cf>, r: Req) -> Resp {
                     .and_then(|p| p.split("\r\n--").next())
                     .and_then(|m| serde_json::from_str::<Value>(m).ok())
                     .unwrap_or(Value::Null);
-                if !body.contains("class Slot") {
+                if !body.contains("class Slot") || !body.contains("class Mailbox") {
                     return Resp::json(400, json!({"success": false}));
                 }
                 let had = st.scripts.get(path).cloned().flatten();
                 let tag = meta["migrations"]["new_tag"].as_str().map(String::from);
-                if had.is_some() && tag.is_some() {
+                let old = meta["migrations"]["old_tag"].as_str().map(String::from);
+                // Cloudflare's rule: old_tag must be the applied tag.
+                if tag.is_some() && had != old {
                     return Resp::json(
                         400,
                         json!({"success": false, "errors": [{"message": "migration tag already applied"}]}),
                     );
                 }
-                st.scripts.insert(path.to_string(), had.or(tag));
+                st.scripts.insert(path.to_string(), tag.or(had));
                 st.uploads.push(meta);
                 Resp::json(200, json!({"success": true, "result": {}}))
             } else if let (true, Some(name)) = (m == "POST", path.strip_suffix("/subdomain")) {
@@ -140,7 +142,11 @@ async fn deploy_is_idempotent_and_never_repeats_the_migration() {
     let st = st.lock().unwrap();
     assert_eq!(st.scripts.len(), 1, "one script, nothing else");
     assert_eq!(st.uploads.len(), 2);
-    assert_eq!(st.uploads[0]["migrations"]["new_tag"], "v1");
+    assert_eq!(st.uploads[0]["migrations"]["new_tag"], "v2");
+    assert_eq!(
+        st.uploads[0]["migrations"]["steps"],
+        json!([{"new_sqlite_classes": ["Slot"]}, {"new_sqlite_classes": ["Mailbox"]}])
+    );
     assert!(st.uploads[1].get("migrations").is_none());
     for meta in &st.uploads {
         assert_eq!(meta["observability"]["enabled"], false);
@@ -151,9 +157,40 @@ async fn deploy_is_idempotent_and_never_repeats_the_migration() {
             .any(|b| b["name"] == "SLOTS" && b["class_name"] == "Slot"));
         assert!(bindings
             .iter()
+            .any(|b| b["name"] == "MAILBOXES" && b["class_name"] == "Mailbox"));
+        assert!(bindings
+            .iter()
             .any(|b| b["name"] == "RELAY_KEY" && b["type"] == "secret_text"));
     }
     assert_eq!(st.subdomain_on, ["ferrule-relay", "ferrule-relay"]);
+}
+
+#[tokio::test]
+async fn an_m20_relay_gets_only_the_mailbox_migration() {
+    let st = Arc::new(Mutex::new(Cf {
+        subdomain: Some("owner".into()),
+        scripts: HashMap::from([("ferrule-relay".to_string(), Some("v1".to_string()))]),
+        ..Default::default()
+    }));
+    let s2 = st.clone();
+    let url = serve(Arc::new(move |r| cloudflare(&s2, r))).await;
+    let api = format!("{url}/client/v4");
+    let d = Deploy {
+        api: &api,
+        token: TOKEN,
+        account: "acct",
+        name: "ferrule-relay",
+        relay_key: RELAY_KEY,
+    };
+    relay::deploy(&d).await.unwrap();
+    relay::deploy(&d).await.unwrap();
+    let st = st.lock().unwrap();
+    assert_eq!(
+        st.uploads[0]["migrations"],
+        json!({"old_tag": "v1", "new_tag": "v2", "new_sqlite_classes": ["Mailbox"]})
+    );
+    assert!(st.uploads[1].get("migrations").is_none());
+    assert_eq!(st.scripts["ferrule-relay"].as_deref(), Some("v2"));
 }
 
 #[tokio::test]

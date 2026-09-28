@@ -1,5 +1,5 @@
 //! `ferrule setup`: the interactive installer. The first run walks through
-//! a model provider and its key, Telegram, Discord, Slack, tool credentials, web search, the sandbox,
+//! a model provider and its key, Telegram, Discord, Slack, WhatsApp, tool credentials, web search, the sandbox,
 //! the browser and the background service; later runs open a menu to change any one
 //! part. Answers are checked live where they can be (the key opens the
 //! model list, the bot token answers `getMe`) and saved the moment they're
@@ -10,6 +10,7 @@
 mod channels;
 mod local;
 mod remote;
+mod whatsapp;
 
 use crate::config::Plan;
 use crate::{browser, config, probe, secrets, service};
@@ -148,6 +149,10 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(channels::slack_step(t, true).await)?.quit() {
         return Ok(false);
     }
+    heading("WhatsApp");
+    if settle(whatsapp::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
     heading("Tool credentials");
     if settle(credentials_step(t, http, true).await)?.quit() {
         return Ok(false);
@@ -201,6 +206,7 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Telegram             {}", telegram_summary(&cfg)),
             format!("Discord              {}", channels::discord_summary(&cfg)),
             format!("Slack                {}", channels::slack_summary(&cfg)),
+            format!("WhatsApp             {}", whatsapp::summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Web search           {}", web_search_summary(&cfg)),
             format!("Memory recall        {}", memory_summary(&cfg)),
@@ -233,16 +239,17 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             1 => telegram_step(t, http, false).await,
             2 => channels::discord_step(t, false).await,
             3 => channels::slack_step(t, false).await,
-            4 => credentials_step(t, http, false).await,
-            5 => web_search_step(t, false),
-            6 => memory_step(t, false).await,
-            7 => sandbox_step(t, false),
-            8 => network_step(t, false),
-            9 => browser_step(t),
-            10 => crate::mcp_add::setup_step(t, false).await,
-            11 => crate::import::setup_step(t, false).await,
-            12 => remote::step(t).await,
-            13 => service_step(t, false),
+            4 => whatsapp::step(t, false).await,
+            5 => credentials_step(t, http, false).await,
+            6 => web_search_step(t, false),
+            7 => memory_step(t, false).await,
+            8 => sandbox_step(t, false),
+            9 => network_step(t, false),
+            10 => browser_step(t),
+            11 => crate::mcp_add::setup_step(t, false).await,
+            12 => crate::import::setup_step(t, false).await,
+            13 => remote::step(t).await,
+            14 => service_step(t, false),
             n if Some(n) == another => another_instance(),
             _ => break,
         };

@@ -7,6 +7,7 @@
 pub mod discord;
 pub mod http;
 pub mod slack;
+pub mod whatsapp;
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

@@ -9,8 +9,9 @@ use std::time::Duration;
 
 pub const WORKER_JS: &str = include_str!("../../../relay/worker.js");
 pub const RELAY_KEY_ENV: &str = "FERRULE_RELAY_KEY";
-/// The Durable Object migration the Worker needs, sent once.
-const MIGRATION_TAG: &str = "v1";
+/// The Durable Object migrations the Worker needs, each sent once: `v1`
+/// made `Slot` (M20), `v2` adds M39's WhatsApp `Mailbox`.
+const MIGRATION_TAG: &str = "v2";
 
 /// A flow's slot: the secret only ferrule holds, and its public id (the
 /// OAuth `state`).
@@ -260,7 +261,8 @@ pub async fn deploy(d: &Deploy<'_>) -> Result<String> {
         .as_array()
         .into_iter()
         .flatten()
-        .any(|s| s["id"] == d.name && s["migration_tag"] == MIGRATION_TAG);
+        .find(|s| s["id"] == d.name)
+        .and_then(|s| s["migration_tag"].as_str().map(String::from));
     // The account's workers.dev subdomain: a new account has none until
     // Workers is opened once in the dashboard, so make one.
     let sub = match call(http.get(format!("{base}/subdomain"))).await {
@@ -294,13 +296,26 @@ pub async fn deploy(d: &Deploy<'_>) -> Result<String> {
         "compatibility_date": "2025-09-01",
         "bindings": [
             {"type": "durable_object_namespace", "name": "SLOTS", "class_name": "Slot"},
+            {"type": "durable_object_namespace", "name": "MAILBOXES", "class_name": "Mailbox"},
             {"type": "secret_text", "name": "RELAY_KEY", "text": d.relay_key},
         ],
         "observability": {"enabled": false},
         "logpush": false,
     });
-    if !applied {
-        metadata["migrations"] = json!({"new_tag": MIGRATION_TAG, "new_sqlite_classes": ["Slot"]});
+    match applied.as_deref() {
+        Some(MIGRATION_TAG) => {}
+        // An M20 relay: only the mailbox is new.
+        Some("v1") => {
+            metadata["migrations"] = json!({
+                "old_tag": "v1", "new_tag": MIGRATION_TAG, "new_sqlite_classes": ["Mailbox"],
+            })
+        }
+        _ => {
+            metadata["migrations"] = json!({
+                "new_tag": MIGRATION_TAG,
+                "steps": [{"new_sqlite_classes": ["Slot"]}, {"new_sqlite_classes": ["Mailbox"]}],
+            })
+        }
     }
     let boundary = format!("ferrule-{}", b64(&random::<12>()));
     let body = multipart(

@@ -821,6 +821,7 @@ pub(crate) fn looks_like_key(word: &str) -> bool {
         "rk_",
         "xox",
         "xapp-",
+        "EAA",
         "ghp_",
         "gho_",
         "ghs_",

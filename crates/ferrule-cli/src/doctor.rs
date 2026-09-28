@@ -1921,14 +1921,110 @@ impl Report {
 /// and HTTP API channel. Whether any of them runs.
 async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bool {
     let mut on = false;
-    for c in crate::channels::CHANNELS.iter().skip(3) {
+    if let Some(w) = &cfg.gateway.whatsapp {
+        whatsapp(r, cfg, w, offline).await;
+        on = true;
+    }
+    for c in crate::channels::CHANNELS.iter().skip(4) {
         if crate::channels::configured(cfg, c.name) {
-            let _ = offline;
             r.fail(c.name, "configured, but this build doesn't run it");
             on = true;
         }
     }
     on
+}
+
+/// WhatsApp: the token and number, where webhooks come from, and messages
+/// held by a closed 24-hour window. Reads only; the mailbox is configured
+/// by the gateway and by Test, not here.
+async fn whatsapp(
+    r: &mut Report,
+    cfg: &config::Config,
+    w: &crate::channels::settings::WhatsApp,
+    offline: bool,
+) {
+    use crate::channels::settings::WhatsAppInbound;
+    use crate::channels::whatsapp as cw;
+    use ferrule_gateway::channels::whatsapp as wa;
+    let wc = match cw::config(cfg, w, None) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("whatsapp", format!("{e:#}"));
+            return;
+        }
+    };
+    let allowed = w.allowed_users.len() + usize::from(cfg.trust.whatsapp_owner.is_some());
+    let who = if offline {
+        format!("token set, not checked · {allowed} number(s) allowed")
+    } else {
+        match wa::probe(&wc.api_url, &wc.api_version, &wc.phone_number_id, &wc.token).await {
+            Ok(p) => {
+                format!("{} {} · {allowed} number(s) allowed", p.number, p.name).replace("  ", " ")
+            }
+            Err(why) => {
+                r.fail("whatsapp", why);
+                r.hint("the dashboard's WhatsApp card → Test, or `ferrule setup` → WhatsApp");
+                return;
+            }
+        }
+    };
+    match w.inbound {
+        WhatsAppInbound::Listen => r.ok(
+            "whatsapp",
+            format!(
+                "{who} · webhooks on 127.0.0.1:{} (your tunnel)",
+                w.listen_port
+            ),
+        ),
+        WhatsAppInbound::Relay => {
+            match cw::relay(cfg, w) {
+                None => {
+                    r.fail("whatsapp", "webhooks come through the relay, and none is deployed (or its key is missing)");
+                    r.hint("`ferrule connections relay deploy`, or inbound = \"listen\" behind your own tunnel");
+                }
+                Some(_) if offline => r.ok(
+                    "whatsapp",
+                    format!("{who} · through the relay, not checked"),
+                ),
+                Some((url, _)) => match cw::relay_has_mailbox(&url).await {
+                    Ok(true) => r.ok("whatsapp", format!("{who} · webhooks through the relay")),
+                    Ok(false) => {
+                        r.fail(
+                            "whatsapp",
+                            "the relay predates M39 and has no WhatsApp mailbox",
+                        );
+                        r.hint("`ferrule connections relay deploy` updates it in place");
+                    }
+                    Err(why) => r.fail("whatsapp", why),
+                },
+            }
+        }
+    }
+    if w.template.is_none() {
+        r.note(
+            "whatsapp",
+            "no template: a reply after 24 hours of silence waits until they write again",
+        );
+    }
+    if let Some(dir) = &wc.state_dir {
+        let held = wa::window::held_on_disk(dir, chrono::Utc::now().timestamp());
+        if !held.is_empty() {
+            let list = held
+                .iter()
+                .map(|(chat, n)| format!("{n} for {chat}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            r.warn(
+                "whatsapp",
+                format!("messages held by the closed 24-hour window: {list}"),
+            );
+            r.hint("they go when the person writes again; a template ([gateway.whatsapp] template) tells them sooner");
+        }
+    }
+    if allowed == 0 {
+        r.warn("whatsapp", "no number is allowed, so it answers no one");
+        r.hint("`ferrule setup` → WhatsApp pairs you with a code");
+    }
 }
 
 /// M38: what this instance shares with another one that it mustn't: a bot,

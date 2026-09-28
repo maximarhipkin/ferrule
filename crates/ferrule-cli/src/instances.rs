@@ -201,6 +201,9 @@ pub struct Facts {
     pub relay: Option<String>,
     /// Only compared, never shown.
     pub relay_key: Option<String>,
+    /// M39: each other channel's account, `(channel, id)`: the WhatsApp
+    /// number's id and the like, never a secret.
+    pub accounts: Vec<(&'static str, String)>,
     /// Its config or secrets couldn't be read, so some of the above is
     /// missing.
     pub unreadable: Option<String>,
@@ -263,6 +266,10 @@ impl Facts {
             facts.relay = Some(url.trim().trim_end_matches('/').to_ascii_lowercase());
             facts.relay_key = secret(ferrule_connections::relay::RELAY_KEY_ENV);
         }
+        facts.accounts = crate::channels::CHANNELS
+            .iter()
+            .filter_map(|c| Some((c.name, crate::channels::account(cfg, c.name)?)))
+            .collect();
         facts
     }
 }
@@ -281,7 +288,7 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clash {
     pub severity: Severity,
-    /// `telegram`, `dashboard`, `workspace`, `ssh` or `relay`.
+    /// `telegram`, `dashboard`, `workspace`, `ssh`, `relay` or `channel`.
     pub what: &'static str,
     pub other: String,
     pub message: String,
@@ -333,6 +340,15 @@ pub fn clashes(me: &Facts, others: &[Facts]) -> Vec<Clash> {
                     Severity::Fail,
                     "ssh",
                     format!("the remote workspace {a} is the instance `{other}`'s too: two agents would edit one tree"),
+                );
+            }
+        }
+        for (channel, id) in &me.accounts {
+            if o.accounts.iter().any(|(c, i)| c == channel && i == id) {
+                clash(
+                    Severity::Fail,
+                    "channel",
+                    crate::channels::account_clash(channel, id, &other),
                 );
             }
         }
@@ -777,6 +793,7 @@ mod tests {
         me.ssh = Some("box:22/app".into());
         me.relay = Some("https://r.example".into());
         me.relay_key = Some("k1".into());
+        me.accounts = vec![("whatsapp", "1110001".into())];
         let mut other = me.clone();
         other.name = None;
         other.relay_key = Some("k2".into());
@@ -789,9 +806,13 @@ mod tests {
                 ("dashboard", Severity::Fail),
                 ("workspace", Severity::Fail),
                 ("ssh", Severity::Fail),
+                ("channel", Severity::Fail),
                 ("relay", Severity::Fail),
             ]
         );
+        assert!(found[4]
+            .message
+            .contains("WhatsApp number (phone number id 1110001)"));
         assert!(found.iter().all(|c| c.other == "default"));
         assert!(found[0].message.contains("id 111") && found[0].message.contains("`default`"));
         // Keys are compared, never shown.
@@ -814,7 +835,9 @@ mod tests {
         me.workspace = Some("/a".into());
         me.ssh = Some("box:22/a".into());
         me.relay = Some("https://r1".into());
+        me.accounts = vec![("whatsapp", "1".into())];
         let mut other = facts(Some("b"));
+        other.accounts = vec![("whatsapp", "2".into()), ("matrix", "1".into())];
         other.bot = Some("2".into());
         other.port = Some(8766);
         other.workspace = Some("/b".into());

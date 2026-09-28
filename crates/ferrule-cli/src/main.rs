@@ -1991,7 +1991,10 @@ fn with_owner(cfg: &config::Config, channel: &str, users: &[String]) -> Vec<Stri
 /// by the long-lived daemon (`run_gateway`) and `ferrule tasks run-now` (which
 /// needs the same destination channels available to deliver its one result,
 /// without starting the daemon's inbound loops).
-fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channel>>> {
+fn build_channels(
+    cfg: &config::Config,
+    workspace: Option<&Path>,
+) -> Result<HashMap<String, Arc<dyn Channel>>> {
     let mut named_channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
 
     if cfg.gateway.local {
@@ -2042,6 +2045,14 @@ fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channe
         _ => bail!(
             "Slack needs both [gateway] slack_bot_token_env (xoxb-) and slack_app_token_env (xapp-, for Socket Mode) — run `ferrule setup`"
         ),
+    }
+
+    if let Some(w) = &g.whatsapp {
+        let wa =
+            ferrule_gateway::WhatsAppChannel::new(channels::whatsapp::config(cfg, w, workspace)?)
+                .with_allowed(with_owner(cfg, "whatsapp", &w.allowed_users));
+        let wa: Arc<dyn Channel> = Arc::new(wa);
+        named_channels.insert(wa.name().to_string(), wa);
     }
 
     Ok(named_channels)
@@ -2133,7 +2144,7 @@ async fn run_gateway(
     )
     .await?;
 
-    let named_channels = build_channels(&cfg)?;
+    let named_channels = build_channels(&cfg, Some(&workspace))?;
     if named_channels.is_empty() {
         bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true`, `telegram_token_env`, `discord_token_env`, `slack_bot_token_env` or a `[gateway.<channel>]` table (whatsapp, matrix, email, signal, mattermost, http) in the config");
     }
@@ -2588,7 +2599,7 @@ async fn tasks_run_now(
     )
     .await?;
 
-    let named_channels = build_channels(&cfg)?;
+    let named_channels = build_channels(&cfg, None)?;
     let router = Arc::new(Router::new(
         sessions_dir,
         agent_factory,
