@@ -791,6 +791,21 @@ that convention yet — ask before introducing one).
     - The dashboard names its instance and acts only on it. `install.sh`
       refreshes every running instance on the binary it replaced.
     - **Decisions for Max and open edges:** see the M38 session-log entry.
+  - **M39 more channels**: **built** (2026-09-28, branch `m39-channels`,
+    PR to main open, not merged). The design and as-built notes are in
+    `docs/m39-channels.md`. The user guide is `docs/channels.md`.
+    - Six channels beside Telegram, Discord and Slack: WhatsApp (Cloud
+      API, through the relay's mailbox), Matrix, email (IMAP IDLE +
+      SMTP), Signal (signal-cli's daemon), Mattermost and an HTTP API
+      with a key per program.
+    - Each has a setup step, a dashboard card with Test and a guide,
+      doctor lines, approvals in the channel, files in and out, and a
+      cross-instance clash check; each is tested against a mock on
+      127.0.0.1.
+    - The seams: every Telegram/Discord/Slack list (owners, redaction,
+      health, doctor, cards) is now per channel, and `send_file` sends a
+      workspace file to the session's chat.
+    - **Decisions for Max and open edges:** see the M39 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -5003,4 +5018,97 @@ real binary gave engineered 20/20, naive 11/20, $0.98.
 - A system instance on a real systemd host.
 - The bot's `@username` in `instances list`, if the gateway starts
   recording it.
+- README lines (listed in the PR).
+
+### 2026-09-28 — M39 more channels (Devi, Opus 5.5)
+
+**Scope.** Reach the agent from WhatsApp, Matrix, email, Signal,
+Mattermost and any program over HTTP, in M31's shape: the same channel
+trait, chats, sessions, allowlist, mention-only shared chats, pairing,
+an owner per channel, and tokens out of the model's reach. The design
+and as-built notes are in `docs/m39-channels.md`; the user guide is
+`docs/channels.md`. Branch `m39-channels`, one commit per part.
+
+**What was built.**
+- **A Windows flake first:** the live_fixes 409 test is timed from the
+  gateway's first getUpdates, dispatch errors are told in the chat, and
+  `tasks.db` waits on a busy lock.
+- **The seams:** owners (`[trust] <channel>_owner`), redaction, health,
+  doctor, setup and the dashboard cards (`card::Spec`) are per channel
+  instead of three hard-coded lists. `send_file` sends a workspace file
+  to the session's own chat; incoming files land in the inbox.
+- **WhatsApp:** the Cloud API. Meta's webhook reaches the relay Worker,
+  which checks the signature and keeps it in a mailbox the gateway
+  drains; ferrule configures the mailbox itself. Text, media, reply
+  buttons for approvals, 👀 and read receipts; the 24-hour window with an
+  optional template.
+- **Matrix:** `/sync` long-poll, DMs by user id, rooms on a mention, HTML
+  with edits for streaming, approvals by reaction, files through the media
+  repo; encrypted rooms refused with one notice.
+- **Email:** IMAP IDLE and SMTP on M37's native code; threads kept,
+  strangers' mail left unread, `Authentication-Results` required on the
+  big providers, loop guards and a rate per address, approvals by a
+  first-line keyword, attachments both ways, an app password or M37's
+  Gmail connection.
+- **Signal:** signal-cli's JSON-RPC daemon over HTTP, started by the
+  gateway or adopted; DMs, groups on a mention, Note to Self, text styles,
+  approvals by reply keyword, attachments; linking by QR in setup.
+- **Mattermost:** a bot token, the WebSocket and REST v4; DMs, channels on
+  a mention answered in threads, edits for streaming, approvals by
+  reaction, files both ways, rate limits waited out.
+- **HTTP API:** `POST /v1/messages` on 127.0.0.1:8788 with a bearer key
+  per program (only its SHA-256 kept), JSON or SSE; an outbox
+  (`GET /v1/events`) and a signed webhook for what nobody waited for;
+  files as base64 in and links out; 429s per key; public only through a
+  quick tunnel. `ferrule channels keys list | add | webhook | revoke`.
+- **Every channel:** setup, a dashboard card with Test and a guide, doctor
+  lines, a cross-instance clash (M38), hermetic tests against a mock, and
+  an `#[ignore]`d live test keyed by `FERRULE_LIVE_*`.
+
+**Decisions taken alone (for Max to overrule).**
+- `send_file` isn't approval-gated (the design said it would be, like
+  `write_file`, which isn't either). It sends only workspace files, only
+  to the session's own chat.
+- WhatsApp's mailbox is set by an authenticated call and stored in the
+  Durable Object, so no Cloudflare token is needed after deploy; the app
+  secret is therefore held on Cloudflare. Strangers on WhatsApp are never
+  answered: a reply opens a billed conversation.
+- A Matrix or Mattermost DM's chat is the person's user id, not the room
+  or channel id, so owner notices and task results can reach them.
+- Matrix encrypted rooms are refused, not supported.
+- Email finds new mail by UID rather than UNSEEN, delivers at most once,
+  and requires `Authentication-Results` by default only on Gmail, Yahoo,
+  iCloud and Fastmail. Outlook/M365 (OAuth only) isn't supported yet.
+- Signal: signal-cli and Java are detected, never vendored; a
+  `run-now` process doesn't start a daemon.
+- The HTTP API's CLI is `ferrule channels keys …`; a key is printed once
+  and the console refuses to print one. The gateway never downloads
+  cloudflared (setup does). A webhook is tried at once, then after 1, 5
+  and 30 s.
+- Three new trait hooks (`answered`, `busy_notices`, `note`) rather than
+  special-casing the HTTP API in the router.
+- Generic SVG icons on the cards, not brand assets.
+- Teams, Google Chat, Twilio SMS and Zulip left as follow-ups; the design
+  (§13) describes each.
+
+**Verified live vs only against fakes.** No channel was run against a
+real account: there were no WhatsApp, Matrix, mail, Signal or
+Mattermost credentials in this session. Every channel is tested against
+a mock server on 127.0.0.1, and through the real binary where it
+matters (setup-free config, the gateway, doctor, `channels keys`).
+
+**Checks.** 1598 tests passed, 0 failed, 28 ignored. fmt and clippy
+`-D warnings` are clean. The starter eval against the mock through the
+real binary gave engineered 20/20, naive 11/20, $0.98.
+
+**Follow-ups.**
+- A live run of each channel with a real account (the ignored tests).
+- Teams, Google Chat, Twilio SMS, Zulip; Outlook/M365 mail by OAuth.
+- Matrix end-to-end encryption.
+- Files in and out for Telegram, Discord and Slack through the new seam.
+- A `run-now` result for the HTTP API: its outbox copy can be overwritten
+  by the running gateway's `state.json` (the webhook still fires).
+- Windows flake suspects not yet fixed: sync sleeps in the file-write
+  tests, the agent factory off `spawn_blocking`, rename retries in
+  `health.rs`.
 - README lines (listed in the PR).

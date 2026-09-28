@@ -835,6 +835,28 @@ is a raw shell, which is his decision.
 with its own bot and dashboard, in one command, and neither one's update,
 restart or removal touches the other.
 
+### M39 — more channels
+
+**Status.** Built (`docs/m39-channels.md`; user guide
+`docs/channels.md`). PR to `main` open, not merged.
+- **Six new ways in:** WhatsApp, Matrix, email, Signal, Mattermost, and an
+  HTTP API for scripts, n8n or Zapier, beside Telegram, Discord and Slack.
+- **The same rules everywhere:** an allowlist, mention-only in shared
+  chats, pairing, an owner per channel, approvals in the channel, and
+  tokens the model never sees.
+- **Files both ways** where the platform allows: what people send lands
+  in the inbox, and `send_file` sends a workspace file back.
+- **Each one is set up the same way:** a setup step, a dashboard card with
+  a token form, Test and a guide, doctor lines, and a check that two
+  instances don't share an account.
+- **The HTTP API** gives each program its own key, answers as JSON or a
+  stream, keeps what nobody waited for in an outbox, and can call a signed
+  webhook; it stays on this machine unless a tunnel is turned on.
+
+**Done means.** Max's agent answers him on WhatsApp or by mail, a team
+reaches it from Matrix, Signal or Mattermost, and an n8n flow calls it
+with a key, each set up from the phone with Test showing it works.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

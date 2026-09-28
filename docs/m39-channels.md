@@ -715,4 +715,133 @@ setup, as two instances on one Telegram bot are today:
 
 ## As built
 
-(Filled in at the end of the milestone.)
+Built on branch `m39-channels` in nine commits: the Windows flake fix, this
+document, the seams, then one commit per channel. The user guide is
+[channels.md](channels.md). Every channel has a setup step, a dashboard
+card with Test and a guide, doctor lines, approvals in the channel, files
+where the platform allows, a cross-instance clash, and hermetic tests
+against a mock on 127.0.0.1. Nothing here was run against a real account;
+each channel has an `#[ignore]`d live test keyed by `FERRULE_LIVE_*`.
+
+Where the build differs from the sections above, the build is right:
+
+**Every channel**
+- **`send_file` isn't approval-gated** (§2 and §11 said it was, "like
+  `write_file`", but `write_file` isn't gated either; only shell, MCP and
+  declared tools are). It stays inside the workspace, refuses hidden paths,
+  and sends only to the session's own chat.
+- **Three new `Channel` hooks:** `answered(chat, message_id)` after a reply
+  is delivered (the HTTP API needs to know an answer is complete);
+  `busy_notices()` (false for the HTTP API: a program doesn't want "still
+  working" messages); `note()`, a line in `/status` that isn't a problem
+  (the HTTP API's port and public URL).
+- **The API routes** are `channels/keys/add` and `channels/keys/revoke`,
+  and the keys come with the HTTP card in `GET channels` (not
+  `channels/http/…`).
+
+**WhatsApp**
+- **The mailbox is configured by ferrule**, with an authenticated
+  `POST /wa/<box>/config` (the relay key) stored in the Durable Object,
+  rather than Worker secret bindings, so no Cloudflare token is needed to
+  change it. The app secret is therefore held on Cloudflare too. The
+  Worker 404s every box but its own, and `/health` says `v: 2, wa: true`,
+  so doctor can say "redeploy the relay" for one that predates WhatsApp.
+- **Strangers are never answered**, not even with their number: a reply
+  opens a billed conversation.
+- **Listen mode answers 200 first**, then processes.
+- **A closed 24-hour window without a template** makes the send an error
+  in plain words and a `problem()`. With a template, one template per
+  closed window; later messages are held quietly and delivered, headed,
+  when the person writes.
+- Files go before text, and the text becomes their caption when it fits
+  (≤ 1024) and there are no buttons. Images are JPEG/PNG; anything else
+  goes as a document.
+
+**Matrix**
+- **A DM's chat id is the person's user id**, not the room id (§4), so an
+  owner notice or a task result reaches them; the DM room is kept in
+  `state.json`, or created (unencrypted) on the first send.
+- Anyone in an allowed room may mention the bot (as in Slack); reactions
+  to approvals count only from allowed users.
+- The first `/sync` is catch-up only. The encrypted-room notice is sent
+  once per room, and remembered.
+- `stream_every` is 3 s: Synapse's rate limit counts edits.
+- **Login:** setup and the card store only a token (a password is turned
+  into one and never saved; the card is token-only). A password probe
+  logs its session out afterwards.
+- `state.json` is merged, not overwritten, so a `ferrule tasks run-now`
+  process can't rewind the daemon's sync position.
+- The clash compares the user id, or a fingerprint of the token.
+
+**Email**
+- **IDLE is renewed every 4 minutes**, not 25: health's staleness is
+  300 s.
+- **New mail is found by UID, not UNSEEN**, so mail the owner already read
+  on their phone is still answered. `last_uid` advances before the hand-off
+  (at most once).
+- Mail from anyone not allowed is **left unread** and never read into the
+  model.
+- Only the topmost `Authentication-Results` counts. `require_auth` is on
+  by default for Gmail, Yahoo, iCloud and Fastmail, off elsewhere; an
+  approval needs a vouched sender either way.
+- Loopback servers not on 993/465 are plain (tests, Proton Bridge).
+- Oversized mail is answered, not downloaded. A new thread's subject is
+  `ferrule: …` with `Auto-Submitted: auto-generated`. 10 mails an hour per
+  address.
+- A Google-style app password loses its spaces (only when it's 16
+  letters). `use_connection = "gmail"` reuses M37's Gmail record; such a
+  config isn't compared across instances, since the address is sealed.
+- The clash key is `user on imap host`. Outlook and Microsoft 365
+  (OAuth only) are a follow-up.
+
+**Signal**
+- **`ferrule tasks run-now` doesn't start a daemon**: its sends need the
+  gateway's daemon, or your own.
+- A daemon already on the port is adopted; the port is part of the clash
+  check, so one instance can't drive another's account through it.
+- No typing indicator (the trait has no hook for it). The link QR is drawn
+  by `qrencode` when it's installed; otherwise the `sgnl://` link is
+  printed.
+
+**Mattermost**
+- **A DM's chat id is the user id** (§7 said the channel id). Channel chats
+  are `channel/root` threads, as in Slack, and a thread the bot has
+  answered in needs no mention.
+- Usernames in `allowed_users` are resolved when the gateway starts.
+- Approvals are reactions by emoji name (`+1`, `-1`, `one` … `nine`).
+  👀 also marks the channel read. Posts from bots, webhooks and the system
+  are skipped. Streaming edits every 2 s. No state file: DM channels come
+  from the idempotent `/channels/direct`.
+- The clash is keyed by the server and a token fingerprint, since the user
+  id needs a network call.
+
+**HTTP API**
+- The CLI is **`ferrule channels keys list | add | webhook | revoke`**
+  (§8 said `channels http keys`). The console refuses `add` and `webhook`,
+  which print a secret once; the card shows a new key once instead.
+- **Keys count without a restart:** `clients.json` is re-read when its
+  mtime or length changes. `last_used` lives in the gateway's own
+  `state.json`, so the CLI and the gateway never write the same file.
+- **The outbox is persisted** with its numbering, across restarts; a
+  removed `state.json` starts it over, and `after` past the end reads from
+  the start.
+- **A `delta` carries the whole answer so far**, not an increment, since
+  an edit can change what was said. A split answer's parts are joined
+  with a newline. A request whose program hung up, or that waited 30
+  minutes (504), gets its answer in the outbox.
+- **Files in are base64 in the JSON body**, inside the 64 KiB cap; no
+  multipart.
+- **The 401 carries `WWW-Authenticate: Bearer realm="ferrule"`**, which is
+  how doctor and Test tell ferrule's API from anything else on the port.
+- A webhook is tried at once, then after 1, 5 and 30 s (§8: three retries).
+  Its secret is `frw_…`, separate from the key.
+- **The gateway never downloads cloudflared on start**; setup fetches it
+  when `public = "tunnel"` is chosen, and a missing one is an error at
+  start.
+- The owner is `[trust] http_owner = "<key name>"`; unset, no program is
+  the owner. Owner commands work in the key's own conversation.
+
+**Not built (follow-ups):** Teams, Google Chat, Twilio SMS and Zulip
+(§13); Outlook/M365 mail; a typing hook; a `ferrule tasks run-now` result
+for the HTTP API still reaches the webhook, but its outbox copy can be
+overwritten by the running gateway's `state.json`.
