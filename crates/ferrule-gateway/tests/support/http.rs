@@ -136,7 +136,7 @@ pub fn serve(handler: Handler) -> u16 {
     port
 }
 
-async fn read(stream: &mut tokio::net::TcpStream) -> Option<Request> {
+pub async fn read(stream: &mut tokio::net::TcpStream) -> Option<Request> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_end = loop {

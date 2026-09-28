@@ -270,6 +270,11 @@ impl Facts {
             .iter()
             .filter_map(|c| Some((c.name, crate::channels::account(cfg, c.name, &secret)?)))
             .collect();
+        // Two daemons ferrule starts can't share a port: the second one's
+        // gateway would talk to the first's account.
+        if let Some(s) = cfg.gateway.signal.as_ref().filter(|s| s.url.is_none()) {
+            facts.accounts.push(("signal-port", s.port.to_string()));
+        }
         facts
     }
 }

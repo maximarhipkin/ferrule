@@ -91,6 +91,7 @@ pub const CARDS: &[&Spec] = &[
     &super::whatsapp::SPEC,
     &super::matrix::SPEC,
     &super::email::SPEC,
+    &super::signal::SPEC,
 ];
 
 /// `name`'s card.

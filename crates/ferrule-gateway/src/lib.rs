@@ -24,8 +24,8 @@ pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
 };
 pub use channels::{
-    DiscordChannel, EmailChannel, LocalChannel, MatrixChannel, SlackChannel, TelegramChannel,
-    WhatsAppChannel,
+    DiscordChannel, EmailChannel, LocalChannel, MatrixChannel, SignalChannel, SlackChannel,
+    TelegramChannel, WhatsAppChannel,
 };
 pub use error::GatewayError;
 pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI};

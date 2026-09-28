@@ -2072,6 +2072,16 @@ fn build_channels(
         named_channels.insert(mail.name().to_string(), mail);
     }
 
+    if let Some(s) = &g.signal {
+        let sig = ferrule_gateway::SignalChannel::new(channels::signal::config(s, workspace)?)
+            .with_allowed(
+                with_owner(cfg, "signal", &s.allowed_users),
+                s.allowed_groups.clone(),
+            );
+        let sig: Arc<dyn Channel> = Arc::new(sig);
+        named_channels.insert(sig.name().to_string(), sig);
+    }
+
     Ok(named_channels)
 }
 

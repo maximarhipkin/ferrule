@@ -29,6 +29,7 @@ channels added in M39. The design, and the reasons behind it, are in
 | Ferrule in the chat app your customers or family already use | WhatsApp (a business number, from Meta) |
 | An open, self-hostable chat, or a room shared with a team | Matrix (unencrypted rooms only) |
 | Nothing new to install: write to it like a colleague, or get task results in your inbox | Email (a mailbox of its own) |
+| End-to-end encryption to your phone, with no company account or webhook | Signal (a spare number, and signal-cli on the machine) |
 
 ## WhatsApp
 
@@ -518,3 +519,160 @@ cargo test -p ferrule-gateway --test email -- --ignored
 ```
 
 It logs in, prints the probe and sends `…_TO` one mail.
+
+## Signal
+
+Ferrule talks to Signal through [signal-cli](https://github.com/AsamK/signal-cli),
+an unofficial command-line client, running as a daemon on the same machine.
+Messages stay end-to-end encrypted between your phone and that machine.
+Signal has no bot API, so the agent needs a Signal account of its own, just
+like a person.
+
+signal-cli is not part of ferrule, and ferrule never downloads it. Setup
+and doctor find it and say what's missing.
+
+### What you need
+
+1. **signal-cli**, from its releases page:
+   <https://github.com/AsamK/signal-cli/releases>.
+   - **Linux:** the native build (`signal-cli-<version>-Linux-native.tar.gz`)
+     needs nothing else. Unpack it and put `bin/` on your `PATH`.
+   - **macOS:** `brew install signal-cli`.
+   - **Windows, or the JVM build anywhere:** it needs Java 21 or newer, for
+     example Temurin from <https://adoptium.net/temurin/releases/>.
+2. **An account for it.** Pick one:
+   - **A separate number (best).** Any number that can receive an SMS or
+     a call once. Register it with signal-cli: get a captcha token as the
+     wiki describes (<https://github.com/AsamK/signal-cli/wiki/Registration-with-captcha>),
+     then `signal-cli -a +972501234567 register --captcha <token>` and
+     `signal-cli -a +972501234567 verify <code>`. You then write to the
+     agent like any contact.
+   - **Your own number, linked.** signal-cli becomes a linked device, like
+     Signal Desktop (<https://github.com/AsamK/signal-cli/wiki/Linking-other-devices-(Provisioning)>).
+     `ferrule setup` → Signal does the linking. You talk to the agent in
+     **Note to Self**. Be aware that the linked device can read all of
+     your new messages, although ferrule answers only the chats you
+     allow.
+
+### Steps
+
+The short way is **`ferrule setup` → Signal**. Setup:
+
+1. asks whether ferrule should start signal-cli's daemon (recommended)
+   or use one you run yourself. If signal-cli isn't found, it explains how
+   to install it and waits;
+2. lists the accounts signal-cli already holds, or links a new one. It
+   runs `signal-cli link -n ferrule` and shows the link as a QR code if
+   `qrencode` is installed; scan it in Signal → Settings → Linked
+   devices;
+3. saves `[gateway.signal]`. There's no token: signal-cli keeps the
+   account's keys in its own data folder;
+4. allows you: pair with a code sent from your phone, type your number,
+   or, on a linked number, allow Note to Self.
+
+Groups are allowed later: **`ferrule setup` → Signal → Allow a group**
+lists the account's groups while the daemon runs.
+
+On the dashboard, fill in the Signal card (the number, allowed numbers and
+groups, and optionally the daemon URL or signal-cli's path), **Save**, then
+**Test**.
+
+By hand, in `config.toml`:
+
+```toml
+[gateway.signal]
+account = "+972501234567"                # the agent's number, as signal-cli holds it
+allowed_users = ["+972541112233"]        # numbers, or Signal uuids
+# allowed_groups = ["R3JvdXAtaWQ…="]     # group ids: a mention there reaches it
+# signal_cli = "/opt/signal-cli/bin/signal-cli"   # default: the one on PATH
+# port = 7583                            # the daemon ferrule starts, on 127.0.0.1
+# url = "http://127.0.0.1:8080"          # a daemon you run instead (see below)
+# max_file_mb = 20
+```
+
+The first number on `allowed_users` is the owner, the one who can approve
+tool calls. To name another, set `signal_owner = "+972541112233"` under
+`[trust]`.
+
+### The daemon
+
+Without `url`, the gateway starts
+`signal-cli -a <account> daemon --http 127.0.0.1:<port> --receive-mode on-connection`
+itself. It stops the daemon when the gateway stops and restarts it if it
+exits. Its output goes to `gateway/signal/daemon.log` in the instance's
+data folder. If a daemon already answers on the port, ferrule uses it as
+it is.
+
+To run the daemon yourself, for example in the
+[bbernhard/signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)
+container in `json-rpc-native` mode, or as a system service, start it
+with `--http` and set `url`. A daemon that serves several accounts works
+too, because ferrule names its own account in each call.
+
+`ferrule tasks run-now` doesn't start a daemon. To deliver a result to
+Signal, it needs the gateway's daemon (or yours) to be running.
+
+### Who gets an answer
+
+- **Allowed numbers in a DM.** A message from a number (or uuid) on
+  `allowed_users` reaches the agent. Anyone else gets nothing, and not
+  even a read receipt.
+- **Groups: allowed, and mentioned.** In a group on `allowed_groups`,
+  ferrule answers when it is @-mentioned or someone replies to its
+  message, whoever wrote it.
+- **Note to Self** reaches the agent only when the agent's own number is
+  on `allowed_users`; setup adds it when you pick that option.
+- **Only new messages.** In on-connection mode, messages sent while the
+  gateway was down wait on Signal's servers and arrive when it's back.
+
+### What works
+
+- **Text** both ways. The agent's Markdown (bold, italic, strikethrough,
+  code, spoilers) becomes Signal's own text styles. Long answers are sent
+  in parts of 2000 characters.
+- **Replies** quote your message.
+- **👀 and a read receipt** when a message is taken.
+- **Approvals by reply.** Signal bots have no buttons. The question lists
+  the choices ("send `yes a1` to allow"); answer with the keyword.
+- **Files in:** photos, voice notes and documents are saved to the
+  workspace's inbox, up to `max_file_mb` (default 20) each.
+- **Files out:** the agent's files go with its answer.
+
+### Limits and errors
+
+- **No streaming.** Ferrule doesn't use Signal's message edits yet, so the
+  answer is sent once, when it's done. There's no typing indicator
+  either.
+- **Rate limits.** Signal throttles new accounts that write to many
+  people. On a rate limit ferrule waits and tries again, like on the
+  other channels. A "proof required" challenge has to be solved with
+  signal-cli (`submitRateLimitChallenge`); the log names it.
+- **A number not on Signal** is said plainly, and so is a contact's
+  changed safety number (their identity key). Trust the new key with
+  `signal-cli -a <account> trust <number> -a` if you know it's theirs.
+- **signal-cli must stay current.** Signal changes its servers now and
+  then, and releases older than about three months stop working. Update
+  it when doctor or the log says the daemon can't connect.
+- **One number, one instance.** signal-cli locks an account's data for one
+  daemon, so two instances (M38) on one number fail. Two instances that
+  start their own daemons also need different `port`s. Doctor and setup
+  name the instance that already has the number or the port.
+
+### Checking it
+
+`ferrule doctor` asks the daemon its version and the account's groups;
+nothing is sent. When ferrule starts the daemon and it isn't running yet,
+doctor checks that signal-cli is installed and holds the account (and,
+for the JVM build, that Java is 21 or newer). It warns when no one is
+allowed. `ferrule doctor --offline` only looks for signal-cli.
+
+A live round trip, not run in CI, against a daemon you started:
+
+```sh
+FERRULE_LIVE_SIGNAL_URL=http://127.0.0.1:7583 \
+FERRULE_LIVE_SIGNAL_ACCOUNT=+972501234567 \
+FERRULE_LIVE_SIGNAL_TO=+972541112233 \
+cargo test -p ferrule-gateway --test signal -- --ignored
+```
+
+It prints the probe and sends `…_TO` one message.

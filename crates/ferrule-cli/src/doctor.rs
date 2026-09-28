@@ -1933,7 +1933,15 @@ async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bo
         email(r, cfg, e, offline).await;
         on = true;
     }
-    for c in crate::channels::CHANNELS.iter().skip(6) {
+    if let Some(s) = &cfg.gateway.signal {
+        signal(r, cfg, s, offline).await;
+        on = true;
+    }
+    // The M39 channels this build doesn't run yet.
+    for c in crate::channels::CHANNELS.iter().skip(3) {
+        if ["whatsapp", "matrix", "email", "signal"].contains(&c.name) {
+            continue;
+        }
         if crate::channels::configured(cfg, c.name) {
             r.fail(c.name, "configured, but this build doesn't run it");
             on = true;
@@ -2144,6 +2152,63 @@ async fn email(
     if e.allowed_senders.is_empty() && !owner {
         r.warn("email", "no sender is allowed, so it answers no one");
         r.hint("add your address to [gateway.email] allowed_senders, or `ferrule setup` → Email");
+    }
+}
+
+/// Signal: signal-cli and Java on this machine, the daemon (ferrule's or
+/// yours) and the account's groups, and who may write.
+async fn signal(
+    r: &mut Report,
+    cfg: &config::Config,
+    s: &crate::channels::settings::Signal,
+    offline: bool,
+) {
+    use crate::channels::signal as sg;
+    if let Err(e) = sg::config(s, None) {
+        r.fail("signal", format!("{e:#}"));
+        return;
+    }
+    let owner = cfg.trust.signal_owner.is_some();
+    let allowed = s.allowed_users.len() + usize::from(owner);
+    let lists = format!(
+        "{allowed} user(s), {} group(s) allowed",
+        s.allowed_groups.len()
+    );
+    let account = s.account.trim();
+    if offline {
+        let found = if s.url.is_none() {
+            let f = sg::detect(Some(s)).await;
+            format!(" · {}", f.summary())
+        } else {
+            String::new()
+        };
+        r.ok(
+            "signal",
+            format!(
+                "{account} via {}{found} · not checked · {lists}",
+                sg::url(s)
+            ),
+        );
+    } else {
+        match sg::test(s).await {
+            Ok(said) => r.ok("signal", format!("{said} · {lists}")),
+            Err(why) => {
+                r.fail("signal", why);
+                r.hint("`ferrule setup` → Signal, or the dashboard's Signal card → Test");
+                return;
+            }
+        }
+    }
+    if s.url.is_none() {
+        let found = sg::detect(Some(s)).await;
+        if found.signal_cli.is_none() {
+            r.fail("signal", found.summary());
+            r.hint("install signal-cli: https://github.com/AsamK/signal-cli/releases (the JVM build needs Java 21+)");
+        }
+    }
+    if allowed == 0 && s.allowed_groups.is_empty() {
+        r.warn("signal", "no one is allowed, so it answers no one");
+        r.hint("add your number to [gateway.signal] allowed_users, or `ferrule setup` → Signal");
     }
 }
 

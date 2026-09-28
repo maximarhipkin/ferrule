@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::{discord, email, matrix, slack, wait, whatsapp};
+use support::{discord, email, matrix, signal, slack, wait, whatsapp};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -701,4 +701,133 @@ allowed_senders = ["{max}"]
         "{lines:?}"
     );
     assert!(!out.contains(email::PASSWORD), "{out}");
+}
+
+#[test]
+fn signal_answers_its_allowed_number_through_the_daemon_and_the_doctor_reads_it() {
+    let (url, log) = model_server();
+    let d = signal::start();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    let base = format!(
+        r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+"#
+    );
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"{base}
+[gateway.signal]
+account = "{acct}"
+url = "{daemon}"
+allowed_users = ["{max}"]
+"#,
+            acct = signal::ACCOUNT,
+            daemon = d.url,
+            max = signal::MAX,
+        ),
+    )
+    .unwrap();
+    let mut cmd = command(home, &["gateway"], discord::TOKEN);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the event stream", LIMIT, || d.state().open > 0);
+    d.push(signal::dm(
+        signal::STRANGER,
+        "STRANGER-SIG",
+        1_760_000_000_001,
+    ));
+    d.push(signal::dm(
+        signal::MAX,
+        "hello from signal",
+        1_760_000_000_002,
+    ));
+    wait("the Signal answer", LIMIT, || {
+        d.calls("send").iter().any(|p| {
+            p["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("ECHO hello from signal"))
+        })
+    });
+    assert!(!asked(&log, "STRANGER-SIG"));
+    let sent = d.calls("send");
+    assert!(
+        sent.iter()
+            .all(|p| p["recipient"][0].as_str() != Some(signal::STRANGER)),
+        "{sent:?}"
+    );
+
+    let doctor = |home: &Path, offline: bool| -> Vec<Value> {
+        let args: &[&str] = if offline {
+            &["doctor", "--offline", "--json"]
+        } else {
+            &["doctor", "--json"]
+        };
+        let o = command(home, args, discord::TOKEN).output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout);
+        let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+            .unwrap_or_else(|e| panic!("{e}: {out}"));
+        report["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["what"] == "signal")
+            .cloned()
+            .collect()
+    };
+    let lines = doctor(home, true);
+    assert!(
+        lines.iter().any(|l| l["level"] == "ok"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("1 user(s), 0 group(s)")),
+        "{lines:?}"
+    );
+
+    // Without a URL ferrule starts signal-cli itself: doctor says when
+    // there's none to start.
+    let other = tempfile::tempdir().unwrap();
+    let home2 = other.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home2.join(sub)).unwrap();
+    }
+    let missing = home2.join("no-signal-cli");
+    std::fs::write(
+        home2.join("ferrule.toml"),
+        format!(
+            "{base}\n[gateway.signal]\naccount = \"{}\"\nsignal_cli = {:?}\nport = {}\n",
+            signal::ACCOUNT,
+            missing.display().to_string(),
+            support::bind().1,
+        ),
+    )
+    .unwrap();
+    let lines = doctor(home2, true);
+    assert!(
+        lines.iter().any(
+            |l| l["level"] == "fail" && l["text"].as_str().unwrap().contains("isn't installed")
+        ),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l["level"] == "warn"),
+        "no one allowed: {lines:?}"
+    );
 }
