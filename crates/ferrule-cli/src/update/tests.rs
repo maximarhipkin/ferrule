@@ -1,7 +1,7 @@
 //! M36's hermetic tests (docs/m36-self-update.md §9): a mock release
 //! server, a test signing key, a fake service and a fake owner.
 
-use super::apply::{Apply, Outcome, Service, Want};
+use super::apply::{Apply, Outcome, Service, Sibling, Want};
 use super::notice::{Owner, Watch};
 use super::release::{self, Release, Source};
 use super::state::{self, EventKind, Lock, Request, State, Told};
@@ -1501,4 +1501,129 @@ async fn doctor_shows_claudes_version_the_latest_and_how_it_updates() {
     };
     let (ok, line) = super::claude::doctor_line(&missing, true).await;
     assert!(!ok && line.starts_with("claude: "), "{line}");
+}
+
+/// A second instance on the same binary: its own data and state dirs.
+fn sibling_dirs(s: &Setup, name: &str) -> (PathBuf, PathBuf) {
+    let data = s.exe.parent().unwrap().parent().unwrap().join(name);
+    std::fs::create_dir_all(data.join("update")).unwrap();
+    let state_dir = super::state_dir(&data);
+    (data, state_dir)
+}
+
+fn fake(data: &Path, comes_up: &str) -> FakeService {
+    FakeService {
+        data: data.into(),
+        comes_up: Some(comes_up.into()),
+        restarts: Mutex::new(0),
+    }
+}
+
+#[tokio::test]
+async fn siblings_restart_together_and_each_records_the_update() {
+    let s = setup().await;
+    let (data, state_dir) = sibling_dirs(&s, "work");
+    let mine = fake(&s.data, "0.6.0");
+    let theirs = fake(&data, "0.6.0");
+    let mut a = apply(&s, Some(&mine));
+    a.siblings = vec![Sibling {
+        name: "work".into(),
+        data: data.clone(),
+        state_dir: state_dir.clone(),
+        service: &theirs,
+    }];
+    assert!(matches!(
+        a.run(&Want::default()).await.unwrap(),
+        Outcome::Updated {
+            restart_needed: false,
+            ..
+        }
+    ));
+    assert_eq!(*mine.restarts.lock().unwrap(), 1);
+    assert_eq!(*theirs.restarts.lock().unwrap(), 1);
+    for dir in [&s.state_dir, &state_dir] {
+        let e = State::load(dir).events.last().cloned().unwrap();
+        assert_eq!((e.kind, e.to.as_str()), (EventKind::Updated, "0.6.0"));
+        assert!(!dir.join("apply.lock").exists(), "every lock is let go");
+    }
+}
+
+#[tokio::test]
+async fn one_sibling_that_doesnt_come_up_rolls_back_and_pins_all() {
+    let s = setup().await;
+    let (data, state_dir) = sibling_dirs(&s, "work");
+    let mine = fake(&s.data, "0.6.0");
+    // The sibling keeps reporting the old version.
+    let theirs = fake(&data, "0.5.1");
+    let mut a = apply(&s, Some(&mine));
+    a.siblings = vec![Sibling {
+        name: "work".into(),
+        data: data.clone(),
+        state_dir: state_dir.clone(),
+        service: &theirs,
+    }];
+    assert!(matches!(
+        a.run(&Want::default()).await.unwrap(),
+        Outcome::RolledBack { .. }
+    ));
+    assert_eq!(std::fs::read(&s.exe).unwrap(), b"old");
+    assert_eq!(*mine.restarts.lock().unwrap(), 2);
+    assert_eq!(*theirs.restarts.lock().unwrap(), 2);
+    for dir in [&s.state_dir, &state_dir] {
+        let state = State::load(dir);
+        assert!(state.is_pinned("v0.6.0"), "{}", dir.display());
+        assert_eq!(state.events.last().unwrap().kind, EventKind::RolledBack);
+    }
+}
+
+#[tokio::test]
+async fn a_siblings_pin_busy_gateway_or_lock_holds_the_update() {
+    let s = setup().await;
+    let (data, state_dir) = sibling_dirs(&s, "work");
+    let mine = fake(&s.data, "0.6.0");
+    let theirs = fake(&data, "0.6.0");
+    let with_sibling = || {
+        let mut a = apply(&s, Some(&mine));
+        a.siblings = vec![Sibling {
+            name: "work".into(),
+            data: data.clone(),
+            state_dir: state_dir.clone(),
+            service: &theirs,
+        }];
+        a
+    };
+    // Pinned there (a rollback in that instance): pinned here.
+    let mut pinned = State::default();
+    pinned.pin("v0.6.0");
+    pinned.save(&state_dir).unwrap();
+    assert_eq!(
+        with_sibling().run(&Want::default()).await.unwrap(),
+        Outcome::UpToDate
+    );
+    State::default().save(&state_dir).unwrap();
+    // Its gateway is mid-turn: nobody's is swapped under it.
+    mark(&data, "0.5.1", true, 600);
+    assert_eq!(
+        with_sibling().run(&Want::default()).await.unwrap(),
+        Outcome::Busy
+    );
+    std::fs::remove_file(data.join("gateway").join(RUNNING_FILE)).unwrap();
+    // Its own updater is running.
+    let held = Lock::take(&state_dir).unwrap();
+    let e = with_sibling().run(&Want::default()).await.unwrap_err();
+    assert!(e.to_string().contains("another update"), "{e}");
+    drop(held);
+    assert_eq!(std::fs::read(&s.exe).unwrap(), b"old");
+    assert_eq!(*theirs.restarts.lock().unwrap(), 0);
+}
+
+#[test]
+fn a_sibling_with_auto_off_holds_the_units_runs() {
+    let on = |n: &str, auto| (n.to_string(), auto);
+    assert_eq!(super::held_by(&[]), None);
+    assert_eq!(super::held_by(&[on("a", None), on("b", Some(true))]), None);
+    assert_eq!(
+        super::held_by(&[on("a", None), on("b", Some(false))]),
+        Some("b")
+    );
 }

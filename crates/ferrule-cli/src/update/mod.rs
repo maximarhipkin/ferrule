@@ -161,6 +161,22 @@ pub async fn cli(args: Args) -> Result<()> {
         );
     }
     apply.service = restarts.then_some(&Installed as &dyn Service);
+    // M38 §4: the other instances on this binary restart with it.
+    let others = others_running(&exe);
+    if !others.is_empty() {
+        let names: Vec<&str> = others.iter().map(|o| o.name.as_str()).collect();
+        confirm(
+            &format!(
+                "This binary also runs the instance{} {}: {} restart{} with it. Go on?",
+                if names.len() == 1 { "" } else { "s" },
+                names.join(", "),
+                if names.len() == 1 { "it" } else { "they" },
+                if names.len() == 1 { "s" } else { "" },
+            ),
+            args.yes,
+        )?;
+    }
+    apply.siblings = siblings(&others);
     println!("Checking and installing {}…", found.tag);
     match apply.run(&want).await? {
         Outcome::UpToDate => println!("Nothing to install."),
@@ -248,7 +264,30 @@ async fn apply_unit(
     apply.channel = settings.channel;
     let installed = matches!(service::status(), service::Status::Installed { .. });
     apply.service = installed.then_some(&Installed as &dyn Service);
+    let others = others_running(exe);
+    apply.siblings = siblings(&others);
+    let autos: Vec<(String, Option<bool>)> =
+        others.iter().map(|o| (o.name.clone(), o.auto)).collect();
+    let held = held_by(&autos);
     let ferrule = match &request {
+        // The owner pressed "update" on one instance: it restarts the
+        // others, so one that said auto = false holds it.
+        Some(r) if r.ferrule && held.is_some() => {
+            let who = held.unwrap_or_default();
+            if let Some(found) = apply.check(&Want::default()).await? {
+                apply::record_failure(
+                    &state_dir,
+                    &apply.current.to_string(),
+                    &found.version.to_string(),
+                    &format!(
+                        "the instance `{who}` runs this binary too and has [update] auto = false; \
+                         `ferrule update` in a terminal installs it for both, after asking"
+                    ),
+                );
+            }
+            println!("not installed: the instance `{who}` has [update] auto = false");
+            false
+        }
         Some(r) => r.ferrule,
         None => {
             let recent = state::State::load(&state_dir)
@@ -260,6 +299,10 @@ async fn apply_unit(
             // The units exist, so unset means on.
             if settings.auto == Some(false) {
                 apply.check(&Want::default()).await?;
+                false
+            } else if let Some(who) = held {
+                apply.check(&Want::default()).await?;
+                println!("only checked: the instance `{who}` runs this binary too and has [update] auto = false");
                 false
             } else {
                 true
@@ -277,6 +320,73 @@ async fn apply_unit(
         }
     }
     Ok(())
+}
+
+/// Another instance whose service runs this binary (M38 §4).
+pub struct Other {
+    pub name: String,
+    pub svc: service::Svc,
+    pub data: PathBuf,
+    /// Its `[update] auto`; unreadable reads as unset.
+    pub auto: Option<bool>,
+}
+
+impl apply::Service for service::Svc {
+    fn restart(&self) -> Result<()> {
+        service::Svc::restart(self)
+    }
+}
+
+/// The instances in this scope, this one aside, whose installed service
+/// runs `exe`.
+pub fn others_running(exe: &Path) -> Vec<Other> {
+    let Ok(places) = crate::instances::Places::here() else {
+        return Vec::new();
+    };
+    let me = crate::instance::current();
+    let scope = service::scope();
+    crate::instances::discover(&places)
+        .into_iter()
+        .filter(|f| f.scope == scope && f.name != me)
+        .filter(|f| {
+            f.unit
+                .as_deref()
+                .and_then(service::installed_exe_at)
+                .and_then(|e| dunce::canonicalize(e).ok())
+                .as_deref()
+                == Some(exe)
+        })
+        .map(|f| Other {
+            name: f.label().to_string(),
+            svc: f.svc(),
+            auto: crate::config::Config::from_file(&f.config)
+                .ok()
+                .and_then(|c| c.update.auto),
+            data: f.data,
+        })
+        .collect()
+}
+
+/// The siblings as the apply flow takes them.
+fn siblings(others: &[Other]) -> Vec<apply::Sibling<'_>> {
+    others
+        .iter()
+        .map(|o| apply::Sibling {
+            name: o.name.clone(),
+            state_dir: state_dir(&o.data),
+            data: o.data.clone(),
+            service: &o.svc,
+        })
+        .collect()
+}
+
+/// Who says a run from the units mustn't install (§4 4): the first sibling
+/// with `[update] auto = false`.
+pub fn held_by(others: &[(String, Option<bool>)]) -> Option<&str> {
+    others
+        .iter()
+        .find(|(_, auto)| *auto == Some(false))
+        .map(|(name, _)| name.as_str())
 }
 
 /// Not this user's to replace: a system service's binary, run by root's

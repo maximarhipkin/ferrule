@@ -24,6 +24,16 @@ impl Service for Installed {
     }
 }
 
+/// Another instance whose service runs the same binary (M38 §4): it waits,
+/// restarts, rolls back and is pinned with this one.
+pub struct Sibling<'a> {
+    /// How it reads in messages: its name, or `default`.
+    pub name: String,
+    pub data: PathBuf,
+    pub state_dir: PathBuf,
+    pub service: &'a dyn Service,
+}
+
 /// Everything the flow needs, so tests can point it at a mock and a temp
 /// dir, and shorten the waits.
 pub struct Apply<'a> {
@@ -46,6 +56,8 @@ pub struct Apply<'a> {
     /// How long the new gateway must stay up to count as healthy.
     pub healthy_after: Duration,
     pub poll: Duration,
+    /// The other instances that run this binary.
+    pub siblings: Vec<Sibling<'a>>,
 }
 
 /// What to install.
@@ -91,7 +103,33 @@ impl Apply<'_> {
             health_for: Duration::from_secs(180),
             healthy_after: Duration::from_secs(30),
             poll: Duration::from_secs(5),
+            siblings: Vec::new(),
         }
+    }
+
+    /// Every state dir the run owns: its own, then its siblings'.
+    fn state_dirs(&self) -> impl Iterator<Item = &Path> {
+        std::iter::once(self.state_dir.as_path())
+            .chain(self.siblings.iter().map(|s| s.state_dir.as_path()))
+    }
+
+    /// The apply lock in every state dir, in sorted order, so two
+    /// siblings' updaters can't each hold half (§4 2).
+    fn lock_all(&self) -> Result<Vec<Lock>> {
+        let mut dirs: Vec<&Path> = self.state_dirs().collect();
+        dirs.sort();
+        dirs.dedup();
+        dirs.into_iter().map(Lock::take).collect()
+    }
+
+    /// Change every state (its own and its siblings'), saving each.
+    fn each_state(&self, mut change: impl FnMut(&mut State)) -> Result<()> {
+        for dir in self.state_dirs() {
+            let mut state = State::load(dir);
+            change(&mut state);
+            state.save(dir)?;
+        }
+        Ok(())
     }
 
     /// The newest release this would install, recording the check. `None`:
@@ -129,19 +167,25 @@ impl Apply<'_> {
             .filter(|r| self.channel == Channel::Prerelease || !r.prerelease)
             .max_by(|a, b| a.version.cmp(&b.version))
             .map(|r| r.tag.clone());
+        // A version pinned in a sibling (a rollback there) is pinned here
+        // too (§4 3).
+        let mut pinned = state.pinned.clone();
+        for s in &self.siblings {
+            pinned.extend(State::load(&s.state_dir).pinned);
+        }
         Ok(release::choose(
             &releases,
             &self.current,
             self.channel,
-            &state.pinned,
+            &pinned,
             &self.target,
         )
         .cloned())
     }
 
-    /// The whole flow, under the apply lock.
+    /// The whole flow, under the apply lock (every sibling's too).
     pub async fn run(&self, want: &Want) -> Result<Outcome> {
-        let _lock = Lock::take(&self.state_dir)?;
+        let _locks = self.lock_all()?;
         let Some(release) = self.check(want).await? else {
             return Ok(Outcome::UpToDate);
         };
@@ -161,32 +205,36 @@ impl Apply<'_> {
             self.record_failure(&from, &to, &format!("{e:#}"));
             return Err(e);
         }
-        let mut state = State::load(&self.state_dir);
-        if want.to.is_some() {
-            state.unpin(&release.tag);
-        }
-        let Some(service) = self.service else {
-            state.push(EventKind::Updated, &from, &to, &release.headline());
-            state.save(&self.state_dir)?;
+        let unpin = |state: &mut State| {
+            if want.to.is_some() {
+                state.unpin(&release.tag);
+            }
+        };
+        if self.service.is_none() && self.siblings.is_empty() {
+            self.each_state(|state| {
+                unpin(state);
+                state.push(EventKind::Updated, &from, &to, &release.headline());
+            })?;
             return Ok(Outcome::Updated {
                 from,
                 to,
                 restart_needed: true,
             });
         };
-        let restarted = service.restart();
+        let restarted = self.restart_all();
         if restarted.is_ok() && self.wait_healthy(&release.version).await {
-            state.push(EventKind::Updated, &from, &to, &release.headline());
-            state.save(&self.state_dir)?;
+            self.each_state(|state| {
+                unpin(state);
+                state.push(EventKind::Updated, &from, &to, &release.headline());
+            })?;
             return Ok(Outcome::Updated {
                 from,
                 to,
-                restart_needed: false,
+                restart_needed: self.service.is_none(),
             });
         }
         swap::roll_back(&self.exe)?;
-        let back = service.restart();
-        state.pin(&release.tag);
+        let back = self.restart_all();
         let why = match (&restarted, &back) {
             (Err(e), _) => format!("the restart failed: {e:#}"),
             (_, Err(e)) => format!("it didn't come up, and restarting {from} failed: {e:#}"),
@@ -195,9 +243,37 @@ impl Apply<'_> {
                 self.health_for.as_secs()
             ),
         };
-        state.push(EventKind::RolledBack, &from, &to, &why);
-        state.save(&self.state_dir)?;
+        self.each_state(|state| {
+            state.pin(&release.tag);
+            state.push(EventKind::RolledBack, &from, &to, &why);
+        })?;
         Ok(Outcome::RolledBack { from, to })
+    }
+
+    /// Restart this instance's service and every sibling's; the first
+    /// failure, after trying them all.
+    fn restart_all(&self) -> Result<()> {
+        let mut first = self.service.and_then(|s| s.restart().err());
+        for s in &self.siblings {
+            if let Err(e) = s.service.restart() {
+                first.get_or_insert(e.context(format!("restarting the instance `{}`", s.name)));
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+
+    /// Every data dir whose gateway the run waits for.
+    fn data_dirs(&self) -> impl Iterator<Item = &Path> {
+        std::iter::once(self.data.as_path()).chain(self.siblings.iter().map(|s| s.data.as_path()))
+    }
+
+    /// The gateways that restart: this instance's with a service, and the
+    /// siblings'.
+    fn restarted_dirs(&self) -> impl Iterator<Item = &Path> {
+        self.service
+            .map(|_| self.data.as_path())
+            .into_iter()
+            .chain(self.siblings.iter().map(|s| s.data.as_path()))
     }
 
     pub async fn verify(&self, release: &Release, want: &Want) -> Result<Checked> {
@@ -222,22 +298,15 @@ impl Apply<'_> {
 
     /// One `failed` event per version, not one a day.
     fn record_failure(&self, from: &str, to: &str, why: &str) {
-        let mut state = State::load(&self.state_dir);
-        let again = state
-            .events
-            .last()
-            .is_some_and(|e| e.kind == EventKind::Failed && e.to == to && e.notes == why);
-        if !again {
-            state.push(EventKind::Failed, from, to, why);
-            let _ = state.save(&self.state_dir);
-        }
+        record_failure(&self.state_dir, from, to, why);
     }
 
-    /// Wait until no turn is running (§3.2 4); false when the wait ran out.
+    /// Wait until no turn is running in any sibling (§3.2 4, M38 §4 5);
+    /// false when the wait ran out.
     async fn wait_idle(&self) -> bool {
         let deadline = Instant::now() + self.idle_for;
         loop {
-            if idle(&self.data) {
+            if self.data_dirs().all(idle) {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -247,25 +316,40 @@ impl Apply<'_> {
         }
     }
 
-    /// The new gateway's marker names `version`, its pid is alive and it
-    /// has been up `healthy_after` (§3.4).
+    /// Every sibling's new gateway's marker names `version`, its pid is
+    /// alive and it has been up `healthy_after` (§3.4, M38 §4 6).
     async fn wait_healthy(&self, version: &semver::Version) -> bool {
         let deadline = Instant::now() + self.health_for;
-        loop {
-            if let Some(marker) = fresh_marker(&self.data) {
+        let healthy = |data: &Path| {
+            fresh_marker(data).is_some_and(|marker| {
                 let up = super::state::now().saturating_sub(marker.started);
-                if marker.version == version.to_string()
+                marker.version == version.to_string()
                     && crate::health::pid_alive(marker.pid) != Some(false)
                     && up >= self.healthy_after.as_secs()
-                {
-                    return true;
-                }
+            })
+        };
+        loop {
+            if self.restarted_dirs().all(healthy) {
+                return true;
             }
             if Instant::now() >= deadline {
                 return false;
             }
             tokio::time::sleep(self.poll).await;
         }
+    }
+}
+
+/// One `failed` event per version in a state dir, not one a day.
+pub fn record_failure(state_dir: &Path, from: &str, to: &str, why: &str) {
+    let mut state = State::load(state_dir);
+    let again = state
+        .events
+        .last()
+        .is_some_and(|e| e.kind == EventKind::Failed && e.to == to && e.notes == why);
+    if !again {
+        state.push(EventKind::Failed, from, to, why);
+        let _ = state.save(state_dir);
     }
 }
 
