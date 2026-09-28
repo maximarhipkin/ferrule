@@ -63,7 +63,7 @@ async fn load_from(
     let mut logged = false;
     loop {
         let Some(file) = find()? else {
-            anyhow::bail!("no config found. Run `ferrule setup` first.")
+            return Err(crate::config::no_config());
         };
         match Config::from_file(&file) {
             Ok(cfg) => {

@@ -114,6 +114,15 @@ fn instances_are_listed_made_and_removed() {
     let o = ferrule(root, &["instances", "new", "work", "--user", "--no-setup"]);
     assert!(!o.status.success());
     assert!(text(&o).contains("already"), "{}", text(&o));
+    // A name with no config (a typo) is named, never the default's.
+    let o = ferrule(root, &["--instance", "wrok", "doctor", "--offline"]);
+    assert!(!o.status.success());
+    assert!(
+        text(&o).contains("no config for the instance `wrok`")
+            && text(&o).contains("ferrule --instance wrok setup"),
+        "{}",
+        text(&o)
+    );
 
     // Removing keeps its files unless --purge; the default can't be.
     std::fs::create_dir_all(root.join("data/ferrule-work/private")).unwrap();

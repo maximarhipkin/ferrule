@@ -148,7 +148,10 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
         Err(e) => {
             r.fail("config", format!("{e:#}"));
             if config::config_path()?.is_none() {
-                r.hint("run `ferrule setup`");
+                r.hint(format!(
+                    "run `ferrule {}setup`",
+                    crate::instance::flag(crate::instance::current().as_deref())
+                ));
             }
             binary(&mut r);
             browser_check(&mut r, None);

@@ -161,6 +161,14 @@ Icons are inline SVG paths in the script. Type sizes are 13, 15, 17, 20,
 24 and 30 px. Text written by you or the agent sits in `dir="auto"`
 elements and is set with `textContent` only.
 
+## Several instances
+
+Each [named instance](instances.md) has its own dashboard, opened with
+`/dashboard` to its own bot. Its header shows the name beside the version,
+and the tab reads `ferrule · <name>`. Everything on the page, the console
+and the fix buttons included, acts on that instance only. The console
+refuses `--instance`.
+
 ## What it never shows
 
 Keys, tokens, the relay key, secrets-file values, the heartbeat URL's

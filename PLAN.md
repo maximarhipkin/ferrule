@@ -771,6 +771,26 @@ that convention yet — ask before introducing one).
       desktop sidebar, and themes that follow the system. A Node browser
       check runs in CI on all three OSes.
     - **Decisions for Max and open edges:** see the M37 session-log entry.
+  - **M38 named instances**: **built** (2026-09-28, branch
+    `m38-instances`, PR to main open, not merged). The design and as-built
+    notes are in `docs/m38-instances.md`. The user guide is
+    `docs/instances.md`.
+    - `--instance <name>` / `FERRULE_INSTANCE` on every command. A name is
+      `[a-z0-9-]`, 1–24, alphanumeric at both ends, never `default`. The
+      default instance's paths, units, labels and hints are 0.8.0's byte
+      for byte (golden fixtures).
+    - A named instance gets `ferrule-<name>` sibling dirs, the
+      `ferrule@<name>` unit, `ferrule-update@<name>` units, the
+      `ai.ferrule.*.<name>` labels, its own system user and relay Worker.
+    - `ferrule instances list | new | remove [--purge]`, and "Another
+      instance" in setup's menu.
+    - Collisions in doctor and setup: the same bot, fixed dashboard port,
+      workspace, SSH workspace or relay.
+    - Updates coordinated per binary: every sibling's lock, pins and
+      `auto = false` count; all restart together, and a rollback pins all.
+    - The dashboard names its instance and acts only on it. `install.sh`
+      refreshes every running instance on the binary it replaced.
+    - **Decisions for Max and open edges:** see the M38 session-log entry.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -4907,3 +4927,80 @@ starter eval against the mock through the real binary gave engineered
 - An opt-in shell if Max wants one.
 - README lines (listed in the PR).
 
+### 2026-09-28 — M38 named instances (Devi, Opus 5.5)
+
+**Scope.** Several independent agents on one machine, each with its own
+config, data, bot, service and dashboard, without touching the default
+install. The design and as-built notes are in `docs/m38-instances.md`.
+The user guide is `docs/instances.md` (new): named instances, separate
+Unix users, and the one-bot-per-agent rule. Branch `m38-instances`, from
+v0.8.0, with one commit per part.
+
+**What was built.**
+- **The name:** `--instance <name>` (a global flag) and
+  `FERRULE_INSTANCE`, validated before anything runs. `instance.rs`
+  derives every path, unit, label, system user and relay Worker name.
+  `FERRULE_ROOT` moves the config and data roots, for tests. The
+  default's paths and unit texts are compared with 0.8.0's.
+- **The service:** `Svc { instance, scope }` behind the old free
+  functions, so setup, `--refresh-service`, doctor, status, stop, restart
+  and uninstall follow the instance. Named units carry
+  `FERRULE_INSTANCE`, and a named instance never reads `./ferrule.toml`.
+- **`ferrule instances list | new | remove`:** found by config dir, by
+  unit and by system config. `new` runs the setup as a child without this
+  instance's paths or secrets. `remove` keeps the files unless `--purge`,
+  which asks for the name and never touches a workspace or a system user.
+  Setup's menu has "Another instance".
+- **Collisions:** a pure `clashes()` over each instance's facts (bot id,
+  fixed dashboard port, canonical workspace, SSH target, relay URL and
+  key). Doctor checks every readable instance; setup warns when it
+  finishes.
+- **Updates:** per-instance units, coordinated per binary. Siblings are
+  the same-scope instances whose unit runs the binary being replaced:
+  every lock is taken in sorted order, pins are merged, a sibling's
+  `auto = false` holds timer runs and refuses gateway requests by name,
+  all must be idle, all restart and are health-checked, and a rollback
+  pins and records in each. A terminal `ferrule update` names the
+  siblings and asks.
+- **The dashboard:** `instance` in `/api/health`, in the header and the
+  title. Children (doctor, fix buttons, the console) get
+  `FERRULE_INSTANCE`. A named instance's relay Worker is
+  `ferrule-relay-<name>`.
+- **`install.sh`:** the upgrade loops over the default unit and every
+  `ferrule@*.service` / `ai.ferrule.gateway.*.plist`, refreshing each
+  running one on this binary with its own `--instance`.
+
+**Decisions taken alone (for Max to overrule).**
+- `ferrule@<name>.service` rather than `ferrule-<name>.service`: `@` can't
+  appear in a name, so no instance can take the default's update unit
+  name.
+- Sibling directories (`ferrule-<name>`), not subdirectories of the
+  default's.
+- A system instance runs as its own user, `ferrule-<name>`.
+- Per-instance update units coordinated at apply time, rather than one
+  shared updater per binary.
+- `auto = false` in any sibling holds the others' automatic updates.
+- `list` shows the bot id, not `@username`: nothing records the username.
+- Setup checks collisions once at the end, not at each prompt.
+- `remove --purge` refuses a workspace inside the instance's dirs.
+- The doctor note for a `FERRULE_CONFIG` that isn't the instance's own
+  was dropped: every service-run doctor would have shown it.
+
+**Verified live vs only against fakes.** No real second service was
+installed: the container has no systemd user session or launchd. The
+units, the coordinated update, the system-instance path and `install.sh`
+are tested against fakes and stubs. `instances list/new/remove`,
+`--instance`, the doctor collision check and a named instance's
+dashboard and console run through the real binary against a temp home.
+
+**Checks.** 1435 tests passed, 0 failed, 23 ignored. fmt and clippy
+`-D warnings` are clean. The starter eval against the mock through the
+real binary gave engineered 20/20, naive 11/20, $0.98.
+
+**Follow-ups.**
+- A second instance on Max's server (a user service), and one coordinated
+  update across the two.
+- A system instance on a real systemd host.
+- The bot's `@username` in `instances list`, if the gateway starts
+  recording it.
+- README lines (listed in the PR).

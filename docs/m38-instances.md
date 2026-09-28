@@ -1,6 +1,6 @@
 # M38 — Named instances (design)
 
-Status: design, 2026-09-28, branch `m38-instances`. Written before the
+Status: built, 2026-09-28, branch `m38-instances`. Written before the
 code; where the build departs from it, see **As built** at the end. User
 guide: [instances.md](instances.md).
 
@@ -316,3 +316,71 @@ setup, `--refresh-service` and a named instance's setup don't ask.
 - Sharing one bot between instances (Telegram allows one poller).
 - A multi-instance dashboard: each instance has its own.
 - Deleting system users.
+
+---
+
+## As built
+
+Built as designed, in four commits (the name and paths; updates per
+binary; the dashboard and the relay; `install.sh`). Where it departs:
+
+- **§5 `list` shows the bot id only.** The gateway doesn't record its
+  bot's `@username` anywhere another process can read it, so the column is
+  `bot id <n>` (or `none`). The dashboard port is the one a running
+  gateway wrote to `<data>/gateway/dashboard.json`, else the configured
+  fixed port.
+- **§5 `new` without a terminal.** `--no-setup`, or no terminal on stdin,
+  writes the config file (the setup header only) and prints
+  `ferrule --instance <name> setup [--system|--user]` instead of starting
+  the setup. That's how the tests make instances.
+- **§5 `remove --purge` refuses a workspace inside the instance's dirs.**
+  "Never delete a workspace" can't hold if the workspace is inside the
+  data dir, so `--purge` stops and says to move it first. Without
+  `--purge`, and for a workspace elsewhere, nothing changes.
+- **§6 setup checks at the end, not per value.** The collision check runs
+  once, when setup finishes, against the config it saved, and prints each
+  clash as a warning. Checking at each prompt would mean threading the
+  other instances through every step for the same answer a few seconds
+  later.
+- **§8 is a menu item, not a first question.** Setup on the default
+  instance, once it's set up, has an **Another instance** item in its menu.
+  It asks for a name, validates it, and runs `instances new` with the
+  same scope. A first setup doesn't show it, and neither does a named
+  instance's setup.
+- **§10's `FERRULE_CONFIG` note was dropped.** The units pin
+  `FERRULE_CONFIG`, and `--config` sets it, so "the config isn't the
+  instance's own" would fire on every service-run doctor. The variable
+  still wins, silently, as it always has.
+- **§10, a typo in `--instance`.** A named instance with no config says
+  `no config for the instance `<name>``, with its setup command and
+  `ferrule instances list`. The default's message is unchanged.
+- **§4, an instance with no service of its own.** When the updater runs
+  for an instance that has no service but has siblings that do (a
+  terminal `ferrule update`), the siblings are restarted and health-checked
+  and the instance itself reports `restart_needed`.
+- **§3, `install.sh` as root.** It looks at the system units
+  (`/etc/systemd/system/ferrule.service` and `ferrule@*.service`) when any
+  exists, otherwise at root's user units, which is the old rule extended
+  to named units. The shell test covers the user and macOS paths; the
+  system path is the same loop with another directory and no `--user`.
+  `install.ps1` is unchanged: Windows has no service, and its "a gateway
+  is still running the old version" line already covers every instance.
+- **§7, the header.** The name is a small outlined label after the
+  version (`#inst`, hidden for the default), set from `/api/health`.
+
+**Tests.** Every derived path, unit text and label for the default is
+compared with 0.8.0's (`units-0.8.0/` fixtures); names; `clashes()` over
+each shared thing and the unknowns; instance discovery by config and by
+unit; the coordinated update (siblings restart together, one that doesn't
+come up rolls back and pins all, a sibling's pin, busy gateway, lock or
+`auto = false` holds it); `instances list/new/remove` and `--instance` /
+`FERRULE_INSTANCE` through the real binary against a temp home; a shared
+bot as a doctor failure; a named instance's page and console; and
+`install.sh` against stub `curl`, `uname`, `id`, `systemctl` and
+`launchctl` (Unix only).
+
+**Not verified live.** No real second service was installed: the
+container has no systemd user session or launchd. The system-instance
+path (`useradd ferrule-<name>`, the unit, the update units as root) and a
+coordinated update across two real services are tested against fakes
+only.

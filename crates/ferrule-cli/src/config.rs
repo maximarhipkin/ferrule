@@ -1613,6 +1613,17 @@ pub fn global_config_path() -> Result<PathBuf> {
         .config_file(crate::instance::current().as_deref()))
 }
 
+/// No config to load: the default's words are 0.8.0's; a named instance
+/// (M38) is named, since a typo in `--instance` lands here too.
+pub fn no_config() -> anyhow::Error {
+    match crate::instance::current() {
+        None => anyhow!("no config found. Run `ferrule setup` first."),
+        Some(name) => anyhow!(
+            "no config for the instance `{name}`. Run `ferrule --instance {name} setup` to set it up; `ferrule instances list` shows the ones there are."
+        ),
+    }
+}
+
 /// The file `Config::load` reads: `$FERRULE_CONFIG` (what `--config` sets),
 /// else `./ferrule.toml`, else the global one. `None` when none exists;
 /// `$FERRULE_CONFIG` is returned even if missing, so the error names it. A
@@ -1642,7 +1653,7 @@ impl Config {
 
     pub fn load() -> Result<(Self, PathBuf)> {
         let Some(path) = config_path()? else {
-            bail!("no config found. Run `ferrule setup` first.")
+            return Err(no_config());
         };
         match Self::from_file(&path) {
             Ok(cfg) => Ok((cfg, path)),
