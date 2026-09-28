@@ -1,0 +1,10 @@
+# Written by `ferrule setup`.
+[Unit]
+Description=ferrule update requests from the gateway
+
+[Path]
+PathExists=/home/u/.local/share/ferrule/update/request
+Unit=ferrule-update.service
+
+[Install]
+WantedBy=default.target

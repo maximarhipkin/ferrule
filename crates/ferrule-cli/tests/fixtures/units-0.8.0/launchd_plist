@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by `ferrule setup` — re-run it to change this service. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.ferrule.gateway</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/local/bin/ferrule</string><string>gateway</string><string>--workspace</string><string>/srv/ws</string></array>
+  <key>WorkingDirectory</key><string>/srv/ws</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FERRULE_CONFIG</key><string>/etc/ferrule/config.toml</string>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/a/Library/Logs/ferrule/gateway.log</string>
+  <key>StandardErrorPath</key><string>/Users/a/Library/Logs/ferrule/gateway.log</string>
+</dict>
+</plist>

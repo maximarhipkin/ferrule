@@ -1,0 +1,11 @@
+# Written by `ferrule setup`; `ferrule setup --refresh-service` rewrites it.
+[Unit]
+Description=ferrule update (signed releases, rolled back if they don't start)
+
+[Service]
+Type=oneshot
+ExecStart="/usr/local/bin/ferrule" update --apply
+Environment="FERRULE_CONFIG=/etc/ferrule/config.toml"
+Environment="PATH=/usr/local/bin:/usr/bin"
+TimeoutStartSec=7h
+Nice=10

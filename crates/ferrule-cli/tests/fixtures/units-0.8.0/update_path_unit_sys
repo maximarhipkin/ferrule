@@ -1,0 +1,10 @@
+# Written by `ferrule setup`.
+[Unit]
+Description=ferrule update requests from the gateway
+
+[Path]
+PathExists=/var/lib/ferrule/data/update/request
+Unit=ferrule-update.service
+
+[Install]
+WantedBy=paths.target

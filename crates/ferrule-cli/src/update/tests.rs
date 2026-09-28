@@ -1035,6 +1035,23 @@ fn the_system_state_lives_under_roots_home() {
         Path::new(crate::service::SYSTEM_HOME).join("update")
     );
     assert_eq!(super::state_dir(Path::new("/d")), Path::new("/d/update"));
+    // M38: a named system instance's too, and nothing that only looks like one.
+    assert_eq!(
+        super::state_dir(Path::new("/var/lib/ferrule-work/data")),
+        Path::new("/var/lib/ferrule-work/update")
+    );
+    for data in [
+        "/var/lib/ferrule-Work/data",
+        "/var/lib/other/data",
+        "/srv/var/lib/ferrule/data",
+        "/var/lib/ferrule-work/data2",
+    ] {
+        assert_eq!(
+            super::state_dir(Path::new(data)),
+            Path::new(data).join("update"),
+            "{data}"
+        );
+    }
 }
 
 #[test]
@@ -1045,6 +1062,7 @@ fn the_update_units_run_update_apply_daily_and_on_request() {
         workspace: "/w".into(),
         config: "/etc/ferrule/config.toml".into(),
         path_env: "/usr/bin".into(),
+        instance: None,
     };
     let system = service::system_update_unit(&spec, Path::new("/var/lib/ferrule/data"));
     assert!(system.contains("ExecStart=\"/usr/local/bin/ferrule\" update --apply\n"));
@@ -1059,7 +1077,11 @@ fn the_update_units_run_update_apply_daily_and_on_request() {
     assert!(user.contains("ExecStart=\"/usr/local/bin/ferrule\" update --apply\n"));
     let timer = service::update_timer();
     assert!(timer.contains("OnCalendar=daily") && timer.contains("RandomizedDelaySec=6h"));
-    let path = service::update_path_unit(Path::new("/var/lib/ferrule/data/update/request"), true);
+    let path = service::update_path_unit(
+        Path::new("/var/lib/ferrule/data/update/request"),
+        true,
+        None,
+    );
     assert!(path.contains("PathExists=/var/lib/ferrule/data/update/request\n"));
     assert!(path.contains(&format!("Unit={}", service::UPDATE_SERVICE)));
     assert!(path.contains("WantedBy=paths.target"));

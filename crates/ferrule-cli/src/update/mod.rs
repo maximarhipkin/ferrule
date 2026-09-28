@@ -39,11 +39,22 @@ const TIMER_GAP: u64 = 12 * 3600;
 
 /// Where the state and lock live: root's `/var/lib/ferrule/update` for
 /// the system service (its user reads, can't write), else `<data>/update`.
+/// A named system instance's is `/var/lib/ferrule-<name>/update` (M38).
 pub fn state_dir(data: &Path) -> PathBuf {
-    if data == Path::new(service::SYSTEM_DATA) {
-        Path::new(service::SYSTEM_HOME).join("update")
-    } else {
-        data.join("update")
+    let system_home = data
+        .parent()
+        .filter(|_| data.file_name().is_some_and(|n| n == "data"))
+        .filter(|home| {
+            home.parent() == Some(Path::new("/var/lib"))
+                && home.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n == "ferrule"
+                        || n.strip_prefix("ferrule-")
+                            .is_some_and(|name| crate::instance::validate(name).is_ok())
+                })
+        });
+    match system_home {
+        Some(home) => home.join("update"),
+        None => data.join("update"),
     }
 }
 
@@ -268,16 +279,23 @@ async fn apply_unit(
     Ok(())
 }
 
-/// Not this user's to replace: the system service's binary, run by root's
-/// units.
+/// Not this user's to replace: a system service's binary, run by root's
+/// units — the default's or any named instance's (M38).
 fn someone_elses(exe: &Path) -> Option<String> {
     if service::is_root() || !cfg!(target_os = "linux") {
         return None;
     }
-    let system = service::installed_exe_at(Path::new(service::SYSTEM_UNIT_PATH))?;
-    (dunce::canonicalize(system).ok()? == exe).then(|| {
-        "the system service runs this binary; update it as root: sudo ferrule update".into()
-    })
+    let runs_it = |svc: service::Svc| {
+        let system = service::installed_exe_at(&svc.system_unit_path())?;
+        (dunce::canonicalize(system).ok()? == exe).then_some(())
+    };
+    let named = service::unit_names(service::Scope::System);
+    std::iter::once(None)
+        .chain(named.iter().map(|n| Some(n.as_str())))
+        .find_map(|n| runs_it(service::Svc::new(n, service::Scope::System)))
+        .map(|()| {
+            "a system service runs this binary; update it as root: sudo ferrule update".into()
+        })
 }
 
 fn confirm(question: &str, yes: bool) -> Result<()> {

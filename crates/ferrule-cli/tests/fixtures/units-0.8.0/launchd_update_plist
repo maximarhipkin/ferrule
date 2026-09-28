@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by `ferrule setup`; `ferrule setup --refresh-service` rewrites it. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.ferrule.update</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/local/bin/ferrule</string><string>update</string><string>--apply</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>FERRULE_CONFIG</key><string>/etc/ferrule/config.toml</string>
+    <key>PATH</key><string>/usr/local/bin:/usr/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>17</integer>
+  </dict>
+  <key>WatchPaths</key>
+  <array><string>/Users/a/Library/Application Support/ferrule/update/request</string></array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/a/Library/Logs/ferrule/update.log</string>
+  <key>StandardErrorPath</key><string>/Users/a/Library/Logs/ferrule/update.log</string>
+</dict>
+</plist>
