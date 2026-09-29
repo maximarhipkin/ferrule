@@ -5216,7 +5216,8 @@ Mattermost credentials in this session. Every channel is tested against
 a mock server on 127.0.0.1, and through the real binary where it
 matters (setup-free config, the gateway, doctor, `channels keys`).
 
-**Checks.** 1598 tests passed, 0 failed, 28 ignored. fmt and clippy
+**Checks.** 1628 tests passed, 0 failed, 28 ignored (after merging
+`main`). fmt and clippy
 `-D warnings` are clean. The starter eval against the mock through the
 real binary gave engineered 20/20, naive 11/20, $0.98.
 
