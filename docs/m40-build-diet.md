@@ -168,6 +168,11 @@ What was found and judged safe to merge:
   a flake. The mitigation is the audit in §2.3 and three green CI runs on
   three OSes; the fix for a new one is to split the file back out with the
   reason, not to add sleeps.
+  Seen once: `discord::a_dropped_socket_resumes_…` had a known race of
+  its own (asserting `problem()` cleared before the client could read
+  RESUMED; 1 of 20 suites before M40). The busier merged binary made it
+  3 of 35. The race was in the test, so the test now waits for the
+  problem to clear (0 of 30); splitting it out would not have fixed it.
 - **More tests in parallel per binary.** Slow real-binary tests
   (ferrule-cli's) now overlap with each other more. Their timeouts were
   already sized for a loaded CI runner.
