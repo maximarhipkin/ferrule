@@ -21,9 +21,10 @@
 //! that isn't allowed is a warning (once an hour) that `/status` shows.
 
 use crate::channel::{Button, ButtonAction, Channel, ChannelCapabilities};
+use crate::channels::files::{self, Inbox, Refused, Saved};
 use crate::error::GatewayError;
 use crate::health::human;
-use crate::message::{InboundMessage, OutboundMessage};
+use crate::message::{Attachment, InboundMessage, OutboundMessage};
 use crate::stream::chunks;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -85,6 +86,18 @@ struct Parsed {
     unread: Option<&'static str>,
     /// Photos sent together share this; they get one reply, not one each.
     album: Option<String>,
+    /// A voice note or audio file, taken into the inbox when there is one
+    /// (M41), and the caption that came with it.
+    audio: Option<TgAudio>,
+}
+
+/// A voice note or audio file in an update.
+struct TgAudio {
+    file_id: String,
+    name: String,
+    mime: Option<String>,
+    size: Option<u64>,
+    caption: String,
 }
 
 pub struct TelegramChannel {
@@ -112,6 +125,9 @@ pub struct TelegramChannel {
     ignored: Mutex<HashMap<i64, Instant>>,
     /// Albums already told their photos weren't read.
     albums: Mutex<HashSet<String>>,
+    /// Where voice notes and audio files are saved (M41); `None` leaves
+    /// them unread, as before.
+    inbox: Option<Inbox>,
 }
 
 impl TelegramChannel {
@@ -148,7 +164,15 @@ impl TelegramChannel {
             conflict: Mutex::new(None),
             ignored: Mutex::new(HashMap::new()),
             albums: Mutex::new(HashSet::new()),
+            inbox: None,
         }
+    }
+
+    /// Saves voice notes and audio files people send here, so the gateway
+    /// can transcribe them (M41). Other files keep the "only text" reply.
+    pub fn with_inbox(mut self, inbox: Option<Inbox>) -> Self {
+        self.inbox = inbox;
+        self
     }
 
     /// Tests only: short deadlines and backoff so a hung or failing mock
@@ -305,6 +329,7 @@ impl TelegramChannel {
                 if let Some(q) = update.get("callback_query") {
                     self.mark_choice(q).await;
                 }
+                let parsed = self.take_audio(parsed).await;
                 if let Some(kind) = parsed.unread.filter(|_| parsed.msg.text.is_empty()) {
                     self.cannot_read(&parsed, kind).await;
                     continue;
@@ -315,6 +340,80 @@ impl TelegramChannel {
             }
         }
         Ok(true)
+    }
+
+    /// A voice note or audio file, saved to the inbox: the message then
+    /// carries it as an attachment with M39's line about it, and is read.
+    async fn take_audio(&self, mut parsed: Parsed) -> Parsed {
+        let (Some(inbox), Some(audio)) = (&self.inbox, parsed.audio.take()) else {
+            return parsed;
+        };
+        let (saved, refused) = match self.download(inbox, &parsed.msg.message_id, &audio).await {
+            Ok(s) => (vec![s], vec![]),
+            Err(r) => (vec![], vec![r]),
+        };
+        parsed.msg.attachments = saved
+            .iter()
+            .map(|s| Attachment {
+                kind: s.mime.clone(),
+                url: s.path.to_string_lossy().into_owned(),
+                name: Some(s.rel.clone()),
+            })
+            .collect();
+        parsed.msg.text = files::with_notes(&audio.caption, &saved, &refused);
+        parsed.unread = None;
+        parsed
+    }
+
+    /// `getFile`, then the file itself, capped at the inbox's size.
+    async fn download(
+        &self,
+        inbox: &Inbox,
+        message_id: &str,
+        audio: &TgAudio,
+    ) -> Result<Saved, Refused> {
+        let refuse = |why: String| Refused {
+            name: audio.name.clone(),
+            why,
+        };
+        if let Some(n) = audio.size.filter(|n| *n > inbox.max_bytes()) {
+            return Err(inbox.too_big(&audio.name, n));
+        }
+        let file = self
+            .call("getFile", json!({ "file_id": audio.file_id }))
+            .await
+            .map_err(|e| refuse(format!("Telegram didn't hand it over ({e})")))?;
+        let Some(path) = file.get("file_path").and_then(Value::as_str) else {
+            return Err(refuse(
+                "Telegram didn't hand it over (no file_path; bots can fetch files up to 20 MB)"
+                    .into(),
+            ));
+        };
+        let url = format!("{}/file/bot{}/{}", self.base_url, self.token, path);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| refuse(format!("the download failed: {}", e.without_url())))?;
+        if !resp.status().is_success() {
+            return Err(refuse(format!(
+                "the download failed (HTTP {})",
+                resp.status()
+            )));
+        }
+        let bytes = files::read_capped(resp, inbox.max_bytes())
+            .await
+            .map_err(refuse)?;
+        inbox
+            .save(
+                "telegram",
+                message_id,
+                &audio.name,
+                audio.mime.as_deref(),
+                &bytes,
+            )
+            .map_err(|e| refuse(format!("it couldn't be saved: {e}")))
     }
 
     fn api_url(&self, method: &str) -> String {
@@ -580,6 +679,7 @@ impl TelegramChannel {
                 msg,
                 unread: None,
                 album: None,
+                audio: None,
             });
         }
         let message = update.get("message")?;
@@ -627,8 +727,38 @@ impl TelegramChannel {
             },
             unread,
             album,
+            audio: tg_audio(message),
         })
     }
+}
+
+/// The voice note or audio file in a message, if it has one.
+fn tg_audio(message: &Value) -> Option<TgAudio> {
+    let (key, a) = ["voice", "audio"]
+        .into_iter()
+        .find_map(|k| message.get(k).map(|a| (k, a)))?;
+    let file_id = a.get("file_id")?.as_str()?.to_string();
+    let mime = a
+        .get("mime_type")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let name = match (key, a.get("file_name").and_then(Value::as_str)) {
+        (_, Some(n)) => n.to_string(),
+        // A voice note is Ogg Opus with no name.
+        ("voice", None) => "voice.ogg".to_string(),
+        (_, None) => "audio".to_string(),
+    };
+    Some(TgAudio {
+        file_id,
+        name,
+        mime,
+        size: a.get("file_size").and_then(Value::as_u64),
+        caption: message
+            .get("caption")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    })
 }
 
 /// What a message carries that ferrule can't read, in words for the

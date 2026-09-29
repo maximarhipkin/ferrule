@@ -1,13 +1,14 @@
 use crate::channel::Channel;
 use crate::error::GatewayError;
-use crate::message::{InboundMessage, OutboundMessage};
+use crate::message::{Attachment, InboundMessage, OutboundMessage};
 use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
 use crate::stream::{StreamPacing, StreamingReply};
+use crate::transcribe::{heard_line, Audio, Transcription};
 use ferrule_core::failure::Kind;
 use ferrule_core::{Agent, AgentEvent, CoreError, Guard, GuardedCall, Role, Transcript, Verdict};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
@@ -68,6 +69,9 @@ pub struct Router {
     /// edit), and how.
     streaming: HashSet<String>,
     pacing: StreamPacing,
+    /// M41: what happens to voice and audio messages; `None` leaves them
+    /// as the adapter delivered them.
+    transcription: Option<Transcription>,
 }
 
 struct Lane {
@@ -226,7 +230,15 @@ impl Router {
             changed: Arc::new(Notify::new()),
             streaming: HashSet::new(),
             pacing: StreamPacing::default(),
+            transcription: None,
         }
+    }
+
+    /// Transcribes voice and audio messages before the agent reads them
+    /// (M41), or says how to turn that on.
+    pub fn with_transcription(mut self, transcription: Transcription) -> Self {
+        self.transcription = Some(transcription);
+        self
     }
 
     /// Streams replies on these channels (M27), where the channel can edit
@@ -587,6 +599,7 @@ impl Router {
             changed: self.changed.clone(),
             guard: guard.clone(),
             stream,
+            transcription: self.transcription.clone(),
         };
         let task = tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
         Ok((tx, guard, task))
@@ -610,6 +623,8 @@ async fn run_lane(
     // M41: the kind of the last turn's failure, while it's one the
     // conversation itself may cause.
     let mut last_failure: Option<Kind> = None;
+    // M41: this chat was told transcription is off.
+    let mut told_off = false;
     while let Some(job) = rx.recv().await {
         if watch.state.lock().unwrap().retired {
             break;
@@ -620,6 +635,12 @@ async fn run_lane(
             person,
         } = job;
         watch.start(&inbound.text);
+        let inbound = match &watch.transcription {
+            Some(t) if inbound.attachments.iter().any(is_audio) => {
+                hear(t, inbound, channel.as_ref(), &session_id, &mut told_off).await
+            }
+            _ => inbound,
+        };
         // The agent's events only feed the lane's state (what it's doing,
         // when it last moved). They're drained by their own task that
         // never waits: `Agent::emit` blocks while a live receiver's buffer
@@ -715,6 +736,81 @@ struct LaneWatch {
     guard: Arc<TurnGuard>,
     /// How this lane's replies stream; `None` when they don't.
     stream: Option<StreamPacing>,
+    transcription: Option<Transcription>,
+}
+
+/// An audio file an adapter saved (M39's inbox), not a link.
+fn is_audio(a: &Attachment) -> bool {
+    a.kind.starts_with("audio/") && Path::new(&a.url).is_file()
+}
+
+/// M41: `inbound` with a line per audio attachment in front of its text:
+/// the transcript, or why there isn't one. The file's own line (M39's)
+/// stays. When it can't transcribe, the sender hears why: each failure,
+/// and "it's off" once per chat.
+async fn hear(
+    t: &Transcription,
+    mut inbound: InboundMessage,
+    channel: Option<&Arc<dyn Channel>>,
+    session_id: &str,
+    told_off: &mut bool,
+) -> InboundMessage {
+    let mut lines = Vec::new();
+    let mut tell = Vec::new();
+    for a in inbound.attachments.iter().filter(|a| is_audio(a)) {
+        match t {
+            Transcription::On(backend) => {
+                let audio = Audio {
+                    path: Path::new(&a.url),
+                    mime: &a.kind,
+                    session_id,
+                    channel: &inbound.channel,
+                };
+                match backend.transcribe(&audio).await {
+                    Ok(h) if h.text.is_empty() => lines
+                        .push("[voice message: transcribed, but no speech was heard in it]".into()),
+                    Ok(h) => lines.push(heard_line(&h)),
+                    Err(why) => {
+                        tracing::warn!(session = %session_id, error = %why, "transcription failed");
+                        lines.push(format!("[voice message: not transcribed: {why}]"));
+                        tell.push(format!(
+                            "I couldn't transcribe your voice message: {}.",
+                            why.trim_end_matches('.')
+                        ));
+                    }
+                }
+            }
+            Transcription::Off { how } => {
+                tracing::info!(session = %session_id, "a voice message wasn't transcribed: transcription is off");
+                lines.push("[voice message: not transcribed, transcription is off]".into());
+                if !*told_off && !how.is_empty() {
+                    *told_off = true;
+                    tell.push(how.clone());
+                }
+            }
+        }
+    }
+    if let Some(ch) = channel {
+        for text in tell {
+            let msg = OutboundMessage {
+                channel: inbound.channel.clone(),
+                chat_id: inbound.chat_id.clone(),
+                text,
+                reply_to: (!inbound.message_id.is_empty()).then(|| inbound.message_id.clone()),
+                attachments: vec![],
+            };
+            if let Err(e) = ch.send(msg).await {
+                tracing::warn!(session = %session_id, error = %e, "couldn't say why a voice message wasn't transcribed");
+            }
+        }
+    }
+    let lines = lines.join("\n");
+    inbound.text = if inbound.text.trim().is_empty() {
+        lines
+    } else {
+        format!("{lines}\n{}", inbound.text)
+    };
+    inbound
 }
 
 impl LaneWatch {

@@ -19,6 +19,7 @@ pub mod sdnotify;
 pub mod session;
 pub mod stream;
 pub mod tools;
+pub mod transcribe;
 
 pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
@@ -43,3 +44,4 @@ pub use scheduler::{
     TaskKind, TaskStore, SCHEDULER_PSEUDO_CHANNEL,
 };
 pub use stream::StreamPacing;
+pub use transcribe::{Transcriber, Transcription};

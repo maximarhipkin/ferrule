@@ -667,6 +667,9 @@ pub struct Config {
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// M41: turning voice messages into text (docs/channels.md).
+    #[serde(default)]
+    pub transcription: crate::transcription::TranscriptionConfig,
     /// M34: the workspace when `--workspace` isn't given: a local path, or
     /// a remote one (`ssh:<name>`, `ssh://[user@]host[:port]/path`).
     #[serde(default)]
@@ -1719,6 +1722,7 @@ impl Config {
         self.check_providers()?;
         self.memory.hybrid()?;
         self.egress.policy()?;
+        self.transcription.choice(&self.providers, |_| None)?;
         if let EmbedderChoice::Endpoint(e) = self.memory.choice(&self.providers)? {
             if let Some(var) = e.key_env {
                 self.secrets

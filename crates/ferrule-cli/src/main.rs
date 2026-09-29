@@ -40,6 +40,7 @@ mod setup;
 mod subscription;
 mod tasks_admin;
 mod telemetry;
+mod transcription;
 mod trust;
 mod update;
 mod web_search;
@@ -2075,7 +2076,13 @@ fn build_channels(
                 .with_owner(trust::owner_chat(cfg))
                 .with_conflict_after(Duration::from_secs(
                     cfg.health.telegram_conflict_secs.max(1),
-                )),
+                ))
+                .with_inbox(workspace.map(|ws| {
+                    ferrule_gateway::channels::files::Inbox::new(
+                        ws,
+                        ferrule_gateway::channels::files::DEFAULT_MAX_MB,
+                    )
+                })),
         );
         named_channels.insert(telegram.name().to_string(), telegram);
     }
@@ -2308,7 +2315,8 @@ async fn run_gateway(
     let router = Arc::new(
         Router::new(sessions_dir, agent_factory, named_channels.clone())
             .with_max_turn(health::max_turn(&cfg))
-            .with_streaming(streaming_channels(&cfg), StreamPacing::default()),
+            .with_streaming(streaming_channels(&cfg), StreamPacing::default())
+            .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
     );
     files.bind(&router);
     // A chat whose agents report while it's idle is run again, and its

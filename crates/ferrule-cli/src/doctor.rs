@@ -178,6 +178,14 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     proxy(&mut r, &cfg);
     web_search_check(&mut r, &cfg, &http, offline).await;
     memory_check(&mut r, &cfg);
+    if chat_on {
+        let (fine, line) = crate::transcription::doctor_line(&cfg);
+        if fine {
+            r.note("voice", line);
+        } else {
+            r.warn("voice", line);
+        }
+    }
     telemetry_check(&mut r, &cfg);
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);

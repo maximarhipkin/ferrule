@@ -13,4 +13,5 @@ mod signal;
 mod slack;
 mod streaming;
 mod support;
+mod voice;
 mod whatsapp;
