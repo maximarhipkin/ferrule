@@ -50,6 +50,15 @@ const IGNORED_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// counts (its documented limit; Discord has 2000, Slack 4000).
 pub const MESSAGE_LIMIT: usize = 4096;
 
+/// The command menu ferrule registers with `setMyCommands` (M41): the ones
+/// anyone in the chat may send. Telegram wants them without the slash.
+pub const MENU: &[(&str, &str)] = &[
+    ("new", "Start a fresh conversation (the old one is saved)"),
+    ("stop", "Stop what I'm doing"),
+    ("status", "What I'm doing right now"),
+    ("help", "The commands"),
+];
+
 /// Why a poll failed: `Retry` heals by itself (network, Telegram's own 5xx,
 /// a rate limit, a bad body); `Conflict` is a 409, which needs the owner if
 /// it lasts; `Fatal` never heals (the token was rejected).
@@ -376,6 +385,21 @@ impl TelegramChannel {
             return Err(format!("{method} failed (status {status}): {body}"));
         }
         Ok(body.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    /// M41: the command menu under the chat's `/` button. Best effort: a
+    /// bot without it works the same, so a failure is only logged.
+    async fn set_commands(&self) {
+        let commands: Vec<Value> = MENU
+            .iter()
+            .map(|(command, description)| json!({"command": command, "description": description}))
+            .collect();
+        let call = self.call("setMyCommands", json!({ "commands": commands }));
+        match tokio::time::timeout(Duration::from_secs(5), call).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::debug!(error = %e, "telegram: couldn't set the command menu"),
+            Err(_) => tracing::debug!("telegram: setting the command menu timed out"),
+        }
     }
 
     /// A webhook set on the bot makes Telegram push updates there and
@@ -902,6 +926,7 @@ impl Channel for TelegramChannel {
     /// rejects the token, and `Ok` once the receiving side of `tx` is gone.
     async fn run(&self, tx: mpsc::Sender<InboundMessage>) -> Result<(), GatewayError> {
         self.remove_webhook().await;
+        self.set_commands().await;
         let mut backoff = self.backoff_min;
         let mut failures = 0u32;
         loop {
@@ -1483,6 +1508,8 @@ mod tests {
     struct Bot {
         url: String,
         calls: Arc<Mutex<Vec<(String, Value)>>>,
+        /// The last `setMyCommands` body (M41), kept apart from `calls`.
+        menu: Arc<Mutex<Option<Value>>>,
     }
 
     impl Bot {
@@ -1491,6 +1518,8 @@ mod tests {
             let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
             let calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
             let log = calls.clone();
+            let menu: Arc<Mutex<Option<Value>>> = Arc::default();
+            let set_menu = menu.clone();
             let webhook = Arc::new(Mutex::new(webhook.to_string()));
             let polls = Arc::new(Mutex::new(std::collections::VecDeque::from(polls)));
             std::thread::spawn(move || {
@@ -1539,6 +1568,10 @@ mod tests {
                             200,
                             json!({"ok": true, "result": {"url": *webhook.lock().unwrap()}}),
                         ),
+                        "setMyCommands" => {
+                            *set_menu.lock().unwrap() = Some(body);
+                            (200, json!({"ok": true, "result": true}))
+                        }
                         _ => {
                             if method == "deleteWebhook" {
                                 webhook.lock().unwrap().clear();
@@ -1555,7 +1588,7 @@ mod tests {
                     let _ = stream.write_all(resp.as_bytes());
                 }
             });
-            Self { url, calls }
+            Self { url, calls, menu }
         }
 
         /// The texts sent to `chat`.
@@ -1662,6 +1695,25 @@ mod tests {
         handle.abort();
         assert_eq!(got.unwrap().text, "hi");
         assert!(bot.methods().is_empty(), "{:?}", bot.methods());
+    }
+
+    #[tokio::test]
+    async fn the_command_menu_is_registered_at_start() {
+        let bot = Bot::start("", vec![updates(vec![json!({"text": "hi"})])]);
+        let channel = channel(&bot);
+        let (tx, mut rx) = mpsc::channel(8);
+        let run = channel.clone();
+        let handle = tokio::spawn(async move { run.run(tx).await });
+        timeout(Duration::from_secs(3), rx.recv()).await.unwrap();
+        handle.abort();
+        let menu = bot.menu.lock().unwrap().clone().expect("setMyCommands");
+        let names: Vec<&str> = menu["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["new", "stop", "status", "help"]);
     }
 
     #[tokio::test]

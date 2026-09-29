@@ -28,13 +28,13 @@ pub use channels::{
     SignalChannel, SlackChannel, TelegramChannel, WhatsAppChannel,
 };
 pub use error::GatewayError;
-pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI};
+pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI, HELP};
 pub use health::{
     Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, RunningMarker,
     StallHook,
 };
 pub use message::{Attachment, InboundMessage, OutboundMessage};
-pub use router::{AgentFactory, LaneSnapshot, Reply, Router};
+pub use router::{AgentFactory, LaneSnapshot, Reply, Reset, Router, NEW_HINT};
 pub use scheduler::{
     ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, Hold, JobReport, BUILTIN_CHANNEL,
 };

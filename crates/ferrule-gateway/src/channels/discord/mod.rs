@@ -48,7 +48,8 @@ const FLAG_CONTENT: u64 = (1 << 18) | (1 << 19);
 
 /// The slash commands `ferrule setup` registers, each with an optional
 /// `args` string.
-pub const SLASH_COMMANDS: [(&str, &str); 11] = [
+pub const SLASH_COMMANDS: [(&str, &str); 13] = [
+    ("new", "Start a fresh conversation (the old one is saved)"),
     ("status", "What ferrule is doing"),
     ("stop", "Stop every run (kill switch)"),
     ("resume", "Let runs start again"),
@@ -60,6 +61,7 @@ pub const SLASH_COMMANDS: [(&str, &str); 11] = [
     ("caps", "Spending caps"),
     ("mcp", "MCP servers"),
     ("connections", "Connected services"),
+    ("help", "The commands"),
 ];
 
 /// View Channels, Send Messages, Send Messages in Threads, Read Message

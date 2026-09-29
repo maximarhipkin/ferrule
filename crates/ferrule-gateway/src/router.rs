@@ -4,6 +4,7 @@ use crate::message::{InboundMessage, OutboundMessage};
 use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
 use crate::stream::{StreamPacing, StreamingReply};
+use ferrule_core::failure::Kind;
 use ferrule_core::{Agent, AgentEvent, CoreError, Guard, GuardedCall, Role, Transcript, Verdict};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -76,7 +77,16 @@ struct Lane {
     state: Arc<Mutex<LaneState>>,
     /// Ends this lane's running turn (M22: the dashboard's "stop this turn").
     guard: Arc<TurnGuard>,
+    /// The lane's task, so `/new` can wait for it to end (M41).
+    task: tokio::task::JoinHandle<()>,
 }
+
+/// A new lane's sender, its turn guard and its task.
+type Spawned = (
+    mpsc::Sender<LaneJob>,
+    Arc<TurnGuard>,
+    tokio::task::JoinHandle<()>,
+);
 
 /// What a lane is doing, for `/status`, the busy notice and the watchdog
 /// (M19b). Fed by the lane itself and by its agent's events.
@@ -99,7 +109,51 @@ struct LaneState {
     /// Waiting to call the model again (M19c): when, which retry, and
     /// whether it's a rate limit. Cleared by the next event.
     retry_at: Option<(Instant, u32, bool)>,
+    /// `/new` retired the lane (M41): it takes no further message, even
+    /// one already queued.
+    retired: bool,
 }
+
+/// What `/new` did (M41).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reset {
+    /// Messages in the conversation that was put aside.
+    pub messages: usize,
+    /// Messages that were queued behind the running turn and dropped.
+    pub dropped: usize,
+    /// A turn was running and was stopped.
+    pub stopped: bool,
+    /// Where the old transcript went; `None` when there was none.
+    pub saved: Option<PathBuf>,
+}
+
+impl Reset {
+    /// The chat's answer to `/new`.
+    pub fn text(&self) -> String {
+        let mut text = match (self.saved.is_some(), self.messages) {
+            (true, 1) => "New conversation. The previous one (1 message) is saved.".to_string(),
+            (true, n) => format!("New conversation. The previous one ({n} messages) is saved."),
+            (false, _) => "New conversation.".to_string(),
+        };
+        match self.dropped {
+            0 => {}
+            1 => text.push_str(" 1 message that was waiting was dropped; send it again if you still need it."),
+            n => text.push_str(&format!(
+                " {n} messages that were waiting were dropped; send them again if you still need them."
+            )),
+        }
+        text
+    }
+}
+
+/// How long `/new` waits for a stopped turn to wind down before it
+/// aborts the lane's task.
+const RESET_WAIT: Duration = Duration::from_secs(10);
+
+/// Added to a failure's text when the chat's previous turn failed the same
+/// way (M41): the conversation itself may be what the provider rejects.
+pub const NEW_HINT: &str =
+    "It failed the same way last time, so the conversation itself may be what's rejected: send /new to start a fresh conversation";
 
 /// One lane as `/status` and the watchdog see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,7 +386,7 @@ impl Router {
             }
         }
         let state = Arc::new(Mutex::new(LaneState::default()));
-        let (tx, guard) = self.spawn_lane(session_id, &msg.channel, state.clone())?;
+        let (tx, guard, task) = self.spawn_lane(session_id, &msg.channel, state.clone())?;
         lanes.insert(
             session_id.to_string(),
             Lane {
@@ -341,6 +395,7 @@ impl Router {
                 chat_id: msg.chat_id.clone(),
                 state: state.clone(),
                 guard,
+                task,
             },
         );
         Ok((tx, state))
@@ -352,6 +407,62 @@ impl Router {
     /// execution isn't). False when there was no lane.
     pub fn retire(&self, session_id: &str) -> bool {
         self.lanes.lock().unwrap().remove(session_id).is_some()
+    }
+
+    /// `/new` (M41): puts `session_id`'s conversation aside and lets the
+    /// next message start a fresh one. A running turn is stopped the way
+    /// [`Router::stop`] stops it (said to be "from /new"), messages queued
+    /// behind it are dropped, and the lane's task is waited for, so the old
+    /// agent never writes again. The transcript is renamed to
+    /// `<sid>.<UTC stamp>.jsonl` next to where it was: kept, not replayed.
+    /// Memory lives elsewhere and carries over.
+    pub async fn reset(&self, session_id: &str) -> Result<Reset, GatewayError> {
+        let lane = self.lanes.lock().unwrap().remove(session_id);
+        let mut out = Reset::default();
+        if let Some(lane) = lane {
+            {
+                let mut st = lane.state.lock().unwrap();
+                st.retired = true;
+                out.dropped = st.queued;
+                out.stopped = st.busy_since.is_some();
+            }
+            if out.stopped {
+                lane.guard.stop("/new");
+            }
+            // Its sender goes with it: an idle lane's `recv` ends at once.
+            let Lane { tx, task, .. } = lane;
+            drop(tx);
+            let abort = task.abort_handle();
+            if tokio::time::timeout(RESET_WAIT, task).await.is_err() {
+                tracing::warn!(session = %session_id, "a lane didn't end within 10 s of /new; aborting it");
+                abort.abort();
+            }
+            self.changed.notify_waiters();
+        }
+        let path = self.sessions_dir.join(format!("{session_id}.jsonl"));
+        if path.exists() {
+            out.messages = std::fs::read_to_string(&path)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter(|v| v["type"] == "message")
+                .filter(|v| matches!(v["message"]["role"].as_str(), Some("user" | "assistant")))
+                .count();
+            let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+            let mut saved = self
+                .sessions_dir
+                .join(format!("{session_id}.{stamp}.jsonl"));
+            let mut n = 1;
+            while saved.exists() {
+                n += 1;
+                saved = self
+                    .sessions_dir
+                    .join(format!("{session_id}.{stamp}-{n}.jsonl"));
+            }
+            std::fs::rename(&path, &saved).map_err(|e| GatewayError::Core(e.into()))?;
+            out.saved = Some(saved);
+        }
+        Ok(out)
     }
 
     /// Ends `session_id`'s running turn the way the kill switch ends every
@@ -450,7 +561,7 @@ impl Router {
         session_id: &str,
         channel_name: &str,
         state: Arc<Mutex<LaneState>>,
-    ) -> Result<(mpsc::Sender<LaneJob>, Arc<TurnGuard>), GatewayError> {
+    ) -> Result<Spawned, GatewayError> {
         let transcript = Transcript::create(&self.sessions_dir, session_id)?;
         let history = transcript.read_messages().unwrap_or_default();
         let mut agent = (self.agent_factory)(session_id, transcript)?;
@@ -477,8 +588,8 @@ impl Router {
             guard: guard.clone(),
             stream,
         };
-        tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
-        Ok((tx, guard))
+        let task = tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
+        Ok((tx, guard, task))
     }
 }
 
@@ -496,7 +607,13 @@ async fn run_lane(
     session_id: String,
     watch: LaneWatch,
 ) {
+    // M41: the kind of the last turn's failure, while it's one the
+    // conversation itself may cause.
+    let mut last_failure: Option<Kind> = None;
     while let Some(job) = rx.recv().await {
+        if watch.state.lock().unwrap().retired {
+            break;
+        }
         let LaneJob {
             msg: inbound,
             reply,
@@ -547,10 +664,20 @@ async fn run_lane(
         // rather than feeding the next turn's state.
         drain.abort();
         let reply_text = match &run_result {
-            Ok(answer) => answer.clone(),
+            Ok(answer) => {
+                last_failure = None;
+                answer.clone()
+            }
             Err(e) => {
                 tracing::error!(session = %session_id, error = %e, "agent run failed");
-                failure_text(e)
+                let mut text = failure_text(e);
+                let kind = conversation_failure(e);
+                if kind.is_some() && kind == last_failure {
+                    text.push_str("\n\n");
+                    text.push_str(NEW_HINT);
+                }
+                last_failure = kind;
+                text
             }
         };
         if let Some(streamer) = streamer {
@@ -809,6 +936,17 @@ impl Guard for TurnGuard {
 fn rate_limited(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     lower.contains("http 429") || lower.contains("\"code\":429") || lower.contains("rate limit")
+}
+
+/// A failure the conversation itself may cause (M41): the provider refused
+/// the request as it was (a 4xx that isn't about keys, access, the model or
+/// the rate), so the same history is likely to fail the same way again.
+fn conversation_failure(e: &CoreError) -> Option<Kind> {
+    if !ferrule_core::failure::provider_origin(e) {
+        return None;
+    }
+    let kind = ferrule_core::failure::classify(e);
+    matches!(kind, Kind::BadRequest | Kind::ContextTooLong).then_some(kind)
 }
 
 /// What the chat sees when a run fails outright, instead of silence: the

@@ -1889,20 +1889,47 @@ async fn close_tree(sup: &ferrule_agents::Supervisor, root: &str) {
     }
 }
 
+/// `/help`'s lines for the commands this binary's interceptors answer
+/// (M41), after the gateway's own `/new`, `/status` and `/help`.
+const CHAT_COMMANDS: &[(&str, &str)] = &[
+    (
+        "/stop",
+        "stop every run now; nothing new starts until /resume",
+    ),
+    ("/resume", "let runs start again (owner)"),
+    (
+        "/plan <task>",
+        "explore read-only, then ask before running the plan",
+    ),
+    ("/undo", "revert the agent's last commit (owner)"),
+    ("/model", "show or switch the model"),
+    ("/login, /logout", "sign in to a ChatGPT or Claude plan"),
+    ("/connect, /connections", "connected services"),
+    (
+        "/skills, /mcp, /hooks, /caps",
+        "what's installed, and spending caps",
+    ),
+    (
+        "/dashboard",
+        "a link to the dashboard (owner's private chat)",
+    ),
+];
+
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
-    let session_id = uuid::Uuid::new_v4().to_string();
+    let mut session_id = uuid::Uuid::new_v4().to_string();
     let undo_dir = dunce::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
-    let (mut agent, sup) = build_root(provider, workspace, 60, &session_id, "chat").await?;
+    let (mut agent, mut sup) =
+        build_root(provider.clone(), workspace.clone(), 60, &session_id, "chat").await?;
     // M27: the answer prints as the model writes it.
-    let streamed = config::Config::load()
+    let stream = config::Config::load()
         .map(|(cfg, _)| cfg.agent.stream)
-        .unwrap_or(true)
-        .then(|| {
-            let (sink, streamed) = chat_stream();
-            agent.set_reply_stream(Some(sink));
-            streamed
-        });
-    println!("ferrule chat — Ctrl-D to exit. Session {session_id}");
+        .unwrap_or(true);
+    let mut streamed = stream.then(|| {
+        let (sink, streamed) = chat_stream();
+        agent.set_reply_stream(Some(sink));
+        streamed
+    });
+    println!("ferrule chat — Ctrl-D to exit, /new for a fresh conversation. Session {session_id}");
     let stdin = std::io::stdin();
     loop {
         // Reports from agents it started reach it with your next message.
@@ -1924,6 +1951,36 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
         }
         let prompt = line.trim();
         if prompt.is_empty() {
+            continue;
+        }
+        // M41: a fresh conversation; the old session stays on disk.
+        if prompt == "/new" || prompt == "/reset" {
+            let n = agent
+                .messages
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        m.role,
+                        ferrule_core::Role::User | ferrule_core::Role::Assistant
+                    )
+                })
+                .count();
+            if let Some(sup) = &sup {
+                close_tree(sup, &session_id).await;
+            }
+            agent.end_session("new", &spawn_renderer(false)).await;
+            let old = std::mem::replace(&mut session_id, uuid::Uuid::new_v4().to_string());
+            (agent, sup) =
+                build_root(provider.clone(), workspace.clone(), 60, &session_id, "chat").await?;
+            streamed = stream.then(|| {
+                let (sink, streamed) = chat_stream();
+                agent.set_reply_stream(Some(sink));
+                streamed
+            });
+            println!(
+                "\x1b[90m[new] New conversation. The previous one ({n} message{}) is saved as session {old}. Session {session_id}\x1b[0m",
+                if n == 1 { "" } else { "s" }
+            );
             continue;
         }
         // M29: take back the latest agent commit, without a model call.
@@ -2431,6 +2488,11 @@ async fn run_gateway(
             owner: trust::owner_chat(&cfg),
         }));
     }
+    gateway = gateway.with_help(
+        CHAT_COMMANDS
+            .iter()
+            .map(|(c, w)| (c.to_string(), w.to_string())),
+    );
     for channel in adapters {
         gateway.add_channel(channel);
     }

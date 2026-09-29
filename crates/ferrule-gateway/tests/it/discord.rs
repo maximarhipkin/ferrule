@@ -630,7 +630,7 @@ async fn doctors_probe_reads_only_and_setup_registers_the_commands() {
     assert!(err.contains("Reset Token"), "{err}");
     assert_eq!(
         dc::register_commands(&d.api, TOKEN, "555").await.unwrap(),
-        11
+        13
     );
     let put = d.state().find("PUT", "/applications/555/commands")[0].json();
     let names: Vec<&str> = put
@@ -640,6 +640,7 @@ async fn doctors_probe_reads_only_and_setup_registers_the_commands() {
         .map(|c| c["name"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"status") && names.contains(&"undo"));
+    assert!(names.contains(&"new") && names.contains(&"help"));
     assert!(dc::invite_url("555").contains("permissions=274877975552"));
     assert!(dc::invite_url("555").contains("scope=bot+applications.commands"));
 }

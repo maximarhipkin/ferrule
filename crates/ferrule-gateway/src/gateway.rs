@@ -16,6 +16,16 @@ const ACK_WAIT: Duration = Duration::from_secs(2);
 /// probably about to answer.
 pub const BUSY_NOTICE_AFTER: Duration = Duration::from_secs(3);
 
+/// The chat commands the gateway answers itself (M41 `/help`), before the
+/// ones the embedding binary adds with [`Gateway::with_help`].
+pub const HELP: &[(&str, &str)] = &[
+    (
+        "/new",
+        "start a fresh conversation; the old one is saved and memory stays (also /reset)",
+    ),
+    ("/help", "this list"),
+];
+
 /// Ties one or more channel adapters to a `Router`. Every adapter pushes
 /// onto the same inbound funnel and runs concurrently as its own tokio task;
 /// the gateway's only job is fan-in + dispatch, mirroring NanoClaw's
@@ -28,6 +38,8 @@ pub struct Gateway {
     redactor: Arc<Redactor>,
     health: Option<Arc<Health>>,
     restarts: Arc<ChannelRestarts>,
+    /// `/help`'s lines after the gateway's own (M41).
+    help: Vec<(String, String)>,
 }
 
 /// M37: a channel's inbound loop, started again from the dashboard. The
@@ -120,7 +132,33 @@ impl Gateway {
             redactor: Arc::new(Redactor::default()),
             health: None,
             restarts: Arc::default(),
+            help: Vec::new(),
         }
+    }
+
+    /// Adds `(command, what it does)` lines to `/help` (M41), for the
+    /// commands the interceptors answer.
+    pub fn with_help(mut self, lines: impl IntoIterator<Item = (String, String)>) -> Self {
+        self.help.extend(lines);
+        self
+    }
+
+    /// `/help`'s answer.
+    fn help_text(&self) -> String {
+        let mut lines: Vec<(String, String)> = HELP
+            .iter()
+            .map(|(c, w)| (c.to_string(), w.to_string()))
+            .collect();
+        if self.health.is_some() {
+            lines.insert(1, ("/status".into(), "what I'm doing right now".into()));
+        }
+        lines.extend(self.help.iter().cloned());
+        let mut text = String::from("Commands:");
+        for (command, what) in lines {
+            text.push_str(&format!("\n{command} — {what}"));
+        }
+        text.push_str("\n\nAnything else is a message for me.");
+        text
     }
 
     /// M37: where the dashboard restarts a channel's loop.
@@ -250,6 +288,25 @@ impl Gateway {
     /// One inbound message: `/status`, an interceptor's, or the receipt,
     /// the busy notice if its chat is mid-turn, and its lane.
     async fn handle(&self, msg: InboundMessage) {
+        // M41: the chat's own escape hatch. Anyone the channel lets talk
+        // here may use it, and it touches this chat's lane only.
+        if is_command(&msg.text, "/new") || is_command(&msg.text, "/reset") {
+            let sid = crate::session::session_id(&msg.channel, &msg.chat_id);
+            let text = match self.router.reset(&sid).await {
+                Ok(reset) => reset.text(),
+                Err(e) => format!(
+                    "I couldn't start a new conversation: {}",
+                    self.redactor.redact(&e.to_string())
+                ),
+            };
+            self.reply_directly(&msg, text).await;
+            return;
+        }
+        if is_command(&msg.text, "/help") {
+            let text = self.help_text();
+            self.reply_directly(&msg, text).await;
+            return;
+        }
         if let Some(health) = &self.health {
             if is_command(&msg.text, "/status") {
                 let report = health.report(&self.router.snapshot(), &self.channels);
