@@ -19,7 +19,10 @@ channel that has credentials. Every channel keeps the same rules:
 Telegram is set up by `ferrule setup` and described in the README; Discord
 and Slack in [discord.md](discord.md) and [slack.md](slack.md). This page covers the
 channels added in M39. The design, and the reasons behind it, are in
-[m39-channels.md](m39-channels.md).
+[m39-channels.md](m39-channels.md). What works in every chat, whichever
+channel it's on, is at the end: [chat commands](#chat-commands),
+[voice messages](#voice-messages) and [the typing
+indicator](#typing-indicator).
 
 ## Which channel to pick
 
@@ -962,3 +965,110 @@ the `reply` as the text.
 ferrule's realm), whether the port is free, or what else is on it. It
 counts the keys and webhooks, and warns when there's no key. With
 `public = "tunnel"`, it says whether cloudflared is here.
+
+## Chat commands
+
+These work in every chat, answered by the gateway itself (the model never
+sees them):
+
+| Command | What it does |
+|---|---|
+| `/new` (or `/reset`) | Starts a fresh conversation in this chat. A running turn is stopped, and messages waiting behind it are dropped (the reply says how many). The old transcript stays on disk as `sessions/<chat>.<UTC time>.jsonl`. It's kept, not replayed. Memory, tasks and settings stay. |
+| `/status` | What ferrule is doing right now. |
+| `/help` | The commands this chat answers. |
+| `/stop`, `/resume`, `/model`, `/undo`, `/plan`, … | As before; `/help` lists the ones this gateway has. |
+
+When a turn fails the same way twice in a row (the same 4xx from the
+model), the error ends with a hint to send `/new`. The conversation itself
+is then the likely problem: something in it that the provider rejects, or
+a history that no longer fits.
+
+Telegram shows `/new`, `/stop`, `/status` and `/help` in the bot's command
+menu (set when the gateway starts). Discord gets `/new` and `/help` as slash
+commands when `ferrule setup` registers them ([discord.md](discord.md)).
+`ferrule chat` takes `/new` too.
+
+## Voice messages
+
+A voice note or audio file sent to ferrule is transcribed before the agent
+sees it. The agent gets the text and the saved file's path:
+
+```
+[voice message, 0:14, transcribed]: בוא נקבע את הפגישה ליום שלישי
+[file saved: inbox/telegram/2026-09-29/voice-1234.ogg (audio/ogg, 21 KB)]
+```
+
+This works on every channel that saves files into the inbox: Telegram
+(voice notes and audio files), WhatsApp, Matrix, Mattermost, Signal, email
+and the HTTP API. Discord and Slack don't download files yet.
+
+The gateway makes the call itself, so the key never enters the sandbox. No
+language is assumed; the backend detects it unless you pin one.
+
+**Turning it on.** With an OpenAI API key set (`OPENAI_API_KEY`, or a
+`[providers.X]` on `api.openai.com` whose key is set), it's on with no
+config at all. Otherwise, pick a backend in `ferrule.toml`:
+
+```toml
+[transcription]
+backend = "openai"                       # auto (the default) | openai | command | off
+
+# Any OpenAI-compatible endpoint, e.g. Groq:
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"             # "" for a local server with no key
+model = "whisper-large-v3"               # default: whisper-1
+# provider = "groq"                      # or borrow a [providers.X]'s URL and key
+# language = "he"                        # unset: detected
+# price_per_minute = 0.006               # USD, for the ledger; 0 when local
+# timeout_secs = 120
+```
+
+Or a program on this machine, such as whisper.cpp. `{file}` is the audio
+file's path. There's no shell, `~` is expanded, stdout is the transcript,
+and the program is killed at `timeout_secs`:
+
+```toml
+[transcription]
+backend = "command"
+command = "whisper-cli -m ~/models/ggml-small.bin -nt {file}"
+```
+
+Ferrule doesn't convert audio. The file goes up as it came (OGG/Opus from
+Telegram and WhatsApp; OpenAI and Groq accept it). If a backend refuses the
+format, the reply says so.
+
+**When it can't transcribe**, the file is still saved, and the agent still
+runs with a note saying why:
+
+- **Off** (no key and no backend): the sender is told how to turn it on,
+  once per chat while the gateway runs. If the only models are ChatGPT or
+  Claude subscriptions, the message adds that a plan doesn't come with an
+  API key for this.
+- **The backend failed** (down, a refused format, a timeout): the sender
+  gets the reason in one line.
+
+Each transcription is a ledger row (`call_kind = "transcription"`), costed
+at `price_per_minute` when the length is known. `ferrule doctor` has a
+`voice` line: which backend is active and why, or how to turn it on.
+
+## Typing indicator
+
+While a turn runs, the chat shows that ferrule is typing. The indicator is
+refreshed until the reply goes out, and stops then, on `/stop`, and on an
+error:
+
+| Channel | How | Refreshed every |
+|---|---|---|
+| Telegram | "typing…" | 4 s |
+| Discord | "Ferrule is typing…" | 8 s |
+| Matrix | the room's typing notice, cleared at the end | 25 s |
+| WhatsApp | the Cloud API's typing indicator, which also marks the message read | 20 s |
+
+Slack, Mattermost, Signal, email and the HTTP API have none. If a channel
+answers a typing call with a rate limit (429), typing stops for the rest of
+that turn, so it never competes with the reply. To turn it off:
+
+```toml
+[gateway]
+typing = false
+```

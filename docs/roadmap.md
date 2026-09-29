@@ -902,6 +902,25 @@ merged.
 green on three OSes with the same test count, and a contributor knows
 where a new test goes.
 
+### M41 — daily use
+
+**Status.** Built (`docs/m41-daily-use.md`; user docs `docs/channels.md`
+and `docs/backup.md`). PR to `main` open, not merged.
+- **`/new`** in every chat: a fresh conversation, the old one kept, memory
+  untouched; a conversation that keeps failing the same way suggests it.
+- **Voice messages** reach the agent as text: an OpenAI-compatible
+  endpoint (OpenAI, Groq, a local server) or a local command such as
+  whisper.cpp, any language.
+- **"Typing…"** while ferrule works, on Telegram, Discord, Matrix and
+  WhatsApp.
+- **`ferrule backup` / `ferrule restore`:** one checked file with
+  everything ferrule knows, and a restore that never deletes what was
+  there.
+
+**Done means.** Max escapes a broken conversation from his phone, talks to
+ferrule by voice in Hebrew, sees it working, and can move an instance to a
+new machine with two commands.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

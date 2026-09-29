@@ -1,8 +1,9 @@
 # M41 — daily use: /new, voice messages, typing, backups
 
-**Status:** design, 2026-09-29 (branch `m41-daily-use`). User docs:
-[`channels.md`](channels.md) (chat commands, voice messages) and
-[`backup.md`](backup.md).
+**Status:** built, 2026-09-29 (branch `m41-daily-use`); what was verified
+and how is in §5. User docs: [`channels.md`](channels.md) (chat commands,
+voice messages, the typing indicator), [`discord.md`](discord.md) (the slash
+list) and [`backup.md`](backup.md).
 
 Four small things that someone who talks to ferrule every day from a phone
 misses first:
@@ -139,7 +140,7 @@ provider = "openai"      # borrow base_url and api_key_env from a [providers.X]
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 model = "whisper-1"
-language = ""            # empty: the backend detects it; "he" pins Hebrew
+# language = "he"        # unset: the backend detects it; "he" pins Hebrew
 # or a local program; {file} is the audio file's path
 command = "whisper-cli -m ~/models/ggml-small.bin -otxt -of - {file}"
 timeout_secs = 120
@@ -154,7 +155,10 @@ price_per_minute = 0.006 # for the ledger; 0 for a local server
   no shell, stdout is the transcript. It is killed at `timeout_secs`.
 - **auto** (the default): `openai` when an OpenAI key is set (an
   `[providers.X]` with an OpenAI base URL whose key variable is set, or
-  `OPENAI_API_KEY` itself); otherwise off.
+  `OPENAI_API_KEY` itself); otherwise off. An `auto` that also sets
+  `base_url`, `provider` or `command` is a config error: it says which
+  backend was meant rather than guess.
+- `api_key_env = ""` sends no key (a local server).
 - **off:** nothing is sent anywhere.
 
 The key is read from the environment in the ferrule process, the same way
@@ -187,89 +191,201 @@ gets one line: which backend is active and why, or how to turn it on.
 
 ## 3. Typing indicator
 
-`Channel::typing(chat_id, message_id)` with a no-op default, and
-`Channel::typing_every()` (default 4 s). While a lane runs a turn, one task
-per turn calls it at that interval.
+`Channel::typing(chat_id, message_id, on) -> Typing`, with a default that
+answers `Typing::Unsupported`. The channel says when to call it again:
+`Shown { again_in }`, `Limited` (a 429: no more this turn), or `Failed`
+(logged, retried at the next interval). One refresher per turn
+(`typing.rs`) starts once the turn's stop guard is armed. It calls
+`typing(…, true)` at once, then after each `again_in`, and it's stopped, and
+awaited, **before** the reply is sent. It stops on `/stop` (the guard's stop
+future), on an error, and when the turn ends. A channel that clears typing
+explicitly (Matrix) gets `typing(…, false)` then.
 
 | Channel | Call | Refresh |
 |---|---|---|
 | Telegram | `sendChatAction` `typing` (lasts 5 s) | 4 s |
-| Discord | `POST /channels/{id}/typing` (lasts 10 s) | 8 s |
-| Matrix | `PUT …/typing/{user}` `{typing: true, timeout: 30000}`; `false` when the turn ends | 25 s |
-| WhatsApp | the Cloud API's typing indicator: a read receipt with `typing_indicator: {type: "text"}` on the inbound message (lasts 25 s or until the reply) | 20 s |
-| Slack, Mattermost, email, Signal, HTTP | none (no-op) | — |
+| Discord | `POST /channels/{id}/typing` (lasts 10 s); skipped while a deferred slash command's answer is pending, which already shows "thinking…" | 8 s |
+| Matrix | `PUT …/typing/{user}` `{typing: true, timeout: 30000}`; `{typing: false}` when the turn ends | 25 s |
+| WhatsApp | a read receipt with `typing_indicator: {type: "text"}` on the inbound message (lasts 25 s or until the reply); error codes 130429/131056 count as a rate limit | 20 s |
+| Slack, Mattermost, email, Signal, HTTP | none (`Unsupported`, never called again) | — |
 
-It stops at once when the reply is sent, on `/stop` or `/new`, and on an
-error. A 429 (`GatewayError::RateLimited`) from a typing call drops typing for
-the rest of that turn, so the indicator never competes with the reply for the
-rate limit. `[gateway] typing = true` is the default; `false` turns it off.
+Typing runs alongside streaming (a streamed reply's edits don't stop it;
+the final send does), and for scheduled and dispatched turns too, since
+they go through the same lane. `Router::with_typing(bool)` is off by default
+in the library, so embedders opt in. The CLI turns it on unless
+`[gateway] typing = false`.
+
+While this was built, a flaky `health` test turned out to be a real race:
+a status write that began before a clean shutdown could land after the
+shutdown removed `status.txt`, leaving it behind. `write_status` and
+`write_running` now re-check the closed flag after writing and remove what
+they wrote. It's fixed in the same commit.
 
 ## 4. `ferrule backup` and `ferrule restore`
 
 ### The archive
 
-`ferrule backup [--out FILE] [--include-secrets]` writes one `.tar.gz` of the
-instance's data dir:
+`ferrule backup [--out FILE] [--include-secrets]` writes one `.tar.gz`:
+`manifest.json` first, then `data/<path>` for each file in the data dir,
+then `config/config.toml` when a config file resolves.
 
-- SQLite databases (`tasks.db`, `memory.db`, `agents.db`, any other
-  `*.db`) are copied consistently with `VACUUM INTO` into a temp dir, never
-  byte-copied while open;
-- everything else as it is: `sessions/` (JSONL transcripts), `ledger.jsonl`,
-  `ferrule.toml`, memory, schedules, `gateway/` state, skills, plugins,
-  hooks, `learn/`, `trust/`, `mcp/`, `plans/` (sign-in state for plans is a
-  secret, see below);
-- `manifest.json` at the top: ferrule version, instance, UTC time, whether
-  secrets are included, and each file's path, size and sha256.
+- SQLite databases, found by their 16-byte header rather than their name,
+  are copied with `VACUUM INTO` into a temp dir next to the output, never
+  byte-copied while open. What's still in a live WAL is in the copy.
+- Everything else as it is: `sessions/`, `ledger.jsonl`, skills, plugins,
+  hooks, `learn/`, `trust/`, `mcp/`, `plans/`, `gateway/` state.
+- `manifest.json`: `format: 1`, the ferrule version, the instance, the UTC
+  time, `secrets`, where the config came from, and each file's path, size
+  and sha256. Each tar entry carries exactly the bytes that were hashed,
+  even if the file grows during the backup.
 
-**Excluded as caches:** `models/` (downloaded weights), `update/`, `bin/`,
-`worktrees/`, `eval/` run output, `telemetry/`, the running marker, and
-`*-wal`/`*-shm` files.
+**Excluded as caches:** `models/`, `update/`, `bin/`, `worktrees/`,
+`eval/`, `telemetry/`, `sandbox/`, `gateway/running.json`,
+`gateway/status.txt`, `backup.json`, and `*-wal`, `*-shm` and `*-journal`
+files. So is the output file, if it's written inside the data dir.
+Symlinks are skipped.
 
-**Secrets** (`secrets.env`, `private/`, `plans/`, `claude-code/`, `ssh/`) are
-left out by default. `--include-secrets` adds them, prints a warning, writes
-the archive with mode 0600, and the manifest records `"secrets": true`.
+**Secrets** (excluded by default): `private/` (`secrets.env`, the plan
+sign-ins, the dashboard's login links), `claude-code/`, `ssh/`,
+`proxy/keys/` (the proxy's CA key) and `gateway/matrix/session.json`.
+The design's first draft listed `plans/` as sign-in state. It's
+`PlanStore`'s task plans, not a secret, so it's backed up.
+`gateway/http/clients.json` holds only key hashes and is backed up too.
+`--include-secrets` adds them, prints a warning to stderr, and the manifest
+records `"secrets": true`.
+
+**The file is always 0600** on Unix (created with that mode), with or
+without secrets: transcripts and memory are private too. It's written to
+`<out>.partial`, fsynced, then renamed. An existing output is refused.
+`ferrule backup` then writes `<data>/backup.json` (file, time, size,
+secrets) for the doctor.
 
 ### Restore
 
 `ferrule restore FILE [--dry-run]`:
 
-1. Refuses while this instance's gateway runs (its running marker has a live
-   pid) or its service is running, and says how to stop it.
-2. Reads the manifest, verifies every file's sha256 and size, and refuses a
-   file that's missing, extra or changed. Refuses an archive from a newer
-   major version.
-3. Moves the current data dir to `<data>.pre-restore-<stamp>` (never deletes),
-   then extracts into a fresh data dir. With `--dry-run` it stops after 2 and
-   prints what it would do.
+1. **Running.** It refuses while this instance's running marker has a live
+   pid, or its service reports running. The refusal names the stop command
+   (`Svc::stop_hint`: `launchctl bootout gui/<uid>/<label>`,
+   `sudo systemctl stop <unit>`, `systemctl --user stop <unit>`) or the
+   foreground gateway's pid.
+2. **Verify.** `manifest.json` must be the first entry, and each other
+   entry must be a regular file named `data/<normal components>` or
+   `config/config.toml`. So no `..`, no absolute path and no links. Nothing
+   may be extra, duplicated or missing, and every size and sha256 must
+   match. A gzip or tar error reads as "the archive is damaged". A `format`
+   above 1 is refused. So is a newer release line: a greater major version,
+   or while ferrule is 0.x, a greater minor version, since 0.x minors are
+   where the data format moves.
+3. **Stage.** The archive is read once. Each entry is hashed while it's
+   written into a hidden sibling, `<parent>/.<name>.restore-XXXX`, so the
+   data dir is never touched by a check that fails. Any failure removes the
+   staging dir.
+4. **Swap.** The data dir is renamed to `<data>.pre-restore-<stamp>`, and the
+   staged `data/` renamed into its place (on the same filesystem, so both
+   renames are atomic). If the second rename fails, the first is undone. If
+   the archive has no secrets, the secret paths are copied from the
+   pre-restore dir, so the restored instance keeps this machine's keys. A
+   restored config replaces the resolved config path (or the instance's
+   global one when none exists). The old one is moved to
+   `<config>.pre-restore-<stamp>`.
+
+`--dry-run` runs steps 1 and 2 without writing. A running gateway is
+reported, not refused, so a backup can be checked at any time. It prints
+the moves a restore would make.
+
+Caches stay in the pre-restore dir. The reply points at `models/` there, so
+a large download needn't be repeated.
 
 `--instance NAME` (the global flag from M38) picks the instance for both.
+The dashboard's console (M37 parity table) runs `backup` as a change, but
+refuses `--include-secrets`. It refuses `restore` except `--dry-run`: a
+restore needs the gateway stopped, and the page is the gateway.
 
 ### Doctor and schedules
 
-`ferrule doctor` shows the age of the newest backup it knows about (recorded
-in `<data>/backup.json` by `ferrule backup`) as info, never as a warning.
+`ferrule doctor` shows `backup: the last one was 3 days ago: <file>` (or
+"none made yet") as a note, never a warning.
 
 Scheduled backups (`[backup] every/keep/dir`): the scheduler runs agent tasks
 (prompts), not CLI commands, so a backup task would need a new task kind.
 That doesn't fit naturally; it's a follow-up (§6). A cron or systemd timer
 running `ferrule backup` works today, and `docs/backup.md` shows one.
 
-## 5. Tests
+## 5. What was verified, and how
 
-- `/new`: a session whose history makes the mock provider return 400 twice
-  (the second error ends with the hint), then `/new`, then the next message
-  works; the old transcript is on disk under its new name.
-- Voice: a Telegram voice update with a mock transcription server ends with
-  the transcript in the agent's input; with the server down, the agent still
-  gets the file and a note, and the person gets the reason.
-- Typing: the fake Telegram server sees `sendChatAction` during a long mock
-  turn and none after the reply.
-- Backup: session, memory, task and a ledger line → backup → wipe → restore →
-  identical; refusal while the gateway runs; a corrupted or tampered archive
-  is refused.
+Every check below is an automated test in the workspace suite. They're
+hermetic: mock servers on 127.0.0.1, temp dirs, and the real `ferrule`
+binary for the CLI ones. The suite went from 1628 passed (28 ignored) to
+1659 passed (28 ignored), with clippy `-D warnings` and `cargo fmt --check`
+clean after each part.
+
+- **`/new`** (`ferrule-gateway/tests/it/daily_use.rs`):
+  - A mock provider that answers 400 to any history containing a poisoned
+    message. The first failure has no hint, and the second ends with "send
+    /new". `/new` replies "New conversation. The previous one (N messages)
+    is saved". The next message succeeds, and the old transcript is on disk
+    under `<sid>.<stamp>.jsonl`.
+  - `/new` during a slow turn stops it and drops the queued message, and
+    the reply counts it.
+  - `/new` on an empty chat.
+  - A unit test sees the Telegram menu (`new`, `stop`, `status`, `help`)
+    registered at start. The Discord registration test counts the two new
+    slash commands.
+- **Voice** (`tests/it/voice.rs`, and unit tests in `transcribe.rs` and
+  `transcription.rs`):
+  - A Telegram voice update against a mock Bot API (`getFile` plus the file
+    URL) and a mock `/audio/transcriptions`. The agent's input has
+    `[voice message, 0:14, transcribed]: …` and the saved path, and there's
+    a ledger row.
+  - With the service down, the agent still gets the file and a note, and
+    the sender gets the reason.
+  - With transcription off, the sender is told how to turn it on.
+  - Unit tests: backend choice (`auto` with and without a key, a plan-only
+    setup), bad settings refused in words, `{file}` templates split without
+    a shell, the command backend's stdout and its timeout kill, OGG going up
+    as is, a rejected format's wording, and a voice note's length read from
+    its last Ogg page.
+- **Typing** (`tests/it/typing.rs`, unit tests in `typing.rs`):
+  - A 5.5 s mock turn on Telegram gets exactly two `sendChatAction` calls
+    (0 s and 4 s), none after the `sendMessage`, and none in the 4.2 s
+    after the turn.
+  - A 429 on the first call gets no second one, and the reply still goes.
+  - `typing = false` sends none.
+  - Unit tests of the refresher: it refreshes until stopped and then
+    clears, a rate limit ends it, a stop ends it at once, and a channel
+    without typing is asked once.
+- **Backup** (`ferrule-cli/tests/it/backup.rs`, through the binary):
+  - Round trip. A session JSONL, two memories in a `MemoryStore` held open
+    (WAL) during the backup, a cron task, a ledger line, a config and a
+    secret. Then a backup, a wipe and a restore. Every table's rows in
+    `memory.db` and `tasks.db`, and the session, ledger and config bytes,
+    come back identical. The archive has no secrets and no `models/`. The
+    local secret was carried over. The old data and config are in
+    `.pre-restore-*`, no staging dir is left, and doctor shows the age.
+  - `--include-secrets` puts `private/` in and sets `"secrets": true`. An
+    existing output is refused.
+  - A live running marker makes restore refuse, naming the pid, and the data
+    dir is unchanged.
+  - Refused with nothing moved: one byte changed in a file, an extra file,
+    a `data/../../escape` path, a missing file, a gzip cut in half, and a
+    manifest claiming ferrule 99.0.0. The intact archive then restores.
+
+**Not verified live:** transcription against the real OpenAI or Groq
+endpoints and a real whisper.cpp, including the `verbose_json` → `json`
+retry, which only a backend that refuses `verbose_json` exercises; typing
+on real clients. Telegram's is tested against a mock Bot API. Discord's,
+Matrix's and WhatsApp's requests are written from their API docs, and no
+test sends them. Nor a restore refused by a real systemd or launchd
+service: the tests fake only the running marker, not the service probe.
+Backup and restore on Windows are covered only by CI, and 0600 doesn't
+apply there.
 
 ## 6. Follow-ups
 
 - Voice on Discord and Slack (they don't download files yet).
-- Scheduled backups inside ferrule.
+- Scheduled backups inside ferrule (`[backup] every/keep/dir`, a task kind
+  that runs a command), with pruning.
 - Other Telegram file kinds (photos, documents) through the inbox.
+- Typing on Slack (only through the assistant-thread status API) and
+  Mattermost (a websocket `user_typing` action).
