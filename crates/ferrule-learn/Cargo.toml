@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-learn"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 description = "The M16 learning loop: a gated delta playbook, memory consolidation and the offline pass that writes them"
 license = "MIT OR Apache-2.0"

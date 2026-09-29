@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-gateway"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 description = "Long-running daemon: channel adapters, session routing, scheduler"
 license = "MIT OR Apache-2.0"
