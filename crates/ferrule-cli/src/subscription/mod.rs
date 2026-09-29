@@ -75,8 +75,9 @@ pub async fn chatgpt_models(issuer: &str) -> Vec<String> {
 /// The Claude Code engine's model names (claude's own aliases).
 pub const CLAUDE_CODE_MODELS: &[&str] = &["sonnet", "opus", "haiku"];
 
-/// Setup's Claude plan choice.
-pub async fn claude_setup_step(t: &mut crate::setup::Target) -> anyhow::Result<()> {
+/// Setup's Claude plan choice. `false`: nothing was set up, so the caller
+/// can offer another way.
+pub async fn claude_setup_step(t: &mut crate::setup::Target) -> anyhow::Result<bool> {
     claude::setup_step(t).await
 }
 

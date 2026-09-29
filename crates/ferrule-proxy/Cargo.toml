@@ -3,6 +3,7 @@ name = "ferrule-proxy"
 version = "0.9.1"
 edition = "2021"
 description = "Credential gateway: sandboxed commands hold placeholders, a local proxy swaps in the real secrets for the hosts they're bound to"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = { workspace = true }

@@ -202,6 +202,15 @@ pub struct ModelsConfig {
     /// no fallback.
     pub fallback: Vec<String>,
     pub aliases: BTreeMap<String, String>,
+    /// Governance: models nothing may run. A word is `provider/model`, a
+    /// bare model id (that id on every provider), a provider (all its
+    /// models) or an alias. A denied model stays connected but is refused,
+    /// with the reason, wherever a model is picked.
+    pub deny: Vec<String>,
+    /// `[models.exact]`: the exact model id a connected model must be, so
+    /// an id the provider silently retargets is refused instead of run.
+    /// The key is a ref as above, the value the id that must be connected.
+    pub exact: BTreeMap<String, String>,
     /// M22: a public model list (OpenRouter's shape) the dashboard and
     /// `ferrule model catalog` read prices from when no connected provider
     /// is OpenRouter. Unset: OpenRouter's; "": none.
@@ -1348,25 +1357,29 @@ impl From<&SecretSpec> for ferrule_proxy::SecretRule {
 pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` writes and edits this for you.
 # API keys never go in this file: they live in environment variables, or in
 # the private secrets file `ferrule setup` keeps (a real env var wins).
+#
+# Everything below is commented out: this file is a tour, not a working
+# config — `ferrule setup` writes the real one. Uncomment what you want.
 
-default_provider = "kimi"
+# default_provider = "kimi"
 # workspace = "ssh:app"      # the workspace when --workspace isn't given: a
 #                            # path, or a remote one from [ssh.<name>] below
 
-[providers.kimi]
-base_url = "https://api.moonshot.ai/v1"
-api_key_env = "MOONSHOT_API_KEY"
-model = "kimi-k2.6"
-profile = "kimi"
+# A provider: the API base, the env var its key is read from, the model.
+# [providers.kimi]
+# base_url = "https://api.moonshot.ai/v1"
+# api_key_env = "MOONSHOT_API_KEY"
+# model = "kimi-k2.6"
+# profile = "kimi"
 # price_input_per_mtok = 0.60         # USD / 1M input tokens — optional, for
 # price_cached_input_per_mtok = 0.15  # `ferrule ledger`'s cost_usd column.
 # price_output_per_mtok = 2.50        # Omit any of the three and cost stays null.
 
-[providers.openai]
-base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
-model = "gpt-5.2"
-profile = "openai"
+# [providers.openai]
+# base_url = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
+# model = "gpt-5.2"
+# profile = "openai"
 
 # More models on the same key; each field is optional (the provider's if unset).
 # [providers.openai.models."gpt-5.2-mini"]
@@ -1381,8 +1394,12 @@ profile = "openai"
 # [models]
 # default = "openai/gpt-5.2"
 # fallback = []                   # e.g. ["kimi"]; empty = no fallback
+# deny = []                       # models nothing may run: provider/model, a bare
+#                                 # model id (every provider), a provider, an alias
 # [models.aliases]
 # mini = "openai/gpt-5.2-mini"
+# [models.exact]                  # the exact id a connected model must be; a model
+# "openai/gpt-5.2" = "gpt-5.2-2026-01-01"   # the provider retargeted is refused
 
 # Any OpenAI-compatible endpoint works: OpenRouter, DeepSeek, Ollama, vLLM…
 # [providers.local]

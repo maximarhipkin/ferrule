@@ -20,7 +20,7 @@ pub mod tool;
 
 pub use auth::{Auth, CredentialSource};
 pub use browser::BrowserConfig;
-pub use client::{CallToolResult, McpClient, McpToolInfo, ServerHost};
+pub use client::{CallToolResult, McpClient, McpToolInfo, SavedContent, ServerHost};
 pub use config::McpServerConfig;
 pub use error::McpError;
 pub use local::{Local, LocalServer};

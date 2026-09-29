@@ -252,3 +252,35 @@ fn a_first_install_with_no_service_restarts_nothing() {
     assert!(out.contains("Installed ferrule 9.9.9"), "{out}");
     assert_eq!(log, "", "{out}");
 }
+
+#[test]
+fn the_path_note_names_the_rc_file_and_the_opt_out_touches_nothing() {
+    // A shell install.sh knows: the note names its rc file.
+    let m = Machine::new("Linux", &[]);
+    let (out, _) = m.install(&[("SHELL", "/bin/zsh"), ("FERRULE_NO_RC", "1")]);
+    assert!(
+        out.contains("to PATH so `ferrule` works in new shells — put this in ~/.zshrc:"),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "export PATH=\"{}:$PATH\"",
+            m.root.join("bin").display()
+        )),
+        "{out}"
+    );
+    assert!(!m.home().join(".zshrc").exists(), "nothing was written");
+}
+
+#[test]
+fn an_rc_file_that_already_has_the_path_line_is_left_alone() {
+    let m = Machine::new("Linux", &[]);
+    let rc = m.home().join(".zshrc");
+    let line = format!("export PATH=\"{}:$PATH\"", m.root.join("bin").display());
+    std::fs::write(&rc, format!("# mine\n{line}\n")).unwrap();
+    let (out, _) = m.install(&[("SHELL", "/bin/zsh")]);
+    assert!(out.contains("~/.zshrc already has"), "{out}");
+    let text = std::fs::read_to_string(&rc).unwrap();
+    assert_eq!(text.matches(":$PATH").count(), 1, "{text}");
+    assert!(text.starts_with("# mine\n"), "{text}");
+}

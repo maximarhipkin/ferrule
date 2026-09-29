@@ -207,6 +207,30 @@ stronger one only when a turn fails, and any level above can name a tier
 (`tier:cheap`, `tier:strong`) instead of a model: see
 [routing.md](routing.md).
 
+## Keeping a model out: deny and exact
+
+Two `[models]` lists govern what may run, wherever a model is picked (the
+default, a pin, a task, a tier, `--model`):
+
+```toml
+[models]
+deny = ["openai/gpt-4o", "claude-sonnet-5", "groq", "old"]
+
+[models.exact]
+"openai/gpt-5.2" = "gpt-5.2-2026-01-01"
+```
+
+- **`deny`** refuses a model with the reason. A word is any ref: a
+  `provider/model`, a bare model id (that id on every provider), a provider
+  (all its models), or an alias. The model stays connected and listed —
+  `ferrule doctor` says what's denied — but nothing may run it.
+- **`exact`** pins a connected model to the one id it must be. When the
+  provider silently retargets (the endpoint answers as another id), every
+  use is refused instead of quietly running the wrong model.
+
+A denied or mis-pinned model can still be changed or removed. `ferrule
+doctor` fails on a pin the connected id doesn't match, with the fix.
+
 ## When a model is down
 
 Fallback is **off** until you list models. With
@@ -238,7 +262,9 @@ never used.
 `ferrule doctor` checks every provider's key. When more than one model is
 connected, it also lists them with the default and fallback, warns about a
 model whose key is missing, and fails when the default or a fallback names
-something that isn't connected. `ferrule doctor --ping-models` also makes
+something that isn't connected. It says what `[models] deny` refuses, and
+fails on an `[models.exact]` pin the connected id doesn't match.
+`ferrule doctor --ping-models` also makes
 one real call to every connected model. It costs a few tokens each.
 For a local server it also compares the server's real window with the one
 ferrule plans for, and `--ping-models` tells a model that can't call tools

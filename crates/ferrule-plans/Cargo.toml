@@ -3,6 +3,7 @@ name = "ferrule-plans"
 version = "0.9.1"
 edition = "2021"
 description = "M35 subscription plans: ChatGPT sign-in and its sealed tokens, the plans' usage windows, and the Claude Code engine that runs a turn inside the unmodified claude binary"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 ferrule-core = { path = "../ferrule-core" }

@@ -13,7 +13,24 @@ fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+        // The owner's own git setup is never part of a test repo: no
+        // global/system config (a 1Password/gpg signer, hooksPath), known
+        // identity. Same isolation as ferrule-extensions' tests.
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
+        ])
         .args(args)
         .output()
         .unwrap();

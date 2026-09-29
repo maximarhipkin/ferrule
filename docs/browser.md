@@ -130,9 +130,12 @@ not have one. `doctor` recognises the failure and suggests, in this order:
 
 ## Limits
 
-- Screenshots are saved as files in the state dir; the model doesn't see
-  the image itself yet. An image a tool returns inline is replaced by a
-  note saying what was left out, so the model knows it's there.
+- An image (or any non-text part) a tool returns is decoded and saved under
+  the workspace at `.ferrule/mcp-content/`, and the tool result names the
+  file, type and size, so the model can open it with `read_file`. Nothing
+  prunes that dir yet; it's yours to clean. A part over 16 MiB (64 MiB over
+  a whole result) or one that won't decode keeps a note saying it was left
+  out, so the model knows it's there.
 - On Windows agent-browser 0.38's MCP server hangs on the first command
   that has to start its background daemon (the daemon inherits the pipe
   the server is reading). ferrule runs `agent-browser get url` with no

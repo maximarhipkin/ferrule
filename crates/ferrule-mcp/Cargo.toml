@@ -3,6 +3,7 @@ name = "ferrule-mcp"
 version = "0.9.1"
 edition = "2021"
 description = "MCP client (stdio and Streamable HTTP): exposes MCP servers' tools as ferrule Tools"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 ferrule-core = { path = "../ferrule-core" }
@@ -15,6 +16,7 @@ async-trait = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+base64 = "0.22"
 
 [dev-dependencies]
 dunce = { workspace = true }

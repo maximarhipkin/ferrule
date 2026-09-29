@@ -3,6 +3,7 @@ name = "ferrule-sandbox"
 version = "0.9.1"
 edition = "2021"
 description = "OS-level sandbox for agent shell commands: Landlock + seccomp on Linux, Seatbelt on macOS, a restricted token in a job on Windows"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 dunce = { workspace = true }

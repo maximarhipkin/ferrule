@@ -755,6 +755,43 @@ async fn models_check(r: &mut Report, ping: bool) {
         r.fail("models", p);
         r.hint("`ferrule model list` shows what's connected; `ferrule model default <ref>` fixes the default");
     }
+    // [models] deny / [models.exact] governance: a deny is the owner's
+    // choice (said as fact, once); a pin the connected id doesn't match
+    // refuses every use, so it's a failure.
+    let cat = models.catalog();
+    let denied: Vec<String> = cat
+        .entries
+        .iter()
+        .filter(|e| cat.denied(e).is_some())
+        .map(|e| e.reference())
+        .collect();
+    if !denied.is_empty() {
+        r.ok(
+            "models",
+            format!("denied by [models] deny: {}", denied.join(", ")),
+        );
+    }
+    for e in &cat.entries {
+        let Some(pin) = cat.exact_pin(e) else {
+            continue;
+        };
+        if e.model == pin {
+            r.ok(
+                "models",
+                format!("{} pinned to `{pin}` ([models] exact)", e.reference()),
+            );
+        } else {
+            r.fail(
+                "models",
+                format!(
+                    "{}: pinned to `{pin}` by [models] exact, but `{}` is connected — every use is refused",
+                    e.reference(),
+                    e.model
+                ),
+            );
+            r.hint("connect the pinned id (`ferrule model add`), or fix [models.exact]");
+        }
+    }
     routing_check(r, &view.routing);
     let unpriced = crate::models::catalog::unpriced(&models.catalog());
     for u in &unpriced {

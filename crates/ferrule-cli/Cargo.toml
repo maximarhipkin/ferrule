@@ -3,6 +3,7 @@ name = "ferrule-cli"
 version = "0.9.1"
 edition = "2021"
 description = "ferrule binary: run, chat, memory, config"
+license = "MIT OR Apache-2.0"
 build = "build.rs"
 
 [[bin]]

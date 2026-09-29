@@ -3,8 +3,9 @@
 Where Ferrule is and where it's going. This is the plan as it stands; the
 day-by-day record lives in `PLAN.md` (Current State and Session Log), and the
 reasoning behind each milestone lives in the `docs/research-*.md` reports —
-most recently `docs/research-number-one-harness-strategy.md`, the
-six-investigation synthesis that produced M14–M19.
+most recently `docs/research-round2-improvements.md`, the round-2
+six-investigation synthesis at v0.9.0; its predecessor,
+`docs/research-number-one-harness-strategy.md`, produced M14–M19.
 
 ## Done
 
@@ -23,9 +24,39 @@ six-investigation synthesis that produced M14–M19.
 | **M10** | MCP servers under the sandbox, `web_fetch` and MCP-over-HTTP through the credential proxy, a hardened system service as root, Chrome detection in `doctor`. |
 | **M11** | The browser: agent-browser's MCP server on an installed Chrome, in the sandbox, behind the proxy, driven for real in CI on Linux, macOS and Windows (`docs/browser.md`). |
 | **M12 p1–5** | Sub-agents: `spawn_agent`/`wait`/`resume`/`close`, a board and a task list, a worktree per child, a verifier on a snapshot, roles on their own providers, tree limits and budget (`docs/agents.md`). |
+| **M13** | Self-extension: skills and MCP servers hot-load mid-session and self-install from an owner allow-list, behind a poisoning scan and exact pins (`docs/m13-self-extension.md`). |
+| **M14 p1–5** | `ferrule eval`: task suites through the real agent loop with command and rubric graders, a naive/engineered A/B on one model, and a diff against the last run (`docs/eval.md`). |
+| **M15** | Memory update pipeline and reversible compaction: `update_memory`/`forget` with supersede, goal-driven recall, and `search_history` over the transcript (`docs/m15-memory.md`). |
+| **M16** | The learning loop: `ferrule learn` reviews failed runs and keeps a playbook lesson only when the task's check passes twice with it (`docs/m16-learning-loop.md`). |
+| **M17** | `ferrule mcp add` with a live smoke test, secrets bound in the same step, and hot add/remove in a running gateway (`docs/m17-mcp-add.md`). |
+| **M18** | Lifecycle hooks: ten events with Claude Code's payload and exit-code contract, `verify_command` as the built-in Stop check, workspace hooks behind a SHA-256 trust pin (`docs/m18-hooks.md`). |
+| **M19** | Trust & cost: token and dollar caps read from the ledger, a kill switch, approval gates on destructive actions, and plan mode (`docs/m19-trust-cost.md`). |
+| **M19b** | Never silently deaf: 👀 receipts, `/status` at any time, a turn watchdog, restart notices and an optional heartbeat (`docs/m19b-reliability.md`). |
+| **M19c** | Live-bot fixes: every reason the bot stays silent is said in the chat or shown by `ferrule status`/`doctor` (`docs/m19c-live-fixes.md`). |
+| **M20** | Connections: the owner taps one Telegram button to connect a service; tokens are sealed, refreshed per request and never seen by the model (`docs/connections.md`). |
+| **M21** | Models: several connected at once with prices and windows, a default, pins per chat/task/role, and an optional fallback (`docs/models.md`). |
+| **M22** | The dashboard: one loopback page for health, connections, models, usage, tasks and logs, opened by a one-use link, working with every model down (`docs/dashboard.md`). |
+| **M23** | Native drivers: Anthropic Messages and OpenAI Responses beside the chat API, with Anthropic prompt caching priced in the ledger (`docs/models.md`). |
+| **M24** | Dashboard leftovers: logins survive restarts, candidate-model evaluation and audited edits of caps, MCP, skills, hooks trust and tasks from the page (`docs/dashboard.md`). |
+| **M25** | Routing, phase 1: `[routing] tiers` start every turn cheap and escalate one tier on a failure signal; off by default (`docs/routing.md`). |
+| **M26** | Isolation: sandboxed reads (`deny_read`), a native Windows sandbox (a restricted token in a job object, no admin), plain-HTTP `web_fetch` through the proxy, hide-only unconfined MCP servers (`docs/sandbox.md`, `docs/windows-sandbox.md`). |
+| **M27** | Speed: parallel read-only tool calls, streaming replies in Telegram and `ferrule chat`, a cache-stable prompt prefix, and the timings in `ferrule ledger` (`docs/speed.md`). |
+| **M28** | `web_search` (Brave, Tavily, Exa, SearXNG) through the proxy with a daily cap, and keyword-triggered skills (`docs/web-search.md`, `docs/skills.md`). |
+| **M29** | Edit mechanics: `edit_file` SEARCH/REPLACE, a tree-sitter repo map with `code_search`, per-edit lint, optional auto-commit with `ferrule undo` (`docs/editing.md`). |
+| **M30** | Vector recall: a local opt-in embedder or any `/v1/embeddings` endpoint merged with BM25; exactly BM25 when it's off (`docs/memory.md`). |
+| **M31** | Discord and Slack channels, outbound only, with per-channel allowlists, pairing codes and approval buttons (`docs/discord.md`, `docs/slack.md`). |
+| **M32** | WASM tool plugins in wasmi with deny-by-default capabilities, installed through M13's flow (`docs/plugins.md`). |
+| **M33** | Ops: an egress policy in the proxy, a Unix-socket allowlist, OTel traces, and OpenClaw/Hermes importers (`docs/egress.md`, `docs/otel.md`, `docs/migrate.md`). |
+| **M34** | SSH workspaces over the system `ssh` with strict host keys, and local-model first run for Ollama/llama.cpp/LM Studio/vLLM (`docs/ssh.md`, `docs/local-models.md`). |
+| **M35** | Subscription sign-in: a ChatGPT plan natively (Codex OAuth) and a Claude plan through the unmodified `claude` binary (`docs/subscriptions.md`). |
+| **M36** | Self-update (signed releases with rollback) and self-repair (failure classification, fallbacks, a last-good config) (`docs/updates.md`). |
+| **M37** | The control room: closable notices with fix buttons, model pickers, connections that work, terminal parity, a phone UI (`docs/dashboard.md`, `docs/connections.md`). |
+| **M38** | Named instances: several agents on one machine, each with its own config, data, bot, service and dashboard, with coordinated updates (`docs/instances.md`). |
 
-## Next, in order
+## Milestones
 
+Every one of these has shipped; the sections below are the record, with
+each one's scope, design deltas and open edges as they stood at the time.
 M11–M13 were approved 2026-09-24 (msg 3090). M14–M19 come from
 `docs/research-number-one-harness-strategy.md`, adopted the same day.
 M21 came from Max on 2026-09-25 (msg 3160).

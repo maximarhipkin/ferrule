@@ -14,6 +14,8 @@
 #                        on Linux /usr/local/bin, where the system service,
 #                        which can't see /root, runs it from)
 #   FERRULE_NO_SETUP=1   install only, don't start the wizard
+#   FERRULE_NO_RC=1      don't offer to put the install dir on PATH in your
+#                        shell's rc file (the note is printed either way)
 #   GITHUB_TOKEN         optional: download through the API (a private fork)
 #
 # On Windows, use install.ps1 instead.
@@ -128,6 +130,20 @@ mv -f "$DIR/.ferrule.new" "$DIR/ferrule"
 BIN=$DIR/ferrule
 say "Installed $("$BIN" --version) → $BIN"
 
+# The line new shells need, and the rc file it belongs in when the shell
+# is one we know.
+PATH_LINE="export PATH=\"$DIR:\$PATH\""
+rc= rc_show="your shell's profile"
+case ${SHELL:-} in
+    */zsh) rc=$HOME/.zshrc; rc_show="~/.zshrc" ;;
+    */bash) rc=$HOME/.bashrc; rc_show="~/.bashrc" ;;
+esac
+path_note() {
+    say "Add $DIR to PATH so \`ferrule\` works in new shells — put this in $rc_show:"
+    say "  $PATH_LINE"
+}
+
+path_done=
 case ":$PATH:" in
     *":$DIR:"*)
         other=$(command -v ferrule || true)
@@ -136,13 +152,30 @@ case ":$PATH:" in
         fi
         ;;
     *)
-        case ${SHELL:-} in
-            */zsh) rc="~/.zshrc" ;;
-            */bash) rc="~/.bashrc" ;;
-            *) rc="your shell's profile" ;;
-        esac
-        say "Add $DIR to PATH so \`ferrule\` works in new shells — put this in $rc:"
-        say "  export PATH=\"$DIR:\$PATH\""
+        if [ -n "$rc" ] && [ "${FERRULE_NO_RC:-}" != 1 ]; then
+            if [ -f "$rc" ] && grep -qF "$PATH_LINE" "$rc"; then
+                say "$rc_show already has $DIR on PATH; new shells find \`ferrule\`."
+                path_done=1
+            elif (: </dev/tty) 2>/dev/null; then
+                printf 'Add it to %s? [Y/n] ' "$rc_show"
+                answer=
+                read -r answer </dev/tty || true
+                case $answer in
+                    n | N | no | No | NO)
+                        path_note
+                        ;;
+                    *)
+                        printf '\n# ferrule\n%s\n' "$PATH_LINE" >>"$rc"
+                        say "Added to $rc_show; new shells find \`ferrule\` (this one: \`$PATH_LINE\`)."
+                        path_done=1
+                        ;;
+                esac
+            else
+                path_note
+            fi
+        else
+            path_note
+        fi
         ;;
 esac
 
@@ -219,6 +252,18 @@ if "$BIN" config path 2>/dev/null | grep -q '^config *none yet'; then
     elif (: </dev/tty) 2>/dev/null; then
         say ""
         "$BIN" setup </dev/tty
+        # The wizard's dozen steps bury whatever was printed before them, so
+        # the PATH note is said again on the way out.
+        case ":$PATH:" in
+            *":$DIR:"*) ;;
+            *)
+                if [ -n "$path_done" ]; then
+                    say "PATH: $rc_show has the line — open a new shell and \`ferrule\` works."
+                else
+                    path_note
+                fi
+                ;;
+        esac
     else
         say "No terminal to ask on. Next, in a terminal: \`$BIN setup\`."
     fi

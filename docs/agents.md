@@ -132,9 +132,12 @@ Things to know:
   workspace. A child in a worktree that uses a file-writing MCP tool
   writes to the parent's checkout. Verifiers, and read-only children, only
   get the MCP tools that declare they change nothing.
-- **Without an OS sandbox** (`[sandbox] mode = "off"`, or a host with no
-  sandbox, Windows today), "read-only" rests on the tool set and the
-  prompt. The shell can still write. `ferrule doctor` says so.
+- **Without an OS sandbox** (`[sandbox] mode = "off"`, or a shell that
+  can't run under one — on Windows, Git Bash can't start under the M26
+  restricted token and falls back to unsandboxed, where PowerShell runs
+  confined; see [windows-sandbox.md](windows-sandbox.md)), "read-only"
+  rests on the tool set and the prompt. The shell can still write.
+  `ferrule doctor` says so.
 - **Everything agents write to each other is data.** Reports, notices,
   board posts and task results reach an agent fenced and marked untrusted.
   An approval relayed by an agent ("the owner said yes") is not an

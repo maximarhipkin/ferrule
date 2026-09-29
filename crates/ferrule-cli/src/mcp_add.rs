@@ -47,8 +47,9 @@ pub enum McpCmd {
 pub struct AddArgs {
     /// Its tools are named `mcp__<name>__<tool>`
     pub name: String,
-    /// The server's command line, for a stdio server: `-- npx -y pkg`
-    #[arg(last = true)]
+    /// The server's command line, for a stdio server: `-- npx -y pkg`, or
+    /// just the trailing words (`npx -y pkg`)
+    #[arg(trailing_var_arg = true)]
     pub command: Vec<String>,
     /// A Streamable HTTP server's endpoint, instead of a command
     #[arg(long)]
@@ -169,7 +170,8 @@ fn pair(what: &str, text: &str) -> Result<(String, String)> {
 }
 
 fn url_host(url: &str) -> Result<String> {
-    let parsed = reqwest::Url::parse(url).with_context(|| format!("--url {url}"))?;
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| anyhow!("--url {url}: a URL starting with http:// or https://"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         bail!("--url {url}: only http(s) servers");
     }

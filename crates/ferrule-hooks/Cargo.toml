@@ -3,6 +3,7 @@ name = "ferrule-hooks"
 version = "0.9.1"
 edition = "2021"
 description = "Lifecycle hooks: command hooks, [hooks] config, workspace trust, the audit log"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 dunce = { workspace = true }
