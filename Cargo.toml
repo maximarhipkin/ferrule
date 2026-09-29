@@ -50,6 +50,15 @@ libc = "0.2"
 # python and cmd.exe can't take (the same as std::fs::canonicalize elsewhere).
 dunce = "1"
 
+# Test and debug builds (tests inherit dev): line tables for our crates,
+# so a failing test's backtrace still names file:line, and no debug info
+# for dependencies. See docs/m40-build-diet.md for the sizes.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"
