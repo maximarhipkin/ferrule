@@ -611,6 +611,10 @@ python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linu
 python3 tests_e2e/hidden_keys.py           # the agent can't reach the saved keys
 ```
 
+Integration tests are one binary per crate, in `crates/<crate>/tests/it/`
+(add a module, not a file). Run one file with
+`cargo test -p <crate> --test it <file>::`.
+
 CI runs the tests on Linux, macOS and Windows. A `v*` tag builds the
 release archives for every platform and publishes them with the install
 scripts.
