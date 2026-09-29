@@ -2,6 +2,8 @@
 //! holds: Windows PowerShell (and cmd for the process limit). Git Bash
 //! can't run under the token; `windows_git_bash.rs` checks that it degrades
 //! cleanly. Needs no admin; runs on the windows-latest CI runner.
+//! Its own binary, not in `tests/it/`: it sets FERRULE_SHELL, which the
+//! sandbox reads once per process.
 
 #![cfg(windows)]
 

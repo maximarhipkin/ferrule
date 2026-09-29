@@ -153,7 +153,7 @@ one, so it's ignored by default:
 FERRULE_LIVE_SLACK_BOT_TOKEN=xoxb-… \
 FERRULE_LIVE_SLACK_APP_TOKEN=xapp-… \
 FERRULE_LIVE_SLACK_USER=U0123ABCD \
-cargo test -p ferrule-gateway --test slack -- --ignored slack_live_round_trip
+cargo test -p ferrule-gateway --test it slack::slack_live_round_trip -- --ignored
 ```
 
 It DMs you "ferrule live test: reply to this DM" and waits two minutes for

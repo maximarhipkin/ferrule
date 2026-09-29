@@ -1900,7 +1900,7 @@ fn agents(ctx: &Ctx) -> Answer {
 }
 
 #[cfg(test)]
-#[path = "../../../ferrule-connections/tests/common/mod.rs"]
+#[path = "../../../ferrule-connections/tests/it/common/mod.rs"]
 mod mock;
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 //! The engine's child never sees a credential that would outrank the plan.
-//! Its own test binary: it sets variables in the process environment.
+//! Its own binary, not in `tests/it/`: it sets API keys in the process
+//! environment, which the other engine tests would inherit.
 
 use ferrule_core::message::Message;
 use ferrule_core::provider::{CompletionRequest, Provider};

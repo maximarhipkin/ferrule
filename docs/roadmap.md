@@ -888,6 +888,20 @@ restart or removal touches the other.
 reaches it from Matrix, Signal or Mattermost, and an n8n flow calls it
 with a key, each set up from the phone with Test showing it works.
 
+### M40 — build diet
+
+**Status.** Built (`docs/m40-build-diet.md`). PR to `main` open, not
+merged.
+- **Smaller test builds:** a dev profile keeps line tables for our code
+  and no debug info for dependencies; backtraces still name file:line.
+- **One test binary per crate:** `tests/it/`, add a module, not a file.
+- **From an empty dir:** 10.66 GB → 2.62 GB, 102 → 51 executables; a
+  release adds ~2 GB to a shared target dir instead of ~9.4 GB.
+
+**Done means.** A milestone run no longer fills the 72 GB disk, CI is
+green on three OSes with the same test count, and a contributor knows
+where a new test goes.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

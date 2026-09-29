@@ -337,7 +337,7 @@ derives it from the `ChildSpec`, and the `remember` tool itself refuses
   `search_history`. An old large result is shortened to a ref and fetched
   back in full. Shortening is skipped with no transcript, and the naive
   `Truncate` path is unchanged.
-- `ferrule-cli` binary tests (`tests/memory.rs`, a scripted model server):
+- `ferrule-cli` binary tests (`tests/it/memory.rs`, a scripted model server):
   a fact is stored in one `ferrule run`, corrected through `update_memory`
   in a second, and the third session's system prompt holds the correction,
   not the old fact. A read-only child's tool list has `recall` and

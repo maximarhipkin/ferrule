@@ -332,7 +332,7 @@ times, on a cheap model, routed cheap → strong, and a strong model
 
 There are 20 tasks, each with a fixture, a hidden grader (in `graders/`
 or `checks/`, never in the workspace) and a reference solution (in
-`solutions/`). The test `crates/ferrule-eval/tests/starter_suite.rs`
+`solutions/`). The test `crates/ferrule-eval/tests/it/starter_suite.rs`
 checks three things for every task: the reference solution passes, an
 untouched workspace fails, and the plausible first try fails.
 

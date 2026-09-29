@@ -212,7 +212,7 @@ A live round trip, not run in CI:
 FERRULE_LIVE_WHATSAPP_TOKEN=EAA… \
 FERRULE_LIVE_WHATSAPP_PHONE_ID=123456789012345 \
 FERRULE_LIVE_WHATSAPP_TO=972501234567 \
-cargo test -p ferrule-gateway --test whatsapp -- --ignored
+cargo test -p ferrule-gateway --test it whatsapp:: -- --ignored
 ```
 
 It sends a message with buttons to `…_TO`. With
@@ -355,7 +355,7 @@ A live round trip, not run in CI:
 FERRULE_LIVE_MATRIX_URL=https://matrix-client.matrix.org \
 FERRULE_LIVE_MATRIX_TOKEN=syt_… \
 FERRULE_LIVE_MATRIX_TO=@you:matrix.org \
-cargo test -p ferrule-gateway --test matrix -- --ignored
+cargo test -p ferrule-gateway --test it matrix:: -- --ignored
 ```
 
 It prints the probe, then sends `…_TO` a message, edits it and reacts 👀.
@@ -517,7 +517,7 @@ FERRULE_LIVE_EMAIL_PASSWORD='abcd efgh ijkl mnop' \
 FERRULE_LIVE_EMAIL_IMAP=imap.gmail.com:993 \
 FERRULE_LIVE_EMAIL_SMTP=smtp.gmail.com:465 \
 FERRULE_LIVE_EMAIL_TO=you@example.com \
-cargo test -p ferrule-gateway --test email -- --ignored
+cargo test -p ferrule-gateway --test it email:: -- --ignored
 ```
 
 It logs in, prints the probe and sends `…_TO` one mail.
@@ -674,7 +674,7 @@ A live round trip, not run in CI, against a daemon you started:
 FERRULE_LIVE_SIGNAL_URL=http://127.0.0.1:7583 \
 FERRULE_LIVE_SIGNAL_ACCOUNT=+972501234567 \
 FERRULE_LIVE_SIGNAL_TO=+972541112233 \
-cargo test -p ferrule-gateway --test signal -- --ignored
+cargo test -p ferrule-gateway --test it signal:: -- --ignored
 ```
 
 It prints the probe and sends `…_TO` one message.
@@ -796,7 +796,7 @@ A live round trip, not run in CI:
 FERRULE_LIVE_MATTERMOST_URL=https://chat.example.com \
 FERRULE_LIVE_MATTERMOST_TOKEN=… \
 FERRULE_LIVE_MATTERMOST_TO=@you \
-cargo test -p ferrule-gateway --test mattermost -- --ignored
+cargo test -p ferrule-gateway --test it mattermost:: -- --ignored
 ```
 
 It prints the probe, then sends `…_TO` a message, edits it and reacts 👀.

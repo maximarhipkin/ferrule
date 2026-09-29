@@ -221,7 +221,7 @@ The test suite never reaches the network. These `#[ignore]`d tests do, by
 hand:
 
 ```sh
-cargo test -p ferrule-providers --test live codex_client_version -- --ignored --nocapture
+cargo test -p ferrule-providers --test it live::codex_client_version -- --ignored --nocapture
 cargo test -p ferrule-cli update::tests::live_the_real_release_list_parses -- --ignored --nocapture
 ```
 

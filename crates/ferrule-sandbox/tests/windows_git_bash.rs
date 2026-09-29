@@ -2,7 +2,8 @@
 //! memory to the user's SID, which a write-restricted token can't match, so
 //! it can't hold tier 1. What must hold is that it never half-works: the
 //! sandbox either confines it or reports itself degraded, and says why.
-//! A process of its own, because the shell is picked once per process.
+//! Its own binary, not in `tests/it/`: it sets FERRULE_SHELL, and the shell
+//! is picked once per process.
 
 #![cfg(windows)]
 

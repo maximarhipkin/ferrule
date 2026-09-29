@@ -124,7 +124,7 @@ one, so it's ignored by default:
 ```sh
 FERRULE_LIVE_DISCORD_TOKEN=<bot token> \
 FERRULE_LIVE_DISCORD_USER=<your user id> \
-cargo test -p ferrule-gateway --test discord -- --ignored discord_live_round_trip
+cargo test -p ferrule-gateway --test it discord::discord_live_round_trip -- --ignored
 ```
 
 It DMs you "ferrule live test: reply to this DM" and waits two minutes for

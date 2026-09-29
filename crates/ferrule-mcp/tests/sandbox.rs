@@ -2,6 +2,8 @@
 //! sandbox: what it can write, judged by which files exist afterwards —
 //! not by what the server says — and what it can read. Skipped where
 //! there's no sandbox backend.
+//! Its own binary, not in `tests/it/`: on Windows it sets FERRULE_SHELL,
+//! which the sandbox reads once per process.
 
 use ferrule_core::tool::{Tool, ToolContext};
 use ferrule_mcp::{connect_and_build_tools, McpServerConfig, ServerHost};

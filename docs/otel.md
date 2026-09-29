@@ -156,7 +156,7 @@ Against a **real collector** (not run in CI):
 ```bash
 docker run --rm -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
 FERRULE_OTEL_LIVE_ENDPOINT=http://127.0.0.1:4318 \
-  cargo test -p ferrule-otel --test export -- --ignored live
+  cargo test -p ferrule-otel --test it export::live -- --ignored
 # optional, for a hosted backend: FERRULE_OTEL_LIVE_HEADER='x-honeycomb-team=…'
 ```
 

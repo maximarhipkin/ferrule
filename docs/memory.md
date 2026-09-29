@@ -149,5 +149,5 @@ To run it yourself, after `ferrule memory model download`:
 
 ```sh
 FERRULE_EMBED_MODEL_DIR=<data>/models/potion-multilingual-128M@73908c3 \
-  cargo test -p ferrule-memory --test bench -- --ignored --nocapture
+  cargo test -p ferrule-memory --test it bench:: -- --ignored --nocapture
 ```

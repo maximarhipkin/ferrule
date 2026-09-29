@@ -323,7 +323,7 @@ The design held. Where the build differs, or adds something:
 **Tests.**
 - Unit tests in `dashboard/` (auth, http, api), `models/catalog.rs` and
   `tasks_admin.rs`.
-- `tests/dashboard.rs` runs the real binary against a fake Telegram and
+- `tests/it/dashboard.rs` runs the real binary against a fake Telegram and
   scripted model servers, one of them serving a recorded OpenRouter
   `/models` (`tests/fixtures/openrouter-models.json`). It covers:
   - the one-time link: used twice, a non-owner, tampered, no session or

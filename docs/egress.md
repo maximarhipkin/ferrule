@@ -261,7 +261,7 @@ ferrule sandbox -- curl -sS http://169.254.169.254/        # the 403 text (with 
 ferrule sandbox -- curl --unix-socket /var/run/docker.sock http://x/_ping   # refused on Linux and macOS
 ```
 
-The tests: `cargo test -p ferrule-proxy --test policy` (the policy, DNS,
+The tests: `cargo test -p ferrule-proxy --test it policy::` (the policy, DNS,
 denial pages, the source split) and `cargo test -p ferrule-sandbox --test
 enforcement` (real Unix sockets: allowed, refused, a symlink, an abstract
 socket, a socket the command made). The socket tests skip where the

@@ -469,7 +469,7 @@ cost: the owner can be asked about a call that a hook then blocks.
   - Caps and approvals reach an eval only with `owner_trust = true`.
     There is no hooks opt-in (M18 §7).
 
-Tested in `crates/ferrule-cli/tests/trust.rs`:
+Tested in `crates/ferrule-cli/tests/it/trust.rs`:
 - `the_gate_answers_before_pre_tool_use_hooks_and_no_hook_can_approve_past_it`: one session has a gated `rm -rf` and a plain `echo`, plus a PreToolUse hook that logs and answers allow with a note. The rm is refused with no note, and the hook logged only the echo.
 - `a_stop_hook_sending_the_run_back_still_meets_the_run_cap`
 - `a_planning_run_fires_no_hooks_and_the_approved_plan_does`
