@@ -27,6 +27,7 @@ use crate::channels::slack::mrkdwn;
 use crate::error::GatewayError;
 use crate::message::{Attachment, InboundMessage, OutboundMessage};
 use crate::stream::chunks;
+use crate::typing::Typing;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -808,6 +809,35 @@ fn media_kind(mime: &str) -> &'static str {
 impl Channel for WhatsAppChannel {
     fn name(&self) -> &str {
         "whatsapp"
+    }
+
+    /// A read receipt with a typing indicator on the message being
+    /// answered; it shows for up to 25 s or until the reply: again every
+    /// 20. Nothing clears it but the reply.
+    async fn typing(&self, _chat_id: &str, message_id: &str, on: bool) -> Typing {
+        if !on || message_id.is_empty() {
+            return Typing::Unsupported;
+        }
+        let url = format!("{}/{}/messages", self.graph, self.cfg.phone_number_id);
+        let body = json!({
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": message_id,
+            "typing_indicator": { "type": "text" },
+        });
+        match self
+            .graph(self.client.post(&url).json(&body), "typing")
+            .await
+        {
+            Ok(_) => Typing::Shown {
+                again_in: Duration::from_secs(20),
+            },
+            Err(e) if matches!(e.code, 130429 | 131056) => Typing::Limited,
+            Err(e) => {
+                tracing::debug!("whatsapp: typing: {}", e.message);
+                Typing::Failed
+            }
+        }
     }
 
     fn capabilities(&self) -> ChannelCapabilities {

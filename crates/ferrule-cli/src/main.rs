@@ -2316,6 +2316,7 @@ async fn run_gateway(
         Router::new(sessions_dir, agent_factory, named_channels.clone())
             .with_max_turn(health::max_turn(&cfg))
             .with_streaming(streaming_channels(&cfg), StreamPacing::default())
+            .with_typing(cfg.gateway.typing())
             .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
     );
     files.bind(&router);

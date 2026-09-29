@@ -726,6 +726,10 @@ impl Health {
         if let Err(e) = write_atomic(&dir.join(STATUS_FILE), report.as_bytes()) {
             tracing::debug!(error = %e, "couldn't write the status file");
         }
+        // A shutdown between the check and the write: it goes after all.
+        if self.closed.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(dir.join(STATUS_FILE));
+        }
     }
 
     /// Writes `<dir>/running.json`: this process, and the turns it's in
@@ -755,6 +759,9 @@ impl Health {
         let bytes = serde_json::to_vec_pretty(&marker).unwrap_or_default();
         if let Err(e) = write_atomic(&dir.join(RUNNING_FILE), &bytes) {
             tracing::debug!(error = %e, "couldn't write the running marker");
+        }
+        if self.closed.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(dir.join(RUNNING_FILE));
         }
     }
 

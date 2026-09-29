@@ -5,6 +5,7 @@ use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
 use crate::stream::{StreamPacing, StreamingReply};
 use crate::transcribe::{heard_line, Audio, Transcription};
+use crate::typing::Typist;
 use ferrule_core::failure::Kind;
 use ferrule_core::{Agent, AgentEvent, CoreError, Guard, GuardedCall, Role, Transcript, Verdict};
 use std::collections::{HashMap, HashSet};
@@ -72,6 +73,8 @@ pub struct Router {
     /// M41: what happens to voice and audio messages; `None` leaves them
     /// as the adapter delivered them.
     transcription: Option<Transcription>,
+    /// M41: "typing…" while a turn runs.
+    typing: bool,
 }
 
 struct Lane {
@@ -231,7 +234,15 @@ impl Router {
             streaming: HashSet::new(),
             pacing: StreamPacing::default(),
             transcription: None,
+            typing: false,
         }
+    }
+
+    /// M41: shows "typing…" in the chat while a turn runs, on channels that
+    /// have it (`[gateway] typing`).
+    pub fn with_typing(mut self, typing: bool) -> Self {
+        self.typing = typing;
+        self
     }
 
     /// Transcribes voice and audio messages before the agent reads them
@@ -600,6 +611,7 @@ impl Router {
             guard: guard.clone(),
             stream,
             transcription: self.transcription.clone(),
+            typing: self.typing,
         };
         let task = tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
         Ok((tx, guard, task))
@@ -635,6 +647,23 @@ async fn run_lane(
             person,
         } = job;
         watch.start(&inbound.text);
+        // M41: armed before the voice notes are heard, so a `/stop` while
+        // they are ends the typing too.
+        watch.guard.arm();
+        let typist = match &channel {
+            Some(ch) if watch.typing && !inbound.chat_id.is_empty() => {
+                let guard = watch.guard.clone();
+                Some(Typist::start(
+                    ch.clone(),
+                    inbound.chat_id.clone(),
+                    inbound.message_id.clone(),
+                    async move {
+                        guard.stop_asked().await;
+                    },
+                ))
+            }
+            _ => None,
+        };
         let inbound = match &watch.transcription {
             Some(t) if inbound.attachments.iter().any(is_audio) => {
                 hear(t, inbound, channel.as_ref(), &session_id, &mut told_off).await
@@ -673,7 +702,6 @@ async fn run_lane(
             }
             _ => None,
         };
-        watch.guard.arm();
         let run_result = if person {
             agent.run_user(&inbound.text, etx).await
         } else {
@@ -701,6 +729,9 @@ async fn run_lane(
                 text
             }
         };
+        if let Some(typist) = typist {
+            typist.stop().await;
+        }
         if let Some(streamer) = streamer {
             streamer.finish(reply_text).await;
         } else if let Some(ch) = &channel {
@@ -737,6 +768,7 @@ struct LaneWatch {
     /// How this lane's replies stream; `None` when they don't.
     stream: Option<StreamPacing>,
     transcription: Option<Transcription>,
+    typing: bool,
 }
 
 /// An audio file an adapter saved (M39's inbox), not a link.

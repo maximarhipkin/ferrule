@@ -26,6 +26,7 @@ use crate::error::GatewayError;
 use crate::health::human;
 use crate::message::{Attachment, InboundMessage, OutboundMessage};
 use crate::stream::chunks;
+use crate::typing::Typing;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -1019,6 +1020,24 @@ impl TelegramChannel {
 impl Channel for TelegramChannel {
     fn name(&self) -> &str {
         "telegram"
+    }
+
+    /// `sendChatAction typing`, which shows for 5 s: again every 4.
+    async fn typing(&self, chat_id: &str, _message_id: &str, on: bool) -> Typing {
+        if !on {
+            return Typing::Unsupported;
+        }
+        let action = json!({ "chat_id": chat_id, "action": "typing" });
+        match self.deliver("sendChatAction", &action).await {
+            Ok(_) => Typing::Shown {
+                again_in: Duration::from_secs(4),
+            },
+            Err(GatewayError::RateLimited { .. }) => Typing::Limited,
+            Err(e) => {
+                tracing::debug!(error = %e, "telegram: typing");
+                Typing::Failed
+            }
+        }
     }
 
     fn capabilities(&self) -> ChannelCapabilities {

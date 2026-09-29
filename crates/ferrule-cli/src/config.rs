@@ -450,6 +450,9 @@ fn default_verify_timeout_secs() -> u64 {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct GatewayConfig {
+    /// M41: "typing…" in the chat while a turn runs. Unset = on.
+    #[serde(default)]
+    pub typing: Option<bool>,
     /// Enable the stdin/stdout local channel (mostly for smoke-testing the
     /// gateway itself without any external service).
     #[serde(default)]
@@ -517,6 +520,13 @@ pub struct GatewayConfig {
     /// M39: `[gateway.http]`, `POST /v1/messages` for your own programs.
     #[serde(default)]
     pub http: Option<crate::channels::settings::HttpApi>,
+}
+
+impl GatewayConfig {
+    /// Whether chats see "typing…" while a turn runs (on unless turned off).
+    pub fn typing(&self) -> bool {
+        self.typing.unwrap_or(true)
+    }
 }
 
 fn default_telegram_base_url() -> String {
@@ -1425,6 +1435,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # auto_commit_author = "ferrule <ferrule@localhost>"
 
 # [gateway]
+# typing = true                             # "typing…" in the chat while a turn runs
 # local = true                              # enable the stdin/stdout channel
 # telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
 # telegram_allowed_chats = []               # chat ids the bot answers; empty =
@@ -2111,6 +2122,16 @@ model = "gpt-5.5"
         let cfg: Config =
             toml::from_str("[gateway]\ntelegram_allowed_chats = [42, -1001234]").unwrap();
         assert_eq!(cfg.gateway.telegram_allowed_chats, [42, -1001234]);
+    }
+
+    #[test]
+    fn typing_is_on_unless_turned_off() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(cfg.gateway.typing());
+        let cfg: Config = toml::from_str("[gateway]\nlocal = true").unwrap();
+        assert!(cfg.gateway.typing());
+        let cfg: Config = toml::from_str("[gateway]\ntyping = false").unwrap();
+        assert!(!cfg.gateway.typing());
     }
 
     #[test]

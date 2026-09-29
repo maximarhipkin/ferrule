@@ -20,6 +20,7 @@ pub mod session;
 pub mod stream;
 pub mod tools;
 pub mod transcribe;
+pub mod typing;
 
 pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
@@ -45,3 +46,4 @@ pub use scheduler::{
 };
 pub use stream::StreamPacing;
 pub use transcribe::{Transcriber, Transcription};
+pub use typing::Typing;
