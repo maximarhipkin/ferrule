@@ -148,15 +148,15 @@ One ferrule-side tool works the same on every model.
 - the daily cap and price, and the settings the provider ignores.
 
 The hermetic tests run each provider against a local mock through the real
-proxy: `cargo test -p ferrule-proxy --test search`.
+proxy: `cargo test -p ferrule-proxy --test it search::`.
 
 The live tests make one real search each and are ignored by default:
 
 ```sh
-BRAVE_API_KEY=… cargo test -p ferrule-proxy --test search live_brave -- --ignored --nocapture
-TAVILY_API_KEY=… cargo test -p ferrule-proxy --test search live_tavily -- --ignored --nocapture
-EXA_API_KEY=… cargo test -p ferrule-proxy --test search live_exa -- --ignored --nocapture
-SEARXNG_URL=https://search.example.org cargo test -p ferrule-proxy --test search live_searxng -- --ignored --nocapture
+BRAVE_API_KEY=… cargo test -p ferrule-proxy --test it search::live_brave -- --ignored --nocapture
+TAVILY_API_KEY=… cargo test -p ferrule-proxy --test it search::live_tavily -- --ignored --nocapture
+EXA_API_KEY=… cargo test -p ferrule-proxy --test it search::live_exa -- --ignored --nocapture
+SEARXNG_URL=https://search.example.org cargo test -p ferrule-proxy --test it search::live_searxng -- --ignored --nocapture
 ```
 
 Each prints what the agent would see. They go through the proxy like the

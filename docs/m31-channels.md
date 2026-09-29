@@ -17,7 +17,7 @@ WhatsApp is out of scope. §9 lays out the options.
 ## 0. What stays as it is
 
 - **Telegram's behaviour, byte for byte.** Every Telegram test in
-  `channels/telegram.rs`, `tests/streaming.rs` and the gateway's own tests
+  `channels/telegram.rs`, `tests/it/streaming.rs` and the gateway's own tests
   passes unmodified. Telegram strings, audit fields and session ids don't
   change. Where channel-neutral code moves into the core, Telegram's case is
   the old code path.
@@ -591,7 +591,7 @@ small HTTP server on 127.0.0.1, scripted per test.
 
 **Across channels:**
 - Telegram's tests, unmodified and green;
-- `tests/channels.rs`: one gateway running the Telegram, Discord and Slack
+- `tests/it/channels.rs`: one gateway running the Telegram, Discord and Slack
   mocks at once, with a message from each reaching its own lane and each
   answer going out through its own mock;
 - the owner generalization: the hub with a Discord primary gets the

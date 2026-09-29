@@ -157,7 +157,7 @@ The SDK's `host` module wraps every op: `http`, `read_file`,
 `examples/plugins/build.sh` rebuilds both reproducibly and re-pins their
 manifests. It needs `rustup target add wasm32-unknown-unknown`. The built
 `.wasm` files are committed so that tests never build them.
-`cargo test -p ferrule-plugins --test examples -- --ignored` checks that a
+`cargo test -p ferrule-plugins --test it examples:: -- --ignored` checks that a
 rebuild gives the same bytes, and also calls the live GitHub API.
 
 ### Other languages

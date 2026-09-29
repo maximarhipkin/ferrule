@@ -272,7 +272,7 @@ test runs it with the real local model:
 
 ```sh
 FERRULE_EMBED_MODEL_DIR=/path/to/models/potion-multilingual-128M@73908c3 \
-  cargo test -p ferrule-memory --test bench -- --ignored --nocapture
+  cargo test -p ferrule-memory --test it bench:: -- --ignored --nocapture
 ```
 
 **The ship rule.** The merge whose numbers are better on paraphrase and
@@ -387,7 +387,7 @@ The command, with the model downloaded:
 
 ```sh
 FERRULE_EMBED_MODEL_DIR=<data>/models/potion-multilingual-128M@73908c3 \
-  cargo test --release -p ferrule-memory --test bench -- --ignored --nocapture
+  cargo test --release -p ferrule-memory --test it bench:: -- --ignored --nocapture
 ```
 
 **Binary growth** (release, x86_64 Linux, `ferrule`, measured before
@@ -451,17 +451,17 @@ next to M29's `grammars`.
 - No ANN index (§2.3's limits stand); `search_history` stays keyword.
 - The endpoint backend has no live test against a real provider. Its
   401/429/500, dimension and key-swap behaviour are tested through the
-  real proxy against a local HTTPS origin (`ferrule-proxy/tests/embed.rs`).
+  real proxy against a local HTTPS origin (`ferrule-proxy/tests/it/embed.rs`).
 
 **Tests.**
 - `ferrule-embed`: the fake embedder, and download checksum mismatch
-  and short-file refusals (`tests/download.rs`). There is also an
+  and short-file refusals (`tests/it/download.rs`). There is also an
   `#[ignore]`d real download (530,977,691 bytes, 14.9 s, verified).
-- `ferrule-proxy/tests/embed.rs`: `/v1/embeddings` through the real
+- `ferrule-proxy/tests/it/embed.rs`: `/v1/embeddings` through the real
   credential proxy — the key is swapped in, a refused key is 401 and
   never echoed, 429 carries `Retry-After`, a wrong dimension is refused,
   and a 5xx keeps its status.
-- `ferrule-memory/tests/vectors.rs`:
+- `ferrule-memory/tests/it/vectors.rs`:
   - merge ordering, and time decay after the merge;
   - a hit on a replaced fact returns its correction;
   - another model's vectors are never compared;
@@ -469,7 +469,7 @@ next to M29's `grammars`.
   - the trigger that clears a vector with its text, and `forget`;
   - `user_version` unchanged;
   - no vector gives exactly BM25.
-- `tests/bench.rs`: the harness on the fake embedder.
+- `tests/it/bench.rs`: the harness on the fake embedder.
 - `ferrule-cli`:
   - reindex stops on an error and resumes, and waits out a 429;
   - a failing embedder is `None`, and its paid call is an error row;
@@ -477,7 +477,7 @@ next to M29's `grammars`.
   - the near-duplicate hint;
   - goal recall catches up in the background;
   - `[memory]` config parsing and key binding.
-- `ferrule-cli/tests/memory.rs`, through the real binary with a scripted
+- `ferrule-cli/tests/it/memory.rs`, through the real binary with a scripted
   `/embeddings`:
   - recall by meaning, with the system prompt and tools byte-identical
     across every request of two sessions, and each turn's second request

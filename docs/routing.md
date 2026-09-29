@@ -202,7 +202,7 @@ with `[routing] tiers` and the keys in the environment:
 
 ```bash
 FERRULE_LIVE_CONFIG=~/.config/ferrule/ferrule.toml \
-  cargo test -p ferrule-cli --test eval -- --ignored live_routing --nocapture
+  cargo test -p ferrule-cli --test it eval::live_routing -- --ignored --nocapture
 ```
 
 `cargo test` never runs it.

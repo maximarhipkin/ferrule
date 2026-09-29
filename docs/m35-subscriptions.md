@@ -589,7 +589,7 @@ over loopback TCP, not a Unix socket.
 
 ## 12. Tests (hermetic)
 
-- **ChatGPT** (`ferrule-plans/tests/chatgpt.rs`, `ferrule-providers`
+- **ChatGPT** (`ferrule-plans/tests/it/chatgpt.rs`, `ferrule-providers`
   codex tests): a mock OAuth server on 127.0.0.1 (device code with a string
   interval, PKCE with the loopback listener, the paste fallback, refresh
   with rotation, revoked and expired refresh tokens), a mock Codex backend
@@ -597,7 +597,7 @@ over loopback TCP, not a Unix socket.
   one refresh reaches the server), 401 → refresh → success, the usage-limit
   429 → a fail-over, and the token absent from the transcript, the ledger
   and the log output.
-- **Engine** (`ferrule-plans/tests/engine.rs`, a `fake-claude` test binary
+- **Engine** (`ferrule-plans/tests/it/engine.rs`, a `fake-claude` test binary
   that replays stream-json from a script and records its argv and env):
   resume, streaming, `/stop` kills the group (a grandchild's pid is gone),
   a permission-prompt round trip through a real M19 hub, a bridged Ferrule
@@ -692,7 +692,7 @@ Where the code departs from the design above, or settles what it left open:
   that isn't shipped. The CLI tests take it from next to the ferrule
   binary, or build it through `$CARGO`.
 - The real-hub approval round trip moved from `ferrule-plans/tests` to the
-  CLI tests (`tests/claude_plan.rs`), where the real binary, gateway and
+  CLI tests (`tests/it/claude_plan.rs`), where the real binary, gateway and
   hub run it.
 - The live engine test is
   `live_two_chat_turns_through_the_real_claude_with_the_sandbox_on`

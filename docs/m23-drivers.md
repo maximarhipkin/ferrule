@@ -569,8 +569,8 @@ call against the real API. They read `ANTHROPIC_API_KEY` or
 are no live keys in this container. Max runs them with:
 
 ```
-ANTHROPIC_API_KEY=… cargo test -p ferrule-providers --test live -- --ignored anthropic
-OPENAI_API_KEY=…    cargo test -p ferrule-providers --test live -- --ignored responses
+ANTHROPIC_API_KEY=… cargo test -p ferrule-providers --test it live::anthropic -- --ignored
+OPENAI_API_KEY=…    cargo test -p ferrule-providers --test it live::openai_responses -- --ignored
 ```
 
 ## 10. Failure modes
@@ -636,7 +636,7 @@ they left open:
 - **Doctor** labels each provider `name · model · <api> api (set|inferred)`.
   `ferrule model list --json` and the dashboard's models section carry the
   same `driver` string.
-- **Live tests** (`crates/ferrule-providers/tests/live.rs`) default to
+- **Live tests** (`crates/ferrule-providers/tests/it/live.rs`) default to
   `claude-sonnet-5` with adaptive thinking and `gpt-5-mini` with effort
   `low`. They're `#[ignore]` and skip, passing, without a key. This
   container has no provider keys, so neither has run against a real API.

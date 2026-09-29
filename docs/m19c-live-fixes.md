@@ -271,7 +271,7 @@ down.
 
 ### Tests
 
-`crates/ferrule-cli/tests/live_fixes.rs` runs the real `ferrule` binary
+`crates/ferrule-cli/tests/it/live_fixes.rs` runs the real `ferrule` binary
 against a mock Bot API and a mock model that answers with OpenRouter's real
 404 and 429 bodies. It covers:
 

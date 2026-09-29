@@ -51,7 +51,7 @@ jobs:
           echo "FERRULE_REQUIRE_BROWSER_TEST=1" >> "$GITHUB_ENV"
 
       # The SSH tests start the runner's own sshd, unprivileged, on
-      # 127.0.0.1 (crates/ferrule-ssh/tests/sshd.rs). Linux must run them;
+      # 127.0.0.1 (crates/ferrule-ssh/tests/it/sshd.rs). Linux must run them;
       # macOS runs them if its sshd starts; Windows has none.
       - name: sshd for the SSH tests
         if: runner.os == 'Linux'

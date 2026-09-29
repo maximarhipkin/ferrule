@@ -484,7 +484,7 @@ tests.
   an undeclared domain and method are refused; the placeholder is swapped
   by the real proxy on the way to a TLS mock upstream on 127.0.0.1, the
   upstream sees the real value and the plugin sees neither
-  (`crates/ferrule-proxy/tests/plugin.rs`).
+  (`crates/ferrule-proxy/tests/it/plugin.rs`).
 - **Limits:** an infinite loop (fuel), a host op that sleeps (timeout), a
   memory bomb, a huge reply, a trap → each a tool error, and the next call
   on the same plugin works.
@@ -531,7 +531,7 @@ held with these differences:
   modules carry no builder paths, and a rebuild is byte-identical:
   `unit_convert.wasm` 86,827 B, `github_repo.wasm` 97,899 B. The ignored
   tests are `build_sh_reproduces_the_committed_modules` and
-  `github_repo_answers_live` in `crates/ferrule-plugins/tests/examples.rs`.
+  `github_repo_answers_live` in `crates/ferrule-plugins/tests/it/examples.rs`.
 - **Timeout test.** It is a loop against a short `timeout_secs`
   (`a_deadline_stops_a_loop`), not a sleeping host op. The deadline is
   checked between fuel slices either way.
@@ -559,9 +559,9 @@ Where the tests are:
 
 | what | where |
 |---|---|
-| load checks, capabilities, limits, fencing, read-only, cancel | `crates/ferrule-plugins/tests/runtime.rs` (WAT probe) |
-| the committed examples | `crates/ferrule-plugins/tests/examples.rs` |
-| placeholder swap through the real proxy, undeclared domain, no route without it | `crates/ferrule-proxy/tests/plugin.rs` |
-| the M19 gate for `approval` tools | `crates/ferrule-trust/tests/trust.rs` (`a_tool_that_asks_for_approval_goes_through_the_gate`) |
-| install: pin, scan, queue, capabilities, widening, tamper, hot-add, schema refusal | `crates/ferrule-extensions/tests/plugins.rs` |
-| the CLI and doctor through the binary | `crates/ferrule-cli/tests/plugins.rs` |
+| load checks, capabilities, limits, fencing, read-only, cancel | `crates/ferrule-plugins/tests/it/runtime.rs` (WAT probe) |
+| the committed examples | `crates/ferrule-plugins/tests/it/examples.rs` |
+| placeholder swap through the real proxy, undeclared domain, no route without it | `crates/ferrule-proxy/tests/it/plugin.rs` |
+| the M19 gate for `approval` tools | `crates/ferrule-trust/tests/it/trust.rs` (`a_tool_that_asks_for_approval_goes_through_the_gate`) |
+| install: pin, scan, queue, capabilities, widening, tamper, hot-add, schema refusal | `crates/ferrule-extensions/tests/it/plugins.rs` |
+| the CLI and doctor through the binary | `crates/ferrule-cli/tests/it/plugins.rs` |
