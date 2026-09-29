@@ -1651,9 +1651,10 @@
         this.said[x.name] = null;
         this.load();
       };
-      box.append(fields,
-        said ? el("div", { class: "said test " + (said.ok ? "ok" : "bad") + " msg", dir: "auto", text: said.said }) : null,
-        el("div", { class: "row" }, test, save,
+      // Element.append would print a null as the word "null".
+      box.append(fields);
+      if (said) box.append(el("div", { class: "said test " + (said.ok ? "ok" : "bad") + " msg", dir: "auto", text: said.said }));
+      box.append(el("div", { class: "row" }, test, save,
           x.configured ? btn("Remove", "channels/remove", { name: x.name }, "danger") : null),
         el("p", { class: "muted small", text: "Tokens go to the secrets file, never back to this page, and the model never sees them." }));
       return box;
