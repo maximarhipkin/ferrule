@@ -808,6 +808,20 @@ that convention yet — ask before introducing one).
       health, doctor, cards) is now per channel, and `send_file` sends a
       workspace file to the session's chat.
     - **Decisions for Max and open edges:** see the M39 session-log entry.
+  - **M40 build diet**: **built** (2026-09-29, branch `m40-build-diet`,
+    PR to main open, not merged). Design and numbers:
+    `docs/m40-build-diet.md`.
+    - A `[profile.dev]` in `Cargo.toml` (tests inherit it): line tables
+      for our crates, no debug info for dependencies.
+    - Each crate's integration tests are one binary, `tests/it/`: add a
+      module, not a file. Run one with `--test it <file>::`. Four files
+      keep their own process (they set env vars read once per process);
+      CI fails on any other new `tests/*.rs`.
+    - A fresh test build: 10.66 GB → 2.62 GB, 102 → 51 executables. A
+      release used to add ~9.4 GB to a shared target dir; now ~2 GB.
+    - Older sections and session-log entries below name the pre-M40
+      paths (`tests/<file>.rs`, `--test <file>`); read them as
+      `tests/it/<file>.rs` and `--test it <file>::`.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -5232,3 +5246,46 @@ real binary gave engineered 20/20, naive 11/20, $0.98.
   tests, the agent factory off `spawn_blocking`, rename retries in
   `health.rs`.
 - README lines (listed in the PR).
+
+### 2026-09-29 — M40 build diet (Devi, Opus 5.5)
+
+**Scope.** Max, 29.09: "the builds pollute the disk" — the shared target
+dir hit 24 GB on 28.09 and filled the disk mid-run. Make one test build
+small and write fewer executables. Branch `m40-build-diet`; design and
+measurements in `docs/m40-build-diet.md`.
+
+**What was built.**
+- **A baseline** from an empty target dir: 277 s, 10.66 GB, 102
+  executables (8.69 GB), 1628 tests passed.
+- **The finding that changes the story:** an edit does *not* leave a
+  second copy. Test binaries are hashed by package version, profile,
+  features and compiler, so an edit overwrites them in place (+4 KB). A
+  release (every crate's version bumped) re-hashes all of them: 10.9 →
+  20.1 GB. That, toolchain updates and differing `CARGO_PROFILE_*` envs
+  are what fill a shared dir.
+- **`[profile.dev]`**: `debug = "line-tables-only"`, and `debug = false`
+  for dependencies. 10.66 → 3.65 GB. A deliberately failing test still
+  printed our file:line in the backtrace. No `strip`/`split-debuginfo`.
+- **One test binary per crate**: 74 integration-test files → 19 `it`
+  binaries + 4 separate files (`plans/engine_env`, `mcp/sandbox`,
+  `sandbox/windows`, `sandbox/windows_git_bash`: each sets an env var
+  that is read once per process). 3.65 → 2.62 GB, 51 executables; a
+  test run after an edit 259 → 206 s. A release now adds ~2 GB.
+- Docs, CONTRIBUTING, code comments and the self-exec helpers' `--exact`
+  names follow the move; a CI step guards the layout.
+
+**Tests.** 1628 passed, 28 ignored, before and after; the name sets are
+identical modulo the module prefix. clippy and fmt clean.
+
+**Decisions for Max.**
+- `tests/it/` for every crate, including the five with a single file, so
+  the rule has no exceptions.
+- `proxy/egress.rs` was merged although it sets `NO_PROXY` (to the
+  loopback bypass every hermetic test wants; the other proxy tests set
+  their proxy explicitly).
+- Older PLAN.md sections keep their pre-M40 test paths (this file's rule:
+  change only your own section); the M40 bullet above says how to read
+  them. The docs/ pages and code comments were updated.
+- The repo-external sweep (`cargo-sweep.py --keep 2`) is still worth
+  running: it is what removes the previous release's copies.
+

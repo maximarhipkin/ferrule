@@ -1,6 +1,7 @@
 # M40 — build diet: smaller test builds, one test binary per crate
 
-**Status:** design, 2026-09-29 (branch `m40-build-diet`).
+**Status:** built, 2026-09-29 (branch `m40-build-diet`). Design first,
+then the as-built numbers in §4–§5.
 
 **For contributors, in one line:** a crate's integration tests live in
 `tests/it/`; to add tests, add a module to `tests/it/main.rs`, not a file
@@ -28,18 +29,23 @@ Measured on this machine (4 cores, rustc 1.98.1), from an empty
 `CARGO_TARGET_DIR`, `CARGO_INCREMENTAL=0`, no `CARGO_PROFILE_*` in the env.
 The script is in §6.
 
-| | baseline |
-|---|---|
-| `cargo build --workspace --tests`, from empty | 277 s |
-| target dir after it | 10.66 GB |
-| executables in `debug/deps` | 102, 8.69 GB |
-| `cargo test --workspace`, second run (link nothing, run all) | 124 s |
-| target dir after touching `ferrule-core/src/lib.rs` + `cargo test --workspace` | 10.67 GB (+0) |
-| that touch + `cargo test --workspace` | 297 s |
-| a real edit to `ferrule-core` + `cargo test --workspace --no-run` | 176 s |
-| + `cargo clippy --workspace --all-targets` | 10.94 GB |
-| + every crate's version bumped (a release) + `cargo test --workspace --no-run` | **20.10 GB**, 203 executables, 17.37 GB |
-| tests: passed / failed / ignored, binaries run | 1628 / 0 / 28, 99 |
+| | before | + dev profile | + one binary per crate |
+|---|---|---|---|
+| `cargo build --workspace --tests`, from empty | 277 s | 202 s | 194 s |
+| target dir after it | 10.66 GB | 3.65 GB | **2.62 GB** |
+| executables in `debug/deps` | 102, 8.69 GB | 102, 2.57 GB | **51, 1.53 GB** |
+| `cargo test --workspace`, second run (link nothing, run all) | 124 s | 121 s | 90 s |
+| touch `ferrule-core/src/lib.rs`, then `cargo test --workspace` | 297 s | 259 s | 206 s |
+| target dir after that | 10.67 GB | 3.65 GB | 2.62 GB |
+| + `cargo clippy --workspace --all-targets` | 10.94 GB | 3.86 GB | 2.83 GB |
+| + every crate's version bumped (a release), `cargo test --workspace --no-run` | **20.10 GB**, 203 exes | 6.65 GB, 203 exes | **4.59 GB**, 101 exes |
+| tests passed / failed / ignored | 1628 / 0 / 28 | 1628 / 0 / 28 | 1628 / 0 / 28 |
+| test binaries cargo runs (incl. unit and doc tests) | 99 | 99 | 48 |
+
+The integration-test binaries went from 74 (one per file) to 23: one
+`it` per crate that has integration tests (19), plus the four files in
+§2.3. The other executables are the crates' unit-test binaries and the
+`ferrule`, `ferrule-sandbox-launch` and `ferrule-fake-claude` binaries.
 
 ### What actually grows the disk
 
@@ -47,8 +53,9 @@ The brief assumed that every code change relinks every test binary under
 a new hash. The measurement says otherwise. A test binary's hash comes
 from the package id (name + **version** + source), the profile, the
 features, the target and the compiler, not from the source text. An edit
-relinks all 101 test binaries (176 s) but overwrites them in place: the
-target dir grew by 4 KB.
+relinks all the test binaries (176 s for a one-line change to
+`ferrule-core` before M40) but overwrites them in place: the target dir
+grew by 4 KB.
 
 What leaves a second copy of everything behind is a change to one of
 those inputs:
@@ -107,8 +114,8 @@ Each crate's `tests/*.rs` becomes `tests/it/<name>.rs`, and
 (`tests/common/`, the gateway's `tests/support/`) become `mod common` /
 `mod support` in the same binary, compiled once instead of once per file.
 
-- **Why:** each test binary links the whole dependency tree of its crate.
-  For `ferrule-cli` that is ~200 MB per file, and there were 18 files.
+- **Why:** each test binary links the whole dependency tree of its crate,
+  50–200 MB each, and there were 74 of them.
   One binary per crate links it once. The link step also runs once per
   crate instead of once per file, and linking is most of an incremental
   test build.
@@ -173,7 +180,57 @@ What was found and judged safe to merge:
 
 ## 4. After the profile
 
+The target dir went from 10.66 GB to 3.65 GB, and the test executables
+from 8.69 GB to 2.57 GB: most of the debug info was the dependencies'.
+The biggest executable left, `ferrule-cli`'s unit tests, is 191 MB: 55 MB
+of code, 17 MB `.debug_str` and 15 MB `.debug_line` (mostly std's own,
+which ships prebuilt), and the symbol table.
+
+**The backtrace check.** A deliberately failing integration test in
+`ferrule-core` (an out-of-bounds index in a helper), run with
+`RUST_BACKTRACE=1`, printed:
+
+```
+thread 'm40_backtrace_probe' panicked at crates/ferrule-core/tests/m40_backtrace_probe.rs:7:13:
+   3: m40_backtrace_probe::helper
+             at ./tests/m40_backtrace_probe.rs:7:13
+   4: m40_backtrace_probe::m40_backtrace_probe
+             at ./tests/m40_backtrace_probe.rs:4:5
+```
+
+So file:line survives for our frames. The test was then removed.
+
+**`split-debuginfo` and `strip` were not added** (§2.1): with only line
+tables left, splitting moves little off the executables on Linux and
+none of it out of the target dir, and either `strip` level would cost
+the file:line or the function names above.
+
 ## 5. After one binary per crate
+
+Another 1 GB off a fresh build (3.65 → 2.62 GB), half the executables,
+and a quarter less time for a test run after an edit (259 → 206 s),
+because the link step runs 19 times instead of 74. A release now adds
+~2 GB to a shared dir instead of ~9.4 GB before M40.
+
+**The test count** is the same before and after: 1628 passed and 28
+ignored, and the set of test names is identical once the module prefix
+(`trust::`) is taken off the `it` binaries' names (1656 names, compared
+line by line).
+
+**Two files re-run their own test binary** as a helper process
+(`chatgpt::child_refresh`, `enforcement::net_probe_helper` and
+`unix_probe_helper`); their `--exact` names now carry the module. A
+missed rename would have matched no test and exited 0, which the network
+probe would read as "the network works", so each name was checked with
+`--list --exact` against the built binary.
+
+**`ferrule-cli`'s dashboard code** includes the connections tests' mocks
+through `#[path]` (for its own unit tests); that path moved to
+`tests/it/common/mod.rs`, as did `channels.rs`'s path to the gateway's
+`tests/it/support/`.
+
+**CI guards the layout.** A step on Linux fails if `crates/*/tests/`
+holds a `.rs` file other than the four in §2.3, and says where it goes.
 
 ## 6. How it was measured
 

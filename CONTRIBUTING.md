@@ -26,6 +26,15 @@ python3 tests_e2e/setup_wizard.py          # the setup wizard in a real terminal
 python3 tests_e2e/hidden_keys.py           # the agent can't reach the saved keys
 ```
 
+Each crate's integration tests are **one binary**, `tests/it/`: add a
+module to `tests/it/main.rs`, not a file in `tests/`. Run one former file
+with `cargo test -p <crate> --test it <file>::` (e.g.
+`cargo test -p ferrule-cli --test it trust::`). A file that changes
+something process-wide (env vars read once, the CWD) stays in `tests/` on
+its own, with a line saying why; CI lists the allowed ones.
+[`docs/m40-build-diet.md`](docs/m40-build-diet.md) has the reasons and
+the sizes.
+
 CI runs `cargo test --workspace --locked --no-fail-fast` on Linux, macOS and
 Windows, plus a live sandbox self-test, the dashboard browser check, and on
 Linux the two end-to-end scripts above. Keep the suite green on the

@@ -60,6 +60,22 @@ jobs:
           test -x /usr/sbin/sshd || { sudo apt-get update -q && sudo apt-get install -y -q openssh-server; }
           echo "FERRULE_REQUIRE_SSHD=1" >> "$GITHUB_ENV"
 
+      # One integration-test binary per crate (docs/m40-build-diet.md):
+      # a new file in tests/ is a new 100-200 MB executable per build.
+      - name: Test layout
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          allowed="crates/ferrule-mcp/tests/sandbox.rs
+          crates/ferrule-plans/tests/engine_env.rs
+          crates/ferrule-sandbox/tests/windows.rs
+          crates/ferrule-sandbox/tests/windows_git_bash.rs"
+          extra=$(ls crates/*/tests/*.rs | grep -vxF "$(echo "$allowed" | sed 's/^ *//')" || true)
+          if [ -n "$extra" ]; then
+            echo "::error::Integration tests go in tests/it/ as a module: $extra"
+            exit 1
+          fi
+
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
 
