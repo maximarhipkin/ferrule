@@ -5277,6 +5277,14 @@ measurements in `docs/m40-build-diet.md`.
 **Tests.** 1628 passed, 28 ignored, before and after; the name sets are
 identical modulo the module prefix. clippy and fmt clean.
 
+**A known flake got likelier.** `discord::a_dropped_socket_resumes_…`
+(listed under "Other flaky tests" above, 1 of 20 suites) failed in 3 of
+35 runs of the merged gateway binary: the race it has (the mock counts
+RESUMED before sending it, the client clears `problem()` when it reads
+it) widens when the other gateway tests share the process. Splitting
+the file out would not remove the race, so the test now waits
+(`until(… problem().is_none())`), as that note proposed. 0 of 30 after.
+
 **Decisions for Max.**
 - `tests/it/` for every crate, including the five with a single file, so
   the rule has no exceptions.

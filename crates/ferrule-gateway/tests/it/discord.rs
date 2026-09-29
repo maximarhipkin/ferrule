@@ -246,7 +246,9 @@ async fn a_dropped_socket_resumes_with_the_session_and_last_sequence() {
     assert_eq!(resume["d"]["seq"], 2, "READY was 1, the DM 2");
     assert_eq!(resume["d"]["token"], TOKEN);
     assert_eq!(d.state().identifies().len(), 1);
-    assert!(r.ch.problem().is_none(), "{:?}", r.ch.problem());
+    // The mock counts RESUMED before sending it; the client clears the
+    // problem when it reads it.
+    until("RESUMED clears the problem", T, || r.ch.problem().is_none()).await;
     d.dm("m2", "1001", "two");
     assert_eq!(recv(&mut r).await.text, "two");
 }
