@@ -9,10 +9,10 @@
 
 <p align="center">
   <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.9.1-c4764a" alt="release v0.9.1"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.10.0-c4764a" alt="release v0.10.0"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/download-~10_MB-8a929a" alt="download: about 10 MB">
-  <img src="https://img.shields.io/badge/tests-1454-8a929a" alt="1454 workspace tests">
+  <img src="https://img.shields.io/badge/tests-1628-8a929a" alt="1628 workspace tests">
 </p>
 
 <p align="center">
@@ -31,8 +31,9 @@
 
 Ferrule is an AI agent that runs on your machine, on your terms. Give it a
 model — an API key, a ChatGPT or Claude plan you already pay for, or a
-local Ollama — and it works where you are: the terminal, Telegram, Discord
-and Slack, a cron schedule, or its own web dashboard. It can edit code,
+local Ollama — and it works where you are: the terminal, Telegram, Discord,
+Slack, WhatsApp, Matrix, email, Signal, Mattermost, an HTTP API, a cron
+schedule, or its own web dashboard. It can edit code,
 run commands, browse and search the web, drive your installed Chrome, work
 in a directory on another machine over SSH, connect Jira, Gmail, Notion
 and friends, and split big jobs across sub-agents — inside an OS sandbox,
@@ -155,8 +156,8 @@ cost control, or a harness that tells the truth.
 </p>
 
 Two cells in that table go the other way, honestly: the others carry more
-channels today (WhatsApp included; ferrule has Telegram, Discord and
-Slack), and their ecosystems are bigger by years. What ferrule won't
+channels today (ferrule has nine: Telegram, Discord, Slack, WhatsApp,
+Matrix, email, Signal, Mattermost and an HTTP API), and their ecosystems are bigger by years. What ferrule won't
 compromise: the sandbox and the credential proxy are **on by default, not
 opt-in**; every run ends in a **status you can trust**, with a verify
 loop behind it; spend is **capped by you**, not hoped for. And it stays
@@ -237,7 +238,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. Add `triggers: [ship it, release]` and the skill loads when your message says so, Hebrew included; only what a person types counts, never a web page or tool output ([`docs/skills.md`](docs/skills.md)). |
 | **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall, plus optional meaning-based recall (a local multilingual model or any OpenAI-compatible `/v1/embeddings` endpoint) merged with it ([`docs/memory.md`](docs/memory.md)). `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
 | **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons, kept only when the task passes twice with the lesson in the prompt ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md)). |
-| **Gateway** | A long-running daemon with Telegram, Discord, Slack and local channels, all at once, one session lane per chat, resumed across restarts. Discord and Slack connect out over a WebSocket (no public URL) and approve with buttons ([`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md)). Telegram replies grow as they're written, edited about once a second (`[gateway] telegram_stream`). Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
+| **Gateway** | A long-running daemon with Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, an HTTP API and local channels, all at once ([`docs/channels.md`](docs/channels.md)), one session lane per chat, resumed across restarts. Discord and Slack connect out over a WebSocket (no public URL) and approve with buttons ([`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md)). Telegram replies grow as they're written, edited about once a second (`[gateway] telegram_stream`). Never silently deaf: 👀 on every message it accepts, `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a voice note or photo it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). |
 | **Dashboard** | One page for the whole app: health first, connections, models with an OpenRouter catalog, prices and recommendations, usage, tasks, logs, extensions and sub-agents. Send `/dashboard` and get a one-use 10-minute link; a `cloudflared` quick tunnel opens on demand (downloaded and checksum-checked the first time if the machine has none) and `/dashboard off` revokes it all. Everything the terminal does is there too: a console runs any `ferrule` command (as an argument list, never a shell), a chat pane talks to the agent, and the config has a form per section with a checked, atomic save. Notices close for a day and carry fix buttons; models are picked from lists, the fallback chain included; connections are tiles with key-based ways in where OAuth is hard (Jira/Confluence by API token, Gmail by app password, Google Drive/Sheets/Calendar by service account) and a fixed callback address deployed to your own Cloudflare account ([`docs/connections.md`](docs/connections.md)). Caps, MCP servers, skills, hooks and task schedules are edited from the page, a candidate model can be evaluated on the starter suite (cost shown first), and the login survives a restart. It never calls the model, so it works when every model is down ([`docs/dashboard.md`](docs/dashboard.md)). |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
 | **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, secret env vars are stripped, and reads of ferrule's secrets, credential dirs and your `deny_read` paths are denied. On Windows: a restricted token in a job object, no admin rights; commands need PowerShell there, since Git Bash can't start under the token ([below](#windows), [`docs/sandbox.md`](docs/sandbox.md)). |
@@ -279,7 +280,7 @@ from v0.6.0 or older runs the one-liner once to get there.
 | macOS | `~/.local/bin/ferrule` | Apple silicon, Intel |
 | Windows | `%LOCALAPPDATA%\Programs\ferrule\ferrule.exe`, added to your PATH | x86-64 (ARM64 runs it under emulation) |
 
-Both scripts read `FERRULE_VERSION` (a tag such as `v0.9.1`; default the
+Both scripts read `FERRULE_VERSION` (a tag such as `v0.10.0`; default the
 latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 
 ### Setup
@@ -294,9 +295,10 @@ enter them:
    use), or a local model (Ollama, llama.cpp, LM Studio, vLLM).
 2. **Telegram** (optional): paste the token from
    [@BotFather](https://t.me/BotFather), then message the bot. Your chat
-   goes on the bot's allow-list; it ignores everyone else. **Discord** and
-   **Slack** are the next two steps, each optional
-   ([`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md)).
+   goes on the bot's allow-list; it ignores everyone else. **Discord**,
+   **Slack**, WhatsApp, Matrix, Mattermost, email, Signal and the HTTP API
+   are the next steps, each optional ([`docs/discord.md`](docs/discord.md),
+   [`docs/slack.md`](docs/slack.md), [`docs/channels.md`](docs/channels.md)).
 3. **Tool credentials** (optional): tokens the agent's commands may use,
    such as `GITHUB_TOKEN`, each bound to the hosts it's for (see the
    [credential gateway](#credential-gateway)).
@@ -444,7 +446,8 @@ telegram_allowed_chats = [123456789]   # everyone else is ignored
 ferrule gateway          # long-polls Telegram; one session per chat
 ```
 
-**Discord and Slack** run in the same daemon, next to Telegram:
+**Discord and Slack** run in the same daemon, next to Telegram (the other
+channels are in [`docs/channels.md`](docs/channels.md)):
 
 ```toml
 [gateway]
@@ -585,7 +588,7 @@ crates/
   ferrule-tools      fs / shell / web_fetch / diary / memory tools, proxied egress
   ferrule-memory     SQLite + FTS5 memory with time decay
   ferrule-embed      embedders: local model2vec, OpenAI-compatible /v1/embeddings
-  ferrule-gateway    daemon: channels (Telegram, Discord, Slack, local), session router, scheduler
+  ferrule-gateway    daemon: channels (Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, HTTP API, local), session router, scheduler
   ferrule-mcp        MCP client: sandboxed stdio servers, Streamable HTTP servers
   ferrule-skills     Agent Skills discovery and loading
   ferrule-plugins    WASM tool plugins: wasmi runtime, capabilities, limits
@@ -601,7 +604,7 @@ crates/
 ## Development
 
 ```bash
-cargo test --workspace                     # 1454 tests; a few platform-only ones are cfg'd out per OS
+cargo test --workspace                     # 1628 tests; a few platform-only ones are cfg'd out per OS
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
