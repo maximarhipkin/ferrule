@@ -262,12 +262,18 @@ impl Gateway {
                 // An empty reply takes the message without answering it.
                 if !reply.is_empty() || !buttons.is_empty() {
                     self.reply_with_buttons(&msg, reply, &buttons).await;
+                } else if let Some(channel) = self.channel(&msg.channel) {
+                    channel.answered(&msg.chat_id, &msg.message_id).await;
                 }
                 return;
             }
         }
         self.acknowledge(&msg).await;
-        if let Some(lane) = self.router.claim_busy_notice(&msg, self.busy_notice_after) {
+        let busy_notices = self.channel(&msg.channel).is_none_or(|c| c.busy_notices());
+        if let Some(lane) = busy_notices
+            .then(|| self.router.claim_busy_notice(&msg, self.busy_notice_after))
+            .flatten()
+        {
             let text = busy_text(
                 &self.redactor.redact(&lane.activity),
                 lane.busy_for.unwrap_or_default(),
@@ -298,7 +304,21 @@ impl Gateway {
                 )
                 .await;
             }
-            Err(e) => tracing::error!(error = %e, "failed to dispatch inbound message"),
+            Err(e) => {
+                // The 👀 is already there: say why nothing follows it,
+                // rather than leave the sender waiting on silence.
+                tracing::error!(error = %e, "failed to dispatch inbound message");
+                let text = match &e {
+                    GatewayError::Core(core) => self
+                        .redactor
+                        .redact(&ferrule_core::failure::chat_text(core)),
+                    other => format!(
+                        "I couldn't start on this message: {}",
+                        self.redactor.redact(&other.to_string())
+                    ),
+                };
+                self.reply_directly(&reply, text).await;
+            }
         }
     }
 
@@ -344,6 +364,7 @@ impl Gateway {
         if let Err(e) = send_with_buttons(channel.as_ref(), out, buttons).await {
             tracing::error!(error = %e, "failed to send an intercepted reply");
         }
+        channel.answered(&msg.chat_id, &msg.message_id).await;
     }
 }
 
@@ -617,6 +638,43 @@ mod tests {
         assert_eq!(scripted.sent.lock().unwrap()[0].text, "echo: hello");
     }
 
+    #[tokio::test]
+    async fn an_agent_that_cant_start_is_told_in_the_chat_not_only_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripted = Arc::new(ScriptedChannel {
+            script: vec![msg("c1", "hello")],
+            sent: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("scripted".into(), scripted.clone());
+        let factory: crate::router::AgentFactory =
+            Arc::new(|_sid, _t| Err(GatewayError::Channel("tasks.db is locked".into())));
+        let router = Arc::new(Router::new(dir.path(), factory, channels));
+        let mut gateway = Gateway::new(router);
+        gateway.add_channel(scripted.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+        let sent = scripted.sent.lock().unwrap();
+        assert_eq!(
+            sent.len(),
+            1,
+            "{:?}",
+            sent.iter().map(|m| &m.text).collect::<Vec<_>>()
+        );
+        assert!(
+            sent[0].text.contains("I couldn't start on this message"),
+            "{}",
+            sent[0].text
+        );
+        assert!(
+            sent[0].text.contains("tasks.db is locked"),
+            "{}",
+            sent[0].text
+        );
+    }
+
     /// Counts its starts, then waits for ever, like a polling adapter.
     struct Poller(std::sync::atomic::AtomicUsize);
     #[async_trait]
@@ -777,6 +835,8 @@ mod tests {
         log: Arc<std::sync::Mutex<Vec<String>>>,
         /// How long the channel stays open after its script.
         linger: Duration,
+        /// Like the HTTP API: no busy notices, and `answered` logged.
+        quiet: bool,
     }
     #[async_trait]
     impl Channel for ReactingChannel {
@@ -818,6 +878,17 @@ mod tests {
                 .unwrap()
                 .push(format!("react {emoji} to {message_id}"));
             Ok(())
+        }
+        fn busy_notices(&self) -> bool {
+            !self.quiet
+        }
+        async fn answered(&self, _chat_id: &str, message_id: &str) {
+            if self.quiet {
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push(format!("answered {message_id}"));
+            }
         }
     }
 
@@ -870,10 +941,22 @@ mod tests {
         release: &Arc<tokio::sync::Semaphore>,
         linger: Duration,
     ) -> (Arc<ReactingChannel>, Arc<Router>) {
+        held_gateway_with(dir, script, log, release, linger, false)
+    }
+
+    fn held_gateway_with(
+        dir: &std::path::Path,
+        script: Vec<InboundMessage>,
+        log: &Log,
+        release: &Arc<tokio::sync::Semaphore>,
+        linger: Duration,
+        quiet: bool,
+    ) -> (Arc<ReactingChannel>, Arc<Router>) {
         let channel = Arc::new(ReactingChannel {
             script,
             log: log.clone(),
             linger,
+            quiet,
         });
         let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
         channels.insert("scripted".into(), channel.clone());
@@ -1032,6 +1115,42 @@ mod tests {
                 "send to 1: echo: first",
                 "turn: second",
                 "send to 2: echo: second"
+            ]
+        );
+    }
+
+    /// A channel that skips busy notices (the HTTP API) gets none, and is
+    /// told when each message's answer is complete.
+    #[tokio::test]
+    async fn a_quiet_channel_gets_no_busy_notice_and_hears_each_answer_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let log: Log = Arc::default();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let script = numbered(&["first", "second"]);
+        let (channel, router) =
+            held_gateway_with(dir.path(), script, &log, &release, Duration::ZERO, true);
+        let mut gateway = Gateway::new(router).with_busy_notice_after(Duration::ZERO);
+        gateway.add_channel(channel);
+        tokio::time::timeout(Duration::from_secs(2), gateway.run())
+            .await
+            .unwrap()
+            .unwrap();
+        wait_for_log(&log, 3).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["react 👀 to 1", "turn: first", "react 👀 to 2"]
+        );
+        release.add_permits(1);
+        wait_for_log(&log, 8).await;
+        assert_eq!(
+            log.lock().unwrap()[3..8],
+            [
+                "send to 1: echo: first",
+                "answered 1",
+                "turn: second",
+                "send to 2: echo: second",
+                "answered 2",
             ]
         );
     }

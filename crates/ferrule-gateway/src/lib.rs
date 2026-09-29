@@ -18,11 +18,15 @@ pub mod scheduler;
 pub mod sdnotify;
 pub mod session;
 pub mod stream;
+pub mod tools;
 
 pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
 };
-pub use channels::{DiscordChannel, LocalChannel, SlackChannel, TelegramChannel};
+pub use channels::{
+    DiscordChannel, EmailChannel, HttpChannel, LocalChannel, MatrixChannel, MattermostChannel,
+    SignalChannel, SlackChannel, TelegramChannel, WhatsAppChannel,
+};
 pub use error::GatewayError;
 pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI};
 pub use health::{

@@ -1,7 +1,7 @@
 // node --test relay/ — the Worker against an in-memory Durable Object.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import worker, { Slot, encryptKey } from "./worker.js";
+import worker, { Mailbox, Slot, encryptKey } from "./worker.js";
 
 const RELAY_KEY = "test-relay-key-0123456789";
 
@@ -11,32 +11,34 @@ function fakeEnv() {
   const objects = new Map();
   const realNow = Date.now;
   Date.now = () => clock.now;
-  const env = {
-    RELAY_KEY,
-    SLOTS: {
-      idFromName: (name) => name,
-      get(id) {
-        if (!objects.has(id)) {
-          const data = new Map();
-          const state = {
-            alarm: null,
-            storage: {
-              get: async (k) => data.get(k),
-              put: async (k, v) => void data.set(k, v),
-              delete: async (k) => void data.delete(k),
-              deleteAll: async () => data.clear(),
-              setAlarm: async (t) => void (state.alarm = t),
-              deleteAlarm: async () => void (state.alarm = null),
-              data,
-            },
-          };
-          objects.set(id, { state, slot: new Slot(state) });
-        }
-        const o = objects.get(id);
-        return { fetch: (url, init) => o.slot.fetch(new Request(url, init)) };
-      },
+  const namespace = (kind, Class) => ({
+    idFromName: (name) => name,
+    get(id) {
+      const key = kind + ":" + id;
+      if (!objects.has(key)) {
+        const data = new Map();
+        const state = {
+          alarm: null,
+          storage: {
+            get: async (k) => structuredClone(data.get(k)),
+            put: async (k, v) => void data.set(k, structuredClone(v)),
+            delete: async (k) => void data.delete(k),
+            deleteAll: async () => data.clear(),
+            list: async ({ prefix = "" } = {}) =>
+              new Map([...data].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1))),
+            setAlarm: async (t) => void (state.alarm = t),
+            getAlarm: async () => state.alarm,
+            deleteAlarm: async () => void (state.alarm = null),
+            data,
+          },
+        };
+        objects.set(key, { state, slot: new Class(state) });
+      }
+      const o = objects.get(key);
+      return { fetch: (url, init) => o.slot.fetch(new Request(url, init)) };
     },
-  };
+  });
+  const env = { RELAY_KEY, SLOTS: namespace("slot", Slot), MAILBOXES: namespace("mailbox", Mailbox) };
   // Runs every alarm that is due, as the runtime would.
   const advance = async (ms) => {
     clock.now += ms;
@@ -74,7 +76,7 @@ test("health answers", async () => {
   const { env, restore } = fakeEnv();
   const r = await call(env, "GET", "/health");
   assert.equal(r.status, 200);
-  assert.deepEqual(await r.json(), { ok: true, relay: "ferrule-relay", v: 1 });
+  assert.deepEqual(await r.json(), { ok: true, relay: "ferrule-relay", v: 2, wa: true });
   restore();
 });
 
@@ -91,7 +93,7 @@ test("a code reaches the poller once, then it's gone", async () => {
   const second = await poll(env, secret);
   assert.equal(second.status, 410, "a second read finds it used");
   assert.equal((await call(env, "GET", `/cb?state=${id}&code=replay`)).status, 409, "a replay is refused");
-  assert.equal(objects.get(id).state.storage.data.get("value"), undefined, "the value is gone");
+  assert.equal(objects.get("slot:" + id).state.storage.data.get("value"), undefined, "the value is gone");
   restore();
 });
 
@@ -172,7 +174,7 @@ test("an unread value is deleted after five minutes", async () => {
   await poll(env, secret);
   await call(env, "GET", `/cb?state=${id}&code=abc`);
   await advance(5 * 60 * 1000 + 1);
-  assert.equal(objects.get(id).state.storage.data.size, 0, "the alarm wiped it");
+  assert.equal(objects.get("slot:" + id).state.storage.data.size, 0, "the alarm wiped it");
   assert.equal((await poll(env, secret)).status, 204);
   restore();
 });
@@ -239,4 +241,129 @@ test("the key form's envelope round-trips and drops once", async () => {
 test("the worker never logs", async () => {
   const src = await import("node:fs").then((fs) => fs.readFileSync(new URL("./worker.js", import.meta.url), "utf8"));
   assert.ok(!/console\./.test(src));
+});
+
+// --- M39: the WhatsApp mailbox ---
+
+const WA_SECRET = "app-secret-1";
+const WA_VERIFY = "verify-me";
+
+async function waBox(key = RELAY_KEY) {
+  return b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode("wa:" + key))));
+}
+
+async function waSign(secret, body) {
+  const k = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return "sha256=" + Buffer.from(await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(body))).toString("hex");
+}
+
+const waAuth = (key = RELAY_KEY) => ({ authorization: "Bearer " + key, "content-type": "application/json" });
+
+async function waConfigure(env) {
+  const box = await waBox();
+  const r = await call(env, "POST", `/wa/${box}/config`, {
+    body: JSON.stringify({ verify_token: WA_VERIFY, app_secret: WA_SECRET }),
+    headers: waAuth(),
+  });
+  assert.equal(r.status, 200);
+  return box;
+}
+
+async function waPost(env, box, body, secret = WA_SECRET) {
+  return call(env, "POST", `/wa/${box}`, { body, headers: { "x-hub-signature-256": await waSign(secret, body) } });
+}
+
+const waTake = async (env, box, after = 0, key = RELAY_KEY) =>
+  call(env, "POST", `/wa/${box}/take`, { body: JSON.stringify({ after }), headers: waAuth(key) });
+
+test("whatsapp: only the key's own box exists", async () => {
+  const { env, restore } = fakeEnv();
+  const other = await waBox("some-other-key");
+  for (const [m, p] of [["GET", `/wa/${other}`], ["POST", `/wa/${other}`], ["POST", `/wa/${other}/take`], ["GET", "/wa/"]]) {
+    assert.equal((await call(env, m, p)).status, 404, p);
+  }
+  restore();
+});
+
+test("whatsapp: meta's verify gets its challenge only with the token", async () => {
+  const { env, restore } = fakeEnv();
+  const box = await waBox();
+  const q = (token) => `/wa/${box}?hub.mode=subscribe&hub.verify_token=${token}&hub.challenge=1158201444`;
+  assert.equal((await call(env, "GET", q(WA_VERIFY))).status, 403, "not configured yet");
+  await waConfigure(env);
+  const ok = await call(env, "GET", q(WA_VERIFY));
+  assert.equal(ok.status, 200);
+  assert.equal(await ok.text(), "1158201444");
+  assert.equal((await call(env, "GET", q("wrong"))).status, 403);
+  restore();
+});
+
+test("whatsapp: config and take need the relay key", async () => {
+  const { env, restore } = fakeEnv();
+  const box = await waBox();
+  const r = await call(env, "POST", `/wa/${box}/config`, {
+    body: JSON.stringify({ verify_token: "x", app_secret: "y" }),
+    headers: waAuth("wrong"),
+  });
+  assert.equal(r.status, 401);
+  assert.equal((await waTake(env, box, 0, "wrong")).status, 401);
+  const empty = await call(env, "POST", `/wa/${box}/config`, { body: "{}", headers: waAuth() });
+  assert.equal(empty.status, 400);
+  restore();
+});
+
+test("whatsapp: signed events queue in order and go once acknowledged", async () => {
+  const { env, restore } = fakeEnv();
+  const box = await waConfigure(env);
+  assert.equal((await waPost(env, box, '{"n":1}')).status, 200);
+  assert.equal((await waPost(env, box, '{"n":2}')).status, 200);
+  let got = await (await waTake(env, box)).json();
+  assert.equal(got.configured, true);
+  assert.deepEqual(got.events.map((e) => [e.seq, e.body]), [[1, '{"n":1}'], [2, '{"n":2}']]);
+  assert.equal(got.events[0].sig, await waSign(WA_SECRET, '{"n":1}'));
+  got = await (await waTake(env, box, 1)).json();
+  assert.deepEqual(got.events.map((e) => e.seq), [2]);
+  got = await (await waTake(env, box, 2)).json();
+  assert.deepEqual(got.events, []);
+  restore();
+});
+
+test("whatsapp: a bad signature, an unconfigured box or a huge body is refused", async () => {
+  const { env, restore } = fakeEnv();
+  const box = await waBox();
+  assert.equal((await waPost(env, box, "{}")).status, 503, "not set up");
+  await waConfigure(env);
+  assert.equal((await waPost(env, box, "{}", "wrong-secret")).status, 401);
+  const r = await call(env, "POST", `/wa/${box}`, { body: "{}" });
+  assert.equal(r.status, 401, "no signature");
+  const huge = "x".repeat(256 * 1024 + 1);
+  assert.equal((await waPost(env, box, huge)).status, 413);
+  assert.deepEqual((await (await waTake(env, box)).json()).events, []);
+  restore();
+});
+
+test("whatsapp: a full mailbox answers 503 so meta retries", async () => {
+  const { env, objects, restore } = fakeEnv();
+  const box = await waConfigure(env);
+  const { state } = objects.get("mailbox:" + box);
+  await state.storage.put("bytes", 5 * 1024 * 1024 - 3);
+  assert.equal((await waPost(env, box, '{"a":1}')).status, 503);
+  await state.storage.put("bytes", 0);
+  assert.equal((await waPost(env, box, '{"a":1}')).status, 200);
+  restore();
+});
+
+test("whatsapp: an event nobody takes is gone after a day", async () => {
+  const { env, advance, restore } = fakeEnv();
+  const box = await waConfigure(env);
+  await waPost(env, box, '{"old":1}');
+  await advance(12 * 60 * 60 * 1000);
+  await waPost(env, box, '{"new":1}');
+  await advance(12 * 60 * 60 * 1000 + 1);
+  let got = await (await waTake(env, box)).json();
+  assert.deepEqual(got.events.map((e) => e.body), ['{"new":1}']);
+  await advance(12 * 60 * 60 * 1000);
+  got = await (await waTake(env, box)).json();
+  assert.deepEqual(got.events, []);
+  restore();
 });

@@ -5,8 +5,13 @@
 #![allow(dead_code)]
 
 pub mod discord;
+pub mod email;
 pub mod http;
+pub mod matrix;
+pub mod mattermost;
+pub mod signal;
 pub mod slack;
+pub mod whatsapp;
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

@@ -371,6 +371,21 @@ impl Router {
     }
 
     /// Every session with a lane, busy or idle (M21: a new default
+    /// M39: the channel and chat a session's lane serves, while it has one
+    /// (`send_file` sends to the session's own chat, nowhere else).
+    pub fn chat_of(&self, session_id: &str) -> Option<(String, String)> {
+        self.lanes
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|l| (l.channel.clone(), l.chat_id.clone()))
+    }
+
+    /// The adapter called `name`.
+    pub fn channel(&self, name: &str) -> Option<Arc<dyn Channel>> {
+        self.channels.get(name).cloned()
+    }
+
     /// retires them all, so each chat's next agent gets its profile).
     pub fn sessions(&self) -> Vec<String> {
         let mut out: Vec<String> = self.lanes.lock().unwrap().keys().cloned().collect();
@@ -548,6 +563,9 @@ async fn run_lane(
             if let Err(e) = ch.send(out).await {
                 tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
             }
+        }
+        if let (Some(ch), false) = (&channel, inbound.message_id.is_empty()) {
+            ch.answered(&inbound.chat_id, &inbound.message_id).await;
         }
         if let Some(reply_tx) = reply {
             let outcome = run_result

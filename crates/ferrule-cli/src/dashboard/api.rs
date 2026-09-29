@@ -113,6 +113,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "chat" => super::chat::view(ctx, req),
             "approvals" => super::chat::approvals(ctx),
             "config" => super::config_page::get(ctx),
+            "channels" => super::channels::list(ctx),
             _ => None,
         };
     }
@@ -157,6 +158,11 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             ok(json!({ "ok": ctx.runs.cancel(id) }))
         }
         "channels/restart" => channel_restart(ctx, body),
+        "channels/test" => super::channels::test(ctx, body).await,
+        "channels/save" => super::channels::save(ctx, body),
+        "channels/remove" => super::channels::remove(ctx, body),
+        "channels/keys/add" => super::channels::key_add(ctx, body),
+        "channels/keys/revoke" => super::channels::key_revoke(ctx, body),
         "config/restore" => config_restore(ctx, body),
         "gateway/restart" => gateway_restart(ctx, body),
         _ => None,
@@ -1008,7 +1014,7 @@ pub fn doctor_report(out: &str) -> Option<Value> {
         }
         let what = item["what"].as_str().unwrap_or("");
         let fixes = match what {
-            "telegram" | "discord" | "slack" => json!([
+            w if crate::trust::is_chat_channel(w) => json!([
                 { "label": format!("Restart {what}"), "action": "channels/restart", "body": { "name": what } }
             ]),
             "config" => json!([

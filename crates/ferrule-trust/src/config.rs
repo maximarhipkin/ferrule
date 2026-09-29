@@ -3,7 +3,17 @@
 use serde::Deserialize;
 
 /// The channels an owner chat can be on, in the default primary order.
-pub const OWNER_CHANNELS: [&str; 3] = ["telegram", "discord", "slack"];
+pub const OWNER_CHANNELS: &[&str] = &[
+    "telegram",
+    "discord",
+    "slack",
+    "whatsapp",
+    "matrix",
+    "mattermost",
+    "signal",
+    "email",
+    "http",
+];
 
 /// The owner's caps and gates. Every cap is off at 0.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -29,9 +39,22 @@ pub struct TrustConfig {
     /// M31: the owner's Slack member id (`U…`). Unset: the first of
     /// `[gateway] slack_allowed_users`.
     pub slack_owner: Option<String>,
-    /// M31: which owner chat gets approvals and warnings: `telegram`,
-    /// `discord` or `slack`. Unset: Telegram, else Discord, else Slack,
-    /// among the channels that run and have an owner.
+    /// M39: the owner's WhatsApp number, `wa_id` digits. Unset: the first
+    /// of `[gateway.whatsapp] allowed_users`.
+    pub whatsapp_owner: Option<String>,
+    /// M39: the owner's Matrix user id (`@max:example.org`).
+    pub matrix_owner: Option<String>,
+    /// M39: the owner's Mattermost user id.
+    pub mattermost_owner: Option<String>,
+    /// M39: the owner's Signal number (`+972…`) or ACI uuid.
+    pub signal_owner: Option<String>,
+    /// M39: the owner's email address.
+    pub email_owner: Option<String>,
+    /// M39: the HTTP API client (by name) that is the owner.
+    pub http_owner: Option<String>,
+    /// M31: which owner chat gets approvals and warnings, one of
+    /// [`OWNER_CHANNELS`]. Unset: the first in that order among the
+    /// channels that run and have an owner.
     pub owner_channel: Option<String>,
     pub approval_timeout_secs: u64,
     pub plan_timeout_secs: u64,
@@ -53,6 +76,12 @@ impl Default for TrustConfig {
             owner_chat: None,
             discord_owner: None,
             slack_owner: None,
+            whatsapp_owner: None,
+            matrix_owner: None,
+            mattermost_owner: None,
+            signal_owner: None,
+            email_owner: None,
+            http_owner: None,
             owner_channel: None,
             approval_timeout_secs: 600,
             plan_timeout_secs: 3600,
@@ -62,6 +91,38 @@ impl Default for TrustConfig {
 }
 
 impl TrustConfig {
+    /// The owner setting for a channel other than Telegram (whose owner is
+    /// a number, `owner_chat`): `discord_owner`, `whatsapp_owner`, ….
+    pub fn owner_on(&self, channel: &str) -> Option<&String> {
+        match channel {
+            "discord" => self.discord_owner.as_ref(),
+            "slack" => self.slack_owner.as_ref(),
+            "whatsapp" => self.whatsapp_owner.as_ref(),
+            "matrix" => self.matrix_owner.as_ref(),
+            "mattermost" => self.mattermost_owner.as_ref(),
+            "signal" => self.signal_owner.as_ref(),
+            "email" => self.email_owner.as_ref(),
+            "http" => self.http_owner.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Every owner set in `[trust]`, Telegram's first.
+    pub fn named_owners(&self) -> Vec<crate::chat::ChatRef> {
+        use crate::chat::ChatRef;
+        self.owner_chat
+            .map(ChatRef::from)
+            .into_iter()
+            .chain(OWNER_CHANNELS.iter().filter_map(|c| {
+                self.owner_on(c).map(|u| match *c {
+                    // An email chat is the address in lower case.
+                    "email" => ChatRef::new(*c, u.trim().to_ascii_lowercase()),
+                    _ => ChatRef::new(*c, u.clone()),
+                })
+            }))
+            .collect()
+    }
+
     /// Everything off: no caps, no gates. What `ferrule eval` runs under
     /// unless a suite opts in, and a starting point for tests.
     pub fn off() -> Self {

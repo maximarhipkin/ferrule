@@ -1,6 +1,7 @@
 mod agents;
 mod autocommit;
 mod browser;
+mod channels;
 mod config;
 mod config_follow;
 mod connections;
@@ -280,6 +281,11 @@ enum Cmd {
     Connections {
         #[command(subcommand)]
         op: connections::ConnectionsCmd,
+    },
+    /// The HTTP API's keys, one per program that calls it (docs/channels.md)
+    Channels {
+        #[command(subcommand)]
+        op: channels::http::ChannelsCmd,
     },
     /// Several agents on one machine: list them, set up another, remove one
     /// (docs/instances.md)
@@ -868,6 +874,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Ssh { op } => remote::run(op).await?,
         Cmd::Connections { op } => connections::run(op).await?,
         Cmd::Instances { op } => instances::run(op).await?,
+        Cmd::Channels { op } => channels::http::run(op)?,
         Cmd::Sandbox {
             probe_net: true, ..
         } => probe_net(),
@@ -1373,18 +1380,7 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
             .filter_map(|p| p.key_var())
             .map(String::from),
     );
-    let g = &cfg.gateway;
-    policy.secret_vars.extend(
-        [
-            &g.telegram_token_env,
-            &g.discord_token_env,
-            &g.slack_bot_token_env,
-            &g.slack_app_token_env,
-        ]
-        .into_iter()
-        .flatten()
-        .cloned(),
-    );
+    policy.secret_vars.extend(channels::secret_envs(cfg));
     // Commands get these back as placeholders, from the credential proxy.
     policy.secret_vars.extend(cfg.secrets.keys().cloned());
     policy.hidden.extend(hidden_paths());
@@ -1966,20 +1962,16 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
 /// The channels whose replies stream (M27): each chat channel when its
 /// `[gateway] <channel>_stream`, or else `[agent] stream`, says so.
 fn streaming_channels(cfg: &config::Config) -> Vec<String> {
-    let g = &cfg.gateway;
-    [
-        ("telegram", g.telegram_stream),
-        ("discord", g.discord_stream),
-        ("slack", g.slack_stream),
-    ]
-    .into_iter()
-    .filter(|(_, on)| on.unwrap_or(cfg.agent.stream))
-    .map(|(name, _)| name.to_string())
-    // The page's chat streams whenever the agent does.
-    .chain(
-        (cfg.dashboard.enabled && cfg.agent.stream).then(|| dashboard::chat::CHANNEL.to_string()),
-    )
-    .collect()
+    channels::CHANNELS
+        .iter()
+        .filter(|c| channels::streams(cfg, c.name))
+        .map(|c| c.name.to_string())
+        // The page's chat streams whenever the agent does.
+        .chain(
+            (cfg.dashboard.enabled && cfg.agent.stream)
+                .then(|| dashboard::chat::CHANNEL.to_string()),
+        )
+        .collect()
 }
 
 /// A token from the env var `[gateway] <key>` names.
@@ -2005,7 +1997,10 @@ fn with_owner(cfg: &config::Config, channel: &str, users: &[String]) -> Vec<Stri
 /// by the long-lived daemon (`run_gateway`) and `ferrule tasks run-now` (which
 /// needs the same destination channels available to deliver its one result,
 /// without starting the daemon's inbound loops).
-fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channel>>> {
+fn build_channels(
+    cfg: &config::Config,
+    workspace: Option<&Path>,
+) -> Result<HashMap<String, Arc<dyn Channel>>> {
     let mut named_channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
 
     if cfg.gateway.local {
@@ -2058,6 +2053,59 @@ fn build_channels(cfg: &config::Config) -> Result<HashMap<String, Arc<dyn Channe
         ),
     }
 
+    if let Some(w) = &g.whatsapp {
+        let wa =
+            ferrule_gateway::WhatsAppChannel::new(channels::whatsapp::config(cfg, w, workspace)?)
+                .with_allowed(with_owner(cfg, "whatsapp", &w.allowed_users));
+        let wa: Arc<dyn Channel> = Arc::new(wa);
+        named_channels.insert(wa.name().to_string(), wa);
+    }
+
+    if let Some(m) = &g.matrix {
+        let mx = ferrule_gateway::MatrixChannel::new(channels::matrix::config(m, workspace)?)
+            .with_allowed(
+                with_owner(cfg, "matrix", &m.allowed_users),
+                m.allowed_rooms.clone(),
+            );
+        let mx: Arc<dyn Channel> = Arc::new(mx);
+        named_channels.insert(mx.name().to_string(), mx);
+    }
+
+    if let Some(m) = &g.mattermost {
+        let mm =
+            ferrule_gateway::MattermostChannel::new(channels::mattermost::config(m, workspace)?)
+                .with_allowed(
+                    with_owner(cfg, "mattermost", &m.allowed_users),
+                    m.allowed_channels.clone(),
+                );
+        let mm: Arc<dyn Channel> = Arc::new(mm);
+        named_channels.insert(mm.name().to_string(), mm);
+    }
+
+    if let Some(h) = &g.http {
+        let api: Arc<dyn Channel> = Arc::new(ferrule_gateway::HttpChannel::new(
+            channels::http::config(h, cfg, workspace)?,
+        ));
+        named_channels.insert(api.name().to_string(), api);
+    }
+
+    if let Some(e) = &g.email {
+        let mail = ferrule_gateway::EmailChannel::new(channels::email::config(e, workspace)?)
+            .with_allowed(with_owner(cfg, "email", &e.allowed_senders));
+        let mail: Arc<dyn Channel> = Arc::new(mail);
+        named_channels.insert(mail.name().to_string(), mail);
+    }
+
+    if let Some(s) = &g.signal {
+        let sig = ferrule_gateway::SignalChannel::new(channels::signal::config(s, workspace)?)
+            .with_allowed(
+                with_owner(cfg, "signal", &s.allowed_users),
+                s.allowed_groups.clone(),
+            );
+        let sig: Arc<dyn Channel> = Arc::new(sig);
+        named_channels.insert(sig.name().to_string(), sig);
+    }
+
     Ok(named_channels)
 }
 
@@ -2069,6 +2117,7 @@ async fn gateway_factory(
     provider: Option<String>,
     workspace: PathBuf,
     max_iterations: usize,
+    files: Arc<ferrule_gateway::tools::FileOut>,
 ) -> Result<(
     ferrule_gateway::AgentFactory,
     Option<Arc<ferrule_agents::Supervisor>>,
@@ -2097,7 +2146,7 @@ async fn gateway_factory(
         let fail = |e: String| ferrule_gateway::GatewayError::Channel(e);
         let scope = models::Scope::for_session(session_id)
             .fixed(provider.clone(), "the gateway's --provider");
-        let agent = build_agent_from(
+        let mut agent = build_agent_from(
             scope,
             workspace.clone(),
             max_iterations,
@@ -2107,6 +2156,15 @@ async fn gateway_factory(
             None,
         )
         .map_err(|e| fail(e.to_string()))?;
+        // M39: a chat's agent sends files to its own chat; a remote
+        // workspace's files aren't here to send.
+        if channels::of_session(session_id).is_some() && remote::current().is_none() {
+            agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
+                files.clone(),
+                session_id,
+                hidden_paths(),
+            )));
+        }
         match &factory_sup {
             Some(sup) => sup
                 .attach_root(agent, session_id, &workspace)
@@ -2127,31 +2185,31 @@ async fn run_gateway(
     let cfg = loaded.config().clone();
     let sessions_dir = config::data_dir()?.join("sessions");
 
-    let (agent_factory, sup) =
-        gateway_factory(&cfg, provider.clone(), workspace.clone(), max_iterations).await?;
+    let files = Arc::new(ferrule_gateway::tools::FileOut::default());
+    let (agent_factory, sup) = gateway_factory(
+        &cfg,
+        provider.clone(),
+        workspace.clone(),
+        max_iterations,
+        files.clone(),
+    )
+    .await?;
 
-    let named_channels = build_channels(&cfg)?;
+    let named_channels = build_channels(&cfg, Some(&workspace))?;
     if named_channels.is_empty() {
-        bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true`, `telegram_token_env`, `discord_token_env` or `slack_bot_token_env` in the config");
+        bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true`, `telegram_token_env`, `discord_token_env`, `slack_bot_token_env` or a `[gateway.<channel>]` table (whatsapp, matrix, email, signal, mattermost, http) in the config");
     }
-    for (name, users, key) in [
-        (
-            "discord",
-            &cfg.gateway.discord_allowed_users,
-            "discord_allowed_users",
-        ),
-        (
-            "slack",
-            &cfg.gateway.slack_allowed_users,
-            "slack_allowed_users",
-        ),
-    ] {
-        if named_channels.contains_key(name)
-            && users.is_empty()
-            && !trust::owners(&cfg).iter().any(|o| o.channel == name)
-        {
+    let owners = trust::owners(&cfg);
+    for c in channels::CHANNELS {
+        // Telegram says so below; the HTTP API lets in its keys.
+        if matches!(c.name, "telegram" | "http") || !named_channels.contains_key(c.name) {
+            continue;
+        }
+        if channels::lists_nobody(&cfg, c.name) && !owners.iter().any(|o| o.channel == c.name) {
             tracing::warn!(
-                "{key} is empty: {name} answers nobody's DMs. Run `ferrule setup` to pair, or add a user id to [gateway] {key}"
+                "{key} is empty: {name} answers nobody's DMs. Run `ferrule setup` to pair, or add who may write to {key}",
+                key = c.users_key,
+                name = c.title,
             );
         }
     }
@@ -2195,6 +2253,7 @@ async fn run_gateway(
             .with_max_turn(health::max_turn(&cfg))
             .with_streaming(streaming_channels(&cfg), StreamPacing::default()),
     );
+    files.bind(&router);
     // A chat whose agents report while it's idle is run again, and its
     // answer goes to the chat.
     if let Some(sup) = &sup {
@@ -2580,10 +2639,18 @@ async fn tasks_run_now(
         .get(id)?
         .ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
-    let (agent_factory, sup) =
-        gateway_factory(&cfg, provider.clone(), workspace.clone(), max_iterations).await?;
+    // A task's session isn't a chat: nothing here sends files.
+    let files = Arc::new(ferrule_gateway::tools::FileOut::default());
+    let (agent_factory, sup) = gateway_factory(
+        &cfg,
+        provider.clone(),
+        workspace.clone(),
+        max_iterations,
+        files,
+    )
+    .await?;
 
-    let named_channels = build_channels(&cfg)?;
+    let named_channels = build_channels(&cfg, None)?;
     let router = Arc::new(Router::new(
         sessions_dir,
         agent_factory,

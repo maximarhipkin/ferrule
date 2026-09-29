@@ -37,6 +37,11 @@ impl ChatRef {
 
     /// "Telegram", "Discord", "Slack": the channel for a sentence.
     pub fn channel_title(&self) -> String {
+        match self.channel.as_str() {
+            "whatsapp" => return "WhatsApp".into(),
+            "http" => return "HTTP API".into(),
+            _ => {}
+        }
         let mut c = self.channel.chars();
         match c.next() {
             Some(first) => first.to_uppercase().chain(c).collect(),

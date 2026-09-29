@@ -994,13 +994,17 @@ name = "ferrule-gateway"
 version = "0.9.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "croner",
+ "ferrule-connections",
  "ferrule-core",
  "ferrule-sandbox",
+ "ferrule-tools",
  "futures-util",
  "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

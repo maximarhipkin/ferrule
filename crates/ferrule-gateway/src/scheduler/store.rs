@@ -143,6 +143,9 @@ impl TaskStore {
     }
 
     fn init(conn: Connection) -> Result<Self, SchedulerError> {
+        // The gateway opens this file more than once (the agents, the
+        // scheduler, health): wait out another's write, don't fail on it.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS tasks (

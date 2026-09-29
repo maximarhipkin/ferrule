@@ -195,6 +195,8 @@ impl Gmail {
             references: reply.as_ref().map(|m| m.references.as_str()),
             message_id: None,
             date: mime::date_now(),
+            headers: &[],
+            files: &[],
         });
         let rcpts: Vec<String> = to.iter().chain(&cc).map(|a| mime::bare(a)).collect();
         let stream = super::net::connect(&self.ep.smtp).await?;

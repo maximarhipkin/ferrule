@@ -67,28 +67,32 @@ pub fn owner_chat(cfg: &Config) -> Option<i64> {
 }
 
 /// The owner's chat on every channel that has one (M31), the primary
-/// first: `[trust] owner_channel`, else Telegram, Discord, Slack. Telegram's
-/// is `owner_chat` as before; Discord's and Slack's are `[trust]
-/// discord_owner`/`slack_owner`, else the first allowed user, when the
+/// first: `[trust] owner_channel`, else the [`crate::channels::CHANNELS`]
+/// order. Telegram's is `owner_chat` as before; every other channel's is
+/// its `[trust] <channel>_owner`, else its first allowed user, when the
 /// channel is configured.
 pub fn owners(cfg: &Config) -> Vec<ChatRef> {
-    let g = &cfg.gateway;
     let mut out: Vec<ChatRef> = owner_chat(cfg).map(ChatRef::from).into_iter().collect();
-    if g.discord_token_env.is_some() {
-        let who = cfg
-            .trust
-            .discord_owner
-            .clone()
-            .or_else(|| g.discord_allowed_users.first().cloned());
-        out.extend(who.map(|u| ChatRef::new("discord", u)));
-    }
-    if g.slack_bot_token_env.is_some() {
-        let who = cfg
-            .trust
-            .slack_owner
-            .clone()
-            .or_else(|| g.slack_allowed_users.first().cloned());
-        out.extend(who.map(|u| ChatRef::new("slack", u)));
+    for c in crate::channels::CHANNELS.iter().skip(1) {
+        // Slack's owner counted from its bot token alone before M39.
+        let on = match c.name {
+            "slack" => cfg.gateway.slack_bot_token_env.is_some(),
+            n => crate::channels::configured(cfg, n),
+        };
+        if !on {
+            continue;
+        }
+        let who = cfg.trust.owner_on(c.name).cloned().or_else(|| {
+            crate::channels::allowed_users(cfg, c.name)
+                .into_iter()
+                .next()
+        });
+        // An email chat is the address in lower case.
+        let who = who.map(|u| match c.name {
+            "email" => u.trim().to_ascii_lowercase(),
+            _ => u,
+        });
+        out.extend(who.map(|u| ChatRef::new(c.name, u)));
     }
     if let Some(first) = &cfg.trust.owner_channel {
         if let Some(i) = out.iter().position(|c| &c.channel == first) {
@@ -163,17 +167,10 @@ pub fn route_for(tree: &str) -> Route {
             chat_label: "the dashboard's chat".into(),
         };
     }
-    if let Some(chat) = tree.strip_prefix("telegram__") {
+    if let Some((c, chat)) = crate::channels::of_session(tree) {
         return Route::Owner {
-            chat_label: format!("Telegram chat {chat}"),
+            chat_label: format!("{} chat {chat}", c.title),
         };
-    }
-    for (prefix, title) in [("discord__", "Discord"), ("slack__", "Slack")] {
-        if let Some(chat) = tree.strip_prefix(prefix) {
-            return Route::Owner {
-                chat_label: format!("{title} chat {chat}"),
-            };
-        }
     }
     Route::Unattended(format!("session `{tree}` has nobody to ask"))
 }

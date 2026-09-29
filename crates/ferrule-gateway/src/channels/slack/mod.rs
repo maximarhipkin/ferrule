@@ -13,7 +13,7 @@
 //! split at 3900 characters. Buttons are Block Kit; a tap arrives as the
 //! command it carries. `/ferrule <command>` arrives as `/<command>`.
 
-mod mrkdwn;
+pub(crate) mod mrkdwn;
 mod socket;
 
 pub use mrkdwn::convert as to_mrkdwn;

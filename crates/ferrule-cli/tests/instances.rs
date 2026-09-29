@@ -150,8 +150,7 @@ fn instances_are_listed_made_and_removed() {
 fn two_instances_with_one_bot_are_a_doctor_failure() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let config =
-        "[gateway]\ntelegram_token_env = \"TELEGRAM_BOT_TOKEN\"\n\n[dashboard]\nport = 18765\n";
+    let config = "[gateway]\ntelegram_token_env = \"TELEGRAM_BOT_TOKEN\"\n\n[gateway.whatsapp]\nphone_number_id = \"1110001\"\ninbound = \"listen\"\n\n[gateway.matrix]\nhomeserver = \"https://m.org\"\naccess_token_env = \"MATRIX_ACCESS_TOKEN\"\nuser = \"@bot:m.org\"\n\n[gateway.email]\naddress = \"Bot@Gmail.com\"\npassword_env = \"EMAIL_PASSWORD\"\n\n[gateway.signal]\naccount = \"+15550000001\"\n\n[gateway.mattermost]\nserver_url = \"https://Chat.example.com/\"\n\n[gateway.http]\nport = 18788\n\n[dashboard]\nport = 18765\n";
     for inst in ["ferrule", "ferrule-work"] {
         let c = root.join("config").join(inst);
         std::fs::create_dir_all(&c).unwrap();
@@ -160,7 +159,7 @@ fn two_instances_with_one_bot_are_a_doctor_failure() {
         std::fs::create_dir_all(&p).unwrap();
         std::fs::write(
             p.join("secrets.env"),
-            "TELEGRAM_BOT_TOKEN=123456:not-a-real-token\n",
+            "TELEGRAM_BOT_TOKEN=123456:not-a-real-token\nMATTERMOST_TOKEN=mm-not-a-real-token\n",
         )
         .unwrap();
     }
@@ -188,6 +187,61 @@ fn two_instances_with_one_bot_are_a_doctor_failure() {
         texts
             .iter()
             .any(|t| t.contains("port 18765") && t.contains("`default`")),
+        "{texts:?}"
+    );
+    // M39: one mailbox in two instances.
+    assert!(
+        lines.iter().any(|l| l["level"] == "fail"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("the same mailbox (bot@gmail.com on imap.gmail.com)")),
+        "{texts:?}"
+    );
+    // M39: one WhatsApp number in two instances.
+    assert!(
+        lines.iter().any(|l| l["level"] == "fail"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("WhatsApp number (phone number id 1110001)")),
+        "{texts:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l["level"] == "fail"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("Matrix bot account (@bot:m.org)")),
+        "{texts:?}"
+    );
+    // M39: one Signal number, and one port for ferrule's own daemon.
+    assert!(
+        lines.iter().any(|l| l["level"] == "fail"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("the same Signal number (+15550000001)")),
+        "{texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("port 7583 for its own signal-cli daemon")),
+        "{texts:?}"
+    );
+    // M39: one Mattermost bot, known by its token's fingerprint.
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("the same Mattermost bot (https://chat.example.com, token ")),
+        "{texts:?}"
+    );
+    // M39: one port for the HTTP API.
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("port 18788 for the HTTP API")),
         "{texts:?}"
     );
     // The token itself is never shown.

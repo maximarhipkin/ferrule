@@ -16,7 +16,8 @@ use std::time::{Duration, Instant, SystemTime};
 /// Replaces secrets with `[redacted]` in anything the owner is shown:
 /// `/status`, the status file, the heartbeat, the running marker. Knows
 /// the configured secret values, and the shapes of a Telegram bot token, a
-/// Discord bot token and Slack's `xox…-`/`xapp-` tokens.
+/// Discord bot token, Slack's `xox…-`/`xapp-` tokens and Meta's `EAA…`
+/// access tokens (WhatsApp).
 #[derive(Debug, Clone, Default)]
 pub struct Redactor {
     secrets: Vec<String>,
@@ -40,8 +41,33 @@ impl Redactor {
                 out = out.replace(s.as_str(), "[redacted]");
             }
         }
-        redact_discord_tokens(&redact_slack_tokens(&redact_bot_tokens(&out)))
+        redact_meta_tokens(&redact_discord_tokens(&redact_slack_tokens(
+            &redact_bot_tokens(&out),
+        )))
     }
+}
+
+/// A Meta (WhatsApp Cloud API) access token: `EAA` and 30+ letters and
+/// digits.
+fn redact_meta_tokens(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut spans = vec![];
+    let mut i = 0;
+    while i < b.len() {
+        if (i == 0 || !token_char(b[i - 1])) && b[i..].starts_with(b"EAA") {
+            let mut k = i + 3;
+            while k < b.len() && b[k].is_ascii_alphanumeric() {
+                k += 1;
+            }
+            if k - i >= 33 {
+                spans.push((i, k));
+                i = k;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    cut(text, &spans)
 }
 
 fn token_char(c: u8) -> bool {
@@ -673,6 +699,9 @@ impl Health {
             if let Some(problem) = c.problem() {
                 out.push(format!("    {problem}"));
             }
+            if let Some(note) = c.note() {
+                out.push(format!("    {note}"));
+            }
         }
         out.push(String::new());
         out.push("recent warnings and errors:".into());
@@ -812,6 +841,13 @@ fn clock(at: SystemTime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redaction_hides_meta_tokens() {
+        let token = format!("EAAG{}", "a1B2c3".repeat(20));
+        let out = Redactor::default().redact(&format!("token={token} EAAshort EAAGx"));
+        assert_eq!(out, "token=[redacted] EAAshort EAAGx");
+    }
 
     #[test]
     fn redaction_hides_discord_and_slack_token_shapes() {

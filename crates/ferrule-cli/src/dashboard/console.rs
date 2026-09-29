@@ -197,6 +197,25 @@ pub const PARITY: &[Leaf] = &[
         "terminal only",
         "",
     ),
+    leaf("channels keys list", Read, "Channels (HTTP API card) + console", ""),
+    leaf(
+        "channels keys add",
+        Refused("it prints a key once: make it on the HTTP API card, where it isn't kept in the console's output"),
+        "Channels (HTTP API card)",
+        "",
+    ),
+    leaf(
+        "channels keys webhook",
+        Refused("it prints a signing secret once: run it at the terminal"),
+        "terminal only",
+        "",
+    ),
+    leaf(
+        "channels keys revoke",
+        Destructive,
+        "Channels (HTTP API card) + console",
+        "",
+    ),
     leaf("connections list", Read, "Connections + console", ""),
     leaf(
         "connections add",

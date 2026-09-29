@@ -14,7 +14,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use support::{discord, slack, wait};
+use support::{discord, email, matrix, mattermost, signal, slack, wait, whatsapp};
 
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -411,4 +411,664 @@ fn a_dead_discord_socket_shows_in_status_while_telegram_and_slack_keep_answering
         status.contains("rejected the bot token")
     });
     assert!(!status.contains(bad), "{status}");
+}
+
+/// M39: WhatsApp through the real binary: webhooks from the relay's
+/// mailbox, answers through the Graph API mock, a stranger never reaching
+/// the model, and the doctor's line.
+#[test]
+fn whatsapp_through_the_relay_mailbox_answers_only_its_allowed_number() {
+    let (url, log) = model_server();
+    let meta = whatsapp::start();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[connections]
+relay_url = "{relay}"
+
+[gateway.whatsapp]
+phone_number_id = "{phone}"
+api_url = "{relay}"
+allowed_users = ["{max}"]
+"#,
+            relay = meta.url,
+            phone = whatsapp::PHONE_ID,
+            max = whatsapp::MAX,
+        ),
+    )
+    .unwrap();
+    let with_keys = |mut cmd: Command| {
+        cmd.env("WHATSAPP_TOKEN", whatsapp::TOKEN)
+            .env("WHATSAPP_APP_SECRET", whatsapp::APP_SECRET)
+            .env("WHATSAPP_VERIFY_TOKEN", whatsapp::VERIFY)
+            .env("FERRULE_RELAY_KEY", whatsapp::RELAY_KEY);
+        cmd
+    };
+    let mut cmd = with_keys(command(home, &["gateway"], discord::TOKEN));
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the mailbox set up", LIMIT, || {
+        meta.state().config.is_some()
+    });
+    assert_eq!(
+        meta.state().config,
+        Some((whatsapp::VERIFY.into(), whatsapp::APP_SECRET.into()))
+    );
+    meta.deliver(
+        &whatsapp::text("wamid.s1", "15550000999", "STRANGER-WA"),
+        whatsapp::APP_SECRET,
+    );
+    meta.deliver(
+        &whatsapp::text("wamid.m1", whatsapp::MAX, "hello from whatsapp"),
+        whatsapp::APP_SECRET,
+    );
+    wait("the WhatsApp answer", LIMIT, || {
+        any_has(&meta.texts(), "ECHO hello from whatsapp")
+    });
+    assert!(!asked(&log, "STRANGER-WA"));
+    // Every send went to the allowed number; nothing to the stranger.
+    for b in meta.state().sent.iter() {
+        if let Some(to) = b["to"].as_str() {
+            assert_eq!(to, whatsapp::MAX, "{b}");
+        }
+    }
+
+    let o = with_keys(command(
+        home,
+        &["doctor", "--offline", "--json"],
+        discord::TOKEN,
+    ))
+    .output()
+    .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    let wa: Vec<&Value> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "whatsapp")
+        .collect();
+    assert!(
+        wa.iter().any(
+            |l| l["level"] == "ok" && l["text"].as_str().unwrap().contains("through the relay")
+        ),
+        "{wa:?}"
+    );
+    assert!(!out.contains(whatsapp::TOKEN), "{out}");
+}
+
+#[test]
+fn matrix_answers_its_allowed_user_in_a_dm_and_the_doctor_reads_it() {
+    let (url, log) = model_server();
+    let hs = matrix::start();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway.matrix]
+homeserver = "{hs}"
+access_token_env = "MATRIX_ACCESS_TOKEN"
+user = "{bot}"
+allowed_users = ["{max}"]
+stream = false
+"#,
+            hs = hs.url,
+            bot = matrix::BOT,
+            max = matrix::MAX,
+        ),
+    )
+    .unwrap();
+    let with_token = |mut cmd: Command| {
+        cmd.env("MATRIX_ACCESS_TOKEN", matrix::TOKEN);
+        cmd
+    };
+    let mut cmd = with_token(command(home, &["gateway"], discord::TOKEN));
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the first long-poll", LIMIT, || {
+        hs.state().sinces.iter().any(Option::is_some)
+    });
+    hs.timeline(
+        matrix::DM,
+        vec![
+            matrix::text("$s1", matrix::STRANGER, "STRANGER-MX"),
+            matrix::text("$m1", matrix::MAX, "hello from matrix"),
+        ],
+    );
+    wait("the Matrix answer", LIMIT, || {
+        any_has(&hs.bodies(matrix::DM), "ECHO hello from matrix")
+    });
+    assert!(!asked(&log, "STRANGER-MX"));
+    // The sync position is the instance's own.
+    assert!(home.join("data/gateway/matrix/state.json").exists());
+
+    let o = with_token(command(
+        home,
+        &["doctor", "--offline", "--json"],
+        discord::TOKEN,
+    ))
+    .output()
+    .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    let mx: Vec<&Value> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "matrix")
+        .collect();
+    assert!(
+        mx.iter()
+            .any(|l| l["level"] == "ok" && l["text"].as_str().unwrap().contains("1 user(s)")),
+        "{mx:?}"
+    );
+    assert!(!out.contains(matrix::TOKEN), "{out}");
+}
+
+#[test]
+fn mattermost_answers_its_allowed_user_and_a_mention_in_a_thread() {
+    let (url, log) = model_server();
+    let mm = mattermost::start();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway.mattermost]
+server_url = "{server}"
+allowed_users = ["@max"]
+allowed_channels = ["{town}"]
+stream = false
+"#,
+            server = mm.url,
+            town = mattermost::CHANNEL,
+        ),
+    )
+    .unwrap();
+    let with_token = |mut cmd: Command| {
+        cmd.env("MATTERMOST_TOKEN", mattermost::TOKEN);
+        cmd
+    };
+    let mut cmd = with_token(command(home, &["gateway"], discord::TOKEN));
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the socket's challenge", LIMIT, || {
+        mm.state()
+            .frames
+            .iter()
+            .any(|f| f["action"] == "authentication_challenge")
+    });
+    // Before the challenge the username was resolved; the socket may
+    // still be opening its reader, so send until one lands.
+    mm.send(mattermost::dm(
+        "q0000000000000000000000001",
+        mattermost::STRANGER,
+        "STRANGER-MM",
+    ));
+    mm.send(mattermost::dm(
+        "q0000000000000000000000002",
+        mattermost::MAX,
+        "hello from mattermost",
+    ));
+    wait("the Mattermost answer", LIMIT, || {
+        mm.state().posts_in(mattermost::DM).iter().any(|p| {
+            p["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("ECHO hello from mattermost"))
+        })
+    });
+    mm.send(mattermost::said(
+        "q0000000000000000000000003",
+        mattermost::CHANNEL,
+        mattermost::STRANGER,
+        "in the channel",
+        None,
+        true,
+    ));
+    wait("the thread's answer", LIMIT, || {
+        mm.state().posts_in(mattermost::CHANNEL).iter().any(|p| {
+            p["root_id"] == "q0000000000000000000000003"
+                && p["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("ECHO in the channel"))
+        })
+    });
+    assert!(!asked(&log, "STRANGER-MM"));
+    // 👀 on arrival.
+    assert!(mm
+        .state()
+        .reactions()
+        .contains(&("q0000000000000000000000002".to_string(), "eyes".to_string())));
+
+    let o = with_token(command(
+        home,
+        &["doctor", "--offline", "--json"],
+        discord::TOKEN,
+    ))
+    .output()
+    .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    let lines: Vec<&Value> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "mattermost")
+        .collect();
+    assert!(
+        lines.iter().any(|l| l["level"] == "ok"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("1 user(s), 1 channel(s) allowed")),
+        "{lines:?}"
+    );
+    assert!(!out.contains(mattermost::TOKEN), "{out}");
+}
+
+#[test]
+fn email_answers_its_allowed_sender_in_the_thread_and_the_doctor_reads_it() {
+    let (url, log) = model_server();
+    let p = email::Provider::start(true);
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway.email]
+address = "{bot}"
+imap_host = "127.0.0.1"
+imap_port = {imap}
+smtp_host = "127.0.0.1"
+smtp_port = {smtp}
+password_env = "EMAIL_PASSWORD"
+allowed_senders = ["{max}"]
+"#,
+            bot = email::ADDRESS,
+            max = email::MAX,
+            imap = p.imap_port,
+            smtp = p.smtp_port,
+        ),
+    )
+    .unwrap();
+    let with_password = |mut cmd: Command| {
+        cmd.env("EMAIL_PASSWORD", email::PASSWORD);
+        cmd
+    };
+    let mut cmd = with_password(command(home, &["gateway"], discord::TOKEN));
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the first IDLE", LIMIT, || p.state().idles > 0);
+    let stranger = p.deliver(email::mail("someone@else.test", "hi", "STRANGER-MAIL", &[]));
+    let max = p.deliver(email::mail(
+        email::MAX,
+        "a question",
+        "hello by mail",
+        &[("Message-ID", "<q1@example.com>")],
+    ));
+    wait("the email answer", LIMIT, || p.sent() > 0);
+    let data = p.sent_data(0);
+    let reply = ferrule_connections::native::mime::parse(data.as_bytes());
+    assert!(reply.text.contains("ECHO"), "{data}");
+    assert!(reply.text.contains("hello by mail"), "{data}");
+    assert!(data.contains("In-Reply-To: <q1@example.com>"), "{data}");
+    assert!(data.contains("Subject: Re: a question"), "{data}");
+    assert!(!asked(&log, "STRANGER-MAIL"));
+    assert!(p.seen(max));
+    assert!(!p.seen(stranger), "a stranger's mail stays unread");
+    // The last UID seen is the instance's own.
+    assert!(home.join("data/gateway/email/state.json").exists());
+
+    let o = with_password(command(
+        home,
+        &["doctor", "--offline", "--json"],
+        discord::TOKEN,
+    ))
+    .output()
+    .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    let lines: Vec<&Value> = report["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["what"] == "email")
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l["level"] == "ok"
+                && l["text"].as_str().unwrap().contains("1 sender(s) allowed")),
+        "{lines:?}"
+    );
+    assert!(!out.contains(email::PASSWORD), "{out}");
+}
+
+#[test]
+fn signal_answers_its_allowed_number_through_the_daemon_and_the_doctor_reads_it() {
+    let (url, log) = model_server();
+    let d = signal::start();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    let base = format!(
+        r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+"#
+    );
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"{base}
+[gateway.signal]
+account = "{acct}"
+url = "{daemon}"
+allowed_users = ["{max}"]
+"#,
+            acct = signal::ACCOUNT,
+            daemon = d.url,
+            max = signal::MAX,
+        ),
+    )
+    .unwrap();
+    let mut cmd = command(home, &["gateway"], discord::TOKEN);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let _gw = Running(cmd.spawn().unwrap());
+
+    wait("the event stream", LIMIT, || d.state().open > 0);
+    d.push(signal::dm(
+        signal::STRANGER,
+        "STRANGER-SIG",
+        1_760_000_000_001,
+    ));
+    d.push(signal::dm(
+        signal::MAX,
+        "hello from signal",
+        1_760_000_000_002,
+    ));
+    wait("the Signal answer", LIMIT, || {
+        d.calls("send").iter().any(|p| {
+            p["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("ECHO hello from signal"))
+        })
+    });
+    assert!(!asked(&log, "STRANGER-SIG"));
+    let sent = d.calls("send");
+    assert!(
+        sent.iter()
+            .all(|p| p["recipient"][0].as_str() != Some(signal::STRANGER)),
+        "{sent:?}"
+    );
+
+    let doctor = |home: &Path, offline: bool| -> Vec<Value> {
+        let args: &[&str] = if offline {
+            &["doctor", "--offline", "--json"]
+        } else {
+            &["doctor", "--json"]
+        };
+        let o = command(home, args, discord::TOKEN).output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout);
+        let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+            .unwrap_or_else(|e| panic!("{e}: {out}"));
+        report["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["what"] == "signal")
+            .cloned()
+            .collect()
+    };
+    let lines = doctor(home, true);
+    assert!(
+        lines.iter().any(|l| l["level"] == "ok"
+            && l["text"]
+                .as_str()
+                .unwrap()
+                .contains("1 user(s), 0 group(s)")),
+        "{lines:?}"
+    );
+
+    // Without a URL ferrule starts signal-cli itself: doctor says when
+    // there's none to start.
+    let other = tempfile::tempdir().unwrap();
+    let home2 = other.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home2.join(sub)).unwrap();
+    }
+    let missing = home2.join("no-signal-cli");
+    std::fs::write(
+        home2.join("ferrule.toml"),
+        format!(
+            "{base}\n[gateway.signal]\naccount = \"{}\"\nsignal_cli = {:?}\nport = {}\n",
+            signal::ACCOUNT,
+            missing.display().to_string(),
+            support::bind().1,
+        ),
+    )
+    .unwrap();
+    let lines = doctor(home2, true);
+    assert!(
+        lines.iter().any(
+            |l| l["level"] == "fail" && l["text"].as_str().unwrap().contains("isn't installed")
+        ),
+        "{lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l["level"] == "warn"),
+        "no one allowed: {lines:?}"
+    );
+}
+
+/// One HTTP/1.1 request to the API on 127.0.0.1; the status and body.
+fn api_call(port: u16, method: &str, path: &str, key: &str, body: &str) -> (u16, String) {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(LIMIT)).unwrap();
+    write!(
+        s,
+        "{method} {path} HTTP/1.1\r\nhost: 127.0.0.1\r\nauthorization: Bearer {key}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    let status = out
+        .split(' ')
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    let body = out.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    (status, body.to_string())
+}
+
+#[test]
+fn the_http_api_answers_a_key_made_on_the_command_line_until_it_is_revoked() {
+    let (url, log) = model_server();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    for sub in ["work", "data", "home"] {
+        std::fs::create_dir_all(home.join(sub)).unwrap();
+    }
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    std::fs::write(
+        home.join("ferrule.toml"),
+        format!(
+            r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "{url}"
+api_key_env = "FERRULE_TEST_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway.http]
+port = {port}
+"#
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let o = command(home, args, discord::TOKEN).output().unwrap();
+        assert!(o.status.success(), "{args:?}: {o:?}");
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+    let made = run(&["channels", "keys", "add", "n8n"]);
+    let key = made
+        .split_whitespace()
+        .find(|w| w.starts_with("frk_"))
+        .unwrap_or_else(|| panic!("{made}"))
+        .to_string();
+    // Only the key's hash is kept.
+    let stored = std::fs::read_to_string(home.join("data/gateway/http/clients.json")).unwrap();
+    assert!(!stored.contains(&key), "{stored}");
+    assert!(run(&["channels", "keys", "list"]).contains("n8n"));
+
+    let _gw = gateway(home, discord::TOKEN);
+    wait("the API", LIMIT, || {
+        TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let (status, body) = api_call(
+        port,
+        "POST",
+        "/v1/messages",
+        "frk_wrong",
+        r#"{"text":"STRANGER-HTTP"}"#,
+    );
+    assert_eq!(status, 401, "{body}");
+    let (status, body) = api_call(
+        port,
+        "POST",
+        "/v1/messages",
+        &key,
+        r#"{"text":"hello from a program"}"#,
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("ECHO hello from a program"), "{body}");
+    assert!(!asked(&log, "STRANGER-HTTP"));
+
+    // doctor sees the gateway's API on its port.
+    let o = command(home, &["doctor", "--json"], discord::TOKEN)
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let report: Value = serde_json::from_str(out.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("{e}: {out}"));
+    assert!(
+        report["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["what"] == "http"
+                && i["level"] == "ok"
+                && i["text"].as_str().unwrap().contains("answering on")
+                && i["text"].as_str().unwrap().contains("1 key")),
+        "{report}"
+    );
+
+    // Revoked on the command line, refused by the running gateway.
+    run(&["channels", "keys", "revoke", "n8n"]);
+    let (status, _) = api_call(port, "POST", "/v1/messages", &key, r#"{"text":"again"}"#);
+    assert_eq!(status, 401);
+    assert!(!run(&["channels", "keys", "list"]).contains("n8n"));
 }

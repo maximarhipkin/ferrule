@@ -114,6 +114,9 @@ struct TgState {
     webhook: String,
     /// Answer `getUpdates` with the other-poller 409 until then.
     conflict_until: Option<Instant>,
+    /// A 409 this long from the first `getUpdates`: timed from the
+    /// gateway's own start, not the test's, however slow the start is.
+    conflict_for: Option<Duration>,
     next: i64,
 }
 
@@ -172,7 +175,8 @@ impl FakeTelegram {
             }
             assert!(
                 Instant::now() < deadline,
-                "no message to {chat} with {needle:?}; sent: {sent:#?}"
+                "no message to {chat} with {needle:?}; sent: {sent:#?}\n{}",
+                gateway_log()
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -189,7 +193,7 @@ impl FakeTelegram {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-        panic!("/status never had {needle:?}: {report}");
+        panic!("/status never had {needle:?}: {report}\n{}", gateway_log());
     }
 
     fn texts_to(&self, chat: i64) -> Vec<String> {
@@ -220,6 +224,9 @@ fn telegram_serve(stream: TcpStream, state: &Mutex<TgState>) {
     st.methods.push(method.clone());
     match method.as_str() {
         "getUpdates" => {
+            if let Some(d) = st.conflict_for.take() {
+                st.conflict_until = Some(Instant::now() + d);
+            }
             if !st.webhook.is_empty() {
                 drop(st);
                 return respond(stream, "409 Conflict", "", &conflict("Conflict: can't use getUpdates method while webhook is active; use deleteWebhook to delete the webhook first"));
@@ -356,8 +363,26 @@ impl Drop for Running {
     }
 }
 
+thread_local! {
+    /// This test's gateway log: each test runs on its own thread.
+    static GATEWAY_LOG: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The last gateway's stderr, for a failed wait: what it did meanwhile.
+fn gateway_log() -> String {
+    GATEWAY_LOG.with(|l| match &*l.borrow() {
+        Some(path) => format!(
+            "gateway stderr ({}):\n{}",
+            path.display(),
+            std::fs::read_to_string(path).unwrap_or_else(|e| format!("unreadable: {e}"))
+        ),
+        None => "no gateway started on this thread".into(),
+    })
+}
+
 /// A gateway with `RUST_LOG` unset, its stderr in `<home>/stderr.log`.
 fn gateway(home: &Path) -> Running {
+    GATEWAY_LOG.with(|l| *l.borrow_mut() = Some(home.join("stderr.log")));
     let log = std::fs::File::create(home.join("stderr.log")).unwrap();
     let child = command(home, &["gateway"])
         .stdout(Stdio::null())
@@ -393,7 +418,7 @@ fn plain(bytes: &[u8]) -> String {
 fn a_lasting_409_is_told_once_shown_by_status_and_its_end_too() {
     let (url, _) = model_server();
     let tg = FakeTelegram::start();
-    tg.state.lock().unwrap().conflict_until = Some(Instant::now() + Duration::from_secs(4));
+    tg.state.lock().unwrap().conflict_for = Some(Duration::from_secs(4));
     let dir = home(&url, &tg.url, "\n[health]\ntelegram_conflict_secs = 1\n");
     let _gw = gateway(dir.path());
 

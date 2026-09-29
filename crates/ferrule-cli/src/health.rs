@@ -57,18 +57,7 @@ impl Visit for Fields {
 /// chat channels' tokens and the providers' API keys.
 pub fn redactor(cfg: &Config) -> Redactor {
     let mut names: Vec<String> = cfg.secrets.keys().cloned().collect();
-    let g = &cfg.gateway;
-    names.extend(
-        [
-            &g.telegram_token_env,
-            &g.discord_token_env,
-            &g.slack_bot_token_env,
-            &g.slack_app_token_env,
-        ]
-        .into_iter()
-        .flatten()
-        .cloned(),
-    );
+    names.extend(crate::channels::secret_envs(cfg));
     names.extend(
         cfg.providers
             .values()
@@ -205,15 +194,9 @@ fn startup_notice(cfg: &Config, health: &Health) -> Option<Notice> {
 /// Where the gateway's own warnings go: the owner's primary chat on a
 /// channel the gateway runs.
 fn owner(cfg: &Config) -> Option<(String, String)> {
-    let g = &cfg.gateway;
     crate::trust::owners(cfg)
         .into_iter()
-        .find(|o| match o.channel.as_str() {
-            "telegram" => g.telegram_token_env.is_some(),
-            "discord" => g.discord_token_env.is_some(),
-            "slack" => g.slack_bot_token_env.is_some() && g.slack_app_token_env.is_some(),
-            _ => false,
-        })
+        .find(|o| crate::channels::configured(cfg, &o.channel))
         .map(|o| (o.channel, o.chat))
 }
 

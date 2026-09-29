@@ -1,5 +1,5 @@
 //! `ferrule setup`: the interactive installer. The first run walks through
-//! a model provider and its key, Telegram, Discord, Slack, tool credentials, web search, the sandbox,
+//! a model provider and its key, Telegram, Discord, Slack, WhatsApp, tool credentials, web search, the sandbox,
 //! the browser and the background service; later runs open a menu to change any one
 //! part. Answers are checked live where they can be (the key opens the
 //! model list, the bot token answers `getMe`) and saved the moment they're
@@ -8,8 +8,14 @@
 //! comments and layout.
 
 mod channels;
+mod email;
+mod http_api;
 mod local;
+mod matrix;
+mod mattermost;
 mod remote;
+mod signal;
+mod whatsapp;
 
 use crate::config::Plan;
 use crate::{browser, config, probe, secrets, service};
@@ -169,6 +175,30 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(channels::slack_step(t, true).await)?.quit() {
         return Ok(false);
     }
+    heading("WhatsApp");
+    if settle(whatsapp::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
+    heading("Matrix");
+    if settle(matrix::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
+    heading("Mattermost");
+    if settle(mattermost::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
+    heading("Email");
+    if settle(email::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
+    heading("Signal");
+    if settle(signal::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
+    heading("HTTP API");
+    if settle(http_api::step(t, true).await)?.quit() {
+        return Ok(false);
+    }
     heading("Tool credentials");
     if settle(credentials_step(t, http, true).await)?.quit() {
         return Ok(false);
@@ -198,9 +228,11 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
         return Ok(false);
     }
     let gw = t.config()?.gateway;
+    let cfg = t.config()?;
     if gw.telegram_token_env.is_some()
         || gw.discord_token_env.is_some()
         || gw.slack_bot_token_env.is_some()
+        || !crate::channels::configured_names(&cfg).is_empty()
     {
         heading("Background service");
         if settle(service_step(t, true))?.quit() {
@@ -220,6 +252,12 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Telegram             {}", telegram_summary(&cfg)),
             format!("Discord              {}", channels::discord_summary(&cfg)),
             format!("Slack                {}", channels::slack_summary(&cfg)),
+            format!("WhatsApp             {}", whatsapp::summary(&cfg)),
+            format!("Matrix               {}", matrix::summary(&cfg)),
+            format!("Mattermost           {}", mattermost::summary(&cfg)),
+            format!("Email                {}", email::summary(&cfg)),
+            format!("Signal               {}", signal::summary(&cfg)),
+            format!("HTTP API             {}", http_api::summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Web search           {}", web_search_summary(&cfg)),
             format!("Memory recall        {}", memory_summary(&cfg)),
@@ -252,16 +290,22 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             1 => telegram_step(t, http, false).await,
             2 => channels::discord_step(t, false).await,
             3 => channels::slack_step(t, false).await,
-            4 => credentials_step(t, http, false).await,
-            5 => web_search_step(t, false),
-            6 => memory_step(t, false).await,
-            7 => sandbox_step(t, false),
-            8 => network_step(t, false),
-            9 => browser_step(t),
-            10 => crate::mcp_add::setup_step(t, false).await,
-            11 => crate::import::setup_step(t, false).await,
-            12 => remote::step(t).await,
-            13 => service_step(t, false),
+            4 => whatsapp::step(t, false).await,
+            5 => matrix::step(t, false).await,
+            6 => mattermost::step(t, false).await,
+            7 => email::step(t, false).await,
+            8 => signal::step(t, false).await,
+            9 => http_api::step(t, false).await,
+            10 => credentials_step(t, http, false).await,
+            11 => web_search_step(t, false),
+            12 => memory_step(t, false).await,
+            13 => sandbox_step(t, false),
+            14 => network_step(t, false),
+            15 => browser_step(t),
+            16 => crate::mcp_add::setup_step(t, false).await,
+            17 => crate::import::setup_step(t, false).await,
+            18 => remote::step(t).await,
+            19 => service_step(t, false),
             n if Some(n) == another => another_instance(),
             _ => break,
         };
@@ -355,7 +399,7 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
-fn plural(n: usize, one: &str, many: &str) -> String {
+pub(crate) fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
@@ -464,10 +508,7 @@ impl Target {
     fn forget_secret(&mut self, name: &str) -> Result<()> {
         let cfg = self.config()?;
         let used = cfg.providers.values().any(|p| p.api_key_env == name)
-            || cfg.gateway.telegram_token_env.as_deref() == Some(name)
-            || cfg.gateway.discord_token_env.as_deref() == Some(name)
-            || cfg.gateway.slack_bot_token_env.as_deref() == Some(name)
-            || cfg.gateway.slack_app_token_env.as_deref() == Some(name)
+            || crate::channels::reads_env(&cfg, name)
             || cfg.secrets.contains_key(name);
         if !used {
             secrets::remove(&secrets::path()?, name)?;

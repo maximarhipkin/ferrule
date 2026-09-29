@@ -169,7 +169,8 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     let discord_on = discord(&mut r, &cfg, offline).await;
     let slack_on = slack(&mut r, &cfg, offline).await;
     // Any chat channel makes this a gateway that should be running.
-    let chat_on = telegram_on || discord_on || slack_on;
+    let chat_on =
+        telegram_on || discord_on || slack_on || m39_channels(&mut r, &cfg, offline).await;
     let backend = sandbox(&mut r, &cfg, &secrets_path);
     let confined = backend != Backend::None;
     mcp(&mut r, &cfg, backend);
@@ -1950,6 +1951,430 @@ impl Report {
                 self.hint("keep one: stop the other (Ctrl-C in its terminal, or `kill <pid>`); `ferrule status` shows which one this data directory's is");
             }
         }
+    }
+}
+
+/// M39: a line per configured WhatsApp, Matrix, email, Signal, Mattermost
+/// and HTTP API channel. Whether any of them runs.
+async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bool {
+    let mut on = false;
+    if let Some(w) = &cfg.gateway.whatsapp {
+        whatsapp(r, cfg, w, offline).await;
+        on = true;
+    }
+    if let Some(m) = &cfg.gateway.matrix {
+        matrix(r, cfg, m, offline).await;
+        on = true;
+    }
+    if let Some(m) = &cfg.gateway.mattermost {
+        mattermost(r, cfg, m, offline).await;
+        on = true;
+    }
+    if let Some(e) = &cfg.gateway.email {
+        email(r, cfg, e, offline).await;
+        on = true;
+    }
+    if let Some(s) = &cfg.gateway.signal {
+        signal(r, cfg, s, offline).await;
+        on = true;
+    }
+    if let Some(h) = &cfg.gateway.http {
+        http(r, cfg, h, offline).await;
+        on = true;
+    }
+    on
+}
+
+/// The HTTP API: its keys, what answers on its port, and the tunnel.
+async fn http(
+    r: &mut Report,
+    cfg: &config::Config,
+    h: &crate::channels::settings::HttpApi,
+    offline: bool,
+) {
+    use crate::channels::http::{self as api, Listening};
+    let dir = match api::dir() {
+        Ok(d) => d,
+        Err(e) => {
+            r.fail("http", format!("{e:#}"));
+            return;
+        }
+    };
+    let clients = match ferrule_gateway::channels::http::clients::load(&dir) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("http", format!("{e}: no key works until it's fixed"));
+            r.hint("remove the file and make the keys again: `ferrule channels keys add <name>`");
+            return;
+        }
+    };
+    let keys = api::keys_said(&dir);
+    let hooks = clients.iter().filter(|c| c.webhook.is_some()).count();
+    let hooks = if hooks > 0 {
+        format!(" · {hooks} with a webhook")
+    } else {
+        String::new()
+    };
+    let public = if h.public.is_some() {
+        " · public through a tunnel"
+    } else {
+        " · this machine only"
+    };
+    let at = format!("127.0.0.1:{}", h.port);
+    if offline {
+        r.ok("http", format!("{at} · {keys}{hooks}{public}"));
+    } else {
+        match api::listening(h.port).await {
+            Listening::Ours => r.ok("http", format!("answering on {at} · {keys}{hooks}{public}")),
+            Listening::Free => r.ok(
+                "http",
+                format!("{at} is free: it opens with the gateway · {keys}{hooks}{public}"),
+            ),
+            Listening::Other(why) => {
+                r.fail("http", format!("something else is on {at} ({why})"));
+                r.hint("set another `[gateway.http] port`");
+            }
+        }
+    }
+    if clients.is_empty() {
+        r.warn("http", "no key yet, so nothing can call it");
+        r.hint("`ferrule channels keys add <name>`, or the HTTP API card on the dashboard");
+    }
+    if h.public.is_some() {
+        if let Err(e) = api::config(h, cfg, None) {
+            r.fail("http", format!("{e:#}"));
+        }
+    }
+}
+
+/// WhatsApp: the token and number, where webhooks come from, and messages
+/// held by a closed 24-hour window. Reads only; the mailbox is configured
+/// by the gateway and by Test, not here.
+async fn whatsapp(
+    r: &mut Report,
+    cfg: &config::Config,
+    w: &crate::channels::settings::WhatsApp,
+    offline: bool,
+) {
+    use crate::channels::settings::WhatsAppInbound;
+    use crate::channels::whatsapp as cw;
+    use ferrule_gateway::channels::whatsapp as wa;
+    let wc = match cw::config(cfg, w, None) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("whatsapp", format!("{e:#}"));
+            return;
+        }
+    };
+    let allowed = w.allowed_users.len() + usize::from(cfg.trust.whatsapp_owner.is_some());
+    let who = if offline {
+        format!("token set, not checked · {allowed} number(s) allowed")
+    } else {
+        match wa::probe(&wc.api_url, &wc.api_version, &wc.phone_number_id, &wc.token).await {
+            Ok(p) => {
+                format!("{} {} · {allowed} number(s) allowed", p.number, p.name).replace("  ", " ")
+            }
+            Err(why) => {
+                r.fail("whatsapp", why);
+                r.hint("the dashboard's WhatsApp card → Test, or `ferrule setup` → WhatsApp");
+                return;
+            }
+        }
+    };
+    match w.inbound {
+        WhatsAppInbound::Listen => r.ok(
+            "whatsapp",
+            format!(
+                "{who} · webhooks on 127.0.0.1:{} (your tunnel)",
+                w.listen_port
+            ),
+        ),
+        WhatsAppInbound::Relay => {
+            match cw::relay(cfg, w) {
+                None => {
+                    r.fail("whatsapp", "webhooks come through the relay, and none is deployed (or its key is missing)");
+                    r.hint("`ferrule connections relay deploy`, or inbound = \"listen\" behind your own tunnel");
+                }
+                Some(_) if offline => r.ok(
+                    "whatsapp",
+                    format!("{who} · through the relay, not checked"),
+                ),
+                Some((url, _)) => match cw::relay_has_mailbox(&url).await {
+                    Ok(true) => r.ok("whatsapp", format!("{who} · webhooks through the relay")),
+                    Ok(false) => {
+                        r.fail(
+                            "whatsapp",
+                            "the relay predates M39 and has no WhatsApp mailbox",
+                        );
+                        r.hint("`ferrule connections relay deploy` updates it in place");
+                    }
+                    Err(why) => r.fail("whatsapp", why),
+                },
+            }
+        }
+    }
+    if w.template.is_none() {
+        r.note(
+            "whatsapp",
+            "no template: a reply after 24 hours of silence waits until they write again",
+        );
+    }
+    if let Some(dir) = &wc.state_dir {
+        let held = wa::window::held_on_disk(dir, chrono::Utc::now().timestamp());
+        if !held.is_empty() {
+            let list = held
+                .iter()
+                .map(|(chat, n)| format!("{n} for {chat}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            r.warn(
+                "whatsapp",
+                format!("messages held by the closed 24-hour window: {list}"),
+            );
+            r.hint("they go when the person writes again; a template ([gateway.whatsapp] template) tells them sooner");
+        }
+    }
+    if allowed == 0 {
+        r.warn("whatsapp", "no number is allowed, so it answers no one");
+        r.hint("`ferrule setup` → WhatsApp pairs you with a code");
+    }
+}
+
+/// Matrix: the login, the joined rooms, and the encrypted ones it refuses.
+async fn matrix(
+    r: &mut Report,
+    cfg: &config::Config,
+    m: &crate::channels::settings::Matrix,
+    offline: bool,
+) {
+    use ferrule_gateway::channels::matrix as mx;
+    let mc = match crate::channels::matrix::config(m, None) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("matrix", format!("{e:#}"));
+            return;
+        }
+    };
+    let allowed = m.allowed_users.len() + usize::from(cfg.trust.matrix_owner.is_some());
+    let rooms = m.allowed_rooms.len();
+    let lists = format!("{allowed} user(s), {rooms} room(s) allowed");
+    let state_dir = mc.state_dir.clone();
+    if offline {
+        r.ok(
+            "matrix",
+            format!("{} · login set, not checked · {lists}", m.homeserver),
+        );
+    } else {
+        // The gateway's own session when it has one (a password login made
+        // just for this would be one more device).
+        let probe_cfg = match (&mc.login, &state_dir) {
+            (mx::Login::Password { .. }, Some(_)) => mc,
+            _ => mx::MatrixConfig {
+                state_dir: None,
+                ..mc
+            },
+        };
+        match mx::probe(probe_cfg).await {
+            Ok(p) => r.ok("matrix", format!("{} · {lists}", p.summary())),
+            Err(why) => {
+                r.fail("matrix", why);
+                r.hint("log in again with `ferrule setup` → Matrix, or the dashboard's Matrix card → Test");
+                return;
+            }
+        }
+    }
+    if let Some(dir) = &state_dir {
+        let encrypted = mx::encrypted_on_disk(dir);
+        if !encrypted.is_empty() {
+            r.note(
+                "matrix",
+                format!(
+                    "refuses {} encrypted room(s) it was invited to: {}",
+                    encrypted.len(),
+                    encrypted.join(", ")
+                ),
+            );
+            r.hint("ferrule can't read end-to-end encrypted rooms; make one with encryption off and invite the bot there");
+        }
+    }
+    if allowed == 0 && rooms == 0 {
+        r.warn("matrix", "no user or room is allowed, so it answers no one");
+        r.hint("`ferrule setup` → Matrix pairs you with a code");
+    }
+}
+
+/// Mattermost: the bot account, and whether it's in the channels it's
+/// allowed to answer in.
+async fn mattermost(
+    r: &mut Report,
+    cfg: &config::Config,
+    m: &crate::channels::settings::Mattermost,
+    offline: bool,
+) {
+    use ferrule_gateway::channels::mattermost as mm;
+    let mc = match crate::channels::mattermost::config(m, None) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("mattermost", format!("{e:#}"));
+            return;
+        }
+    };
+    let allowed = m.allowed_users.len() + usize::from(cfg.trust.mattermost_owner.is_some());
+    let chans = m.allowed_channels.len();
+    let lists = format!("{allowed} user(s), {chans} channel(s) allowed");
+    if offline {
+        r.ok(
+            "mattermost",
+            format!("{} · token set, not checked · {lists}", m.server_url),
+        );
+    } else {
+        match mm::probe(mc.clone()).await {
+            Ok(p) => {
+                r.ok("mattermost", format!("{} · {lists}", p.summary()));
+                if !p.is_bot {
+                    r.hint("a bot account (Integrations → Bot Accounts) keeps its posts marked as a bot's and apart from a person's");
+                }
+            }
+            Err(why) => {
+                r.fail("mattermost", why);
+                r.hint("make a new token under Integrations → Bot Accounts, then `ferrule setup` → Mattermost or the dashboard's Mattermost card");
+                return;
+            }
+        }
+        if chans > 0 {
+            if let Ok(joined) = mm::channels(mc).await {
+                let missing: Vec<&str> = m
+                    .allowed_channels
+                    .iter()
+                    .filter(|c| !joined.iter().any(|j| &j.id == *c))
+                    .map(String::as_str)
+                    .collect();
+                if !missing.is_empty() {
+                    r.warn(
+                        "mattermost",
+                        format!(
+                            "the bot isn't a member of {} allowed channel(s): {}",
+                            missing.len(),
+                            missing.join(", ")
+                        ),
+                    );
+                    r.hint("invite it there: /invite @<bot> in the channel");
+                }
+            }
+        }
+    }
+    if allowed == 0 && chans == 0 {
+        r.warn(
+            "mattermost",
+            "no user or channel is allowed, so it answers no one",
+        );
+        r.hint("`ferrule setup` → Mattermost pairs you with a code");
+    }
+}
+
+/// Email: logs in to IMAP and SMTP (reads nothing, marks nothing read),
+/// whether the server has IDLE, and who may write.
+async fn email(
+    r: &mut Report,
+    cfg: &config::Config,
+    e: &crate::channels::settings::Email,
+    offline: bool,
+) {
+    let ec = match crate::channels::email::config(e, None) {
+        Ok(c) => c,
+        Err(err) => {
+            r.fail("email", format!("{err:#}"));
+            return;
+        }
+    };
+    let owner = cfg.trust.email_owner.is_some();
+    let lists = format!(
+        "{} sender(s) allowed",
+        e.allowed_senders.len() + usize::from(owner)
+    );
+    let vouching = if ec.require_auth {
+        ""
+    } else {
+        " · unvouched mail accepted"
+    };
+    if offline {
+        r.ok(
+            "email",
+            format!(
+                "{} via {} · password set, not checked · {lists}{vouching}",
+                ec.address, ec.imap.host
+            ),
+        );
+    } else {
+        match ferrule_gateway::channels::email::probe(ec).await {
+            Ok(p) => r.ok("email", format!("{} · {lists}{vouching}", p.summary())),
+            Err(why) => {
+                r.fail("email", why);
+                r.hint("`ferrule setup` → Email, or the dashboard's Email card → Test");
+                return;
+            }
+        }
+    }
+    if e.allowed_senders.is_empty() && !owner {
+        r.warn("email", "no sender is allowed, so it answers no one");
+        r.hint("add your address to [gateway.email] allowed_senders, or `ferrule setup` → Email");
+    }
+}
+
+/// Signal: signal-cli and Java on this machine, the daemon (ferrule's or
+/// yours) and the account's groups, and who may write.
+async fn signal(
+    r: &mut Report,
+    cfg: &config::Config,
+    s: &crate::channels::settings::Signal,
+    offline: bool,
+) {
+    use crate::channels::signal as sg;
+    if let Err(e) = sg::config(s, None) {
+        r.fail("signal", format!("{e:#}"));
+        return;
+    }
+    let owner = cfg.trust.signal_owner.is_some();
+    let allowed = s.allowed_users.len() + usize::from(owner);
+    let lists = format!(
+        "{allowed} user(s), {} group(s) allowed",
+        s.allowed_groups.len()
+    );
+    let account = s.account.trim();
+    if offline {
+        let found = if s.url.is_none() {
+            let f = sg::detect(Some(s)).await;
+            format!(" · {}", f.summary())
+        } else {
+            String::new()
+        };
+        r.ok(
+            "signal",
+            format!(
+                "{account} via {}{found} · not checked · {lists}",
+                sg::url(s)
+            ),
+        );
+    } else {
+        match sg::test(s).await {
+            Ok(said) => r.ok("signal", format!("{said} · {lists}")),
+            Err(why) => {
+                r.fail("signal", why);
+                r.hint("`ferrule setup` → Signal, or the dashboard's Signal card → Test");
+                return;
+            }
+        }
+    }
+    if s.url.is_none() {
+        let found = sg::detect(Some(s)).await;
+        if found.signal_cli.is_none() {
+            r.fail("signal", found.summary());
+            r.hint("install signal-cli: https://github.com/AsamK/signal-cli/releases (the JVM build needs Java 21+)");
+        }
+    }
+    if allowed == 0 && s.allowed_groups.is_empty() {
+        r.warn("signal", "no one is allowed, so it answers no one");
+        r.hint("add your number to [gateway.signal] allowed_users, or `ferrule setup` → Signal");
     }
 }
 

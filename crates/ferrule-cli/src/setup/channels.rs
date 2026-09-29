@@ -399,13 +399,13 @@ fn manage(title: &str, allowed: &[String]) -> Result<Manage> {
 }
 
 /// Six digits for the user to DM the bot.
-fn pairing_code() -> String {
+pub(super) fn pairing_code() -> String {
     let n = u32::from_le_bytes(ferrule_connections::seal::random::<4>());
     format!("{:06}", n % 1_000_000)
 }
 
 /// Run the channel until someone pairs or [`PAIR_WAIT`] runs out.
-async fn wait_for<C: Channel + 'static>(
+pub(super) async fn wait_for<C: Channel + 'static>(
     ch: Arc<C>,
     paired: impl Fn() -> Option<(String, String)>,
 ) -> Result<Option<(String, String)>> {
