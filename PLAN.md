@@ -822,6 +822,23 @@ that convention yet — ask before introducing one).
     - Older sections and session-log entries below name the pre-M40
       paths (`tests/<file>.rs`, `--test <file>`); read them as
       `tests/it/<file>.rs` and `--test it <file>::`.
+  - **M41 daily use**: **built** (2026-09-29, branch `m41-daily-use`,
+    PR to main open, not merged). Design and what was verified:
+    `docs/m41-daily-use.md`; user docs `docs/channels.md` (chat commands,
+    voice messages, typing) and `docs/backup.md`.
+    - `/new` (`/reset`) in every chat: stops the lane's turn, drops what
+      waited, keeps the transcript as `<sid>.<stamp>.jsonl`; the same 4xx
+      twice suggests it. `/help`, Telegram's command menu, Discord's
+      `/new` `/help`, and `/new` in `ferrule chat`.
+    - Voice messages transcribed in the router for every channel that
+      saves files (Telegram now downloads voice and audio):
+      `[transcription]` auto/openai/command/off, a ledger row per call, a
+      doctor `voice` line, and the sender told how to turn it on.
+    - A typing indicator while a turn runs (Telegram, Discord, Matrix,
+      WhatsApp), stopped before the reply; `[gateway] typing`.
+    - `ferrule backup` / `ferrule restore`: a checked `.tar.gz`, secrets
+      only on request, the old data moved aside, never deleted; doctor
+      shows the last backup's age.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -5297,3 +5314,63 @@ the file out would not remove the race, so the test now waits
 - The repo-external sweep (`cargo-sweep.py --keep 2`) is still worth
   running: it is what removes the previous release's copies.
 
+
+### 2026-09-29 — M41 daily use (Devi, Opus 5.5)
+
+**Scope.** The four things that make ferrule livable from a phone every
+day: escape a broken conversation, talk to it by voice, see that it's
+working, and move it to a new machine. Branch `m41-daily-use`; design,
+decisions and what was verified in `docs/m41-daily-use.md`.
+
+**What was built** (one commit each).
+- **`/new` and `/reset`** in every channel: stop the lane's turn, drop
+  what waited, move the transcript to `<sid>.<stamp>.jsonl` (kept, never
+  deleted), memory untouched. The same 4xx twice in a lane adds a hint to
+  send `/new`. `/help`; Telegram's command menu; Discord's `/new` and
+  `/help` slash commands; `/new` in `ferrule chat`.
+- **Voice transcription** in the router, before the agent sees the
+  message: `[transcription]` with `auto` (OpenAI key → OpenAI), `openai`
+  (any compatible endpoint: Groq, a local server), `command` (whisper.cpp
+  or anything that prints text), `off`. Language detected unless pinned.
+  A ledger row per call, a doctor `voice` line; without a backend the
+  sender is told once per lane how to turn it on. Telegram now downloads
+  voice notes and audio.
+- **Typing indicator**: one refresher per turn (Telegram 4 s, Discord 8 s,
+  Matrix 25 s and cleared, WhatsApp read receipt 20 s), stopped before the
+  reply, on `/stop` and on error, and for the rest of the turn after a
+  429. `[gateway] typing`, on by default. Fixed on the way: a clean
+  shutdown could race a status write and leave `status.txt` behind.
+- **`ferrule backup` / `ferrule restore`**: a `.tar.gz` (0600) with a
+  sha256 manifest; SQLite copied with `VACUUM INTO`; caches left out;
+  secrets only with `--include-secrets`. Restore refuses while the gateway
+  or its service runs (and says how to stop it), checks every file and the
+  version before anything moves, keeps the old data as
+  `<data>.pre-restore-<stamp>`, carries secrets over when the backup has
+  none, and has `--dry-run`. Doctor shows the last backup's age. User doc:
+  `docs/backup.md`.
+
+**Tests.** 1628 → 1659 passed, 28 ignored. New integration modules:
+`ferrule-gateway/tests/it/{daily_use,voice,typing}.rs`,
+`ferrule-cli/tests/it/backup.rs`, plus unit tests. clippy and fmt clean.
+
+**Eval.** `eval run evals/starter --variant ab`, real binary, mock model:
+engineered 20/20, naive 11/20, $0.98 total, unchanged.
+
+**Not verified live.** No real Telegram/Discord/Matrix/WhatsApp account,
+no real transcription endpoint, no real systemd/launchd service during a
+restore; all are covered by mocks (see the design doc §5).
+
+**Decisions for Max.**
+- Backups are 0600 even without secrets; conversations are private too.
+- Restoring a backup without secrets keeps the machine's current ones.
+- An archive from a newer release line (newer major, or newer minor on
+  0.x) is refused; older ones restore.
+- `restore --dry-run` reports a running gateway but doesn't refuse.
+- In the dashboard console, `backup` is allowed without secrets and
+  `restore` is terminal-only (`--dry-run` excepted).
+- Typing is on by default in the config, also for scheduled turns;
+  Discord skips it while a slash command is deferred.
+- The transcription ledger row records cost, not duration.
+
+**Follow-ups.** Voice on Discord/Slack; scheduled backups with pruning;
+other Telegram file kinds; typing on Slack and Mattermost.

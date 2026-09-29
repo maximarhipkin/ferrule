@@ -22,6 +22,7 @@ use crate::channels::access::{self, Access, Dm};
 use crate::error::GatewayError;
 use crate::message::{InboundMessage, OutboundMessage};
 use crate::stream::chunks;
+use crate::typing::Typing;
 use ratelimit::Limits;
 use reqwest::Method;
 use serde_json::{json, Value};
@@ -48,7 +49,8 @@ const FLAG_CONTENT: u64 = (1 << 18) | (1 << 19);
 
 /// The slash commands `ferrule setup` registers, each with an optional
 /// `args` string.
-pub const SLASH_COMMANDS: [(&str, &str); 11] = [
+pub const SLASH_COMMANDS: [(&str, &str); 13] = [
+    ("new", "Start a fresh conversation (the old one is saved)"),
     ("status", "What ferrule is doing"),
     ("stop", "Stop every run (kill switch)"),
     ("resume", "Let runs start again"),
@@ -60,6 +62,7 @@ pub const SLASH_COMMANDS: [(&str, &str); 11] = [
     ("caps", "Spending caps"),
     ("mcp", "MCP servers"),
     ("connections", "Connected services"),
+    ("help", "The commands"),
 ];
 
 /// View Channels, Send Messages, Send Messages in Threads, Read Message
@@ -676,6 +679,28 @@ impl DiscordChannel {
 impl Channel for DiscordChannel {
     fn name(&self) -> &str {
         "discord"
+    }
+
+    /// `POST /channels/{id}/typing`, which shows for 10 s: again every 8.
+    /// A slash command already shows "thinking…".
+    async fn typing(&self, chat_id: &str, _message_id: &str, on: bool) -> Typing {
+        if !on || self.deferred.lock().unwrap().contains_key(chat_id) {
+            return Typing::Unsupported;
+        }
+        let Ok((channel, _)) = self.channel_of(chat_id).await else {
+            return Typing::Failed;
+        };
+        let path = format!("/channels/{channel}/typing");
+        match self.rest(Method::POST, &path, None, false).await {
+            Ok(_) => Typing::Shown {
+                again_in: Duration::from_secs(8),
+            },
+            Err(GatewayError::RateLimited { .. }) => Typing::Limited,
+            Err(e) => {
+                tracing::debug!(error = %e, "discord: typing");
+                Typing::Failed
+            }
+        }
     }
 
     fn capabilities(&self) -> ChannelCapabilities {

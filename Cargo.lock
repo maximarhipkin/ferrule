@@ -838,6 +838,7 @@ dependencies = [
  "minisign-verify",
  "reqwest",
  "ring",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",

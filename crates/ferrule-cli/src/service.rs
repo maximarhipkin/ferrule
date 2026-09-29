@@ -267,6 +267,17 @@ impl Svc {
         }
     }
 
+    /// The command that stops the service, for messages.
+    pub fn stop_hint(&self) -> String {
+        if cfg!(target_os = "macos") {
+            format!("launchctl bootout {}", self.launchd_target())
+        } else if self.scope == Scope::System {
+            format!("sudo systemctl stop {}", self.short())
+        } else {
+            format!("systemctl --user stop {}", self.short())
+        }
+    }
+
     pub fn status(&self) -> Status {
         let unit = match self.unit_path() {
             Ok(unit) => unit,

@@ -96,8 +96,11 @@ Telegram, else Discord, else Slack.
 - 👀 on your message means it was received.
 - Approvals come with **Allow** and **Refuse** buttons. Typing `yes`/`no`
   works too.
-- **Slash commands:** `/status /stop /resume /model /dashboard /skills
-  /undo /plan /caps /mcp /connections`, each with an optional `args`.
+- **Slash commands:** `/new /status /stop /resume /model /dashboard
+  /skills /undo /plan /caps /mcp /connections /help`, each with an optional
+  `args`. `/new` starts a fresh conversation in that chat
+  ([channels.md](channels.md#chat-commands)). A bot set up before M41 gets
+  the two new ones on the next `ferrule setup`.
   `ferrule setup` registers them (the daemon never does). Global commands
   can take a while to appear in the client. Typed commands always work:
   `/status` in a DM, `@Ferrule /status` in a channel.

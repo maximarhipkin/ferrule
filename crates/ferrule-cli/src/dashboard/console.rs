@@ -98,6 +98,18 @@ pub const PARITY: &[Leaf] = &[
     ),
     leaf("status", Read, "Home + console", ""),
     leaf(
+        "backup",
+        Change,
+        "console",
+        "`--include-secrets` is terminal only",
+    ),
+    leaf(
+        "restore",
+        Refused("it refuses while the gateway runs, and the page is the gateway: stop it and restore at the terminal"),
+        "terminal only",
+        "`--dry-run` checks a backup from the console",
+    ),
+    leaf(
         "dashboard link",
         Change,
         "console",
@@ -428,6 +440,10 @@ pub fn classify(path: &str, m: &ArgMatches) -> Class {
             Refused("it asks questions: add -y (the page's confirm stands for it)")
         }
         "stop" if flag(m, "status") => Read,
+        "backup" if flag(m, "include_secrets") => Refused(
+            "a file of every key shouldn't be made from a browser: run it at the terminal",
+        ),
+        "restore" if flag(m, "dry_run") => Read,
         "trust caps" if given(m, "set") && !flag(m, "yes") => Refused(
             "raising a cap asks first: add --yes (the page's confirm stands for it)",
         ),
@@ -822,6 +838,10 @@ mod tests {
         assert!(matches!(class("gateway"), Refused(_)));
         assert!(matches!(class("chat"), Refused(_)));
         assert!(matches!(class("config edit"), Refused(_)));
+        assert_eq!(class("backup"), Change);
+        assert!(matches!(class("backup --include-secrets"), Refused(_)));
+        assert!(matches!(class("restore b.tar.gz"), Refused(_)));
+        assert_eq!(class("restore --dry-run b.tar.gz"), Read);
         assert!(
             matches!(class("mcp add x --no-sandbox -y -- node s.js"), Refused(w) if w.contains("sandbox"))
         );

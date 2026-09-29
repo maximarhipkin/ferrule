@@ -21,10 +21,12 @@
 //! that isn't allowed is a warning (once an hour) that `/status` shows.
 
 use crate::channel::{Button, ButtonAction, Channel, ChannelCapabilities};
+use crate::channels::files::{self, Inbox, Refused, Saved};
 use crate::error::GatewayError;
 use crate::health::human;
-use crate::message::{InboundMessage, OutboundMessage};
+use crate::message::{Attachment, InboundMessage, OutboundMessage};
 use crate::stream::chunks;
+use crate::typing::Typing;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -49,6 +51,15 @@ const IGNORED_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// The most a `sendMessage` text may hold, in UTF-16 units as Telegram
 /// counts (its documented limit; Discord has 2000, Slack 4000).
 pub const MESSAGE_LIMIT: usize = 4096;
+
+/// The command menu ferrule registers with `setMyCommands` (M41): the ones
+/// anyone in the chat may send. Telegram wants them without the slash.
+pub const MENU: &[(&str, &str)] = &[
+    ("new", "Start a fresh conversation (the old one is saved)"),
+    ("stop", "Stop what I'm doing"),
+    ("status", "What I'm doing right now"),
+    ("help", "The commands"),
+];
 
 /// Why a poll failed: `Retry` heals by itself (network, Telegram's own 5xx,
 /// a rate limit, a bad body); `Conflict` is a 409, which needs the owner if
@@ -76,6 +87,18 @@ struct Parsed {
     unread: Option<&'static str>,
     /// Photos sent together share this; they get one reply, not one each.
     album: Option<String>,
+    /// A voice note or audio file, taken into the inbox when there is one
+    /// (M41), and the caption that came with it.
+    audio: Option<TgAudio>,
+}
+
+/// A voice note or audio file in an update.
+struct TgAudio {
+    file_id: String,
+    name: String,
+    mime: Option<String>,
+    size: Option<u64>,
+    caption: String,
 }
 
 pub struct TelegramChannel {
@@ -103,6 +126,9 @@ pub struct TelegramChannel {
     ignored: Mutex<HashMap<i64, Instant>>,
     /// Albums already told their photos weren't read.
     albums: Mutex<HashSet<String>>,
+    /// Where voice notes and audio files are saved (M41); `None` leaves
+    /// them unread, as before.
+    inbox: Option<Inbox>,
 }
 
 impl TelegramChannel {
@@ -139,7 +165,15 @@ impl TelegramChannel {
             conflict: Mutex::new(None),
             ignored: Mutex::new(HashMap::new()),
             albums: Mutex::new(HashSet::new()),
+            inbox: None,
         }
+    }
+
+    /// Saves voice notes and audio files people send here, so the gateway
+    /// can transcribe them (M41). Other files keep the "only text" reply.
+    pub fn with_inbox(mut self, inbox: Option<Inbox>) -> Self {
+        self.inbox = inbox;
+        self
     }
 
     /// Tests only: short deadlines and backoff so a hung or failing mock
@@ -296,6 +330,7 @@ impl TelegramChannel {
                 if let Some(q) = update.get("callback_query") {
                     self.mark_choice(q).await;
                 }
+                let parsed = self.take_audio(parsed).await;
                 if let Some(kind) = parsed.unread.filter(|_| parsed.msg.text.is_empty()) {
                     self.cannot_read(&parsed, kind).await;
                     continue;
@@ -306,6 +341,80 @@ impl TelegramChannel {
             }
         }
         Ok(true)
+    }
+
+    /// A voice note or audio file, saved to the inbox: the message then
+    /// carries it as an attachment with M39's line about it, and is read.
+    async fn take_audio(&self, mut parsed: Parsed) -> Parsed {
+        let (Some(inbox), Some(audio)) = (&self.inbox, parsed.audio.take()) else {
+            return parsed;
+        };
+        let (saved, refused) = match self.download(inbox, &parsed.msg.message_id, &audio).await {
+            Ok(s) => (vec![s], vec![]),
+            Err(r) => (vec![], vec![r]),
+        };
+        parsed.msg.attachments = saved
+            .iter()
+            .map(|s| Attachment {
+                kind: s.mime.clone(),
+                url: s.path.to_string_lossy().into_owned(),
+                name: Some(s.rel.clone()),
+            })
+            .collect();
+        parsed.msg.text = files::with_notes(&audio.caption, &saved, &refused);
+        parsed.unread = None;
+        parsed
+    }
+
+    /// `getFile`, then the file itself, capped at the inbox's size.
+    async fn download(
+        &self,
+        inbox: &Inbox,
+        message_id: &str,
+        audio: &TgAudio,
+    ) -> Result<Saved, Refused> {
+        let refuse = |why: String| Refused {
+            name: audio.name.clone(),
+            why,
+        };
+        if let Some(n) = audio.size.filter(|n| *n > inbox.max_bytes()) {
+            return Err(inbox.too_big(&audio.name, n));
+        }
+        let file = self
+            .call("getFile", json!({ "file_id": audio.file_id }))
+            .await
+            .map_err(|e| refuse(format!("Telegram didn't hand it over ({e})")))?;
+        let Some(path) = file.get("file_path").and_then(Value::as_str) else {
+            return Err(refuse(
+                "Telegram didn't hand it over (no file_path; bots can fetch files up to 20 MB)"
+                    .into(),
+            ));
+        };
+        let url = format!("{}/file/bot{}/{}", self.base_url, self.token, path);
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| refuse(format!("the download failed: {}", e.without_url())))?;
+        if !resp.status().is_success() {
+            return Err(refuse(format!(
+                "the download failed (HTTP {})",
+                resp.status()
+            )));
+        }
+        let bytes = files::read_capped(resp, inbox.max_bytes())
+            .await
+            .map_err(refuse)?;
+        inbox
+            .save(
+                "telegram",
+                message_id,
+                &audio.name,
+                audio.mime.as_deref(),
+                &bytes,
+            )
+            .map_err(|e| refuse(format!("it couldn't be saved: {e}")))
     }
 
     fn api_url(&self, method: &str) -> String {
@@ -376,6 +485,21 @@ impl TelegramChannel {
             return Err(format!("{method} failed (status {status}): {body}"));
         }
         Ok(body.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    /// M41: the command menu under the chat's `/` button. Best effort: a
+    /// bot without it works the same, so a failure is only logged.
+    async fn set_commands(&self) {
+        let commands: Vec<Value> = MENU
+            .iter()
+            .map(|(command, description)| json!({"command": command, "description": description}))
+            .collect();
+        let call = self.call("setMyCommands", json!({ "commands": commands }));
+        match tokio::time::timeout(Duration::from_secs(5), call).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::debug!(error = %e, "telegram: couldn't set the command menu"),
+            Err(_) => tracing::debug!("telegram: setting the command menu timed out"),
+        }
     }
 
     /// A webhook set on the bot makes Telegram push updates there and
@@ -556,6 +680,7 @@ impl TelegramChannel {
                 msg,
                 unread: None,
                 album: None,
+                audio: None,
             });
         }
         let message = update.get("message")?;
@@ -603,8 +728,38 @@ impl TelegramChannel {
             },
             unread,
             album,
+            audio: tg_audio(message),
         })
     }
+}
+
+/// The voice note or audio file in a message, if it has one.
+fn tg_audio(message: &Value) -> Option<TgAudio> {
+    let (key, a) = ["voice", "audio"]
+        .into_iter()
+        .find_map(|k| message.get(k).map(|a| (k, a)))?;
+    let file_id = a.get("file_id")?.as_str()?.to_string();
+    let mime = a
+        .get("mime_type")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let name = match (key, a.get("file_name").and_then(Value::as_str)) {
+        (_, Some(n)) => n.to_string(),
+        // A voice note is Ogg Opus with no name.
+        ("voice", None) => "voice.ogg".to_string(),
+        (_, None) => "audio".to_string(),
+    };
+    Some(TgAudio {
+        file_id,
+        name,
+        mime,
+        size: a.get("file_size").and_then(Value::as_u64),
+        caption: message
+            .get("caption")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    })
 }
 
 /// What a message carries that ferrule can't read, in words for the
@@ -867,6 +1022,24 @@ impl Channel for TelegramChannel {
         "telegram"
     }
 
+    /// `sendChatAction typing`, which shows for 5 s: again every 4.
+    async fn typing(&self, chat_id: &str, _message_id: &str, on: bool) -> Typing {
+        if !on {
+            return Typing::Unsupported;
+        }
+        let action = json!({ "chat_id": chat_id, "action": "typing" });
+        match self.deliver("sendChatAction", &action).await {
+            Ok(_) => Typing::Shown {
+                again_in: Duration::from_secs(4),
+            },
+            Err(GatewayError::RateLimited { .. }) => Typing::Limited,
+            Err(e) => {
+                tracing::debug!(error = %e, "telegram: typing");
+                Typing::Failed
+            }
+        }
+    }
+
     fn capabilities(&self) -> ChannelCapabilities {
         ChannelCapabilities {
             reactions: true,
@@ -902,6 +1075,7 @@ impl Channel for TelegramChannel {
     /// rejects the token, and `Ok` once the receiving side of `tx` is gone.
     async fn run(&self, tx: mpsc::Sender<InboundMessage>) -> Result<(), GatewayError> {
         self.remove_webhook().await;
+        self.set_commands().await;
         let mut backoff = self.backoff_min;
         let mut failures = 0u32;
         loop {
@@ -1483,6 +1657,8 @@ mod tests {
     struct Bot {
         url: String,
         calls: Arc<Mutex<Vec<(String, Value)>>>,
+        /// The last `setMyCommands` body (M41), kept apart from `calls`.
+        menu: Arc<Mutex<Option<Value>>>,
     }
 
     impl Bot {
@@ -1491,6 +1667,8 @@ mod tests {
             let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
             let calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
             let log = calls.clone();
+            let menu: Arc<Mutex<Option<Value>>> = Arc::default();
+            let set_menu = menu.clone();
             let webhook = Arc::new(Mutex::new(webhook.to_string()));
             let polls = Arc::new(Mutex::new(std::collections::VecDeque::from(polls)));
             std::thread::spawn(move || {
@@ -1539,6 +1717,10 @@ mod tests {
                             200,
                             json!({"ok": true, "result": {"url": *webhook.lock().unwrap()}}),
                         ),
+                        "setMyCommands" => {
+                            *set_menu.lock().unwrap() = Some(body);
+                            (200, json!({"ok": true, "result": true}))
+                        }
                         _ => {
                             if method == "deleteWebhook" {
                                 webhook.lock().unwrap().clear();
@@ -1555,7 +1737,7 @@ mod tests {
                     let _ = stream.write_all(resp.as_bytes());
                 }
             });
-            Self { url, calls }
+            Self { url, calls, menu }
         }
 
         /// The texts sent to `chat`.
@@ -1662,6 +1844,25 @@ mod tests {
         handle.abort();
         assert_eq!(got.unwrap().text, "hi");
         assert!(bot.methods().is_empty(), "{:?}", bot.methods());
+    }
+
+    #[tokio::test]
+    async fn the_command_menu_is_registered_at_start() {
+        let bot = Bot::start("", vec![updates(vec![json!({"text": "hi"})])]);
+        let channel = channel(&bot);
+        let (tx, mut rx) = mpsc::channel(8);
+        let run = channel.clone();
+        let handle = tokio::spawn(async move { run.run(tx).await });
+        timeout(Duration::from_secs(3), rx.recv()).await.unwrap();
+        handle.abort();
+        let menu = bot.menu.lock().unwrap().clone().expect("setMyCommands");
+        let names: Vec<&str> = menu["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["new", "stop", "status", "help"]);
     }
 
     #[tokio::test]

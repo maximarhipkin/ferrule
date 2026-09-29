@@ -25,6 +25,7 @@ use crate::channels::files::{self, Inbox};
 use crate::error::GatewayError;
 use crate::message::{Attachment, InboundMessage, OutboundMessage};
 use crate::stream::chunks;
+use crate::typing::Typing;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1246,6 +1247,34 @@ pub async fn probe(cfg: MatrixConfig) -> Result<Probe, String> {
 impl Channel for MatrixChannel {
     fn name(&self) -> &str {
         "matrix"
+    }
+
+    /// `PUT /rooms/{room}/typing/{me}` for 30 s, again every 25; cleared
+    /// at the end.
+    async fn typing(&self, chat_id: &str, _message_id: &str, on: bool) -> Typing {
+        let (Ok(room), Ok(me)) = (self.room_for(chat_id).await, self.me().await) else {
+            return Typing::Failed;
+        };
+        let path = format!(
+            "/_matrix/client/v3/rooms/{}/typing/{}",
+            enc(&room),
+            enc(&me)
+        );
+        let body = if on {
+            json!({ "typing": true, "timeout": 30000 })
+        } else {
+            json!({ "typing": false })
+        };
+        match self.call(Method::PUT, &path, Some(&body), "typing").await {
+            Ok(_) => Typing::Shown {
+                again_in: Duration::from_secs(25),
+            },
+            Err(e) if e.status == 429 => Typing::Limited,
+            Err(e) => {
+                tracing::debug!("matrix: typing: {}", e.message);
+                Typing::Failed
+            }
+        }
     }
 
     fn capabilities(&self) -> ChannelCapabilities {

@@ -1,5 +1,6 @@
 mod agents;
 mod autocommit;
+mod backup;
 mod browser;
 mod channels;
 mod config;
@@ -40,6 +41,7 @@ mod setup;
 mod subscription;
 mod tasks_admin;
 mod telemetry;
+mod transcription;
 mod trust;
 mod update;
 mod web_search;
@@ -198,6 +200,25 @@ enum Cmd {
     /// What the running gateway is doing: turns, spend, schedule, channels
     /// and recent errors (the same report `/status` answers in a chat)
     Status,
+    /// Write a .tar.gz of this instance's data and config, secrets left
+    /// out unless asked (docs/backup.md)
+    Backup {
+        /// Where to write it [default: ferrule-backup-<time>.tar.gz here]
+        #[arg(long, short = 'o', value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Add keys, sign-ins and credentials too (the file stays readable
+        /// by you only)
+        #[arg(long)]
+        include_secrets: bool,
+    },
+    /// Put a backup back after checking it; the data here is moved aside,
+    /// never deleted (docs/backup.md)
+    Restore {
+        file: PathBuf,
+        /// Check the backup and say what would change, change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// The dashboard: a one-time login link to the running gateway's page
     /// (or the page served from here when none runs), revoke every session
     /// (docs/dashboard.md)
@@ -805,6 +826,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::Backup {
+            out,
+            include_secrets,
+        } => backup::backup(out, include_secrets)?,
+        Cmd::Restore { file, dry_run } => backup::restore(&file, dry_run)?,
         Cmd::Dashboard { op } => dashboard::cli::cmd(op).await?,
         Cmd::Model { op } => models::cmd(op).await?,
         Cmd::Tasks { op } => {
@@ -1889,20 +1915,47 @@ async fn close_tree(sup: &ferrule_agents::Supervisor, root: &str) {
     }
 }
 
+/// `/help`'s lines for the commands this binary's interceptors answer
+/// (M41), after the gateway's own `/new`, `/status` and `/help`.
+const CHAT_COMMANDS: &[(&str, &str)] = &[
+    (
+        "/stop",
+        "stop every run now; nothing new starts until /resume",
+    ),
+    ("/resume", "let runs start again (owner)"),
+    (
+        "/plan <task>",
+        "explore read-only, then ask before running the plan",
+    ),
+    ("/undo", "revert the agent's last commit (owner)"),
+    ("/model", "show or switch the model"),
+    ("/login, /logout", "sign in to a ChatGPT or Claude plan"),
+    ("/connect, /connections", "connected services"),
+    (
+        "/skills, /mcp, /hooks, /caps",
+        "what's installed, and spending caps",
+    ),
+    (
+        "/dashboard",
+        "a link to the dashboard (owner's private chat)",
+    ),
+];
+
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
-    let session_id = uuid::Uuid::new_v4().to_string();
+    let mut session_id = uuid::Uuid::new_v4().to_string();
     let undo_dir = dunce::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
-    let (mut agent, sup) = build_root(provider, workspace, 60, &session_id, "chat").await?;
+    let (mut agent, mut sup) =
+        build_root(provider.clone(), workspace.clone(), 60, &session_id, "chat").await?;
     // M27: the answer prints as the model writes it.
-    let streamed = config::Config::load()
+    let stream = config::Config::load()
         .map(|(cfg, _)| cfg.agent.stream)
-        .unwrap_or(true)
-        .then(|| {
-            let (sink, streamed) = chat_stream();
-            agent.set_reply_stream(Some(sink));
-            streamed
-        });
-    println!("ferrule chat — Ctrl-D to exit. Session {session_id}");
+        .unwrap_or(true);
+    let mut streamed = stream.then(|| {
+        let (sink, streamed) = chat_stream();
+        agent.set_reply_stream(Some(sink));
+        streamed
+    });
+    println!("ferrule chat — Ctrl-D to exit, /new for a fresh conversation. Session {session_id}");
     let stdin = std::io::stdin();
     loop {
         // Reports from agents it started reach it with your next message.
@@ -1924,6 +1977,36 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
         }
         let prompt = line.trim();
         if prompt.is_empty() {
+            continue;
+        }
+        // M41: a fresh conversation; the old session stays on disk.
+        if prompt == "/new" || prompt == "/reset" {
+            let n = agent
+                .messages
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        m.role,
+                        ferrule_core::Role::User | ferrule_core::Role::Assistant
+                    )
+                })
+                .count();
+            if let Some(sup) = &sup {
+                close_tree(sup, &session_id).await;
+            }
+            agent.end_session("new", &spawn_renderer(false)).await;
+            let old = std::mem::replace(&mut session_id, uuid::Uuid::new_v4().to_string());
+            (agent, sup) =
+                build_root(provider.clone(), workspace.clone(), 60, &session_id, "chat").await?;
+            streamed = stream.then(|| {
+                let (sink, streamed) = chat_stream();
+                agent.set_reply_stream(Some(sink));
+                streamed
+            });
+            println!(
+                "\x1b[90m[new] New conversation. The previous one ({n} message{}) is saved as session {old}. Session {session_id}\x1b[0m",
+                if n == 1 { "" } else { "s" }
+            );
             continue;
         }
         // M29: take back the latest agent commit, without a model call.
@@ -2018,7 +2101,13 @@ fn build_channels(
                 .with_owner(trust::owner_chat(cfg))
                 .with_conflict_after(Duration::from_secs(
                     cfg.health.telegram_conflict_secs.max(1),
-                )),
+                ))
+                .with_inbox(workspace.map(|ws| {
+                    ferrule_gateway::channels::files::Inbox::new(
+                        ws,
+                        ferrule_gateway::channels::files::DEFAULT_MAX_MB,
+                    )
+                })),
         );
         named_channels.insert(telegram.name().to_string(), telegram);
     }
@@ -2251,7 +2340,9 @@ async fn run_gateway(
     let router = Arc::new(
         Router::new(sessions_dir, agent_factory, named_channels.clone())
             .with_max_turn(health::max_turn(&cfg))
-            .with_streaming(streaming_channels(&cfg), StreamPacing::default()),
+            .with_streaming(streaming_channels(&cfg), StreamPacing::default())
+            .with_typing(cfg.gateway.typing())
+            .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
     );
     files.bind(&router);
     // A chat whose agents report while it's idle is run again, and its
@@ -2431,6 +2522,11 @@ async fn run_gateway(
             owner: trust::owner_chat(&cfg),
         }));
     }
+    gateway = gateway.with_help(
+        CHAT_COMMANDS
+            .iter()
+            .map(|(c, w)| (c.to_string(), w.to_string())),
+    );
     for channel in adapters {
         gateway.add_channel(channel);
     }

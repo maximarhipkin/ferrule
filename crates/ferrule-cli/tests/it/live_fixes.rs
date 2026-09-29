@@ -262,6 +262,16 @@ fn telegram_serve(stream: TcpStream, state: &Mutex<TgState>) {
             drop(st);
             respond(stream, "200 OK", "", &info.to_string());
         }
+        "getFile" => {
+            drop(st);
+            let file =
+                json!({"ok": true, "result": {"file_id": "v1", "file_path": "voice/file_1.oga"}});
+            respond(stream, "200 OK", "", &file.to_string());
+        }
+        "file_1.oga" => {
+            drop(st);
+            respond(stream, "200 OK", "", "OggS");
+        }
         "deleteWebhook" => {
             st.webhook.clear();
             st.sent.push(json!({"deleteWebhook": body}));
@@ -347,6 +357,7 @@ fn command(home: &Path, args: &[&str]) -> Command {
         "WATCHDOG_USEC",
         "WATCHDOG_PID",
         "RUST_LOG",
+        "OPENAI_API_KEY",
     ] {
         cmd.env_remove(var);
     }
@@ -534,12 +545,16 @@ fn messages_that_arent_text_get_plain_words() {
     let dir = home(&url, &tg.url, "");
     let _gw = gateway(dir.path());
 
+    // M41: a voice note is saved; with no transcription set up the sender
+    // hears how to turn it on, and the agent gets the file.
     tg.push(42, json!({"voice": {"file_id": "v1", "duration": 3}}));
     let (n, voice) = tg.wait_for(42, "I got your", 0);
-    assert_eq!(
-        voice,
-        "I got your voice message, but I can only read text for now, so I don't know what's in it. Please type your message instead."
+    assert!(
+        voice.starts_with("I got your voice message and saved it, but voice transcription is off")
+            && voice.contains("OPENAI_API_KEY"),
+        "{voice}"
     );
+    let (n, _) = tg.wait_for(42, "PLAIN", n);
     // An album is one reply.
     for _ in 0..3 {
         tg.push(

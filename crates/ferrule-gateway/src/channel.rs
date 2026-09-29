@@ -153,6 +153,14 @@ pub trait Channel: Send + Sync {
         None
     }
 
+    /// M41: show (`on`) or clear "typing…" in `chat_id` while a turn runs;
+    /// `message_id` is the message the turn answers (WhatsApp shows it on
+    /// that). Called by one refresher per turn, again after `again_in`.
+    async fn typing(&self, chat_id: &str, message_id: &str, on: bool) -> crate::Typing {
+        let _ = (chat_id, message_id, on);
+        crate::Typing::Unsupported
+    }
+
     /// Whether the gateway tells a chat it's still busy with the previous
     /// message. A program's request (the HTTP API) just waits its turn.
     fn busy_notices(&self) -> bool {
