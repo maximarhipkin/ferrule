@@ -72,6 +72,8 @@ tar = { version = "0.4", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 semver = "1"
 tempfile = { workspace = true }
+# M41: a consistent copy of each database for `ferrule backup`.
+rusqlite = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }

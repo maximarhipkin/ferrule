@@ -3,6 +3,7 @@
 //! A new test file is a module here, not a file in `tests/`.
 
 mod agents;
+mod backup;
 mod channels;
 mod claude_plan;
 mod dashboard;

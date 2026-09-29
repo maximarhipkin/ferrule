@@ -195,6 +195,7 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     update_check(&mut r, &cfg, offline).await;
     repairs_check(&mut r);
     health_check(&mut r, &cfg, chat_on);
+    r.note("backup", crate::backup::doctor_line());
     connections_check(&mut r, &cfg);
     editing_check(&mut r, &cfg);
     ssh_check(&mut r, &cfg, offline).await;

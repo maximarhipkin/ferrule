@@ -334,7 +334,7 @@ pub fn running_gateways() -> Vec<u32> {
 }
 
 /// The pid in a fresh running marker, if it's alive.
-fn marker_pid() -> Option<u32> {
+pub fn marker_pid() -> Option<u32> {
     let path = dir().ok()?.join(RUNNING_FILE);
     let age = std::fs::metadata(&path)
         .and_then(|m| m.modified())

@@ -1,5 +1,6 @@
 mod agents;
 mod autocommit;
+mod backup;
 mod browser;
 mod channels;
 mod config;
@@ -199,6 +200,25 @@ enum Cmd {
     /// What the running gateway is doing: turns, spend, schedule, channels
     /// and recent errors (the same report `/status` answers in a chat)
     Status,
+    /// Write a .tar.gz of this instance's data and config, secrets left
+    /// out unless asked (docs/backup.md)
+    Backup {
+        /// Where to write it [default: ferrule-backup-<time>.tar.gz here]
+        #[arg(long, short = 'o', value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Add keys, sign-ins and credentials too (the file stays readable
+        /// by you only)
+        #[arg(long)]
+        include_secrets: bool,
+    },
+    /// Put a backup back after checking it; the data here is moved aside,
+    /// never deleted (docs/backup.md)
+    Restore {
+        file: PathBuf,
+        /// Check the backup and say what would change, change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// The dashboard: a one-time login link to the running gateway's page
     /// (or the page served from here when none runs), revoke every session
     /// (docs/dashboard.md)
@@ -806,6 +826,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::Backup {
+            out,
+            include_secrets,
+        } => backup::backup(out, include_secrets)?,
+        Cmd::Restore { file, dry_run } => backup::restore(&file, dry_run)?,
         Cmd::Dashboard { op } => dashboard::cli::cmd(op).await?,
         Cmd::Model { op } => models::cmd(op).await?,
         Cmd::Tasks { op } => {
