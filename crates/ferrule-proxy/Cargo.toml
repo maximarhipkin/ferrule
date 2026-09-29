@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-proxy"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "Credential gateway: sandboxed commands hold placeholders, a local proxy swaps in the real secrets for the hosts they're bound to"
 license = "MIT OR Apache-2.0"

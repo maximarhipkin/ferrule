@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-plans"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 description = "M35 subscription plans: ChatGPT sign-in and its sealed tokens, the plans' usage windows, and the Claude Code engine that runs a turn inside the unmodified claude binary"
 license = "MIT OR Apache-2.0"
