@@ -1203,3 +1203,23 @@ also in the final report.
    hard-coded colour would dodge `tokens_meet_wcag_aa`.
 7. **Part 2: the tests live in `dashboard/page_tests.rs`**, next to the
    assets they read, not in `mod.rs`.
+8. **Part 3: `GET /api/setup` is its own endpoint.** The plan derived the
+   checklist in the page from `/api/health`, `/api/models` and the chat
+   log. Three requests, and the "hello" step needs the ledger. One small
+   server-side view (`dashboard/setup.rs`) answers it, tested through the
+   real binary (`tests/it/dashboard_m47.rs`).
+9. **Part 3: steps open in place by reusing the section code.** The plan
+   drew a fresh panel per step. The model and Telegram panels borrow
+   `sections.models` and `sections.channels` (`Object.create` with a
+   different mount point), so the two flows cannot drift apart. Their
+   boxes live in `home.boxes` so the 3-second redraw does not wipe a
+   half-typed key.
+10. **Part 3: Home draws its own notices.** The global banner is skipped
+    on Home (`refresh()`), otherwise every problem showed twice. Other
+    sections keep the banner.
+11. **Part 3: the old `.steps li::before` tick** belonged to the doctor
+    list and leaked a tofu glyph onto the checklist's `<ol>`. It is now
+    scoped to `ul.steps`.
+12. **Part 3: the setup test uses a fresh fake Telegram for its second
+    gateway.** One fake shared by two gateways in turn was flaky (the first
+    process can still be mid-poll and swallow the update).

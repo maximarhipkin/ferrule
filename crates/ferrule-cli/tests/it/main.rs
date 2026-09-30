@@ -7,6 +7,7 @@ mod backup;
 mod channels;
 mod claude_plan;
 mod dashboard;
+mod dashboard_m47;
 mod eval;
 mod goal;
 mod health;

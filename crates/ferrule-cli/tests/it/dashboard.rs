@@ -397,7 +397,7 @@ pub(super) fn gateway(home: &Path, env: &[(&str, &str)]) -> Running {
 
 /// `[gateway]` for the fake Telegram (the group -100 and 42, the owner),
 /// local links only, and no reference catalog from the internet.
-fn telegram(tg: &FakeTelegram) -> String {
+pub(super) fn telegram(tg: &FakeTelegram) -> String {
     format!(
         "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"{}\"\ntelegram_allowed_chats = [-100, 42]\n\n[dashboard]\nremote = \"off\"\n",
         tg.url
@@ -406,7 +406,7 @@ fn telegram(tg: &FakeTelegram) -> String {
 
 /// Provider `a` (a-one, a-two) and `b` (b-large, b-small), `fast` =
 /// b/b-small, default_provider `a`; `models` goes into `[models]`.
-fn two(a: &Server, b: &Server, models: &str, extra: &str) -> String {
+pub(super) fn two(a: &Server, b: &Server, models: &str, extra: &str) -> String {
     format!(
         r#"default_provider = "a"
 
@@ -617,7 +617,7 @@ impl Page {
 }
 
 /// The owner asks for a link in their chat and signs in with it.
-fn sign_in(tg: &FakeTelegram, from: usize) -> (usize, Page) {
+pub(super) fn sign_in(tg: &FakeTelegram, from: usize) -> (usize, Page) {
     tg.say(42, "/dashboard");
     let (n, said) = tg.wait_for(42, "Dashboard: ", from);
     let (port, token) = link_in(&said);

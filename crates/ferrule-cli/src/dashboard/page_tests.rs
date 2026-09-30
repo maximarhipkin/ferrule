@@ -251,3 +251,39 @@ fn the_page_loads_nothing_from_elsewhere() {
         !JS.contains("XMLHttpRequest") && !JS.contains("WebSocket") && !JS.contains("EventSource")
     );
 }
+
+/// The `GLOSSARY` keys and the plain sentence each carries.
+fn glossary() -> BTreeMap<String, String> {
+    let body = JS
+        .split("const GLOSSARY = {")
+        .nth(1)
+        .expect("a GLOSSARY")
+        .split("\n  };")
+        .next()
+        .unwrap();
+    body.lines()
+        .filter_map(|l| {
+            let (k, v) = l.trim().split_once(": \"")?;
+            Some((k.to_string(), v.trim_end_matches("\",").to_string()))
+        })
+        .collect()
+}
+
+#[test]
+fn every_tip_has_a_definition() {
+    let have = glossary();
+    assert!(have.len() >= 15, "parsed only {} terms", have.len());
+    for (term, meaning) in &have {
+        assert!(
+            meaning.split_whitespace().count() >= 5 && meaning.ends_with('.'),
+            "{term}: a definition is a sentence, got {meaning:?}"
+        );
+    }
+    let asked = quoted_after(JS, "tip(");
+    assert!(!asked.is_empty(), "the page uses no tip()");
+    let missing: Vec<&&str> = asked.iter().filter(|a| !have.contains_key(**a)).collect();
+    assert!(
+        missing.is_empty(),
+        "tip() words with no definition: {missing:?}"
+    );
+}

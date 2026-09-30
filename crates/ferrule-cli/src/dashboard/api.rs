@@ -93,6 +93,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         return match path {
             "health" => ok(health(ctx)),
             "managed" => ok(managed_view(ctx)),
+            "setup" => super::setup::view(ctx),
             "connections" => connections(ctx).await,
             "connections/checklist" => connections_checklist(ctx).await,
             "models" => models(ctx),

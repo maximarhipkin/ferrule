@@ -218,6 +218,59 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
   const get = (path) => js(`return await window.ferrule.api(${JSON.stringify(path)})`);
   const run = async (name, fn) => { try { step(name, true, await fn()); } catch (e) { step(name, false, e.message); } };
 
+  // M47: the first-run checklist on Home follows the bot, opens a step in
+  // place, and words like "fallback" explain themselves.
+  await run("first-run checklist", async () => {
+    await until("the checklist", () => js(`return document.querySelectorAll("#main .steps .step").length === 3`));
+    const bar = await js(`const p = document.querySelector('#main [role="progressbar"]'); return p && [p.getAttribute("aria-valuenow"), p.getAttribute("aria-valuemax")]`);
+    if (!bar || bar[1] !== "3" || Number(bar[0]) < 1) throw new Error("the progress bar says " + JSON.stringify(bar));
+    if (SHOTS) {
+      mkdirSync(SHOTS, { recursive: true });
+      for (const [w, h] of [[390, 844], [1280, 860]]) {
+        await size(w, h);
+        await sleep(600);
+        const r = await cdp("Page.captureScreenshot", { format: "png" });
+        writeFileSync(join(SHOTS, `home-first-run-${w}.png`), Buffer.from(r.data, "base64"));
+      }
+      await size(1280, 900);
+    }
+    if (!(await click("#main .steps", "Say hello"))) throw new Error("no Say hello button");
+    await until("the chat", () => js(`return !!document.querySelector(".composer textarea")`));
+    await until("the answer to the greeting", () => js(`return document.querySelectorAll(".bubble:not(.you)").length > 0`), 45);
+    await js(`window.ferrule.show("health")`);
+    await until("the checklist to finish and go", () => js(`return !document.querySelector("#main .steps")`), 20);
+    return "3 steps, " + bar[0] + " of 3 at first, gone once the bot answered";
+  });
+
+  await run("a step opens in place", async () => {
+    // Pretend the model step is open, to see the provider form come up in it.
+    await js(`
+      const h = window.ferrule.sections.health;
+      const steps = [{ id: "model", done: false, label: "Give your bot a brain", detail: "x" }, { id: "hello", done: false, label: "Say hello", detail: "y" }];
+      const real = h.load;
+      h.load = async function (health) { this.last = { h: health, approvals: [], setup: { done: false, steps } }; this.draw(); };
+      window.__realLoad = real;
+      await h.load((await window.ferrule.api("/api/health")));`);
+    if (!(await click("#main .steps", "Set up"))) throw new Error("no Set up button");
+    await until("a provider form in the step", () => js(`return document.querySelectorAll("#main .step-panel .card").length > 0`), 15).catch(async (e) => {
+      throw new Error(e.message + "; the panel: " + (await js(`const p = document.querySelector("#main .step-panel"); return p ? p.outerHTML.slice(0, 300) : "none"`)));
+    });
+    const n = await js(`return document.querySelectorAll("#main .step-panel .card").length`);
+    if (!(await click("#main .steps", "Close"))) throw new Error("no Close button");
+    await js(`window.ferrule.sections.health.load = window.__realLoad; window.ferrule.show("health")`);
+    return n + " provider cards drawn inside the step";
+  });
+
+  await run("a glossary word explains itself", async () => {
+    await until("Details", () => js(`return [...document.querySelectorAll("#main details summary")].some((s) => /Details/.test(s.textContent))`));
+    await js(`[...document.querySelectorAll("#main details summary")].find((s) => /Details/.test(s.textContent)).click()`);
+    await until("the words", () => js(`return !!document.querySelector("#main button.tip")`));
+    await js(`document.querySelector("#main button.tip").click()`);
+    const shown = await js(`const b = document.querySelector("#main button.tip"); const d = document.getElementById(b.getAttribute("aria-controls")); return !d.hidden && d.textContent.length > 20 && b.getAttribute("aria-expanded") === "true"`);
+    if (!shown) throw new Error("the definition didn't open");
+    return "a tip opens its sentence";
+  });
+
   await run("dismiss a notice", async () => {
     const before = await get("/api/health");
     const target = (before.problems || []).find((p) => p.id && p.closable);

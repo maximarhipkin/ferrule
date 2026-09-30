@@ -553,22 +553,175 @@
 
   const sections = {};
 
+  // ---- words a stranger may not know (M47) --------------------------------
+  // `tip("fallback")` is the word as a button; it opens its plain meaning in
+  // place (no hover: a phone has none).
+  const GLOSSARY = {
+    model: "The AI that reads your message and writes the answer. Different models cost different amounts.",
+    fallback: "A second model to use when the first one is down, so a chat keeps going.",
+    cap: "A limit on how much your bot may spend or do in a day. When it's reached, the bot stops and says so.",
+    turn: "One message from you and everything the bot does to answer it.",
+    approval: "A question the bot asks you before doing something risky, like running a command. You answer Allow or Refuse.",
+    channel: "A place you talk to your bot from: Telegram, Discord, Slack, this page.",
+    connection: "An account your bot signs in to, like Google or GitHub, so it can work there for you.",
+    MCP: "A standard way to plug extra tools into your bot, such as a calendar or a database.",
+    skill: "A written how-to your bot reads when a task calls for it.",
+    hook: "A small command that runs by itself when something happens, like before a tool is used.",
+    cron: "A schedule, written as five fields (minute, hour, day, month, weekday). \"0 9 * * *\" is every day at 9:00.",
+    routing: "Starting each turn on a cheap model and moving to a stronger one only when the cheap one fails.",
+    tunnel: "A private web address that lets you open this page from your phone while your bot runs at home.",
+    token: "A secret code that proves who you are to a service. Keep it private.",
+    lane: "One conversation's line: messages in a chat wait their turn so answers don't mix.",
+    watchdog: "A timer that notices when a turn has made no progress for a while and says so.",
+    heartbeat: "A regular \"I'm alive\" signal the bot sends so you know it's running.",
+    relay: "A helper server that passes messages between your bot and a service that can't reach it directly.",
+    pin: "Fixing one chat to one model, whatever the default is.",
+    alias: "A short nickname for a model, like \"fast\".",
+  };
+  let tips = 0;
+  function tip(term) {
+    const def = el("span", { class: "tip-def", id: "tip-" + ++tips, role: "note", text: GLOSSARY[term] || "", hidden: true });
+    const b = el("button", { type: "button", class: "tip", "aria-expanded": "false", "aria-controls": def.id, text: term });
+    b.onclick = () => { def.hidden = !def.hidden; b.setAttribute("aria-expanded", String(!def.hidden)); };
+    return frag(b, def);
+  }
+
+  // ---- Home (M47): what state it's in, what needs you, what to do next ---
+
+  // The first-run checklist keeps its open panels between polls: a step's
+  // form is drawn once into a box that outlives every redraw of the page.
+  const home = {
+    open: null,
+    boxes: {},
+    models: null,
+    channels: null,
+    hidden: () => { try { return localStorage.getItem("ferrule-setup-hidden") === "1"; } catch (_) { return false; } },
+    hide() { try { localStorage.setItem("ferrule-setup-hidden", "1"); } catch (_) { /* private mode */ } },
+    box(id) { return this.boxes[id] || (this.boxes[id] = el("div", { class: "step-panel stack" })); },
+    // The Models section's provider forms, drawn into this box: same code,
+    // same calls, so a key typed here is tested and saved the same way.
+    modelPanel() {
+      const fresh = !this.boxes.model;
+      const box = this.box("model");
+      if (!this.models) {
+        const M = this.models = Object.create(sections.models);
+        M.fbEdited = false;
+        M.home = true;
+        M.drawChoices = function () {
+          const ps = (this.choices && this.choices.providers) || [];
+          setKids(box, ps.length ? el("div", { class: "tiles" }, ps.map((p) => this.provider(p))) : el("p", { class: "muted", text: "No provider is listed." }));
+        };
+        M.loadChoices = async function () {
+          try { this.choices = await api("/api/models/choices"); } catch (e) { return sectionError(box, e); }
+          this.drawChoices();
+          refresh();
+        };
+      }
+      if (fresh) this.models.loadChoices();
+      return box;
+    },
+    // The Channels section's Telegram walk-through (token, wait, allow).
+    telegramPanel() {
+      const fresh = !this.boxes.telegram;
+      const box = this.box("telegram");
+      if (!this.channels) {
+        const C = this.channels = Object.create(sections.channels);
+        C.said = {};
+        C.load = function () { setKids(box, this.telegram({ configured: false })); };
+      }
+      if (fresh) this.channels.load();
+      return box;
+    },
+  };
+
+  function status(h) {
+    const list = h.problems || [];
+    const busy = (h.turns || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
+    if (h.kill && h.kill.on) return ["bad", "Stopped: the kill switch is on, so nothing will run."];
+    if (list.some((p) => p.top)) return ["bad", "Your bot needs you: " + list.length + (list.length === 1 ? " thing" : " things") + " to fix."];
+    if (list.length) return ["warn", "Your bot is running, with " + list.length + (list.length === 1 ? " thing" : " things") + " to look at."];
+    if (busy.length) return ["ok pulse", "Your bot is working on " + (busy.length === 1 ? "a message" : busy.length + " messages") + " now."];
+    return ["ok", h.gateway ? "Your bot is running. All quiet." : "All quiet. The gateway isn't running in this process."];
+  }
+
+  function checklist(s) {
+    const steps = s.steps;
+    const n = steps.filter((x) => x.done).length;
+    const modelDone = (steps.find((x) => x.id === "model") || {}).done;
+    const more = (x) => {
+      if (x.id === "hello") {
+        const b = button(x.done ? "Open chat" : "Say hello", { kind: x.done ? null : "primary", icon: "send" });
+        b.disabled = !modelDone && !x.done;
+        b.onclick = async () => {
+          if (!x.done) {
+            b.setAttribute("aria-busy", "true");
+            try { await api("/api/chat/send", { text: "Hi! Introduce yourself in two lines." }); } catch (e) { toast(e.message, true); b.removeAttribute("aria-busy"); return; }
+          }
+          show("chat");
+        };
+        return b;
+      }
+      if (x.done) return null;
+      const opened = home.open === x.id;
+      const b = button(opened ? "Close" : x.id === "model" ? "Set up" : "Connect", { kind: opened ? null : "primary" });
+      b.setAttribute("aria-expanded", String(opened));
+      b.onclick = () => { delete home.boxes[x.id]; home.open = opened ? null : x.id; sections.health.draw(); };
+      return b;
+    };
+    return el("section", { class: "card accent", "aria-labelledby": "setup-h" },
+      el("div", { class: "card-head" },
+        el("h3", { id: "setup-h", text: "Get started" }),
+        el("span", { class: "muted small", text: n + " of " + steps.length + " done" }),
+        button("Hide this", { kind: "ghost", onclick: () => { home.hide(); sections.health.draw(); } })),
+      el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(steps.length), "aria-valuenow": String(n), "aria-label": "Setup progress" },
+        steps.map((x) => el("span", { class: x.done ? "seg on" : "seg" }))),
+      el("ol", { class: "steps" }, steps.map((x, i) => el("li", { class: "step" + (x.done ? " done" : "") },
+        el("span", { class: "mark", "aria-hidden": "true" }, x.done ? icon("check") : String(i + 1)),
+        el("div", { class: "body" },
+          el("div", { class: "t" }, x.label, x.done ? el("span", { class: "sr", text: " (done)" }) : null,
+            x.skippable && !x.done ? el("span", { class: "muted small", text: " · optional" }) : null),
+          el("div", { class: "d msg", dir: "auto", text: x.detail })),
+        more(x),
+        home.open === x.id && !x.done && x.id !== "hello"
+          ? (x.id === "model" ? home.modelPanel() : home.telegramPanel()) : null))));
+  }
+
+  const QUICK = [
+    ["chat", "chat", "Chat", "Talk to your bot here"],
+    ["tasks", "tasks", "Tasks", "Things it does on a schedule"],
+    ["usage", "usage", "Spending", "What it has cost so far"],
+    ["models", "models", "Models", "Pick or add a brain"],
+  ];
+
   sections.health = {
     title: "Home",
     every: 3,
     mount(root) {
       this.box = el("div");
+      this.last = null;
       root.append(this.box, doctor.box);
       doctor.draw();
     },
     async load(h) {
+      let approvals = [];
+      let setup = null;
+      await Promise.all([
+        api("/api/approvals").then((a) => { approvals = a.approvals; }).catch(() => { /* not here */ }),
+        api("/api/setup").then((s) => { setup = s; }).catch(() => { /* an older page's server */ }),
+      ]);
+      this.last = { h, approvals, setup };
+      this.draw();
+    },
+    draw() {
+      if (!this.last) return;
+      const { h, approvals, setup } = this.last;
       const kill = h.kill || null;
       const hb = h.heartbeat;
       const ch = h.channels || [];
       const turns = h.turns || [];
       const wd = h.watchdog;
-      let approvals = [];
-      try { approvals = (await api("/api/approvals")).approvals; } catch (_) { /* not here */ }
+      const [level, said] = status(h);
+      const running = turns.filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
       const lanes = ch.length ? ch.map((c) => c.name).join(" + ") + (ch.length === 1 ? " lane" : " lanes") : null;
       const rows = [
         h.last_start ? ["last start", text(h.last_start)] : null,
@@ -581,42 +734,59 @@
         (h.updates || []).length ? ["updates", el("div", {}, ...h.updates.map((l) => el("div", { class: "msg", dir: "auto", text: l })))] : null,
         (h.repairs || []).length ? ["repairs", el("div", {}, ...h.repairs.map((l) => el("div", { class: "msg", dir: "auto", text: l })))] : null,
       ].filter(Boolean);
+      const showList = setup && !setup.done && !home.hidden();
+      const tgOpen = setup && setup.done && !(setup.steps.find((x) => x.id === "telegram") || {}).done;
       setKids(this.box,
-        secHead("Home", (h.problems || []).length ? (h.problems.length + " to look at") : "all quiet",
-          btn("Run doctor", "doctor/run", {}),
-          kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
+        el("section", { class: "card hero", "aria-label": "Status" },
+          el("div", { class: "row" }, led(level),
+            el("p", { class: "lead grow", text: said }),
+            btn("Run doctor", "doctor/run", {}),
+            kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
+          el("p", { class: "muted small m0", text: [h.version ? "v" + h.version : null, h.uptime ? "up " + h.uptime : null, lanes].filter(Boolean).join(" · ") })),
         MANAGED.on ? el("div", { class: "card" },
           el("h3", { text: "Managed" }),
           el("p", { class: "muted small", dir: "auto", text: MANAGED.reason }),
           (MANAGED.locks || []).length ? el("ul", {}, ...MANAGED.locks.map((l) => el("li", { dir: "auto", text: l }))) : null,
           el("p", { class: "small", text: "Commands: " + MANAGED.protection })) : null,
+        problems(h.problems),
+        showList ? checklist(setup) : null,
         approvalsCard(approvals),
+        el("div", { class: "quick" }, QUICK.map(([sec, ic, t, d]) => el("button", { type: "button", class: "quick-tile", onclick: () => show(sec) },
+          icon(ic), el("span", { class: "t", text: t }), el("span", { class: "d", text: d }))),
+          tgOpen && !showList ? el("button", { type: "button", class: "quick-tile", onclick: () => show("channels", { tile: "telegram" }) },
+            icon("telegram"), el("span", { class: "t", text: "Telegram" }), el("span", { class: "d", text: "Talk to your bot from your phone" })) : null),
+        running.length ? el("section", { class: "card", "aria-label": "Running now" },
+          el("h3", { class: "mt0", text: "Running now" }),
+          table(["where", "message", "for", ""], running.map((t) => ({ cells: [
+            frag(el("span", { class: "mono small", text: t.place }), t.stuck ? frag(" ", tag("stuck", "bad")) : null),
+            frag(text(t.text), t.activity ? el("span", { class: "sub msg", dir: "auto", text: t.activity }) : null),
+            el("span", { class: "mono", text: secs(t.busy_secs) }),
+            btn("Stop", "turn/stop", { session: t.session }, "danger"),
+          ]})))) : null,
+        turns.length > running.length ? el("p", { class: "muted small", text: (turns.length - running.length) + " queued behind them." }) : null,
         hiddenNotices(h.hidden),
-        el("div", { class: "stats" },
-          stat("version", h.version ? "v" + h.version : "–"),
-          stat("uptime", h.uptime || "–", h.started ? "since " + h.started : null),
-          stat("gateway", h.gateway ? "running" : "standalone", h.gateway ? lanes : "the gateway's page has the lanes"),
-          stat("watchdog", wd ? (wd.ok ? "ok" : "attention") : "–",
-            wd && wd.ok && wd.after_secs ? "no-progress " + secs(wd.after_secs) : (wd && !wd.ok ? "see below" : null)),
-          stat("heartbeat", hb ? ago(hb.last_at) : "not set", hb ? hb.host + " · every " + secs(hb.every_secs) : null)),
-        rows.length ? el("div", { class: "card" }, kv(rows)) : null,
-        el("h3", { text: "Channels" }),
-        ch.length ? table(["channel", "polls", "last ok poll", ""], ch.map((c) => ({ cells: [
-          frag(led(c.stale ? "bad" : "ok pulse"), " ", c.name,
-            c.problem ? el("span", { class: "sub msg", dir: "auto", text: c.problem }) : null),
-          c.polls ? "yes" : "no",
-          el("span", { class: c.stale ? "bad" : "mono muted", text: ago(c.last_ok_poll) }),
-          c.stale ? btn("Restart", "channels/restart", { name: c.name }) : null,
-        ]}))) : el("div", { class: "empty", text: "no channel in this process" }),
-        el("h3", { text: "Running turns" }),
-        turns.length ? table(["where", "message", "for", ""], turns.map((t) => ({ cells: [
-          frag(el("span", { class: "mono small", text: t.place }), t.stuck ? frag(" ", tag("stuck", "bad")) : null),
-          frag(text(t.text), t.activity ? el("span", { class: "sub msg", dir: "auto", text: t.activity }) : null),
-          t.busy_secs === null || t.busy_secs === undefined ? el("span", { class: "muted", text: "queued" }) : el("span", { class: "mono", text: secs(t.busy_secs) }),
-          t.busy_secs === null || t.busy_secs === undefined ? null : btn("Stop", "turn/stop", { session: t.session }, "danger"),
-        ]}))) : el("div", { class: "empty", text: "nothing running" }),
-        h.spend ? el("h3", { text: "Spend today, against the caps" }) : null,
-        h.spend ? capsCard(h.spend) : null);
+        disc("home-details", "card", frag("Details ", el("span", { class: "muted small", text: "· gateway, channels, caps" })),
+          el("div", { class: "details-body stack" },
+            el("p", { class: "muted small m0" }, "A ", tip("channel"), " is where you talk to your bot. The ", tip("watchdog"),
+              " and ", tip("heartbeat"), " tell you it is alive; a ", tip("cap"), " limits what it may spend."),
+            el("div", { class: "stats" },
+              stat("version", h.version ? "v" + h.version : "–"),
+              stat("uptime", h.uptime || "–", h.started ? "since " + h.started : null),
+              stat("gateway", h.gateway ? "running" : "standalone", h.gateway ? lanes : "the gateway's page has the lanes"),
+              stat("watchdog", wd ? (wd.ok ? "ok" : "attention") : "–",
+                wd && wd.ok && wd.after_secs ? "no-progress " + secs(wd.after_secs) : (wd && !wd.ok ? "see below" : null)),
+              stat("heartbeat", hb ? ago(hb.last_at) : "not set", hb ? hb.host + " · every " + secs(hb.every_secs) : null)),
+            rows.length ? kv(rows) : null,
+            el("h4", { class: "mb0", text: "Channels" }),
+            ch.length ? table(["channel", "polls", "last ok poll", ""], ch.map((c) => ({ cells: [
+              frag(led(c.stale ? "bad" : "ok pulse"), " ", c.name,
+                c.problem ? el("span", { class: "sub msg", dir: "auto", text: c.problem }) : null),
+              c.polls ? "yes" : "no",
+              el("span", { class: c.stale ? "bad" : "mono muted", text: ago(c.last_ok_poll) }),
+              c.stale ? btn("Restart", "channels/restart", { name: c.name }) : null,
+            ]}))) : el("div", { class: "empty", text: "no channel in this process" }),
+            h.spend ? el("h4", { class: "mb0", text: "Spend today, against the caps" }) : null,
+            h.spend ? capsCard(h.spend) : null)));
     },
   };
 
@@ -965,7 +1135,7 @@
         await new Promise((r) => setTimeout(r, 3000));
         try { this.chatgpt = await api("/api/plans/chatgpt/poll"); } catch (_) { break; }
         if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); break; }
-        if (current === "models" && !this.fbEdited) this.drawChoices();
+        if ((current === "models" || (this.home && current === "health")) && !this.fbEdited) this.drawChoices();
       }
     },
   };
@@ -2159,7 +2329,8 @@
       badges.connections = probs.filter((p) => p.section === "connections").length;
       if (ap) badges.chat = ap.approvals.length;
       markNav();
-      setKids(banner, problems(probs));
+      // Home draws the problems itself, under its status sentence.
+      setKids(banner, name === "health" ? null : problems(probs));
       if (!(auto === true && !s.every) && (s.live || !typing())) await s.load(lastHealth);
     } catch (e) {
       if (!csrf) return;

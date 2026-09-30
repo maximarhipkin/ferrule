@@ -20,6 +20,7 @@ mod page_tests;
 pub mod panel;
 mod public;
 pub mod runs;
+pub mod setup;
 mod telegram;
 #[cfg(test)]
 pub mod testing;
