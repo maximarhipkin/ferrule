@@ -25,6 +25,7 @@ pub mod tool;
 pub mod transcript;
 pub mod triggers;
 pub mod verify;
+pub mod vision;
 
 pub use agent::{Agent, AgentConfig, ContextOverflow, RetryPolicy};
 pub use baseline::{load_context_baseline, load_context_baseline_layered};
@@ -37,7 +38,7 @@ pub use ledger::{
     EvalTag, LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch, TraceEvent, TraceLevel,
 };
 pub use lifecycle::{HookEvent, HookSet};
-pub use message::{Message, NativeBlocks, Role, ToolCall, Usage};
+pub use message::{ImageRef, Message, NativeBlocks, Role, ToolCall, Usage};
 pub use profile::HarnessProfile;
 pub use provider::{
     CompletionRequest, CompletionResponse, Delta, DeltaSink, FailOver, Provider, Served,

@@ -63,6 +63,16 @@ pub struct Entry {
 pub const CLAUDE_CODE_WINDOW: usize = 1_000_000;
 
 impl Entry {
+    /// Whether this model sees photos: the config's `vision`, else its name.
+    /// A model run through Claude Code never does (its engine is text).
+    pub fn sees_images(&self) -> bool {
+        self.plan != Some(crate::config::Plan::ClaudeCode)
+            && self
+                .options
+                .vision
+                .unwrap_or_else(|| ferrule_providers::vision::by_name(&self.model))
+    }
+
     /// A driver for this model with `key`.
     pub fn client(&self, key: impl Into<String>) -> Arc<dyn Provider> {
         if let Some(plan) = self.plan {
@@ -662,6 +672,16 @@ impl Models {
         self.pick(&mut st, scope)
     }
 
+    /// Whether the model `scope` asks for sees photos (before outages).
+    pub fn wanted_sees_images(&self, scope: &Scope) -> bool {
+        let mut st = self.state.lock().unwrap();
+        self.refresh(&mut st);
+        self.refresh_pins(&mut st);
+        self.pick(&mut st, scope)
+            .map(|e| e.sees_images())
+            .unwrap_or(false)
+    }
+
     fn pick(&self, st: &mut State, scope: &Scope) -> Result<Entry, String> {
         self.pick_floor(st, scope).map(|(e, _)| e)
     }
@@ -1046,6 +1066,11 @@ impl Provider for RoutedProvider {
         &self.name
     }
 
+    fn sees_images(&self) -> bool {
+        // Advisory: the model that serves a call decides for itself.
+        self.models.wanted_sees_images(&self.scope)
+    }
+
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
         self.complete_routed(req).await.1
     }
@@ -1402,6 +1427,33 @@ max_tokens = 32000
         assert_eq!(cat.price("a", "a-two").unwrap().output, 8.0);
         assert_eq!(cat.price("a", "hand-picked").unwrap().output, 2.0);
         assert_eq!(cat.price("zz", "a-one"), None);
+    }
+
+    #[test]
+    fn a_model_sees_photos_by_its_name_unless_the_config_says() {
+        let text = r#"
+default_provider = "a"
+[providers.a]
+base_url = "https://api.example.com/v1"
+api_key_env = "PATH"
+model = "gpt-4o"
+[providers.a.models."deepseek-chat"]
+[providers.a.models."gpt-4o-mini"]
+vision = false
+[providers.a.models."my-tuned-model"]
+vision = true
+[providers.a.models."claude-sonnet-5-5"]
+"#;
+        let cat = Catalog::from_config(&cfg(text));
+        let sees = |m: &str| cat.resolve(&format!("a/{m}")).unwrap().sees_images();
+        assert!(sees("gpt-4o"));
+        assert!(!sees("deepseek-chat"), "a text-only name");
+        assert!(!sees("gpt-4o-mini"), "the config says no");
+        assert!(sees("my-tuned-model"), "the config says yes");
+        assert!(sees("claude-sonnet-5-5"));
+        // The claim goes to the driver too.
+        let e = cat.resolve("a/my-tuned-model").unwrap();
+        assert_eq!(e.options.vision, Some(true));
     }
 
     #[test]

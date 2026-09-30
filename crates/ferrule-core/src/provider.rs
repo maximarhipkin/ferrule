@@ -121,6 +121,13 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// Whether the model this provider serves can see images (M47). A
+    /// driver that can't gets each photo as a one-line note instead of
+    /// pixels; a routing provider answers for the tier a turn starts on.
+    fn sees_images(&self) -> bool {
+        false
+    }
+
     /// The tier the last call went to, for its ledger row.
     fn route_tag(&self) -> Option<crate::routing::RouteTag> {
         None

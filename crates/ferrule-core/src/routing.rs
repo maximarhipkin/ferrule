@@ -315,6 +315,10 @@ impl Provider for Tiered {
         self.tiers[level].provider.fail_over(served, error)
     }
 
+    fn sees_images(&self) -> bool {
+        self.tiers[self.level()].provider.sees_images()
+    }
+
     fn routes(&self) -> bool {
         true
     }

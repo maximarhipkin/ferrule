@@ -17,6 +17,7 @@ pub mod openai_compat;
 pub mod responses;
 #[cfg(test)]
 mod stream_tests;
+pub mod vision;
 
 pub use anthropic::AnthropicProvider;
 pub use codex::{CodexProvider, PlanAuth, PlanCredentials, RateLimits};
@@ -174,6 +175,9 @@ pub struct DriverOptions {
     pub effort: Option<String>,
     /// The output cap when a request doesn't set one.
     pub max_tokens: Option<u32>,
+    /// Whether the model sees images; `None`: guess from its name
+    /// ([`vision::by_name`]).
+    pub vision: Option<bool>,
 }
 
 /// The driver for `api`. `name` is the provider's name in config. A
@@ -194,7 +198,9 @@ pub fn build(
         api
     };
     match api {
-        Api::Chat => Arc::new(OpenAiCompatProvider::new(name, base_url, api_key, model)),
+        Api::Chat => Arc::new(
+            OpenAiCompatProvider::new(name, base_url, api_key, model).with_vision(options.vision),
+        ),
         Api::Anthropic => Arc::new(AnthropicProvider::new(
             name, base_url, api_key, model, options,
         )),

@@ -946,7 +946,8 @@
             r.pricing
               ? frag(el("span", { class: "mono", text: price(r.pricing) }), r.price_source ? el("span", { class: "sub", text: r.price_source }) : null)
               : frag(tag("no price", "warn"), el("span", { class: "sub", text: "the dollar caps can't see its spend" })),
-            el("span", { class: "mono", text: r.context_window ? num(r.context_window) : "–" }),
+            frag(el("span", { class: "mono", text: r.context_window ? num(r.context_window) : "–" }),
+              r.vision ? el("span", { class: "sub", text: "sees photos" }) : null),
             r.down_secs !== null && r.down_secs !== undefined
               ? frag(tag("down " + secs(r.down_secs), "bad"),
                 r.down_reason ? el("span", { class: "sub msg", dir: "auto", text: r.down_reason }) : null)

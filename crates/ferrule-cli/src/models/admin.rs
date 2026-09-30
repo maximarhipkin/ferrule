@@ -49,6 +49,8 @@ pub struct ModelRow {
     /// M23: `anthropic (inferred)`, `chat (set)`.
     pub driver: String,
     pub context_window: usize,
+    /// M47: whether photos reach it as pixels (config `vision`, else its name).
+    pub vision: bool,
     pub pricing: Option<ProviderPricing>,
     pub price_source: Option<String>,
     /// Skipped for this long yet, after an outage.
@@ -168,6 +170,7 @@ impl Models {
                     profile: e.profile.clone(),
                     driver: e.driver(),
                     context_window: e.harness().context_window,
+                    vision: e.sees_images(),
                     pricing: e.pricing,
                     price_source: e.price_source.clone(),
                     down_secs: down.map(|d| (d.until - now).as_secs()),

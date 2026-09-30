@@ -49,6 +49,10 @@ pub struct ProviderConfig {
     /// M23: the output cap when a call doesn't set one (native drivers).
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// M47: whether the model sees photos. Unset: guessed from its name
+    /// (`gpt-4o`, `claude-…`, `gemini-…`, `llava`… yes; the rest no).
+    #[serde(default)]
+    pub vision: Option<bool>,
     /// More models on the same endpoint and key (M21), besides `model`:
     /// `[providers.X.models."id"]`, each field falling back to the
     /// provider's.
@@ -185,6 +189,7 @@ pub struct ModelConfig {
     pub thinking: Option<Thinking>,
     pub effort: Option<String>,
     pub max_tokens: Option<u32>,
+    pub vision: Option<bool>,
     /// Where the prices came from when ferrule wrote them (M22): "openrouter
     /// catalog 2026-09-25". Unset: set by hand, and never overwritten.
     pub price_source: Option<String>,
@@ -321,6 +326,7 @@ impl ProviderConfig {
                 .and_then(|m| m.effort.clone())
                 .or_else(|| self.effort.clone()),
             max_tokens: mc.and_then(|m| m.max_tokens).or(self.max_tokens),
+            vision: mc.and_then(|m| m.vision).or(self.vision),
         }
     }
 
@@ -1440,6 +1446,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # More models on the same key; each field is optional (the provider's if unset).
 # [providers.openai.models."gpt-5.2-mini"]
 # context_window = 400000
+# vision = true            # sees photos (else guessed from the model's name)
 # price_input_per_mtok = 0.25
 # price_cached_input_per_mtok = 0.025
 # price_output_per_mtok = 2.0

@@ -379,7 +379,7 @@ fn thinking_and_effort_go_out_only_when_set_and_only_on_our_own_loop() {
     let adaptive = DriverOptions {
         thinking: Some(Thinking::Adaptive),
         effort: Some("high".into()),
-        max_tokens: None,
+        ..Default::default()
     };
     let fresh = req(vec![Message::user("hi")]);
     let b = with(adaptive.clone()).payload(&fresh, false).body;
@@ -657,4 +657,53 @@ async fn a_subscription_token_is_refused_on_every_call_without_a_request() {
     }
     assert!(is_subscription_token("sk-ant-oat01-x"));
     assert!(!is_subscription_token("sk-ant-api03-x"));
+}
+
+#[test]
+fn a_photo_goes_as_a_base64_image_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cat.jpg");
+    std::fs::write(&path, [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+    let img = ferrule_core::ImageRef {
+        path: path.to_string_lossy().into_owned(),
+        mime: "image/jpeg".into(),
+        name: Some("cat.jpg".into()),
+    };
+    let msgs = vec![Message::user_with_images(
+        "what is this?",
+        vec![img.clone()],
+    )];
+    let b = with(DriverOptions::default())
+        .payload(&req(msgs.clone()), false)
+        .body;
+    let content = &b["messages"][0]["content"];
+    assert_eq!(
+        content[0],
+        json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/4AECAw=="}})
+    );
+    assert_eq!(content[1]["type"], "text");
+    assert_eq!(content[1]["text"], "what is this?");
+    // The cache mark stays on the text, the last block.
+    assert!(content[0].get("cache_control").is_none());
+    assert!(content[1].get("cache_control").is_some());
+
+    // A model told it can't see gets the note, not the bytes.
+    let blind = with(DriverOptions {
+        vision: Some(false),
+        ..Default::default()
+    });
+    let b = blind.payload(&req(msgs), false).body;
+    let text = b["messages"][0]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("can't see images") && text.contains("cat.jpg"),
+        "{text}"
+    );
+    assert!(!b.to_string().contains("/9j/"), "{b}");
+    assert!(!ferrule_core::Provider::sees_images(&with(DriverOptions {
+        vision: Some(false),
+        ..Default::default()
+    })));
+    assert!(ferrule_core::Provider::sees_images(&with(
+        DriverOptions::default()
+    )));
 }

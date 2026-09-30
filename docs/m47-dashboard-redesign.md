@@ -1256,3 +1256,20 @@ also in the final report.
     Usage, Tasks, Logs, Extensions and Agents were rewritten with the new
     `advanced()`, `chips()` and `toggle()` pieces. The Logs "kinds" select
     became three chips (Everything, Problems, Changes).
+20. **Part 5a: `OpenAiCompatProvider::new` keeps its signature.** The plan
+    passed `DriverOptions` into `new`, which meant editing `stream_tests.rs`
+    and `model_eval/mod.rs`. A `.with_vision(Option<bool>)` builder does the
+    same for `build()` and touches neither.
+21. **Part 5a: the "photos refused" memory is per driver, not per call.**
+    After an image 400 the driver remembers (an `AtomicBool`) and sends
+    notes from then on, so a wrong name-list guess costs one failed request
+    per process, not one per photo. The retry test covers the second call.
+22. **Part 5a: `Entry.options.vision` carries the config's answer.** The
+    plan added a separate `Entry.vision`. `Entry` already holds a
+    `DriverOptions`, so `vision` lives there and `Entry::sees_images()` reads
+    it (and says no for a Claude Code plan). `RoutedProvider::sees_images`
+    is advisory: the served driver decides on its own.
+23. **Part 5a: the Codex backend needed one more shape.** Its input items
+    are typed messages; `typed_message` only wrapped plain-string content, so
+    it now also wraps a content array (the `input_text` + `input_image`
+    parts). The conversation cache key also hashes photo paths.

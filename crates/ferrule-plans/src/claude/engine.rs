@@ -872,7 +872,11 @@ pub fn prompt(messages: &[Message], resuming: bool) -> String {
     let parts: Vec<String> = messages[last..]
         .iter()
         .filter_map(|m| match m.role {
-            Role::User => m.content.clone(),
+            Role::User => Some(ferrule_core::vision::text_with_notes(
+                m,
+                ferrule_core::vision::NoteWhy::TextOnly,
+            ))
+            .filter(|t| !t.is_empty()),
             Role::Tool => m
                 .content
                 .as_deref()
@@ -889,7 +893,10 @@ pub fn prompt_fresh(messages: &[Message]) -> String {
     let Some(last_user) = messages.iter().rposition(|m| m.role == Role::User) else {
         return String::new();
     };
-    let new = messages[last_user].content.clone().unwrap_or_default();
+    let new = ferrule_core::vision::text_with_notes(
+        &messages[last_user],
+        ferrule_core::vision::NoteWhy::TextOnly,
+    );
     let mut lines: Vec<String> = messages[..last_user]
         .iter()
         .filter_map(|m| {
@@ -940,6 +947,26 @@ mod tests {
             items: vec![json!({"session_id": id})],
         });
         m
+    }
+
+    #[test]
+    fn a_photo_reaches_claude_code_as_a_note() {
+        let img = ferrule_core::ImageRef {
+            path: "/w/inbox/cat.jpg".into(),
+            mime: "image/jpeg".into(),
+            name: Some("cat.jpg".into()),
+        };
+        let msgs = vec![
+            Message::system("s"),
+            Message::user_with_images("what is this?", vec![img]),
+        ];
+        for text in [prompt(&msgs, true), prompt(&msgs, false)] {
+            assert!(text.contains("what is this?"), "{text}");
+            assert!(
+                text.contains("can't see images") && text.contains("cat.jpg"),
+                "{text}"
+            );
+        }
     }
 
     #[test]

@@ -7,12 +7,14 @@
 //! stateless-only hosts such as OpenRouter alike.
 
 use crate::common::{self, last_user, replayable};
+use crate::vision::{self, Part};
 use crate::DriverOptions;
 use ferrule_core::error::CoreError;
 use ferrule_core::message::{Message, NativeBlocks, Role, ToolCall, Usage};
 use ferrule_core::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use ferrule_core::tool::ToolDefinition;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::warn;
 
 /// `NativeBlocks::api` for this driver.
@@ -31,6 +33,8 @@ pub struct ResponsesProvider {
     /// M35: the ChatGPT plan's Codex backend, whose request type has no
     /// output cap and always streams (see `codex`).
     codex: bool,
+    /// A server said no to a photo: from here on, notes only.
+    refused_images: AtomicBool,
 }
 
 pub(crate) struct Payload {
@@ -55,7 +59,21 @@ impl ResponsesProvider {
             options,
             client: common::client(),
             codex: false,
+            refused_images: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn sees(&self) -> bool {
+        !self.refused_images.load(Ordering::Relaxed)
+            && self
+                .options
+                .vision
+                .unwrap_or_else(|| vision::by_name(&self.model))
+    }
+
+    /// A photo was refused: notes from here on.
+    pub(crate) fn refuse_images(&self) {
+        self.refused_images.store(true, Ordering::Relaxed);
     }
 
     /// The body builder and parser for the Codex backend: no key, and no
@@ -82,6 +100,8 @@ impl ResponsesProvider {
             .collect();
 
         let latest_user = last_user(msgs);
+        let sees = self.sees();
+        let pixel_set = ferrule_core::vision::pixel_set(msgs);
         let mut input: Vec<Value> = Vec::new();
         let mut replayed = false;
         for (i, m) in msgs.iter().enumerate().skip(lead) {
@@ -93,8 +113,33 @@ impl ResponsesProvider {
                     }
                 }
                 Role::User => {
-                    if let Some(t) = nonempty(&m.content) {
-                        input.push(json!({"role": "user", "content": t}));
+                    let mut text = nonempty(&m.content).unwrap_or_default().to_string();
+                    let mut pics = Vec::new();
+                    for part in vision::parts(i, m, &pixel_set, sees) {
+                        match part {
+                            Part::Pixels { mime, data } => pics.push(json!({
+                                "type": "input_image",
+                                "image_url": format!("data:{mime};base64,{data}"),
+                            })),
+                            Part::Note(n) => {
+                                if !text.is_empty() {
+                                    text.push('\n');
+                                }
+                                text.push_str(&n);
+                            }
+                        }
+                    }
+                    if pics.is_empty() {
+                        if !text.is_empty() {
+                            input.push(json!({"role": "user", "content": text}));
+                        }
+                    } else {
+                        let mut all = Vec::new();
+                        if !text.is_empty() {
+                            all.push(json!({"type": "input_text", "text": text}));
+                        }
+                        all.extend(pics);
+                        input.push(json!({"role": "user", "content": all}));
                     }
                 }
                 Role::Tool => input.push(json!({
@@ -287,8 +332,28 @@ impl Provider for ResponsesProvider {
         &self.name
     }
 
+    fn sees_images(&self) -> bool {
+        self.sees()
+    }
+
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
-        let first = self.payload(&req, false);
+        let pixels = vision::has_pixels(&req.messages, self.sees());
+        match self.attempt(&req).await {
+            // The name list guessed wrong: once more with notes, and notes
+            // from here on.
+            Err(e) if pixels && vision::image_rejected(&e) => {
+                warn!(provider = %self.name, "photos refused ({e}); sending notes instead");
+                self.refuse_images();
+                self.attempt(&req).await
+            }
+            done => done,
+        }
+    }
+}
+
+impl ResponsesProvider {
+    async fn attempt(&self, req: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let first = self.payload(req, false);
         let sink = req.stream.as_ref();
         let body = match self.post(&first.body, sink).await {
             // A host that can't read our reasoning back: once, without it.
@@ -298,7 +363,7 @@ impl Provider for ResponsesProvider {
                     "reasoning items rejected, retrying once without them: {}",
                     m.chars().take(200).collect::<String>()
                 );
-                self.post(&self.payload(&req, true).body, sink).await?
+                self.post(&self.payload(req, true).body, sink).await?
             }
             other => other?,
         };
