@@ -1173,8 +1173,9 @@ end.
 ## Verified, and how
 
 **Tests.** `cargo test --workspace --no-fail-fast`: 1721 passed before
-M47, **1777 passed, 0 failed, 29 ignored** after part 6 (56 new, in 71
-test binaries plus the one M47 added). Run on this branch, real binaries.
+M47, **1777 passed, 0 failed, 29 ignored** after part 6 (56 new), and 1788
+after merging main's M42 part 6. Run on this branch, real binaries. The starter eval against the stdlib mock
+still reads engineered 20/20, naive 11/20, $0.98.
 
 | What | Where |
 |---|---|
@@ -1194,7 +1195,7 @@ test binaries plus the one M47 added). Run on this branch, real binaries.
 | A text turn's request body is byte-identical to before | `openai_compat::a_text_turn_body_is_unchanged` |
 
 **The browser check** (`scripts/dashboard_browser_check.mjs`, real gateway,
-real headless Chromium, mock model): **27 steps, 27 passed, 0 failed**. It
+real headless Chromium, mock model): **25 steps, 25 passed, 0 failed** (27 with `--shots` and `--shots-all`), re-run after merging main. It
 fails on any page error, on a stray `null`/`undefined`, and, at 390 px on
 every section, on a sideways scroll, an unnamed control, a control under
 44 px, anything but one `h1`, a broken Skip link, or a Settings page that

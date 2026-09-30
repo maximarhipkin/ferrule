@@ -5613,8 +5613,8 @@ was verified in `docs/m47-dashboard-redesign.md`, user docs in
   gzip for static files, sixty after-screenshots.
 - **7 Docs and PR.**
 
-**Tests.** 1721 → 1777 passed on the branch before merging main, 0
-failed, 29 ignored. Browser check 27 steps, 27 passed.
+**Tests.** 1721 → 1788 passed on the branch after merging main (M42 part 6), 0
+failed, 29 ignored. Browser check 25 steps (27 with the screenshot options), all passed.
 
 **Repo rule.** The standing rule against touching images conflicts with the
 brief's `docs/assets/m47/`. Resolution (D13): new files only, in a new
