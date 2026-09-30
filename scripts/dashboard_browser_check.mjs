@@ -438,6 +438,100 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     return "attached, sent as a JPEG, chip in the log, no <img>, answered";
   });
 
+  await run("copy an answer", async () => {
+    await js(`window.ferrule.show("chat")`);
+    await until("a bot bubble with Copy", () => js(`return !!document.querySelector('.bubble:not(.you) button[aria-label="Copy the answer"]')`), 10);
+    await js(`document.querySelector('.bubble:not(.you) button[aria-label="Copy the answer"]').click()`);
+    return "the answer has a Copy button";
+  });
+
+  // M47 part 5c: a task from the picker, memory search, backup, the look
+  // and the language.
+  await run("a new task through the picker", async () => {
+    await js(`window.ferrule.show("tasks")`);
+    await until("New task", () => click("#main", "New task"), 10);
+    await until("the dialog", () => js(`return !!document.querySelector("dialog.dlg.wide[open] input")`), 5);
+    await js(`
+      const d = document.querySelector("dialog.dlg.wide[open]");
+      const set = (c, v) => { c.value = v; c.dispatchEvent(new Event("input", { bubbles: true })); };
+      set(d.querySelector("input"), "Check task");
+      set(d.querySelector("textarea"), "Say hello to the browser check.");`);
+    const words = await until("the preview in words", () => js(`const p = document.querySelector("dialog.dlg.wide .preview .msg"); return p && /^Runs: weekdays at 09:00/.test(p.textContent) && p.textContent`), 10);
+    const next = await js(`return document.querySelectorAll("dialog.dlg.wide .preview .next li").length`);
+    if (next < 2) throw new Error("only " + next + " next runs are shown");
+    await js(`document.querySelector('dialog.dlg.wide button[type="submit"]').click()`);
+    await until("the dialog to close", () => js(`return !document.querySelector("dialog.dlg.wide")`), 10);
+    await until("the task in the list", () => js(`return document.getElementById("main").textContent.includes("Check task")`), 15);
+    const t = (await get("/api/tasks")).tasks.find((x) => x.name === "Check task");
+    if (!t || t.schedule !== "0 9 * * 1-5") throw new Error("the task is " + JSON.stringify(t));
+    return words.trim() + "; " + next + " next runs; added and listed";
+  });
+
+  await run("a bad schedule says why", async () => {
+    await click("#main", "New task");
+    await until("the dialog", () => js(`return !!document.querySelector("dialog.dlg.wide[open]")`), 5);
+    await js(`
+      const d = document.querySelector("dialog.dlg.wide[open]");
+      const adv = d.querySelector("details.advanced"); adv.open = true;
+      const raw = [...adv.querySelectorAll("input")].pop();
+      raw.value = "61 25 * * *"; raw.dispatchEvent(new Event("input", { bubbles: true }));`);
+    const said = await until("the reason", () => js(`const e = document.querySelector("dialog.dlg.wide .preview .err"); return e && e.textContent`), 10);
+    await js(`document.querySelector("dialog.dlg.wide").close()`);
+    return said.slice(0, 80);
+  });
+
+  await run("memory lists and searches", async () => {
+    for (const text of ["Max likes his coffee black", "The office wifi is called Stanley"]) {
+      const r = spawnSync(BIN, ["memory", "add", text], { env, cwd: join(tmp, "work") });
+      if (r.status !== 0) throw new Error("memory add: " + r.stderr);
+    }
+    await js(`window.ferrule.show("memory")`);
+    await until("both memories", () => js(`return document.querySelectorAll("#main .memory .item").length === 2`), 15);
+    await js(`const i = document.querySelector('#main input[type="search"]'); i.focus(); i.value = "coffee"; i.dispatchEvent(new Event("input", { bubbles: true }));`);
+    await until("one match", () => js(`const l = document.querySelectorAll("#main .memory .item"); return l.length === 1 && l[0].textContent.includes("coffee")`), 10);
+    const before = (await get("/api/memory")).memories.length;
+    if (before !== 2) throw new Error("the API lists " + before);
+    return "2 listed, 'coffee' finds 1";
+  });
+
+  await run("settings: backup and dark", async () => {
+    await js(`window.ferrule.show("settings")`);
+    await until("Back up now", () => click("#main", "Back up now"), 10);
+    await until("the backup in the list", () => js(`return !!document.querySelector('#main a[download]')`), 60);
+    const href = await js(`return document.querySelector('#main a[download]').getAttribute("href")`);
+    if (!/\/api\/backups\/download\?name=/.test(href)) throw new Error("the link is " + href);
+    const got = await js(`const r = await fetch(${JSON.stringify("")} + document.querySelector('#main a[download]').getAttribute("href"), { credentials: "same-origin" }); const b = await r.arrayBuffer(); return [r.status, b.byteLength]`);
+    if (got[0] !== 200 || got[1] < 100) throw new Error("the download answered " + got);
+    await click("#main", "Dark");
+    const th = await js(`return document.documentElement.getAttribute("data-theme")`);
+    if (th !== "forge") throw new Error("the theme is " + th);
+    await click("#main", "System");
+    return "a backup made, listed and downloadable (" + got[1] + " bytes); Dark sets forge";
+  });
+
+  await run("Hebrew reads right to left", async () => {
+    await js(`window.ferrule.show("settings")`);
+    await js(`localStorage.setItem("ferrule-lang", "he"); location.reload()`);
+    await sleep(500);
+    await until("the page in Hebrew", () => js(`return document.documentElement.dir === "rtl" && !document.getElementById("rail").hidden && [...document.querySelectorAll("#rail a")].some((a) => a.textContent.includes("בית"))`), 20);
+    const bad = await js(`
+      const wide = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+      const cw = document.documentElement.clientWidth;
+      const out = wide > 1 ? [...document.querySelectorAll("body *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.left < -1 || r.right > cw + 1); }).slice(0, 6).map((e) => e.tagName + "." + e.className + "#" + e.id + "<" + (e.parentElement && e.parentElement.outerHTML.slice(0, 160)) + "> " + Math.round(e.getBoundingClientRect().left) + ".." + Math.round(e.getBoundingClientRect().right)) : [];
+      return { wide, lang: document.documentElement.lang, out, nav: [...document.querySelectorAll("#rail a")].map((a) => a.textContent.trim()).join("|") };`);
+    if (bad.lang !== "he" || bad.wide > 1) throw new Error(JSON.stringify(bad));
+    if (SHOTS) {
+      await size(390, 844); await js(`window.ferrule.show("tasks")`); await sleep(800);
+      const r = await cdp("Page.captureScreenshot", { format: "png" });
+      writeFileSync(join(SHOTS, "tasks-he-390.png"), Buffer.from(r.data, "base64"));
+      await size(1280, 900);
+    }
+    await js(`localStorage.removeItem("ferrule-lang"); location.reload()`);
+    await sleep(500);
+    await until("the page in English again", () => js(`return document.documentElement.dir === "ltr" && !document.getElementById("rail").hidden`), 20);
+    return "dir=rtl, nav in Hebrew, no sideways scroll; back to English";
+  });
+
   if (SHOTS) {
     mkdirSync(SHOTS, { recursive: true });
     const shots = [];

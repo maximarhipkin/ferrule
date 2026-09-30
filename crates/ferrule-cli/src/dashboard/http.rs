@@ -87,6 +87,8 @@ pub struct Response {
     pub content_type: &'static str,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// A file sent from disk instead of `body` (a backup, M47).
+    pub file: Option<std::path::PathBuf>,
 }
 
 impl Response {
@@ -96,7 +98,15 @@ impl Response {
             content_type,
             headers: Vec::new(),
             body: body.into(),
+            file: None,
         }
+    }
+
+    /// `path`'s bytes, streamed. Never cached: it is the owner's data.
+    pub fn file(path: std::path::PathBuf, content_type: &'static str) -> Self {
+        let mut r = Self::new(200, content_type, Vec::new());
+        r.file = Some(path);
+        r.with_header("Cache-Control", "no-store".into())
     }
 
     pub fn json(status: u16, value: &serde_json::Value) -> Self {
@@ -116,6 +126,7 @@ impl Response {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -300,6 +311,25 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
         .headers
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("cache-control"));
+    // A file goes out as it is read; if it can't be opened the answer is
+    // a plain 404 instead of a head with nothing behind it.
+    let (mut file, length) = match &resp.file {
+        Some(path) => match tokio::fs::File::open(path).await {
+            Ok(f) => match f.metadata().await {
+                Ok(m) => {
+                    let n = m.len();
+                    (Some(f), n)
+                }
+                Err(_) => (None, 0),
+            },
+            Err(_) => {
+                let gone =
+                    Response::json(404, &serde_json::json!({ "error": "That file is gone." }));
+                return Box::pin(write(stream, gone)).await;
+            }
+        },
+        None => (None, resp.body.len() as u64),
+    };
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\
          {}X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\
@@ -308,7 +338,7 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
         resp.status,
         reason(resp.status),
         resp.content_type,
-        resp.body.len(),
+        length,
         if cached { "" } else { "Cache-Control: no-store\r\n" },
     );
     for (k, v) in &resp.headers {
@@ -316,7 +346,14 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
     }
     head.push_str("\r\n");
     let _ = stream.write_all(head.as_bytes()).await;
-    let _ = stream.write_all(&resp.body).await;
+    match file.as_mut() {
+        Some(f) => {
+            let _ = tokio::io::copy(f, stream).await;
+        }
+        None => {
+            let _ = stream.write_all(&resp.body).await;
+        }
+    }
     let _ = stream.shutdown().await;
 }
 

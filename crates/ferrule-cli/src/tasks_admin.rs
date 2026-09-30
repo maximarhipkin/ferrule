@@ -260,6 +260,112 @@ impl TasksAdmin {
     }
 }
 
+/// A task made on the page (M47). There is no gate here: a gate is a shell
+/// command, and only `ferrule tasks add --gate` may set one.
+pub struct NewPageTask {
+    pub name: String,
+    pub prompt: String,
+    pub kind: TaskKind,
+    pub schedule: String,
+    pub timezone: String,
+    pub channel: String,
+    pub chat_id: String,
+    pub model: Option<String>,
+}
+
+impl TasksAdmin {
+    /// The next `count` times a schedule fires, as unix seconds, by the
+    /// parser `ferrule tasks add` uses (M47's live preview).
+    pub fn preview(
+        kind: TaskKind,
+        schedule: &str,
+        timezone: &str,
+        count: usize,
+    ) -> Result<Vec<i64>> {
+        let schedule = &wall_clock(kind, schedule, timezone)?;
+        let mut now = chrono::Utc::now();
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let next = ferrule_gateway::initial_next_run_at(kind, schedule, timezone, now)
+                .map_err(|e| anyhow!("`{schedule}` ({timezone}): {e}"))?;
+            let Some(next) = next else { break };
+            out.push(next);
+            if kind == TaskKind::Once {
+                break;
+            }
+            match chrono::DateTime::from_timestamp(next, 0) {
+                Some(t) => now = t,
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Adds a task and audits it. Refuses a one-off whose time has gone:
+    /// the scheduler would run it at the next tick, which isn't what
+    /// someone picking a date on a page means.
+    pub fn add(&self, new: NewPageTask, by: &str) -> Result<(Task, Option<i64>)> {
+        let now = chrono::Utc::now();
+        let schedule = wall_clock(new.kind, &new.schedule, &new.timezone)?;
+        let next = ferrule_gateway::initial_next_run_at(new.kind, &schedule, &new.timezone, now)
+            .map_err(|e| anyhow!("`{schedule}` ({}): {e}", new.timezone))?;
+        if new.kind == TaskKind::Once && next.is_some_and(|n| n <= now.timestamp()) {
+            bail!("That time has already passed. Pick a time in the future.");
+        }
+        let store = self.store()?;
+        let task = store.add(
+            ferrule_gateway::NewTask {
+                name: new.name,
+                kind: new.kind,
+                schedule,
+                timezone: new.timezone,
+                channel: new.channel,
+                chat_id: new.chat_id,
+                prompt: new.prompt,
+                gate: None,
+                model: new.model,
+            },
+            uuid::Uuid::new_v4().to_string(),
+            now.timestamp(),
+            next,
+        )?;
+        self.record(
+            "task.add",
+            serde_json::json!({
+                "task": task.id, "name": task.name, "kind": match task.kind {
+                    TaskKind::Cron => "cron",
+                    TaskKind::Once => "once",
+                },
+                "schedule": task.schedule, "timezone": task.timezone,
+                "channel": task.channel, "by": by,
+            }),
+        );
+        let at = task.next_run_at;
+        Ok((task, at))
+    }
+}
+
+/// A one-off's `2026-10-01T09:00` (no offset) read in `timezone`, as the
+/// RFC 3339 the scheduler stores. Anything else passes through trimmed, so
+/// a full timestamp or a cron line keeps working.
+fn wall_clock(kind: TaskKind, schedule: &str, timezone: &str) -> Result<String> {
+    let schedule = schedule.trim();
+    if kind != TaskKind::Once {
+        return Ok(schedule.to_string());
+    }
+    let Ok(local) = chrono::NaiveDateTime::parse_from_str(schedule, "%Y-%m-%dT%H:%M") else {
+        return Ok(schedule.to_string());
+    };
+    let tz: chrono_tz::Tz = timezone
+        .parse()
+        .map_err(|_| anyhow!("`{timezone}` isn't a time zone name (like Asia/Jerusalem)"))?;
+    let at = local
+        .and_local_timezone(tz)
+        .earliest()
+        .ok_or_else(|| anyhow!("{local} doesn't exist in {timezone}: the clocks skip it"))?;
+    Ok(at.to_rfc3339())
+}
+
 /// Read-modify-write the config under its lock; refuse (writing nothing)
 /// an edit that wouldn't parse as a config.
 pub(crate) fn edit_config<T>(

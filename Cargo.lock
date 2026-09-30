@@ -802,6 +802,7 @@ dependencies = [
  "blake2",
  "bytes",
  "chrono",
+ "chrono-tz",
  "clap",
  "dirs",
  "dunce",

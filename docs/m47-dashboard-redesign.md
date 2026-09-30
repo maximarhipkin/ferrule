@@ -1332,3 +1332,53 @@ also in the final report.
     path plus the "can't see images" note for a text-only model. The
     no-inbox path (and its "I can only read text" reply) is unchanged and
     still covered by the telegram unit tests.
+34. **Part 5c: a Once time is wall-clock plus a zone, converted on the
+    server.** The plan had the page compute a UTC instant. The browser's
+    idea of a zone and the bot's can differ, and a `<input type=date>`
+    has no zone, so the page sends `YYYY-MM-DDTHH:MM` and an IANA name and
+    `TasksAdmin::add` converts it with `chrono-tz` (already in the
+    lockfile through the cron code; now a direct dependency of
+    `ferrule-cli`). A time in the past or in a skipped hour is refused
+    with a sentence.
+35. **Part 5c: the backup download is a streamed GET.** Every other route
+    is a JSON POST or GET answered whole; a backup can be tens of MB. The
+    download is handled in `Dashboard::handle` before the router, needs
+    the session cookie like any read, and `Response` gained a `file`
+    field that is streamed. The name is validated (`is_name`), must be a
+    regular file inside the backups dir, and symlinks are ignored.
+    Backups made from the page are numbered by time, the last three are
+    kept, and one never contains the previous one.
+36. **Part 5c: new audit events.** `backup.made`, `backup.deleted`,
+    `memory.forget` and `task.add` join the M41 list, so the Logs page
+    shows who did what from the dashboard. None carries memory text.
+37. **Part 5c: Hebrew is one extra file, fetched by the page.** The plan
+    rewrote the index for the language. `theme.js` sets `lang` and `dir`
+    before paint from `localStorage`, and `app.js` loads
+    `BASE + "/lang-he.js"` only when Hebrew is chosen, so an English
+    reader downloads nothing extra and no `index_for` rewrite was needed.
+    Switching language reloads the page (one code path). Only fixed words
+    go through `tr()`; the bot's and server's own text stays as written
+    and keeps `dir="auto"`. A page-test scans every `tr("…")`,
+    `fill("…")` and `/*tr*/"…"` literal and fails if `lang-he.js` lacks
+    it (or has a word nobody asks for).
+38. **Part 5c: what Hebrew doesn't cover yet.** The shell, nav, palette,
+    Tasks, Memory, Settings and the dialogs are translated. Home's body,
+    Chat, Models, Connections, Channels, Logs, Extensions, Console and
+    Config are still English, as are the server's confirm sentences.
+    They read fine RTL (layout uses logical properties) and are listed as
+    a follow-up rather than half-translated by guesswork.
+39. **Part 5c: no second emergency stop in Settings.** The plan listed
+    one. The kill switch already sits on Home and Health where a person
+    in trouble looks; a copy in Settings would be a second place to keep
+    right. Settings holds Appearance, Language, Backup and Getting
+    started.
+40. **Part 5c: a task's destination.** "My own chat" needs an owner chat;
+    a bot without one falls back to the dashboard chat, rather than
+    refusing. A page-made task can't carry a gate
+    (approval rules stay in the file), covered by a test.
+41. **Part 5c: the problem strip's icons had no size.** Found by the new
+    Hebrew step of the browser check, which measures sideways scroll: the
+    `.strip` link on Home drew its alert icon and chevron at the SVG's
+    default width (about 960 px), which overflowed left under RTL. It had
+    been latent in English too (the strip is hidden when nothing is
+    wrong). `.strip .ico` now has a size.

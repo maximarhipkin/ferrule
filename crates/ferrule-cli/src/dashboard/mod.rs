@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod backup_page;
 pub mod channels;
 pub mod chat;
 pub mod cli;
@@ -13,6 +14,7 @@ pub mod console;
 pub mod door;
 mod healthz;
 pub mod http;
+pub mod memory;
 pub mod models_page;
 pub mod notices;
 #[cfg(test)]
@@ -45,6 +47,8 @@ const APP_JS: &str = include_str!("assets/app.js");
 const APP_CSS: &str = include_str!("assets/app.css");
 /// Sets the theme before the first paint (the CSP allows no inline script).
 const THEME_JS: &str = include_str!("assets/theme.js");
+/// The page's fixed words in Hebrew: fetched only when Hebrew is chosen.
+const LANG_HE: &str = include_str!("assets/lang-he.js");
 /// IBM Plex (OFL 1.1), served from the binary so the page never depends on
 /// a font CDN: Sans and Mono cut to Latin-1, Sans Hebrew whole, each loaded
 /// only when the page has a character in its `unicode-range`.
@@ -108,6 +112,8 @@ pub struct Ctx {
     pub plans: Arc<models_page::PlanFlows>,
     /// The page's own chat channel (M37 §4.3); `None` outside the gateway.
     pub chat: Option<Arc<chat::DashboardChannel>>,
+    /// The backup started from the page, if one is running (M47).
+    pub backups: backup_page::Job,
 }
 
 impl Ctx {
@@ -134,6 +140,7 @@ impl Ctx {
             plans: Arc::default(),
             runs: Arc::default(),
             chat: None,
+            backups: Arc::default(),
         }
     }
 
@@ -157,6 +164,7 @@ impl Ctx {
             plans: Arc::default(),
             runs: Arc::default(),
             chat: None,
+            backups: Arc::default(),
         }
     }
 }
@@ -634,6 +642,9 @@ impl Dashboard {
             (_, "/theme.js") if get => {
                 return Response::new(200, "text/javascript; charset=utf-8", THEME_JS)
             }
+            (_, "/lang-he.js") if get => {
+                return Response::new(200, "text/javascript; charset=utf-8", LANG_HE)
+            }
             (_, "/fonts/OFL.txt") if get => {
                 return Response::new(200, "text/plain; charset=utf-8", FONT_LICENSE)
                     .with_header("Cache-Control", FOREVER.into())
@@ -691,6 +702,7 @@ impl Dashboard {
             (true, "/api/session") => {
                 Response::json(200, &json!({ "csrf": granted.csrf, "user": granted.user }))
             }
+            (true, "/api/backups/download") => backup_page::download(&self.ctx, &req),
             (false, "/api/logout") => {
                 if let Some(c) = cookie {
                     self.sessions.close(c);
@@ -936,7 +948,7 @@ mod tests {
         assert_eq!(r.status, 404);
         // The page and its scripts change with the binary: never cached
         // (`http::write` adds no-store to anything without its own).
-        for path in ["/", "/app.js", "/app.css", "/theme.js"] {
+        for path in ["/", "/app.js", "/app.css", "/theme.js", "/lang-he.js"] {
             let r = d.handle(req("GET", path, &[], "")).await;
             assert_eq!(r.status, 200, "{path}");
             assert_eq!(cache(&r), None, "{path}");

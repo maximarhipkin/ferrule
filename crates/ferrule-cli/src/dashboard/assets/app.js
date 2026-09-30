@@ -37,6 +37,27 @@
   const tag = (t, cls) => el("span", { class: "tag " + (cls || ""), text: t });
   const led = (cls) => el("span", { class: "led " + (cls || "") });
 
+  // ---- language (M47): English, or Hebrew read right to left --------------
+  // The Hebrew words live in /lang-he.js, loaded before the first draw and
+  // only when Hebrew is chosen. `tr` on an English string gives its Hebrew when
+  // there is one and the English otherwise, so an untranslated string is
+  // never blank. Only fixed words go through it; nothing the server or the
+  // bot says does, and none of it can hold a secret.
+  const LANG = window.ferruleLang ? window.ferruleLang.pick() : "en";
+  const LOCALE = LANG === "he" ? "he-IL" : undefined;
+  let HE = null;
+  const tr = (s) => (HE && HE[s]) || s;
+  const fill = (s, n) => tr(s).replace("%s", n);
+  function loadLang() {
+    if (LANG !== "he") return Promise.resolve();
+    return new Promise((done) => {
+      const script = el("script", { src: BASE + "/lang-he.js" });
+      script.addEventListener("load", () => { HE = window.FERRULE_HE || null; done(); });
+      script.addEventListener("error", () => done());
+      document.head.append(script);
+    });
+  }
+
   async function api(path, body, extra) {
     const opts = Object.assign({ credentials: "same-origin", headers: {} }, extra || {});
     if (body !== undefined) {
@@ -70,8 +91,8 @@
     document.body.classList.remove("running");
     const main = document.getElementById("main");
     main.replaceChildren(el("div", { class: "card" },
-      el("p", { text: why || "Not logged in." }),
-      el("p", { class: "muted", text: "Send /dashboard to the bot on Telegram for a new link, or run `ferrule dashboard link` on the machine." })));
+      el("p", { dir: "auto", text: why || tr("Not logged in.") }),
+      el("p", { class: "muted", text: tr("Send /dashboard to the bot on Telegram for a new link, or run `ferrule dashboard link` on the machine.") })));
   }
 
   // ---- small helpers -----------------------------------------------------
@@ -84,7 +105,7 @@
     for (const old of box.children) if (old.dataset.text === t) old.remove();
     const card = el("div", { class: "t " + kind, role: kind === "bad" ? "alert" : null },
       el("span", { class: "txt", dir: "auto", text: t }),
-      el("button", { class: "ghost icon", "aria-label": "Close", onclick: () => card.remove() }, icon("x")));
+      el("button", { class: "ghost icon", "aria-label": tr("Close"), onclick: () => card.remove() }, icon("x")));
     card.dataset.text = t;
     box.append(card);
     while (box.children.length > 3) box.firstChild.remove();
@@ -100,8 +121,8 @@
       const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
       const box = input ? el("input", { name: "v", value: input.value || "", dir: "auto", autocomplete: "off", "aria-label": input.label || title }) : null;
       let answer = input ? null : false;
-      const no = el("button", { type: "button", text: cancel || "Cancel", autofocus: danger || null, onclick: () => d.close() });
-      const yes = el("button", { type: "submit", class: danger ? "danger primary" : "primary", text: confirm || "OK" });
+      const no = el("button", { type: "button", text: cancel || tr("Cancel"), autofocus: danger || null, onclick: () => d.close() });
+      const yes = el("button", { type: "submit", class: danger ? "danger primary" : "primary", text: confirm || tr("OK") });
       d.append(el("form", {
         method: "dialog",
         onsubmit: (e) => { e.preventDefault(); answer = input ? box.value : true; d.close(); },
@@ -124,9 +145,9 @@
     if (!good.length) return;
     const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
     d.append(el("form", { method: "dialog" },
-      el("h3", { id: "dlg-title", text: "Continue in your browser" }),
-      good.map((l) => el("a", { class: "btn primary", href: l.url, target: "_blank", rel: "noopener", dir: "auto" }, icon("external"), l.text || "Open")),
-      el("div", { class: "row" }, el("button", { text: "Done" }))));
+      el("h3", { id: "dlg-title", text: tr("Continue in your browser") }),
+      good.map((l) => el("a", { class: "btn primary", href: l.url, target: "_blank", rel: "noopener", dir: "auto" }, icon("external"), l.text || tr("Open"))),
+      el("div", { class: "row" }, el("button", { text: tr("Done") }))));
     d.addEventListener("close", () => d.remove());
     document.body.append(d);
     d.showModal();
@@ -146,7 +167,7 @@
         r = await api("/api/" + path, body || {});
       } catch (e) {
         if (e.status !== 409 || !e.data || !e.data.confirm) throw e;
-        const yes = await ask({ title: "Are you sure?", text: e.data.confirm, confirm: "Yes, do it", danger: true });
+        const yes = await ask({ title: tr("Are you sure?"), text: e.data.confirm, confirm: tr("Yes, do it"), danger: true });
         if (!yes) return null;
         r = await api("/api/" + path, Object.assign({}, body, { confirm: true }));
       }
@@ -215,21 +236,15 @@
     return frag(Array.from({ length: n || 2 }, () => el("div", { class: "skel card", "aria-hidden": "true" })));
   }
 
-  // "0 9 * * * Asia/Jerusalem" → ["0 9 * * *", "Asia/Jerusalem"].
-  function splitTz(v) {
-    const w = v.trim().split(/\s+/);
-    return w.length > 5 ? [w.slice(0, 5).join(" "), w.slice(5).join(" ")] : [w.join(" "), null];
-  }
-
   function ago(unix) {
-    if (unix === null || unix === undefined) return "never";
+    if (unix === null || unix === undefined) return tr("never");
     const s = Math.round(Date.now() / 1000 - unix);
-    const f = (n) => (s < 0 ? "in " : "") + n + (s < 0 ? "" : " ago");
+    const f = (n) => (s < 0 ? fill("in %s", n) : fill("%s ago", n));
     const a = Math.abs(s);
-    if (a < 90) return f(a + "s");
-    if (a < 5400) return f(Math.round(a / 60) + " min");
-    if (a < 129600) return f(Math.round(a / 3600) + " h");
-    return f(Math.round(a / 86400) + " d");
+    if (a < 90) return f(a + tr("s"));
+    if (a < 5400) return f(Math.round(a / 60) + " " + tr("min"));
+    if (a < 129600) return f(Math.round(a / 3600) + " " + tr("h"));
+    return f(Math.round(a / 86400) + " " + tr("d"));
   }
   const secs = (s) => (s === null || s === undefined ? "–" : s < 90 ? s + "s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h");
   const usd = (n) => (n === null || n === undefined ? "–" : "$" + (n < 1 && n > 0 ? n.toFixed(4) : n.toFixed(2)));
@@ -630,6 +645,7 @@
     channels: null,
     hidden: () => { try { return localStorage.getItem("ferrule-setup-hidden") === "1"; } catch (_) { return false; } },
     hide() { try { localStorage.setItem("ferrule-setup-hidden", "1"); } catch (_) { /* private mode */ } },
+    show() { try { localStorage.removeItem("ferrule-setup-hidden"); } catch (_) { /* private mode */ } },
     box(id) { return this.boxes[id] || (this.boxes[id] = el("div", { class: "step-panel stack" })); },
     // The Models section's provider forms, drawn into this box: same code,
     // same calls, so a key typed here is tested and saved the same way.
@@ -1570,28 +1586,223 @@
 
   // "0 9 * * *" in words. Anything it can't say plainly stays as the cron
   // line, which the Advanced fold always shows.
-  const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const pad2 = (n) => String(n).padStart(2, "0");
+  // 2023-01-01 was a Sunday: the weekday's name in the page's language.
+  const dayName = (i) => new Date(2023, 0, 1 + (Number(i) % 7)).toLocaleDateString(LOCALE, { weekday: "long" });
+  const HOURS = [1, 2, 3, 4, 6, 8, 12];
+
+  // The presets the picker offers, read back from a cron line; null for
+  // anything else (which the picker then keeps as a custom line).
+  function parseCron(c) {
+    const f = String(c).trim().split(/\s+/);
+    if (f.length !== 5) return null;
+    const [mi, ho, dom, mo, dow] = f;
+    let m;
+    if (mo !== "*") return null;
+    if (/^\d+$/.test(mi) && /^\d+$/.test(ho)) {
+      const time = pad2(ho) + ":" + pad2(mi);
+      if (dom === "*" && dow === "*") return { preset: "day", time };
+      if (dom === "*" && dow === "1-5") return { preset: "weekdays", time };
+      if (dom === "*" && /^[0-7]$/.test(dow)) return { preset: "weekly", time, dow: Number(dow) % 7 };
+      if (dow === "*" && /^\d+$/.test(dom) && Number(dom) >= 1 && Number(dom) <= 28) return { preset: "monthly", time, dom: Number(dom) };
+    }
+    if (mi === "0" && dom === "*" && dow === "*" && (m = /^\*\/(\d+)$/.exec(ho)) && HOURS.includes(Number(m[1]))) return { preset: "hours", every: Number(m[1]) };
+    return null;
+  }
+
   function scheduleWords(t) {
     if (t.kind !== "cron") {
       const d = new Date(t.schedule);
-      return isNaN(d) ? "Once, " + t.schedule : "Once, " + d.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      return fill("Once, %s", isNaN(d) ? t.schedule : d.toLocaleString(LOCALE, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }));
     }
     const f = String(t.schedule).trim().split(/\s+/);
     if (f.length !== 5) return t.schedule;
     const [mi, ho, dom, mo, dow] = f;
-    const two = (n) => String(n).padStart(2, "0");
-    let m;
-    if (/^\*\/\d+$/.test(mi) && ho === "*" && dom === "*" && mo === "*" && dow === "*") return "Every " + mi.slice(2) + " minutes";
-    if (/^\d+$/.test(mi) && ho === "*" && dom === "*" && mo === "*" && dow === "*") return mi === "0" ? "Every hour" : "Every hour, at :" + two(mi);
-    if (!/^\d+$/.test(mi) || !/^\d+$/.test(ho) || dom !== "*" || mo !== "*") return t.schedule;
-    const at = " at " + two(ho) + ":" + two(mi);
-    if (dow === "*") return "Every day" + at;
-    if (dow === "1-5") return "Weekdays" + at;
-    if (dow === "0,6" || dow === "6,0") return "Weekends" + at;
-    if ((m = /^[0-7]$/.exec(dow))) return "Every " + DAYS[Number(dow) % 7] + at;
-    return t.schedule;
+    if (/^\*\/\d+$/.test(mi) && ho === "*" && dom === "*" && mo === "*" && dow === "*") return fill("Every %s minutes", mi.slice(2));
+    if (/^\d+$/.test(mi) && ho === "*" && dom === "*" && mo === "*" && dow === "*") return mi === "0" ? tr("Every hour") : fill("Every hour, at :%s", pad2(mi));
+    if (dom === "*" && mo === "*" && /^\d+$/.test(mi) && /^\d+$/.test(ho) && (dow === "0,6" || dow === "6,0")) return tr("Weekends at") + " " + pad2(ho) + ":" + pad2(mi);
+    const p = parseCron(t.schedule);
+    if (!p) return t.schedule;
+    const at = " " + tr("at") + " " + p.time;
+    if (p.preset === "day") return tr("Every day") + at;
+    if (p.preset === "weekdays") return tr("Weekdays") + at;
+    if (p.preset === "weekly") return tr("Every") + " " + dayName(p.dow) + at;
+    if (p.preset === "monthly") return fill("On day %s of every month", p.dom) + at;
+    return p.every === 1 ? tr("Every hour") : fill("Every %s hours", p.every);
   }
-  const clock = (unix) => new Date(unix * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const clock = (unix) => new Date(unix * 1000).toLocaleString(LOCALE, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+  // ---- the schedule picker (M47) ------------------------------------------
+  // A beginner picks "every weekday at 09:00"; nobody has to know cron. The
+  // words and the next three run times come from the server's own parser
+  // (/api/tasks/preview), so what the page promises is what will happen.
+  // The raw line is under Advanced, and wins when it is filled in.
+
+  const zones = () => {
+    let list = [];
+    let mine = "UTC";
+    try { list = Intl.supportedValuesOf("timeZone").slice(); } catch (_) { /* an older browser */ }
+    try { mine = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) { /* no Intl */ }
+    for (const z of ["UTC", mine]) if (!list.includes(z)) list.push(z);
+    return { list: list.sort(), mine };
+  };
+  const inZone = (unix, tz) => {
+    const o = { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" };
+    try { return new Date(unix * 1000).toLocaleString(LOCALE, Object.assign({ timeZone: tz }, o)); } catch (_) { return new Date(unix * 1000).toLocaleString(LOCALE, o); }
+  };
+  const labelled = (label, control, hint) => el("label", { class: "field" }, el("span", { text: label }), control, hint ? el("span", { class: "hint", text: hint }) : null);
+
+  function schedulePicker(init) {
+    const z = zones();
+    const s = Object.assign({ preset: "weekdays", time: "09:00", dow: 1, dom: 1, every: 6, date: "", raw: "", tz: z.mine }, init || {});
+    const sub = el("div", { class: "stack" });
+    const out = el("div", { class: "preview", "aria-live": "polite" });
+    const pick = (obj, key, control, onchange) => { control.oninput = () => { obj[key] = control.value; onchange(); }; return control; };
+    let seq = 0;
+    let timer = null;
+
+    const value = () => {
+      const raw = s.raw.trim().replace(/\s+/g, " ");
+      if (raw) return { kind: "cron", schedule: raw };
+      const [h, m] = (s.time || "09:00").split(":").map(Number);
+      const at = (Number.isNaN(m) ? 0 : m) + " " + (Number.isNaN(h) ? 9 : h);
+      switch (s.preset) {
+        case "day": return { kind: "cron", schedule: at + " * * *" };
+        case "weekdays": return { kind: "cron", schedule: at + " * * 1-5" };
+        case "weekly": return { kind: "cron", schedule: at + " * * " + s.dow };
+        case "monthly": return { kind: "cron", schedule: at + " " + s.dom + " * *" };
+        case "hours": return { kind: "cron", schedule: "0 */" + s.every + " * * *" };
+        default: return { kind: "once", schedule: s.date ? s.date + "T" + (s.time || "09:00") : "" };
+      }
+    };
+    const words = (v) => {
+      if (v.kind === "once") return tr("Runs once");
+      const w = scheduleWords(v);
+      return w === v.schedule ? fill("Custom schedule: %s", v.schedule) : fill("Runs: %s", w.charAt(0).toLowerCase() + w.slice(1));
+    };
+    const changed = () => {
+      clearTimeout(timer);
+      const v = value();
+      const mine = ++seq;
+      if (!v.schedule) { setKids(out, el("span", { class: "muted", text: tr("Pick a date and a time.") })); return; }
+      setKids(out, el("span", { class: "muted", text: tr("Checking…") }));
+      timer = setTimeout(async () => {
+        try {
+          const r = await api("/api/tasks/preview", { kind: v.kind, schedule: v.schedule, timezone: s.tz });
+          if (mine !== seq) return;
+          setKids(out,
+            el("div", { class: "msg", dir: "auto", text: words(v) + " (" + s.tz + ")" }),
+            el("ol", { class: "next small", "aria-label": tr("Next runs") }, r.next.map((u) => el("li", { text: inZone(u, s.tz) }))));
+        } catch (e) {
+          if (mine !== seq) return;
+          setKids(out, el("div", { class: "err msg", dir: "auto", role: "alert", text: e.message }));
+        }
+      }, 250);
+    };
+
+    const draw = () => {
+      const time = pick(s, "time", el("input", { type: "time", dir: "ltr", value: s.time, required: true }), changed);
+      const parts = {
+        day: [labelled(tr("At"), time)],
+        weekdays: [labelled(tr("At"), time)],
+        weekly: [labelled(tr("On"), pick(s, "dow", el("select", {}, [1, 2, 3, 4, 5, 6, 0].map((d) => el("option", { value: d, text: dayName(d), selected: Number(s.dow) === d }))), changed)), labelled(tr("At"), time)],
+        monthly: [labelled(tr("On day"), pick(s, "dom", el("select", {}, Array.from({ length: 28 }, (_, i) => el("option", { value: i + 1, text: String(i + 1), selected: Number(s.dom) === i + 1 }))), changed), tr("1 to 28, so it happens every month")), labelled(tr("At"), time)],
+        hours: [labelled(tr("Every"), pick(s, "every", el("select", {}, HOURS.map((h) => el("option", { value: h, text: h === 1 ? tr("hour") : fill("%s hours", h), selected: Number(s.every) === h }))), changed))],
+        once: [labelled(tr("On"), pick(s, "date", el("input", { type: "date", dir: "ltr", value: s.date, required: true }), changed)), labelled(tr("At"), time)],
+      }[s.preset];
+      setKids(sub, el("div", { class: "row grid" }, parts));
+    };
+
+    const preset = el("select", { "aria-label": tr("How often") }, [
+      ["day", "Every day"], ["weekdays", "Every weekday"], ["weekly", "Every week"], ["monthly", "Every month"], ["hours", "Every few hours"], ["once", "Once"],
+    ].map(([v, t]) => el("option", { value: v, text: tr(t), selected: v === s.preset })));
+    preset.onchange = () => { s.preset = preset.value; s.raw = ""; rawBox.value = ""; draw(); changed(); };
+    const tzBox = el("select", { "aria-label": tr("Time zone") }, z.list.map((x) => el("option", { value: x, text: x, selected: x === s.tz })));
+    tzBox.onchange = () => { s.tz = tzBox.value; changed(); };
+    const rawBox = pick(s, "raw", el("input", { dir: "ltr", class: "mono", value: s.raw, placeholder: "0 9 * * 1-5", autocomplete: "off", spellcheck: "false", "aria-label": tr("Custom schedule (5 fields)") }), changed);
+
+    draw();
+    changed();
+    return {
+      value: () => Object.assign(value(), { timezone: s.tz }),
+      node: el("div", { class: "stack" },
+        labelled(tr("How often"), preset),
+        sub,
+        labelled(tr("Time zone"), tzBox),
+        out,
+        advanced("cron", tr("your own schedule line"),
+          labelled(tr("Custom schedule (5 fields)"), rawBox, tr("Minute hour day month weekday. If this isn't empty, it is used instead of the choices above.")))),
+    };
+  }
+
+  // A form in the page's own dialog (a bottom sheet on a phone): `submit`
+  // returns the server's answer or throws; a refusal stays in the dialog
+  // with its reason, so nothing typed is lost.
+  function formDialog(title, fields, confirm, submit) {
+    const back = document.activeElement;
+    const d = el("dialog", { class: "dlg wide", "aria-labelledby": "dlg-title" });
+    const err = el("p", { class: "bad msg small", dir: "auto", role: "alert" });
+    const go = el("button", { type: "submit", class: "primary", text: confirm });
+    d.append(el("form", {
+      method: "dialog",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        if (go.getAttribute("aria-busy") === "true") return;
+        go.setAttribute("aria-busy", "true");
+        err.textContent = "";
+        try {
+          const r = await submit();
+          if (r && r.said) toast(r.said);
+          d.close();
+          refresh();
+        } catch (x) {
+          err.textContent = x.message;
+        } finally {
+          go.removeAttribute("aria-busy");
+        }
+      },
+    },
+      el("h3", { id: "dlg-title", dir: "auto", text: title }), fields, err,
+      el("div", { class: "row" }, el("button", { type: "button", text: tr("Cancel"), onclick: () => d.close() }), go)));
+    d.addEventListener("close", () => { d.remove(); if (back && back.isConnected && back.focus) back.focus(); });
+    document.body.append(d);
+    d.showModal();
+    return d;
+  }
+
+  function newTask() {
+    const name = el("input", { dir: "auto", maxlength: 80, required: true, autocomplete: "off", placeholder: tr("Morning summary") });
+    const what = el("textarea", { dir: "auto", rows: 3, required: true, placeholder: tr("Summarise my unread mail and tell me what needs an answer.") });
+    const picker = schedulePicker();
+    let to = "chat";
+    const dest = el("div", { class: "field" }, el("span", { text: tr("Send the result to") }));
+    const drawDest = () => dest.replaceChildren(dest.firstChild, chips(tr("Send the result to"), [["chat", tr("This dashboard's chat")], ["owner", tr("My own chat")]], to, (v) => { to = v; drawDest(); }));
+    drawDest();
+    const model = el("input", { dir: "ltr", class: "mono", autocomplete: "off", placeholder: tr("the default"), "aria-label": tr("Model") });
+    formDialog(tr("New task"), el("div", { class: "stack" },
+      labelled(tr("Name"), name),
+      labelled(tr("What should the bot do?"), what),
+      picker.node,
+      dest,
+      advanced("newtask", tr("choose a model"), labelled(tr("Model"), model, tr("provider/model, or leave empty for the default")))),
+    tr("Add the task"), () => {
+      const v = picker.value();
+      const body = { name: name.value.trim(), prompt: what.value.trim(), kind: v.kind, schedule: v.schedule, timezone: v.timezone, to };
+      if (model.value.trim()) body.model = model.value.trim();
+      return api("/api/tasks/add", body);
+    });
+    name.focus();
+  }
+
+  function changeSchedule(t) {
+    const parsed = parseCron(t.schedule);
+    const picker = schedulePicker(Object.assign({ tz: t.timezone }, parsed || { raw: t.schedule }));
+    formDialog(tr("Change the schedule"), el("div", { class: "stack" },
+      el("p", { class: "msg", dir: "auto", text: t.name || t.id }), picker.node), tr("Save"), () => {
+      const v = picker.value();
+      return api("/api/tasks/schedule", { id: t.id, schedule: v.schedule, timezone: v.timezone });
+    });
+  }
 
   // A chart with the numbers under it for a screen reader, which cannot
   // read bars.
@@ -1677,23 +1888,25 @@
         r = await api("/api/tasks");
       } catch (e) { return sectionError(this.box, e); }
       setKids(this.box,
-        secHead("Tasks", r.tasks.length ? r.tasks.length + " scheduled" : "things your bot does on a schedule"),
+        secHead(tr("Tasks"), r.tasks.length ? fill("%s scheduled", r.tasks.length) : tr("things your bot does on a schedule"),
+          button(tr("New task"), { icon: "plus", kind: "primary", onclick: newTask })),
         r.paused ? el("div", { class: "alert bad" },
-          el("div", { class: "body" }, el("div", { class: "what", text: "The kill switch is on: nothing runs." }))) : null,
+          el("div", { class: "body" }, el("div", { class: "what", text: tr("The kill switch is on: nothing runs.") }))) : null,
         r.tasks.length ? el("div", { class: "plain-list" }, r.tasks.map((t) => this.item(t)))
-          : empty("No tasks yet", "A task is something your bot does by itself, like a morning summary. Ask it in Chat: \"every weekday at 9, summarise my unread mail\"."));
+          : empty(tr("No tasks yet"), tr("A task is something your bot does by itself, like a morning summary. Add one here, or ask for it in Chat: \"every weekday at 9, summarise my unread mail\"."),
+            button(tr("New task"), { icon: "plus", kind: "primary", onclick: newTask })));
     },
     item(t) {
-      const next = t.enabled && t.next_run_at != null ? "Next: " + clock(t.next_run_at) + " (" + ago(t.next_run_at) + ")" : t.enabled ? "" : "Paused";
+      const next = t.enabled && t.next_run_at != null ? tr("Next:") + " " + clock(t.next_run_at) + " (" + ago(t.next_run_at) + ")" : t.enabled ? "" : tr("Paused");
       const last = t.runs.length ? t.runs[0] : null;
       return el("div", { class: "card task" },
         el("div", { class: "item" },
           el("div", { class: "grow" },
             el("div", { class: "t msg", dir: "auto", text: t.name || t.id }),
             el("div", { class: "d", text: scheduleWords(t) + (next ? " · " + next : "") })),
-          toggle((t.enabled ? "Pause " : "Resume ") + (t.name || t.id), t.enabled,
+          toggle((t.enabled ? tr("Pause") : tr("Resume")) + " " + (t.name || t.id), t.enabled,
             (e) => act(t.enabled ? "tasks/pause" : "tasks/resume", { id: t.id }, e.currentTarget)),
-          btn("Run now", "tasks/run", { id: t.id })),
+          btn(tr("Run now"), "tasks/run", { id: t.id })),
         last && last.status !== "succeeded" && last.status !== "running" ? el("p", { class: "small mt0 " + (last.status === "skipped" ? "warn" : "bad") },
           "Last run " + last.status + " " + ago(last.started_at) + (last.detail ? ": " : ""), last.detail ? text(last.detail) : null) : null,
         advanced("task-" + t.id, "schedule line, model, history",
@@ -1710,14 +1923,11 @@
           }, x.status + " · " + ago(x.started_at)))) : el("p", { class: "muted small", text: "never ran" }),
           t.runs.slice(0, 1).map((x) => x.detail ? el("div", { class: "muted small msg mt", dir: "auto", text: x.detail }) : null),
           el("div", { class: "row" },
-            askBtn("Schedule", "tasks/schedule", t.kind === "cron" ? "Cron schedule (5 fields), then optionally a space and an IANA timezone:" : "When (RFC 3339):",
-              t.kind === "cron" ? t.schedule + " " + t.timezone : t.schedule, (v) => {
-                const [schedule, timezone] = t.kind === "cron" ? splitTz(v) : [v.trim(), null];
-                return { id: t.id, schedule, timezone };
-              }),
+            t.kind === "cron" ? button(tr("Change schedule"), { onclick: () => changeSchedule(t) })
+              : askBtn(tr("Schedule"), "tasks/schedule", "When (RFC 3339):", t.schedule, (v) => ({ id: t.id, schedule: v.trim(), timezone: null })),
             askBtn("Model", "tasks/model", "The model it runs on (provider/model, a provider or an alias), or \"default\":",
               t.model || "default", (v) => ({ id: t.id, model: v.trim() })),
-            t.builtin ? null : btn("Delete", "tasks/delete", { id: t.id }, "danger"))));
+            t.builtin ? null : btn(tr("Delete"), "tasks/delete", { id: t.id }, "danger"))));
     },
   };
 
@@ -2501,20 +2711,127 @@
   };
 
 
+  // ---- Memory (M47): what the bot remembers, searchable, forgettable ------
+  // Keyword search on the server (no model, no embedding call): the page
+  // works when every model is down. The text is the owner's and the bot's:
+  // in dir="auto" elements, never parsed as HTML.
+
+  sections.memory = {
+    live: true,
+    every: 30,
+    mount(root) {
+      this.box = el("div");
+      this.seq = 0;
+      this.q = el("input", {
+        type: "search", dir: "auto", autocomplete: "off", spellcheck: "false", class: "grow",
+        placeholder: tr("Search what your bot remembers"), "aria-label": tr("Search what your bot remembers"),
+      });
+      let wait = null;
+      this.q.oninput = () => { clearTimeout(wait); wait = setTimeout(() => this.load(), 300); };
+      this.q.onkeydown = (e) => { if (e.key === "Escape" && this.q.value) { this.q.value = ""; this.load(); } };
+      root.append(secHead(tr("Memory"), tr("what it remembers")), el("div", { class: "row search" }, icon("search"), this.q), this.box);
+    },
+    async load() {
+      const q = this.q.value.trim();
+      const mine = ++this.seq;
+      let r;
+      try {
+        r = await api("/api/memory" + (q ? "?q=" + encodeURIComponent(q) : ""));
+      } catch (e) { return mine === this.seq ? sectionError(this.box, e) : null; }
+      if (mine !== this.seq) return null;
+      setKids(this.box,
+        !r.available ? empty(tr("Nothing remembered yet"), tr("Your bot remembers what you tell it to (\"remember that I like my coffee black\") and what it learns while it works."))
+          : !r.memories.length ? empty(q ? tr("Nothing matches that") : tr("Nothing remembered yet"), q ? tr("Try fewer or different words.") : tr("Tell your bot \"remember that…\" in Chat, and it shows up here."))
+            : el("div", { class: "plain-list" }, r.memories.map((m) => this.item(m))));
+      return r;
+    },
+    item(m) {
+      const b = button(tr("Forget"), { icon: "trash", kind: "ghost", aria: tr("Forget this memory") });
+      b.onclick = async () => { if (await act("memory/forget", { id: m.id }, b)) this.load(); };
+      return el("div", { class: "card memory" },
+        el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t msg", dir: "auto", text: m.text }),
+            el("div", { class: "d" }, (m.tags || []).map((g) => el("span", { class: "tag", dir: "auto", text: g })), " ", ago(m.at))),
+          b));
+    },
+  };
+
+  // ---- Settings (M47): look, language, backup ------------------------------
+
+  const bytes = (n) => (n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(0) + " KB" : (n / 1048576).toFixed(1) + " MB");
+
+  sections.settings = {
+    every: 0,
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      this.files = el("div");
+      root.append(secHead(tr("Settings"), tr("look, language, backup")), this.box);
+    },
+    async load() {
+      let r;
+      try {
+        r = await api("/api/backups");
+      } catch (e) { r = null; }
+      this.draw(r);
+      // A backup runs in the background: look again until it is done.
+      clearTimeout(this.poll);
+      if (r && r.running) this.poll = setTimeout(() => { if (current === "settings") this.load(); }, 1500);
+    },
+    draw(r) {
+      const theme = window.ferruleTheme;
+      const look = card({ title: tr("Appearance"), icon: "sun" },
+        el("p", { class: "muted small mt0", text: tr("Follows your device until you pick one.") }),
+        theme ? chips(tr("Appearance"), [["auto", tr("System")], ["paper", tr("Light")], ["forge", tr("Dark")]], theme.pick(),
+          (v) => { theme.set(v); themeButtonLabel(); this.draw(r); }) : null);
+      const lang = card({ title: tr("Language"), icon: "globe" },
+        el("p", { class: "muted small mt0", text: tr("Hebrew reads right to left. What you and your bot write always follows its own direction.") }),
+        chips(tr("Language"), [["en", "English"], ["he", "עברית"]], LANG, (v) => { if (v !== LANG && window.ferruleLang) window.ferruleLang.set(v); }));
+      const list = r && r.files && r.files.length
+        ? el("div", { class: "plain-list" }, r.files.map((f) => el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t mono", dir: "ltr", text: f.name }),
+            el("div", { class: "d", text: bytes(f.bytes) + " · " + ago(f.at) })),
+          el("a", { class: "btn", href: BASE + "/api/backups/download?name=" + encodeURIComponent(f.name), download: f.name, "aria-label": tr("Download") + " " + f.name }, icon("download"), tr("Download")),
+          button(tr("Delete"), { icon: "trash", kind: "ghost", aria: tr("Delete") + " " + f.name, onclick: async (e) => { if (await act("backups/delete", { name: f.name }, e.currentTarget)) this.load(); } }))))
+        : null;
+      const running = !!(r && r.running);
+      const go = button(running ? tr("Backing up…") : tr("Back up now"), { icon: "backup", kind: "primary", onclick: () => this.backup() });
+      if (running || !r) go.disabled = true;
+      const bak = card({ title: tr("Backup"), icon: "backup" },
+        el("p", { class: "muted small mt0", text: tr("One file with your bot's memory, chats, tasks and settings. Keys and passwords are left out. The last three are kept.") }),
+        r && r.error ? el("div", { class: "alert bad" }, el("div", { class: "body" }, el("div", { class: "what msg", dir: "auto", text: r.error }))) : null,
+        r ? (r.files.length ? null : el("p", { class: "muted small", text: tr("No backup yet. Press the button to make one.") })) : el("p", { class: "muted small", text: tr("Backups aren't available in this process.") }),
+        list, el("div", { class: "row" }, go));
+      const more = card({ title: tr("Getting started"), icon: "help" },
+        el("div", { class: "row" },
+          button(tr("Show the setup checklist again"), { onclick: () => { home.show(); toast(tr("The checklist is back on Home.")); } }),
+          button(tr("Keyboard shortcuts"), { onclick: () => shortcuts() }),
+          button(tr("Sign out"), { icon: "power", onclick: () => document.getElementById("logout").click() })));
+      setKids(this.box, look, lang, bak, more);
+    },
+    async backup() {
+      const r = await act("backup", {});
+      if (r) this.load();
+    },
+  };
+
+
   // ---- navigation and polling --------------------------------------------
   // A phone gets a bottom bar of five (the rest in a sheet under "More");
   // from 900 px, a sidebar with everything. Same sections, same URLs.
   // The groups put what a beginner touches daily first (D3).
 
   const GROUPS = [
-    ["Everyday", ["health", "chat", "tasks", "memory", "usage"]],
-    ["Setup", ["channels", "connections", "models"]],
-    ["Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
+    [/*tr*/"Everyday", ["health", "chat", "tasks", "memory", "usage"]],
+    [/*tr*/"Setup", ["channels", "connections", "models"]],
+    [/*tr*/"Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
   ];
   const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
   const TABS = ["health", "chat", "tasks", "usage"];
   const ICON_OF = { health: "health" };
-  const SUB = { health: "how the bot is doing", chat: "talk to it here", tasks: "things it does on a schedule", memory: "what it remembers", usage: "spend and caps", channels: "where people reach the agent", connections: "services it can use", models: "which brain it thinks with", logs: "what happened", agents: "sub-agents", extensions: "skills, tools, MCP", routing: "which model for what", console: "ferrule commands", config: "the file, secrets hidden", settings: "look, language, backup" };
+  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
+  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", memory: /*tr*/"Memory", usage: /*tr*/"Usage", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
   let timer = null;
@@ -2522,11 +2839,11 @@
   let lastHealth = null;
   const badges = {};
 
-  const title = (s) => sections[s].title || s[0].toUpperCase() + s.slice(1);
+  const title = (s) => tr(NAMES[s] || sections[s].title || s[0].toUpperCase() + s.slice(1));
 
   function navLink(s, withSub) {
     const a = el("a", { href: "#" + s }, icon(ICON_OF[s] || s), el("span", { text: title(s) }),
-      withSub && SUB[s] ? el("span", { class: "sub muted small", text: SUB[s] }) : null);
+      withSub && SUB[s] ? el("span", { class: "sub muted small", text: tr(SUB[s]) }) : null);
     a.dataset.s = s;
     a.onclick = (e) => { e.preventDefault(); closeSheet(); show(s); };
     return a;
@@ -2536,22 +2853,22 @@
     const rail = document.getElementById("rail");
     const groups = (link) => GROUPS.map(([name, list]) => {
       const mine = list.filter((s) => sections[s] && link.keep(s));
-      return mine.length ? frag(el("div", { class: "group", text: name }), mine.map((s) => link.make(s))) : null;
+      return mine.length ? frag(el("div", { class: "group", text: tr(name) }), mine.map((s) => link.make(s))) : null;
     });
     setKids(rail,
       groups({ keep: () => true, make: (s) => navLink(s) }),
       el("div", { class: "rail-foot" },
-        frag(el("b", { text: "session" }), el("br"), "12 h max · idle 30 min", el("br"),
-          el("b", { text: "login" }), el("br"), "one-use link")));
+        frag(el("b", { text: tr("session") }), el("br"), tr("12 h max · idle 30 min"), el("br"),
+          el("b", { text: tr("login") }), el("br"), tr("one-use link"))));
     rail.hidden = false;
     const tabs = document.getElementById("tabs");
-    const more = el("a", { href: "#more", "aria-haspopup": "dialog" }, icon("more"), el("span", { text: "More" }));
+    const more = el("a", { href: "#more", "aria-haspopup": "dialog" }, icon("more"), el("span", { text: tr("More") }));
     more.dataset.s = "more";
     more.onclick = (e) => { e.preventDefault(); openSheet(); };
     tabs.replaceChildren(...TABS.filter((s) => sections[s]).map((s) => navLink(s)), more);
     tabs.hidden = false;
     const sheet = document.getElementById("sheet");
-    sheet.replaceChildren(el("div", { class: "panel", role: "dialog", "aria-modal": "true", "aria-label": "All sections" },
+    sheet.replaceChildren(el("div", { class: "panel", role: "dialog", "aria-modal": "true", "aria-label": tr("All sections") },
       el("div", { class: "grip" }),
       groups({ keep: (s) => !TABS.includes(s), make: (s) => navLink(s, true) })));
     sheet.onclick = (e) => { if (e.target === sheet) closeSheet(); };
@@ -2583,7 +2900,7 @@
       const n = s === "more" ? order.filter((x) => !TABS.includes(x)).reduce((t, x) => t + (badges[x] || 0), 0) : badges[s] || 0;
       let dot = a.querySelector(".dot");
       if (n && !dot) { dot = el("span", { class: "dot" }); a.append(dot); }
-      if (dot) { if (n) { dot.textContent = n > 9 ? "9+" : String(n); dot.setAttribute("aria-label", n + " need you"); } else dot.remove(); }
+      if (dot) { if (n) { dot.textContent = n > 9 ? "9+" : String(n); dot.setAttribute("aria-label", fill("%s need you", n)); } else dot.remove(); }
     }
   }
 
@@ -2690,32 +3007,38 @@
     const t = window.ferruleTheme;
     if (!t) { b.hidden = true; return; }
     const p = t.pick();
-    b.textContent = p;
-    b.title = "Theme: " + (p === "auto" ? "follows the system" : p === "paper" ? "light" : "dark");
+    b.textContent = p === "auto" ? tr("auto") : p === "paper" ? tr("paper") : tr("forge");
+    b.title = tr("Theme:") + " " + (p === "auto" ? tr("follows the system") : p === "paper" ? tr("light") : tr("dark"));
   }
 
   // Each action: what it is called, words it also answers to, an icon, and
   // `when` (absent = always). `run` may be async.
   const PALETTE_ACTIONS = [
-    { label: "Run doctor", words: "check health problems", icon: "health",
+    { label: /*tr*/"Run doctor", words: "check health problems", icon: "health",
       run: async () => { show("health"); await act("doctor/run", {}); } },
-    { label: "Stop the running turn", words: "cancel halt", icon: "stop",
+    { label: /*tr*/"Stop the running turn", words: "cancel halt", icon: "stop",
       when: () => busyTurns().length > 0,
       run: async () => { for (const t of busyTurns()) await act("turn/stop", { session: t.session }); } },
-    { label: "Attach a photo", words: "picture image send upload camera", icon: "image",
+    { label: /*tr*/"Attach a photo", words: "picture image send upload camera", icon: "image",
       run: () => { show("chat"); if (sections.chat.pick) sections.chat.pick(); else sections.chat.wantPick = true; } },
-    { label: "Switch theme", words: "dark light appearance paper forge", icon: "sun",
+    { label: /*tr*/"New task", words: "add create schedule remind every daily", icon: "plus",
+      run: () => { show("tasks"); newTask(); } },
+    { label: /*tr*/"Back up now", words: "backup save export download", icon: "backup",
+      run: () => { show("settings"); sections.settings.backup(); } },
+    { label: /*tr*/"Switch language", words: "hebrew english עברית language rtl", icon: "globe",
+      run: () => { if (window.ferruleLang) window.ferruleLang.set(LANG === "he" ? "en" : "he"); } },
+    { label: /*tr*/"Switch theme", words: "dark light appearance paper forge", icon: "sun",
       run: () => { if (window.ferruleTheme) { window.ferruleTheme.next(); themeButtonLabel(); } } },
-    { label: "Sign out", words: "log out", icon: "power",
+    { label: /*tr*/"Sign out", words: "log out", icon: "power",
       run: () => document.getElementById("logout").click() },
-    { label: "Keyboard shortcuts", words: "help keys ?", icon: "search",
+    { label: /*tr*/"Keyboard shortcuts", words: "help keys ?", icon: "search",
       run: () => shortcuts() },
   ];
   const busyTurns = () => ((lastHealth && lastHealth.turns) || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
 
   function paletteItems() {
-    const go = order.map((s) => ({ label: title(s), words: (SUB[s] || "") + " go open", icon: ICON_OF[s] || s, hint: "Go to", run: () => show(s) }));
-    return go.concat(PALETTE_ACTIONS.filter((a) => !a.when || a.when()));
+    const go = order.map((s) => ({ label: title(s), words: (SUB[s] || "") + " " + s + " go open", icon: ICON_OF[s] || s, hint: tr("Go to"), run: () => show(s) }));
+    return go.concat(PALETTE_ACTIONS.filter((a) => !a.when || a.when()).map((a) => Object.assign({}, a, { label: tr(a.label) })));
   }
 
   function palette() {
@@ -2724,12 +3047,12 @@
     const items = paletteItems().map((it, i) => Object.assign({ id: "pal-" + i, key: fold(it.label + " " + (it.words || "")) }, it));
     let shown = items;
     let at = 0;
-    const d = el("dialog", { class: "dlg pal", "aria-label": "Search and commands" });
-    const list = el("ul", { class: "pal-list", id: "pal-list", role: "listbox", "aria-label": "Results" });
+    const d = el("dialog", { class: "dlg pal", "aria-label": tr("Search and commands") });
+    const list = el("ul", { class: "pal-list", id: "pal-list", role: "listbox", "aria-label": tr("Results") });
     const box = el("input", {
       type: "text", class: "pal-input", role: "combobox", "aria-expanded": "true", "aria-controls": "pal-list",
       "aria-autocomplete": "list", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
-      placeholder: "Go to a page or run a command…", "aria-label": "Search and commands",
+      placeholder: tr("Go to a page or run a command…"), "aria-label": tr("Search and commands"),
     });
     const paint = () => {
       list.replaceChildren(...(shown.length ? shown.map((it, i) => {
@@ -2738,7 +3061,7 @@
         li.onclick = () => choose(it);
         li.onmousemove = () => { if (at !== i) { at = i; paint(); } };
         return li;
-      }) : [el("li", { class: "empty", role: "presentation", text: "Nothing matches." })]));
+      }) : [el("li", { class: "empty", role: "presentation", text: tr("Nothing matches.") })]));
       if (shown[at]) box.setAttribute("aria-activedescendant", shown[at].id); else box.removeAttribute("aria-activedescendant");
       const on = list.querySelector(".on");
       if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest" });
@@ -2770,12 +3093,12 @@
   }
 
   function shortcuts() {
-    const rows = [["/", "Search pages and commands"], ["Ctrl K  ·  ⌘ K", "The same, from anywhere"], ["?", "This list"], ["Esc", "Close what's open"]];
+    const rows = [["/", tr("Search pages and commands")], ["Ctrl K  ·  ⌘ K", tr("The same, from anywhere")], ["?", tr("This list")], ["Esc", tr("Close what's open")]];
     const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
     d.append(el("form", { method: "dialog" },
-      el("h3", { id: "dlg-title", text: "Keyboard shortcuts" }),
+      el("h3", { id: "dlg-title", text: tr("Keyboard shortcuts") }),
       el("dl", { class: "keys" }, rows.map(([k, v]) => frag(el("dt", null, el("kbd", { text: k })), el("dd", { text: v })))),
-      el("div", { class: "row" }, el("button", { class: "primary", text: "Done" }))));
+      el("div", { class: "row" }, el("button", { class: "primary", text: tr("Done") }))));
     d.addEventListener("close", () => d.remove());
     document.body.append(d);
     d.showModal();
@@ -2813,7 +3136,21 @@
     find.onclick = () => palette();
   }
 
+  // The words in index.html, in the chosen language.
+  function translateShell() {
+    if (!HE) return;
+    const set = (sel, fn) => { const n = document.querySelector(sel); if (n) fn(n); };
+    set(".skip", (n) => { n.textContent = tr("Skip to content"); });
+    set("#logout", (n) => { n.textContent = tr("Log out"); });
+    set("#find", (n) => { n.setAttribute("aria-label", tr("Search and commands (press /)")); n.title = tr("Search and commands (press /)"); });
+    set("#rail", (n) => n.setAttribute("aria-label", tr("Sections")));
+    set("#tabs", (n) => n.setAttribute("aria-label", tr("Quick sections")));
+    set("#main > p", (n) => { n.textContent = tr("Loading…"); });
+  }
+
   async function start() {
+    await loadLang();
+    translateShell();
     bootChrome();
     // A login link carries its token after '#': the browser never sends it
     // to a server, and it's gone from the address bar at once. A section
@@ -2831,7 +3168,7 @@
     logout.hidden = false;
     logout.onclick = async () => {
       try { await api("/api/logout", {}); } catch (_) { /* gone anyway */ }
-      loggedOut("Logged out.");
+      loggedOut(tr("Logged out."));
     };
     document.getElementById("live").hidden = false;
     document.getElementById("find").hidden = false;

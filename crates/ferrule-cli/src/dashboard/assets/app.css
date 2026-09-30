@@ -542,6 +542,7 @@ html[dir="rtl"] details.advanced[open] > summary::before{transform:rotate(45deg)
 .switch[aria-busy="true"]{opacity:.6}
 .strip{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);margin:0 0 var(--sp-3);min-height:var(--tap);border-radius:var(--r-md);background:var(--warn-soft);color:var(--warn);font-weight:var(--fw-strong);text-decoration:none}
 .strip .grow{min-width:0}
+.strip .ico{inline-size:18px;block-size:18px}
 .plain-list{display:flex;flex-direction:column;gap:var(--sp-2)}
 .item{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3);border:var(--hair);border-radius:var(--r-md);background:var(--panel)}
 .item .grow{min-width:0}
@@ -602,3 +603,19 @@ kbd{font:var(--fs-sm) var(--mono);padding:2px 8px;border:var(--hair);border-bott
 @media (min-width:900px){#toast{inset-inline:auto 18px;bottom:18px;align-items:flex-end}}
 /* an arrow that points along the reading direction */
 html[dir="rtl"] .ico.flip{transform:scaleX(-1)}
+
+/* ---------- M47 part 5c: memory, the schedule picker, settings ---------- */
+dialog.dlg.wide{width:min(520px,calc(100vw - 24px))}
+@media (max-width:639px){dialog.dlg.wide{width:100%}}
+.row.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--sp-3);align-items:start}
+.row.grid .field{margin:0}
+.row.search{flex-wrap:nowrap;margin:0 0 var(--sp-3);position:relative}
+.row.search > .ico{position:absolute;inset-inline-start:var(--sp-3);width:18px;height:18px;color:var(--muted);pointer-events:none}
+.row.search input{padding-inline-start:38px}
+.memory .item{border:0;padding:0;background:none}
+.memory .d .tag{margin-inline-end:var(--sp-1)}
+.preview{background:var(--panel-2);border:var(--hair);border-radius:var(--r-md);padding:var(--sp-3);min-height:var(--tap);font-size:var(--fs-sm)}
+.preview .err{color:var(--bad)}
+.preview .next{margin:var(--sp-2) 0 0;padding-inline-start:var(--sp-5);color:var(--ink-2)}
+.field .chips{margin-top:var(--sp-1)}
+.item .btn{flex:none}

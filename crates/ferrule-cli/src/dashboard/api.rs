@@ -118,6 +118,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "approvals" => super::chat::approvals(ctx),
             "config" => super::config_page::get(ctx),
             "channels" => super::channels::list(ctx),
+            "memory" => super::memory::list(ctx, req).await,
+            "backups" => super::backup_page::list(ctx),
             _ => None,
         };
     }
@@ -157,6 +159,11 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "console/cancel" => super::console::cancel(ctx, body),
         "chat/send" => super::chat::send(ctx, body).await,
         "chat/photo" => super::chat::photo(ctx, body).await,
+        "backup" => super::backup_page::start(ctx),
+        "backups/delete" => super::backup_page::delete(ctx, body),
+        "memory/forget" => super::memory::forget(ctx, body).await,
+        "tasks/preview" => task_preview(body),
+        "tasks/add" => task_add(ctx, body).await,
         "approvals/answer" => super::chat::answer(ctx, body),
         "config/check" => super::config_page::check(ctx, body),
         "config/save" => super::config_page::save(ctx, body),
@@ -1745,6 +1752,121 @@ fn task_edit(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     };
     match done {
         Ok(said) => ok(json!({ "ok": true, "said": said })),
+        Err(e) => bad(400, format!("{e:#}")),
+    }
+}
+
+fn task_kind(body: &Value) -> Result<ferrule_gateway::TaskKind, Answer> {
+    match body.get("kind").and_then(Value::as_str).unwrap_or("cron") {
+        "cron" => Ok(ferrule_gateway::TaskKind::Cron),
+        "once" => Ok(ferrule_gateway::TaskKind::Once),
+        other => Err(bad(
+            400,
+            format!("`kind` is `{other}`; use `cron` or `once`"),
+        )),
+    }
+}
+
+/// The next few times a schedule fires, by the same parser `ferrule tasks
+/// add` uses, so the page can say them before anything is saved.
+fn task_preview(body: &Value) -> Answer {
+    let kind = need!(task_kind(body));
+    let schedule = need!(arg(body, "schedule"));
+    let tz = body
+        .get("timezone")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|z| !z.is_empty())
+        .unwrap_or("UTC");
+    match crate::tasks_admin::TasksAdmin::preview(kind, schedule, tz, 3) {
+        Ok(next) => ok(json!({ "ok": true, "next": next })),
+        Err(e) => bad(400, format!("{e:#}")),
+    }
+}
+
+/// A task made on the page: what to do, when, and where the answer goes.
+/// Never a gate (a shell command); that stays `ferrule tasks add --gate`.
+async fn task_add(ctx: &Ctx, body: &Value) -> Answer {
+    let Some(t) = &ctx.tasks else {
+        return missing("the tasks");
+    };
+    if body.get("gate").is_some_and(|g| !g.is_null()) {
+        return bad(
+            400,
+            "Tasks from the page can't run a gate command; use `ferrule tasks add --gate` for that.",
+        );
+    }
+    let text = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+    };
+    if text("name").is_empty() {
+        return bad(400, "Give the task a name.");
+    }
+    if text("prompt").is_empty() {
+        return bad(400, "Tell the bot what to do in this task.");
+    }
+    if text("schedule").is_empty() {
+        return bad(400, "Pick when it runs.");
+    }
+    let kind = need!(task_kind(body));
+    let tz = match text("timezone") {
+        "" => "UTC",
+        z => z,
+    };
+    let model = match text("model") {
+        "" | "default" => None,
+        word => {
+            let Some(m) = &ctx.models else {
+                return missing("the models");
+            };
+            if let Err(why) = m.resolve(word) {
+                return bad(400, format!("The model {word} isn't connected ({why})."));
+            }
+            Some(word.to_string())
+        }
+    };
+    let (channel, chat_id) = match (text("to"), &ctx.owner_chat) {
+        ("chat", _) | ("", None) => (
+            super::chat::CHANNEL.to_string(),
+            super::chat::CHAT.to_string(),
+        ),
+        (_, Some(owner)) => (owner.channel.clone(), owner.chat.clone()),
+        (_, None) => (
+            super::chat::CHANNEL.to_string(),
+            super::chat::CHAT.to_string(),
+        ),
+    };
+    let new = crate::tasks_admin::NewPageTask {
+        name: text("name").to_string(),
+        prompt: text("prompt").to_string(),
+        kind,
+        schedule: text("schedule").to_string(),
+        timezone: tz.to_string(),
+        channel,
+        chat_id,
+        model,
+    };
+    match t.add(new, BY) {
+        Ok((task, next)) => {
+            let when = next
+                .and_then(|n| chrono::DateTime::from_timestamp(n, 0))
+                .map(|n| match task.timezone.parse::<chrono_tz::Tz>() {
+                    Ok(z) => format!(
+                        " Next run: {} ({z}).",
+                        n.with_timezone(&z).format("%a %-d %b, %H:%M")
+                    ),
+                    Err(_) => format!(" Next run: {} UTC.", n.format("%a %-d %b, %H:%M")),
+                })
+                .unwrap_or_default();
+            ok(json!({
+                "ok": true,
+                "id": task.id,
+                "said": format!("Added \u{201c}{}\u{201d}.{when}", task.name),
+            }))
+        }
         Err(e) => bad(400, format!("{e:#}")),
     }
 }

@@ -409,3 +409,126 @@ fn the_index_has_landmarks_and_a_skip_link() {
     assert!(HTML.contains("href=\"#main\""));
     assert!(HTML.contains("id=\"toast\"") && HTML.contains("aria-live="));
 }
+
+const HE: &str = include_str!("assets/lang-he.js");
+const THEME: &str = include_str!("assets/theme.js");
+
+/// The string literal that starts at `s[0]` (an opening quote), raw as
+/// written, escapes and all; `None` when it never closes.
+fn literal(s: &str) -> Option<&str> {
+    let mut escaped = false;
+    for (i, c) in s.char_indices().skip(1) {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return Some(&s[1..i]),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every fixed word the page can show in Hebrew: what `tr("…")` and
+/// `fill("…", n)` are given, and what carries a `/*tr*/` marker where the
+/// call comes later (a nav label, a palette entry).
+fn shell_strings() -> Vec<String> {
+    let mut out = Vec::new();
+    for marker in ["tr(\"", "fill(\"", "/*tr*/\""] {
+        for (at, _) in JS.match_indices(marker) {
+            // Not `str(`, `attr(` and the like.
+            if marker != "/*tr*/\""
+                && JS[..at]
+                    .chars()
+                    .last()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let quote = at + marker.len() - 1;
+            out.push(
+                literal(&JS[quote..])
+                    .expect("an unclosed string")
+                    .to_string(),
+            );
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The keys of `lang-he.js`: one entry to a line, `  "key": "value",`.
+fn hebrew_keys() -> Vec<String> {
+    HE.lines()
+        .filter(|l| l.starts_with("  \""))
+        .map(|l| literal(&l[2..]).expect("an unclosed key").to_string())
+        .collect()
+}
+
+#[test]
+fn every_shell_string_has_a_hebrew_version() {
+    let words = shell_strings();
+    assert!(
+        words.len() > 100,
+        "the scan found too few strings: {}",
+        words.len()
+    );
+    let have = hebrew_keys();
+    let missing: Vec<&String> = words.iter().filter(|w| !have.contains(w)).collect();
+    assert!(missing.is_empty(), "no Hebrew for: {missing:#?}");
+    // And nothing stale: a key no call asks for is a translation nobody sees.
+    let stale: Vec<&String> = have.iter().filter(|k| !words.contains(k)).collect();
+    assert!(
+        stale.is_empty(),
+        "lang-he.js has words the page never asks for: {stale:#?}"
+    );
+    let mut sorted = have.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), have.len(), "a key twice in lang-he.js");
+}
+
+#[test]
+fn a_hebrew_word_keeps_the_placeholders_of_its_english() {
+    for line in HE.lines().filter(|l| l.starts_with("  \"")) {
+        let key = literal(&line[2..]).unwrap();
+        let rest = &line[2 + key.len() + 2..];
+        let val = literal(rest.trim_start_matches(':').trim_start()).expect("a value");
+        assert_eq!(
+            key.matches("%s").count(),
+            val.matches("%s").count(),
+            "{key}"
+        );
+        assert!(!val.contains('<') && !val.contains('>'), "markup in {key}");
+        assert!(!val.trim().is_empty(), "an empty translation of {key}");
+    }
+}
+
+#[test]
+fn theme_js_sets_the_language_and_direction_before_paint() {
+    assert!(THEME.contains("setAttribute(\"lang\", lang)"));
+    assert!(THEME.contains("setAttribute(\"dir\", lang === \"he\" ? \"rtl\" : \"ltr\")"));
+    // Before the first paint means a script in <head>, not deferred.
+    let script = HTML.find("src=\"/theme.js\"").unwrap();
+    assert!(script < HTML.find("<body>").unwrap());
+    assert!(!HTML[script - 30..script + 30].contains("defer"));
+    // The Hebrew words are fetched by the page, only when chosen: never
+    // named in the HTML, so an English reader never downloads them.
+    assert!(!HTML.contains("lang-he"));
+    assert!(JS.contains("/lang-he.js") && JS.contains("LANG !== \"he\""));
+}
+
+#[test]
+fn the_hebrew_file_is_data_only() {
+    assert!(HE.contains("window.FERRULE_HE = {"));
+    for bad in [
+        "eval(",
+        "Function(",
+        "innerHTML",
+        "fetch(",
+        "import(",
+        "document.",
+    ] {
+        assert!(!HE.contains(bad), "{bad} in lang-he.js");
+    }
+}

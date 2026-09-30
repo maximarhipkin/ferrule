@@ -39,6 +39,8 @@ pub const CACHES: &[&str] = &[
     "gateway/running.json",
     "gateway/status.txt",
     "backup.json",
+    // The page's own backups (M47): a backup never holds the last one.
+    "backups",
 ];
 
 /// `<data>/backup.json`: the newest backup, for `ferrule doctor`.
@@ -180,7 +182,7 @@ fn utc_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-fn stamp_now() -> String {
+pub(crate) fn stamp_now() -> String {
     chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string()
 }
 

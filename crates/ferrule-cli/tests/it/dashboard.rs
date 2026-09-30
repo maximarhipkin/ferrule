@@ -1717,7 +1717,7 @@ fn an_eval_obeys_the_owners_caps_and_kill_switch() {
 // ---- M24: editing from the page ------------------------------------------
 
 /// The audit events on the page's log, newest first.
-fn audited(page: &Page, event: &str) -> Vec<Value> {
+pub(super) fn audited(page: &Page, event: &str) -> Vec<Value> {
     page.read("logs?kind=audit")["rows"]
         .as_array()
         .unwrap()

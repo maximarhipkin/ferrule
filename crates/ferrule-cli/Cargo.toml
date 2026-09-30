@@ -58,6 +58,7 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
 # M28: the host a [web_search] key is bound to.
 url = "2"
 reqwest = { workspace = true }
