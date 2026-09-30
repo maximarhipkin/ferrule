@@ -994,6 +994,26 @@ menu (set when the gateway starts). Discord gets `/new` and `/help` as slash
 commands when `ferrule setup` registers them ([discord.md](discord.md)).
 `ferrule chat` takes `/new` too.
 
+## Photos
+
+A photo is saved to the workspace's inbox like any file and then handed to
+the model **as a picture**, if the model can see one (see [Photos: which
+models see them](models.md#photos-which-models-see-them)). A caption is the
+message's text. If the model can't see images, the chat is told so once, in
+a sentence, and the agent still gets the saved file's path.
+
+- **Telegram** sends the largest size Ferrule will take (at most 2000 px on
+  the long side and within the size cap). An album is read as its first
+  photo only; the bot says so once per album, and you send the others one
+  at a time.
+- **The dashboard's Chat** has an attach button (also in the command
+  palette). The page shrinks the photo to 1568 px and re-encodes it as
+  JPEG in your browser, which also drops its EXIF and GPS data, before
+  anything leaves the phone. The server takes JPEG, PNG, WebP and GIF up
+  to 3.5 MB, checks the file's first bytes, and refuses SVG.
+- The other channels that save files (WhatsApp, Matrix, Mattermost, Signal,
+  email, the HTTP API) hand images to the model the same way.
+
 ## Voice messages
 
 A voice note or audio file sent to ferrule is transcribed before the agent

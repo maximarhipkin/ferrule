@@ -38,7 +38,7 @@ pub use public::Public;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
@@ -631,19 +631,48 @@ impl Dashboard {
         let get = req.method == "GET" || req.method == "HEAD";
         match (req.method.as_str(), req.path.as_str()) {
             (_, "/" | "/login" | "/index.html") if get => {
-                return Response::new(200, "text/html; charset=utf-8", self.index.clone())
+                return squeezed(
+                    &req,
+                    "text/html; charset=utf-8",
+                    self.index.as_bytes(),
+                    None,
+                )
             }
             (_, "/app.js") if get => {
-                return Response::new(200, "text/javascript; charset=utf-8", APP_JS)
+                static GZ: OnceLock<Vec<u8>> = OnceLock::new();
+                return squeezed(
+                    &req,
+                    "text/javascript; charset=utf-8",
+                    APP_JS.as_bytes(),
+                    Some(&GZ),
+                );
             }
             (_, "/app.css") if get => {
-                return Response::new(200, "text/css; charset=utf-8", APP_CSS)
+                static GZ: OnceLock<Vec<u8>> = OnceLock::new();
+                return squeezed(
+                    &req,
+                    "text/css; charset=utf-8",
+                    APP_CSS.as_bytes(),
+                    Some(&GZ),
+                );
             }
             (_, "/theme.js") if get => {
-                return Response::new(200, "text/javascript; charset=utf-8", THEME_JS)
+                static GZ: OnceLock<Vec<u8>> = OnceLock::new();
+                return squeezed(
+                    &req,
+                    "text/javascript; charset=utf-8",
+                    THEME_JS.as_bytes(),
+                    Some(&GZ),
+                );
             }
             (_, "/lang-he.js") if get => {
-                return Response::new(200, "text/javascript; charset=utf-8", LANG_HE)
+                static GZ: OnceLock<Vec<u8>> = OnceLock::new();
+                return squeezed(
+                    &req,
+                    "text/javascript; charset=utf-8",
+                    LANG_HE.as_bytes(),
+                    Some(&GZ),
+                );
             }
             (_, "/fonts/OFL.txt") if get => {
                 return Response::new(200, "text/plain; charset=utf-8", FONT_LICENSE)
@@ -820,6 +849,52 @@ pub fn host_of(url: &str) -> Result<String> {
         .to_ascii_lowercase())
 }
 
+/// Whether an `Accept-Encoding` value takes gzip (and doesn't say `q=0`).
+fn takes_gzip(value: &str) -> bool {
+    value.split(',').any(|part| {
+        let mut it = part.split(';');
+        let coding = it.next().unwrap_or("").trim();
+        let refused = it.any(|p| {
+            let p = p.trim();
+            p.strip_prefix("q=")
+                .and_then(|q| q.trim().parse::<f32>().ok())
+                .is_some_and(|q| q <= 0.0)
+        });
+        (coding.eq_ignore_ascii_case("gzip") || coding == "*") && !refused
+    })
+}
+
+/// One of the page's own files: gzipped when the browser takes it (the
+/// page is about 220 KB as written and about 65 KB gzipped, M47), whole
+/// when it doesn't. `cache` keeps the compressed bytes of a file that
+/// never changes while the process runs, so it is squeezed once.
+fn squeezed(
+    req: &Request,
+    content_type: &'static str,
+    raw: &[u8],
+    cache: Option<&'static OnceLock<Vec<u8>>>,
+) -> Response {
+    if !req.header("accept-encoding").is_some_and(takes_gzip) {
+        return Response::new(200, content_type, raw);
+    }
+    let squeeze = || {
+        use std::io::Write;
+        let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        let _ = z.write_all(raw);
+        z.finish().unwrap_or_default()
+    };
+    let body = match cache {
+        Some(c) => c.get_or_init(squeeze).clone(),
+        None => squeeze(),
+    };
+    if body.is_empty() {
+        return Response::new(200, content_type, raw);
+    }
+    Response::new(200, content_type, body)
+        .with_header("Content-Encoding", "gzip".into())
+        .with_header("Vary", "Accept-Encoding".into())
+}
+
 /// Every string in `value`, through the redactor.
 pub fn redact_value(value: &mut Value, r: &Redactor) {
     match value {
@@ -916,6 +991,59 @@ mod tests {
             .await;
         assert_eq!(r.status, 200);
         assert!(String::from_utf8_lossy(&r.body).contains(&csrf));
+    }
+
+    #[tokio::test]
+    async fn the_pages_own_files_are_gzipped_only_for_a_browser_that_takes_it() {
+        use std::io::Read;
+        let (_d, d) = dash();
+        let has = |r: &Response, k: &str| {
+            r.headers
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+        };
+        for path in ["/", "/app.js", "/app.css", "/theme.js", "/lang-he.js"] {
+            let plain = d.handle(req("GET", path, &[], "")).await;
+            assert_eq!(has(&plain, "Content-Encoding"), None, "{path}");
+            let zipped = d
+                .handle(req(
+                    "GET",
+                    path,
+                    &[("accept-encoding", "br, gzip;q=0.8")],
+                    "",
+                ))
+                .await;
+            assert_eq!(has(&zipped, "Content-Encoding").as_deref(), Some("gzip"));
+            assert_eq!(
+                has(&zipped, "Vary").as_deref(),
+                Some("Accept-Encoding"),
+                "{path}"
+            );
+            assert!(zipped.body.len() < plain.body.len(), "{path} shrinks");
+            let mut back = Vec::new();
+            flate2::read::GzDecoder::new(&zipped.body[..])
+                .read_to_end(&mut back)
+                .unwrap();
+            assert_eq!(back, plain.body, "{path} round-trips");
+            // `q=0` says no, and so does asking for nothing.
+            for no in ["gzip;q=0", "identity", ""] {
+                let r = d
+                    .handle(req("GET", path, &[("accept-encoding", no)], ""))
+                    .await;
+                assert_eq!(has(&r, "Content-Encoding"), None, "{path} with {no:?}");
+            }
+        }
+        // The API is never squeezed: a secret must not ride a compressed body.
+        let r = d
+            .handle(req(
+                "GET",
+                "/api/session",
+                &[("accept-encoding", "gzip")],
+                "",
+            ))
+            .await;
+        assert_eq!(has(&r, "Content-Encoding"), None);
     }
 
     #[tokio::test]

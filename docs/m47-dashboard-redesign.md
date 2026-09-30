@@ -1382,3 +1382,42 @@ also in the final report.
     default width (about 960 px), which overflowed left under RTL. It had
     been latent in English too (the strip is hidden when nothing is
     wrong). `.strip .ico` now has a size.
+42. **Part 6: `.ico` has a default size, replacing item 41's rule.** The
+    chat's photo chip had the same unsized-icon bug as the strip (39 px of
+    sideways scroll at 390). A size on each place would miss the next one,
+    so `.ico` itself is 18 px and the specific `.strip .ico` rule is gone.
+43. **Part 6: headings.** The page had no `h1` and every card title was an
+    `h3`. Each section now has one `h1` (`secHead`; Home has a hidden one)
+    and card titles are `h2`. The browser check asserts exactly one `h1`
+    per section.
+44. **Part 6: a placeholder names its field.** `el()` sets `aria-label`
+    from `placeholder` on an `input`/`textarea` that has no label of its
+    own, because a placeholder alone isn't an accessible name. The browser
+    check fails any unnamed control at 390 px.
+45. **Part 6: tap targets.** Under 900 px, or with a coarse pointer, every
+    button is at least 44 px (`--tap`) both ways. Exceptions, listed in the
+    check: the glossary `.tip` and inline links, and checkboxes, which are
+    sized through their label.
+46. **Part 6: the budget in D1 is revised.** The gzip budget for
+    `app.js` + `app.css` was 45 KB; measured, they are 51.8 + 9.3 KB
+    (about 61 KB) after five new sections, the palette, the schedule
+    picker and the Hebrew hook. The budget was about the wire, and the wire
+    is smaller than before: the server now gzips its five text files
+    (once per process, and only when the browser sends `Accept-Encoding:
+    gzip`; the API is never compressed). Home cold at 390 px went from
+    203,128 B and FCP 132 ms to about 107,000 B and FCP 84 to 92 ms (two runs), including two
+    fonts (43 KB, already compressed), at 6 API calls (was 5; the extra one is the
+    chat's approvals count for the nav badge, which the redesign added).
+47. **Part 6: `box.append(null)` printed "nullnull".** The Telegram card
+    on Channels (old code, not M47's) appended two `null` children with the
+    DOM's own `append`, which turns each into the text "null". The
+    browser check's "no null/undefined/[object]" scan missed it because it
+    only matched a whole word; it now matches repeats. Found in the
+    after-screenshots.
+48. **Part 6: screenshot pass.** Looking at all 60 images turned up: the
+    chat composer stopped 8 px above the tab bar, so messages showed
+    through the gap; the Usage and Logs range chips touched the cards
+    below them; the Logs search box was not full width on a phone; the
+    Console's command chips had no border once they were made 44 px; the
+    Backup button touched the file list. All fixed in this part; the
+    numbers are in "Verified, and how".

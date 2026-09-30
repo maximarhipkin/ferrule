@@ -58,7 +58,7 @@ ferrule dashboard                 # a link, or the page served from here when no
 
 ## What's on it
 
-- **Health** comes first. The problems are on top, each with its fix: a
+- **Home** (`#health`) comes first. The problems are on top, each with its fix: a
   failing default model (with a working one to switch to), the kill
   switch, a stuck turn, a channel that stopped polling, a used-up cap, a
   model without prices. Below that: uptime, version, channels, the
@@ -99,6 +99,9 @@ ferrule dashboard                 # a link, or the page served from here when no
   skills (**Disable**, **Enable**), the config's hooks, and this
   workspace's `.ferrule/hooks.toml` with its SHA-256 and **Trust this
   version** / **Untrust**. See [Editing from the page](#editing-from-the-page).
+- **Memory** (M47): what your bot remembers, newest first, searched by
+  keyword (never by a model). **Forget** removes one.
+- **Settings** (M47): look, language, backup, the checklist and sign out.
 - **Agents** (running sub-agents): read-only.
 
 The page polls only the section you're looking at (health every 3 s,
@@ -113,6 +116,78 @@ User content (message previews, task names, log lines, skill
 descriptions, the hooks file) sits in elements marked `dir="auto"`, so
 Hebrew or Arabic reads right to left inside the left-to-right page, and
 the log filter takes Hebrew as it is.
+
+## A page for people who don't code (M47)
+
+M47 redesigned the page for a phone and for someone who has never opened a
+terminal. The design, the decisions and the corrections made while building
+are in [m47-dashboard-redesign.md](m47-dashboard-redesign.md). Nothing on
+the way to the page, or on it, calls a model, and every ability of the old
+page is still there (a test lists every API route and fails if the page
+stopped using one).
+
+![Home on a phone](assets/m47/after/health-390-light.jpg)
+![Home on a desktop, dark](assets/m47/after/health-1280-dark.jpg)
+
+**Getting around.** On a phone the bottom bar has Home, Chat, Tasks, Usage
+and **More**, which opens the rest in three groups. From 900 px wide there
+is a sidebar with the same groups:
+
+| Group | Pages |
+|---|---|
+| Everyday | Home, Chat, Tasks, Memory, Usage |
+| Setup | Channels, Connections, Models |
+| Advanced | Logs, Agents, Extensions, Routing, Console, Config, Settings |
+
+Every page keeps its `#name` link. A number on Home, or on Connections,
+counts what needs you. Anything for experts (raw cron, a schedule line, a
+model per task, history) sits under an **Advanced** fold in its card, and
+technical words such as *MCP* explain themselves when tapped.
+
+**First run.** A new install opens Home on a three-step checklist (connect
+a model, connect a channel, say hello). A step opens in place, and the
+checklist goes away when the bot has answered. **Settings** brings it back.
+
+**Search and shortcuts.** `/` (when not typing) or Ctrl/⌘-K opens a
+palette over every page and the common actions: new task, attach a photo,
+stop the running turn, back up now, switch theme or language, run the
+doctor, sign out. `?` lists the shortcuts, and Esc closes what's open. In
+Chat, Enter sends and Shift+Enter starts a new line. Tab first reaches a
+**Skip to content** link.
+
+**Chat photos.** The paperclip-style photo button in Chat (or "Attach a
+photo" in the palette) sends a picture with your message. The page shrinks
+it and strips its location data before it leaves the device. Whether the
+model sees it or only gets the file depends on the model: see [Photos:
+which models see them](models.md#photos-which-models-see-them). Each
+answer has a **Copy** button.
+
+**Tasks.** **New task** opens a form: what to do, when (every day, on
+weekdays, every week or month on a day, every N hours, or once), and where
+the answer goes (this chat or your own chat). It shows the schedule in
+words and the next three runs in your time zone, and says what's wrong with
+a bad time before saving. A task made here never carries a gate command;
+that stays on the command line.
+
+**Memory.** Lists and searches what the bot remembers and lets you forget
+one. It's a keyword search over the memory database, opened read-only.
+
+**Backup.** Settings → Backup makes one file of your memory, chats, tasks
+and settings, **without keys or passwords**, and offers it for download.
+The last three are kept in `<data>/backups/`. See [backup.md](backup.md).
+
+**Look and language.** Light, Dark or the device's own setting, kept in
+the browser. **עברית** switches the page's own words to Hebrew and the
+layout to right-to-left; what you and your bot write follows its own
+direction either way. The Hebrew file is fetched only when chosen. The
+sentences the server writes (a problem's explanation, for one) are still
+English.
+
+![Settings on a desktop](assets/m47/after/settings-1280-light.jpg)
+
+Sixty screenshots (fifteen pages, 390 and 1280 px, light and dark) are in
+[assets/m47/after](assets/m47/after/), with the pre-redesign ones in
+[assets/m47/before](assets/m47/before/).
 
 ## The control room (M37)
 
@@ -370,9 +445,20 @@ packages. It signs in with the `/dashboard` link, then:
 - picks a fallback model;
 - connects the MCP server with a key and tests it;
 - runs a console command;
-- chats once;
+- chats once, and once with a photo, and copies an answer;
+- adds a task through the schedule picker and gets a clear message for a
+  bad schedule;
+- lists and searches memory;
+- makes and downloads a backup, and picks Dark;
+- switches to Hebrew and checks it reads right to left with no sideways
+  scroll (M47);
+- walks the first-run checklist, a glossary word, the palette and the
+  phone's More sheet;
 - visits every section, failing on any script error or a stray
-  `null`/`undefined` on the page.
+  `null`/`undefined` on the page;
+- at 390 px, on every section: no sideways scroll, every control named and
+  at least 44 px, exactly one `h1`, the keyboard's Skip link works, and
+  Settings polls nothing.
 
 CI runs it on Linux, macOS and Windows.
 
@@ -382,4 +468,6 @@ node scripts/dashboard_browser_check.mjs --bin target/debug/ferrule [--chromium 
 ```
 
 `--shots` saves the screenshots of Home, Connections, Models, Chat and
-Console at 390 and 1280 px.
+Console at 390 and 1280 px. `--shots-all DIR` (M47) saves every section at
+both sizes in light and dark as JPEGs. `--measure` prints a cold load of
+Home at 390 px: first paint, bytes on the wire and API calls.

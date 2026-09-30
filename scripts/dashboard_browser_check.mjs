@@ -607,11 +607,78 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
       await js(`window.ferrule.show(${JSON.stringify(name)})`);
       await sleep(900);
       const t = await js(`return document.getElementById("main").innerText`);
-      const m = t.match(/(^|\s)(null|undefined|NaN)(\s|$)|\[object \w+\]/);
+      const m = t.match(/(^|\s)(null|undefined|NaN)+(\s|$)|\[object \w+\]/);
       if (m) bad.push(name + ": " + JSON.stringify(t.slice(Math.max(0, m.index - 40), m.index + 30)));
     }
     if (bad.length) throw new Error(bad.join(" | "));
     return "no null/undefined/[object] on any section";
+  });
+
+  // M47 part 6: on a phone, every section fits the width, every control is
+  // a finger's size and has a name, and the keyboard gets in without a mouse.
+  await run("every section fits a phone", async () => {
+    await size(390, 844);
+    const problems = [];
+    for (const name of await js(`return Object.keys(window.ferrule.sections)`)) {
+      await js(`window.ferrule.show(${JSON.stringify(name)})`);
+      await sleep(900);
+      const r = await js(`
+        const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && !e.closest("[hidden], dialog:not([open]), .sr"); };
+        const named = (e) => {
+          const t = (e.getAttribute("aria-label") || "").trim();
+          if (t) return true;
+          const by = e.getAttribute("aria-labelledby");
+          if (by && by.split(" ").some((i) => (document.getElementById(i) || {}).textContent)) return true;
+          if (e.labels && [...e.labels].some((l) => l.textContent.trim())) return true;
+          if (e.tagName === "INPUT" && ["button", "submit"].includes(e.type) && e.value) return true;
+          return !!(e.textContent || "").trim() || !!(e.getAttribute("title") || "").trim();
+        };
+        const tap = [...document.querySelectorAll("#main button, #main a[href], #main input:not([type=hidden]), #main select, #main textarea, #main [role=button], #main [role=switch], #tabs a, #topbar button, header button")]
+          .filter(vis);
+        // A checkbox is tapped through its label; a glossary word is inline text.
+        const box = (e) => ((e.type === "checkbox" || e.type === "radio") && e.closest("label")) || e;
+        const small = tap.filter((e) => { const r = box(e).getBoundingClientRect(); return (r.width < 44 || r.height < 44) && !e.classList.contains("tip") && !(e.tagName === "A" && e.closest("p, .msg, li, .small, .muted, details summary")); })
+          .map((e) => e.tagName.toLowerCase() + "[" + (e.getAttribute("aria-label") || e.textContent || e.type || "").trim().slice(0, 24) + "] " + Math.round(e.getBoundingClientRect().width) + "x" + Math.round(e.getBoundingClientRect().height));
+        const unnamed = tap.filter((e) => !named(e)).map((e) => e.outerHTML.slice(0, 90));
+        return { wide: document.documentElement.scrollWidth - document.documentElement.clientWidth, small, unnamed,
+          h1: document.querySelectorAll("#main h1").length,
+          cur: [document.querySelectorAll('#rail [aria-current="page"]').length, document.querySelectorAll('#tabs [aria-current="page"]').length] };`);
+      if (r.wide > 1) {
+        const who = await js(`const cw = document.documentElement.clientWidth; return [...document.querySelectorAll("body *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.right > cw + 1 && !e.closest("dialog:not([open]), [hidden], #tabs"); }).slice(0, 4).map((e) => e.tagName.toLowerCase() + (e.id ? "#" + e.id : "") + "." + String(e.className.baseVal ?? e.className).slice(0, 30) + " in " + (e.parentElement && (e.parentElement.id || e.parentElement.tagName)) + " right=" + Math.round(e.getBoundingClientRect().right) + " " + JSON.stringify(e.outerHTML.slice(0, 110)))`);
+        problems.push(name + ": scrolls sideways by " + r.wide + " px: " + who.join(", "));
+      }
+      if (r.unnamed.length) problems.push(name + ": no name on " + r.unnamed.slice(0, 3).join(" ; "));
+      if (r.small.length) problems.push(name + ": under 44 px: " + r.small.slice(0, 4).join(", ") + (r.small.length > 4 ? " (+" + (r.small.length - 4) + ")" : ""));
+      if (r.h1 !== 1) problems.push(name + ": " + r.h1 + " h1");
+      if (r.cur[1] > 1 || r.cur[0] > 1) problems.push(name + ": aria-current " + r.cur);
+    }
+    await size(1280, 900);
+    if (problems.length) throw new Error("\n    " + problems.join("\n    "));
+    return "no sideways scroll, every control named and 44 px, one h1 each";
+  });
+
+  await run("the keyboard gets in", async () => {
+    await js(`window.ferrule.show("health"); document.activeElement && document.activeElement.blur(); window.scrollTo(0, 0)`);
+    await key("Tab", "Tab");
+    const first = await js(`const a = document.activeElement; return a && [a.tagName, a.getAttribute("href"), a.textContent.trim()]`);
+    if (!first || first[0] !== "A" || first[1] !== "#main") throw new Error("the first Tab lands on " + JSON.stringify(first));
+    await key("Enter", "Enter");
+    await until("focus in #main", () => js(`return document.activeElement && document.activeElement.id === "main"`), 5);
+    return "Tab → “" + first[2] + "”, Enter → focus in #main";
+  });
+
+  await run("Settings polls nothing", async () => {
+    await js(`window.ferrule.show("settings")`);
+    await sleep(2500);
+    await cdp("Network.enable");
+    let n = 0;
+    const on = (m) => { const d = JSON.parse(m.data); if (d.method === "Network.requestWillBeSent" && d.params.request.url.includes("/api/")) n++; };
+    ws.addEventListener("message", on);
+    await sleep(20000);
+    ws.removeEventListener("message", on);
+    // Health for the badges every 15 s, plus approvals: a handful, not a stream.
+    if (n > 8) throw new Error(n + " API calls in 20 s on a page that has nothing live");
+    return n + " API calls in 20 s";
   });
 
   step("no script errors", errors.length === 0, errors.slice(0, 5).join(" | "));

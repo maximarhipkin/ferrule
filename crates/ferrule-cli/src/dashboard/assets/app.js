@@ -23,6 +23,11 @@
       else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
       else e.setAttribute(k, v === true ? "" : v);
     }
+    // A field with a hint and no label is named by its hint, so a screen
+    // reader never meets an unnamed box (a placeholder alone isn't a name).
+    if ((tag === "input" || tag === "textarea") && e.hasAttribute("placeholder") && !e.hasAttribute("aria-label") && !e.hasAttribute("aria-labelledby") && !e.hasAttribute("id")) {
+      e.setAttribute("aria-label", e.getAttribute("placeholder"));
+    }
     for (const kid of kids.flat(2)) {
       if (kid === null || kid === undefined || kid === false) continue;
       e.append(typeof kid === "string" || typeof kid === "number" ? String(kid) : kid);
@@ -127,7 +132,7 @@
         method: "dialog",
         onsubmit: (e) => { e.preventDefault(); answer = input ? box.value : true; d.close(); },
       },
-        el("h3", { id: "dlg-title", dir: "auto", text: title }),
+        el("h2", { id: "dlg-title", dir: "auto", text: title }),
         body ? el("p", { class: "msg", dir: "auto", text: body }) : null,
         box,
         el("div", { class: "row" }, no, yes)));
@@ -145,7 +150,7 @@
     if (!good.length) return;
     const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
     d.append(el("form", { method: "dialog" },
-      el("h3", { id: "dlg-title", text: tr("Continue in your browser") }),
+      el("h2", { id: "dlg-title", text: tr("Continue in your browser") }),
       good.map((l) => el("a", { class: "btn primary", href: l.url, target: "_blank", rel: "noopener", dir: "auto" }, icon("external"), l.text || tr("Open"))),
       el("div", { class: "row" }, el("button", { text: tr("Done") }))));
     d.addEventListener("close", () => d.remove());
@@ -218,7 +223,7 @@
   function card(head, ...body) {
     const h = head && (head.title || head.icon || head.right)
       ? el("div", { class: "card-head" }, head.icon ? icon(head.icon) : null,
-        head.title ? el("h3", { text: head.title }) : null, head.right || null)
+        head.title ? el("h2", { text: head.title }) : null, head.right || null)
       : null;
     return el("div", { class: "card" + (head && head.cls ? " " + head.cls : "") }, h, body);
   }
@@ -267,7 +272,7 @@
   function secHead(title, sub, ...controls) {
     const ctrls = controls.filter(Boolean);
     return el("div", { class: "sec-head" },
-      el("h2", { text: title }),
+      el("h1", { text: title }),
       sub ? el("span", { class: "sub", text: sub }) : null,
       ctrls.length ? frag(el("span", { class: "spacer" }), ...ctrls) : null);
   }
@@ -545,7 +550,7 @@
   function approvalsCard(list) {
     if (!list || !list.length) return null;
     return el("div", { class: "card" },
-      el("h3", { text: "Waiting for you", class: "mt0" }),
+      el("h2", { text: "Waiting for you", class: "mt0" }),
       list.map((a) => el("div", { class: "check" },
         led("warn pulse"),
         el("div", { class: "body" },
@@ -719,7 +724,7 @@
     };
     return el("section", { class: "card accent", "aria-labelledby": "setup-h" },
       el("div", { class: "card-head" },
-        el("h3", { id: "setup-h", text: "Get started" }),
+        el("h2", { id: "setup-h", text: "Get started" }),
         el("span", { class: "muted small", text: n + " of " + steps.length + " done" }),
         button("Hide this", { kind: "ghost", onclick: () => { home.hide(); sections.health.draw(); } })),
       el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(steps.length), "aria-valuenow": String(n), "aria-label": "Setup progress" },
@@ -786,14 +791,15 @@
       const showList = setup && !setup.done && !home.hidden();
       const tgOpen = setup && setup.done && !(setup.steps.find((x) => x.id === "telegram") || {}).done;
       setKids(this.box,
+        el("h1", { class: "sr", text: title("health") }),
         el("section", { class: "card hero", "aria-label": "Status" },
           el("div", { class: "row" }, led(level),
-            el("p", { class: "lead grow", text: said }),
+            el("p", { class: "lead grow", role: "status", text: said }),
             btn("Run doctor", "doctor/run", {}),
             kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
           el("p", { class: "muted small m0", text: [h.version ? "v" + h.version : null, h.uptime ? "up " + h.uptime : null, lanes].filter(Boolean).join(" · ") })),
         MANAGED.on ? el("div", { class: "card" },
-          el("h3", { text: "Managed" }),
+          el("h2", { text: "Managed" }),
           el("p", { class: "muted small", dir: "auto", text: MANAGED.reason }),
           (MANAGED.locks || []).length ? el("ul", {}, ...MANAGED.locks.map((l) => el("li", { dir: "auto", text: l }))) : null,
           el("p", { class: "small", text: "Commands: " + MANAGED.protection })) : null,
@@ -805,7 +811,7 @@
           tgOpen && !showList ? el("button", { type: "button", class: "quick-tile", onclick: () => show("channels", { tile: "telegram" }) },
             icon("telegram"), el("span", { class: "t", text: "Telegram" }), el("span", { class: "d", text: "Talk to your bot from your phone" })) : null),
         running.length ? el("section", { class: "card", "aria-label": "Running now" },
-          el("h3", { class: "mt0", text: "Running now" }),
+          el("h2", { class: "mt0", text: "Running now" }),
           table(["where", "message", "for", ""], running.map((t) => ({ cells: [
             frag(el("span", { class: "mono small", text: t.place }), t.stuck ? frag(" ", tag("stuck", "bad")) : null),
             frag(text(t.text), t.activity ? el("span", { class: "sub msg", dir: "auto", text: t.activity }) : null),
@@ -883,13 +889,13 @@
       this.tools.onchange = go;
       this.sort.onchange = go;
       root.append(this.chooseBox, this.box,
-        el("h3", { text: "Evaluate a candidate" }),
+        el("h2", { text: "Evaluate a candidate" }),
         el("div", { class: "card" },
           el("div", { class: "row" }, this.suite,
             el("span", { class: "muted small", text: "an estimate first, then a confirm; runs under your caps" })),
           this.evalBox),
-        el("h3", { text: "Recommended" }), this.rec,
-        el("h3", { text: "Catalog" }),
+        el("h2", { text: "Recommended" }), this.rec,
+        el("h2", { text: "Catalog" }),
         el("div", { class: "row" }, this.search, this.tools, this.sort,
           el("button", { text: "Refresh", onclick: () => this.catalog(true) })),
         this.list);
@@ -944,7 +950,7 @@
       const chat = el("input", { placeholder: "chat id", size: 10, dir: "auto" });
       const last = (v.last_served || [])[0];
       setKids(this.box, 
-        el("h3", { text: "Connected models" }),
+        el("h2", { text: "Connected models" }),
         el("div", { class: "row mb" }, btn("Fill missing prices", "catalog/fill-prices", {})),
         m.fixed ? el("div", { class: "alert warn" },
           el("div", { class: "body" },
@@ -977,7 +983,7 @@
               btn("Remove", "models/remove", { model: r.reference }, "danger")),
           ],
         })), [2]) : el("div", { class: "empty", text: "no models connected" }),
-        el("h3", { text: "Pins" }),
+        el("h2", { text: "Pins" }),
         v.pins.length
           ? table(["chat", "model", ""], v.pins.map((p) => ({ cells: [
             el("span", { class: "mono", text: p.channel + " " + p.chat }),
@@ -986,7 +992,7 @@
             btn("Unpin", "models/unpin", { chat: p.chat, channel: p.channel }),
           ]})))
           : el("div", { class: "empty", text: "no chat is pinned" }),
-        el("h3", { text: "Pin a chat, add a model by id" }),
+        el("h2", { text: "Pin a chat, add a model by id" }),
         el("div", { class: "card" },
           el("div", { class: "row" }, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value }))),
           (() => {
@@ -1111,7 +1117,7 @@
               unused.length ? el("button", { text: "Add one", onclick: () => { this.fb.push(unused[0].reference); edited(); } }) : null,
               save,
               this.fbEdited ? el("button", { class: "ghost", text: "Discard", onclick: () => { this.fbEdited = false; this.loadChoices(); } }) : null))),
-        el("h3", { text: "Providers" }),
+        el("h2", { text: "Providers" }),
         on.length ? el("div", { class: "tiles" }, on.map((p) => this.provider(p))) : el("div", { class: "empty", text: "no provider connected" }),
         off.length ? disc("providers-off", "card", "Connect another provider (" + off.length + ")",
           el("div", { class: "tiles details-body" }, off.map((p) => this.provider(p)))) : null);
@@ -1226,7 +1232,7 @@
         (v.problems || []).length ? v.problems.map((p) =>
           el("div", { class: "alert warn" },
             el("div", { class: "body" }, el("div", { class: "what msg", dir: "auto", text: p })))) : null,
-        el("h3", { text: "Tiers" }),
+        el("h2", { text: "Tiers" }),
         v.tiers.length ? table(["", "tier", "model", "price / 1M", "context", "key"], v.tiers.map((t, i) => ({ cells: [
           el("span", { class: "mono muted", text: String(i + 1) }),
           tag(i === 0 ? "cheap" : i === v.tiers.length - 1 ? "strong" : "mid", i === 0 ? "copper" : null),
@@ -1235,19 +1241,19 @@
           el("span", { class: "mono", text: t.context_window ? num(t.context_window) : "–" }),
           t.key_present ? tag("ready", "ok") : tag(t.key_env + " not set", "bad"),
         ]}))) : el("div", { class: "empty", text: "no tiers set" }),
-        el("h3", { text: "Escalations" }),
+        el("h2", { text: "Escalations" }),
         (st.days || []).length ? table(["day", "count", "why"], st.days.map((d) => ({ cells: [
           el("span", { class: "mono", text: d.day }),
           el("span", { class: "mono", text: String(d.escalations) }),
           text(reasons(d.reasons)),
         ]})), [1]) : el("div", { class: "empty", text: "none in this window" }),
-        el("h3", { text: "Spend per tier" }),
+        el("h2", { text: "Spend per tier" }),
         (st.tiers || []).length ? frag(
           bars(st.tiers.map((t, i) => ({ k: t.tier, v: t.usd, dim: i > 0 })), usd),
           table(["tier", "calls", "cost"], st.tiers.map((t) => ({ cells: [
             text(t.tier), el("span", { class: "mono", text: String(t.calls) }), el("span", { class: "mono", text: usd(t.usd) }),
           ]})), [1, 2])) : el("div", { class: "empty", text: "no routed calls in this window" }),
-        el("h3", { text: "Change" }),
+        el("h2", { text: "Change" }),
         sg.said ? el("p", { class: "muted small msg", dir: "auto", text: sg.said }) : null,
         el("div", { class: "card" }, el("div", { class: "row" }, tiers, cap, on, v.enabled ? btn("Turn off", "routing/unset", {}, "danger") : null)));
     },
@@ -1293,7 +1299,7 @@
         list ? this.checklist(list) : null,
         this.pending(c),
         this.connected(c),
-        el("h3", { text: "Services" }),
+        el("h2", { text: "Services" }),
         el("div", { class: "tiles" }, c.tiles.map((t) => this.tile(c, t))));
       if (this.target) {
         const node = document.getElementById("tile-" + this.target);
@@ -1326,7 +1332,7 @@
       if (c.relay_url) {
         card.append(frag(
           el("div", { class: "row" },
-            el("h3", { class: "grow m0", text: "Fixed callback address" }),
+            el("h2", { class: "grow m0", text: "Fixed callback address" }),
             c.relay_live ? tag("working", "ok") : tag("not answering", "bad")),
           el("p", { class: "muted small", text: "Paste this where a service asks for a redirect or callback URL. It stays the same across restarts." }),
           el("div", { class: "callback" }, el("code", { text: c.callback }), copyBtn(c.callback)),
@@ -1339,7 +1345,7 @@
         if (!this.relayForms) return card;
       } else {
         card.append(
-          el("h3", { class: "mt0", text: "Fixed callback address" }),
+          el("h2", { class: "mt0", text: "Fixed callback address" }),
           el("p", { class: "small", text: "OAuth sign-ins (Google's wizard, Atlassian's OAuth, most MCP servers) send you back to an address that must never change. A small relay on your own Cloudflare account gives you one, free. Key-based ways in don't need it." }));
       }
       // Deploy: a Cloudflare API token, never shown again.
@@ -1424,7 +1430,7 @@
         }
       };
       return el("div", { class: "card" },
-        el("h3", { class: "mt0", text: "What each service still needs" }),
+        el("h2", { class: "mt0", text: "What each service still needs" }),
         list.checks.map((ch) => {
           const cls = CHECK_OK.includes(ch.state) ? "ok" : CHECK_BAD.includes(ch.state) ? "bad" : ch.state === "pending" ? "warn pulse" : "";
           const row = el("div", { class: "check" },
@@ -1456,7 +1462,7 @@
       const flows = c.pending_flows || [];
       if (!flows.length) return null;
       return el("div", { class: "card" },
-        el("h3", { class: "mt0", text: "Waiting on a sign-in" }),
+        el("h2", { class: "mt0", text: "Waiting on a sign-in" }),
         flows.map((f) => el("div", { class: "check" },
           led("warn pulse"),
           el("div", { class: "body" },
@@ -1469,7 +1475,7 @@
       if (!c.connections.length) return null;
       const att = Object.fromEntries((c.attention || []).map((a) => [a.name, a]));
       return frag(
-        el("h3", { text: "Connected" }),
+        el("h2", { text: "Connected" }),
         el("div", { class: "stack" }, c.connections.map((s) => {
           const a = att[s.name];
           const needs = s.state === "needs_reconnect" || (a && a.expired);
@@ -1510,7 +1516,7 @@
       const att = (c.attention || []).find((a) => a.tile === t.tile);
       return el("div", { class: "card tile", id: "tile-" + t.tile },
         el("div", { class: "head" },
-          el("h3", { class: "grow", text: t.title }),
+          el("h2", { class: "grow", text: t.title }),
           att ? tag(att.expired ? "expired" : "expires in " + att.days_left + " d", att.expired ? "bad" : "warn") : t.connected ? tag("connected", "ok") : null),
         t.options.length > 1 ? el("p", { class: "muted small m0", text: t.options.length + " ways in, simplest first." }) : null,
         t.options.map((o) => this.option(c, o)));
@@ -1762,7 +1768,7 @@
         }
       },
     },
-      el("h3", { id: "dlg-title", dir: "auto", text: title }), fields, err,
+      el("h2", { id: "dlg-title", dir: "auto", text: title }), fields, err,
       el("div", { class: "row" }, el("button", { type: "button", text: tr("Cancel"), onclick: () => d.close() }), go)));
     d.addEventListener("close", () => { d.remove(); if (back && back.isConnected && back.focus) back.focus(); });
     document.body.append(d);
@@ -1820,7 +1826,7 @@
     mount(root) {
       this.box = el("div");
       this.more = el("div", { class: "stack" });
-      this.pick = el("div");
+      this.pick = el("div", { class: "mb" });
       // Outside the boxes the poll redraws, so a half-typed cap survives it.
       const edit = el("details", { class: "card", ontoggle: (e) => { if (e.target.open) capsEditor(e.target); } },
         el("summary", { text: "Edit caps" }));
@@ -1860,9 +1866,9 @@
           stat("latency", "p50 " + u.p50_ms + " ms", "p95 " + u.p95_ms + " ms"),
           stat("retried", u.retry_pct + "%", u.malformed ? u.malformed + " unreadable lines" : "all lines read")),
         el("p", { class: "muted small", text: "egress refused: " + (u.egress_refused.count ? u.egress_refused.count + " · " + u.egress_refused.hosts.map((h) => h.host + " ×" + h.count).join(", ") : "none") }),
-        el("h3", { text: "Tokens per day" }),
+        el("h2", { text: "Tokens per day" }),
         chart("Tokens per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.input_tokens + d.output_tokens })), num),
-        el("h3", { text: "Per model" }),
+        el("h2", { text: "Per model" }),
         u.per_model.length ? table(["model", "calls", "errors", "cache", "p50 / p95", "cost"], u.per_model.map((r) => ({ cells: [
           frag(el("span", { class: "mono", text: r.provider + "/" + r.model }), el("span", { class: "sub", text: r.shape })),
           String(r.calls), String(r.errors), r.cache_hit_pct + "%",
@@ -1874,8 +1880,8 @@
               : el("span", { class: "mono", text: usd(r.usd) }),
         ]})), [1, 2, 3, 4, 5]) : el("div", { class: "empty", text: "no calls in this window" }),
         el("div", { class: "grid2" },
-          el("div", {}, el("h3", { text: "Per task" }), u.per_task.length ? group(u.per_task) : el("div", { class: "empty", text: "no scheduled runs" })),
-          el("div", {}, el("h3", { text: "Per chat" }), u.per_chat.length ? group(u.per_chat) : el("div", { class: "empty", text: "no chats" }))));
+          el("div", {}, el("h2", { text: "Per task" }), u.per_task.length ? group(u.per_task) : el("div", { class: "empty", text: "no scheduled runs" })),
+          el("div", {}, el("h2", { text: "Per chat" }), u.per_chat.length ? group(u.per_chat) : el("div", { class: "empty", text: "no chats" }))));
     },
   };
 
@@ -1936,7 +1942,7 @@
     page: 0,
     kindV: "all",
     mount(root) {
-      this.pick = el("div");
+      this.pick = el("div", { class: "mb" });
       this.q = el("input", { type: "search", placeholder: "search — Hebrew works as-is", dir: "auto", "aria-label": "Search the log", size: "28" });
       this.box = el("div");
       const go = () => { this.page = 0; this.load(); };
@@ -2008,12 +2014,12 @@
         (e) => act(off ? on_path : off_path, { name }, e.currentTarget));
       setKids(this.box,
         secHead("Extensions", "add-ons your bot can use"),
-        el("h3", { text: "Tools from other programs" }),
+        el("h2", { text: "Tools from other programs" }),
         el("p", { class: "muted small m0" }, "Programs that give your bot new tools, called ", tip("MCP"), " servers."),
         x.mcp.length ? el("div", { class: "plain-list" }, x.mcp.map((m) => el("div", { class: "item" + (m.disabled ? " dead" : "") },
           el("div", { class: "grow" }, el("div", { class: "t", text: m.name }), el("div", { class: "d", text: m.origin === "configured" ? "added in the config" : "from " + m.origin })),
           m.origin === "configured" ? switchFor(m.name, m.disabled, "mcp/enable", "mcp/disable") : tag(m.origin)))) : empty("None connected", "Nothing is adding tools right now."),
-        el("h3", { text: "Skills" }),
+        el("h2", { text: "Skills" }),
         !x.skills_enabled ? empty("Skills are off", "Turn them on in the config to let your bot learn how-to guides.")
           : x.skills.length ? el("div", { class: "plain-list" }, x.skills.map((s) => el("div", { class: "item" + (s.disabled ? " dead" : "") },
             el("div", { class: "grow" }, el("div", { class: "t mono", text: s.name }), el("div", { class: "d" }, text(s.description))),
@@ -2022,12 +2028,12 @@
           x.skills_disabled.map((n, i) => frag(i ? " · " : "", n, " ", btn("Enable", "skills/enable", { name: n })))) : null,
         w && !w.trusted ? workspace : null,
         advanced("extensions", "hooks, removing, trust",
-          el("h3", { text: "Hooks" }),
+          el("h2", { text: "Hooks" }),
           x.hooks.length ? table(["event", "matcher", "command"], x.hooks.map((h) => ({ cells: [
             tag(h.event), el("span", { class: "mono", text: h.matcher || "*" }), el("code", { text: h.command }),
           ]}))) : el("div", { class: "empty", text: "none in the config" }),
           w && w.trusted ? workspace : null,
-          x.mcp.length ? frag(el("h3", { text: "Remove a tool server" }),
+          x.mcp.length ? frag(el("h2", { text: "Remove a tool server" }),
             el("div", { class: "row" }, x.mcp.map((m) => btn("Remove " + m.name, "mcp/remove", { name: m.name }, "danger")))) : null));
     },
   };
@@ -2390,7 +2396,7 @@
       }
       body.append(el("p", { class: "muted small m0" }, "More in ", el("code", { text: x.doc }), "."));
       return el("div", { class: "card tile", id: "channel-" + x.name },
-        el("div", { class: "head" }, s, el("h3", { class: "grow", text: x.title }), tag(st[0], st[1])),
+        el("div", { class: "head" }, s, el("h2", { class: "grow", text: x.title }), tag(st[0], st[1])),
         body);
     },
 
@@ -2456,7 +2462,7 @@
         return el("div", { class: "row" }, el("b", { class: "msg", dir: "auto", text: c.name }),
           el("span", { class: "muted small grow", text: c.kind + " · chat " + c.id }), allow);
       });
-      box.append(
+      setKids(box,
         el("label", { class: "field" }, el("span", { text: "Bot token (from @BotFather)" }), token),
         t.said ? el("div", { class: "said test " + (t.said.ok ? "ok" : "bad") + " msg", dir: "auto", text: t.said.said }) : null,
         chats.length ? el("div", { class: "stack" }, chats) : null,
@@ -2700,9 +2706,9 @@
         c.problem ? el("div", { class: "alert bad" }, el("div", { class: "body" },
           el("div", { class: "what", text: "The file doesn't load" + (c.problem.line ? " (line " + c.problem.line + ")" : "") }),
           el("div", { class: "fix msg", dir: "auto", text: c.problem.error }))) : null,
-        (c.fields || []).length ? el("div", { class: "card" }, el("h3", { class: "mt0", text: "Settings" }), c.fields.map(row)) : null,
+        (c.fields || []).length ? el("div", { class: "card" }, el("h2", { class: "mt0", text: "Settings" }), c.fields.map(row)) : null,
         el("div", { class: "card" },
-          el("h3", { class: "mt0", text: "The file" }),
+          el("h2", { class: "mt0", text: "The file" }),
           el("p", { class: "muted small", text: "Secrets show as placeholders and stay as they are when you save. Commands, gates, secret routing and who gets in can only change on the machine." }),
           c.readable === false ? el("div", { class: "empty", text: "The file can't be read." }) : raw,
           said,
@@ -2802,7 +2808,7 @@
         el("p", { class: "muted small mt0", text: tr("One file with your bot's memory, chats, tasks and settings. Keys and passwords are left out. The last three are kept.") }),
         r && r.error ? el("div", { class: "alert bad" }, el("div", { class: "body" }, el("div", { class: "what msg", dir: "auto", text: r.error }))) : null,
         r ? (r.files.length ? null : el("p", { class: "muted small", text: tr("No backup yet. Press the button to make one.") })) : el("p", { class: "muted small", text: tr("Backups aren't available in this process.") }),
-        list, el("div", { class: "row" }, go));
+        list, el("div", { class: "row mt" }, go));
       const more = card({ title: tr("Getting started"), icon: "help" },
         el("div", { class: "row" },
           button(tr("Show the setup checklist again"), { onclick: () => { home.show(); toast(tr("The checklist is back on Home.")); } }),
@@ -3096,7 +3102,7 @@
     const rows = [["/", tr("Search pages and commands")], ["Ctrl K  ·  ⌘ K", tr("The same, from anywhere")], ["?", tr("This list")], ["Esc", tr("Close what's open")]];
     const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
     d.append(el("form", { method: "dialog" },
-      el("h3", { id: "dlg-title", text: tr("Keyboard shortcuts") }),
+      el("h2", { id: "dlg-title", text: tr("Keyboard shortcuts") }),
       el("dl", { class: "keys" }, rows.map(([k, v]) => frag(el("dt", null, el("kbd", { text: k })), el("dd", { text: v })))),
       el("div", { class: "row" }, el("button", { class: "primary", text: tr("Done") }))));
     d.addEventListener("close", () => d.remove());

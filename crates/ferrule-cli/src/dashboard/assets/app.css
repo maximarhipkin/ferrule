@@ -181,7 +181,7 @@ body.running .collar .sweep{opacity:1;animation:sweep 2.6s linear infinite}
   position:absolute;top:8px;inset-inline-start:calc(50% + 8px);min-width:17px;height:17px;padding:0 4px;border-radius:var(--r-full);
   background:var(--bad);color:var(--panel);font:var(--fw-strong) var(--fs-xs)/17px var(--sans);text-align:center;
 }
-.ico{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.ico{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;inline-size:18px;block-size:18px}
 
 /* the More sheet */
 #sheet{position:fixed;inset:0;z-index:var(--z-sheet);background:var(--scrim);display:flex;align-items:flex-end}
@@ -224,10 +224,10 @@ body.running .collar .sweep{opacity:1;animation:sweep 2.6s linear infinite}
 /* ---------- type and blocks ---------- */
 h1,h2,h3,h4{font-weight:var(--fw-strong);margin:0}
 .sec-head{display:flex;align-items:center;gap:var(--sp-2) 14px;flex-wrap:wrap;margin:2px 0 var(--sp-4)}
-.sec-head h2{font-size:var(--fs-2xl);line-height:1.15;letter-spacing:-.01em}
+.sec-head h1{font-size:var(--fs-2xl);line-height:1.15;letter-spacing:-.01em}
 .sec-head .sub{color:var(--muted);font-size:var(--fs-sm)}
 .sec-head .spacer{flex:1}
-h3{font-size:var(--fs-lg);margin:var(--sp-6) 0 10px}
+h2{font-size:var(--fs-lg);margin:var(--sp-6) 0 10px}
 h4{font-size:var(--fs-md);margin:var(--sp-4) 0 var(--sp-2)}
 p{margin:var(--sp-2) 0}
 .lead{font-size:var(--fs-lg);line-height:1.4;margin:0}
@@ -244,7 +244,7 @@ p{margin:var(--sp-2) 0}
 .card.flat{box-shadow:none;background:var(--panel-2)}
 .card.accent{border-color:var(--copper);box-shadow:0 0 0 1px var(--copper)}
 .card-head{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;margin:0 0 var(--sp-3)}
-.card-head h3{margin:0;font-size:var(--fs-lg);flex:1;min-width:0}
+.card-head h2{margin:0;font-size:var(--fs-lg);flex:1;min-width:0}
 .card-head .ico{width:20px;height:20px;color:var(--muted)}
 
 .row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
@@ -434,7 +434,7 @@ label.cb{display:inline-flex;align-items:center;gap:var(--sp-2);font-size:var(--
 .check .d{font-size:var(--fs-sm);color:var(--ink-2)}
 .tile{display:flex;flex-direction:column;gap:10px}
 .tile .head{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
-.tile .head h3{margin:0;font-size:var(--fs-lg)}
+.tile .head h2{margin:0;font-size:var(--fs-lg)}
 .opt{border:var(--hair);border-radius:var(--r-md);padding:10px var(--sp-3);background:var(--bg)}
 .opt[open]{background:var(--panel)}
 .opt summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;font-weight:var(--fw-strong);min-height:28px}
@@ -459,10 +459,10 @@ ul.steps li.no::before{content:"✗ ";color:var(--bad)}
 .bubble.you{align-self:flex-end;background:var(--copper-soft);border-color:transparent}
 .bubble .at{display:block;font-size:var(--fs-xs);color:var(--muted);margin-top:4px}
 .bubble .row{margin-top:var(--sp-2)}
-.composer{position:sticky;bottom:calc(var(--tabs-h) + var(--sp-2) + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:6px;background:var(--bg);padding:var(--sp-2) 0}
+.composer{position:sticky;bottom:calc(var(--tabs-h) + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:6px;background:var(--bg);padding:var(--sp-2) 0}
 .composer .row{flex-wrap:nowrap;align-items:flex-end}
 .composer textarea{font-family:var(--sans);font-size:var(--fs-md);line-height:1.4;min-height:var(--tap);max-height:220px;resize:none}
-@media (min-width:900px){.composer{bottom:var(--sp-2)}}
+@media (min-width:900px){.composer{bottom:0}}
 .bubble .msg+.msg,.bubble .msg+.codeblock,.bubble .codeblock+.msg{margin-top:var(--sp-2)}
 .bubble .foot{display:flex;align-items:center;gap:var(--sp-1);margin-top:4px}
 .bubble .foot .at{margin:0;margin-inline-end:auto}
@@ -491,6 +491,7 @@ code.ic{font:var(--fs-sm) var(--mono);background:var(--panel-2);padding:1px 5px;
 .console-line input{width:100%;font-family:var(--mono);font-size:var(--fs-md)}
 .complete{display:flex;flex-wrap:wrap;gap:6px;margin:var(--sp-2) 0}
 .complete button{font-family:var(--mono);font-weight:var(--fw-normal);min-height:34px}
+.complete button.ghost{background:var(--panel-2);border-color:var(--line-strong)}
 pre.out{background:var(--panel-2);border-radius:var(--r-md);padding:var(--sp-3);overflow:auto;max-height:55vh;white-space:pre-wrap;overflow-wrap:anywhere;margin:var(--sp-2) 0}
 
 /* ---------- logs, bars, rings, tasks ---------- */
@@ -542,7 +543,6 @@ html[dir="rtl"] details.advanced[open] > summary::before{transform:rotate(45deg)
 .switch[aria-busy="true"]{opacity:.6}
 .strip{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);margin:0 0 var(--sp-3);min-height:var(--tap);border-radius:var(--r-md);background:var(--warn-soft);color:var(--warn);font-weight:var(--fw-strong);text-decoration:none}
 .strip .grow{min-width:0}
-.strip .ico{inline-size:18px;block-size:18px}
 .plain-list{display:flex;flex-direction:column;gap:var(--sp-2)}
 .item{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3);border:var(--hair);border-radius:var(--r-md);background:var(--panel)}
 .item .grow{min-width:0}
@@ -562,7 +562,7 @@ dialog.dlg{
 }
 dialog.dlg::backdrop{background:var(--scrim)}
 dialog.dlg form{display:flex;flex-direction:column;gap:var(--sp-3);padding:18px}
-dialog.dlg h3{margin:0;font-size:var(--fs-lg)}
+dialog.dlg h2{margin:0;font-size:var(--fs-lg)}
 dialog.dlg p{margin:0;color:var(--ink-2)}
 dialog.dlg .row{justify-content:flex-end;margin-top:var(--sp-1)}
 @media (max-width:639px){
@@ -619,3 +619,13 @@ dialog.dlg.wide{width:min(520px,calc(100vw - 24px))}
 .preview .next{margin:var(--sp-2) 0 0;padding-inline-start:var(--sp-5);color:var(--ink-2)}
 .field .chips{margin-top:var(--sp-1)}
 .item .btn{flex:none}
+
+/* A finger's size for the small controls: the 34/32 px ones grow to the tap
+   size where a finger, not a mouse, is the likely pointer. */
+@media (max-width:899px),(pointer:coarse){
+  button{min-inline-size:var(--tap)}
+  button.sm,.alert .x,.complete button{min-block-size:var(--tap)}
+  .alert .x{inline-size:var(--tap)}
+  button.tip,button.link{min-inline-size:0}
+}
+@media (max-width:899px){input[type=search]{inline-size:100%}}
