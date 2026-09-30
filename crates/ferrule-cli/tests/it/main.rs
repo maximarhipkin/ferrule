@@ -10,6 +10,7 @@ mod dashboard;
 mod dashboard_m47;
 mod eval;
 mod goal;
+mod graph;
 mod health;
 mod hooks;
 mod install_sh;

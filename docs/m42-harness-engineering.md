@@ -1,6 +1,6 @@
 # M42 — harness engineering, applied to ourselves
 
-**Status.** Parts 1–5 built (2026-09-30); parts 6–7 are designs, not
+**Status.** Parts 1–6 built (2026-09-30); part 7 is a design, not
 started.
 
 **Source.** A pass over
@@ -116,27 +116,68 @@ Still open from the L13 design: `--schedule` on a goal loop (compose
 with the cron scheduler for timer-driven retries), and a `goal list` /
 `goal abandon` admin surface.
 
-## Part 6 — graph routing over ferrule-agents (design)
+## Part 6 — graph routing over ferrule-agents (done)
 
 L14: once a task needs specialization, parallelism, shared state,
 verification and recovery, it has stopped being a loop — it's a graph of
-nodes, edges, shared state and routing. Ferrule has the nodes (supervisor
-+ roles), the shared state (the board), and the isolation (worktrees).
-What it lacks is explicit edges.
+nodes, edges, shared state and routing. `ferrule graph run FILE` walks a
+declarative graph over the M12 primitives — and the walker is
+deterministic Rust, never a model: it routes, it doesn't decide the work.
 
-- A small declarative graph over the existing primitives, not a new
-  framework: `[[graph.nodes]]` (role, workspace, budget) and
-  `[[graph.edges]]` (`on: pass | fail | always`, `to: node`). The
-  supervisor walks it; the verifier role's result is the pass/fail
-  signal; a fail edge back to the implementer is the rollback edge.
-- Parallel fan-out/fan-in: several worker nodes from one edge, the join
-  node runs when all report (the board already carries their results).
-- Human-approval node: an edge that parks the graph until an owner
-  approval arrives through the channel — the approvals flow exists, this
-  makes it a node.
-- The orchestration tax is real (L14's own warning): one node and one
-  verify edge must stay exactly as cheap as today's `verify_command`.
-  A graph is opt-in per task, never the default path.
+```toml
+goal = "implement feature X with tests green"
+
+[[nodes]]
+id = "implement"
+task = "Implement: {{goal}}\n\nWhat came back:\n{{prev}}"
+
+[[nodes]]
+id = "verify"
+kind = "check"            # the deterministic judge, in the sandbox
+command = "cargo test"
+
+[[nodes]]
+id = "ship"
+kind = "approval"         # parks for the owner (--yes auto-approves)
+message = "Green. Ship?"
+
+[[edges]]
+from = "implement" to = "verify"
+[[edges]]
+from = "verify" to = "implement" on = "fail"   # the rollback edge
+[[edges]]
+from = "verify" to = "ship" on = "pass"
+```
+
+- **Nodes** are `agent` (worker/planner/verifier children, spawned and
+  waited through the supervisor, worktree-isolated, per-node `model`,
+  `timeout_secs`, `max_attempts`), `check` (a command ferrule runs
+  itself, exit 0 is a pass — the same `CommandVerifier` as
+  `verify_command`) or `approval` (a human gate).
+- **Edges** carry `on: pass | fail | always`. A feedback arc set is
+  computed greedily in declaration order: a fail edge back to an earlier
+  node is a rollback that re-fires it (capped by its `max_attempts`), and
+  the check's failure output rides back in `{{prev}}` as the repair
+  instruction.
+- **Fan-out/fan-in**: several edges out of one node run their agents in
+  parallel; a node with several inputs runs only when every one is
+  satisfied (the batch waits for *all*, not the first).
+- **Verifier agents** end with `VERDICT: PASS|FAIL`; anything unclear
+  fails closed.
+- **Success**: `succeed_when = "<node>"`, or every terminal node (no
+  non-feedback way out) passing. The report is truthful per node:
+  pass/fail/never ran, exit 0 or 2.
+- **Caps**: per-node `max_attempts`, per-node timeouts (a straggler is
+  closed, not waited on forever), a global `max_steps`, and the
+  supervisor's own tree limits underneath.
+
+The orchestration tax rule from L14 holds: one node and one check stay
+exactly `verify_command`'s job — a graph is opt-in per task, never the
+default path.
+
+Still open: a run's own resumable state (a cut graph restarts), gateway
+channels starting graphs, `graph list`/`graph stop` for long ones, and
+approval routed to the owner's chat instead of the terminal.
 
 ## Part 7 — pluggable compaction and a session tree (design)
 

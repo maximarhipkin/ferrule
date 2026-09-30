@@ -14,6 +14,7 @@ mod embedding;
 mod eval;
 mod filewrite;
 mod goal;
+mod graph;
 mod health;
 mod hooks_cli;
 mod import;
@@ -191,6 +192,13 @@ enum Cmd {
         /// `workspace`, else `.`
         #[arg(long)]
         workspace: Option<String>,
+    },
+    /// Run a declarative agent graph: nodes (agents, checks, approvals)
+    /// and edges (pass/fail/always, rollback on fail) from a TOML file
+    /// (docs/m42-harness-engineering.md §6)
+    Graph {
+        #[command(subcommand)]
+        op: GraphCmd,
     },
     /// Agent memory operations
     Memory {
@@ -503,6 +511,35 @@ enum TasksCmd {
         workspace: PathBuf,
         #[arg(long, default_value_t = 60)]
         max_iterations: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum GraphCmd {
+    /// Walk the graph: fan-out in parallel, join on every input, roll back
+    /// on a fail edge, park at an approval node
+    Run {
+        /// The graph's TOML file
+        file: PathBuf,
+        /// What the run works toward; wins over the file's `goal`
+        #[arg(long)]
+        goal: Option<String>,
+        /// The model the graph's agents run on when a node names none:
+        /// `provider/model`, a provider, an alias or a model id
+        #[arg(long)]
+        model: Option<String>,
+        /// Default: the config's `workspace`, else `.`
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Iterations per node's agent
+        #[arg(long, default_value_t = 60)]
+        max_iterations: usize,
+        /// Cap on node executions; wins over the file's `max_steps`
+        #[arg(long)]
+        max_steps: Option<usize>,
+        /// Approve every approval node without asking
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -927,6 +964,39 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             let workspace = remote::workspace(workspace, false).await?;
             chat(model.or(provider), workspace).await?;
         }
+        Cmd::Graph { op } => match op {
+            GraphCmd::Run {
+                file,
+                goal,
+                model,
+                workspace,
+                max_iterations,
+                max_steps,
+                yes,
+            } => {
+                let workspace = match workspace {
+                    Some(w) => PathBuf::from(w),
+                    None => config::Config::load()
+                        .ok()
+                        .and_then(|(c, _)| c.workspace)
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from(".")),
+                };
+                let code = graph::run(
+                    &file,
+                    goal,
+                    model,
+                    workspace,
+                    max_iterations,
+                    max_steps,
+                    yes,
+                )
+                .await?;
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+        },
         Cmd::Gateway {
             provider,
             workspace,
@@ -1136,7 +1206,10 @@ async fn build_root(
 
 /// How the supervisor builds a child: like any agent, on its spec's
 /// workspace and session, narrowed to its role.
-fn child_builder(max_iterations: usize, mcp_tools: self_extend::Extensions) -> agents::Build {
+pub(crate) fn child_builder(
+    max_iterations: usize,
+    mcp_tools: self_extend::Extensions,
+) -> agents::Build {
     Arc::new(move |scope, spec, tag| {
         build_agent_from(
             scope,
@@ -1178,7 +1251,7 @@ pub(crate) fn mcp_servers(cfg: &config::Config) -> Vec<McpServerConfig> {
 ///
 /// Servers run in the workspace, through the same sandbox as shell commands
 /// plus a state dir of their own under the data dir — see `ServerHost`.
-async fn connect_mcp_servers(
+pub(crate) async fn connect_mcp_servers(
     servers: &[McpServerConfig],
     sandbox: Arc<Sandbox>,
     workspace: &Path,

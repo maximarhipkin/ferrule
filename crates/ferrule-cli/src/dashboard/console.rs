@@ -65,6 +65,12 @@ pub const PARITY: &[Leaf] = &[
     ),
     leaf("run", Change, "console", "one agent turn, with its tools"),
     leaf(
+        "graph run",
+        Change,
+        "console",
+        "an agent graph, end to end; approval nodes need `--yes` here",
+    ),
+    leaf(
         "chat",
         Refused("a REPL isn't a console command: use the Chat page"),
         "Chat",
