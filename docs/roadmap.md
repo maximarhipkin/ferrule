@@ -976,6 +976,30 @@ sessions until an independent judge says it's met; and a multi-agent task
 can be drawn as a graph — rollback edges and a human gate included — and
 run by deterministic routing, not by prompting.
 
+### M47 — the dashboard, redesigned
+
+**Status.** Built (`docs/m47-dashboard-redesign.md`; user docs
+`docs/dashboard.md`, with additions in `docs/models.md` and
+`docs/channels.md`). PR to `main` open, not merged. Not tried on a real
+phone or with a real vision provider.
+- **A page for people who don't code**: a new visual system (tokens, light
+  and dark, icons, two embedded fonts), a Home that puts what needs you
+  first, a first-run checklist, a phone bottom bar with a More sheet, a
+  desktop sidebar, a command palette, and every advanced control folded
+  away. Nothing on the way to the page calls a model.
+- **Photos**: from Telegram and from Chat, seen by the models that can see
+  them (by name, or `vision = true|false`), a note for those that can't.
+- **New on the page**: Memory (search, forget), a schedule picker and New
+  task with the next runs shown, Backup (no secrets), Settings (theme,
+  Hebrew and right-to-left, sign out).
+- **Quality**: one `h1` per page, named controls, 44 px touch targets, a
+  Skip link, gzip for the page's own files (Home cold: 203 KB → about
+  107 KB, first paint 132 → 84–92 ms), sixty after-screenshots.
+
+**Done means.** Someone who has never opened a terminal can connect a
+model and a channel, say hello, and set a task from a phone, and every
+ability the old page had is still reachable.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

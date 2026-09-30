@@ -853,6 +853,19 @@ that convention yet — ask before introducing one).
     - Telegram set up from the page; `FERRULE_HTTP_BIND`; a bounded
       SIGTERM drain, re-exec restarts, backup/restore in a container.
     - `scripts/m44-measure.sh`: idle 24 MiB, turn peak 26 MiB.
+  - **M47 dashboard redesign**: **built** (2026-09-30, branch
+    `m47-dashboard-redesign`, PR to main open, not merged). Design, plan,
+    corrections and what was verified: `docs/m47-dashboard-redesign.md`;
+    user docs `docs/dashboard.md`, `docs/models.md`, `docs/channels.md`.
+    - A new visual system and navigation (sidebar, phone bottom bar, More
+      sheet, palette, shortcuts), a Home with a first-run checklist,
+      English and Hebrew (right-to-left) from Settings.
+    - Photos: `images` on the provider layer (vision by name or
+      `vision = true|false`), Telegram photos, a Chat photo button.
+    - Memory, a schedule picker with New task, Backup (no secrets),
+      Settings; gzip for the page's own files.
+    - Not verified live: a real phone over the tunnel, real vision
+      providers.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -5577,3 +5590,50 @@ fmt clean.
 **Not done.** A cut graph restarts (no run-state resume); gateway
 channels can't start graphs; no `graph list`/`graph stop`; approval asks
 at the terminal, not in the owner's chat.
+
+### 2026-09-30 — M47 the dashboard, redesigned (Devi, Opus 5.5 plan / Sonnet 5.5 build)
+
+**Scope.** Max tried the page on a phone and wanted it beautiful, modern
+and very easy to use, with more abilities, for beta users who mostly don't
+code. Branch `m47-dashboard-redesign`; design, plan, corrections and what
+was verified in `docs/m47-dashboard-redesign.md`, user docs in
+`docs/dashboard.md`.
+
+**What was built** (one commit per part).
+- **1 Audit.** Before-screenshots (13 sections × 2 widths × 2 themes),
+  the abilities inventory, before-numbers, ranked findings.
+- **2 Visual system.** Tokens, light/dark, icons, components.
+- **3 Home and first run.** Problems first, a three-step checklist.
+- **4 Navigation.** Sidebar, bottom bar and More sheet, palette,
+  shortcuts, sections regrouped, experts' controls folded.
+- **5 New abilities.** Vision in the provider layer (5a), Telegram and
+  Chat photos (5b), Memory, schedule picker and New task, Backup, Settings,
+  Hebrew (5c).
+- **6 Quality.** One `h1`, named controls, 44 px targets, Skip link,
+  gzip for static files, sixty after-screenshots.
+- **7 Docs and PR.**
+
+**Tests.** 1721 → 1777 passed on the branch before merging main, 0
+failed, 29 ignored. Browser check 27 steps, 27 passed.
+
+**Repo rule.** The standing rule against touching images conflicts with the
+brief's `docs/assets/m47/`. Resolution (D13): new files only, in a new
+directory, JPEG, about 7.3 MB, as M37 did with `docs/assets/m37/`. README
+untouched; its lines are in the final report.
+
+**Plan fixes made while building.** 48 corrections, each in the commit that
+found it, listed at the end of the design doc. The largest: the ≤ 45 KB
+gzip budget for `app.js` was missed (about 52 KB) and the wire still
+halved; the screenshot rig became a mode of the browser check instead of a
+second tool.
+
+**Known flake.** `ferrule-mcp browser::tests::a_browser_that_hangs_is_given_up_on`
+can fail in a full parallel run (ETXTBSY fork race); unrelated.
+
+**Not verified live.** A real phone over the real tunnel; real vision
+providers with an image; a real Telegram photo; Hebrew read by a Hebrew
+speaker.
+
+**Follow-ups.** Translate the server's own sentences; a proofreading pass
+on the Hebrew; a live check on a phone.
+
