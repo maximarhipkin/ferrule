@@ -83,13 +83,13 @@ pub fn run(op: HooksCmd) -> Result<()> {
                 Ok((cfg, path)) => (settings(&cfg, &path)?, cfg.agent.verify_command),
                 Err(e) => {
                     eprintln!("({e} — showing default [hooks] settings)");
-                    (HooksConfig::default(), None)
+                    (HooksConfig::default(), Vec::new())
                 }
             };
             let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
             print!(
                 "{}",
-                ferrule_hooks::render_list(&settings, verify.as_deref(), &workspace, &data, runs)
+                ferrule_hooks::render_list(&settings, &verify, &workspace, &data, runs)
             );
         }
         HooksCmd::Trust { workspace } => {

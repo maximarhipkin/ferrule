@@ -129,9 +129,11 @@ harness, for every model it drives:
 - **Structured compaction.** Tool results are deduplicated for free before
   a checklist summary spends any tokens — and your original request is
   pinned into the summary verbatim, so long runs don't drift off-task.
-- **The build is the judge.** With `[agent] verify_command = "cargo test"`,
-  a run that changed files can't finish until the command passes; a failure
-  goes back to the model with the tail of the output.
+- **The build is the judge.** With `[agent] verify_command = "cargo test"`
+  (or a list run in order, `["cargo fmt --check", "cargo test"]`), a run
+  that changed files can't finish until the checks pass; a failure goes
+  back to the model with the tail of the output. `ferrule run --verify
+  CMD` overrides the config for one run.
 - **Never stuck.** Transient provider errors are retried with capped,
   jittered backoff (honouring `Retry-After`). A stuck detector — the same
   call 4×, the same failure 3×, two calls ping-ponging 6× — warns the model
@@ -251,7 +253,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Trust & cost** | Token and dollar caps per run, per day and per scheduled task, with an 80% warning; a kill switch (`ferrule stop`, `/stop`, `/resume`); approvals for destructive actions; plan mode ([`docs/m19-trust-cost.md`](docs/m19-trust-cost.md)). |
 | **Hooks** | Ten lifecycle events (SessionStart, PreToolUse, PostToolUse, Stop, PreCompact and more) with Claude Code's JSON payload and exit-code contract ([`docs/m18-hooks.md`](docs/m18-hooks.md)). |
 | **Eval** | `ferrule eval run`: task suites through the real agent loop, graded by commands and LLM rubrics, with a naive-vs-engineered A/B on the same model ([`docs/eval.md`](docs/eval.md)). |
-| **Context baseline** | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `ferrule.md` in the workspace goes into the system prompt. |
+| **Context baseline** | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `ferrule.md` goes into the system prompt, layered: the config dir (user level), then the workspace's parents, then the workspace itself — most specific last. |
 
 ## Install
 
@@ -690,7 +692,7 @@ and a dated entry for every session.
   investigations.
 - [`docs/roadmap.md`](docs/roadmap.md): every milestone's design and
   status. The per-milestone design notes live next to it
-  (`docs/m12-multi-agent.md` … `docs/m35-subscriptions.md`).
+  (`docs/m12-multi-agent.md` … `docs/m42-harness-engineering.md`).
 - [`PLAN.md`](PLAN.md): the shared working log — current state, open gaps
   and a dated entry for every session.
 

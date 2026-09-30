@@ -921,6 +921,28 @@ and `docs/backup.md`). PR to `main` open, not merged.
 ferrule by voice in Hebrew, sees it working, and can move an instance to a
 new machine with two commands.
 
+### M42 — harness engineering, applied to ourselves
+
+**Status.** Parts 1–4 built (`docs/m42-harness-engineering.md`, from a
+pass over the learn-harness-engineering course and its Claude Code /
+Codex / DeepSeek / Pi breakdowns); parts 5–7 designed there, not started.
+- **The repo dogfoods:** a root `AGENTS.md` directory page and a
+  `Makefile` whose `make check` is the green predicate.
+- **Layered context baseline:** user-level (config dir) → workspace
+  parents → workspace, most specific last in the prompt, the cap spent on
+  the most specific first.
+- **Layered verification:** `[agent] verify_command` takes a list run in
+  order, and `ferrule run --verify CMD` overrides it per run — the goal
+  loop's three parts from the command line.
+- **Model-visible means logged:** compaction writes a `fold` record, a
+  resume replays the compacted state, and an invariant test asserts every
+  model-visible message is in the log.
+
+**Done means.** An agent fresh to this repo runs `make check` and knows
+the rules; a layered config dirs' rules reach every session; a run can't
+finish until an ordered list of checks passes; and nothing the model sees
+is missing from the transcript.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

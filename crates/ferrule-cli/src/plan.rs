@@ -79,6 +79,7 @@ pub async fn run(
         show_reasoning,
         &session,
         false,
+        None,
     )
     .await;
     trust::set_planning(&session, false);
@@ -166,6 +167,7 @@ async fn execute(
         show_reasoning,
         &plan.session,
         true,
+        None,
     )
     .await?;
     let outcome = match &answer {

@@ -346,12 +346,33 @@ fn default_profile() -> String {
     "generic".into()
 }
 
+/// `verify_command` accepts one string (`verify_command = "cargo test"`)
+/// or a list run in order (`verify_command = ["cargo fmt --check", "cargo
+/// test"]`).
+fn de_string_or_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrList {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match StringOrList::deserialize(deserializer)? {
+        StringOrList::One(s) => vec![s],
+        StringOrList::Many(v) => v,
+    })
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentSettings {
-    /// Check ferrule runs itself before a run that changed files may finish
-    /// (e.g. "cargo test", "npm test"). A failure goes back to the agent to
+    /// Checks ferrule runs itself, in order, before a run that changed
+    /// files may finish (e.g. "cargo fmt --check", then "cargo test").
+    /// One string or a list of them; a failure goes back to the agent to
     /// fix, a few rounds at most; then the run ends with a status.
-    pub verify_command: Option<String>,
+    #[serde(default, deserialize_with = "de_string_or_list")]
+    pub verify_command: Vec<String>,
     /// How long the check may take before it counts as failed.
     #[serde(default = "default_verify_timeout_secs")]
     pub verify_timeout_secs: u64,
@@ -413,7 +434,7 @@ fn default_lint_timeout_secs() -> u64 {
 impl Default for AgentSettings {
     fn default() -> Self {
         Self {
-            verify_command: None,
+            verify_command: Vec::new(),
             verify_timeout_secs: default_verify_timeout_secs(),
             parallel_tools: default_parallel_tools(),
             stream: default_stream(),
@@ -1422,7 +1443,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # profile = "generic"
 
 # [agent]
-# verify_command = "cargo test"   # ferrule runs it before a run that changed files ends
+# verify_command = "cargo test"   # ferrule runs it before a run that changed files ends;
+#                                 # or a list run in order: ["cargo fmt --check", "cargo test"]
 # verify_timeout_secs = 600
 # parallel_tools = 4              # read-only tool calls from one response run at once; 1 = one by one
 # stream = true                   # replies grow as the model writes (Telegram, `ferrule chat`)

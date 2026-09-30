@@ -251,7 +251,7 @@ fn env(cfg: &Config, workspace: &Path, provider: Option<String>) -> Result<ferru
             .learning
             .check
             .clone()
-            .or_else(|| cfg.agent.verify_command.clone()),
+            .or_else(|| cfg.agent.verify_command.first().cloned()),
         max_iterations: cfg.learning.gate_max_iterations,
         scratch_root: std::env::temp_dir(),
         skip: vec![data.clone()],

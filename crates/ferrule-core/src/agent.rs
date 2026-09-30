@@ -1937,6 +1937,8 @@ impl Agent {
         let Some(split) = self.fold_point(self.messages.len() - keep) else {
             return Ok(()); // nothing foldable
         };
+        // The tail that survives the fold, for the transcript's fold record.
+        let kept_tail = self.messages.len() - split;
         let head = &self.messages[..split];
         let folded_refs = shortened_refs(head);
 
@@ -2026,7 +2028,8 @@ impl Agent {
             summary_msg.push_str(memory);
         }
         summary_msg.push_str("\n\nContinue from here.");
-        rebuilt.push(Message::user(summary_msg));
+        let summary_message = Message::user(summary_msg);
+        rebuilt.push(summary_message.clone());
         // A provider's own blocks (signed thinking, encrypted reasoning)
         // are bound to the prefix they were made under; the summary just
         // replaced it, so the kept tail goes back as neutral messages (M23).
@@ -2048,6 +2051,10 @@ impl Agent {
         )
         .await;
         if let Some(t) = &self.transcript {
+            // Model-visible means logged: the summary reaches the model on
+            // every later turn, so it goes in the log as a fold; a resume
+            // replays the compacted state, the folded past stays on disk.
+            let _ = t.log_fold(&summary_message, kept_tail);
             let _ = t.log_event(&format!(
                 "compacted: {folded} messages, {before} -> {after} est tokens"
             ));
