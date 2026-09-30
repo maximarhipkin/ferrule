@@ -75,28 +75,82 @@
 
   // ---- small helpers -----------------------------------------------------
 
-  function toast(t, bad) {
+  // Toasts stack in #toast. A good one goes by itself; an error stays until
+  // it is closed, so nobody has to read fast.
+  function toast(t, kind) {
+    kind = kind === true ? "bad" : kind || "";
     const box = document.getElementById("toast");
-    const card = el("div", { class: "t" + (bad ? " bad" : ""), dir: "auto", text: t });
-    box.replaceChildren(card);
-    setTimeout(() => { if (card.parentNode) card.remove(); }, bad ? 9000 : 5000);
+    for (const old of box.children) if (old.dataset.text === t) old.remove();
+    const card = el("div", { class: "t " + kind, role: kind === "bad" ? "alert" : null },
+      el("span", { class: "txt", dir: "auto", text: t }),
+      el("button", { class: "ghost icon", "aria-label": "Close", onclick: () => card.remove() }, icon("x")));
+    card.dataset.text = t;
+    box.append(card);
+    while (box.children.length > 3) box.firstChild.remove();
+    if (kind !== "bad") setTimeout(() => card.remove(), 5000);
+  }
+
+  // The page's own confirm() and prompt(): a native <dialog>, so focus stays
+  // inside, Escape closes it and it mirrors right to left. Resolves true or
+  // false; with `input`, the typed text, or null when cancelled.
+  function ask({ title, text: body, confirm, cancel, danger, input }) {
+    return new Promise((resolve) => {
+      const back = document.activeElement;
+      const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
+      const box = input ? el("input", { name: "v", value: input.value || "", dir: "auto", autocomplete: "off", "aria-label": input.label || title }) : null;
+      let answer = input ? null : false;
+      const no = el("button", { type: "button", text: cancel || "Cancel", autofocus: danger || null, onclick: () => d.close() });
+      const yes = el("button", { type: "submit", class: danger ? "danger primary" : "primary", text: confirm || "OK" });
+      d.append(el("form", {
+        method: "dialog",
+        onsubmit: (e) => { e.preventDefault(); answer = input ? box.value : true; d.close(); },
+      },
+        el("h3", { id: "dlg-title", dir: "auto", text: title }),
+        body ? el("p", { class: "msg", dir: "auto", text: body }) : null,
+        box,
+        el("div", { class: "row" }, no, yes)));
+      d.addEventListener("close", () => { d.remove(); if (back && back.focus) back.focus(); resolve(answer); });
+      document.body.append(d);
+      d.showModal();
+      if (box) box.select();
+    });
+  }
+
+  // A link the server wants opened in another tab (a sign-in page): a
+  // popup opened after a fetch is blocked on a phone, a tapped link is not.
+  function linksDialog(links) {
+    const good = links.filter((l) => /^https?:\/\//i.test(l.url));
+    if (!good.length) return;
+    const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
+    d.append(el("form", { method: "dialog" },
+      el("h3", { id: "dlg-title", text: "Continue in your browser" }),
+      good.map((l) => el("a", { class: "btn primary", href: l.url, target: "_blank", rel: "noopener", dir: "auto" }, icon("external"), l.text || "Open")),
+      el("div", { class: "row" }, el("button", { text: "Done" }))));
+    d.addEventListener("close", () => d.remove());
+    document.body.append(d);
+    d.showModal();
   }
 
   // A POST; a destructive one comes back 409 with its question, and goes
-  // again with `confirm` once the owner says yes.
+  // again with `confirm` once the owner says yes. The button shows it is
+  // working and can't be pressed twice.
   async function act(path, body, button) {
-    if (button) button.disabled = true;
+    if (button) {
+      if (button.getAttribute("aria-busy") === "true") return null;
+      button.setAttribute("aria-busy", "true");
+    }
     try {
       let r;
       try {
         r = await api("/api/" + path, body || {});
       } catch (e) {
         if (e.status !== 409 || !e.data || !e.data.confirm) throw e;
-        if (!window.confirm(e.data.confirm)) return null;
+        const yes = await ask({ title: "Are you sure?", text: e.data.confirm, confirm: "Yes, do it", danger: true });
+        if (!yes) return null;
         r = await api("/api/" + path, Object.assign({}, body, { confirm: true }));
       }
-      if (r.said) toast(r.said, r.ok === false);
-      if (r.links) r.links.forEach((l) => window.open(l.url, "_blank", "noopener"));
+      if (r.said) toast(r.said, r.ok === false ? "bad" : "");
+      if (r.links) linksDialog(r.links);
       // What was typed next to the button went in: the redraw may drop it.
       const box = button && button.closest(".card, .opt, .check, .alert");
       if (box) box.querySelectorAll("[data-dirty]").forEach((i) => { delete i.dataset.dirty; });
@@ -107,7 +161,7 @@
       toast(e.message, true);
       return null;
     } finally {
-      if (button) button.disabled = false;
+      if (button) button.removeAttribute("aria-busy");
     }
   }
 
@@ -117,15 +171,47 @@
     return b;
   }
 
-  // A button that asks for one value first (window.prompt), then POSTs.
-  function ask(label, path, question, now, body) {
+  // A button of the page's kinds: "primary", "danger", "ghost", "link", with
+  // an optional icon; `aria` names an icon-only one.
+  function button(label, o) {
+    o = o || {};
+    const b = el("button", { type: "button", class: o.kind || null, "aria-label": o.aria || null, title: o.aria || null },
+      o.icon ? icon(o.icon) : null, label ? el("span", { text: label }) : null);
+    if (o.onclick) b.onclick = o.onclick;
+    return b;
+  }
+
+  // A button that asks for one value first, then POSTs.
+  function askBtn(label, path, question, now, body) {
     const b = el("button", { text: label });
-    b.onclick = () => {
-      const v = window.prompt(question, now);
+    b.onclick = async () => {
+      const v = await ask({ title: label, text: question, confirm: "Save", input: { value: now } });
       if (v === null || v.trim() === "" || v.trim() === now) return;
-      act(path, body(v), b);
+      act(path, body(v.trim()), b);
     };
     return b;
+  }
+
+  // A card with an optional head: an icon, a title, and things on the right.
+  function card(head, ...body) {
+    const h = head && (head.title || head.icon || head.right)
+      ? el("div", { class: "card-head" }, head.icon ? icon(head.icon) : null,
+        head.title ? el("h3", { text: head.title }) : null, head.right || null)
+      : null;
+    return el("div", { class: "card" + (head && head.cls ? " " + head.cls : "") }, h, body);
+  }
+
+  // What a list says when it has nothing: what is missing, why, and what to do.
+  function empty(what, hint, ...actions) {
+    return el("div", { class: "empty" }, icon("info"),
+      el("div", { class: "what", text: what }),
+      hint ? el("div", { text: hint }) : null,
+      actions.length ? el("div", { class: "row" }, actions) : null);
+  }
+
+  // Grey blocks where a section's cards will be, until its first answer.
+  function skeleton(n) {
+    return frag(Array.from({ length: n || 2 }, () => el("div", { class: "skel card", "aria-hidden": "true" })));
   }
 
   // "0 9 * * * Asia/Jerusalem" → ["0 9 * * *", "Asia/Jerusalem"].
@@ -154,11 +240,12 @@
       frag(el("dt", { text: k }), el("dd", {}, v))));
   }
 
+  // On a phone every row is a card, each cell labelled by its column.
   function table(head, rows, numcols) {
-    return el("div", { class: "tbl" }, el("table", {},
+    return el("div", { class: "tbl cards" }, el("table", { class: "cards" },
       el("thead", {}, el("tr", {}, head.map((h, i) => el("th", { class: (numcols || []).includes(i) ? "num" : null, text: h })))),
       el("tbody", {}, rows.map((r) => el("tr", { class: r.dead ? "dead" : null },
-        r.cells.map((c, i) => el("td", { class: (numcols || []).includes(i) ? "num" : null }, c)))))));
+        r.cells.map((c, i) => el("td", { class: (numcols || []).includes(i) ? "num" : null, "data-label": head[i] || "" }, c)))))));
   }
 
   function secHead(title, sub, ...controls) {
@@ -251,8 +338,11 @@
 
   // ---- M37 pieces --------------------------------------------------------
 
-  // Line icons, one path each, drawn in currentColor.
+  // Line icons, one path each, drawn in currentColor on a 24-pixel grid.
+  // Every one is drawn here; nothing is fetched. A test checks that each
+  // name the page asks for exists.
   const ICONS = {
+    // the sections
     health: "M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6",
     chat: "M4 5h16v11H9l-5 4z",
     models: "M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4",
@@ -263,13 +353,53 @@
     config: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4",
     routing: "M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9c0 6-12 3-12 6",
     usage: "M4 20V10M10 20V4M16 20v-7M2 20h20",
-    tasks: "M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
+    tasks: "M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2",
     logs: "M4 6h16M4 12h16M4 18h10",
     extensions: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
     agents: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0",
+    memory: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6",
+    settings: "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6M12 5a7 7 0 1 0 0 14 7 7 0 0 0 0-14M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1",
+    // things a button does
+    search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14M16 16l4 4",
+    camera: "M4 8h3l2-3h6l2 3h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7",
+    image: "M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9.5h.01",
+    copy: "M8 8h11v12H8zM5 16V4h11",
+    check: "M5 12.5l4.5 4.5L19 7",
+    x: "M6 6l12 12M18 6L6 18",
+    retry: "M20 12a8 8 0 1 1-2.6-5.9M20 4v4h-4",
+    stop: "M7 7h10v10H7z",
+    send: "M12 19V5M6 11l6-6 6 6",
+    play: "M8 5l11 7-11 7z",
+    pause: "M8 5v14M16 5v14",
+    plus: "M12 5v14M5 12h14",
+    edit: "M4 20l1-4L16 5l3 3L8 19zM14 7l3 3",
+    trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
+    download: "M12 4v11M7 11l5 5 5-5M5 20h14",
+    external: "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6",
+    power: "M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0",
+    chevron: "M9 6l6 6-6 6",
+    "chevron-down": "M6 9l6 6 6-6",
+    // things a place is
+    sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
+    moon: "M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z",
+    monitor: "M3 5h18v11H3zM8 20h8M12 16v4",
+    globe: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18",
+    clock: "M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
+    calendar: "M4 6h16v14H4zM4 10h16M8 3v4M16 3v4",
+    backup: "M3 5h18v4H3zM5 9v10h14V9M10 13h4",
+    file: "M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6",
+    key: "M8 11a4 4 0 1 0 0 8 4 4 0 0 0 0-8M11 12l9-9M16 7l3 3M14 9l2 2",
+    lock: "M6 11h12v9H6zM8 11V8a4 4 0 0 1 8 0v3",
+    telegram: "M21 4L3 11l6 2 2 7 3-5 5 4zM9 13l12-9",
+    // things the page says
+    alert: "M12 3l10 18H2zM12 10v5M12 18h.01",
+    info: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 11v5M12 8h.01",
+    help: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01",
   };
-  function icon(name) {
-    const s = el("svg", { class: "ico", viewBox: "0 0 24 24", "aria-hidden": "true" });
+  // Decoration by default (hidden from a screen reader); with a label it
+  // is an image of its own.
+  function icon(name, label) {
+    const s = el("svg", { class: "ico" + (name === "chevron" ? " flip" : ""), viewBox: "0 0 24 24", "aria-hidden": label ? null : "true", role: label ? "img" : null, "aria-label": label || null });
     s.append(el("path", { d: ICONS[name] || ICONS.more, "stroke-width": name === "more" ? 3 : null }));
     return s;
   }
@@ -1325,12 +1455,12 @@
           el("div", { class: "row mt" },
             t.enabled ? btn("Pause", "tasks/pause", { id: t.id }) : btn("Resume", "tasks/resume", { id: t.id }, "primary"),
             btn("Run now", "tasks/run", { id: t.id }),
-            ask("Schedule", "tasks/schedule", t.kind === "cron" ? "Cron schedule (5 fields), then optionally a space and an IANA timezone:" : "When (RFC 3339):",
+            askBtn("Schedule", "tasks/schedule", t.kind === "cron" ? "Cron schedule (5 fields), then optionally a space and an IANA timezone:" : "When (RFC 3339):",
               t.kind === "cron" ? t.schedule + " " + t.timezone : t.schedule, (v) => {
                 const [schedule, timezone] = t.kind === "cron" ? splitTz(v) : [v.trim(), null];
                 return { id: t.id, schedule, timezone };
               }),
-            ask("Model", "tasks/model", "The model it runs on (provider/model, a provider or an alias), or \"default\":",
+            askBtn("Model", "tasks/model", "The model it runs on (provider/model, a provider or an alias), or \"default\":",
               t.model || "default", (v) => ({ id: t.id, model: v.trim() })),
             t.builtin ? null : btn("Delete", "tasks/delete", { id: t.id }, "danger"))))
           : el("div", { class: "empty", text: "no tasks" }));
@@ -1809,7 +1939,7 @@
         this.poll();
       } catch (e) {
         if (e.status === 409 && e.data && e.data.confirm) {
-          if (window.confirm(e.data.confirm)) return this.run(true);
+          if (await ask({ title: "Run this command?", text: e.data.confirm, confirm: "Run it", danger: true })) return this.run(true);
         } else if (e.status === 403) {
           toast(e.message + (e.data && e.data.page ? " · on this page: " + e.data.page : ""), true);
         } else toast(e.message, true);

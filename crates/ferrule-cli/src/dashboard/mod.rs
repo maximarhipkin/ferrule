@@ -15,6 +15,8 @@ mod healthz;
 pub mod http;
 pub mod models_page;
 pub mod notices;
+#[cfg(test)]
+mod page_tests;
 pub mod panel;
 mod public;
 pub mod runs;

@@ -69,9 +69,9 @@ and focus rings.
 - All pairs are checked for AA by a unit test that parses the token block
   (Part 2).
 - Fonts stay IBM Plex Sans and Mono (already self-hosted, OFL, no new
-  bytes). Hebrew falls back to the system UI font (`system-ui`, "Segoe UI",
-  Arial). IBM Plex Sans Hebrew (~40 KB) is left out; it's a follow-up if
-  Max wants it.
+  bytes). *Corrected in Part 2:* IBM Plex Sans Hebrew is already embedded and
+  loads by `unicode-range` (the audit found it), so Hebrew needs no
+  fallback font and no new bytes.
 
 **D3. Navigation.**
 
@@ -319,7 +319,6 @@ abilities get lost quietly.
   chips).
 - PDFs or other documents as vision input (they stay files).
 - Image generation, video.
-- IBM Plex Sans Hebrew.
 - Drag-and-drop reordering.
 - Charts beyond one 7-day bar chart on Usage.
 - Vision for the Claude Code plan engine.
@@ -1168,3 +1167,39 @@ end.
   screenshots of Home, Chat and the tab bar are added to the after set,
   and the browser check asserts `dir="rtl"` and no horizontal scroll in
   Hebrew.
+
+
+## Corrections made while building
+
+These are places where the plan met the code and the code won. Each is
+also in the final report.
+
+1. **Part 1: the screenshot rig.** The plan said to script agent-browser.
+   The browser check's CDP rig is already proven in CI and boots the whole
+   gateway, so `--shots-all` and `--measure` were added to it instead
+   (`scripts/m47_shots.sh` wraps them). One rig to keep working, not two.
+2. **Part 2: theme names and tokens.** The doc wrote `[data-theme="dark"]`
+   and a new colour vocabulary (`--surface`, `--text`, `--accent`). The page
+   already ships `data-theme="paper"|"forge"` with `theme.js`, the
+   `ferrule-theme` key and `window.ferruleTheme`, and 400 lines of CSS use
+   `--panel`, `--ink`, `--copper`. Renaming them would touch every rule for
+   no reader-visible gain, so the **existing names are kept and extended**
+   (space, type in rem, weights, radii, shadows, motion, layers, tap size,
+   focus). The colour *values* changed where the AA test demanded it: the
+   dark `--ink-2`/`--muted` are opaque hex instead of alpha, the light
+   `--muted` and `--copper` are darker, `--copper-strong` is the text/link
+   copper.
+3. **Part 2: the shell is evolved, not rebuilt.** `index.html` already has
+   `#top`, `#rail`, `#main`, `#tabs`, `#sheet` and `#toast`, and the browser
+   check drives them. They stay, gaining landmarks and a skip link in Part 4.
+4. **Part 2: `tip()`** renders as an inline definition that expands under
+   the word, not a popover: a popover needs positioning code and fails on a
+   320 px screen.
+5. **Part 2: no `prefers-color-scheme` mirror.** `theme.js` always sets
+   `data-theme`, so the stylesheet needs no media-query copy of the dark
+   block.
+6. **Part 2: the WCAG test has a sibling.** `every_colour_is_a_token` fails
+   if a rule after the token blocks spells a hex or `rgba()`, otherwise a
+   hard-coded colour would dodge `tokens_meet_wcag_aa`.
+7. **Part 2: the tests live in `dashboard/page_tests.rs`**, next to the
+   assets they read, not in `mod.rs`.
