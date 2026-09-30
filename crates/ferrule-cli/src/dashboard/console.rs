@@ -97,6 +97,7 @@ pub const PARITY: &[Leaf] = &[
         "",
     ),
     leaf("status", Read, "Home + console", ""),
+    leaf("health", Read, "console", ""),
     leaf(
         "backup",
         Change,

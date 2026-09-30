@@ -1908,7 +1908,7 @@ async fn allow_chats(t: &mut Target, tg: &probe::Telegram<'_>, bot: &str) -> Res
     Ok(())
 }
 
-fn save_allowed(t: &mut Target, ids: &[i64]) -> Result<()> {
+pub(crate) fn save_allowed(t: &mut Target, ids: &[i64]) -> Result<()> {
     let ids = toml_edit::Array::from_iter(ids.iter().copied());
     put(
         table(t.root(), &["gateway"])?,

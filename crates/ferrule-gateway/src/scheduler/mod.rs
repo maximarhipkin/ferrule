@@ -108,6 +108,9 @@ pub struct Scheduler {
     /// Asked every tick (M19's kill switch): `Some(why)` skips every due
     /// task this tick. They stay due and run once the hold lifts.
     hold: Option<Hold>,
+    /// M44: `Some(why)` means gate scripts (user commands) may not run
+    /// here; a task with a gate then fails without running.
+    gate_refusal: Option<String>,
 }
 
 /// See [`Scheduler::with_hold`].
@@ -141,6 +144,7 @@ impl Scheduler {
             gate_workspace,
             builtins: HashMap::new(),
             hold: None,
+            gate_refusal: None,
         })
     }
 
@@ -154,6 +158,13 @@ impl Scheduler {
     /// held: the guard of the run it starts stops it instead).
     pub fn with_hold(mut self, hold: Hold) -> Self {
         self.hold = Some(hold);
+        self
+    }
+
+    /// Refuses every gate script, with `why` (a managed bot whose commands
+    /// aren't protected). A task with a gate fails; its prompt never runs.
+    pub fn refuse_gates(mut self, why: String) -> Self {
+        self.gate_refusal = Some(why);
         self
     }
 
@@ -257,6 +268,9 @@ impl Scheduler {
         }
         let mut gate_context = None;
         if let Some(gate_cmd) = &task.gate {
+            if let Some(why) = &self.gate_refusal {
+                return Err(SchedulerError::Gate(format!("the gate didn't run: {why}")));
+            }
             match gate::run_gate(gate_cmd, &self.gate_workspace, self.gate_timeout).await {
                 Ok(gate::GateOutcome::Skip { reason }) => return Ok(InnerOutcome::Skipped(reason)),
                 Ok(gate::GateOutcome::Proceed { context }) => gate_context = context,
@@ -801,6 +815,26 @@ mod tests {
 
         let runs = scheduler.store().runs_for(&task.id, 1).unwrap();
         assert_eq!(runs[0].status, RunStatus::Skipped);
+    }
+
+    /// M44: a scheduler told to refuse gates fails a gated task without
+    /// running the gate or waking the agent.
+    #[tokio::test]
+    async fn a_refused_gate_skips_the_task() {
+        let (scheduler, calls, _recorder, _d1, _d2) =
+            test_scheduler(Reply::Ok("x".into()), Duration::from_secs(5));
+        let scheduler = scheduler.refuse_gates("off".into());
+        let task = add_task(&scheduler, Some("true"));
+
+        let err = scheduler.execute(&task).await.unwrap_err();
+        assert!(matches!(err, SchedulerError::Gate(_)));
+        assert!(
+            err.to_string().contains("the gate didn't run: off"),
+            "{err}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let runs = scheduler.store().runs_for(&task.id, 1).unwrap();
+        assert_eq!(runs[0].status, RunStatus::Failed);
     }
 
     /// Gate outcome: a non-zero gate exit is a `failed` run, and the agent

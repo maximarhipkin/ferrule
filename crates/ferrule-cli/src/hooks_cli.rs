@@ -42,6 +42,13 @@ pub enum HooksCmd {
 /// The `[hooks]` that count: the config's when it came from a trusted
 /// file, else none (said once per process). A bad section is an error.
 pub fn settings(cfg: &config::Config, path: &Path) -> Result<HooksConfig> {
+    if let Some(why) = crate::managed::hooks_off() {
+        static MANAGED_ONCE: Once = Once::new();
+        MANAGED_ONCE.call_once(|| {
+            eprintln!("ferrule: [hooks] and workspace hooks don't run on this bot: {why}");
+        });
+        return Ok(HooksConfig::default());
+    }
     cfg.hooks
         .validate()
         .map_err(|e| anyhow!("[hooks] in {}: {e}", path.display()))?;

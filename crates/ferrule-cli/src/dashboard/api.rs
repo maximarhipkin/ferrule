@@ -35,6 +35,8 @@ pub struct Live {
     pub retire: Retire,
     /// M37: a channel's loop started again from the page.
     pub restarts: Arc<ferrule_gateway::ChannelRestarts>,
+    /// Why commands are refused here (managed mode), for /healthz.
+    pub commands_off: Option<String>,
 }
 
 pub(super) type Answer = Option<(u16, Value)>;
@@ -90,6 +92,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
     if get {
         return match path {
             "health" => ok(health(ctx)),
+            "managed" => ok(managed_view(ctx)),
             "connections" => connections(ctx).await,
             "connections/checklist" => connections_checklist(ctx).await,
             "models" => models(ctx),
@@ -123,8 +126,12 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "models/default" | "models/pin" | "models/unpin" | "models/fallback" | "models/add"
         | "models/remove" | "models/test" => model_op(ctx, path, body).await,
         "models/provider" => super::models_page::provider_save(ctx, body).await,
-        "plans/chatgpt/start" => super::models_page::chatgpt_start(ctx).await,
+        "plans/chatgpt/start" => match crate::managed::kind_refusal("chatgpt", "chatgpt") {
+            Some(why) => bad(403, why),
+            None => super::models_page::chatgpt_start(ctx).await,
+        },
         "plans/chatgpt/cancel" => super::models_page::chatgpt_cancel(ctx),
+        "plans/claude" if crate::managed::on() => bad(403, crate::managed::NO_CLAUDE_PLAN),
         "plans/claude" => super::models_page::claude_token(ctx, body),
         "routing/set" | "routing/unset" => routing_op(ctx, path, body),
         "catalog/add" => catalog_add(ctx, body).await,
@@ -163,6 +170,10 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "channels/remove" => super::channels::remove(ctx, body),
         "channels/keys/add" => super::channels::key_add(ctx, body),
         "channels/keys/revoke" => super::channels::key_revoke(ctx, body),
+        "telegram/test" => super::telegram::test(ctx, body).await,
+        "telegram/save" => super::telegram::save(ctx, body),
+        "telegram/wait" => super::telegram::wait(ctx, body).await,
+        "telegram/allow" => super::telegram::allow(ctx, body).await,
         "config/restore" => config_restore(ctx, body),
         "gateway/restart" => gateway_restart(ctx, body),
         _ => None,
@@ -1104,16 +1115,27 @@ fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
             "The gateway runs in a terminal, not as a service, so nothing would start it again: restart it there.",
         );
     }
+    let managed = crate::managed::on();
     need!(confirmed(
         body,
-        "Restart the gateway? Running turns stop. If you're on the tunnel address, this page stops \
-         working and a new link comes to your chat within a minute."
-            .to_string()
+        if managed {
+            "Restart the bot? Running turns get a few seconds to finish, then they stop; reload \
+             this page in a few seconds."
+                .to_string()
+        } else {
+            "Restart the gateway? Running turns stop. If you're on the tunnel address, this page \
+             stops working and a new link comes to your chat within a minute."
+                .to_string()
+        }
     ));
-    tokio::spawn(async {
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await;
         tracing::info!("restart asked for from the dashboard");
-        terminate_self();
+        if managed {
+            crate::lifecycle::request_restart();
+        } else {
+            terminate_self();
+        }
     });
     ok(json!({ "ok": true, "said": "Restarting…" }))
 }
@@ -1295,6 +1317,32 @@ fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         }
         Err(e) => bad(400, format!("{e:#}")),
     }
+}
+
+/// `GET /api/managed`: whether this bot is run by a panel, and what the
+/// panel's policy locks.
+fn managed_view(ctx: &Ctx) -> Value {
+    use crate::managed;
+    let state = managed::state();
+    let Some(policy) = managed::policy() else {
+        return json!({ "on": false });
+    };
+    let protection = match super::api::config(ctx).map(|c| crate::shared_sandbox(&c)) {
+        Some(Ok(s)) => managed::protection(&s),
+        Some(Err(e)) => format!("unknown: {e}"),
+        None => "unknown: no config".into(),
+    };
+    json!({
+        "on": true,
+        "source": state.source,
+        "bot_id": state.bot_id,
+        "reason": policy.why(),
+        "policy": policy,
+        "locks": policy.locks(),
+        "protection": protection,
+        "panel_secret": managed::panel_secret().is_some(),
+        "claude_plan": managed::NO_CLAUDE_PLAN,
+    })
 }
 
 pub(super) fn config(ctx: &Ctx) -> Option<Config> {
@@ -1808,6 +1856,9 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                     return bad(400, format!("{key} must be a number"));
                 };
                 changes.push((key.clone(), v));
+            }
+            if let Some(why) = crate::settings_admin::caps_refusal(&changes) {
+                return bad(403, why);
             }
             match s.caps_question(&changes) {
                 Ok(Some(q)) => need!(confirmed(body, q)),

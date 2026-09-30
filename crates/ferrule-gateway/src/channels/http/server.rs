@@ -1,4 +1,4 @@
-//! The HTTP API's listener: plain HTTP/1.1 on 127.0.0.1, one request per
+//! The HTTP API's listener: plain HTTP/1.1 on 127.0.0.1 (or `bind`), one request per
 //! connection (`connection: close`), each on its own task so a streaming
 //! answer or a long-poll doesn't hold the others up.
 
@@ -27,16 +27,16 @@ pub(super) async fn run(
     shared: Arc<Shared>,
     tx: mpsc::Sender<InboundMessage>,
 ) -> Result<(), GatewayError> {
-    let port = shared.cfg.port;
-    let listener = TcpListener::bind(("127.0.0.1", port)).await.map_err(|e| {
+    let (ip, port) = (shared.cfg.bind, shared.cfg.port);
+    let listener = TcpListener::bind((ip, port)).await.map_err(|e| {
         GatewayError::Channel(format!(
-            "the HTTP API couldn't listen on 127.0.0.1:{port} ({e}); is another program (or ferrule instance) on it? [gateway.http] port picks another"
+            "the HTTP API couldn't listen on {ip}:{port} ({e}); is another program (or ferrule instance) on it? [gateway.http] port picks another"
         ))
     })?;
     let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     shared.port.store(bound, Ordering::Relaxed);
     shared.clients();
-    tracing::info!("http api: listening on 127.0.0.1:{bound}");
+    tracing::info!("http api: listening on {ip}:{bound}");
     let tunnel = shared
         .cfg
         .tunnel

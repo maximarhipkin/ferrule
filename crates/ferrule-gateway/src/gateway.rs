@@ -84,6 +84,17 @@ impl ChannelRestarts {
         Ok(())
     }
 
+    /// M44: stops every channel loop (a bot's stop). The channels stay in the
+    /// router, so a chat can still be answered to; nothing new arrives.
+    pub fn stop_all(&self) -> usize {
+        let loops = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let n = loops.running.len();
+        for (_, handle) in loops.running.iter() {
+            handle.abort();
+        }
+        n
+    }
+
     fn take(&self) -> Vec<tokio::task::JoinHandle<()>> {
         let mut loops = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         loops.running.drain(..).map(|(_, h)| h).collect()

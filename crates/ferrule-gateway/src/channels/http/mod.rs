@@ -1,5 +1,5 @@
 //! The HTTP API (M39 §8): for programs rather than people. A listener on
-//! `127.0.0.1:<port>` only (a quick tunnel to it when `public = "tunnel"`),
+//! `127.0.0.1:<port>` unless told otherwise (a quick tunnel to it when `public = "tunnel"`),
 //! keys per client (`clients`), and three routes (`server`):
 //!
 //! - `POST /v1/messages` — a message in; the answer back, as one JSON
@@ -48,6 +48,8 @@ pub const MAX_BODY: usize = 64 * 1024;
 pub struct HttpConfig {
     /// `<data>/gateway/http`: `clients.json` and `state.json`.
     pub dir: PathBuf,
+    /// The address it listens on: 127.0.0.1, or 0.0.0.0 in a container.
+    pub bind: std::net::IpAddr,
     /// 0: any free port (tests).
     pub port: u16,
     pub requests_per_minute: u32,
@@ -624,9 +626,10 @@ impl Channel for HttpChannel {
 
     fn note(&self) -> Option<String> {
         let port = self.port();
+        let ip = self.shared.cfg.bind;
         (port != 0).then(|| match self.public_url() {
-            Some(url) => format!("listening on 127.0.0.1:{port}, public at {url}"),
-            None => format!("listening on 127.0.0.1:{port}"),
+            Some(url) => format!("listening on {ip}:{port}, public at {url}"),
+            None => format!("listening on {ip}:{port}"),
         })
     }
 }

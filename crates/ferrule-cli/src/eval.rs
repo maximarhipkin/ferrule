@@ -221,8 +221,9 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
             let provider = pcfg.client(&name, key, &model);
             // The config's sandbox without the credential broker: a task's
             // result mustn't depend on the keys this machine holds.
-            let sandbox =
-                Arc::new(Sandbox::new(crate::sandbox_policy(&cfg)).map_err(|e| anyhow!(e))?);
+            let sandbox = Arc::new(crate::managed::guard(
+                Sandbox::new(crate::sandbox_policy(&cfg)).map_err(|e| anyhow!(e))?,
+            ));
             if caps.max_usd.is_some() && pricing.is_none() {
                 eprintln!(
                     "ferrule eval: `{name}` has no prices in the config, so only the token cap ({}) applies",

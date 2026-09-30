@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const COOKIE: &str = "ferrule_dash";
 pub const CSRF_HEADER: &str = "x-ferrule-csrf";
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     now_ms() / 1000
 }
 
@@ -71,6 +71,11 @@ impl Links {
     #[cfg(test)]
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// A file named `name` in the same directory (the panel's nonces).
+    pub fn file_beside(&self, name: &str) -> PathBuf {
+        self.path.with_file_name(name)
     }
 
     fn load(&self) -> Result<LinkFile> {
@@ -174,6 +179,9 @@ struct Session {
     host: String,
     opened_ms: u64,
     last_ms: u64,
+    /// The panel's user, for a session a panel sign-in opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
 }
 
 /// `<data>/private/dashboard/sessions.json` (M24): the sessions, keyed by
@@ -195,6 +203,8 @@ struct SessionFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Granted {
     pub csrf: String,
+    /// The panel's user id, when a panel sign-in opened the session.
+    pub user: Option<String>,
 }
 
 /// How often a session's last use is written back: the idle timer loses
@@ -307,8 +317,14 @@ impl Sessions {
             .retain(|_, s| self.live_at(s, now, revoked_ms));
     }
 
-    /// A new session on `host`: (the cookie value, its CSRF token).
-    pub fn open(&self, host: &str, revoked_ms: u64) -> Result<(String, String)> {
+    /// A new session on `host` (for the panel's `user`, if any): (the
+    /// cookie value, its CSRF token).
+    pub fn open(
+        &self,
+        host: &str,
+        revoked_ms: u64,
+        user: Option<&str>,
+    ) -> Result<(String, String)> {
         let cookie = seal::b64(&seal::random::<32>());
         let now = now_ms();
         self.change(|f| {
@@ -319,6 +335,7 @@ impl Sessions {
                     host: host_key(host),
                     opened_ms: now,
                     last_ms: now,
+                    user: user.map(str::to_string),
                 },
             );
         })?;
@@ -333,9 +350,9 @@ impl Sessions {
         let hash = seal::sha256_b64(cookie.as_bytes());
         let now = now_ms();
         let key = host_key(host);
-        let last = self.with(|f| {
+        let (last, user) = self.with(|f| {
             let s = f.sessions.get(&hash)?;
-            (self.live_at(s, now, revoked_ms) && s.host == key).then_some(s.last_ms)
+            (self.live_at(s, now, revoked_ms) && s.host == key).then(|| (s.last_ms, s.user.clone()))
         })?;
         if now.saturating_sub(last) >= TOUCH_EVERY_MS || now < last {
             let written = self.change(|f| {
@@ -357,6 +374,7 @@ impl Sessions {
         }
         Some(Granted {
             csrf: csrf_of(cookie),
+            user,
         })
     }
 
@@ -396,19 +414,22 @@ impl Sessions {
 
     /// After a restart: were any tunnel sessions live? They can never be
     /// used again (the tunnel's name changed and a cookie is scoped to
-    /// its name), so they go. `Some(n)` when it's time to send a new link
+    /// its name), so they go, except those on a host in `keep` (the
+    /// public address, which a restart doesn't change). `Some(n)` when it's time to send a new link
     /// on its own: `n` sessions went and none was sent in the last
     /// `every`.
     pub fn retire_tunnel_sessions(
         &self,
         revoked_ms: u64,
         every: Duration,
+        keep: &[String],
     ) -> Result<Option<usize>> {
         let now = now_ms();
         self.change(|f| {
             self.prune(f, now, revoked_ms);
             let before = f.sessions.len();
-            f.sessions.retain(|_, s| s.host == "loopback");
+            f.sessions
+                .retain(|_, s| s.host == "loopback" || keep.contains(&s.host));
             let gone = before - f.sessions.len();
             if gone == 0 || now.saturating_sub(f.auto_link_ms) < every.as_millis() as u64 {
                 return None;
@@ -443,17 +464,17 @@ pub fn same(a: &str, b: &str) -> bool {
 }
 
 /// The `Set-Cookie` for a new session; `Secure` over HTTPS (the tunnel).
-pub fn set_cookie(value: &str, secure: bool, max_age: Duration) -> String {
+pub fn set_cookie(value: &str, secure: bool, max_age: Duration, path: &str) -> String {
     format!(
-        "{COOKIE}={value}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
+        "{COOKIE}={value}; Path={path}; HttpOnly; SameSite=Strict; Max-Age={}{}",
         max_age.as_secs(),
         if secure { "; Secure" } else { "" }
     )
 }
 
-pub fn clear_cookie(secure: bool) -> String {
+pub fn clear_cookie(secure: bool, path: &str) -> String {
     format!(
-        "{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{}",
+        "{COOKIE}=; Path={path}; HttpOnly; SameSite=Strict; Max-Age=0{}",
         if secure { "; Secure" } else { "" }
     )
 }
@@ -532,11 +553,14 @@ mod tests {
     fn sessions_are_bound_to_their_host_and_expire() {
         let dir = tempfile::tempdir().unwrap();
         let s = sessions(&dir, Duration::from_secs(60), Duration::from_secs(600));
-        let (cookie, csrf) = s.open("a.trycloudflare.com", 0).unwrap();
+        let (cookie, csrf) = s.open("a.trycloudflare.com", 0, None).unwrap();
         assert_eq!(csrf, csrf_of(&cookie));
         assert_eq!(
             s.check(Some(&cookie), "a.trycloudflare.com", 0),
-            Some(Granted { csrf: csrf.clone() })
+            Some(Granted {
+                csrf: csrf.clone(),
+                user: None
+            })
         );
         assert_eq!(s.check(Some(&cookie), "evil.example", 0), None);
         assert_eq!(s.check(Some(&cookie), "127.0.0.1:9", 0), None);
@@ -547,18 +571,18 @@ mod tests {
             None,
             "revoked"
         );
-        let (cookie, _) = s.open("127.0.0.1:9", 0).unwrap();
+        let (cookie, _) = s.open("127.0.0.1:9", 0, None).unwrap();
         // This machine on any port: the port may change at a restart.
         assert!(s.check(Some(&cookie), "localhost:10", 0).is_some());
         s.close(&cookie);
         assert_eq!(s.check(Some(&cookie), "127.0.0.1:9", 0), None);
 
         let quick = sessions(&dir, Duration::from_millis(1), Duration::from_secs(600));
-        let (cookie, _) = quick.open("h", 0).unwrap();
+        let (cookie, _) = quick.open("h", 0, None).unwrap();
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(quick.check(Some(&cookie), "h", 0), None);
         let short = sessions(&dir, Duration::from_secs(60), Duration::from_millis(1));
-        let (cookie, _) = short.open("h", 0).unwrap();
+        let (cookie, _) = short.open("h", 0, None).unwrap();
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(short.check(Some(&cookie), "h", 0), None);
     }
@@ -572,8 +596,12 @@ mod tests {
         let before = Sessions::beside(&links, Duration::from_secs(60), Duration::from_secs(600));
         let token = links.mint(None, Duration::from_secs(60)).unwrap();
         assert!(links.consume(&token).unwrap().is_some());
-        let (cookie, csrf) = before.open("127.0.0.1:9", links.revoked_ms()).unwrap();
-        let (gone, _) = before.open("127.0.0.1:9", links.revoked_ms()).unwrap();
+        let (cookie, csrf) = before
+            .open("127.0.0.1:9", links.revoked_ms(), None)
+            .unwrap();
+        let (gone, _) = before
+            .open("127.0.0.1:9", links.revoked_ms(), None)
+            .unwrap();
         before.close(&gone);
         drop(before);
 
@@ -581,7 +609,7 @@ mod tests {
         let after = Sessions::beside(&links, Duration::from_secs(60), Duration::from_secs(600));
         assert_eq!(
             after.check(Some(&cookie), "127.0.0.1:4000", links.revoked_ms()),
-            Some(Granted { csrf }),
+            Some(Granted { csrf, user: None }),
             "the login survived, on a new port"
         );
         assert_eq!(
@@ -606,7 +634,7 @@ mod tests {
             again.check(Some(&cookie), "127.0.0.1:9", links.revoked_ms()),
             None
         );
-        let (cookie, _) = again.open("127.0.0.1:9", links.revoked_ms()).unwrap();
+        let (cookie, _) = again.open("127.0.0.1:9", links.revoked_ms(), None).unwrap();
         again.clear().unwrap();
         let last = Sessions::beside(&links, Duration::from_secs(60), Duration::from_secs(600));
         assert_eq!(
@@ -621,31 +649,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = sessions(&dir, Duration::from_secs(60), Duration::from_secs(600));
         assert_eq!(
-            s.retire_tunnel_sessions(0, Duration::from_secs(600))
+            s.retire_tunnel_sessions(0, Duration::from_secs(600), &[])
                 .unwrap(),
             None
         );
-        let (local, _) = s.open("127.0.0.1:9", 0).unwrap();
-        s.open("a.trycloudflare.com", 0).unwrap();
+        let (local, _) = s.open("127.0.0.1:9", 0, None).unwrap();
+        s.open("a.trycloudflare.com", 0, None).unwrap();
         assert_eq!(
-            s.retire_tunnel_sessions(0, Duration::from_secs(600))
+            s.retire_tunnel_sessions(0, Duration::from_secs(600), &[])
                 .unwrap(),
             Some(1)
         );
         assert_eq!(s.hosts(0), vec!["loopback".to_string()]);
         assert!(s.check(Some(&local), "127.0.0.1:9", 0).is_some());
         // Another restart soon after: the sessions still go, no new link.
-        s.open("b.trycloudflare.com", 0).unwrap();
+        s.open("b.trycloudflare.com", 0, None).unwrap();
         assert_eq!(
-            s.retire_tunnel_sessions(0, Duration::from_secs(600))
+            s.retire_tunnel_sessions(0, Duration::from_secs(600), &[])
                 .unwrap(),
             None
         );
         assert_eq!(s.live(0), 1);
         // A revoked one never counts as live.
-        s.open("c.trycloudflare.com", 0).unwrap();
+        s.open("c.trycloudflare.com", 0, None).unwrap();
         assert_eq!(
-            s.retire_tunnel_sessions(now_ms() + 1, Duration::ZERO)
+            s.retire_tunnel_sessions(now_ms() + 1, Duration::ZERO, &[])
                 .unwrap(),
             None
         );
@@ -656,22 +684,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_public_host_session_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = sessions(&dir, Duration::from_secs(60), Duration::from_secs(600));
+        let (cookie, _) = s.open("bots.test", 0, Some("u_1")).unwrap();
+        let keep = [host_key("bots.test")];
+        s.retire_tunnel_sessions(0, Duration::from_secs(600), &keep)
+            .unwrap();
+        let g = s.check(Some(&cookie), "bots.test", 0).unwrap();
+        assert_eq!(g.user.as_deref(), Some("u_1"));
+        s.retire_tunnel_sessions(0, Duration::from_secs(600), &[])
+            .unwrap();
+        assert!(s.check(Some(&cookie), "bots.test", 0).is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_session_file_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let s = sessions(&dir, Duration::from_secs(60), Duration::from_secs(600));
-        s.open("h", 0).unwrap();
+        s.open("h", 0, None).unwrap();
         let mode = std::fs::metadata(s.path()).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]
     fn cookies_are_strict_and_http_only() {
-        let c = set_cookie("v", true, Duration::from_secs(10));
+        let c = set_cookie("v", true, Duration::from_secs(10), "/");
         assert!(c.contains("HttpOnly") && c.contains("SameSite=Strict") && c.contains("Secure"));
-        assert!(!set_cookie("v", false, Duration::from_secs(10)).contains("Secure"));
+        assert!(!set_cookie("v", false, Duration::from_secs(10), "/").contains("Secure"));
         assert!(same("abc", "abc") && !same("abc", "abd") && !same("abc", "ab"));
     }
 }

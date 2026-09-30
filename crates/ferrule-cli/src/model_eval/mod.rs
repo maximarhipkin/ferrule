@@ -611,9 +611,9 @@ pub async fn run(
         key,
         &c.model,
     ));
-    let sandbox = Arc::new(
+    let sandbox = Arc::new(crate::managed::guard(
         ferrule_sandbox::Sandbox::new(crate::sandbox_policy(&s.cfg)).map_err(|e| anyhow!(e))?,
-    );
+    ));
     let prices = prices_with(&s.cfg, c);
     let plans = crate::models::plans(&s.cfg);
     let ledger: Arc<dyn LedgerSink> = Arc::new(

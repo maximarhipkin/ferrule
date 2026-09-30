@@ -409,6 +409,7 @@ The table is `PARITY` in `dashboard/console.rs`, copied here.
 | `config init` | terminal only | refused | the service already has its config: change it on the Config page |
 | `gateway` | terminal only | refused | it is the running service |
 | `status` | Home + console | read |  |
+| `health` | console | read |  |
 | `backup` | console | change | `--include-secrets` is terminal only |
 | `restore` | terminal only | refused | `--dry-run` checks a backup from the console; the rest refuses while the gateway runs, and the page is the gateway: stop it and restore at the terminal |
 | `dashboard link` | console | change | `--remote` is terminal only (it holds a terminal open) |

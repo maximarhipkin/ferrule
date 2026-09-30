@@ -378,7 +378,7 @@ fn probe_sandbox(
             .with_env(broker.child_env())
             .with_egress(Some(crate::tool_egress(broker)?));
     }
-    Ok((Arc::new(sandbox), broker))
+    Ok((Arc::new(crate::managed::guard(sandbox)), broker))
 }
 
 fn show_tools(probe: &Probe) {

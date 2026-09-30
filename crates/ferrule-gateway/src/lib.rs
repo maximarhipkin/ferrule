@@ -36,7 +36,7 @@ pub use health::{
     StallHook,
 };
 pub use message::{Attachment, InboundMessage, OutboundMessage};
-pub use router::{AgentFactory, LaneSnapshot, Reply, Reset, Router, NEW_HINT};
+pub use router::{AgentFactory, Drained, LaneSnapshot, Reply, Reset, Router, NEW_HINT};
 pub use scheduler::{
     ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, Hold, JobReport, BUILTIN_CHANNEL,
 };

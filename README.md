@@ -641,6 +641,8 @@ and a dated entry for every session.
   llama.cpp, LM Studio or vLLM, with the context-window pitfalls handled.
 - [`docs/migrate.md`](docs/migrate.md) — move over from OpenClaw or Hermes
   (`ferrule import`, a dry run until `--apply`).
+- [`docs/docker.md`](docs/docker.md) — one bot per container: the image,
+  managed mode's policy file, the panel's sign-in, `/healthz`, backup.
 
 **Guides**
 

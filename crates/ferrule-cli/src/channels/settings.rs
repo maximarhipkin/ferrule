@@ -206,6 +206,9 @@ impl Mattermost {
 pub struct HttpApi {
     #[serde(default = "HttpApi::default_port")]
     pub port: u16,
+    /// Where it listens (default 127.0.0.1; `FERRULE_HTTP_BIND` wins).
+    #[serde(default)]
+    pub bind: Option<String>,
     /// `tunnel`: M20's quick tunnel to it. Unset: 127.0.0.1 only.
     #[serde(default)]
     pub public: Option<String>,
@@ -229,6 +232,7 @@ impl Default for HttpApi {
     fn default() -> Self {
         Self {
             port: Self::default_port(),
+            bind: None,
             public: None,
             requests_per_minute: Self::default_rate(),
             stream: None,

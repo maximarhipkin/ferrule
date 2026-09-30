@@ -214,6 +214,8 @@ pub struct Sandbox {
     /// Writes and the network as open as the user's, only the read denies
     /// enforced (see [`Sandbox::unconfined`]).
     hide_only: bool,
+    /// Set in managed mode when commands mustn't run here: every spawn fails with it.
+    refusal: Option<String>,
 }
 
 /// The credential proxy as seen by an HTTP client inside ferrule
@@ -240,6 +242,7 @@ impl Sandbox {
             egress: None,
             desktop: false,
             hide_only: false,
+            refusal: None,
         }
     }
 
@@ -308,6 +311,16 @@ impl Sandbox {
 
     pub fn policy(&self) -> &Policy {
         &self.policy
+    }
+
+    /// Refuses every command from now on, with `why` (managed mode, M44).
+    pub fn refuse(mut self, why: impl Into<String>) -> Self {
+        self.refusal = Some(why.into());
+        self
+    }
+
+    pub fn refusal(&self) -> Option<&str> {
+        self.refusal.as_deref()
     }
 
     /// Why commands run unsandboxed, if they do.
@@ -424,6 +437,7 @@ impl Sandbox {
             egress: self.egress.clone(),
             desktop: false,
             hide_only: self.backend != Backend::None,
+            refusal: self.refusal.clone(),
         }
     }
 
@@ -454,6 +468,9 @@ impl Sandbox {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        if let Some(why) = &self.refusal {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, why.clone()));
+        }
         // Hide-only: all of `/` writable, carved around the denies.
         let roots = match self.hide_only {
             true if cfg!(target_os = "linux") => vec![PathBuf::from("/")],
@@ -929,6 +946,18 @@ mod tests {
             tmp: false,
             ..Policy::default()
         }
+    }
+
+    #[test]
+    fn a_refusing_sandbox_spawns_nothing() {
+        let tmp = std::env::temp_dir();
+        let s = Sandbox::off().refuse("no commands here");
+        for sb in [s.clone(), s.unconfined("y"), s.for_helper(&tmp, &[])] {
+            let e = sb.command("true", ["x"], &tmp).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+            assert!(e.to_string().contains("no commands here"), "{e}");
+        }
+        assert_eq!(Sandbox::off().refusal(), None);
     }
 
     #[test]

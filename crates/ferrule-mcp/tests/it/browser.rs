@@ -96,9 +96,12 @@ async fn the_agent_drives_a_real_chrome_inside_the_sandbox() {
     if let Some(why) = blocker {
         eprintln!("Chrome's own sandbox is off here: {why}");
     }
+    // FERRULE_TEST_CHROME_SANDBOX=on forces Chrome's own sandbox on even
+    // where the check above says it can't work (M44 §9.1 measures that).
+    let forced = std::env::var("FERRULE_TEST_CHROME_SANDBOX").is_ok_and(|v| v == "on");
     let cfg = BrowserConfig {
         enabled: true,
-        chrome_sandbox: blocker.is_none(),
+        chrome_sandbox: blocker.is_none() || forced,
         timeout_secs: Some(90),
         ..Default::default()
     };
@@ -157,4 +160,145 @@ async fn the_agent_drives_a_real_chrome_inside_the_sandbox() {
             "no profile in the state dir"
         );
     }
+}
+
+/// The sum of `VmRSS` (KiB) over `pid`'s descendants, from /proc. Linux only.
+#[cfg(target_os = "linux")]
+fn descendants_rss_kib(pid: u32) -> (u64, Vec<String>) {
+    let mut kids: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Ok(child) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+            continue;
+        };
+        if let Some(ppid) = rest.split_whitespace().nth(1).and_then(|p| p.parse().ok()) {
+            kids.entry(ppid).or_default().push(child);
+        }
+    }
+    let (mut total, mut names, mut todo) = (0, Vec::new(), kids.remove(&pid).unwrap_or_default());
+    while let Some(p) = todo.pop() {
+        todo.extend(kids.remove(&p).unwrap_or_default());
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{p}/status")) else {
+            continue;
+        };
+        let field = |key: &str| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix(key))
+                .map(|v| v.trim().to_string())
+        };
+        total += field("VmRSS:")
+            .and_then(|v| v.split_whitespace().next().and_then(|n| n.parse().ok()))
+            .unwrap_or(0);
+        names.push(field("Name:").unwrap_or_default());
+    }
+    (total, names)
+}
+
+/// A measurement for docs/m44-managed-mode.md §9, not a check. It needs the
+/// network and a real Chrome, so it is skipped unless asked for:
+///
+/// `FERRULE_AGENT_BROWSER=/pnpm/agent-browser cargo test -p ferrule-mcp --test it browser_peak -- --ignored --nocapture`
+///
+/// Opens a real page, prints the peak RSS of everything under the test
+/// (agent-browser, its daemon, Chrome and its helpers), then waits out a
+/// 5 s idle timeout and prints what is left, which must not be Chrome.
+#[cfg(target_os = "linux")]
+#[ignore = "network: FERRULE_AGENT_BROWSER=… cargo test -p ferrule-mcp --test it browser_peak -- --ignored --nocapture"]
+#[tokio::test]
+async fn browser_peak_rss_on_a_real_page() {
+    let Some((chrome, agent_browser)) = prerequisites() else {
+        return;
+    };
+    let workspace = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("browser");
+    let sandbox = Sandbox::new(Policy::default()).expect("sandbox");
+    let blocker =
+        browser::chrome_sandbox_blocker(is_root(), sandbox.backend() == Backend::Seatbelt);
+    let cfg = BrowserConfig {
+        enabled: true,
+        chrome_sandbox: blocker.is_none(),
+        idle_timeout_secs: 5,
+        timeout_secs: Some(120),
+        ..Default::default()
+    };
+    let mut server: McpServerConfig = McpServerConfig {
+        command: agent_browser.to_string_lossy().into_owned(),
+        ..cfg.server_config(&chrome, &state, None).unwrap()
+    };
+    // Behind a TLS-intercepting egress proxy Chrome doesn't trust the
+    // proxy's CA: FERRULE_TEST_CHROME_ARGS=--ignore-certificate-errors.
+    if let Ok(extra) = std::env::var("FERRULE_TEST_CHROME_ARGS") {
+        let args = server.env.entry("AGENT_BROWSER_ARGS".into()).or_default();
+        if !args.is_empty() {
+            args.push(',');
+        }
+        args.push_str(&extra);
+    }
+    let host = ServerHost {
+        sandbox: Arc::new(sandbox),
+        workspace: workspace.path().to_path_buf(),
+        state_dir: state.clone(),
+    };
+    let tools = connect_and_build_tools(server, host)
+        .await
+        .expect("connect");
+
+    let me = std::process::id();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sampler = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut peak = (0, Vec::new());
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let now = descendants_rss_kib(me);
+                if now.0 > peak.0 {
+                    peak = now;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            peak
+        })
+    };
+    let ctx = ToolContext::default();
+    let call = |name: &'static str, args: serde_json::Value| {
+        let t = tool(&tools, name).clone();
+        let ctx = ctx.clone();
+        async move { t.call(args, &ctx).await.map(|o| o.content) }
+    };
+    let opened = call(
+        "open",
+        json!({ "url": "https://en.wikipedia.org/wiki/Rust_(programming_language)" }),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("open: {e}"));
+    let title = call("get_title", json!({})).await.unwrap();
+    let _ = call("snapshot", json!({ "interactive": true })).await;
+    eprintln!("opened: {opened:.120} / title: {title}");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (peak, names) = sampler.join().unwrap();
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    for n in names {
+        *counts.entry(n).or_default() += 1;
+    }
+    eprintln!("PEAK tree RSS: {:.1} MiB {counts:?}", peak as f64 / 1024.0);
+
+    // Idle: the daemon closes Chrome after the idle timeout.
+    std::thread::sleep(std::time::Duration::from_secs(12));
+    let (left, names) = descendants_rss_kib(me);
+    eprintln!("IDLE tree RSS: {:.1} MiB {names:?}", left as f64 / 1024.0);
+    assert!(
+        !names.iter().any(|n| n.to_lowercase().contains("chrom")),
+        "Chrome is still running after the idle timeout: {names:?}"
+    );
+    assert!(
+        state.join("profile").exists(),
+        "no profile in the state dir"
+    );
 }

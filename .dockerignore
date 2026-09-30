@@ -1,0 +1,7 @@
+# The build needs the workspace's sources and, for a prebuilt image, dist/.
+target/
+.git/
+docs/assets/
+docs/branding/
+relay/node_modules/
+**/*.tar.gz

@@ -24,7 +24,7 @@ pub fn link_text(dash: &Dashboard, link: &str, remote: bool) -> String {
     let mut text = format!(
             "Dashboard: {link}\nOne login, valid for {minutes} min. /dashboard off revokes every link and session."
         );
-    if !remote {
+    if !remote && dash.public().is_none() {
         text.push_str(&format!(
                 "\nThat address works on the machine itself. From elsewhere: ssh -L {p}:127.0.0.1:{p} <server>, then open it.",
                 p = dash.port()
@@ -72,8 +72,9 @@ impl ferrule_gateway::Interceptor for DashboardDoor {
         } else {
             " I'll send it to your private chat.".into()
         };
-        let remote =
-            self.dash.settings().remote == "tunnel" && self.dash.ctx.cloudflared.possible();
+        let remote = !crate::managed::on()
+            && self.dash.settings().remote == "tunnel"
+            && self.dash.ctx.cloudflared.possible();
         if !remote {
             let text = match self.dash.local_link() {
                 Ok(link) => link_text(&self.dash, &link, false),

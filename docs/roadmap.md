@@ -921,6 +921,27 @@ and `docs/backup.md`). PR to `main` open, not merged.
 ferrule by voice in Hebrew, sees it working, and can move an instance to a
 new machine with two commands.
 
+### M44 — managed mode
+
+**Status.** Built (`docs/m44-managed-mode.md`; user docs `docs/docker.md`,
+with additions in `docs/dashboard.md`, `docs/sandbox.md` and
+`docs/channels.md`). PR to `main` open, not merged. Nothing in it has run
+in a real container: there is no Docker daemon in the dev environment.
+- **An image**: one bot per container, a non-root user, `/data` for
+  everything, a `-browser` variant, a health check.
+- **`[managed]`**: a policy file the panel writes and the bot cannot edit
+  decides what the bot may do; no Claude plan, no self-update, no `ssh`.
+- **Panel sign-in**: a short-lived token signed with a per-bot secret opens
+  the dashboard under `/b/<id>/`.
+- **Telegram from the page**, `/healthz` and `/busyz`, `ferrule health`, a
+  bounded drain on SIGTERM.
+- **Measured**: about 24 MiB idle and 26 MiB at a turn's peak, so about 460
+  bots per 16 GiB.
+
+**Done means.** A panel can start a bot with one `docker run`, sign a user
+into its page, and update it by swapping the image tag, with the user
+needing no shell.
+
 ### M42 — harness engineering, applied to ourselves
 
 **Status.** Parts 1–4 built (`docs/m42-harness-engineering.md`, from a

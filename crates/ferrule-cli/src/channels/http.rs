@@ -29,6 +29,24 @@ pub fn dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("no data dir (HOME isn't set)"))
 }
 
+/// The address to listen on: the env, then `[gateway.http] bind`, then
+/// 127.0.0.1. Only an IP address: a name would bind wherever it resolves.
+fn bind_of(env: Option<&str>, setting: Option<&str>) -> Result<std::net::IpAddr> {
+    let Some(v) = [env, setting]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|v| !v.is_empty())
+    else {
+        return Ok(std::net::Ipv4Addr::LOCALHOST.into());
+    };
+    v.parse().map_err(|_| {
+        anyhow!(
+            "FERRULE_HTTP_BIND / [gateway.http] bind must be an IP address like 0.0.0.0, not `{v}`"
+        )
+    })
+}
+
 /// The adapter's settings. `workspace`: where files programs send are
 /// saved; `None` (`ferrule tasks run-now`): nothing is taken in.
 pub fn config(h: &HttpApi, cfg: &Config, workspace: Option<&Path>) -> Result<HttpConfig> {
@@ -37,8 +55,11 @@ pub fn config(h: &HttpApi, cfg: &Config, workspace: Option<&Path>) -> Result<Htt
         Some("tunnel") => Some(tunnel_bin(&crate::dashboard::cloudflared(cfg))?),
         Some(other) => bail!("[gateway.http] public is \"tunnel\" or unset, not `{other}`"),
     };
+    let env = std::env::var(crate::managed::HTTP_BIND_ENV).ok();
+    let bind = bind_of(env.as_deref(), h.bind.as_deref())?;
     Ok(HttpConfig {
         dir: dir()?,
+        bind,
         port: h.port,
         requests_per_minute: h.requests_per_minute.max(1),
         tunnel,
@@ -138,6 +159,7 @@ fn check(t: &toml::Table) -> Result<(), String> {
     if h.requests_per_minute == 0 {
         return Err("requests a minute is at least 1".into());
     }
+    bind_of(None, h.bind.as_deref()).map_err(|e| e.to_string())?;
     match h.public.as_deref() {
         None | Some("tunnel") => Ok(()),
         Some(other) => Err(format!("public is `tunnel` or empty, not `{other}`")),
@@ -342,6 +364,25 @@ mod tests {
         assert!(check(&table(&[("port", 0.into())])).is_err());
         assert!(check(&table(&[("port", 70000.into())])).is_err());
         assert!(check(&table(&[("requests_per_minute", 0.into())])).is_err());
+    }
+
+    #[test]
+    fn the_http_bind_comes_from_the_settings_and_is_checked() {
+        let lo: std::net::IpAddr = [127, 0, 0, 1].into();
+        assert_eq!(bind_of(None, None).unwrap(), lo);
+        assert_eq!(bind_of(Some(""), Some(" ")).unwrap(), lo);
+        let all: std::net::IpAddr = [0, 0, 0, 0].into();
+        assert_eq!(bind_of(None, Some("0.0.0.0")).unwrap(), all);
+        // The env wins over the file.
+        assert_eq!(bind_of(Some("0.0.0.0"), Some("127.0.0.1")).unwrap(), all);
+        assert!(bind_of(None, Some("::1")).is_ok());
+        for bad in ["all", "localhost", "0.0.0.0:80", "300.1.1.1"] {
+            let e = bind_of(None, Some(bad)).unwrap_err().to_string();
+            assert!(e.contains("must be an IP address"), "{bad}: {e}");
+        }
+        // And the card refuses it before it is saved.
+        assert!(check(&table(&[("bind", "all".into())])).is_err());
+        assert!(check(&table(&[("bind", "0.0.0.0".into())])).is_ok());
     }
 
     #[test]

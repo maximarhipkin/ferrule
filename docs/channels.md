@@ -838,6 +838,7 @@ By hand, in `config.toml`:
 [gateway.http]
 # port = 8788
 # requests_per_minute = 30     # per key; over it: 429 and Retry-After
+# bind = "127.0.0.1"           # a container needs "0.0.0.0" (or FERRULE_HTTP_BIND, which wins)
 # public = "tunnel"            # a Cloudflare quick tunnel; its URL is in /status
 # stream = true                # default: [agent] stream
 ```
@@ -949,6 +950,11 @@ the `reply` as the text.
 | 429 | over `requests_per_minute` for this key; `Retry-After` says when |
 | 504 | no answer within 30 minutes; it will come in the outbox |
 
+- **The address.** The API listens on `127.0.0.1` unless `[gateway.http]
+  bind` or the env `FERRULE_HTTP_BIND` (which wins) names another IP
+  address, such as `0.0.0.0` in a container behind a proxy
+  ([docker.md](docker.md)). A name isn't accepted, only an address. Like the
+  port, it is read at start.
 - **A port in use** stops only this channel, with a problem naming
   `[gateway.http] port`. The other channels keep running.
 - **A broken `clients.json`** refuses every key (401) and shows as a

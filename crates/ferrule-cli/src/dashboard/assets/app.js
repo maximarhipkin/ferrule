@@ -7,6 +7,8 @@
 "use strict";
 (function () {
   let csrf = null;
+  // Served under a prefix behind the panel's proxy (M44): every address the page asks for starts with it.
+  const BASE = (document.querySelector('meta[name="ferrule-base"]')?.content || "/").replace(/\/$/, "");
 
   // ---- helpers -----------------------------------------------------------
 
@@ -43,7 +45,7 @@
       if (csrf) opts.headers["X-Ferrule-Csrf"] = csrf;
       opts.body = JSON.stringify(body);
     }
-    const r = await fetch(path, opts);
+    const r = await fetch(BASE + path, opts);
     let data = {};
     try { data = await r.json(); } catch (_) { /* not JSON */ }
     if (r.status === 401) { loggedOut(data.error); throw new Error(data.error || "not logged in"); }
@@ -453,6 +455,11 @@
         secHead("Home", (h.problems || []).length ? (h.problems.length + " to look at") : "all quiet",
           btn("Run doctor", "doctor/run", {}),
           kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
+        MANAGED.on ? el("div", { class: "card" },
+          el("h3", { text: "Managed" }),
+          el("p", { class: "muted small", dir: "auto", text: MANAGED.reason }),
+          (MANAGED.locks || []).length ? el("ul", {}, ...MANAGED.locks.map((l) => el("li", { dir: "auto", text: l }))) : null,
+          el("p", { class: "small", text: "Commands: " + MANAGED.protection })) : null,
         approvalsCard(approvals),
         hiddenNotices(h.hidden),
         el("div", { class: "stats" },
@@ -780,6 +787,10 @@
           };
           box.append(el("div", { class: "row" }, b));
         }
+        return box;
+      }
+      if (p.plan === "claude-code" && !p.connected && MANAGED.on) {
+        box.append(el("p", { class: "muted small", text: MANAGED.claude_plan }));
         return box;
       }
       if (p.plan === "claude-code" && !p.connected) {
@@ -1525,7 +1536,9 @@
   // A card per chat channel: its state from the running gateway, a form
   // (secrets write-only: a card only says whether each is set), Test
   // against the service with what's typed, Save, Remove, and the guide
-  // with direct links. Telegram, Discord and Slack stay with `ferrule setup`.
+  // with direct links. Telegram has its own card (M44 §4): a token, a test, a
+// wait for the first message and an Allow for its chat. Discord and Slack
+// stay with `ferrule setup`.
   const CHANNEL_STATE = {
     on: ["running", "ok"], problem: ["problem", "bad"], stale: ["not polling", "bad"],
     restart: ["restart needed", "warn"], set: ["set up", "ok"], off: ["off", null],
@@ -1555,7 +1568,9 @@
       s.append(el("path", { d: x.icon }));
       const body = el("div", { class: "stack" });
       if (x.why) body.append(el("div", { class: "said " + (st[1] === "bad" ? "bad" : "") + " msg", dir: "auto", text: x.why }));
-      if (!x.form) {
+      if (!x.form && x.name === "telegram") {
+        body.append(this.telegram(x));
+      } else if (!x.form) {
         body.append(el("p", { class: "muted small", text: x.configured
           ? "Set up. Change it with `ferrule setup` on the machine."
           : "Run `ferrule setup` on the machine to add it." }));
@@ -1572,6 +1587,78 @@
       return el("div", { class: "card tile", id: "channel-" + x.name },
         el("div", { class: "head" }, s, el("h3", { class: "grow", text: x.title }), tag(st[0], st[1])),
         body);
+    },
+
+    // Telegram: what a terminal's `ferrule setup` does, step by step. The
+    // token stays in this page's memory (each call sends it) until the chat
+    // is allowed; the state survives the section's redraw.
+    telegram(x) {
+      const t = this.tg || (this.tg = { token: "", said: null, chats: [], next: null, waiting: false, restart: false });
+      const box = el("div", { class: "stack" });
+      const token = el("input", { type: "password", name: "token", autocomplete: "new-password", spellcheck: "false", dir: "auto",
+        placeholder: x.configured ? "saved: type to replace" : "123456789:AA…", "aria-label": "Telegram bot token" });
+      token.value = t.token;
+      token.addEventListener("input", () => { t.token = token.value.trim(); });
+      const say = (ok, said) => { t.said = said ? { ok, said } : null; this.load(); };
+      const call = async (path, extra) => {
+        try { return await api("/api/telegram/" + path, Object.assign({ token: t.token }, extra)); }
+        catch (e) { say(false, e.message); return null; }
+      };
+      const test = el("button", { text: "Test" });
+      test.onclick = async () => {
+        test.disabled = true; test.textContent = "Testing…";
+        const r = await call("test");
+        if (r) say(r.ok, r.said);
+      };
+      const save = el("button", { class: "primary", text: x.configured ? "Save the new token" : "Save" });
+      save.onclick = async () => {
+        save.disabled = true;
+        const r = await call("save");
+        if (!r) return;
+        t.restart = !!r.restart;
+        delete token.dataset.dirty;
+        say(true, r.said);
+      };
+      const wait = el("button", { text: t.waiting ? "Waiting…" : "Wait for a message" });
+      wait.disabled = t.waiting;
+      wait.onclick = async () => {
+        t.waiting = true; t.chats = []; t.said = { ok: true, said: "Send any message to your bot now…" };
+        delete token.dataset.dirty;
+        this.load();
+        const until = Date.now() + 120000;
+        let offset = null;
+        while (Date.now() < until && !t.chats.length && t.waiting) {
+          let r;
+          try { r = await api("/api/telegram/wait", { token: t.token, offset }); }
+          catch (e) { t.waiting = false; return say(false, e.message); }
+          if (!r.ok) { t.waiting = false; return say(false, r.said); }
+          if (r.next !== null && r.next !== undefined) { offset = r.next; t.next = r.next; }
+          t.chats = r.chats || [];
+        }
+        t.waiting = false;
+        say(t.chats.length > 0, t.chats.length ? "Someone wrote to the bot. Allow the chat to let it talk to the agent." : "No message came in 2 minutes. Send one, then try again.");
+      };
+      const chats = t.chats.map((c) => {
+        const allow = el("button", { class: "primary", text: "Allow" });
+        allow.onclick = async () => {
+          allow.disabled = true;
+          const r = await call("allow", { chat: c.id, next: t.next });
+          if (!r) return;
+          t.chats = t.chats.filter((o) => o.id !== c.id);
+          t.restart = !!r.restart || t.restart;
+          say(r.ok, r.said);
+        };
+        return el("div", { class: "row" }, el("b", { class: "msg", dir: "auto", text: c.name }),
+          el("span", { class: "muted small grow", text: c.kind + " · chat " + c.id }), allow);
+      });
+      box.append(
+        el("label", { class: "field" }, el("span", { text: "Bot token (from @BotFather)" }), token),
+        t.said ? el("div", { class: "said test " + (t.said.ok ? "ok" : "bad") + " msg", dir: "auto", text: t.said.said }) : null,
+        chats.length ? el("div", { class: "stack" }, chats) : null,
+        el("div", { class: "row" }, test, save, wait,
+          t.restart ? btn("Restart", "gateway/restart", {}, "primary") : null),
+        el("p", { class: "muted small", text: "A change here starts with the next restart. The token goes to the secrets file, never back to this page." }));
+      return box;
     },
 
     // The HTTP API's keys: a list with Revoke, and a form whose new key is
@@ -1829,6 +1916,7 @@
   const ICON_OF = { health: "health" };
   const SUB = { channels: "where people reach the agent", console: "ferrule commands", config: "the file, secrets hidden", routing: "which model for what", usage: "spend and caps", tasks: "scheduled runs", logs: "what happened", extensions: "skills, tools, MCP", agents: "sub-agents" };
   let current = "health";
+  let MANAGED = { on: false };
   let timer = null;
   let banner = null;
   let lastHealth = null;
@@ -1992,7 +2080,7 @@
     // name after '#' is just navigation, from a saved tab.
     const hash = location.hash.length > 1 ? location.hash.slice(1) : "";
     if (hash && !order.includes(hash)) {
-      history.replaceState(null, "", "/");
+      history.replaceState(null, "", BASE + "/");
       try {
         csrf = (await api("/api/login", { token: hash })).csrf;
       } catch (e) { loggedOut(e.message); return; }
@@ -2006,6 +2094,7 @@
       loggedOut("Logged out.");
     };
     document.getElementById("live").hidden = false;
+    MANAGED = await api("/api/managed").catch(() => ({ on: false }));
     buildNav();
     show(order.includes(hash) ? hash : "health");
   }

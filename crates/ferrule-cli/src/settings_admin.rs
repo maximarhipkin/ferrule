@@ -303,6 +303,9 @@ impl Settings {
         if changes.is_empty() {
             bail!("no cap to change");
         }
+        if let Some(why) = caps_refusal(changes) {
+            bail!(why);
+        }
         // The full key from here on, however it was typed.
         let changes: Vec<(&'static str, f64)> = changes
             .iter()
@@ -621,6 +624,14 @@ fn unit(key: &str) -> &'static str {
 }
 
 /// `key`, if it's one of [`CAP_KEYS`] (also without its `max_`).
+/// M44: why a managed bot's policy won't take `changes` (it only lowers
+/// what the panel capped), or `None`.
+pub fn caps_refusal(changes: &[(String, f64)]) -> Option<String> {
+    changes
+        .iter()
+        .find_map(|(k, v)| crate::managed::cap_refusal(cap_key(k).ok()?, *v))
+}
+
 pub fn cap_key(key: &str) -> Result<&'static str> {
     let key = key.trim();
     CAP_KEYS
