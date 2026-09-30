@@ -344,7 +344,7 @@ calls the container by its address) and without a session. Cheap: it reads
 state the gateway already keeps, no model call, no disk write.
 
 ```json
-{"status": "degraded", "reasons": ["no model is set up yet"], "version": "0.11.0",
+{"status": "degraded", "reasons": ["no model is set up yet"], "version": "0.12.0",
  "managed": true, "busy": false, "turns": 0, "queued": 0, "uptime_secs": 42}
 ```
 

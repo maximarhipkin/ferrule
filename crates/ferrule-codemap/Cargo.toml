@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-codemap"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Tree-sitter repo map (ranked outline) and code_search"
 license = "MIT OR Apache-2.0"

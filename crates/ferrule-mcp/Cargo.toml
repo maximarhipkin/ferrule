@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-mcp"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "MCP client (stdio and Streamable HTTP): exposes MCP servers' tools as ferrule Tools"
 license = "MIT OR Apache-2.0"

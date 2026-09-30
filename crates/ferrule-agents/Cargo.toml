@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-agents"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Multi-agent: spawn, wait, resume and close child agents; a shared board and task list; worktrees; limits"
 license = "MIT OR Apache-2.0"
