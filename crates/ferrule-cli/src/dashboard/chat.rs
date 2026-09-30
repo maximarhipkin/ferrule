@@ -9,8 +9,10 @@ use super::api::{arg, bad, ok, Answer};
 use super::http::Request;
 use super::Ctx;
 use async_trait::async_trait;
+use base64::Engine;
+use ferrule_gateway::channels::files::{self, Inbox};
 use ferrule_gateway::{
-    Button, ButtonAction, Channel, ChannelCapabilities, GatewayError, InboundMessage,
+    Attachment, Button, ButtonAction, Channel, ChannelCapabilities, GatewayError, InboundMessage,
     OutboundMessage,
 };
 use serde_json::{json, Value};
@@ -24,6 +26,10 @@ pub const CHAT: &str = "owner";
 const KEEP: usize = 300;
 /// The longest message the page may send.
 pub const MAX_TEXT: usize = 16 * 1024;
+/// The most a photo from the page may weigh (M47): what a provider takes.
+pub const MAX_PHOTO: usize = ferrule_providers::vision::MAX_BYTES;
+/// The most the request for one may weigh: the photo as base64, and words.
+pub const MAX_PHOTO_BODY: usize = MAX_PHOTO.div_ceil(3) * 4 + MAX_TEXT + 1024;
 
 struct Entry {
     id: u64,
@@ -33,6 +39,8 @@ struct Entry {
     text: String,
     buttons: Vec<Value>,
     at: i64,
+    /// A photo the owner sent with it: its name, never its bytes (M47).
+    photo: Option<String>,
 }
 
 #[derive(Default)]
@@ -46,10 +54,28 @@ struct Log {
 pub struct DashboardChannel {
     log: Mutex<Log>,
     tx: Mutex<Option<mpsc::Sender<InboundMessage>>>,
+    /// Where a photo from the page is saved, in the agent's workspace.
+    inbox: Option<Inbox>,
 }
 
 impl DashboardChannel {
+    /// Photos from the page are saved here; without one the page can't send them.
+    pub fn with_inbox(mut self, inbox: Option<Inbox>) -> Self {
+        self.inbox = inbox;
+        self
+    }
+
     fn push(&self, from_owner: bool, text: &str, buttons: Vec<Value>) -> u64 {
+        self.push_with(from_owner, text, buttons, None)
+    }
+
+    fn push_with(
+        &self,
+        from_owner: bool,
+        text: &str,
+        buttons: Vec<Value>,
+        photo: Option<String>,
+    ) -> u64 {
         let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
         log.next_id += 1;
         log.rev += 1;
@@ -61,6 +87,7 @@ impl DashboardChannel {
             text: text.to_string(),
             buttons,
             at: chrono::Utc::now().timestamp(),
+            photo,
         });
         let over = log.entries.len().saturating_sub(KEEP);
         log.entries.drain(..over);
@@ -103,6 +130,58 @@ impl DashboardChannel {
             .map_err(|_| "the agent stopped listening; restart the service".to_string())
     }
 
+    /// The owner sent a photo (and maybe words) from the page: saved in the
+    /// workspace's inbox, then handed to the agent like a Telegram photo.
+    /// The log keeps the words and the photo's name, not its path.
+    pub async fn say_photo(&self, text: &str, mime: &str, bytes: Vec<u8>) -> Result<(), String> {
+        let tx = self
+            .tx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .filter(|tx| !tx.is_closed())
+            .ok_or("the agent isn't listening here: chat works when the dashboard runs inside the gateway (the service)")?;
+        let inbox = self
+            .inbox
+            .clone()
+            .ok_or("this agent has no workspace to keep photos in")?;
+        let ext = match mime {
+            "image/png" => "png",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => "jpg",
+        };
+        let name = format!("photo.{ext}");
+        let id = self.push_with(true, text, Vec::new(), Some(name.clone()));
+        let saved = {
+            let (name, mime, id) = (name.clone(), mime.to_string(), id.to_string());
+            tokio::task::spawn_blocking(move || {
+                inbox.save(CHANNEL, &id, &name, Some(&mime), &bytes)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("the photo couldn't be saved: {e}"))?
+        };
+        let msg = InboundMessage {
+            channel: CHANNEL.into(),
+            chat_id: CHAT.into(),
+            sender: "owner".into(),
+            sender_id: Some(CHAT.into()),
+            message_id: id.to_string(),
+            text: files::with_notes(text, std::slice::from_ref(&saved), &[]),
+            attachments: vec![Attachment {
+                kind: saved.mime.clone(),
+                url: saved.path.to_string_lossy().into_owned(),
+                name: Some(saved.rel.clone()),
+            }],
+            reply_to: None,
+            ts: chrono::Utc::now().timestamp(),
+        };
+        tx.send(msg)
+            .await
+            .map_err(|_| "the agent stopped listening; restart the service".to_string())
+    }
+
     /// Everything changed after revision `from`, and the revision to ask
     /// from next. An entry comes again whole when it was edited.
     pub fn since(&self, from: u64) -> Value {
@@ -112,13 +191,17 @@ impl DashboardChannel {
             .iter()
             .filter(|e| e.rev > from)
             .map(|e| {
-                json!({
+                let mut v = json!({
                     "id": e.id,
                     "who": if e.from_owner { "you" } else { "agent" },
                     "text": e.text,
                     "buttons": e.buttons,
                     "at": e.at,
-                })
+                });
+                if let Some(name) = &e.photo {
+                    v["photo"] = json!({ "name": name });
+                }
+                v
             })
             .collect();
         // The agent owes an answer while the owner spoke last.
@@ -165,6 +248,50 @@ pub async fn send(ctx: &Ctx, body: &Value) -> Answer {
         );
     };
     match ch.say(text).await {
+        Ok(()) => ok(json!({ "ok": true })),
+        Err(why) => bad(503, why),
+    }
+}
+
+/// `POST /api/chat/photo {text, mime, data}`: a photo from the page, as
+/// base64. The page shrinks it first; the size and the type are checked
+/// again here, by the bytes and not by the label.
+pub async fn photo(ctx: &Ctx, body: &Value) -> Answer {
+    let text = body.get("text").and_then(Value::as_str).unwrap_or("");
+    if text.len() > MAX_TEXT {
+        return bad(413, format!("that message is over {} KB", MAX_TEXT / 1024));
+    }
+    let mime = body.get("mime").and_then(Value::as_str).unwrap_or("");
+    if !["image/jpeg", "image/png", "image/webp", "image/gif"].contains(&mime) {
+        return bad(415, "Send a JPEG, PNG, WebP or GIF photo.");
+    }
+    let too_big = || {
+        bad(
+            413,
+            "That photo is too big: the page sends up to 3.5 MB. Try a smaller one.",
+        )
+    };
+    let data = body.get("data").and_then(Value::as_str).unwrap_or("");
+    // Base64 is 4 bytes for 3: refuse by length before decoding.
+    if data.len() > MAX_PHOTO.div_ceil(3) * 4 {
+        return too_big();
+    }
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
+        return bad(400, "That file isn't a photo the bot can read.");
+    };
+    if bytes.len() > MAX_PHOTO {
+        return too_big();
+    }
+    if ferrule_providers::vision::sniff(&bytes) != Some(mime) {
+        return bad(400, "That file isn't a photo the bot can read.");
+    }
+    let Some(ch) = &ctx.chat else {
+        return bad(
+            503,
+            "chat from the page works when the dashboard runs inside the gateway (the service)",
+        );
+    };
+    match ch.say_photo(text, mime, bytes).await {
         Ok(()) => ok(json!({ "ok": true })),
         Err(why) => bad(503, why),
     }
@@ -240,6 +367,7 @@ impl Channel for DashboardChannel {
         ChannelCapabilities {
             reactions: false,
             edits: true,
+            // Outbound: the page's log shows text; `send_file` says so.
             attachments: false,
             buttons: true,
         }

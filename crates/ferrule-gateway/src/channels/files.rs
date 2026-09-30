@@ -86,8 +86,16 @@ impl Inbox {
 /// The line the agent reads for a saved file.
 pub fn note(saved: &Saved) -> String {
     let kind = kind_of(&saved.mime);
+    // A photo is handed to the model as pixels when it can see (M47); when
+    // it can't, the provider layer adds that to its own note. So this line
+    // doesn't claim either.
+    let then = if kind == "photo" {
+        ""
+    } else {
+        " Open it with your tools if you need it; you can't see images."
+    };
     format!(
-        "[The sender attached {} {kind}: {} ({}, {}). Open it with your tools if you need it; you can't see images.]",
+        "[The sender attached {} {kind}: {} ({}, {}).{then}]",
         article(kind),
         saved.rel,
         saved.mime,
@@ -332,7 +340,7 @@ mod tests {
         };
         assert_eq!(
             note(&s),
-            "[The sender attached a photo: inbox/whatsapp/2026-09-28/w1-IMG.jpg (image/jpeg, 184 KB). Open it with your tools if you need it; you can't see images.]"
+            "[The sender attached a photo: inbox/whatsapp/2026-09-28/w1-IMG.jpg (image/jpeg, 184 KB).]"
         );
         let r = Inbox::new("/w", 20).too_big("big.mov", 31 * 1024 * 1024);
         assert_eq!(

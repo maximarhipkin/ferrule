@@ -1273,3 +1273,62 @@ also in the final report.
     are typed messages; `typed_message` only wrapped plain-string content, so
     it now also wraps a content array (the `input_text` + `input_image`
     parts). The conversation cache key also hashes photo paths.
+24. **Part 5b: the dashboard channel keeps `attachments: false`.** Setting
+    it true (so the page's photo would count as an inbound attachment) also
+    switches on `send_file` to the page, which cannot receive one. The
+    flag stays "outbound only"; the inbound photo is an `Attachment` on the
+    `InboundMessage` and never goes through the capability.
+25. **Part 5b: `POST /api/chat/photo` answers `{"ok": true}` only.** The
+    plan returned `saved` and `sees`. The page already learns "the model
+    can't see this" from the bot's own notice in the chat log (the router
+    sends it once per lane, the same for every channel), so a second
+    source would only be able to disagree with it.
+26. **Part 5b: "Try again" finds a failed answer by its text.** The router
+    marks no failure in the chat log, so the page matches the two prefixes
+    `failure::chat_text` produces ("I couldn't reply:", "something went
+    wrong."). It only offers Try again on the last bubble.
+27. **Part 5b: the page shrinks a photo with `createImageBitmap`, or a
+    data URL when that is missing.** The CSP forbids `blob:` in `img-src`,
+    so an object URL for the preview or the decode is out. The preview is
+    the file's name and size, not a thumbnail. A canvas re-encode tries
+    1600, 1280, 960, 640 px at falling JPEG quality until it is ≤ 3.5 MB;
+    a JPEG, PNG, WebP or GIF the browser cannot decode goes as is if it is
+    already ≤ 3.5 MB.
+28. **Part 5b: the window is the scroller, not `.chat`.** The plan's
+    "stay at the bottom unless the reader scrolled up" logic read
+    `.chat.scrollTop`, which never moves (the Part 2 layout scrolls the
+    document). It measures the distance to the bottom of the page and
+    shows a "New messages" pill past 80 px.
+29. **Part 5b: `base64` moved from `[dev-dependencies]` to
+    `[dependencies]` of ferrule-cli.** The page's photo arrives as base64.
+    The crate was already in the tree (providers use it), so the lockfile
+    and the build do not grow.
+30. **Part 5b: the big-body allowance is decided from the head alone, and
+    only for a signed-in page.** The plan raised the body limit on the route.
+    That would have let an anonymous client make the server buffer 5 MB per
+    connection. `http::read` now takes a function of the request head; the
+    photo route gets the larger limit and a 60 s deadline only when the
+    host, origin, JSON content type, session cookie and CSRF header all
+    check out, and at most two such bodies are read at once. Everyone else
+    keeps 64 KB / 10 s, and a `Content-Length` over the limit is a 413
+    before a byte of body is read (`vision::a_big_body_without_a_session_is_refused_unread`,
+    and a unit test for the prefixed path in `dashboard/mod.rs`).
+31. **Part 5b: the photo threat-model tests live in `tests/it/vision.rs`,
+    not `dashboard_m47.rs`.** The plan named two of them
+    (`photo_mime_must_match_its_bytes`, `…svg_is_refused`) there. They are
+    `vision::a_page_photo_is_checked`, beside the tests that need the same
+    scripted model server. Part 5c's tests stay in `dashboard_m47.rs`.
+32. **Part 5b: a Telegram photo's note no longer says "you can't see
+    images".** M39's note told the model to open the file with its tools,
+    which is wrong for a model that sees it as pixels. For a photo the
+    note is now only the path, type and size; the driver adds the "no
+    pixels" note when it cannot send them. Other file kinds keep the M39
+    text. (`docs/m39-channels.md` updated.)
+33. **Part 5b: an M41 test asserted the old behaviour.**
+    `live_fixes::messages_that_arent_text_get_plain_words` expected "I got
+    your photo… I can only read text" for a Telegram photo. With an inbox
+    (the default) a photo is now saved and read, so the test now expects
+    one "I only looked at the first photo" reply per album and the saved
+    path plus the "can't see images" note for a text-only model. The
+    no-inbox path (and its "I can only read text" reply) is unchanged and
+    still covered by the telegram unit tests.

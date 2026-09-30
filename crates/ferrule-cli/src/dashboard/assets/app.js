@@ -37,8 +37,8 @@
   const tag = (t, cls) => el("span", { class: "tag " + (cls || ""), text: t });
   const led = (cls) => el("span", { class: "led " + (cls || "") });
 
-  async function api(path, body) {
-    const opts = { credentials: "same-origin", headers: {} };
+  async function api(path, body, extra) {
+    const opts = Object.assign({ credentials: "same-origin", headers: {} }, extra || {});
     if (body !== undefined) {
       opts.method = "POST";
       opts.headers["Content-Type"] = "application/json";
@@ -1848,10 +1848,99 @@
     },
   };
 
-  // ---- chat (M37 §4.3) ---------------------------------------------------
+  // ---- chat (M37 §4.3, M47) ------------------------------------------------
   // Session dashboard__owner, like any other chat: the page polls what
   // changed since the last revision and merges it by id, so a streamed
-  // edit replaces its bubble instead of adding one.
+  // edit changes its bubble's text in place instead of adding one. A
+  // photo is shrunk here, sent as base64 and named in the log, never shown
+  // back (the page keeps no bytes of it after sending).
+
+  // Prose with `code` and http(s) links, and fenced blocks, built with
+  // el() and textContent only: nothing in a message is ever parsed as HTML.
+  const INLINE = /(`[^`\n]+`)|(https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"])/g;
+  function inline(t) {
+    const out = [];
+    let last = 0;
+    for (const m of t.matchAll(INLINE)) {
+      if (m.index > last) out.push(t.slice(last, m.index));
+      if (m[1]) out.push(el("code", { class: "ic", text: m[1].slice(1, -1) }));
+      else out.push(el("a", { href: m[2], target: "_blank", rel: "noopener noreferrer", text: m[2] }));
+      last = m.index + m[0].length;
+    }
+    if (last < t.length) out.push(t.slice(last));
+    return out;
+  }
+  // Fences alternate: an odd piece is code, and an unclosed one (a reply
+  // still being written) is code too.
+  function richText(t) {
+    return t.split("```").map((piece, i) => {
+      if (i % 2 === 0) return piece.trim() ? el("div", { class: "msg", dir: "auto" }, inline(piece.replace(/^\n+|\n+$/g, ""))) : null;
+      const code = piece.replace(/^[\w+.#-]*\n/, "").replace(/\n$/, "");
+      return el("div", { class: "codeblock" },
+        el("pre", { dir: "ltr" }, el("code", { text: code })),
+        el("button", { type: "button", class: "ghost icon", "aria-label": "Copy the code", title: "Copy the code", onclick: () => copyText(code) }, icon("copy")));
+    });
+  }
+
+  // Copy `t`; the clipboard API needs a secure page, so a plain http
+  // address (a LAN bind) falls back to a hidden textarea and execCommand.
+  async function copyText(t) {
+    let done = false;
+    try { await navigator.clipboard.writeText(t); done = true; } catch (_) {
+      const ta = el("textarea", { class: "sr", "aria-hidden": "true", tabindex: "-1" });
+      ta.value = t;
+      document.body.append(ta);
+      ta.select();
+      try { done = document.execCommand("copy"); } catch (_e) { done = false; }
+      ta.remove();
+    }
+    toast(done ? "Copied" : "Couldn't copy: select the text and copy it by hand.", !done);
+    return done;
+  }
+
+  // The most a photo may weigh on the wire (the server refuses more), and
+  // the sizes the page tries, largest first.
+  const PHOTO_MAX = 3500000;
+  const PHOTO_TRIES = [[1600, 0.85], [1280, 0.8], [960, 0.7], [640, 0.6]];
+  const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+  const FAILED = /^(I couldn't reply:|something went wrong\.)/;
+
+  // A picked file as `{mime, data (base64), preview}`, shrunk to fit.
+  // Whatever the browser can't decode is sent as it is when it is a type the
+  // server takes and small enough; anything else is said in words.
+  async function preparePhoto(file) {
+    const b64 = (url) => url.slice(url.indexOf(",") + 1);
+    const asUrl = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+    let bmp = null;
+    try {
+      if (window.createImageBitmap) bmp = await createImageBitmap(file);
+      else {
+        const img = new Image();
+        img.src = await asUrl(file);
+        await img.decode();
+        bmp = img;
+      }
+    } catch (_) { bmp = null; }
+    if (bmp) {
+      const w0 = bmp.width, h0 = bmp.height;
+      for (const [side, q] of PHOTO_TRIES) {
+        const k = Math.min(1, side / Math.max(w0, h0));
+        const c = el("canvas", { width: Math.max(1, Math.round(w0 * k)), height: Math.max(1, Math.round(h0 * k)) });
+        const g = c.getContext("2d");
+        g.fillStyle = "#fff";
+        g.fillRect(0, 0, c.width, c.height);
+        g.drawImage(bmp, 0, 0, c.width, c.height);
+        const url = c.toDataURL("image/jpeg", q);
+        if (b64(url).length * 0.75 <= PHOTO_MAX) return { mime: "image/jpeg", data: b64(url), preview: url, size: Math.round(b64(url).length * 0.75) };
+      }
+      throw new Error("That photo is too big even after shrinking it. Try another one.");
+    }
+    if (PHOTO_TYPES.includes(file.type) && file.size <= PHOTO_MAX) {
+      const url = await asUrl(file);
+      return { mime: file.type, data: b64(url), preview: url, size: file.size };
+    }
+    throw new Error("This browser can't read that photo. Try a JPEG or PNG.");
+  }
 
   sections.chat = {
     title: "Chat",
@@ -1859,20 +1948,73 @@
     every: 2,
     from: 0,
     entries: new Map(),
+    rows: new Map(),
     mount(root) {
       this.top = el("div");
-      this.log = el("div", { class: "chat", "aria-live": "polite" });
-      this.input = el("textarea", { rows: 2, dir: "auto", placeholder: "Message your agent", "aria-label": "Message" });
-      this.sendBtn = el("button", { class: "primary", text: "Send" });
-      this.note = el("div", { class: "muted small" });
+      this.log = el("div", { class: "chat", role: "log", "aria-live": "polite", "aria-relevant": "additions", "aria-label": "Conversation" });
+      this.typing = el("div", { class: "typing", role: "status", hidden: true },
+        el("span", { class: "dots", "aria-hidden": "true" }, el("i"), el("i"), el("i")),
+        el("span", { class: "label", text: "Writing…" }));
+      this.input = el("textarea", { rows: 1, dir: "auto", placeholder: "Message your agent", "aria-label": "Message" });
+      this.sendBtn = el("button", { type: "button", class: "primary", "aria-label": "Send" }, icon("send"), el("span", { text: "Send" }));
+      this.stopBtn = el("button", { type: "button", class: "danger", hidden: true, "aria-label": "Stop the answer" }, icon("stop"), el("span", { text: "Stop" }));
+      this.note = el("div", { class: "muted small", role: "status" });
+      this.pill = el("button", { type: "button", class: "pill", hidden: true, text: "New messages" }, icon("chevron-down"));
+      this.pill.onclick = () => this.toBottom();
+      this.preview = el("div", { class: "attached", hidden: true });
+      this.photo = null;
+      this.gallery = el("input", { type: "file", accept: "image/*", hidden: true, "aria-hidden": "true", tabindex: "-1" });
+      this.camera = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: true, "aria-hidden": "true", tabindex: "-1" });
+      for (const f of [this.gallery, this.camera]) f.addEventListener("change", () => { if (f.files && f.files[0]) this.attach(f.files[0]); f.value = ""; });
+      const attach = el("button", { type: "button", class: "ghost icon", "aria-label": "Attach a photo", title: "Attach a photo", onclick: () => this.pick() }, icon("image"));
+      const shoot = matchMedia("(pointer:coarse)").matches
+        ? el("button", { type: "button", class: "ghost icon", "aria-label": "Take a photo", title: "Take a photo", onclick: () => this.camera.click() }, icon("camera"))
+        : null;
       this.sendBtn.onclick = () => this.send();
+      this.stopBtn.onclick = () => this.stop();
+      this.input.addEventListener("input", () => this.grow());
       this.input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
       });
-      root.append(secHead("Chat", "the same agent, in its own session"), this.top, this.log,
-        el("div", { class: "composer" }, this.note, el("div", { class: "row" }, el("div", { class: "grow" }, this.input), this.sendBtn)));
+      this.input.addEventListener("paste", (e) => {
+        const f = [...((e.clipboardData && e.clipboardData.files) || [])].find((x) => x.type.startsWith("image/"));
+        if (f) { e.preventDefault(); this.attach(f); }
+      });
+      window.addEventListener("scroll", () => { if (this.pill && this.nearBottom()) this.pill.hidden = true; }, { passive: true });
+      root.append(secHead("Chat", "the same agent, in its own session"), this.top, this.log, this.typing,
+        el("div", { class: "composer" }, this.pill, this.note, this.preview,
+          el("div", { class: "row" }, attach, shoot, el("div", { class: "grow" }, this.input), this.stopBtn, this.sendBtn),
+          this.gallery, this.camera));
       this.drawn = false;
+      this.rows.clear();
+      if (this.wantPick) { this.wantPick = false; setTimeout(() => this.pick(), 60); }
     },
+    pick() { if (this.gallery && !this.gallery.disabled) this.gallery.click(); else this.wantPick = true; },
+    grow() {
+      // Measured at one row, then as many as the text needs, up to eight.
+      const cs = getComputedStyle(this.input);
+      this.input.rows = 1;
+      const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.3;
+      const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+      this.input.rows = Math.min(8, Math.max(1, Math.ceil((this.input.scrollHeight + (parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)) - pad) / line - 0.05)));
+    },
+    nearBottom() { const d = document.documentElement; return d.scrollHeight - window.scrollY - window.innerHeight < 80; },
+    toBottom() { window.scrollTo(0, document.documentElement.scrollHeight); this.pill.hidden = true; },
+    async attach(file) {
+      this.note.textContent = "Preparing the photo…";
+      try {
+        this.photo = await preparePhoto(file);
+        this.photo.name = file.name || "photo";
+        setKids(this.preview,
+          el("img", { src: this.photo.preview, alt: "The photo you are about to send", width: 56, height: 56 }),
+          el("span", { class: "muted small grow", dir: "auto", text: this.photo.name + " · " + Math.max(1, Math.round(this.photo.size / 1024)) + " KB" }),
+          el("button", { type: "button", class: "ghost icon", "aria-label": "Remove the photo", title: "Remove the photo", onclick: () => this.detach() }, icon("x")));
+        this.preview.hidden = false;
+        this.note.textContent = "";
+        this.input.focus();
+      } catch (e) { this.photo = null; this.note.textContent = ""; toast(e.message, true); }
+    },
+    detach() { this.photo = null; this.preview.hidden = true; this.preview.replaceChildren(); },
     async load() {
       let c, ap = { approvals: [] };
       try {
@@ -1880,44 +2022,106 @@
       } catch (e) { return sectionError(this.top, e); }
       setKids(this.top, approvalsCard(ap.approvals));
       // The log starts again after a restart: forget what was drawn.
-      if (c.next < this.from) { this.from = 0; this.entries.clear(); return this.load(); }
+      if (c.next < this.from) { this.from = 0; this.entries.clear(); this.rows.clear(); this.log.replaceChildren(); return this.load(); }
       for (const e of c.entries) this.entries.set(e.id, e);
-      if (c.first) for (const id of [...this.entries.keys()]) if (id < c.first) this.entries.delete(id);
+      if (c.first) for (const id of [...this.entries.keys()]) if (id < c.first) { this.entries.delete(id); const r = this.rows.get(id); if (r) { r.node.remove(); this.rows.delete(id); } }
       this.from = c.next;
       const listening = c.listening;
       this.input.disabled = !listening;
       this.sendBtn.disabled = !listening;
-      this.note.textContent = listening ? "" : (c.why || "The agent isn't listening here: chat works when the dashboard runs inside the gateway (the service).");
-      if (c.entries.length || !this.drawn || this.waiting !== c.waiting) {
-        const stick = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 60 || !this.drawn;
-        this.draw(c.waiting);
-        if (stick) this.log.scrollTop = this.log.scrollHeight;
-        this.drawn = true;
-        this.waiting = c.waiting;
+      this.gallery.disabled = !listening;
+      if (!this.sending) this.note.textContent = listening ? "" : (c.why || "The agent isn't listening here: chat works when the dashboard runs inside the gateway (the service).");
+      const grew = c.entries.length > 0;
+      const stick = this.nearBottom() || !this.drawn;
+      this.draw(c.waiting);
+      this.typing.hidden = !c.waiting;
+      this.stopBtn.hidden = !c.waiting;
+      if (grew) {
+        if (stick) this.toBottom();
+        else if (c.entries.some((e) => e.who !== "you")) this.pill.hidden = false;
       }
+      this.drawn = true;
     },
+    // Only what changed is touched: a bubble whose text, buttons and
+    // "Try again" haven't moved keeps its node, so a selection or a
+    // scroll position inside it survives the poll.
     draw(waiting) {
       const list = [...this.entries.values()].sort((a, b) => a.id - b.id);
-      setKids(this.log,
-        list.length ? null : el("div", { class: "empty", text: "Nothing yet. Whatever you type here goes to your agent, like a message on Telegram." }),
-        list.map((e) => el("div", { class: "bubble" + (e.who === "you" ? " you" : "") },
-          el("div", { class: "msg", dir: "auto", text: e.text }),
-          (e.buttons || []).length ? el("div", { class: "row" }, e.buttons.map((b) => b.url
-            ? el("a", { class: "btn", href: b.url, target: "_blank", rel: "noopener", text: b.text })
-            : el("button", { text: b.text, onclick: (ev) => this.send(b.send, ev.currentTarget) }))) : null,
-          el("div", { class: "at", text: new Date(e.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }))),
-        waiting ? el("div", { class: "typing", text: "thinking…" }) : null);
+      const lastId = list.length ? list[list.length - 1].id : 0;
+      if (!list.length) {
+        if (!this.log.firstChild) this.log.append(el("div", { class: "empty", "data-empty": "1", text: "Nothing yet. Whatever you type here goes to your agent, like a message on Telegram." }));
+        return;
+      }
+      const hint = this.log.querySelector("[data-empty]");
+      if (hint) hint.remove();
+      let prev = null;
+      for (const e of list) {
+        const retry = e.id === lastId && e.who !== "you" && !waiting && FAILED.test(e.text);
+        const sig = JSON.stringify([e.text, e.buttons, e.photo, retry]);
+        let row = this.rows.get(e.id);
+        if (!row || row.sig !== sig) {
+          const node = this.bubble(e, retry);
+          if (row) row.node.replaceWith(node); else (prev ? prev.after(node) : this.log.prepend(node));
+          row = { node, sig };
+          this.rows.set(e.id, row);
+        }
+        prev = row.node;
+      }
+    },
+    bubble(e, retry) {
+      const mine = e.who === "you";
+      return el("div", { class: "bubble" + (mine ? " you" : ""), "data-id": e.id },
+        e.photo ? el("div", { class: "photo-chip" }, icon("image"), el("span", { dir: "auto", text: e.photo.name })) : null,
+        richText(e.text || ""),
+        (e.buttons || []).length ? el("div", { class: "row" }, e.buttons.map((b) => b.url
+          ? el("a", { class: "btn", href: b.url, target: "_blank", rel: "noopener noreferrer", text: b.text })
+          : el("button", { text: b.text, onclick: (ev) => this.send(b.send, ev.currentTarget) }))) : null,
+        el("div", { class: "foot" },
+          el("span", { class: "at", text: new Date(e.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }),
+          mine ? null : el("button", { type: "button", class: "ghost icon sm", "aria-label": "Copy the answer", title: "Copy the answer", onclick: () => copyText(e.text) }, icon("copy")),
+          retry ? el("button", { type: "button", class: "ghost sm", onclick: (ev) => this.again(ev.currentTarget) }, icon("retry"), el("span", { text: "Try again" })) : null));
+    },
+    // The last thing the owner said, said again.
+    again(b) {
+      const mine = [...this.entries.values()].filter((e) => e.who === "you").sort((x, y) => y.id - x.id)[0];
+      if (mine && mine.text.trim()) this.send(mine.text, b); else toast("Nothing to send again: type it once more.", true);
+    },
+    async stop() {
+      this.stopBtn.disabled = true;
+      try { const r = await api("/api/turn/stop", { session: "dashboard__owner" }); toast(r.said || "Stopped."); } catch (e) { toast(e.message, e.status !== 404); } finally { this.stopBtn.disabled = false; this.load(); }
     },
     async send(said, button) {
+      if (this.sending) { this.sending.abort(); return; }
       const t = (said !== undefined ? said : this.input.value).trim();
-      if (!t) return;
+      const photo = said === undefined ? this.photo : null;
+      if (!t && !photo) return;
       const b = button || this.sendBtn;
       b.disabled = true;
       try {
-        await api("/api/chat/send", { text: t });
-        if (said === undefined) { this.input.value = ""; delete this.input.dataset.dirty; }
+        if (photo) {
+          // A photo takes a moment on a slow line: say so, and let it be cancelled.
+          this.sending = new AbortController();
+          this.note.textContent = "Sending photo…";
+          this.sendBtn.replaceChildren(icon("x"), el("span", { text: "Cancel" }));
+          this.sendBtn.setAttribute("aria-label", "Cancel sending the photo");
+          this.sendBtn.disabled = false;
+          await api("/api/chat/photo", { text: t, mime: photo.mime, data: photo.data }, { signal: this.sending.signal });
+          this.detach();
+        } else await api("/api/chat/send", { text: t });
+        if (said === undefined) { this.input.value = ""; this.grow(); delete this.input.dataset.dirty; }
         this.load();
-      } catch (e) { toast(e.message, true); } finally { b.disabled = false; }
+      } catch (e) {
+        if (e.name === "AbortError") toast("Cancelled: the photo wasn't sent.");
+        else toast(e.message, true);
+      } finally {
+        if (this.sending) {
+          this.sending = null;
+          this.note.textContent = "";
+          this.sendBtn.replaceChildren(icon("send"), el("span", { text: "Send" }));
+          this.sendBtn.setAttribute("aria-label", "Send");
+        }
+        b.disabled = false;
+      }
     },
   };
 
@@ -2498,6 +2702,8 @@
     { label: "Stop the running turn", words: "cancel halt", icon: "stop",
       when: () => busyTurns().length > 0,
       run: async () => { for (const t of busyTurns()) await act("turn/stop", { session: t.session }); } },
+    { label: "Attach a photo", words: "picture image send upload camera", icon: "image",
+      run: () => { show("chat"); if (sections.chat.pick) sections.chat.pick(); else sections.chat.wantPick = true; } },
     { label: "Switch theme", words: "dark light appearance paper forge", icon: "sun",
       run: () => { if (window.ferruleTheme) { window.ferruleTheme.next(); themeButtonLabel(); } } },
     { label: "Sign out", words: "log out", icon: "power",

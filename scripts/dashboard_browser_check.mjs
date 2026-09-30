@@ -415,6 +415,29 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     return "the agent answered on the page";
   });
 
+  await run("chat photo", async () => {
+    // A picture drawn in the page, handed to the gallery input as a chosen file.
+    await js(`window.ferrule.show("chat")`);
+    await until("the composer", () => js(`return !!document.querySelector(".composer input[type=file]")`), 10);
+    await js(`
+      const c = document.createElement("canvas"); c.width = 320; c.height = 200;
+      const g = c.getContext("2d"); g.fillStyle = "#2a7"; g.fillRect(0, 0, 320, 200); g.fillStyle = "#fff"; g.fillRect(40, 40, 120, 60);
+      const blob = await new Promise((ok) => c.toBlob(ok, "image/png"));
+      const dt = new DataTransfer(); dt.items.add(new File([blob], "check-photo.png", { type: "image/png" }));
+      const input = document.querySelector(".composer input[type=file]");
+      input.files = dt.files; input.dispatchEvent(new Event("change", { bubbles: true }));
+    `);
+    await until("the attached chip", () => js(`const a = document.querySelector(".composer .attached, .attached"); return a && !a.hidden && a.textContent.includes("check-photo")`), 10);
+    await js(`const t = document.querySelector(".composer textarea"); t.value = "what colour is this?"; t.dispatchEvent(new Event("input", { bubbles: true }));`);
+    await click(".composer", "Send");
+    await until("the photo in the log", () => js(`return [...document.querySelectorAll(".photo-chip")].some((c) => c.textContent.includes(".jpg"))`), 30);
+    await until("the chip cleared", () => js(`const a = document.querySelector(".attached"); return !a || a.hidden`), 10);
+    await until("an answer to it", () => js(`return document.querySelectorAll(".bubble:not(.you)").length > 1`), 45);
+    const img = await js(`return document.querySelectorAll("img").length`);
+    if (img) throw new Error("the page drew an <img> for a photo: " + img);
+    return "attached, sent as a JPEG, chip in the log, no <img>, answered";
+  });
+
   if (SHOTS) {
     mkdirSync(SHOTS, { recursive: true });
     const shots = [];

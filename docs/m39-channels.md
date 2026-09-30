@@ -119,7 +119,12 @@ to `<workspace>/inbox/<channel>/<yyyy-mm-dd>/<id>-<safe name>`. Names are
 sanitized, and nothing ever lands outside `inbox/`. The agent's text gets
 one line per file:
 
-`[The sender attached a photo: inbox/whatsapp/2026-09-28/wamid-3f…-IMG_0042.jpg (image/jpeg, 184 KB). Open it with your tools if you need it; you can't see images.]`
+`[The sender attached a photo: inbox/whatsapp/2026-09-28/wamid-3f…-IMG_0042.jpg (image/jpeg, 184 KB).]`
+
+A photo's line stops there (M47): a model that sees images gets the pixels
+as well, and one that doesn't is told so by the driver. Every other file
+kind ends with "Open it with your tools if you need it; you can't see
+images." as before.
 
 A file that is too big, or whose download fails, is named and not saved,
 and the sender is told why in words. The inbox is the workspace's, so the

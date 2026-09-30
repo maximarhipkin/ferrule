@@ -2573,7 +2573,11 @@ async fn run_gateway(
     // owner's questions, but not for `/connect` or plan chats.
     let mut named_channels = named_channels;
     let page_chat = cfg.dashboard.enabled.then(|| {
-        let ch = Arc::new(dashboard::chat::DashboardChannel::default());
+        let inbox = ferrule_gateway::channels::files::Inbox::new(
+            workspace.clone(),
+            ferrule_gateway::channels::files::DEFAULT_MAX_MB,
+        );
+        let ch = Arc::new(dashboard::chat::DashboardChannel::default().with_inbox(Some(inbox)));
         named_channels.insert(
             dashboard::chat::CHANNEL.to_string(),
             ch.clone() as Arc<dyn Channel>,

@@ -24,3 +24,4 @@ mod models;
 mod plugins;
 mod ssh;
 mod trust;
+mod vision;

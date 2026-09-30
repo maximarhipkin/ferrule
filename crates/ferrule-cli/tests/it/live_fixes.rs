@@ -555,7 +555,8 @@ fn messages_that_arent_text_get_plain_words() {
         "{voice}"
     );
     let (n, _) = tg.wait_for(42, "PLAIN", n);
-    // An album is one reply.
+    // M47: a photo is saved like a voice note. An album is read once, and
+    // the sender hears that once.
     for _ in 0..3 {
         tg.push(
             42,
@@ -563,15 +564,18 @@ fn messages_that_arent_text_get_plain_words() {
         );
     }
     tg.say(42, "after the album");
+    let (n, _) = tg.wait_for(42, "I only looked at the first photo", n);
     let (n, _) = tg.wait_for(42, "PLAIN", n);
-    let photos = tg
+    // The album's first photo and the text after it each get an answer.
+    let (n, _) = tg.wait_for(42, "PLAIN", n);
+    let more = tg
         .texts_to(42)
         .iter()
-        .filter(|t| t.starts_with("I got your photo"))
+        .filter(|t| t.starts_with("I only looked at the first photo"))
         .count();
-    assert_eq!(photos, 1);
+    assert_eq!(more, 1);
 
-    // A caption is the text; the model hears the photo wasn't read.
+    // A caption is the text; a photo is saved and a text-only model is told so.
     tg.push(
         42,
         json!({"photo": [{"file_id": "p2"}], "caption": "what car is this?"}),
@@ -586,9 +590,8 @@ fn messages_that_arent_text_get_plain_words() {
         .find(|c| c.contains("what car is this?"))
         .unwrap();
     assert!(
-        heard.contains(
-            "[The photo attached to this message wasn't read: ferrule reads only text for now.]"
-        ),
+        heard.contains("[The sender attached a photo: inbox/telegram/")
+            && heard.contains("[This model can't see images; the photo is saved as"),
         "{heard}"
     );
     let log = std::fs::read_to_string(dir.path().join("stderr.log")).unwrap();

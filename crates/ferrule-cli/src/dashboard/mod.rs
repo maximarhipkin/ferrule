@@ -335,7 +335,7 @@ impl Dashboard {
                 };
                 let Some(me) = weak.upgrade() else { return };
                 tokio::spawn(async move {
-                    let resp = match http::read(&mut conn).await {
+                    let resp = match http::read(&mut conn, |head| me.limit_for(head)).await {
                         Ok(req) => me.handle(req).await,
                         Err(0) => return,
                         Err(status) => Response::text(status, "bad request"),
@@ -568,6 +568,41 @@ impl Dashboard {
         match path.strip_prefix(base) {
             Some(rest) if rest.starts_with('/') => rest.to_string(),
             _ => path.to_string(),
+        }
+    }
+
+    /// How much body this request may bring, decided from its head alone.
+    /// Only a photo for the chat gets more than the usual 64 KB, and only
+    /// from someone already logged in and passing the same checks `handle`
+    /// makes (same origin, JSON, CSRF); anyone else gets the usual limit and
+    /// the usual refusal, and none of their body is read.
+    fn limit_for(&self, head: &http::Head) -> http::Limit {
+        let usual = http::Limit::default();
+        if head.method != "POST"
+            || self.strip_base(&head.path) != "/api/chat/photo"
+            || self.health_only.load(Ordering::Relaxed)
+        {
+            return usual;
+        }
+        let host = head.header("host").unwrap_or("").to_ascii_lowercase();
+        let same_origin = head.header("origin") == Some(self.origin_for(&host).as_str());
+        let json = head
+            .header("content-type")
+            .is_some_and(|c| c.starts_with("application/json"));
+        let granted =
+            self.sessions
+                .check(head.cookie(auth::COOKIE), &host, self.links.revoked_ms());
+        let csrf = head.header(auth::CSRF_HEADER).unwrap_or("");
+        match granted {
+            Some(g)
+                if self.host_allowed(&host) && same_origin && json && auth::same(csrf, &g.csrf) =>
+            {
+                http::Limit {
+                    body: chat::MAX_PHOTO_BODY,
+                    deadline: Duration::from_secs(60),
+                }
+            }
+            _ => usual,
         }
     }
 
@@ -1100,6 +1135,72 @@ mod tests {
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.clone())
             .unwrap_or_default()
+    }
+
+    fn head(path: &str, headers: &[(&str, &str)]) -> http::Head {
+        http::Head {
+            method: "POST".into(),
+            path: path.into(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_signed_in_page_may_send_a_big_body_to_the_photo_route_even_under_a_prefix() {
+        let (_dir, d) = panel_dash("http://bots.test/b/b_test/");
+        let t = panel_token(60, "0123456789abcdef", PANEL_SECRET, "b_test");
+        let r = panel_post(&d, "/b/b_test/api/login", &t, "http://bots.test").await;
+        let cookie = header(&r, "Set-Cookie");
+        let cookie = cookie.split(';').next().unwrap().to_string();
+        let csrf = serde_json::from_slice::<Value>(&r.body).unwrap()["csrf"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let signed = |path: &str| {
+            head(
+                path,
+                &[
+                    ("host", "bots.test"),
+                    ("origin", "http://bots.test"),
+                    ("content-type", "application/json"),
+                    ("cookie", cookie.as_str()),
+                    (auth::CSRF_HEADER, csrf.as_str()),
+                ],
+            )
+        };
+        let big = |h: &http::Head| d.limit_for(h).body > 1024 * 1024;
+        // Signed in, at the prefixed path or the bare one a proxy leaves.
+        assert!(big(&signed("/b/b_test/api/chat/photo")));
+        assert!(big(&signed("/api/chat/photo")));
+        // Not the photo route, not a POST, no CSRF, another origin, no cookie.
+        assert!(!big(&signed("/b/b_test/api/chat/send")));
+        let mut get = signed("/b/b_test/api/chat/photo");
+        get.method = "GET".into();
+        assert!(!big(&get));
+        let mut no_csrf = signed("/b/b_test/api/chat/photo");
+        no_csrf.headers.remove(auth::CSRF_HEADER);
+        assert!(!big(&no_csrf));
+        let mut wrong_csrf = signed("/b/b_test/api/chat/photo");
+        wrong_csrf
+            .headers
+            .insert(auth::CSRF_HEADER.into(), "nope".into());
+        assert!(!big(&wrong_csrf));
+        let mut cross = signed("/b/b_test/api/chat/photo");
+        cross
+            .headers
+            .insert("origin".into(), "http://evil.test".into());
+        assert!(!big(&cross));
+        let mut anon = signed("/b/b_test/api/chat/photo");
+        anon.headers.remove("cookie");
+        assert!(!big(&anon));
+        let mut host = signed("/b/b_test/api/chat/photo");
+        host.headers.insert("host".into(), "evil.test".into());
+        assert!(!big(&host));
+        // And the usual limit is the small one.
+        assert_eq!(d.limit_for(&anon).body, http::Limit::default().body);
     }
 
     #[tokio::test]

@@ -7,7 +7,9 @@ use crate::stream::{StreamPacing, StreamingReply};
 use crate::transcribe::{heard_line, Audio, Transcription};
 use crate::typing::Typist;
 use ferrule_core::failure::Kind;
-use ferrule_core::{Agent, AgentEvent, CoreError, Guard, GuardedCall, Role, Transcript, Verdict};
+use ferrule_core::{
+    Agent, AgentEvent, CoreError, Guard, GuardedCall, ImageRef, Role, Transcript, Verdict,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -773,6 +775,8 @@ async fn run_lane(
     let mut last_failure: Option<Kind> = None;
     // M41: this chat was told transcription is off.
     let mut told_off = false;
+    // M47: this chat was told the model can't see photos.
+    let mut told_no_vision = false;
     while let Some(job) = rx.recv().await {
         if watch.state.lock().unwrap().retired {
             break;
@@ -838,6 +842,37 @@ async fn run_lane(
             }
             _ => None,
         };
+        // M47: a photo the adapter saved goes to a model that can see as
+        // pixels; for one that can't, the provider layer turns it into a note.
+        let photos: Vec<ImageRef> = inbound
+            .attachments
+            .iter()
+            .filter(|a| is_image(a))
+            .map(|a| ImageRef {
+                path: a.url.clone(),
+                mime: a.kind.clone(),
+                name: a.name.clone(),
+            })
+            .collect();
+        if !photos.is_empty() {
+            if !told_no_vision && !agent.sees_images() {
+                told_no_vision = true;
+                if let Some(ch) = &channel {
+                    let msg = OutboundMessage {
+                        channel: inbound.channel.clone(),
+                        chat_id: inbound.chat_id.clone(),
+                        text: NO_VISION.into(),
+                        reply_to: (!inbound.message_id.is_empty())
+                            .then(|| inbound.message_id.clone()),
+                        attachments: vec![],
+                    };
+                    if let Err(e) = ch.send(msg).await {
+                        tracing::warn!(session = %session_id, error = %e, "couldn't say the model can't see photos");
+                    }
+                }
+            }
+            agent.attach_images(photos);
+        }
         let run_result = if person {
             agent.run_user(&inbound.text, etx).await
         } else {
@@ -905,6 +940,14 @@ struct LaneWatch {
     stream: Option<StreamPacing>,
     transcription: Option<Transcription>,
     typing: bool,
+}
+
+/// Said once per chat when a photo arrives and the model can't see it.
+const NO_VISION: &str = "I saved your photo, but the model I'm using can't see images, so I only get the file. Pick a model marked “sees photos” in the dashboard's Models to change that.";
+
+/// A photo an adapter saved (M39's inbox), not a link (M47).
+fn is_image(a: &Attachment) -> bool {
+    a.kind.starts_with("image/") && Path::new(&a.url).is_file()
 }
 
 /// An audio file an adapter saved (M39's inbox), not a link.

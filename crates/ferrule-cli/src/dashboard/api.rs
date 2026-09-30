@@ -156,6 +156,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "console/run" => super::console::run(ctx, body),
         "console/cancel" => super::console::cancel(ctx, body),
         "chat/send" => super::chat::send(ctx, body).await,
+        "chat/photo" => super::chat::photo(ctx, body).await,
         "approvals/answer" => super::chat::answer(ctx, body),
         "config/check" => super::config_page::check(ctx, body),
         "config/save" => super::config_page::save(ctx, body),
