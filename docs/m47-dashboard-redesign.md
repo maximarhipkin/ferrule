@@ -328,27 +328,85 @@ abilities get lost quietly.
 
 ## Audit
 
-*(Part 1 fills this in: screenshots in `docs/assets/m47/before/`, ranked
-findings, and the numbers.)*
+Screenshots of the page as it was at `855ad17`: every one of the 13
+sections, at 390 and 1280 px, light and dark, in
+`docs/assets/m47/before/<section>-<width>-<light|dark>.jpg` (52 JPEGs,
+3.2 MB). They come from `scripts/m47_shots.sh`, on the mock model with the
+browser check's seeded data (one chat turn, one connected service, one
+hidden notice, a fallback).
 
-Preliminary findings from reading the code, to be confirmed on screen:
+### Before — the numbers
 
-1. **Confusing.**
-   - Undefined words ("lanes", "watchdog", "heartbeat", "fallback",
-     "pins", "catalog", "relay", "cron", "auto/paper/forge").
-   - 13 sections, all at the same level.
-   - Nothing on the page says what to do first.
-2. **Broken on phones.** `window.confirm`/`prompt`, and `window.open` for
-   links, which popup blockers stop.
-3. **Cluttered.** Home shows turns, the watchdog, the heartbeat, caps,
-   notices and problems at once.
-4. **Missing.**
-   - Chat: photo, copy, retry, stop, code blocks.
-   - No palette, no first-run checklist, no memory view, no backup button,
-     no way to create a task.
-   - No Hebrew shell.
-5. **Ugly.** Two sets of greys; buttons and inputs sized differently from
-   section to section; no icons; tables that overflow at 390 px.
+| | Value |
+|---|---|
+| Tests (`cargo test --workspace --no-fail-fast`) | 1721 passed, 0 failed, 29 ignored, in 71 test binaries |
+| `app.js` | 118,452 B raw, 31,730 B gzip -9 |
+| `app.css` | 21,065 B raw, 5,619 B gzip -9 |
+| `theme.js`, `index.html` | 1,299 B, 1,358 B raw |
+| Fonts on a cold load of Home | Plex Sans 400 (21 KB), 600 (22 KB), Plex Mono 400 (17 KB); the two Hebrew cuts load only when Hebrew is on screen |
+| Cold load of Home at 390 px, cache off | 203,128 B on the wire for the assets, 5 API calls, FCP 132 ms (headless Chromium, no CPU throttle), DOMContentLoaded 75 ms |
+| Compression | None. The server sends every asset whole: 203 KB on the wire where gzip would send about 80 KB |
+
+### The abilities inventory (the input for the D15 guard)
+
+The paths `app.js` calls today, from `grep '"/api/…'` plus the 62
+`act(...)`/`btn(...)`/`ask(...)` call sites: `/api/health`, `/api/approvals`,
+`/api/session`, `/api/login`, `/api/logout`, `/api/managed`, `/api/models`,
+`/api/models/choices`, `/api/models/provider/list`, `/api/catalog`,
+`/api/recommend`, `/api/eval`, `/api/run`, `/api/plans/chatgpt/{start,poll}`,
+`/api/routing`, `/api/connections`, `/api/connections/{checklist,test}`,
+`/api/channels`, `/api/channels/test`, `/api/telegram/{test,save,wait,allow}`,
+`/api/chat`, `/api/chat/send`, `/api/console/{complete,run,job,parity}`,
+`/api/config`, `/api/config/check`, `/api/usage`, `/api/tasks`, `/api/logs`,
+`/api/settings`, `/api/agents`. Step 16's guard keeps every route in
+`api::route` reachable from the page.
+
+### Findings, ranked
+
+1. **Confusing (worst).** A new owner lands on Home and sees a tile grid:
+   `version`, `uptime`, `gateway`, `watchdog`, `heartbeat`, `kill switch`.
+   Nothing says what to do first. Undefined words: "lanes", "watchdog",
+   "heartbeat", "fallback", "pins", "catalog", "relay", "cron", "gates",
+   "kill switch", and the theme button, which just says `auto`.
+   Connections opens on a "Fixed callback address" card about OAuth and a
+   Cloudflare relay before any service is shown. → Parts 3 and 4: a status
+   sentence, a first-run checklist, a glossary, "Advanced" folds.
+2. **Missing.** No photo in chat (or anywhere), no copy/retry/stop, no way
+   to create a task (Tasks says "no tasks" and stops), no memory view, no
+   backup button, no command palette, no Hebrew shell, no settings page. →
+   Part 5.
+3. **Ugly and uneven.**
+   - The buttons run from 36 px on desktop to 42 px on touch, and the
+     fallback row's ↑ ↓ × are bare glyphs under 30 px.
+   - Inputs and selects differ in height from section to section.
+   - "Log out" and the theme word ("auto") are plain text buttons in the
+     header.
+   - On the desktop, content sits in a 520 px column with wide empty
+     margins on both sides at 1280 px.
+   - Usage is a long stack of numbers on a phone.
+   - Chat has the composer floating mid-screen with a large gap under it.
+   → Part 2.
+4. **Cluttered.** Home's tile grid, kill-switch chip, hidden-notices row,
+   notice and problem banners all compete for the first screen; on a phone
+   the actual status is below the fold. The problems banner repeats above
+   every section, which pushes each title down by ~270 px at 390 px (see
+   `models-390-light.jpg`). → Part 3: banner only on Home, a count badge
+   elsewhere.
+5. **Slow / heavy.** No compression (203 KB on the wire for Home); each
+   section polls even when its data hasn't changed; `app.js` is one
+   118 KB file for 13 sections. FCP is fine (132 ms) because the page is
+   small and local, so the win here is bytes and idle polling, not paint.
+   → Part 6.
+6. **Broken on phones.** `window.confirm`/`window.prompt` for confirmations
+   and typed values (Tasks → Schedule and Model, the console's destructive
+   commands), which in-app browsers block or style badly. → `ask()`.
+
+What already works and stays: the strict CSP with no inline script, the
+`el()`/`textContent` rule, the `text()` helper string the redaction tests
+grep for, `dir="auto"` on every piece of user text, the bottom tab bar and
+the sidebar, the theme names (`paper`/`forge`, the `ferrule-theme` key and
+`window.ferruleTheme`), and the Hebrew font (already shipped, loaded by
+`unicode-range`).
 
 ## Plan
 
@@ -364,6 +422,15 @@ from the `test result:` lines (summed) and printed at step 1 and at the
 end.
 
 ### Part 1 — Audit with screenshots (commit "M47 part 1 — audit")
+
+> Correction made while building: the screenshot rig is
+> `scripts/m47_shots.sh`, a wrapper over the browser check's own CDP rig
+> (`--shots-all DIR`), not a second rig on agent-browser. Reason: the CDP
+> path already starts the gateway, the fake Telegram and the MCP server, and
+> it is what CI runs, so the shots and the checks can't drift apart.
+> `--measure` reads first paint, the asset bytes and the API call count in
+> the same run; the 4× CPU throttle in step 3 was left out (no throttle
+> makes the before/after runs easier to compare and FCP is 132 ms).
 
 1. **Baseline numbers.**
    - `eval $ENV; cargo build -p ferrule-cli`.

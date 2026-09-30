@@ -9,7 +9,13 @@
 // at 390 and 1280 px. Node 22+ (its built-in WebSocket), no packages; it
 // never touches the owner's own config or data dir, and needs no key.
 //
+// `--shots-all DIR` (M47) saves every section at 390 and 1280 px, in the
+// light and the dark theme, as JPEGs; `--measure` prints what a cold load
+// of Home costs (bytes on the wire per file, first contentful paint, the
+// API calls before it settles) as one JSON line.
+//
 //     node scripts/dashboard_browser_check.mjs --bin target/debug/ferrule [--chromium PATH] [--shots docs/assets/m37]
+//         [--shots-all docs/assets/m47/after] [--measure]
 
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, get as httpGet } from "node:http";
@@ -35,6 +41,8 @@ const argv = process.argv.slice(2);
 const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : null; };
 const BIN = opt("--bin") && resolve(opt("--bin"));
 const SHOTS = opt("--shots") && resolve(opt("--shots"));
+const SHOTS_ALL = opt("--shots-all") && resolve(opt("--shots-all"));
+const MEASURE = argv.includes("--measure");
 const CHROMIUM = opt("--chromium") || ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"].find((c) => spawnSync(c, ["--version"]).status === 0);
 if (!BIN) { console.error("usage: dashboard_browser_check.mjs --bin <ferrule> [--chromium PATH] [--shots DIR]"); process.exit(2); }
 if (!CHROMIUM) { console.error("no Chromium found: pass --chromium"); process.exit(2); }
@@ -302,6 +310,51 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
       }
     }
     step("screenshots", true, shots.length + " in " + SHOTS.slice(ROOT.length + 1));
+  }
+
+  if (SHOTS_ALL) {
+    mkdirSync(SHOTS_ALL, { recursive: true });
+    let n = 0;
+    const names = await js(`return Object.keys(window.ferrule.sections)`);
+    for (const [w, h] of [[390, 844], [1280, 800]]) {
+      await size(w, h);
+      for (const theme of ["paper", "forge"]) {
+        await js(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
+        for (const name of names) {
+          await js(`window.ferrule.show(${JSON.stringify(name)})`);
+          await sleep(1100);
+          const r = await cdp("Page.captureScreenshot", { format: "jpeg", quality: 70 });
+          writeFileSync(join(SHOTS_ALL, `${name}-${w}-${theme === "paper" ? "light" : "dark"}.jpg`), Buffer.from(r.data, "base64"));
+          n++;
+        }
+      }
+    }
+    await js(`document.documentElement.dataset.theme = "paper"`);
+    step("screenshots of every section", true, n + " in " + SHOTS_ALL.slice(ROOT.length + 1));
+  }
+
+  if (MEASURE) {
+    await run("measure a cold load of Home", async () => {
+      await size(390, 844);
+      await cdp("Network.enable");
+      await cdp("Network.setCacheDisabled", { cacheDisabled: true });
+      const calls = [];
+      const onReq = (m) => { const d = JSON.parse(m.data); if (d.method === "Network.requestWillBeSent") calls.push(d.params.request.url); };
+      ws.addEventListener("message", onReq);
+      await cdp("Page.navigate", { url: link.split("#")[0] + "#health" });
+      await until("Home", () => js(`return !!document.querySelector("#main .card, #main .alert, #main .stats")`), 20);
+      await sleep(2500);
+      ws.removeEventListener("message", onReq);
+      const m = await js(`
+        const fcp = (performance.getEntriesByName("first-contentful-paint")[0] || {}).startTime || null;
+        const res = performance.getEntriesByType("resource").map((r) => ({ name: r.name.replace(location.origin, ""), wire: r.transferSize, body: r.decodedBodySize }));
+        const nav = performance.getEntriesByType("navigation")[0];
+        return { fcp_ms: fcp && Math.round(fcp), dcl_ms: Math.round(nav.domContentLoadedEventEnd), files: res.filter((r) => !r.name.startsWith("/api/")), api_calls: res.filter((r) => r.name.startsWith("/api/")).length };`);
+      const wire = m.files.reduce((t, f) => t + (f.wire || 0), 0);
+      console.log("MEASURE " + JSON.stringify({ ...m, wire_bytes: wire, requests_seen: calls.length }));
+      return `FCP ${m.fcp_ms} ms, ${wire} bytes of assets, ${m.api_calls} API calls`;
+    });
+    await cdp("Network.setCacheDisabled", { cacheDisabled: false });
   }
 
   // Every section once: a stray null, undefined or [object …] is a
