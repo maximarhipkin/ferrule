@@ -839,6 +839,20 @@ that convention yet — ask before introducing one).
     - `ferrule backup` / `ferrule restore`: a checked `.tar.gz`, secrets
       only on request, the old data moved aside, never deleted; doctor
       shows the last backup's age.
+  - **M44 managed mode**: **built** (2026-09-30, branch `m44-managed-mode`,
+    PR to main open, not merged). Design, plan and what was verified:
+    `docs/m44-managed-mode.md`; user docs `docs/docker.md`.
+    - A multi-stage `Dockerfile` (runtime and `-browser` targets, tini,
+      uid 10001, `/data`, `HEALTHCHECK ferrule health --probe`) and a
+      release-workflow job. **Never built:** no Docker daemon here.
+    - `FERRULE_MANAGED` + a policy file: `sandbox = "os" | "container"`,
+      no Claude plan, hooks/MCP add/update/setup/ssh/instances closed,
+      config narrowed to the policy, `[sandbox] mode = "off"` refused.
+    - Panel sign-in: an HMAC token per bot, a fail-closed nonce file, the
+      dashboard under `/b/<id>/`, up on boot with `/healthz` and `/busyz`.
+    - Telegram set up from the page; `FERRULE_HTTP_BIND`; a bounded
+      SIGTERM drain, re-exec restarts, backup/restore in a container.
+    - `scripts/m44-measure.sh`: idle 24 MiB, turn peak 26 MiB.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -5374,3 +5388,61 @@ restore; all are covered by mocks (see the design doc §5).
 
 **Follow-ups.** Voice on Discord/Slack; scheduled backups with pruning;
 other Telegram file kinds; typing on Slack and Mattermost.
+
+
+### 2026-09-30 — M44 managed mode (Devi, Opus 5.5 plan / Sonnet 5.5 build)
+
+**Scope.** A closed-beta service: one bot per container, run by a separate
+panel, users bring their own model access, the container is the isolation
+boundary, and the panel updates a bot by swapping the image tag. Branch
+`m44-managed-mode`; design, plan and what was verified in
+`docs/m44-managed-mode.md` (§9), user docs in `docs/docker.md`.
+
+**What was built** (one commit per part).
+- **1 The image.** A multi-stage `Dockerfile` (runtime and `-browser`
+  targets, tini, uid 10001, `/data`, `HEALTHCHECK`, agent-browser 0.38.1
+  pinned with a sha512 check) and a release-workflow job.
+- **2 Managed mode.** `FERRULE_MANAGED` and a policy file (`sandbox = "os"
+  | "container"`): the config is narrowed to the policy, no Claude plan,
+  hooks/MCP add/`update`/`setup`/`ssh`/`instances` closed,
+  `[sandbox] mode = "off"` refused, `/api/managed`, a `doctor` line.
+- **3 Panel sign-in.** An HMAC-SHA256 token per bot, a fail-closed nonce
+  file, the public URL (host, origin, cookie `Path`/`Secure`), the page and
+  its fonts under `/b/<id>/`.
+- **4 The dashboard's gaps.** Telegram from the page (test, save, wait for
+  a first message, allow a chat); `FERRULE_HTTP_BIND`.
+- **5 Health and lifecycle.** `/healthz`, `/busyz`, `ferrule health
+  [--probe]`, a bounded SIGTERM drain, re-exec restarts, backup and
+  restore in a container.
+- **6 Measurements.** `scripts/m44-measure.sh`: idle 24 MiB, one turn's
+  peak 26 MiB, about 462 bots per 16 GiB; a real-page browser peak test.
+- **7 Docs.** `docs/docker.md`; additions to `dashboard.md`, `sandbox.md`,
+  `channels.md`, the README, the roadmap and this file.
+
+**Tests.** 1659 → 1705 passed, 0 failed, 29 ignored (was 28; the new one is
+the real-page browser peak test).
+
+**Eval.** `eval run evals/starter --variant ab`, real binary, mock model:
+engineered 20/20, naive 11/20, $0.98 total, unchanged.
+
+**Plan fixes made while building** (each in the commit that found it).
+- The measurement script must run in managed mode: `/healthz` only exists
+  there, so the first run found no gateway.
+- The Signal key is `[gateway.signal] url`, not `http_url`.
+- The real-Chrome test needs agent-browser ≥ 0.38 (0.27.1 has no `mcp`);
+  behind this environment's TLS-intercepting proxy the peak test needs
+  `FERRULE_TEST_CHROME_ARGS=--ignore-certificate-errors`.
+
+**Not verified live.** No Docker daemon: the image has never been built,
+the musl binary failed to build here (no `x86_64-linux-musl-gcc`; the
+measurements use the glibc binary), the `container` policy has never run in
+a container, and image sizes are estimates. No real reverse proxy, no real
+Telegram bot, no panel. The first CI release run is the first real build.
+
+**Decisions for Max.**
+- Whether to merge before someone has built the image once.
+- The panel itself, invites, billing and per-bot limits are out of scope
+  and still need an owner.
+
+**Follow-ups.** Build and run the image on a machine with Docker and fill
+in the real sizes; cosign signing; subdomain routing.

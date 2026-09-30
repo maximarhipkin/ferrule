@@ -168,6 +168,19 @@ On Windows this is the usual case with Git Bash, which can't run under the
 restricted token. Set `FERRULE_SHELL=powershell` to run commands sandboxed
 in PowerShell ([windows-sandbox.md](windows-sandbox.md), Shells).
 
+## In a container (managed mode)
+
+A bot in a [container](docker.md) never runs unsandboxed silently. When the
+backend doesn't start there, commands run **only** if the panel's policy
+says `sandbox = "container"` (the container is the boundary; the env
+scrubbing and the deny list still apply). Without that line the `shell`
+tool, hooks and the browser are off, and `/healthz` is `degraded` with the
+reason. `[sandbox] mode = "off"` in the user's config counts as "doesn't
+start", so it can't lift the policy. Which
+container runtimes give Landlock, the seccomp filter, Unix sockets and
+Chrome's own sandbox, and which policy each takes: the
+[table in docker.md](docker.md#the-sandbox-inside-a-container).
+
 ## Remote workspaces
 
 With a remote workspace ([ssh.md](ssh.md)) the shell and file tools run

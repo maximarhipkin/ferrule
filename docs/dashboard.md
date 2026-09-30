@@ -288,6 +288,42 @@ catalog_url = "https://openrouter.ai/api/v1/models"
 suite = "/path/to/ferrule/evals/starter"
 ```
 
+## In a container: a panel's page (M44)
+
+In [managed mode](docker.md) the page is always on and is opened from a
+panel, not from a chat link:
+
+```toml
+[dashboard]
+bind = "0.0.0.0"      # or FERRULE_DASHBOARD_BIND; default 127.0.0.1
+port = 8080           # FERRULE_DASHBOARD_PORT
+public_url = "https://bots.example.com/b/b_4f2a/"   # FERRULE_PUBLIC_URL
+```
+
+- **`public_url`** is the address the browser opens: it adds that Host to
+  the allow-list, is the Origin POSTs must carry, and gives the **path
+  prefix**. The page answers with or without the prefix (a proxy may strip
+  it or not), and the session cookie is scoped to it (`Secure` on https).
+- **A non-loopback bind without `public_url`** answers only `/healthz` and
+  `/busyz`; everything else gets a 421 that says how to fix it.
+- **Panel sign-in.** The panel sends the browser to `<public_url>#<token>`,
+  an HMAC-signed token for this bot, made with `FERRULE_PANEL_SECRET`. It
+  opens a normal session. Format, an example, and why the secret is one per
+  bot: [docker.md](docker.md#panel-sign-in). `ferrule dashboard link` still
+  makes a one-use link from inside the container.
+- **The Telegram card** sets up the channel with no terminal: paste the
+  bot's token and **Test** it (`getMe`; it also clears a webhook), **Save**,
+  **Wait for a message** and **Allow** the chat that writes, then
+  **Restart**, which re-executes the gateway in place. Channels are built
+  once at start, which is why a restart is needed.
+- **The Managed card** shows the policy's locks and their reason; a locked
+  control is greyed out with that reason, and the API refuses it with 403
+  and the same words. The Claude plan is refused.
+- **`GET /healthz`** and **`GET /busyz`** answer on any Host, without
+  signing in (see [Health, busy and stopping](docker.md#health-busy-and-stopping)).
+  `ferrule health` prints `/healthz` from inside; `--probe` sets the exit
+  code.
+
 ## Security in three lines
 
 - The page listens on 127.0.0.1 only. The phone reaches it through a

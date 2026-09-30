@@ -433,7 +433,9 @@ subdomain routing; image signing (cosign) — a follow-up.
 
 ## 9. What was verified, and how
 
-Filled in as each part lands.
+§9.1 and §9.2 are the two measured pieces. §9.3 says, part by part, what
+each test proves and, in the same breath, what nothing here has run.
+
 
 ### 9.1 The planning spike (2026-09-30)
 
@@ -546,6 +548,51 @@ With it, and `FERRULE_REQUIRE_BROWSER_TEST=1`:
   variable that adds to `AGENT_BROWSER_ARGS`). So: about ten bots can have a page
   open at once per 16 GiB, and the browser variant costs about 65 MiB more
   per bot once it has been used.
+
+### 9.3 Part by part: verified, and not (2026-09-30)
+
+**Part 1, the image.** Verified: the `Dockerfile` was read against the
+plan and `.github/workflows/release.yml` builds the same targets; the
+agent-browser pin (0.38.1) was installed and used by the real-Chrome test
+in §9.2. **Not verified:** `docker build` has never run (there is no Docker
+daemon here), so the image sizes in `docs/docker.md` are estimates, the
+musl build failed on the missing `x86_64-linux-musl-gcc`, and
+`HEALTHCHECK`, tini and uid 10001 are untested. The first CI release run is
+the first real build.
+
+**Part 2, managed mode.** Verified by `tests/it/managed.rs` (the real
+binary) and the unit tests in `managed.rs`: the env decides over the
+config; a misspelt or nonsense policy is refused; the config is narrowed to
+the policy (caps can only go down, a forbidden provider is refused with the
+policy's reason, hooks need the container word and the shell); the policy
+file is hidden from commands and the panel secret is not passed to
+children; commands need the OS sandbox or the policy's word; `update`,
+`setup`, `ssh`, `instances` and the Claude login are refused; `doctor`
+shows the managed line; a first start serves the page with no model or
+channel. **Not verified:** the `container` policy in a real container; it
+only stops ferrule from insisting on its own sandbox.
+
+**Part 3, panel sign-in.** Verified: `panel.rs` unit tests (a good token
+verifies and each defect is named, a spent nonce survives a restart, the
+nonce file is capped and fails closed) and a sign-in through the gateway
+under the `/b/<id>/` prefix, with the public URL's host, origin and cookie
+`Path`/`Secure`. **Not verified:** any real reverse proxy; the nginx block
+in `docs/docker.md` is the shape the tests exercise, not something run.
+
+**Part 4, the dashboard's gaps.** Verified against a fake Telegram: the
+token test, save, waiting for a first message, and allowing that chat; and
+`FERRULE_HTTP_BIND` for the HTTP API. **Not verified:** a real Telegram bot.
+
+**Part 5, health and lifecycle.** Verified: `/healthz` and `/busyz` before
+and during a turn, `ferrule health [--probe]`, a bounded SIGTERM drain, a
+re-exec restart in the same process (same pid), and backup and restore into a
+non-empty data dir (the old one kept as `.pre-restore-…`). **Not
+verified:** `docker stop`'s own timing and the panel's use of `/busyz`.
+
+**Part 7, docs.** `docs/docker.md` is new; `dashboard.md`, `sandbox.md`,
+`channels.md` and the README link to it. Every environment variable, key
+and flag named there was checked against the code by search. The
+`docker run` lines are the shape the tests run, not lines anyone has run.
 
 ## Plan
 
@@ -950,7 +997,7 @@ already.
      (signal-cli is a JVM that ferrule would spawn unsandboxed);
    - in `config()` (:63), the arm that builds a `Daemon` gets the guard
      `if !crate::managed::on()`. In managed mode a Signal setup needs
-     an external daemon's URL (`http_url`), which is already supported.
+     an external daemon's URL (`[gateway.signal] url`), which is already supported.
 
    Document this in docker.md (7.1).
 
@@ -2065,7 +2112,7 @@ One commit: `M44 part 7: docs — …`.
    of signing, and why a secret must be per bot.
 7. **Never mount the Docker socket**: the Unix-socket allowlist isn't
    enforced under the default profile.
-8. **Signal** needs an external signal-cli daemon (`http_url`).
+8. **Signal** needs an external signal-cli daemon (`[gateway.signal] url`; the plan said `http_url`, the key is `url`).
 9. **Health, busy and stopping**: `/healthz`, `/busyz`,
    `--stop-timeout 30` and the drain.
 10. **How a change is picked up**: the 4.6 table.
