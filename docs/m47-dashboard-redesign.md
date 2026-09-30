@@ -1,7 +1,8 @@
 # M47 — the dashboard, redesigned
 
-Status: **plan** (phase 1). The audit, the before/after numbers and "what
-was verified and how" are filled in as each part lands.
+Status: **built** (parts 1–7), PR to `main` open, not merged. The plan below
+was written first; "Corrections made while building" lists where the code
+corrected it, and "Verified, and how" says what was actually run.
 
 ## Why
 
@@ -1168,6 +1169,71 @@ end.
   and the browser check asserts `dir="rtl"` and no horizontal scroll in
   Hebrew.
 
+
+## Verified, and how
+
+**Tests.** `cargo test --workspace --no-fail-fast`: 1721 passed before
+M47, **1777 passed, 0 failed, 29 ignored** after part 6 (56 new, in 71
+test binaries plus the one M47 added). Run on this branch, real binaries.
+
+| What | Where |
+|---|---|
+| Every API route is still used by the page (no ability lost by accident, D15) | `page_tests::every_route_is_used_by_the_page` |
+| Every colour is a token; every icon used exists; every glossary word has a definition | `page_tests::every_colour_is_a_token`, `every_icon_used_exists`, `every_tip_has_a_definition` |
+| Every `tr("…")` has a Hebrew entry and none is stale | `page_tests::every_shell_string_has_a_hebrew_version` |
+| Static files gzip only for a browser that takes it; the API never | `dashboard::tests::the_pages_own_files_are_gzipped_only_for_a_browser_that_takes_it` |
+| Memory lists, searches and forgets; calls no model | `dashboard_m47::memory_lists_searches_and_forgets`, `memory_search_calls_no_model` |
+| The setup checklist follows the bot | `dashboard_m47::the_setup_checklist_follows_the_bot` |
+| Tasks from the page: listed, audited, no gate, a bad schedule says why, a past "once" refused, the preview equals the parser for every preset | `dashboard_m47::a_task_added_on_the_page_is_listed_and_audited`, `a_page_task_cannot_carry_a_gate`, `a_bad_schedule_says_why`, `a_once_task_in_the_past_is_refused`, `the_preview_matches_the_parser_for_every_preset` |
+| Backup from the page: downloads, has no secrets, names can't leave the folder, only three kept, doesn't contain the last one | `dashboard_m47::a_page_backup_downloads_and_has_no_secrets`, `backup_names_cannot_leave_the_backups_dir`, `only_three_page_backups_are_kept`, `a_backup_does_not_contain_the_last_one` |
+| The new POSTs need a session and a CSRF token | `dashboard_m47::the_new_posts_need_a_session_and_csrf` |
+| A photo is what its bytes say, never SVG, capped, and only a signed-in page may send a big body (also under a prefix) | `a_photo_is_what_its_bytes_say_and_never_svg`, `a_photo_over_the_cap_is_refused_with_a_reason`, `only_a_signed_in_page_may_send_a_big_body_to_the_photo_route_even_under_a_prefix` |
+| A photo reaches a vision model as pixels on each wire (OpenAI-compatible, Anthropic, Responses/Codex, Claude Code as a note) and a text-only model is told | `a_photo_goes_as_an_image_url_part`, `a_photo_goes_as_a_base64_image_block`, `a_photo_goes_as_input_image`, `a_photo_reaches_the_codex_backend_as_a_typed_message`, `a_photo_reaches_claude_code_as_a_note`, `a_page_photo_reaches_the_model`, `a_page_photo_to_a_text_only_model_says_so` |
+| Vision by name unless the config says; only the newest four images; an image 400 is retried without them; old transcripts still load | `a_model_sees_photos_by_its_name_unless_the_config_says`, `vision_false_in_config_wins_over_the_name`, `newest_four_images_go_as_pixels`, `an_image_400_is_retried_with_notes`, `only_a_400_about_images_is_retried_without_them`, `old_transcripts_without_images_still_load` |
+| Telegram photos: largest size within the cap, pixels to a vision model | `a_photo_takes_the_largest_size_a_model_can_use_within_the_cap`, `a_telegram_photo_reaches_a_vision_model_as_pixels` |
+| A text turn's request body is byte-identical to before | `openai_compat::a_text_turn_body_is_unchanged` |
+
+**The browser check** (`scripts/dashboard_browser_check.mjs`, real gateway,
+real headless Chromium, mock model): **27 steps, 27 passed, 0 failed**. It
+fails on any page error, on a stray `null`/`undefined`, and, at 390 px on
+every section, on a sideways scroll, an unnamed control, a control under
+44 px, anything but one `h1`, a broken Skip link, or a Settings page that
+polls.
+
+**Numbers** (headless Chromium, cache off, no CPU throttle, `--measure`).
+
+| | Before | After |
+|---|---|---|
+| Home, cold, 390 px: bytes on the wire (assets) | 203,128 | about 107 KB |
+| First contentful paint | 132 ms | 84–92 ms |
+| API calls on load | 5 | 6 (the checklist's) |
+| `app.js` raw / gzip | 118,452 / 31,730 | 182,544 / about 51.8 KB |
+| `app.css` raw / gzip | 21,065 / 5,619 | 39,478 / about 9.3 KB |
+
+The plan's ≤ 45 KB gzip budget for `app.js` was missed (correction 46): the
+page does a good deal more. The wire is still about half of what it was,
+because the server now compresses.
+
+**Screenshots.** Fifteen sections × 390 and 1280 px × light and dark, in
+[assets/m47/after](assets/m47/after/), named `<section>-<width>-<theme>.jpg`
+(`agents channels chat config connections console extensions health logs
+memory models routing settings tasks usage`). The thirteen sections that
+existed before are in [assets/m47/before](assets/m47/before/) under the
+same names (`memory` and `settings` are new). Regenerate with
+`node scripts/dashboard_browser_check.mjs --bin … --chromium … --shots-all DIR`.
+The whole directory is about 7.3 MB (D13).
+
+**Not verified live.**
+- A real phone over the real tunnel. Phone behaviour is Chromium's mobile
+  emulation at 390 px with touch; the on-screen keyboard, the camera
+  button, iOS Safari's safe area and pinch behaviour were not seen.
+- Real vision providers. The wire bodies are checked against mocks written
+  from each provider's documentation; no real OpenAI, Anthropic, Gemini or
+  Codex call was made with an image.
+- A real Telegram photo. The adapter is tested against a mock Bot API.
+- Hebrew by a Hebrew reader. The strings are complete (a test says so),
+  but the server's own sentences stay English and nobody has proofread the
+  wording.
 
 ## Corrections made while building
 
