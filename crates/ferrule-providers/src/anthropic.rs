@@ -7,12 +7,14 @@
 //! and go back only inside the loop that made them (design §2).
 
 use crate::common::{self, last_user, replayable};
+use crate::vision::{self, Part};
 use crate::{DriverOptions, Thinking};
 use ferrule_core::error::CoreError;
 use ferrule_core::message::{Message, NativeBlocks, Role, ToolCall, Usage};
 use ferrule_core::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use ferrule_core::tool::ToolDefinition;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::warn;
 
 /// `NativeBlocks::api` for this driver.
@@ -45,6 +47,8 @@ pub struct AnthropicProvider {
     /// The key was a subscription token: it isn't kept, and every call
     /// fails without a request.
     refused: bool,
+    /// A server said no to a photo: from here on, notes only.
+    refused_images: AtomicBool,
 }
 
 /// A request body, and whether it carries anything the thinking-400 retry
@@ -79,7 +83,16 @@ impl AnthropicProvider {
             options,
             client: common::client(),
             refused,
+            refused_images: AtomicBool::new(false),
         }
+    }
+
+    fn sees(&self) -> bool {
+        !self.refused_images.load(Ordering::Relaxed)
+            && self
+                .options
+                .vision
+                .unwrap_or_else(|| vision::by_name(&self.model))
     }
 
     /// The request body. `plain` is the retry after a thinking 400: no
@@ -95,6 +108,8 @@ impl AnthropicProvider {
             .collect();
 
         let latest_user = last_user(msgs);
+        let sees = self.sees();
+        let pixel_set = ferrule_core::vision::pixel_set(msgs);
         let mut wire: Vec<WireMessage> = Vec::new();
         // Where each user message's text ended up: (message, block).
         let mut user_marks: Vec<(usize, usize)> = Vec::new();
@@ -116,8 +131,29 @@ impl AnthropicProvider {
                     }
                 }
                 Role::User => {
-                    if let Some(t) = nonempty(&m.content) {
-                        push(&mut wire, "user", vec![text_block(t)]);
+                    // Photos first (the API reads them best that way), then
+                    // the words, then a note for each photo not sent as pixels.
+                    let mut blocks = Vec::new();
+                    let mut text = nonempty(&m.content).unwrap_or_default().to_string();
+                    for part in vision::parts(i, m, &pixel_set, sees) {
+                        match part {
+                            Part::Pixels { mime, data } => blocks.push(json!({
+                                "type": "image",
+                                "source": { "type": "base64", "media_type": mime, "data": data },
+                            })),
+                            Part::Note(n) => {
+                                if !text.is_empty() {
+                                    text.push('\n');
+                                }
+                                text.push_str(&n);
+                            }
+                        }
+                    }
+                    if !text.is_empty() {
+                        blocks.push(text_block(&text));
+                    }
+                    if !blocks.is_empty() {
+                        push(&mut wire, "user", blocks);
                         let at = wire.len() - 1;
                         let mark = (at, wire[at].1.len() - 1);
                         // Text right after the goal (recalled memory, a
@@ -361,8 +397,28 @@ impl Provider for AnthropicProvider {
         &self.name
     }
 
+    fn sees_images(&self) -> bool {
+        self.sees()
+    }
+
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
-        let first = self.payload(&req, false);
+        let pixels = vision::has_pixels(&req.messages, self.sees());
+        match self.attempt(&req).await {
+            // The name list guessed wrong: once more with notes, and notes
+            // from here on.
+            Err(e) if pixels && vision::image_rejected(&e) => {
+                warn!(provider = %self.name, "photos refused ({e}); sending notes instead");
+                self.refused_images.store(true, Ordering::Relaxed);
+                self.attempt(&req).await
+            }
+            done => done,
+        }
+    }
+}
+
+impl AnthropicProvider {
+    async fn attempt(&self, req: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let first = self.payload(req, false);
         let sink = req.stream.as_ref();
         let body = match self.post(&first.body, sink).await {
             // Safety net: thinking bound to a prefix that moved under it.
@@ -373,7 +429,7 @@ impl Provider for AnthropicProvider {
                     "thinking blocks rejected, retrying once without them: {}",
                     m.chars().take(200).collect::<String>()
                 );
-                self.post(&self.payload(&req, true).body, sink).await?
+                self.post(&self.payload(req, true).body, sink).await?
             }
             other => other?,
         };

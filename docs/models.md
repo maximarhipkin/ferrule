@@ -185,6 +185,40 @@ last ran on.
 A gateway started with `--provider` stays on it until it restarts without
 that flag. `/model` says so.
 
+## Photos: which models see them
+
+A photo sent in a chat (Telegram, WhatsApp, the dashboard and the other
+channels that save files) reaches the model as a picture when the model can
+see one. Each provider decides this for itself, so it stays right when a
+fallback takes over:
+
+- **A model that sees photos** gets the image in its own format (the chat
+  driver's `image_url`, Anthropic's `image`, the Responses `input_image`).
+  Only the newest four photos of a conversation go as pixels; older ones
+  become a note, so a long chat doesn't resend every photo.
+- **A model that doesn't** gets a plain note with the saved file's path,
+  and the agent can open the file with its tools. The chat is told once
+  that "the model I'm using can't see images".
+
+Whether a model sees photos comes from `vision` in the config when you set
+it, and otherwise from its name:
+
+```toml
+[providers.local]
+vision = true                          # the provider's models all see photos
+
+[providers.local.models."qwen2.5-vl"]
+vision = true                          # or one model; false turns it off
+```
+
+The name list covers the Claude, GPT-4o/4.1/5, Gemini, Grok 4, Llama 3.2
+Vision and 4, Qwen-VL, Pixtral, Mistral Small 3.1+, Gemma 3 and LLaVA
+families. Everything else (DeepSeek, Kimi K2, GPT-3.5, `o1-mini`, the mock)
+is treated as text-only. The Claude Code plan engine is text-only too.
+The dashboard's Models list marks a model **sees photos**. If a provider
+answers an image with a 400 that names images, Ferrule retries that
+request once with notes in place of pixels.
+
 ## Which model runs
 
 Highest first:

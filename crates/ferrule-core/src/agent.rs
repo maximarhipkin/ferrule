@@ -283,6 +283,8 @@ pub struct Agent {
     started: bool,
     budget: Option<Arc<dyn Budget>>,
     inbox: Option<Arc<dyn Inbox>>,
+    /// Photos for the next goal message (M47); see [`Agent::attach_images`].
+    pending_images: Vec<crate::message::ImageRef>,
     stop: Option<StopFlag>,
     guard: Option<Arc<dyn Guard>>,
     session_recall: Option<Arc<dyn SessionRecall>>,
@@ -347,6 +349,7 @@ impl Agent {
             started: false,
             budget: None,
             inbox: None,
+            pending_images: Vec::new(),
             stop: None,
             guard: None,
             session_recall: None,
@@ -429,6 +432,17 @@ impl Agent {
     pub fn with_inbox(mut self, inbox: Arc<dyn Inbox>) -> Self {
         self.inbox = Some(inbox);
         self
+    }
+
+    /// Photos that ride on the next goal message. The channel saved them to
+    /// disk; each driver decides between pixels and a note (M47).
+    pub fn attach_images(&mut self, images: Vec<crate::message::ImageRef>) {
+        self.pending_images = images;
+    }
+
+    /// Whether the model that serves the next call sees images.
+    pub fn sees_images(&self) -> bool {
+        self.provider.sees_images()
     }
 
     /// Stop at the next step once `flag` is set; see [`StopFlag`].
@@ -525,7 +539,8 @@ impl Agent {
     }
 
     fn est_context_tokens(&self) -> usize {
-        self.messages.iter().map(|m| m.est_tokens()).sum()
+        self.messages.iter().map(|m| m.est_tokens()).sum::<usize>()
+            + crate::vision::est_tokens(&self.messages)
     }
 
     /// The ledger, when its sink wants trace events this run.
@@ -1050,7 +1065,8 @@ impl Agent {
         }
         self.goal = Some(goal.to_string());
         self.incomplete = None;
-        self.push(Message::user(goal));
+        let images = std::mem::take(&mut self.pending_images);
+        self.push(Message::user_with_images(goal, images));
         if std::mem::take(&mut self.memory_due) {
             if let Some(memory) = self.memory.clone() {
                 self.push(Message::user(memory));
@@ -2601,6 +2617,39 @@ mod tests {
             .messages
             .iter()
             .any(|m| m.content.as_deref() == Some("from the new tool")));
+    }
+
+    #[tokio::test]
+    async fn attached_images_ride_on_the_next_user_message() {
+        let mut agent = make_agent(vec![
+            Message::assistant(Some("I see it".into()), vec![], None),
+            Message::assistant(Some("and now?".into()), vec![], None),
+        ]);
+        let photo = crate::message::ImageRef {
+            path: "inbox/a.jpg".into(),
+            mime: "image/jpeg".into(),
+            name: Some("a.jpg".into()),
+        };
+        assert!(!agent.sees_images(), "the scripted provider is text-only");
+        agent.attach_images(vec![photo.clone()]);
+        let (tx, _rx) = mpsc::channel(64);
+        agent.run("what is this?", tx).await.unwrap();
+        let goal = agent
+            .messages
+            .iter()
+            .find(|m| m.content.as_deref() == Some("what is this?"))
+            .unwrap();
+        assert_eq!(goal.images, vec![photo]);
+        // Once: the next message doesn't carry the photo again.
+        let (tx, _rx) = mpsc::channel(64);
+        agent.run("and this?", tx).await.unwrap();
+        let next = agent
+            .messages
+            .iter()
+            .find(|m| m.content.as_deref() == Some("and this?"))
+            .unwrap();
+        assert!(next.images.is_empty());
+        assert!(agent.est_context_tokens() >= crate::vision::IMAGE_TOKENS);
     }
 
     #[tokio::test]

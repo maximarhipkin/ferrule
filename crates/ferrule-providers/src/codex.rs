@@ -281,8 +281,26 @@ impl Provider for CodexProvider {
         &self.name
     }
 
+    fn sees_images(&self) -> bool {
+        self.body.sees()
+    }
+
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
-        let first = self.payload(&req, false);
+        let pixels = crate::vision::has_pixels(&req.messages, self.body.sees());
+        match self.attempt(&req).await {
+            Err(e) if pixels && crate::vision::image_rejected(&e) => {
+                warn!(provider = %self.name, "photos refused ({e}); sending notes instead");
+                self.body.refuse_images();
+                self.attempt(&req).await
+            }
+            done => done,
+        }
+    }
+}
+
+impl CodexProvider {
+    async fn attempt(&self, req: &CompletionRequest) -> Result<CompletionResponse, CoreError> {
+        let first = self.payload(req, false);
         let sink = req.stream.as_ref();
         let body = match self.post(&first.0, sink).await {
             Err(CoreError::Provider(m)) if first.1 && reasoning_rejected(&m) => {
@@ -290,7 +308,7 @@ impl Provider for CodexProvider {
                     provider = %self.name,
                     "reasoning items rejected, retrying once without them"
                 );
-                self.post(&self.payload(&req, true).0, sink).await?
+                self.post(&self.payload(req, true).0, sink).await?
             }
             other => other?,
         };
@@ -317,6 +335,16 @@ impl CodexProvider {
 /// `{"role","content":"text"}` → `{"type":"message","role","content":[…]}`,
 /// the form the Codex CLI sends.
 fn typed_message(item: &mut Value) {
+    // Photos: the content is already parts, only the wrapper is missing.
+    if item.get("type").is_none() {
+        if let (Some(role), Some(parts)) = (
+            item.get("role").and_then(Value::as_str).map(str::to_string),
+            item.get("content").filter(|c| c.is_array()).cloned(),
+        ) {
+            *item = json!({"type": "message", "role": role, "content": parts});
+            return;
+        }
+    }
     let (Some(role), Some(text)) = (
         item.get("role").and_then(Value::as_str).map(str::to_string),
         item.get("content")
@@ -346,6 +374,9 @@ fn cache_key(req: &CompletionRequest, model: &str) -> String {
     let mut users = 0;
     for m in &req.messages {
         m.content.hash(&mut h);
+        for img in &m.images {
+            img.path.hash(&mut h);
+        }
         if m.role == ferrule_core::Role::User {
             users += 1;
             if users == 1 {

@@ -306,3 +306,38 @@ async fn a_refusal_part_is_final() {
     assert_eq!(e.class(), FailureClass::Refused);
     assert!(e.to_string().contains("I can't help with that."), "{e}");
 }
+
+#[test]
+fn a_photo_goes_as_input_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cat.jpg");
+    std::fs::write(&path, [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+    let img = ferrule_core::ImageRef {
+        path: path.to_string_lossy().into_owned(),
+        mime: "image/jpeg".into(),
+        name: Some("cat.jpg".into()),
+    };
+    let msgs = vec![Message::user_with_images("what is this?", vec![img])];
+    let b = with(DriverOptions::default())
+        .payload(&req(msgs.clone()), false)
+        .body;
+    let content = &b["input"][0]["content"];
+    assert_eq!(
+        content[0],
+        json!({"type": "input_text", "text": "what is this?"})
+    );
+    assert_eq!(content[1]["type"], "input_image");
+    assert_eq!(
+        content[1]["image_url"],
+        "data:image/jpeg;base64,/9j/4AECAw=="
+    );
+
+    let blind = with(DriverOptions {
+        vision: Some(false),
+        ..Default::default()
+    });
+    let b = blind.payload(&req(msgs), false).body;
+    let text = b["input"][0]["content"].as_str().unwrap();
+    assert!(text.contains("can't see images"), "{text}");
+    assert!(!b.to_string().contains("/9j/"), "{b}");
+}

@@ -551,3 +551,27 @@ async fn the_model_list_leaves_out_models_for_a_newer_client() {
     );
     assert_eq!(header(&raw, "version"), Some("0.160.0-alpha.3"));
 }
+
+#[test]
+fn a_photo_reaches_the_codex_backend_as_a_typed_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cat.jpg");
+    std::fs::write(&path, [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+    let img = ferrule_core::ImageRef {
+        path: path.to_string_lossy().into_owned(),
+        mime: "image/jpeg".into(),
+        name: Some("cat.jpg".into()),
+    };
+    let p = provider("http://127.0.0.1:1/v1", fake());
+    let mut r = req();
+    r.messages = vec![Message::user_with_images("what is this?", vec![img])];
+    let (body, _) = p.payload(&r, false);
+    let item = &body["input"][0];
+    assert_eq!(item["type"], "message");
+    assert_eq!(item["role"], "user");
+    assert_eq!(
+        item["content"][0],
+        json!({"type": "input_text", "text": "what is this?"})
+    );
+    assert_eq!(item["content"][1]["type"], "input_image");
+}

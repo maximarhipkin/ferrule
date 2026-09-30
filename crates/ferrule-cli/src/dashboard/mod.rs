@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod backup_page;
 pub mod channels;
 pub mod chat;
 pub mod cli;
@@ -13,11 +14,15 @@ pub mod console;
 pub mod door;
 mod healthz;
 pub mod http;
+pub mod memory;
 pub mod models_page;
 pub mod notices;
+#[cfg(test)]
+mod page_tests;
 pub mod panel;
 mod public;
 pub mod runs;
+pub mod setup;
 mod telegram;
 #[cfg(test)]
 pub mod testing;
@@ -33,7 +38,7 @@ pub use public::Public;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
@@ -42,6 +47,8 @@ const APP_JS: &str = include_str!("assets/app.js");
 const APP_CSS: &str = include_str!("assets/app.css");
 /// Sets the theme before the first paint (the CSP allows no inline script).
 const THEME_JS: &str = include_str!("assets/theme.js");
+/// The page's fixed words in Hebrew: fetched only when Hebrew is chosen.
+const LANG_HE: &str = include_str!("assets/lang-he.js");
 /// IBM Plex (OFL 1.1), served from the binary so the page never depends on
 /// a font CDN: Sans and Mono cut to Latin-1, Sans Hebrew whole, each loaded
 /// only when the page has a character in its `unicode-range`.
@@ -105,6 +112,8 @@ pub struct Ctx {
     pub plans: Arc<models_page::PlanFlows>,
     /// The page's own chat channel (M37 §4.3); `None` outside the gateway.
     pub chat: Option<Arc<chat::DashboardChannel>>,
+    /// The backup started from the page, if one is running (M47).
+    pub backups: backup_page::Job,
 }
 
 impl Ctx {
@@ -131,6 +140,7 @@ impl Ctx {
             plans: Arc::default(),
             runs: Arc::default(),
             chat: None,
+            backups: Arc::default(),
         }
     }
 
@@ -154,6 +164,7 @@ impl Ctx {
             plans: Arc::default(),
             runs: Arc::default(),
             chat: None,
+            backups: Arc::default(),
         }
     }
 }
@@ -332,7 +343,7 @@ impl Dashboard {
                 };
                 let Some(me) = weak.upgrade() else { return };
                 tokio::spawn(async move {
-                    let resp = match http::read(&mut conn).await {
+                    let resp = match http::read(&mut conn, |head| me.limit_for(head)).await {
                         Ok(req) => me.handle(req).await,
                         Err(0) => return,
                         Err(status) => Response::text(status, "bad request"),
@@ -568,6 +579,41 @@ impl Dashboard {
         }
     }
 
+    /// How much body this request may bring, decided from its head alone.
+    /// Only a photo for the chat gets more than the usual 64 KB, and only
+    /// from someone already logged in and passing the same checks `handle`
+    /// makes (same origin, JSON, CSRF); anyone else gets the usual limit and
+    /// the usual refusal, and none of their body is read.
+    fn limit_for(&self, head: &http::Head) -> http::Limit {
+        let usual = http::Limit::default();
+        if head.method != "POST"
+            || self.strip_base(&head.path) != "/api/chat/photo"
+            || self.health_only.load(Ordering::Relaxed)
+        {
+            return usual;
+        }
+        let host = head.header("host").unwrap_or("").to_ascii_lowercase();
+        let same_origin = head.header("origin") == Some(self.origin_for(&host).as_str());
+        let json = head
+            .header("content-type")
+            .is_some_and(|c| c.starts_with("application/json"));
+        let granted =
+            self.sessions
+                .check(head.cookie(auth::COOKIE), &host, self.links.revoked_ms());
+        let csrf = head.header(auth::CSRF_HEADER).unwrap_or("");
+        match granted {
+            Some(g)
+                if self.host_allowed(&host) && same_origin && json && auth::same(csrf, &g.csrf) =>
+            {
+                http::Limit {
+                    body: chat::MAX_PHOTO_BODY,
+                    deadline: Duration::from_secs(60),
+                }
+            }
+            _ => usual,
+        }
+    }
+
     pub async fn handle(&self, mut req: Request) -> Response {
         req.path = self.strip_base(&req.path);
         match req.path.as_str() {
@@ -585,16 +631,48 @@ impl Dashboard {
         let get = req.method == "GET" || req.method == "HEAD";
         match (req.method.as_str(), req.path.as_str()) {
             (_, "/" | "/login" | "/index.html") if get => {
-                return Response::new(200, "text/html; charset=utf-8", self.index.clone())
+                return squeezed(
+                    &req,
+                    "text/html; charset=utf-8",
+                    self.index.as_bytes(),
+                    None,
+                )
             }
             (_, "/app.js") if get => {
-                return Response::new(200, "text/javascript; charset=utf-8", APP_JS)
+                static GZ: OnceLock<Vec<u8>> = OnceLock::new();
+                return squeezed(
+                    &req,
+                    "text/javascript; charset=utf-8",
+                    APP_JS.as_bytes(),
+                    Some(&GZ),
+                );
             }
             (_, "/app.css") if get => {
-                return Response::new(200, "text/css; charset=utf-8", APP_CSS)
+                static GZ: OnceLock<Vec<u8>> = OnceLock::new();
+                return squeezed(
+                    &req,
+                    "text/css; charset=utf-8",
+                    APP_CSS.as_bytes(),
+                    Some(&GZ),
+                );
             }
             (_, "/theme.js") if get => {
-                return Response::new(200, "text/javascript; charset=utf-8", THEME_JS)
+                static GZ: OnceLock<Vec<u8>> = OnceLock::new();
+                return squeezed(
+                    &req,
+                    "text/javascript; charset=utf-8",
+                    THEME_JS.as_bytes(),
+                    Some(&GZ),
+                );
+            }
+            (_, "/lang-he.js") if get => {
+                static GZ: OnceLock<Vec<u8>> = OnceLock::new();
+                return squeezed(
+                    &req,
+                    "text/javascript; charset=utf-8",
+                    LANG_HE.as_bytes(),
+                    Some(&GZ),
+                );
             }
             (_, "/fonts/OFL.txt") if get => {
                 return Response::new(200, "text/plain; charset=utf-8", FONT_LICENSE)
@@ -653,6 +731,7 @@ impl Dashboard {
             (true, "/api/session") => {
                 Response::json(200, &json!({ "csrf": granted.csrf, "user": granted.user }))
             }
+            (true, "/api/backups/download") => backup_page::download(&self.ctx, &req),
             (false, "/api/logout") => {
                 if let Some(c) = cookie {
                     self.sessions.close(c);
@@ -770,6 +849,52 @@ pub fn host_of(url: &str) -> Result<String> {
         .to_ascii_lowercase())
 }
 
+/// Whether an `Accept-Encoding` value takes gzip (and doesn't say `q=0`).
+fn takes_gzip(value: &str) -> bool {
+    value.split(',').any(|part| {
+        let mut it = part.split(';');
+        let coding = it.next().unwrap_or("").trim();
+        let refused = it.any(|p| {
+            let p = p.trim();
+            p.strip_prefix("q=")
+                .and_then(|q| q.trim().parse::<f32>().ok())
+                .is_some_and(|q| q <= 0.0)
+        });
+        (coding.eq_ignore_ascii_case("gzip") || coding == "*") && !refused
+    })
+}
+
+/// One of the page's own files: gzipped when the browser takes it (the
+/// page is about 220 KB as written and about 65 KB gzipped, M47), whole
+/// when it doesn't. `cache` keeps the compressed bytes of a file that
+/// never changes while the process runs, so it is squeezed once.
+fn squeezed(
+    req: &Request,
+    content_type: &'static str,
+    raw: &[u8],
+    cache: Option<&'static OnceLock<Vec<u8>>>,
+) -> Response {
+    if !req.header("accept-encoding").is_some_and(takes_gzip) {
+        return Response::new(200, content_type, raw);
+    }
+    let squeeze = || {
+        use std::io::Write;
+        let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        let _ = z.write_all(raw);
+        z.finish().unwrap_or_default()
+    };
+    let body = match cache {
+        Some(c) => c.get_or_init(squeeze).clone(),
+        None => squeeze(),
+    };
+    if body.is_empty() {
+        return Response::new(200, content_type, raw);
+    }
+    Response::new(200, content_type, body)
+        .with_header("Content-Encoding", "gzip".into())
+        .with_header("Vary", "Accept-Encoding".into())
+}
+
 /// Every string in `value`, through the redactor.
 pub fn redact_value(value: &mut Value, r: &Redactor) {
     match value {
@@ -869,6 +994,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_pages_own_files_are_gzipped_only_for_a_browser_that_takes_it() {
+        use std::io::Read;
+        let (_d, d) = dash();
+        let has = |r: &Response, k: &str| {
+            r.headers
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+        };
+        for path in ["/", "/app.js", "/app.css", "/theme.js", "/lang-he.js"] {
+            let plain = d.handle(req("GET", path, &[], "")).await;
+            assert_eq!(has(&plain, "Content-Encoding"), None, "{path}");
+            let zipped = d
+                .handle(req(
+                    "GET",
+                    path,
+                    &[("accept-encoding", "br, gzip;q=0.8")],
+                    "",
+                ))
+                .await;
+            assert_eq!(has(&zipped, "Content-Encoding").as_deref(), Some("gzip"));
+            assert_eq!(
+                has(&zipped, "Vary").as_deref(),
+                Some("Accept-Encoding"),
+                "{path}"
+            );
+            assert!(zipped.body.len() < plain.body.len(), "{path} shrinks");
+            let mut back = Vec::new();
+            flate2::read::GzDecoder::new(&zipped.body[..])
+                .read_to_end(&mut back)
+                .unwrap();
+            assert_eq!(back, plain.body, "{path} round-trips");
+            // `q=0` says no, and so does asking for nothing.
+            for no in ["gzip;q=0", "identity", ""] {
+                let r = d
+                    .handle(req("GET", path, &[("accept-encoding", no)], ""))
+                    .await;
+                assert_eq!(has(&r, "Content-Encoding"), None, "{path} with {no:?}");
+            }
+        }
+        // The API is never squeezed: a secret must not ride a compressed body.
+        let r = d
+            .handle(req(
+                "GET",
+                "/api/session",
+                &[("accept-encoding", "gzip")],
+                "",
+            ))
+            .await;
+        assert_eq!(has(&r, "Content-Encoding"), None);
+    }
+
+    #[tokio::test]
     async fn fonts_are_cached_a_year_and_the_rest_not_at_all() {
         let (_d, d) = dash();
         let cache = |r: &Response| {
@@ -898,7 +1076,7 @@ mod tests {
         assert_eq!(r.status, 404);
         // The page and its scripts change with the binary: never cached
         // (`http::write` adds no-store to anything without its own).
-        for path in ["/", "/app.js", "/app.css", "/theme.js"] {
+        for path in ["/", "/app.js", "/app.css", "/theme.js", "/lang-he.js"] {
             let r = d.handle(req("GET", path, &[], "")).await;
             assert_eq!(r.status, 200, "{path}");
             assert_eq!(cache(&r), None, "{path}");
@@ -1097,6 +1275,72 @@ mod tests {
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.clone())
             .unwrap_or_default()
+    }
+
+    fn head(path: &str, headers: &[(&str, &str)]) -> http::Head {
+        http::Head {
+            method: "POST".into(),
+            path: path.into(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_signed_in_page_may_send_a_big_body_to_the_photo_route_even_under_a_prefix() {
+        let (_dir, d) = panel_dash("http://bots.test/b/b_test/");
+        let t = panel_token(60, "0123456789abcdef", PANEL_SECRET, "b_test");
+        let r = panel_post(&d, "/b/b_test/api/login", &t, "http://bots.test").await;
+        let cookie = header(&r, "Set-Cookie");
+        let cookie = cookie.split(';').next().unwrap().to_string();
+        let csrf = serde_json::from_slice::<Value>(&r.body).unwrap()["csrf"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let signed = |path: &str| {
+            head(
+                path,
+                &[
+                    ("host", "bots.test"),
+                    ("origin", "http://bots.test"),
+                    ("content-type", "application/json"),
+                    ("cookie", cookie.as_str()),
+                    (auth::CSRF_HEADER, csrf.as_str()),
+                ],
+            )
+        };
+        let big = |h: &http::Head| d.limit_for(h).body > 1024 * 1024;
+        // Signed in, at the prefixed path or the bare one a proxy leaves.
+        assert!(big(&signed("/b/b_test/api/chat/photo")));
+        assert!(big(&signed("/api/chat/photo")));
+        // Not the photo route, not a POST, no CSRF, another origin, no cookie.
+        assert!(!big(&signed("/b/b_test/api/chat/send")));
+        let mut get = signed("/b/b_test/api/chat/photo");
+        get.method = "GET".into();
+        assert!(!big(&get));
+        let mut no_csrf = signed("/b/b_test/api/chat/photo");
+        no_csrf.headers.remove(auth::CSRF_HEADER);
+        assert!(!big(&no_csrf));
+        let mut wrong_csrf = signed("/b/b_test/api/chat/photo");
+        wrong_csrf
+            .headers
+            .insert(auth::CSRF_HEADER.into(), "nope".into());
+        assert!(!big(&wrong_csrf));
+        let mut cross = signed("/b/b_test/api/chat/photo");
+        cross
+            .headers
+            .insert("origin".into(), "http://evil.test".into());
+        assert!(!big(&cross));
+        let mut anon = signed("/b/b_test/api/chat/photo");
+        anon.headers.remove("cookie");
+        assert!(!big(&anon));
+        let mut host = signed("/b/b_test/api/chat/photo");
+        host.headers.insert("host".into(), "evil.test".into());
+        assert!(!big(&host));
+        // And the usual limit is the small one.
+        assert_eq!(d.limit_for(&anon).body, http::Limit::default().body);
     }
 
     #[tokio::test]

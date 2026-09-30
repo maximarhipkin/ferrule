@@ -1,10 +1,12 @@
 use crate::common::{self, truncate};
+use crate::vision::{self, Part};
 use ferrule_core::error::CoreError;
 use ferrule_core::error::FailureClass;
 use ferrule_core::message::{Message, Role, ToolCall, Usage};
 use ferrule_core::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use ferrule_core::tool::ToolDefinition;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// OpenAI-compatible chat-completions driver. Handles the dialect details:
 /// tool schemas as `function` objects, arguments as JSON strings, and
@@ -15,6 +17,10 @@ pub struct OpenAiCompatProvider {
     api_key: String,
     model: String,
     client: reqwest::Client,
+    /// The config's `vision` key; `None` guesses from the model name.
+    vision: Option<bool>,
+    /// A server said no to a photo: from here on, notes only.
+    refused_images: AtomicBool,
 }
 
 impl OpenAiCompatProvider {
@@ -31,17 +37,57 @@ impl OpenAiCompatProvider {
             api_key: api_key.into(),
             model: model.into(),
             client,
+            vision: None,
+            refused_images: AtomicBool::new(false),
         }
     }
 
+    /// Whether the model sees photos, when the config says (`None`: guess).
+    pub fn with_vision(mut self, vision: Option<bool>) -> Self {
+        self.vision = vision;
+        self
+    }
+
+    #[cfg(test)]
     fn to_wire(msg: &Message, retain_reasoning: bool) -> Value {
+        Self::wire(msg, retain_reasoning, Vec::new())
+    }
+
+    /// `parts`: [`vision::parts`] of the message's photos.
+    fn wire(msg: &Message, retain_reasoning: bool, parts: Vec<Part>) -> Value {
         let mut m = json!({ "role": match msg.role {
             Role::System => "system",
             Role::User => "user",
             Role::Assistant => "assistant",
             Role::Tool => "tool",
         }});
-        if let Some(c) = &msg.content {
+        if !parts.is_empty() {
+            // The words, then a note for each photo that isn't going as
+            // pixels; then the pixels.
+            let mut text = msg.content.clone().unwrap_or_default();
+            let mut pics = Vec::new();
+            for part in parts {
+                match part {
+                    Part::Note(n) => {
+                        if !text.is_empty() {
+                            text.push('\n');
+                        }
+                        text.push_str(&n);
+                    }
+                    Part::Pixels { mime, data } => pics.push(json!({
+                        "type": "image_url",
+                        "image_url": { "url": format!("data:{mime};base64,{data}") },
+                    })),
+                }
+            }
+            m["content"] = if pics.is_empty() {
+                json!(text)
+            } else {
+                let mut all = vec![json!({ "type": "text", "text": text })];
+                all.extend(pics);
+                json!(all)
+            };
+        } else if let Some(c) = &msg.content {
             m["content"] = json!(c);
         } else if msg.role == Role::Assistant && !msg.tool_calls.is_empty() {
             m["content"] = Value::Null;
@@ -159,10 +205,35 @@ impl Provider for OpenAiCompatProvider {
         &self.name
     }
 
+    fn sees_images(&self) -> bool {
+        !self.refused_images.load(Ordering::Relaxed)
+            && self.vision.unwrap_or_else(|| vision::by_name(&self.model))
+    }
+
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
-        let payload = self.payload(&req);
+        let (payload, pixels) = self.payload(&req);
+        match self.send(&req, &payload).await {
+            // The name list guessed wrong (or the server's model differs):
+            // once more with notes, and notes from here on.
+            Err(e) if pixels && vision::image_rejected(&e) => {
+                tracing::warn!(provider = %self.name, "photos refused ({e}); sending notes instead");
+                self.refused_images.store(true, Ordering::Relaxed);
+                let (plain, _) = self.payload(&req);
+                self.send(&req, &plain).await
+            }
+            done => done,
+        }
+    }
+}
+
+impl OpenAiCompatProvider {
+    async fn send(
+        &self,
+        req: &CompletionRequest,
+        payload: &Value,
+    ) -> Result<CompletionResponse, CoreError> {
         if let Some(sink) = &req.stream {
-            match self.stream(&payload, sink).await {
+            match self.stream(payload, sink).await {
                 // A compatible server that won't stream, or won't take
                 // `stream_options`: once more, plainly.
                 Err(e) if e.class() == FailureClass::BadRequest => {
@@ -171,16 +242,28 @@ impl Provider for OpenAiCompatProvider {
                 done => return done,
             }
         }
-        let reply = common::send(self.post(&payload)).await?;
+        let reply = common::send(self.post(payload)).await?;
         Self::read_reply(reply)
     }
-}
 
-impl OpenAiCompatProvider {
-    fn payload(&self, req: &CompletionRequest) -> Value {
+    /// The request body, and whether any photo goes in it as pixels.
+    fn payload(&self, req: &CompletionRequest) -> (Value, bool) {
+        let sees = self.sees_images();
+        let set = ferrule_core::vision::pixel_set(&req.messages);
+        let mut pixels = false;
+        let messages: Vec<Value> = req
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let parts = vision::parts(i, m, &set, sees);
+                pixels |= parts.iter().any(|p| matches!(p, Part::Pixels { .. }));
+                Self::wire(m, true, parts)
+            })
+            .collect();
         let mut payload = json!({
             "model": self.model,
-            "messages": req.messages.iter().map(|m| Self::to_wire(m, true)).collect::<Vec<_>>(),
+            "messages": messages,
         });
         if !req.tools.is_empty() {
             payload["tools"] = Self::tools_to_wire(&req.tools);
@@ -192,7 +275,7 @@ impl OpenAiCompatProvider {
         if let Some(m) = req.max_output_tokens {
             payload["max_tokens"] = json!(m);
         }
-        payload
+        (payload, pixels)
     }
 
     fn post(&self, payload: &Value) -> reqwest::RequestBuilder {
@@ -555,5 +638,130 @@ mod tests {
         let p = OpenAiCompatProvider::new("test", format!("http://127.0.0.1:{port}/v1"), "sk", "m");
         let err = p.complete(request()).await.unwrap_err();
         assert!(err.is_transient(), "{err:?}");
+    }
+    /// Answers each connection in turn with the given (status, body), and
+    /// returns every request it saw.
+    fn serve_in_turn(
+        replies: Vec<(&'static str, &'static str)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for (status, body) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    let n = stream.read(&mut buf).unwrap();
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some(at) = text.find("\r\n\r\n") {
+                        let want = text[..at]
+                            .to_lowercase()
+                            .lines()
+                            .find_map(|l| {
+                                l.strip_prefix("content-length: ")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if raw.len() >= at + 4 + want || n == 0 {
+                            break;
+                        }
+                    } else if n == 0 {
+                        break;
+                    }
+                }
+                seen.push(String::from_utf8_lossy(&raw).to_string());
+                let resp = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+            seen
+        });
+        (format!("http://127.0.0.1:{port}/v1"), handle)
+    }
+
+    const OK: &str = r#"{"choices":[{"message":{"content":"a cat"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#;
+
+    fn photo_request(dir: &std::path::Path) -> CompletionRequest {
+        let path = dir.join("cat.jpg");
+        std::fs::write(&path, [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]).unwrap();
+        let img = ferrule_core::ImageRef {
+            path: path.to_string_lossy().into_owned(),
+            mime: "image/jpeg".into(),
+            name: Some("cat.jpg".into()),
+        };
+        CompletionRequest {
+            messages: vec![Message::user_with_images("what is this?", vec![img])],
+            tools: vec![],
+            max_output_tokens: None,
+            temperature: None,
+            stream: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_photo_goes_as_an_image_url_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let (url, handle) = serve_in_turn(vec![("200 OK", OK)]);
+        let p = OpenAiCompatProvider::new("t", url, "sk", "gpt-4o");
+        assert!(ferrule_core::Provider::sees_images(&p));
+        p.complete(photo_request(dir.path())).await.unwrap();
+        let sent = handle.join().unwrap().remove(0);
+        let body: Value = serde_json::from_str(sent.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content[0], json!({"type": "text", "text": "what is this?"}));
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "data:image/jpeg;base64,/9j/4AECAw=="
+        );
+    }
+
+    #[tokio::test]
+    async fn a_text_only_model_gets_the_note_not_the_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (url, handle) = serve_in_turn(vec![("200 OK", OK)]);
+        let p = OpenAiCompatProvider::new("t", url, "sk", "deepseek-chat");
+        assert!(!ferrule_core::Provider::sees_images(&p));
+        p.complete(photo_request(dir.path())).await.unwrap();
+        let sent = handle.join().unwrap().remove(0);
+        assert!(
+            !sent.contains("image_url") && !sent.contains("/9j/"),
+            "{sent}"
+        );
+        let body: Value = serde_json::from_str(sent.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let text = body["messages"][0]["content"].as_str().unwrap();
+        assert!(
+            text.starts_with("what is this?\n[This model can't see images"),
+            "{text}"
+        );
+        assert!(text.contains("cat.jpg"), "{text}");
+        // The config can say a model sees even when its name doesn't.
+        let (url, handle) = serve_in_turn(vec![("200 OK", OK)]);
+        let p = OpenAiCompatProvider::new("t", url, "sk", "deepseek-chat").with_vision(Some(true));
+        p.complete(photo_request(dir.path())).await.unwrap();
+        assert!(handle.join().unwrap()[0].contains("image_url"));
+    }
+
+    #[tokio::test]
+    async fn an_image_400_is_retried_with_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let refusal = r#"{"error":{"message":"image input is not supported by this model"}}"#;
+        let (url, handle) = serve_in_turn(vec![
+            ("400 Bad Request", refusal),
+            ("200 OK", OK),
+            ("200 OK", OK),
+        ]);
+        let p = OpenAiCompatProvider::new("t", url, "sk", "some-new-model").with_vision(Some(true));
+        let reply = p.complete(photo_request(dir.path())).await.unwrap();
+        assert_eq!(reply.message.content.as_deref(), Some("a cat"));
+        assert!(!ferrule_core::Provider::sees_images(&p), "it is remembered");
+        // The next call doesn't try pixels again.
+        p.complete(photo_request(dir.path())).await.unwrap();
+        let seen = handle.join().unwrap();
+        assert!(seen[0].contains("image_url"));
+        assert!(!seen[1].contains("image_url") && seen[1].contains("cat.jpg"));
+        assert!(!seen[2].contains("image_url"));
     }
 }

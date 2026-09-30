@@ -23,6 +23,11 @@
       else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
       else e.setAttribute(k, v === true ? "" : v);
     }
+    // A field with a hint and no label is named by its hint, so a screen
+    // reader never meets an unnamed box (a placeholder alone isn't a name).
+    if ((tag === "input" || tag === "textarea") && e.hasAttribute("placeholder") && !e.hasAttribute("aria-label") && !e.hasAttribute("aria-labelledby") && !e.hasAttribute("id")) {
+      e.setAttribute("aria-label", e.getAttribute("placeholder"));
+    }
     for (const kid of kids.flat(2)) {
       if (kid === null || kid === undefined || kid === false) continue;
       e.append(typeof kid === "string" || typeof kid === "number" ? String(kid) : kid);
@@ -37,8 +42,29 @@
   const tag = (t, cls) => el("span", { class: "tag " + (cls || ""), text: t });
   const led = (cls) => el("span", { class: "led " + (cls || "") });
 
-  async function api(path, body) {
-    const opts = { credentials: "same-origin", headers: {} };
+  // ---- language (M47): English, or Hebrew read right to left --------------
+  // The Hebrew words live in /lang-he.js, loaded before the first draw and
+  // only when Hebrew is chosen. `tr` on an English string gives its Hebrew when
+  // there is one and the English otherwise, so an untranslated string is
+  // never blank. Only fixed words go through it; nothing the server or the
+  // bot says does, and none of it can hold a secret.
+  const LANG = window.ferruleLang ? window.ferruleLang.pick() : "en";
+  const LOCALE = LANG === "he" ? "he-IL" : undefined;
+  let HE = null;
+  const tr = (s) => (HE && HE[s]) || s;
+  const fill = (s, n) => tr(s).replace("%s", n);
+  function loadLang() {
+    if (LANG !== "he") return Promise.resolve();
+    return new Promise((done) => {
+      const script = el("script", { src: BASE + "/lang-he.js" });
+      script.addEventListener("load", () => { HE = window.FERRULE_HE || null; done(); });
+      script.addEventListener("error", () => done());
+      document.head.append(script);
+    });
+  }
+
+  async function api(path, body, extra) {
+    const opts = Object.assign({ credentials: "same-origin", headers: {} }, extra || {});
     if (body !== undefined) {
       opts.method = "POST";
       opts.headers["Content-Type"] = "application/json";
@@ -66,37 +92,92 @@
     document.getElementById("sheet").hidden = true;
     document.getElementById("logout").hidden = true;
     document.getElementById("live").hidden = true;
+    document.getElementById("find").hidden = true;
     document.body.classList.remove("running");
     const main = document.getElementById("main");
     main.replaceChildren(el("div", { class: "card" },
-      el("p", { text: why || "Not logged in." }),
-      el("p", { class: "muted", text: "Send /dashboard to the bot on Telegram for a new link, or run `ferrule dashboard link` on the machine." })));
+      el("p", { dir: "auto", text: why || tr("Not logged in.") }),
+      el("p", { class: "muted", text: tr("Send /dashboard to the bot on Telegram for a new link, or run `ferrule dashboard link` on the machine.") })));
   }
 
   // ---- small helpers -----------------------------------------------------
 
-  function toast(t, bad) {
+  // Toasts stack in #toast. A good one goes by itself; an error stays until
+  // it is closed, so nobody has to read fast.
+  function toast(t, kind) {
+    kind = kind === true ? "bad" : kind || "";
     const box = document.getElementById("toast");
-    const card = el("div", { class: "t" + (bad ? " bad" : ""), dir: "auto", text: t });
-    box.replaceChildren(card);
-    setTimeout(() => { if (card.parentNode) card.remove(); }, bad ? 9000 : 5000);
+    for (const old of box.children) if (old.dataset.text === t) old.remove();
+    const card = el("div", { class: "t " + kind, role: kind === "bad" ? "alert" : null },
+      el("span", { class: "txt", dir: "auto", text: t }),
+      el("button", { class: "ghost icon", "aria-label": tr("Close"), onclick: () => card.remove() }, icon("x")));
+    card.dataset.text = t;
+    box.append(card);
+    while (box.children.length > 3) box.firstChild.remove();
+    if (kind !== "bad") setTimeout(() => card.remove(), 5000);
+  }
+
+  // The page's own confirm() and prompt(): a native <dialog>, so focus stays
+  // inside, Escape closes it and it mirrors right to left. Resolves true or
+  // false; with `input`, the typed text, or null when cancelled.
+  function ask({ title, text: body, confirm, cancel, danger, input }) {
+    return new Promise((resolve) => {
+      const back = document.activeElement;
+      const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
+      const box = input ? el("input", { name: "v", value: input.value || "", dir: "auto", autocomplete: "off", "aria-label": input.label || title }) : null;
+      let answer = input ? null : false;
+      const no = el("button", { type: "button", text: cancel || tr("Cancel"), autofocus: danger || null, onclick: () => d.close() });
+      const yes = el("button", { type: "submit", class: danger ? "danger primary" : "primary", text: confirm || tr("OK") });
+      d.append(el("form", {
+        method: "dialog",
+        onsubmit: (e) => { e.preventDefault(); answer = input ? box.value : true; d.close(); },
+      },
+        el("h2", { id: "dlg-title", dir: "auto", text: title }),
+        body ? el("p", { class: "msg", dir: "auto", text: body }) : null,
+        box,
+        el("div", { class: "row" }, no, yes)));
+      d.addEventListener("close", () => { d.remove(); if (back && back.focus) back.focus(); resolve(answer); });
+      document.body.append(d);
+      d.showModal();
+      if (box) box.select();
+    });
+  }
+
+  // A link the server wants opened in another tab (a sign-in page): a
+  // popup opened after a fetch is blocked on a phone, a tapped link is not.
+  function linksDialog(links) {
+    const good = links.filter((l) => /^https?:\/\//i.test(l.url));
+    if (!good.length) return;
+    const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
+    d.append(el("form", { method: "dialog" },
+      el("h2", { id: "dlg-title", text: tr("Continue in your browser") }),
+      good.map((l) => el("a", { class: "btn primary", href: l.url, target: "_blank", rel: "noopener", dir: "auto" }, icon("external"), l.text || tr("Open"))),
+      el("div", { class: "row" }, el("button", { text: tr("Done") }))));
+    d.addEventListener("close", () => d.remove());
+    document.body.append(d);
+    d.showModal();
   }
 
   // A POST; a destructive one comes back 409 with its question, and goes
-  // again with `confirm` once the owner says yes.
+  // again with `confirm` once the owner says yes. The button shows it is
+  // working and can't be pressed twice.
   async function act(path, body, button) {
-    if (button) button.disabled = true;
+    if (button) {
+      if (button.getAttribute("aria-busy") === "true") return null;
+      button.setAttribute("aria-busy", "true");
+    }
     try {
       let r;
       try {
         r = await api("/api/" + path, body || {});
       } catch (e) {
         if (e.status !== 409 || !e.data || !e.data.confirm) throw e;
-        if (!window.confirm(e.data.confirm)) return null;
+        const yes = await ask({ title: tr("Are you sure?"), text: e.data.confirm, confirm: tr("Yes, do it"), danger: true });
+        if (!yes) return null;
         r = await api("/api/" + path, Object.assign({}, body, { confirm: true }));
       }
-      if (r.said) toast(r.said, r.ok === false);
-      if (r.links) r.links.forEach((l) => window.open(l.url, "_blank", "noopener"));
+      if (r.said) toast(r.said, r.ok === false ? "bad" : "");
+      if (r.links) linksDialog(r.links);
       // What was typed next to the button went in: the redraw may drop it.
       const box = button && button.closest(".card, .opt, .check, .alert");
       if (box) box.querySelectorAll("[data-dirty]").forEach((i) => { delete i.dataset.dirty; });
@@ -107,7 +188,7 @@
       toast(e.message, true);
       return null;
     } finally {
-      if (button) button.disabled = false;
+      if (button) button.removeAttribute("aria-busy");
     }
   }
 
@@ -117,32 +198,58 @@
     return b;
   }
 
-  // A button that asks for one value first (window.prompt), then POSTs.
-  function ask(label, path, question, now, body) {
+  // A button of the page's kinds: "primary", "danger", "ghost", "link", with
+  // an optional icon; `aria` names an icon-only one.
+  function button(label, o) {
+    o = o || {};
+    const b = el("button", { type: "button", class: o.kind || null, "aria-label": o.aria || null, title: o.aria || null },
+      o.icon ? icon(o.icon) : null, label ? el("span", { text: label }) : null);
+    if (o.onclick) b.onclick = o.onclick;
+    return b;
+  }
+
+  // A button that asks for one value first, then POSTs.
+  function askBtn(label, path, question, now, body) {
     const b = el("button", { text: label });
-    b.onclick = () => {
-      const v = window.prompt(question, now);
+    b.onclick = async () => {
+      const v = await ask({ title: label, text: question, confirm: "Save", input: { value: now } });
       if (v === null || v.trim() === "" || v.trim() === now) return;
-      act(path, body(v), b);
+      act(path, body(v.trim()), b);
     };
     return b;
   }
 
-  // "0 9 * * * Asia/Jerusalem" → ["0 9 * * *", "Asia/Jerusalem"].
-  function splitTz(v) {
-    const w = v.trim().split(/\s+/);
-    return w.length > 5 ? [w.slice(0, 5).join(" "), w.slice(5).join(" ")] : [w.join(" "), null];
+  // A card with an optional head: an icon, a title, and things on the right.
+  function card(head, ...body) {
+    const h = head && (head.title || head.icon || head.right)
+      ? el("div", { class: "card-head" }, head.icon ? icon(head.icon) : null,
+        head.title ? el("h2", { text: head.title }) : null, head.right || null)
+      : null;
+    return el("div", { class: "card" + (head && head.cls ? " " + head.cls : "") }, h, body);
+  }
+
+  // What a list says when it has nothing: what is missing, why, and what to do.
+  function empty(what, hint, ...actions) {
+    return el("div", { class: "empty" }, icon("info"),
+      el("div", { class: "what", text: what }),
+      hint ? el("div", { text: hint }) : null,
+      actions.length ? el("div", { class: "row" }, actions) : null);
+  }
+
+  // Grey blocks where a section's cards will be, until its first answer.
+  function skeleton(n) {
+    return frag(Array.from({ length: n || 2 }, () => el("div", { class: "skel card", "aria-hidden": "true" })));
   }
 
   function ago(unix) {
-    if (unix === null || unix === undefined) return "never";
+    if (unix === null || unix === undefined) return tr("never");
     const s = Math.round(Date.now() / 1000 - unix);
-    const f = (n) => (s < 0 ? "in " : "") + n + (s < 0 ? "" : " ago");
+    const f = (n) => (s < 0 ? fill("in %s", n) : fill("%s ago", n));
     const a = Math.abs(s);
-    if (a < 90) return f(a + "s");
-    if (a < 5400) return f(Math.round(a / 60) + " min");
-    if (a < 129600) return f(Math.round(a / 3600) + " h");
-    return f(Math.round(a / 86400) + " d");
+    if (a < 90) return f(a + tr("s"));
+    if (a < 5400) return f(Math.round(a / 60) + " " + tr("min"));
+    if (a < 129600) return f(Math.round(a / 3600) + " " + tr("h"));
+    return f(Math.round(a / 86400) + " " + tr("d"));
   }
   const secs = (s) => (s === null || s === undefined ? "–" : s < 90 ? s + "s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h");
   const usd = (n) => (n === null || n === undefined ? "–" : "$" + (n < 1 && n > 0 ? n.toFixed(4) : n.toFixed(2)));
@@ -154,17 +261,18 @@
       frag(el("dt", { text: k }), el("dd", {}, v))));
   }
 
+  // On a phone every row is a card, each cell labelled by its column.
   function table(head, rows, numcols) {
-    return el("div", { class: "tbl" }, el("table", {},
+    return el("div", { class: "tbl cards" }, el("table", { class: "cards" },
       el("thead", {}, el("tr", {}, head.map((h, i) => el("th", { class: (numcols || []).includes(i) ? "num" : null, text: h })))),
       el("tbody", {}, rows.map((r) => el("tr", { class: r.dead ? "dead" : null },
-        r.cells.map((c, i) => el("td", { class: (numcols || []).includes(i) ? "num" : null }, c)))))));
+        r.cells.map((c, i) => el("td", { class: (numcols || []).includes(i) ? "num" : null, "data-label": head[i] || "" }, c)))))));
   }
 
   function secHead(title, sub, ...controls) {
     const ctrls = controls.filter(Boolean);
     return el("div", { class: "sec-head" },
-      el("h2", { text: title }),
+      el("h1", { text: title }),
       sub ? el("span", { class: "sub", text: sub }) : null,
       ctrls.length ? frag(el("span", { class: "spacer" }), ...ctrls) : null);
   }
@@ -251,8 +359,11 @@
 
   // ---- M37 pieces --------------------------------------------------------
 
-  // Line icons, one path each, drawn in currentColor.
+  // Line icons, one path each, drawn in currentColor on a 24-pixel grid.
+  // Every one is drawn here; nothing is fetched. A test checks that each
+  // name the page asks for exists.
   const ICONS = {
+    // the sections
     health: "M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6",
     chat: "M4 5h16v11H9l-5 4z",
     models: "M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4",
@@ -263,13 +374,53 @@
     config: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4",
     routing: "M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9c0 6-12 3-12 6",
     usage: "M4 20V10M10 20V4M16 20v-7M2 20h20",
-    tasks: "M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
+    tasks: "M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2",
     logs: "M4 6h16M4 12h16M4 18h10",
     extensions: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
     agents: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0",
+    memory: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6",
+    settings: "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6M12 5a7 7 0 1 0 0 14 7 7 0 0 0 0-14M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1",
+    // things a button does
+    search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14M16 16l4 4",
+    camera: "M4 8h3l2-3h6l2 3h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7",
+    image: "M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9.5h.01",
+    copy: "M8 8h11v12H8zM5 16V4h11",
+    check: "M5 12.5l4.5 4.5L19 7",
+    x: "M6 6l12 12M18 6L6 18",
+    retry: "M20 12a8 8 0 1 1-2.6-5.9M20 4v4h-4",
+    stop: "M7 7h10v10H7z",
+    send: "M12 19V5M6 11l6-6 6 6",
+    play: "M8 5l11 7-11 7z",
+    pause: "M8 5v14M16 5v14",
+    plus: "M12 5v14M5 12h14",
+    edit: "M4 20l1-4L16 5l3 3L8 19zM14 7l3 3",
+    trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
+    download: "M12 4v11M7 11l5 5 5-5M5 20h14",
+    external: "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6",
+    power: "M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0",
+    chevron: "M9 6l6 6-6 6",
+    "chevron-down": "M6 9l6 6 6-6",
+    // things a place is
+    sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
+    moon: "M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z",
+    monitor: "M3 5h18v11H3zM8 20h8M12 16v4",
+    globe: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18",
+    clock: "M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
+    calendar: "M4 6h16v14H4zM4 10h16M8 3v4M16 3v4",
+    backup: "M3 5h18v4H3zM5 9v10h14V9M10 13h4",
+    file: "M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6",
+    key: "M8 11a4 4 0 1 0 0 8 4 4 0 0 0 0-8M11 12l9-9M16 7l3 3M14 9l2 2",
+    lock: "M6 11h12v9H6zM8 11V8a4 4 0 0 1 8 0v3",
+    telegram: "M21 4L3 11l6 2 2 7 3-5 5 4zM9 13l12-9",
+    // things the page says
+    alert: "M12 3l10 18H2zM12 10v5M12 18h.01",
+    info: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 11v5M12 8h.01",
+    help: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01",
   };
-  function icon(name) {
-    const s = el("svg", { class: "ico", viewBox: "0 0 24 24", "aria-hidden": "true" });
+  // Decoration by default (hidden from a screen reader); with a label it
+  // is an image of its own.
+  function icon(name, label) {
+    const s = el("svg", { class: "ico" + (name === "chevron" ? " flip" : ""), viewBox: "0 0 24 24", "aria-hidden": label ? null : "true", role: label ? "img" : null, "aria-label": label || null });
     s.append(el("path", { d: ICONS[name] || ICONS.more, "stroke-width": name === "more" ? 3 : null }));
     return s;
   }
@@ -281,6 +432,29 @@
       el("summary", {}, summary), ...body);
     d.addEventListener("toggle", () => { if (d.open) opened.add(key); else opened.delete(key); });
     return d;
+  }
+
+  // The knobs most people never need, folded away under one word. Open or
+  // shut, it stays that way across the polls' redraws.
+  function advanced(key, hint, ...body) {
+    return disc("adv-" + key, "advanced",
+      frag("Advanced", hint ? el("span", { class: "muted small", text: " · " + hint }) : null),
+      el("div", { class: "details-body stack" }, ...body));
+  }
+
+  // A choice of one, as a row of pressed/unpressed buttons.
+  function chips(label, options, value, onpick) {
+    return el("div", { class: "chips", role: "group", "aria-label": label },
+      options.map(([v, t]) => el("button", {
+        type: "button", class: "chip", "aria-pressed": String(v === value), text: t,
+        onclick: () => onpick(v),
+      })));
+  }
+
+  // An on/off switch that says what it switches. The caller does the POST.
+  function toggle(label, on, onclick) {
+    return el("button", { type: "button", class: "switch", role: "switch", "aria-checked": String(!!on), "aria-label": label, onclick },
+      el("span", { class: "knob" }));
   }
 
   // A button that copies `value`; says so, or selects it to copy by hand.
@@ -351,6 +525,15 @@
     return el("div", {}, list.map(notice));
   }
 
+  // Away from Home, only this section's problems show in full; the rest are
+  // one line that leads there, so a phone's first screen is the section.
+  function otherProblems(list) {
+    if (!list.length) return null;
+    return el("a", { class: "strip", href: "#health" }, icon("alert"),
+      el("span", { class: "grow", text: list.length + (list.length === 1 ? " other thing needs" : " other things need") + " your attention" }),
+      el("span", { text: "Home" }), icon("chevron"));
+  }
+
   function hiddenNotices(list) {
     if (!list || !list.length) return null;
     return disc("hidden-notices", "card", frag(list.length + " hidden ", el("span", { class: "muted small", text: "· closed for a day, still true" })),
@@ -367,7 +550,7 @@
   function approvalsCard(list) {
     if (!list || !list.length) return null;
     return el("div", { class: "card" },
-      el("h3", { text: "Waiting for you", class: "mt0" }),
+      el("h2", { text: "Waiting for you", class: "mt0" }),
       list.map((a) => el("div", { class: "check" },
         led("warn pulse"),
         el("div", { class: "body" },
@@ -423,22 +606,176 @@
 
   const sections = {};
 
+  // ---- words a stranger may not know (M47) --------------------------------
+  // `tip("fallback")` is the word as a button; it opens its plain meaning in
+  // place (no hover: a phone has none).
+  const GLOSSARY = {
+    model: "The AI that reads your message and writes the answer. Different models cost different amounts.",
+    fallback: "A second model to use when the first one is down, so a chat keeps going.",
+    cap: "A limit on how much your bot may spend or do in a day. When it's reached, the bot stops and says so.",
+    turn: "One message from you and everything the bot does to answer it.",
+    approval: "A question the bot asks you before doing something risky, like running a command. You answer Allow or Refuse.",
+    channel: "A place you talk to your bot from: Telegram, Discord, Slack, this page.",
+    connection: "An account your bot signs in to, like Google or GitHub, so it can work there for you.",
+    MCP: "A standard way to plug extra tools into your bot, such as a calendar or a database.",
+    skill: "A written how-to your bot reads when a task calls for it.",
+    hook: "A small command that runs by itself when something happens, like before a tool is used.",
+    cron: "A schedule, written as five fields (minute, hour, day, month, weekday). \"0 9 * * *\" is every day at 9:00.",
+    routing: "Starting each turn on a cheap model and moving to a stronger one only when the cheap one fails.",
+    tunnel: "A private web address that lets you open this page from your phone while your bot runs at home.",
+    token: "A secret code that proves who you are to a service. Keep it private.",
+    lane: "One conversation's line: messages in a chat wait their turn so answers don't mix.",
+    watchdog: "A timer that notices when a turn has made no progress for a while and says so.",
+    heartbeat: "A regular \"I'm alive\" signal the bot sends so you know it's running.",
+    relay: "A helper server that passes messages between your bot and a service that can't reach it directly.",
+    pin: "Fixing one chat to one model, whatever the default is.",
+    alias: "A short nickname for a model, like \"fast\".",
+  };
+  let tips = 0;
+  function tip(term) {
+    const def = el("span", { class: "tip-def", id: "tip-" + ++tips, role: "note", text: GLOSSARY[term] || "", hidden: true });
+    const b = el("button", { type: "button", class: "tip", "aria-expanded": "false", "aria-controls": def.id, text: term });
+    b.onclick = () => { def.hidden = !def.hidden; b.setAttribute("aria-expanded", String(!def.hidden)); };
+    return frag(b, def);
+  }
+
+  // ---- Home (M47): what state it's in, what needs you, what to do next ---
+
+  // The first-run checklist keeps its open panels between polls: a step's
+  // form is drawn once into a box that outlives every redraw of the page.
+  const home = {
+    open: null,
+    boxes: {},
+    models: null,
+    channels: null,
+    hidden: () => { try { return localStorage.getItem("ferrule-setup-hidden") === "1"; } catch (_) { return false; } },
+    hide() { try { localStorage.setItem("ferrule-setup-hidden", "1"); } catch (_) { /* private mode */ } },
+    show() { try { localStorage.removeItem("ferrule-setup-hidden"); } catch (_) { /* private mode */ } },
+    box(id) { return this.boxes[id] || (this.boxes[id] = el("div", { class: "step-panel stack" })); },
+    // The Models section's provider forms, drawn into this box: same code,
+    // same calls, so a key typed here is tested and saved the same way.
+    modelPanel() {
+      const fresh = !this.boxes.model;
+      const box = this.box("model");
+      if (!this.models) {
+        const M = this.models = Object.create(sections.models);
+        M.fbEdited = false;
+        M.home = true;
+        M.drawChoices = function () {
+          const ps = (this.choices && this.choices.providers) || [];
+          setKids(box, ps.length ? el("div", { class: "tiles" }, ps.map((p) => this.provider(p))) : el("p", { class: "muted", text: "No provider is listed." }));
+        };
+        M.loadChoices = async function () {
+          try { this.choices = await api("/api/models/choices"); } catch (e) { return sectionError(box, e); }
+          this.drawChoices();
+          refresh();
+        };
+      }
+      if (fresh) this.models.loadChoices();
+      return box;
+    },
+    // The Channels section's Telegram walk-through (token, wait, allow).
+    telegramPanel() {
+      const fresh = !this.boxes.telegram;
+      const box = this.box("telegram");
+      if (!this.channels) {
+        const C = this.channels = Object.create(sections.channels);
+        C.said = {};
+        C.load = function () { setKids(box, this.telegram({ configured: false })); };
+      }
+      if (fresh) this.channels.load();
+      return box;
+    },
+  };
+
+  function status(h) {
+    const list = h.problems || [];
+    const busy = (h.turns || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
+    if (h.kill && h.kill.on) return ["bad", "Stopped: the kill switch is on, so nothing will run."];
+    if (list.some((p) => p.top)) return ["bad", "Your bot needs you: " + list.length + (list.length === 1 ? " thing" : " things") + " to fix."];
+    if (list.length) return ["warn", "Your bot is running, with " + list.length + (list.length === 1 ? " thing" : " things") + " to look at."];
+    if (busy.length) return ["ok pulse", "Your bot is working on " + (busy.length === 1 ? "a message" : busy.length + " messages") + " now."];
+    return ["ok", h.gateway ? "Your bot is running. All quiet." : "All quiet. The gateway isn't running in this process."];
+  }
+
+  function checklist(s) {
+    const steps = s.steps;
+    const n = steps.filter((x) => x.done).length;
+    const modelDone = (steps.find((x) => x.id === "model") || {}).done;
+    const more = (x) => {
+      if (x.id === "hello") {
+        const b = button(x.done ? "Open chat" : "Say hello", { kind: x.done ? null : "primary", icon: "send" });
+        b.disabled = !modelDone && !x.done;
+        b.onclick = async () => {
+          if (!x.done) {
+            b.setAttribute("aria-busy", "true");
+            try { await api("/api/chat/send", { text: "Hi! Introduce yourself in two lines." }); } catch (e) { toast(e.message, true); b.removeAttribute("aria-busy"); return; }
+          }
+          show("chat");
+        };
+        return b;
+      }
+      if (x.done) return null;
+      const opened = home.open === x.id;
+      const b = button(opened ? "Close" : x.id === "model" ? "Set up" : "Connect", { kind: opened ? null : "primary" });
+      b.setAttribute("aria-expanded", String(opened));
+      b.onclick = () => { delete home.boxes[x.id]; home.open = opened ? null : x.id; sections.health.draw(); };
+      return b;
+    };
+    return el("section", { class: "card accent", "aria-labelledby": "setup-h" },
+      el("div", { class: "card-head" },
+        el("h2", { id: "setup-h", text: "Get started" }),
+        el("span", { class: "muted small", text: n + " of " + steps.length + " done" }),
+        button("Hide this", { kind: "ghost", onclick: () => { home.hide(); sections.health.draw(); } })),
+      el("div", { class: "progress", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": String(steps.length), "aria-valuenow": String(n), "aria-label": "Setup progress" },
+        steps.map((x) => el("span", { class: x.done ? "seg on" : "seg" }))),
+      el("ol", { class: "steps" }, steps.map((x, i) => el("li", { class: "step" + (x.done ? " done" : "") },
+        el("span", { class: "mark", "aria-hidden": "true" }, x.done ? icon("check") : String(i + 1)),
+        el("div", { class: "body" },
+          el("div", { class: "t" }, x.label, x.done ? el("span", { class: "sr", text: " (done)" }) : null,
+            x.skippable && !x.done ? el("span", { class: "muted small", text: " · optional" }) : null),
+          el("div", { class: "d msg", dir: "auto", text: x.detail })),
+        more(x),
+        home.open === x.id && !x.done && x.id !== "hello"
+          ? (x.id === "model" ? home.modelPanel() : home.telegramPanel()) : null))));
+  }
+
+  const QUICK = [
+    ["chat", "chat", "Chat", "Talk to your bot here"],
+    ["tasks", "tasks", "Tasks", "Things it does on a schedule"],
+    ["usage", "usage", "Spending", "What it has cost so far"],
+    ["models", "models", "Models", "Pick or add a brain"],
+  ];
+
   sections.health = {
     title: "Home",
     every: 3,
     mount(root) {
       this.box = el("div");
+      this.last = null;
       root.append(this.box, doctor.box);
       doctor.draw();
     },
     async load(h) {
+      let approvals = [];
+      let setup = null;
+      await Promise.all([
+        api("/api/approvals").then((a) => { approvals = a.approvals; }).catch(() => { /* not here */ }),
+        api("/api/setup").then((s) => { setup = s; }).catch(() => { /* an older page's server */ }),
+      ]);
+      this.last = { h, approvals, setup };
+      this.draw();
+    },
+    draw() {
+      if (!this.last) return;
+      const { h, approvals, setup } = this.last;
       const kill = h.kill || null;
       const hb = h.heartbeat;
       const ch = h.channels || [];
       const turns = h.turns || [];
       const wd = h.watchdog;
-      let approvals = [];
-      try { approvals = (await api("/api/approvals")).approvals; } catch (_) { /* not here */ }
+      const [level, said] = status(h);
+      const running = turns.filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
       const lanes = ch.length ? ch.map((c) => c.name).join(" + ") + (ch.length === 1 ? " lane" : " lanes") : null;
       const rows = [
         h.last_start ? ["last start", text(h.last_start)] : null,
@@ -451,42 +788,60 @@
         (h.updates || []).length ? ["updates", el("div", {}, ...h.updates.map((l) => el("div", { class: "msg", dir: "auto", text: l })))] : null,
         (h.repairs || []).length ? ["repairs", el("div", {}, ...h.repairs.map((l) => el("div", { class: "msg", dir: "auto", text: l })))] : null,
       ].filter(Boolean);
+      const showList = setup && !setup.done && !home.hidden();
+      const tgOpen = setup && setup.done && !(setup.steps.find((x) => x.id === "telegram") || {}).done;
       setKids(this.box,
-        secHead("Home", (h.problems || []).length ? (h.problems.length + " to look at") : "all quiet",
-          btn("Run doctor", "doctor/run", {}),
-          kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
+        el("h1", { class: "sr", text: title("health") }),
+        el("section", { class: "card hero", "aria-label": "Status" },
+          el("div", { class: "row" }, led(level),
+            el("p", { class: "lead grow", role: "status", text: said }),
+            btn("Run doctor", "doctor/run", {}),
+            kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
+          el("p", { class: "muted small m0", text: [h.version ? "v" + h.version : null, h.uptime ? "up " + h.uptime : null, lanes].filter(Boolean).join(" · ") })),
         MANAGED.on ? el("div", { class: "card" },
-          el("h3", { text: "Managed" }),
+          el("h2", { text: "Managed" }),
           el("p", { class: "muted small", dir: "auto", text: MANAGED.reason }),
           (MANAGED.locks || []).length ? el("ul", {}, ...MANAGED.locks.map((l) => el("li", { dir: "auto", text: l }))) : null,
           el("p", { class: "small", text: "Commands: " + MANAGED.protection })) : null,
+        problems(h.problems),
+        showList ? checklist(setup) : null,
         approvalsCard(approvals),
+        el("div", { class: "quick" }, QUICK.map(([sec, ic, t, d]) => el("button", { type: "button", class: "quick-tile", onclick: () => show(sec) },
+          icon(ic), el("span", { class: "t", text: t }), el("span", { class: "d", text: d }))),
+          tgOpen && !showList ? el("button", { type: "button", class: "quick-tile", onclick: () => show("channels", { tile: "telegram" }) },
+            icon("telegram"), el("span", { class: "t", text: "Telegram" }), el("span", { class: "d", text: "Talk to your bot from your phone" })) : null),
+        running.length ? el("section", { class: "card", "aria-label": "Running now" },
+          el("h2", { class: "mt0", text: "Running now" }),
+          table(["where", "message", "for", ""], running.map((t) => ({ cells: [
+            frag(el("span", { class: "mono small", text: t.place }), t.stuck ? frag(" ", tag("stuck", "bad")) : null),
+            frag(text(t.text), t.activity ? el("span", { class: "sub msg", dir: "auto", text: t.activity }) : null),
+            el("span", { class: "mono", text: secs(t.busy_secs) }),
+            btn("Stop", "turn/stop", { session: t.session }, "danger"),
+          ]})))) : null,
+        turns.length > running.length ? el("p", { class: "muted small", text: (turns.length - running.length) + " queued behind them." }) : null,
         hiddenNotices(h.hidden),
-        el("div", { class: "stats" },
-          stat("version", h.version ? "v" + h.version : "–"),
-          stat("uptime", h.uptime || "–", h.started ? "since " + h.started : null),
-          stat("gateway", h.gateway ? "running" : "standalone", h.gateway ? lanes : "the gateway's page has the lanes"),
-          stat("watchdog", wd ? (wd.ok ? "ok" : "attention") : "–",
-            wd && wd.ok && wd.after_secs ? "no-progress " + secs(wd.after_secs) : (wd && !wd.ok ? "see below" : null)),
-          stat("heartbeat", hb ? ago(hb.last_at) : "not set", hb ? hb.host + " · every " + secs(hb.every_secs) : null)),
-        rows.length ? el("div", { class: "card" }, kv(rows)) : null,
-        el("h3", { text: "Channels" }),
-        ch.length ? table(["channel", "polls", "last ok poll", ""], ch.map((c) => ({ cells: [
-          frag(led(c.stale ? "bad" : "ok pulse"), " ", c.name,
-            c.problem ? el("span", { class: "sub msg", dir: "auto", text: c.problem }) : null),
-          c.polls ? "yes" : "no",
-          el("span", { class: c.stale ? "bad" : "mono muted", text: ago(c.last_ok_poll) }),
-          c.stale ? btn("Restart", "channels/restart", { name: c.name }) : null,
-        ]}))) : el("div", { class: "empty", text: "no channel in this process" }),
-        el("h3", { text: "Running turns" }),
-        turns.length ? table(["where", "message", "for", ""], turns.map((t) => ({ cells: [
-          frag(el("span", { class: "mono small", text: t.place }), t.stuck ? frag(" ", tag("stuck", "bad")) : null),
-          frag(text(t.text), t.activity ? el("span", { class: "sub msg", dir: "auto", text: t.activity }) : null),
-          t.busy_secs === null || t.busy_secs === undefined ? el("span", { class: "muted", text: "queued" }) : el("span", { class: "mono", text: secs(t.busy_secs) }),
-          t.busy_secs === null || t.busy_secs === undefined ? null : btn("Stop", "turn/stop", { session: t.session }, "danger"),
-        ]}))) : el("div", { class: "empty", text: "nothing running" }),
-        h.spend ? el("h3", { text: "Spend today, against the caps" }) : null,
-        h.spend ? capsCard(h.spend) : null);
+        disc("home-details", "card", frag("Details ", el("span", { class: "muted small", text: "· gateway, channels, caps" })),
+          el("div", { class: "details-body stack" },
+            el("p", { class: "muted small m0" }, "A ", tip("channel"), " is where you talk to your bot. The ", tip("watchdog"),
+              " and ", tip("heartbeat"), " tell you it is alive; a ", tip("cap"), " limits what it may spend."),
+            el("div", { class: "stats" },
+              stat("version", h.version ? "v" + h.version : "–"),
+              stat("uptime", h.uptime || "–", h.started ? "since " + h.started : null),
+              stat("gateway", h.gateway ? "running" : "standalone", h.gateway ? lanes : "the gateway's page has the lanes"),
+              stat("watchdog", wd ? (wd.ok ? "ok" : "attention") : "–",
+                wd && wd.ok && wd.after_secs ? "no-progress " + secs(wd.after_secs) : (wd && !wd.ok ? "see below" : null)),
+              stat("heartbeat", hb ? ago(hb.last_at) : "not set", hb ? hb.host + " · every " + secs(hb.every_secs) : null)),
+            rows.length ? kv(rows) : null,
+            el("h4", { class: "mb0", text: "Channels" }),
+            ch.length ? table(["channel", "polls", "last ok poll", ""], ch.map((c) => ({ cells: [
+              frag(led(c.stale ? "bad" : "ok pulse"), " ", c.name,
+                c.problem ? el("span", { class: "sub msg", dir: "auto", text: c.problem }) : null),
+              c.polls ? "yes" : "no",
+              el("span", { class: c.stale ? "bad" : "mono muted", text: ago(c.last_ok_poll) }),
+              c.stale ? btn("Restart", "channels/restart", { name: c.name }) : null,
+            ]}))) : el("div", { class: "empty", text: "no channel in this process" }),
+            h.spend ? el("h4", { class: "mb0", text: "Spend today, against the caps" }) : null,
+            h.spend ? capsCard(h.spend) : null)));
     },
   };
 
@@ -534,13 +889,13 @@
       this.tools.onchange = go;
       this.sort.onchange = go;
       root.append(this.chooseBox, this.box,
-        el("h3", { text: "Evaluate a candidate" }),
+        el("h2", { text: "Evaluate a candidate" }),
         el("div", { class: "card" },
           el("div", { class: "row" }, this.suite,
             el("span", { class: "muted small", text: "an estimate first, then a confirm; runs under your caps" })),
           this.evalBox),
-        el("h3", { text: "Recommended" }), this.rec,
-        el("h3", { text: "Catalog" }),
+        el("h2", { text: "Recommended" }), this.rec,
+        el("h2", { text: "Catalog" }),
         el("div", { class: "row" }, this.search, this.tools, this.sort,
           el("button", { text: "Refresh", onclick: () => this.catalog(true) })),
         this.list);
@@ -595,7 +950,7 @@
       const chat = el("input", { placeholder: "chat id", size: 10, dir: "auto" });
       const last = (v.last_served || [])[0];
       setKids(this.box, 
-        el("h3", { text: "Connected models" }),
+        el("h2", { text: "Connected models" }),
         el("div", { class: "row mb" }, btn("Fill missing prices", "catalog/fill-prices", {})),
         m.fixed ? el("div", { class: "alert warn" },
           el("div", { class: "body" },
@@ -613,7 +968,8 @@
             r.pricing
               ? frag(el("span", { class: "mono", text: price(r.pricing) }), r.price_source ? el("span", { class: "sub", text: r.price_source }) : null)
               : frag(tag("no price", "warn"), el("span", { class: "sub", text: "the dollar caps can't see its spend" })),
-            el("span", { class: "mono", text: r.context_window ? num(r.context_window) : "–" }),
+            frag(el("span", { class: "mono", text: r.context_window ? num(r.context_window) : "–" }),
+              r.vision ? el("span", { class: "sub", text: "sees photos" }) : null),
             r.down_secs !== null && r.down_secs !== undefined
               ? frag(tag("down " + secs(r.down_secs), "bad"),
                 r.down_reason ? el("span", { class: "sub msg", dir: "auto", text: r.down_reason }) : null)
@@ -627,7 +983,7 @@
               btn("Remove", "models/remove", { model: r.reference }, "danger")),
           ],
         })), [2]) : el("div", { class: "empty", text: "no models connected" }),
-        el("h3", { text: "Pins" }),
+        el("h2", { text: "Pins" }),
         v.pins.length
           ? table(["chat", "model", ""], v.pins.map((p) => ({ cells: [
             el("span", { class: "mono", text: p.channel + " " + p.chat }),
@@ -636,7 +992,7 @@
             btn("Unpin", "models/unpin", { chat: p.chat, channel: p.channel }),
           ]})))
           : el("div", { class: "empty", text: "no chat is pinned" }),
-        el("h3", { text: "Pin a chat, add a model by id" }),
+        el("h2", { text: "Pin a chat, add a model by id" }),
         el("div", { class: "card" },
           el("div", { class: "row" }, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value }))),
           (() => {
@@ -761,7 +1117,7 @@
               unused.length ? el("button", { text: "Add one", onclick: () => { this.fb.push(unused[0].reference); edited(); } }) : null,
               save,
               this.fbEdited ? el("button", { class: "ghost", text: "Discard", onclick: () => { this.fbEdited = false; this.loadChoices(); } }) : null))),
-        el("h3", { text: "Providers" }),
+        el("h2", { text: "Providers" }),
         on.length ? el("div", { class: "tiles" }, on.map((p) => this.provider(p))) : el("div", { class: "empty", text: "no provider connected" }),
         off.length ? disc("providers-off", "card", "Connect another provider (" + off.length + ")",
           el("div", { class: "tiles details-body" }, off.map((p) => this.provider(p)))) : null);
@@ -835,7 +1191,7 @@
         await new Promise((r) => setTimeout(r, 3000));
         try { this.chatgpt = await api("/api/plans/chatgpt/poll"); } catch (_) { break; }
         if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); break; }
-        if (current === "models" && !this.fbEdited) this.drawChoices();
+        if ((current === "models" || (this.home && current === "health")) && !this.fbEdited) this.drawChoices();
       }
     },
   };
@@ -876,7 +1232,7 @@
         (v.problems || []).length ? v.problems.map((p) =>
           el("div", { class: "alert warn" },
             el("div", { class: "body" }, el("div", { class: "what msg", dir: "auto", text: p })))) : null,
-        el("h3", { text: "Tiers" }),
+        el("h2", { text: "Tiers" }),
         v.tiers.length ? table(["", "tier", "model", "price / 1M", "context", "key"], v.tiers.map((t, i) => ({ cells: [
           el("span", { class: "mono muted", text: String(i + 1) }),
           tag(i === 0 ? "cheap" : i === v.tiers.length - 1 ? "strong" : "mid", i === 0 ? "copper" : null),
@@ -885,19 +1241,19 @@
           el("span", { class: "mono", text: t.context_window ? num(t.context_window) : "–" }),
           t.key_present ? tag("ready", "ok") : tag(t.key_env + " not set", "bad"),
         ]}))) : el("div", { class: "empty", text: "no tiers set" }),
-        el("h3", { text: "Escalations" }),
+        el("h2", { text: "Escalations" }),
         (st.days || []).length ? table(["day", "count", "why"], st.days.map((d) => ({ cells: [
           el("span", { class: "mono", text: d.day }),
           el("span", { class: "mono", text: String(d.escalations) }),
           text(reasons(d.reasons)),
         ]})), [1]) : el("div", { class: "empty", text: "none in this window" }),
-        el("h3", { text: "Spend per tier" }),
+        el("h2", { text: "Spend per tier" }),
         (st.tiers || []).length ? frag(
           bars(st.tiers.map((t, i) => ({ k: t.tier, v: t.usd, dim: i > 0 })), usd),
           table(["tier", "calls", "cost"], st.tiers.map((t) => ({ cells: [
             text(t.tier), el("span", { class: "mono", text: String(t.calls) }), el("span", { class: "mono", text: usd(t.usd) }),
           ]})), [1, 2])) : el("div", { class: "empty", text: "no routed calls in this window" }),
-        el("h3", { text: "Change" }),
+        el("h2", { text: "Change" }),
         sg.said ? el("p", { class: "muted small msg", dir: "auto", text: sg.said }) : null,
         el("div", { class: "card" }, el("div", { class: "row" }, tiers, cap, on, v.enabled ? btn("Turn off", "routing/unset", {}, "danger") : null)));
     },
@@ -943,7 +1299,7 @@
         list ? this.checklist(list) : null,
         this.pending(c),
         this.connected(c),
-        el("h3", { text: "Services" }),
+        el("h2", { text: "Services" }),
         el("div", { class: "tiles" }, c.tiles.map((t) => this.tile(c, t))));
       if (this.target) {
         const node = document.getElementById("tile-" + this.target);
@@ -976,7 +1332,7 @@
       if (c.relay_url) {
         card.append(frag(
           el("div", { class: "row" },
-            el("h3", { class: "grow m0", text: "Fixed callback address" }),
+            el("h2", { class: "grow m0", text: "Fixed callback address" }),
             c.relay_live ? tag("working", "ok") : tag("not answering", "bad")),
           el("p", { class: "muted small", text: "Paste this where a service asks for a redirect or callback URL. It stays the same across restarts." }),
           el("div", { class: "callback" }, el("code", { text: c.callback }), copyBtn(c.callback)),
@@ -989,7 +1345,7 @@
         if (!this.relayForms) return card;
       } else {
         card.append(
-          el("h3", { class: "mt0", text: "Fixed callback address" }),
+          el("h2", { class: "mt0", text: "Fixed callback address" }),
           el("p", { class: "small", text: "OAuth sign-ins (Google's wizard, Atlassian's OAuth, most MCP servers) send you back to an address that must never change. A small relay on your own Cloudflare account gives you one, free. Key-based ways in don't need it." }));
       }
       // Deploy: a Cloudflare API token, never shown again.
@@ -1074,7 +1430,7 @@
         }
       };
       return el("div", { class: "card" },
-        el("h3", { class: "mt0", text: "What each service still needs" }),
+        el("h2", { class: "mt0", text: "What each service still needs" }),
         list.checks.map((ch) => {
           const cls = CHECK_OK.includes(ch.state) ? "ok" : CHECK_BAD.includes(ch.state) ? "bad" : ch.state === "pending" ? "warn pulse" : "";
           const row = el("div", { class: "check" },
@@ -1106,7 +1462,7 @@
       const flows = c.pending_flows || [];
       if (!flows.length) return null;
       return el("div", { class: "card" },
-        el("h3", { class: "mt0", text: "Waiting on a sign-in" }),
+        el("h2", { class: "mt0", text: "Waiting on a sign-in" }),
         flows.map((f) => el("div", { class: "check" },
           led("warn pulse"),
           el("div", { class: "body" },
@@ -1119,7 +1475,7 @@
       if (!c.connections.length) return null;
       const att = Object.fromEntries((c.attention || []).map((a) => [a.name, a]));
       return frag(
-        el("h3", { text: "Connected" }),
+        el("h2", { text: "Connected" }),
         el("div", { class: "stack" }, c.connections.map((s) => {
           const a = att[s.name];
           const needs = s.state === "needs_reconnect" || (a && a.expired);
@@ -1160,7 +1516,7 @@
       const att = (c.attention || []).find((a) => a.tile === t.tile);
       return el("div", { class: "card tile", id: "tile-" + t.tile },
         el("div", { class: "head" },
-          el("h3", { class: "grow", text: t.title }),
+          el("h2", { class: "grow", text: t.title }),
           att ? tag(att.expired ? "expired" : "expires in " + att.days_left + " d", att.expired ? "bad" : "warn") : t.connected ? tag("connected", "ok") : null),
         t.options.length > 1 ? el("p", { class: "muted small m0", text: t.options.length + " ways in, simplest first." }) : null,
         t.options.map((o) => this.option(c, o)));
@@ -1234,18 +1590,253 @@
     },
   };
 
+  // "0 9 * * *" in words. Anything it can't say plainly stays as the cron
+  // line, which the Advanced fold always shows.
+  const pad2 = (n) => String(n).padStart(2, "0");
+  // 2023-01-01 was a Sunday: the weekday's name in the page's language.
+  const dayName = (i) => new Date(2023, 0, 1 + (Number(i) % 7)).toLocaleDateString(LOCALE, { weekday: "long" });
+  const HOURS = [1, 2, 3, 4, 6, 8, 12];
+
+  // The presets the picker offers, read back from a cron line; null for
+  // anything else (which the picker then keeps as a custom line).
+  function parseCron(c) {
+    const f = String(c).trim().split(/\s+/);
+    if (f.length !== 5) return null;
+    const [mi, ho, dom, mo, dow] = f;
+    let m;
+    if (mo !== "*") return null;
+    if (/^\d+$/.test(mi) && /^\d+$/.test(ho)) {
+      const time = pad2(ho) + ":" + pad2(mi);
+      if (dom === "*" && dow === "*") return { preset: "day", time };
+      if (dom === "*" && dow === "1-5") return { preset: "weekdays", time };
+      if (dom === "*" && /^[0-7]$/.test(dow)) return { preset: "weekly", time, dow: Number(dow) % 7 };
+      if (dow === "*" && /^\d+$/.test(dom) && Number(dom) >= 1 && Number(dom) <= 28) return { preset: "monthly", time, dom: Number(dom) };
+    }
+    if (mi === "0" && dom === "*" && dow === "*" && (m = /^\*\/(\d+)$/.exec(ho)) && HOURS.includes(Number(m[1]))) return { preset: "hours", every: Number(m[1]) };
+    return null;
+  }
+
+  function scheduleWords(t) {
+    if (t.kind !== "cron") {
+      const d = new Date(t.schedule);
+      return fill("Once, %s", isNaN(d) ? t.schedule : d.toLocaleString(LOCALE, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }));
+    }
+    const f = String(t.schedule).trim().split(/\s+/);
+    if (f.length !== 5) return t.schedule;
+    const [mi, ho, dom, mo, dow] = f;
+    if (/^\*\/\d+$/.test(mi) && ho === "*" && dom === "*" && mo === "*" && dow === "*") return fill("Every %s minutes", mi.slice(2));
+    if (/^\d+$/.test(mi) && ho === "*" && dom === "*" && mo === "*" && dow === "*") return mi === "0" ? tr("Every hour") : fill("Every hour, at :%s", pad2(mi));
+    if (dom === "*" && mo === "*" && /^\d+$/.test(mi) && /^\d+$/.test(ho) && (dow === "0,6" || dow === "6,0")) return tr("Weekends at") + " " + pad2(ho) + ":" + pad2(mi);
+    const p = parseCron(t.schedule);
+    if (!p) return t.schedule;
+    const at = " " + tr("at") + " " + p.time;
+    if (p.preset === "day") return tr("Every day") + at;
+    if (p.preset === "weekdays") return tr("Weekdays") + at;
+    if (p.preset === "weekly") return tr("Every") + " " + dayName(p.dow) + at;
+    if (p.preset === "monthly") return fill("On day %s of every month", p.dom) + at;
+    return p.every === 1 ? tr("Every hour") : fill("Every %s hours", p.every);
+  }
+  const clock = (unix) => new Date(unix * 1000).toLocaleString(LOCALE, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+  // ---- the schedule picker (M47) ------------------------------------------
+  // A beginner picks "every weekday at 09:00"; nobody has to know cron. The
+  // words and the next three run times come from the server's own parser
+  // (/api/tasks/preview), so what the page promises is what will happen.
+  // The raw line is under Advanced, and wins when it is filled in.
+
+  const zones = () => {
+    let list = [];
+    let mine = "UTC";
+    try { list = Intl.supportedValuesOf("timeZone").slice(); } catch (_) { /* an older browser */ }
+    try { mine = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) { /* no Intl */ }
+    for (const z of ["UTC", mine]) if (!list.includes(z)) list.push(z);
+    return { list: list.sort(), mine };
+  };
+  const inZone = (unix, tz) => {
+    const o = { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" };
+    try { return new Date(unix * 1000).toLocaleString(LOCALE, Object.assign({ timeZone: tz }, o)); } catch (_) { return new Date(unix * 1000).toLocaleString(LOCALE, o); }
+  };
+  const labelled = (label, control, hint) => el("label", { class: "field" }, el("span", { text: label }), control, hint ? el("span", { class: "hint", text: hint }) : null);
+
+  function schedulePicker(init) {
+    const z = zones();
+    const s = Object.assign({ preset: "weekdays", time: "09:00", dow: 1, dom: 1, every: 6, date: "", raw: "", tz: z.mine }, init || {});
+    const sub = el("div", { class: "stack" });
+    const out = el("div", { class: "preview", "aria-live": "polite" });
+    const pick = (obj, key, control, onchange) => { control.oninput = () => { obj[key] = control.value; onchange(); }; return control; };
+    let seq = 0;
+    let timer = null;
+
+    const value = () => {
+      const raw = s.raw.trim().replace(/\s+/g, " ");
+      if (raw) return { kind: "cron", schedule: raw };
+      const [h, m] = (s.time || "09:00").split(":").map(Number);
+      const at = (Number.isNaN(m) ? 0 : m) + " " + (Number.isNaN(h) ? 9 : h);
+      switch (s.preset) {
+        case "day": return { kind: "cron", schedule: at + " * * *" };
+        case "weekdays": return { kind: "cron", schedule: at + " * * 1-5" };
+        case "weekly": return { kind: "cron", schedule: at + " * * " + s.dow };
+        case "monthly": return { kind: "cron", schedule: at + " " + s.dom + " * *" };
+        case "hours": return { kind: "cron", schedule: "0 */" + s.every + " * * *" };
+        default: return { kind: "once", schedule: s.date ? s.date + "T" + (s.time || "09:00") : "" };
+      }
+    };
+    const words = (v) => {
+      if (v.kind === "once") return tr("Runs once");
+      const w = scheduleWords(v);
+      return w === v.schedule ? fill("Custom schedule: %s", v.schedule) : fill("Runs: %s", w.charAt(0).toLowerCase() + w.slice(1));
+    };
+    const changed = () => {
+      clearTimeout(timer);
+      const v = value();
+      const mine = ++seq;
+      if (!v.schedule) { setKids(out, el("span", { class: "muted", text: tr("Pick a date and a time.") })); return; }
+      setKids(out, el("span", { class: "muted", text: tr("Checking…") }));
+      timer = setTimeout(async () => {
+        try {
+          const r = await api("/api/tasks/preview", { kind: v.kind, schedule: v.schedule, timezone: s.tz });
+          if (mine !== seq) return;
+          setKids(out,
+            el("div", { class: "msg", dir: "auto", text: words(v) + " (" + s.tz + ")" }),
+            el("ol", { class: "next small", "aria-label": tr("Next runs") }, r.next.map((u) => el("li", { text: inZone(u, s.tz) }))));
+        } catch (e) {
+          if (mine !== seq) return;
+          setKids(out, el("div", { class: "err msg", dir: "auto", role: "alert", text: e.message }));
+        }
+      }, 250);
+    };
+
+    const draw = () => {
+      const time = pick(s, "time", el("input", { type: "time", dir: "ltr", value: s.time, required: true }), changed);
+      const parts = {
+        day: [labelled(tr("At"), time)],
+        weekdays: [labelled(tr("At"), time)],
+        weekly: [labelled(tr("On"), pick(s, "dow", el("select", {}, [1, 2, 3, 4, 5, 6, 0].map((d) => el("option", { value: d, text: dayName(d), selected: Number(s.dow) === d }))), changed)), labelled(tr("At"), time)],
+        monthly: [labelled(tr("On day"), pick(s, "dom", el("select", {}, Array.from({ length: 28 }, (_, i) => el("option", { value: i + 1, text: String(i + 1), selected: Number(s.dom) === i + 1 }))), changed), tr("1 to 28, so it happens every month")), labelled(tr("At"), time)],
+        hours: [labelled(tr("Every"), pick(s, "every", el("select", {}, HOURS.map((h) => el("option", { value: h, text: h === 1 ? tr("hour") : fill("%s hours", h), selected: Number(s.every) === h }))), changed))],
+        once: [labelled(tr("On"), pick(s, "date", el("input", { type: "date", dir: "ltr", value: s.date, required: true }), changed)), labelled(tr("At"), time)],
+      }[s.preset];
+      setKids(sub, el("div", { class: "row grid" }, parts));
+    };
+
+    const preset = el("select", { "aria-label": tr("How often") }, [
+      ["day", "Every day"], ["weekdays", "Every weekday"], ["weekly", "Every week"], ["monthly", "Every month"], ["hours", "Every few hours"], ["once", "Once"],
+    ].map(([v, t]) => el("option", { value: v, text: tr(t), selected: v === s.preset })));
+    preset.onchange = () => { s.preset = preset.value; s.raw = ""; rawBox.value = ""; draw(); changed(); };
+    const tzBox = el("select", { "aria-label": tr("Time zone") }, z.list.map((x) => el("option", { value: x, text: x, selected: x === s.tz })));
+    tzBox.onchange = () => { s.tz = tzBox.value; changed(); };
+    const rawBox = pick(s, "raw", el("input", { dir: "ltr", class: "mono", value: s.raw, placeholder: "0 9 * * 1-5", autocomplete: "off", spellcheck: "false", "aria-label": tr("Custom schedule (5 fields)") }), changed);
+
+    draw();
+    changed();
+    return {
+      value: () => Object.assign(value(), { timezone: s.tz }),
+      node: el("div", { class: "stack" },
+        labelled(tr("How often"), preset),
+        sub,
+        labelled(tr("Time zone"), tzBox),
+        out,
+        advanced("cron", tr("your own schedule line"),
+          labelled(tr("Custom schedule (5 fields)"), rawBox, tr("Minute hour day month weekday. If this isn't empty, it is used instead of the choices above.")))),
+    };
+  }
+
+  // A form in the page's own dialog (a bottom sheet on a phone): `submit`
+  // returns the server's answer or throws; a refusal stays in the dialog
+  // with its reason, so nothing typed is lost.
+  function formDialog(title, fields, confirm, submit) {
+    const back = document.activeElement;
+    const d = el("dialog", { class: "dlg wide", "aria-labelledby": "dlg-title" });
+    const err = el("p", { class: "bad msg small", dir: "auto", role: "alert" });
+    const go = el("button", { type: "submit", class: "primary", text: confirm });
+    d.append(el("form", {
+      method: "dialog",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        if (go.getAttribute("aria-busy") === "true") return;
+        go.setAttribute("aria-busy", "true");
+        err.textContent = "";
+        try {
+          const r = await submit();
+          if (r && r.said) toast(r.said);
+          d.close();
+          refresh();
+        } catch (x) {
+          err.textContent = x.message;
+        } finally {
+          go.removeAttribute("aria-busy");
+        }
+      },
+    },
+      el("h2", { id: "dlg-title", dir: "auto", text: title }), fields, err,
+      el("div", { class: "row" }, el("button", { type: "button", text: tr("Cancel"), onclick: () => d.close() }), go)));
+    d.addEventListener("close", () => { d.remove(); if (back && back.isConnected && back.focus) back.focus(); });
+    document.body.append(d);
+    d.showModal();
+    return d;
+  }
+
+  function newTask() {
+    const name = el("input", { dir: "auto", maxlength: 80, required: true, autocomplete: "off", placeholder: tr("Morning summary") });
+    const what = el("textarea", { dir: "auto", rows: 3, required: true, placeholder: tr("Summarise my unread mail and tell me what needs an answer.") });
+    const picker = schedulePicker();
+    let to = "chat";
+    const dest = el("div", { class: "field" }, el("span", { text: tr("Send the result to") }));
+    const drawDest = () => dest.replaceChildren(dest.firstChild, chips(tr("Send the result to"), [["chat", tr("This dashboard's chat")], ["owner", tr("My own chat")]], to, (v) => { to = v; drawDest(); }));
+    drawDest();
+    const model = el("input", { dir: "ltr", class: "mono", autocomplete: "off", placeholder: tr("the default"), "aria-label": tr("Model") });
+    formDialog(tr("New task"), el("div", { class: "stack" },
+      labelled(tr("Name"), name),
+      labelled(tr("What should the bot do?"), what),
+      picker.node,
+      dest,
+      advanced("newtask", tr("choose a model"), labelled(tr("Model"), model, tr("provider/model, or leave empty for the default")))),
+    tr("Add the task"), () => {
+      const v = picker.value();
+      const body = { name: name.value.trim(), prompt: what.value.trim(), kind: v.kind, schedule: v.schedule, timezone: v.timezone, to };
+      if (model.value.trim()) body.model = model.value.trim();
+      return api("/api/tasks/add", body);
+    });
+    name.focus();
+  }
+
+  function changeSchedule(t) {
+    const parsed = parseCron(t.schedule);
+    const picker = schedulePicker(Object.assign({ tz: t.timezone }, parsed || { raw: t.schedule }));
+    formDialog(tr("Change the schedule"), el("div", { class: "stack" },
+      el("p", { class: "msg", dir: "auto", text: t.name || t.id }), picker.node), tr("Save"), () => {
+      const v = picker.value();
+      return api("/api/tasks/schedule", { id: t.id, schedule: v.schedule, timezone: v.timezone });
+    });
+  }
+
+  // A chart with the numbers under it for a screen reader, which cannot
+  // read bars.
+  function chart(title, points, fmt, cap) {
+    const svg = bars(points, fmt, cap);
+    svg.setAttribute("aria-label", title + ": " + points.map((p) => p.k + " " + fmt(p.v)).join(", "));
+    return frag(svg,
+      el("table", { class: "sr" }, el("caption", { text: title }),
+        el("tbody", {}, points.map((p) => el("tr", {}, el("th", { scope: "row", text: p.k }), el("td", { text: fmt(p.v) }))))));
+  }
+
   sections.usage = {
     every: 30,
     days: "7",
     mount(root) {
       this.box = el("div");
-      const pick = el("select", {}, [["1", "today"], ["7", "7 days"], ["30", "30 days"]].map(([v, t]) => el("option", { value: v, text: t })));
-      pick.value = this.days;
-      pick.onchange = () => { this.days = pick.value; this.load(); };
-      // Outside the box the poll redraws, so a half-typed cap survives it.
+      this.more = el("div", { class: "stack" });
+      this.pick = el("div", { class: "mb" });
+      // Outside the boxes the poll redraws, so a half-typed cap survives it.
       const edit = el("details", { class: "card", ontoggle: (e) => { if (e.target.open) capsEditor(e.target); } },
         el("summary", { text: "Edit caps" }));
-      root.append(secHead("Usage", "the ledger · every call accounted for", pick), this.box, edit);
+      this.drawPick();
+      root.append(secHead("Usage", "what your bot has spent"), this.pick, this.box,
+        advanced("usage", "tokens, prices, every model", this.more, edit));
+    },
+    drawPick() {
+      setKids(this.pick, chips("Range", [["1", "Today"], ["7", "7 days"], ["30", "30 days"]], this.days,
+        (v) => { this.days = v; this.drawPick(); this.load(); }));
     },
     async load() {
       let u;
@@ -1254,28 +1845,30 @@
       } catch (e) { return sectionError(this.box, e); }
       const t = u.total;
       const dayCap = u.caps ? (u.caps.caps || []).find((c) => c.cap === "usd_per_day" && c.limit > 0) : null;
+      const window_ = this.days === "1" ? "today" : "in the last " + this.days + " days";
       const group = (rows) => table(["", "calls", "tokens", "cost"], rows.map((r) => ({ cells: [
         text(r.key),
         el("span", { class: "mono", text: String(r.calls) }),
         el("span", { class: "mono", text: num(r.input_tokens + r.output_tokens) }),
         el("span", { class: "mono", text: usd(r.usd) }),
       ]})), [1, 2, 3]);
-      setKids(this.box, 
+      setKids(this.box,
         el("div", { class: "stats" },
-          stat("cost", usd(t.usd), u.malformed ? u.malformed + " unreadable lines" : "all lines read"),
-          stat("calls", String(t.calls), "errors " + u.error_pct + "% · retried " + u.retry_pct + "%"),
+          stat("Spent", usd(t.usd), window_),
+          stat("Calls to a model", String(t.calls), u.error_pct ? u.error_pct + "% went wrong" : "none went wrong")),
+        u.caps ? capsCard(u.caps, el("span", { class: "muted small", text: "A cap stops your bot from spending more. Change them under Advanced." })) : null,
+        t.calls ? card({ title: "Cost per day" }, chart("Cost per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.usd })), usd, dayCap ? dayCap.limit : 0))
+          : empty("Nothing spent " + window_, "Once your bot answers something, the cost shows up here."));
+      setKids(this.more,
+        el("div", { class: "stats" },
           stat("tokens in", num(t.input_tokens), num(t.cached_input_tokens) + " cached"),
           stat("tokens out", num(t.output_tokens), "cache hit " + u.cache_hit_pct + "%"),
-          stat("latency", "p50 " + u.p50_ms + " ms", "p95 " + u.p95_ms + " ms")),
+          stat("latency", "p50 " + u.p50_ms + " ms", "p95 " + u.p95_ms + " ms"),
+          stat("retried", u.retry_pct + "%", u.malformed ? u.malformed + " unreadable lines" : "all lines read")),
         el("p", { class: "muted small", text: "egress refused: " + (u.egress_refused.count ? u.egress_refused.count + " · " + u.egress_refused.hosts.map((h) => h.host + " ×" + h.count).join(", ") : "none") }),
-        u.caps ? el("h3", { text: "Caps" }) : null,
-        u.caps ? capsCard(u.caps, el("span", { class: "muted small", text: "Edit caps below — 0 turns one off." })) : null,
-        el("div", { class: "grid2" },
-          el("div", {}, el("h3", { text: "Cost per day" }),
-            bars(u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.usd })), usd, dayCap ? dayCap.limit : 0)),
-          el("div", {}, el("h3", { text: "Tokens per day" }),
-            bars(u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.input_tokens + d.output_tokens })), num))),
-        el("h3", { text: "Per model" }),
+        el("h2", { text: "Tokens per day" }),
+        chart("Tokens per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.input_tokens + d.output_tokens })), num),
+        el("h2", { text: "Per model" }),
         u.per_model.length ? table(["model", "calls", "errors", "cache", "p50 / p95", "cost"], u.per_model.map((r) => ({ cells: [
           frag(el("span", { class: "mono", text: r.provider + "/" + r.model }), el("span", { class: "sub", text: r.shape })),
           String(r.calls), String(r.errors), r.cache_hit_pct + "%",
@@ -1287,8 +1880,8 @@
               : el("span", { class: "mono", text: usd(r.usd) }),
         ]})), [1, 2, 3, 4, 5]) : el("div", { class: "empty", text: "no calls in this window" }),
         el("div", { class: "grid2" },
-          el("div", {}, el("h3", { text: "Per task" }), u.per_task.length ? group(u.per_task) : el("div", { class: "empty", text: "no scheduled runs" })),
-          el("div", {}, el("h3", { text: "Per chat" }), u.per_chat.length ? group(u.per_chat) : el("div", { class: "empty", text: "no chats" }))));
+          el("div", {}, el("h2", { text: "Per task" }), u.per_task.length ? group(u.per_task) : el("div", { class: "empty", text: "no scheduled runs" })),
+          el("div", {}, el("h2", { text: "Per chat" }), u.per_chat.length ? group(u.per_chat) : el("div", { class: "empty", text: "no chats" }))));
     },
   };
 
@@ -1300,73 +1893,84 @@
       try {
         r = await api("/api/tasks");
       } catch (e) { return sectionError(this.box, e); }
-      setKids(this.box, 
-        secHead("Tasks", r.tasks.length + " scheduled · gates skip at zero token cost"),
+      setKids(this.box,
+        secHead(tr("Tasks"), r.tasks.length ? fill("%s scheduled", r.tasks.length) : tr("things your bot does on a schedule"),
+          button(tr("New task"), { icon: "plus", kind: "primary", onclick: newTask })),
         r.paused ? el("div", { class: "alert bad" },
-          el("div", { class: "body" }, el("div", { class: "what", text: "The kill switch is on: nothing runs." }))) : null,
-        r.tasks.length ? r.tasks.map((t) => el("div", { class: "task" },
-          el("div", { class: "head" },
-            el("span", { class: "name msg", dir: "auto", text: t.name || t.id }),
-            tag(t.kind),
-            t.enabled ? tag("on", "ok") : tag("paused", "warn"),
-            t.builtin ? tag("built in") : null,
-            el("span", { class: "spacer grow" }),
-            el("span", { class: "cron", text: t.schedule + (t.kind === "cron" ? "  ·  " + t.timezone : "") })),
+          el("div", { class: "body" }, el("div", { class: "what", text: tr("The kill switch is on: nothing runs.") }))) : null,
+        r.tasks.length ? el("div", { class: "plain-list" }, r.tasks.map((t) => this.item(t)))
+          : empty(tr("No tasks yet"), tr("A task is something your bot does by itself, like a morning summary. Add one here, or ask for it in Chat: \"every weekday at 9, summarise my unread mail\"."),
+            button(tr("New task"), { icon: "plus", kind: "primary", onclick: newTask })));
+    },
+    item(t) {
+      const next = t.enabled && t.next_run_at != null ? tr("Next:") + " " + clock(t.next_run_at) + " (" + ago(t.next_run_at) + ")" : t.enabled ? "" : tr("Paused");
+      const last = t.runs.length ? t.runs[0] : null;
+      return el("div", { class: "card task" },
+        el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t msg", dir: "auto", text: t.name || t.id }),
+            el("div", { class: "d", text: scheduleWords(t) + (next ? " · " + next : "") })),
+          toggle((t.enabled ? tr("Pause") : tr("Resume")) + " " + (t.name || t.id), t.enabled,
+            (e) => act(t.enabled ? "tasks/pause" : "tasks/resume", { id: t.id }, e.currentTarget)),
+          btn(tr("Run now"), "tasks/run", { id: t.id })),
+        last && last.status !== "succeeded" && last.status !== "running" ? el("p", { class: "small mt0 " + (last.status === "skipped" ? "warn" : "bad") },
+          "Last run " + last.status + " " + ago(last.started_at) + (last.detail ? ": " : ""), last.detail ? text(last.detail) : null) : null,
+        advanced("task-" + t.id, "schedule line, model, history",
           kv([
-            ["next", t.enabled ? el("span", { class: "mono", text: ago(t.next_run_at) }) : tag("paused", "warn")],
+            ["kind", tag(t.kind)],
+            ["schedule", el("span", { class: "cron", text: t.schedule + (t.kind === "cron" ? "  ·  " + t.timezone : "") })],
             ["delivers to", text(t.destination)],
             ["model", el("span", { class: "mono", text: t.model || "the default" })],
+            t.builtin ? ["built in", "yes"] : null,
           ]),
           t.runs.length ? el("div", { class: "runs" }, t.runs.map((x) => el("span", {
             class: "run-dot " + (x.status === "succeeded" ? "ok" : x.status === "skipped" ? "warn" : x.status === "running" ? "" : "bad"),
             title: (x.detail || "") + " · " + ago(x.started_at),
           }, x.status + " · " + ago(x.started_at)))) : el("p", { class: "muted small", text: "never ran" }),
           t.runs.slice(0, 1).map((x) => x.detail ? el("div", { class: "muted small msg mt", dir: "auto", text: x.detail }) : null),
-          el("div", { class: "row mt" },
-            t.enabled ? btn("Pause", "tasks/pause", { id: t.id }) : btn("Resume", "tasks/resume", { id: t.id }, "primary"),
-            btn("Run now", "tasks/run", { id: t.id }),
-            ask("Schedule", "tasks/schedule", t.kind === "cron" ? "Cron schedule (5 fields), then optionally a space and an IANA timezone:" : "When (RFC 3339):",
-              t.kind === "cron" ? t.schedule + " " + t.timezone : t.schedule, (v) => {
-                const [schedule, timezone] = t.kind === "cron" ? splitTz(v) : [v.trim(), null];
-                return { id: t.id, schedule, timezone };
-              }),
-            ask("Model", "tasks/model", "The model it runs on (provider/model, a provider or an alias), or \"default\":",
+          el("div", { class: "row" },
+            t.kind === "cron" ? button(tr("Change schedule"), { onclick: () => changeSchedule(t) })
+              : askBtn(tr("Schedule"), "tasks/schedule", "When (RFC 3339):", t.schedule, (v) => ({ id: t.id, schedule: v.trim(), timezone: null })),
+            askBtn("Model", "tasks/model", "The model it runs on (provider/model, a provider or an alias), or \"default\":",
               t.model || "default", (v) => ({ id: t.id, model: v.trim() })),
-            t.builtin ? null : btn("Delete", "tasks/delete", { id: t.id }, "danger"))))
-          : el("div", { class: "empty", text: "no tasks" }));
+            t.builtin ? null : btn(tr("Delete"), "tasks/delete", { id: t.id }, "danger"))));
     },
   };
 
   sections.logs = {
     every: 0,
     page: 0,
+    kindV: "all",
     mount(root) {
-      this.kind = el("select", {}, [["all", "everything"], ["audit", "audit log"], ["warn", "warnings and errors"]].map(([v, t]) => el("option", { value: v, text: t })));
-      this.q = el("input", { type: "search", placeholder: "filter — Hebrew works as-is", dir: "auto", size: "28" });
+      this.pick = el("div", { class: "mb" });
+      this.q = el("input", { type: "search", placeholder: "search — Hebrew works as-is", dir: "auto", "aria-label": "Search the log", size: "28" });
       this.box = el("div");
       const go = () => { this.page = 0; this.load(); };
-      this.kind.onchange = go;
       this.q.addEventListener("change", go);
-      root.append(secHead("Logs", "audit + warnings · redacted · never transcripts"),
-        el("div", { class: "row" }, this.kind, this.q, el("button", { text: "Reload", onclick: () => this.load() })),
+      this.drawPick = () => setKids(this.pick, chips("Show", [["all", "Everything"], ["warn", "Problems"], ["audit", "Changes"]], this.kindV,
+        (v) => { this.kindV = v; this.drawPick(); go(); }));
+      this.drawPick();
+      root.append(secHead("Logs", "what happened · secrets and chats never appear here"),
+        this.pick, el("div", { class: "row mt" }, this.q, button("Reload", { kind: "ghost", icon: "retry", onclick: () => this.load() })),
         this.box);
     },
     async load() {
       let r;
       try {
-        r = await api("/api/logs?" + new URLSearchParams({ kind: this.kind.value, q: this.q.value, page: this.page }));
+        r = await api("/api/logs?" + new URLSearchParams({ kind: this.kindV, q: this.q.value, page: this.page }));
       } catch (e) { return sectionError(this.box, e); }
       const pages = Math.max(1, Math.ceil(r.total / r.per_page));
       const lvl = (x) => {
         const l = String(x.level).toLowerCase();
         return /error|fail|engage/.test(l) ? "bad" : /warn/.test(l) ? "warn" : x.kind === "audit" ? "audit" : "info";
       };
-      setKids(this.box, 
+      setKids(this.box,
         r.rows.length ? el("div", { class: "logwrap" }, r.rows.map((x) =>
           el("div", { class: "logline" },
             el("span", { class: "when", text: String(x.at).replace("T", " ").slice(5, 19) }),
             el("span", { class: "lvl " + lvl(x), text: x.level }),
-            el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text))))) : el("div", { class: "empty", text: "no log lines match" }),
+            el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text)))))
+          : empty("Nothing matches", this.q.value ? "Try a shorter search." : "Nothing of this kind has happened yet."),
         el("div", { class: "pager" },
           el("button", { text: "← Newer", disabled: this.page === 0, onclick: () => { this.page--; this.load(); } }),
           el("span", { text: "page " + (r.page + 1) + " of " + pages + " · " + r.total + " entries" }),
@@ -1383,56 +1987,54 @@
         x = await api("/api/settings");
       } catch (e) { return sectionError(this.box, e); }
       const w = x.workspace_hooks;
-      setKids(this.box, 
-        secHead("Extensions", "mcp · skills · hooks — every change is an audit line"),
-        el("h3", { text: "MCP servers" }),
-        x.mcp.length ? table(["name", "runs", "origin", ""], x.mcp.map((m) => ({ dead: m.disabled, cells: [
-          frag(el("strong", { text: m.name }), m.disabled ? frag(" ", tag("off", "warn")) : null),
-          el("span", { class: "mono small", text: m.runs }),
-          tag(m.origin),
-          el("div", { class: "row" },
-            m.origin === "configured" ? (m.disabled ? btn("Enable", "mcp/enable", { name: m.name }) : btn("Disable", "mcp/disable", { name: m.name })) : null,
-            btn("Remove", "mcp/remove", { name: m.name }, "danger")),
-        ]}))) : el("div", { class: "empty", text: "none configured" }),
-        el("h3", { text: "Skills" }),
-        !x.skills_enabled ? el("div", { class: "empty", text: "skills are off" })
-          : x.skills.length ? table(["skill", "scope", "what", ""], x.skills.map((s) => ({
-            dead: s.disabled,
-            cells: [
-              frag(el("span", { class: "mono", text: s.name }), s.disabled ? frag(" ", tag("off", "warn")) : null),
-              tag(s.scope),
-              text(s.description),
-              s.disabled ? btn("Enable", "skills/enable", { name: s.name }) : btn("Disable", "skills/disable", { name: s.name }),
-            ],
-          }))) : el("div", { class: "empty", text: "none found" }),
+      const workspace = w ? el("div", { class: "alert block " + (w.trusted ? "ok" : "warn") },
+        el("div", { class: "row" },
+          el("strong", { text: "Workspace hooks" }),
+          el("code", { text: w.file }),
+          w.trusted ? tag("trusted", "ok") : tag(w.trusted_sha ? "changed since trusted" : "not trusted", "warn")),
+        kv([
+          ["SHA-256", el("code", { text: w.sha })],
+          w.trusted_sha && !w.trusted ? ["trusted", el("code", { text: w.trusted_sha })] : null,
+          w.project ? null : ["note", "They won't run until [hooks] project = true is in the config."],
+        ]),
+        w.parse_error ? el("p", { class: "bad msg", dir: "auto", text: w.parse_error }) : null,
+        w.hooks.length ? table(["event", "matcher", "command"], w.hooks.map((h) => ({ cells: [
+          tag(h.event), el("span", { class: "mono", text: h.matcher || "*" }), el("code", { text: h.command }),
+        ]}))) : null,
+        w.diff ? frag(
+          el("h4", { text: "What changed since it was trusted" }),
+          el("pre", {}, w.diff.map((d) => el("div", { class: d.op === "+" ? "diff-add" : d.op === "-" ? "diff-del" : "diff-ctx", text: d.op + " " + d.line }))))
+          : el("details", {}, el("summary", { text: "The file" }), el("pre", { class: "msg", dir: "auto", text: w.text })),
+        el("div", { class: "row" },
+          w.trusted || w.parse_error ? null : btn("Trust this version", "hooks/trust", { sha: w.sha }, "primary"),
+          w.trusted_sha ? btn("Untrust", "hooks/untrust", {}, "danger") : null,
+          el("span", { class: "muted small", text: "Trust is pinned to the hash: any later edit needs trusting again." }))) : null;
+      // Literal paths, so the guard test can see every one.
+      const switchFor = (name, off, on_path, off_path) => toggle((off ? "Turn on " : "Turn off ") + name, !off,
+        (e) => act(off ? on_path : off_path, { name }, e.currentTarget));
+      setKids(this.box,
+        secHead("Extensions", "add-ons your bot can use"),
+        el("h2", { text: "Tools from other programs" }),
+        el("p", { class: "muted small m0" }, "Programs that give your bot new tools, called ", tip("MCP"), " servers."),
+        x.mcp.length ? el("div", { class: "plain-list" }, x.mcp.map((m) => el("div", { class: "item" + (m.disabled ? " dead" : "") },
+          el("div", { class: "grow" }, el("div", { class: "t", text: m.name }), el("div", { class: "d", text: m.origin === "configured" ? "added in the config" : "from " + m.origin })),
+          m.origin === "configured" ? switchFor(m.name, m.disabled, "mcp/enable", "mcp/disable") : tag(m.origin)))) : empty("None connected", "Nothing is adding tools right now."),
+        el("h2", { text: "Skills" }),
+        !x.skills_enabled ? empty("Skills are off", "Turn them on in the config to let your bot learn how-to guides.")
+          : x.skills.length ? el("div", { class: "plain-list" }, x.skills.map((s) => el("div", { class: "item" + (s.disabled ? " dead" : "") },
+            el("div", { class: "grow" }, el("div", { class: "t mono", text: s.name }), el("div", { class: "d" }, text(s.description))),
+            switchFor(s.name, s.disabled, "skills/enable", "skills/disable")))) : empty("No skills found", "A skill is a how-to guide your bot reads when it needs it."),
         x.skills_disabled.length ? el("p", { class: "muted small" }, "Disabled in the config: ",
           x.skills_disabled.map((n, i) => frag(i ? " · " : "", n, " ", btn("Enable", "skills/enable", { name: n })))) : null,
-        el("h3", { text: "Hooks" }),
-        x.hooks.length ? table(["event", "matcher", "command"], x.hooks.map((h) => ({ cells: [
-          tag(h.event), el("span", { class: "mono", text: h.matcher || "*" }), el("code", { text: h.command }),
-        ]}))) : el("div", { class: "empty", text: "none in the config" }),
-        w ? el("div", { class: "alert block " + (w.trusted ? "ok" : "warn") },
-          el("div", { class: "row" },
-            el("strong", { text: "Workspace hooks" }),
-            el("code", { text: w.file }),
-            w.trusted ? tag("trusted", "ok") : tag(w.trusted_sha ? "changed since trusted" : "not trusted", "warn")),
-          kv([
-            ["SHA-256", el("code", { text: w.sha })],
-            w.trusted_sha && !w.trusted ? ["trusted", el("code", { text: w.trusted_sha })] : null,
-            w.project ? null : ["note", "They won't run until [hooks] project = true is in the config."],
-          ]),
-          w.parse_error ? el("p", { class: "bad msg", dir: "auto", text: w.parse_error }) : null,
-          w.hooks.length ? table(["event", "matcher", "command"], w.hooks.map((h) => ({ cells: [
+        w && !w.trusted ? workspace : null,
+        advanced("extensions", "hooks, removing, trust",
+          el("h2", { text: "Hooks" }),
+          x.hooks.length ? table(["event", "matcher", "command"], x.hooks.map((h) => ({ cells: [
             tag(h.event), el("span", { class: "mono", text: h.matcher || "*" }), el("code", { text: h.command }),
-          ]}))) : null,
-          w.diff ? frag(
-            el("h4", { text: "What changed since it was trusted" }),
-            el("pre", {}, w.diff.map((d) => el("div", { class: d.op === "+" ? "diff-add" : d.op === "-" ? "diff-del" : "diff-ctx", text: d.op + " " + d.line }))))
-            : el("details", {}, el("summary", { text: "The file" }), el("pre", { class: "msg", dir: "auto", text: w.text })),
-          el("div", { class: "row" },
-            w.trusted || w.parse_error ? null : btn("Trust this version", "hooks/trust", { sha: w.sha }, "primary"),
-            w.trusted_sha ? btn("Untrust", "hooks/untrust", {}, "danger") : null,
-            el("span", { class: "muted small", text: "Trust is pinned to the hash: any later edit needs trusting again." }))) : null);
+          ]}))) : el("div", { class: "empty", text: "none in the config" }),
+          w && w.trusted ? workspace : null,
+          x.mcp.length ? frag(el("h2", { text: "Remove a tool server" }),
+            el("div", { class: "row" }, x.mcp.map((m) => btn("Remove " + m.name, "mcp/remove", { name: m.name }, "danger")))) : null));
     },
   };
 
@@ -1444,23 +2046,117 @@
       try {
         r = await api("/api/agents");
       } catch (e) { return sectionError(this.box, e); }
-      setKids(this.box, 
-        secHead("Agents", "sub-agents · read-only · isolated contexts, summaries back only"),
-        r.agents.length ? table(["agent", "status", "task", "tokens", "model"], r.agents.map((a) => ({ cells: [
-          frag(el("strong", { text: a.name }), el("span", { class: "sub", text: a.role + " · depth " + a.depth })),
-          a.status === "running" ? frag(led("ok pulse"), " ", tag("running", "ok")) : tag(a.status, a.status === "failed" ? "bad" : null),
-          text(a.task),
-          el("span", { class: "mono", text: num(a.tokens) }),
-          el("span", { class: "mono small", text: a.model || "–" }),
-        ]})), [3]) : el("div", { class: "empty", text: "no sub-agents running" }),
-        el("p", { class: "muted small", text: "spawn_agent / wait / resume / close — planner, worker and verifier roles, a worktree per child, tree limits and a shared budget." }));
+      setKids(this.box,
+        secHead("Agents", "helpers your bot starts for a big job"),
+        r.agents.length ? el("div", { class: "plain-list" }, r.agents.map((a) => el("div", { class: "item" },
+          a.status === "running" ? led("ok pulse") : null,
+          el("div", { class: "grow" }, el("div", { class: "t", text: a.name }), el("div", { class: "d" }, text(a.task))),
+          a.status === "running" ? tag("running", "ok") : tag(a.status, a.status === "failed" ? "bad" : null))))
+          : empty("No helpers running", "When your bot splits a big job, its helpers show up here."),
+        advanced("agents", "role, depth, tokens, model",
+          r.agents.length ? table(["agent", "role", "tokens", "model"], r.agents.map((a) => ({ cells: [
+            el("strong", { text: a.name }),
+            a.role + " · depth " + a.depth,
+            el("span", { class: "mono", text: num(a.tokens) }),
+            el("span", { class: "mono small", text: a.model || "–" }),
+          ]})), [2]) : null,
+          el("p", { class: "muted small", text: "Helpers are read-only: each works in its own room and sends back a summary. A planner, a worker and a verifier, with limits and a shared budget." })));
     },
   };
 
-  // ---- chat (M37 §4.3) ---------------------------------------------------
+  // ---- chat (M37 §4.3, M47) ------------------------------------------------
   // Session dashboard__owner, like any other chat: the page polls what
   // changed since the last revision and merges it by id, so a streamed
-  // edit replaces its bubble instead of adding one.
+  // edit changes its bubble's text in place instead of adding one. A
+  // photo is shrunk here, sent as base64 and named in the log, never shown
+  // back (the page keeps no bytes of it after sending).
+
+  // Prose with `code` and http(s) links, and fenced blocks, built with
+  // el() and textContent only: nothing in a message is ever parsed as HTML.
+  const INLINE = /(`[^`\n]+`)|(https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"])/g;
+  function inline(t) {
+    const out = [];
+    let last = 0;
+    for (const m of t.matchAll(INLINE)) {
+      if (m.index > last) out.push(t.slice(last, m.index));
+      if (m[1]) out.push(el("code", { class: "ic", text: m[1].slice(1, -1) }));
+      else out.push(el("a", { href: m[2], target: "_blank", rel: "noopener noreferrer", text: m[2] }));
+      last = m.index + m[0].length;
+    }
+    if (last < t.length) out.push(t.slice(last));
+    return out;
+  }
+  // Fences alternate: an odd piece is code, and an unclosed one (a reply
+  // still being written) is code too.
+  function richText(t) {
+    return t.split("```").map((piece, i) => {
+      if (i % 2 === 0) return piece.trim() ? el("div", { class: "msg", dir: "auto" }, inline(piece.replace(/^\n+|\n+$/g, ""))) : null;
+      const code = piece.replace(/^[\w+.#-]*\n/, "").replace(/\n$/, "");
+      return el("div", { class: "codeblock" },
+        el("pre", { dir: "ltr" }, el("code", { text: code })),
+        el("button", { type: "button", class: "ghost icon", "aria-label": "Copy the code", title: "Copy the code", onclick: () => copyText(code) }, icon("copy")));
+    });
+  }
+
+  // Copy `t`; the clipboard API needs a secure page, so a plain http
+  // address (a LAN bind) falls back to a hidden textarea and execCommand.
+  async function copyText(t) {
+    let done = false;
+    try { await navigator.clipboard.writeText(t); done = true; } catch (_) {
+      const ta = el("textarea", { class: "sr", "aria-hidden": "true", tabindex: "-1" });
+      ta.value = t;
+      document.body.append(ta);
+      ta.select();
+      try { done = document.execCommand("copy"); } catch (_e) { done = false; }
+      ta.remove();
+    }
+    toast(done ? "Copied" : "Couldn't copy: select the text and copy it by hand.", !done);
+    return done;
+  }
+
+  // The most a photo may weigh on the wire (the server refuses more), and
+  // the sizes the page tries, largest first.
+  const PHOTO_MAX = 3500000;
+  const PHOTO_TRIES = [[1600, 0.85], [1280, 0.8], [960, 0.7], [640, 0.6]];
+  const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+  const FAILED = /^(I couldn't reply:|something went wrong\.)/;
+
+  // A picked file as `{mime, data (base64), preview}`, shrunk to fit.
+  // Whatever the browser can't decode is sent as it is when it is a type the
+  // server takes and small enough; anything else is said in words.
+  async function preparePhoto(file) {
+    const b64 = (url) => url.slice(url.indexOf(",") + 1);
+    const asUrl = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+    let bmp = null;
+    try {
+      if (window.createImageBitmap) bmp = await createImageBitmap(file);
+      else {
+        const img = new Image();
+        img.src = await asUrl(file);
+        await img.decode();
+        bmp = img;
+      }
+    } catch (_) { bmp = null; }
+    if (bmp) {
+      const w0 = bmp.width, h0 = bmp.height;
+      for (const [side, q] of PHOTO_TRIES) {
+        const k = Math.min(1, side / Math.max(w0, h0));
+        const c = el("canvas", { width: Math.max(1, Math.round(w0 * k)), height: Math.max(1, Math.round(h0 * k)) });
+        const g = c.getContext("2d");
+        g.fillStyle = "#fff";
+        g.fillRect(0, 0, c.width, c.height);
+        g.drawImage(bmp, 0, 0, c.width, c.height);
+        const url = c.toDataURL("image/jpeg", q);
+        if (b64(url).length * 0.75 <= PHOTO_MAX) return { mime: "image/jpeg", data: b64(url), preview: url, size: Math.round(b64(url).length * 0.75) };
+      }
+      throw new Error("That photo is too big even after shrinking it. Try another one.");
+    }
+    if (PHOTO_TYPES.includes(file.type) && file.size <= PHOTO_MAX) {
+      const url = await asUrl(file);
+      return { mime: file.type, data: b64(url), preview: url, size: file.size };
+    }
+    throw new Error("This browser can't read that photo. Try a JPEG or PNG.");
+  }
 
   sections.chat = {
     title: "Chat",
@@ -1468,20 +2164,73 @@
     every: 2,
     from: 0,
     entries: new Map(),
+    rows: new Map(),
     mount(root) {
       this.top = el("div");
-      this.log = el("div", { class: "chat", "aria-live": "polite" });
-      this.input = el("textarea", { rows: 2, dir: "auto", placeholder: "Message your agent", "aria-label": "Message" });
-      this.sendBtn = el("button", { class: "primary", text: "Send" });
-      this.note = el("div", { class: "muted small" });
+      this.log = el("div", { class: "chat", role: "log", "aria-live": "polite", "aria-relevant": "additions", "aria-label": "Conversation" });
+      this.typing = el("div", { class: "typing", role: "status", hidden: true },
+        el("span", { class: "dots", "aria-hidden": "true" }, el("i"), el("i"), el("i")),
+        el("span", { class: "label", text: "Writing…" }));
+      this.input = el("textarea", { rows: 1, dir: "auto", placeholder: "Message your agent", "aria-label": "Message" });
+      this.sendBtn = el("button", { type: "button", class: "primary", "aria-label": "Send" }, icon("send"), el("span", { text: "Send" }));
+      this.stopBtn = el("button", { type: "button", class: "danger", hidden: true, "aria-label": "Stop the answer" }, icon("stop"), el("span", { text: "Stop" }));
+      this.note = el("div", { class: "muted small", role: "status" });
+      this.pill = el("button", { type: "button", class: "pill", hidden: true, text: "New messages" }, icon("chevron-down"));
+      this.pill.onclick = () => this.toBottom();
+      this.preview = el("div", { class: "attached", hidden: true });
+      this.photo = null;
+      this.gallery = el("input", { type: "file", accept: "image/*", hidden: true, "aria-hidden": "true", tabindex: "-1" });
+      this.camera = el("input", { type: "file", accept: "image/*", capture: "environment", hidden: true, "aria-hidden": "true", tabindex: "-1" });
+      for (const f of [this.gallery, this.camera]) f.addEventListener("change", () => { if (f.files && f.files[0]) this.attach(f.files[0]); f.value = ""; });
+      const attach = el("button", { type: "button", class: "ghost icon", "aria-label": "Attach a photo", title: "Attach a photo", onclick: () => this.pick() }, icon("image"));
+      const shoot = matchMedia("(pointer:coarse)").matches
+        ? el("button", { type: "button", class: "ghost icon", "aria-label": "Take a photo", title: "Take a photo", onclick: () => this.camera.click() }, icon("camera"))
+        : null;
       this.sendBtn.onclick = () => this.send();
+      this.stopBtn.onclick = () => this.stop();
+      this.input.addEventListener("input", () => this.grow());
       this.input.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
       });
-      root.append(secHead("Chat", "the same agent, in its own session"), this.top, this.log,
-        el("div", { class: "composer" }, this.note, el("div", { class: "row" }, el("div", { class: "grow" }, this.input), this.sendBtn)));
+      this.input.addEventListener("paste", (e) => {
+        const f = [...((e.clipboardData && e.clipboardData.files) || [])].find((x) => x.type.startsWith("image/"));
+        if (f) { e.preventDefault(); this.attach(f); }
+      });
+      window.addEventListener("scroll", () => { if (this.pill && this.nearBottom()) this.pill.hidden = true; }, { passive: true });
+      root.append(secHead("Chat", "the same agent, in its own session"), this.top, this.log, this.typing,
+        el("div", { class: "composer" }, this.pill, this.note, this.preview,
+          el("div", { class: "row" }, attach, shoot, el("div", { class: "grow" }, this.input), this.stopBtn, this.sendBtn),
+          this.gallery, this.camera));
       this.drawn = false;
+      this.rows.clear();
+      if (this.wantPick) { this.wantPick = false; setTimeout(() => this.pick(), 60); }
     },
+    pick() { if (this.gallery && !this.gallery.disabled) this.gallery.click(); else this.wantPick = true; },
+    grow() {
+      // Measured at one row, then as many as the text needs, up to eight.
+      const cs = getComputedStyle(this.input);
+      this.input.rows = 1;
+      const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.3;
+      const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+      this.input.rows = Math.min(8, Math.max(1, Math.ceil((this.input.scrollHeight + (parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)) - pad) / line - 0.05)));
+    },
+    nearBottom() { const d = document.documentElement; return d.scrollHeight - window.scrollY - window.innerHeight < 80; },
+    toBottom() { window.scrollTo(0, document.documentElement.scrollHeight); this.pill.hidden = true; },
+    async attach(file) {
+      this.note.textContent = "Preparing the photo…";
+      try {
+        this.photo = await preparePhoto(file);
+        this.photo.name = file.name || "photo";
+        setKids(this.preview,
+          el("img", { src: this.photo.preview, alt: "The photo you are about to send", width: 56, height: 56 }),
+          el("span", { class: "muted small grow", dir: "auto", text: this.photo.name + " · " + Math.max(1, Math.round(this.photo.size / 1024)) + " KB" }),
+          el("button", { type: "button", class: "ghost icon", "aria-label": "Remove the photo", title: "Remove the photo", onclick: () => this.detach() }, icon("x")));
+        this.preview.hidden = false;
+        this.note.textContent = "";
+        this.input.focus();
+      } catch (e) { this.photo = null; this.note.textContent = ""; toast(e.message, true); }
+    },
+    detach() { this.photo = null; this.preview.hidden = true; this.preview.replaceChildren(); },
     async load() {
       let c, ap = { approvals: [] };
       try {
@@ -1489,44 +2238,106 @@
       } catch (e) { return sectionError(this.top, e); }
       setKids(this.top, approvalsCard(ap.approvals));
       // The log starts again after a restart: forget what was drawn.
-      if (c.next < this.from) { this.from = 0; this.entries.clear(); return this.load(); }
+      if (c.next < this.from) { this.from = 0; this.entries.clear(); this.rows.clear(); this.log.replaceChildren(); return this.load(); }
       for (const e of c.entries) this.entries.set(e.id, e);
-      if (c.first) for (const id of [...this.entries.keys()]) if (id < c.first) this.entries.delete(id);
+      if (c.first) for (const id of [...this.entries.keys()]) if (id < c.first) { this.entries.delete(id); const r = this.rows.get(id); if (r) { r.node.remove(); this.rows.delete(id); } }
       this.from = c.next;
       const listening = c.listening;
       this.input.disabled = !listening;
       this.sendBtn.disabled = !listening;
-      this.note.textContent = listening ? "" : (c.why || "The agent isn't listening here: chat works when the dashboard runs inside the gateway (the service).");
-      if (c.entries.length || !this.drawn || this.waiting !== c.waiting) {
-        const stick = this.log.scrollHeight - this.log.scrollTop - this.log.clientHeight < 60 || !this.drawn;
-        this.draw(c.waiting);
-        if (stick) this.log.scrollTop = this.log.scrollHeight;
-        this.drawn = true;
-        this.waiting = c.waiting;
+      this.gallery.disabled = !listening;
+      if (!this.sending) this.note.textContent = listening ? "" : (c.why || "The agent isn't listening here: chat works when the dashboard runs inside the gateway (the service).");
+      const grew = c.entries.length > 0;
+      const stick = this.nearBottom() || !this.drawn;
+      this.draw(c.waiting);
+      this.typing.hidden = !c.waiting;
+      this.stopBtn.hidden = !c.waiting;
+      if (grew) {
+        if (stick) this.toBottom();
+        else if (c.entries.some((e) => e.who !== "you")) this.pill.hidden = false;
       }
+      this.drawn = true;
     },
+    // Only what changed is touched: a bubble whose text, buttons and
+    // "Try again" haven't moved keeps its node, so a selection or a
+    // scroll position inside it survives the poll.
     draw(waiting) {
       const list = [...this.entries.values()].sort((a, b) => a.id - b.id);
-      setKids(this.log,
-        list.length ? null : el("div", { class: "empty", text: "Nothing yet. Whatever you type here goes to your agent, like a message on Telegram." }),
-        list.map((e) => el("div", { class: "bubble" + (e.who === "you" ? " you" : "") },
-          el("div", { class: "msg", dir: "auto", text: e.text }),
-          (e.buttons || []).length ? el("div", { class: "row" }, e.buttons.map((b) => b.url
-            ? el("a", { class: "btn", href: b.url, target: "_blank", rel: "noopener", text: b.text })
-            : el("button", { text: b.text, onclick: (ev) => this.send(b.send, ev.currentTarget) }))) : null,
-          el("div", { class: "at", text: new Date(e.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }))),
-        waiting ? el("div", { class: "typing", text: "thinking…" }) : null);
+      const lastId = list.length ? list[list.length - 1].id : 0;
+      if (!list.length) {
+        if (!this.log.firstChild) this.log.append(el("div", { class: "empty", "data-empty": "1", text: "Nothing yet. Whatever you type here goes to your agent, like a message on Telegram." }));
+        return;
+      }
+      const hint = this.log.querySelector("[data-empty]");
+      if (hint) hint.remove();
+      let prev = null;
+      for (const e of list) {
+        const retry = e.id === lastId && e.who !== "you" && !waiting && FAILED.test(e.text);
+        const sig = JSON.stringify([e.text, e.buttons, e.photo, retry]);
+        let row = this.rows.get(e.id);
+        if (!row || row.sig !== sig) {
+          const node = this.bubble(e, retry);
+          if (row) row.node.replaceWith(node); else (prev ? prev.after(node) : this.log.prepend(node));
+          row = { node, sig };
+          this.rows.set(e.id, row);
+        }
+        prev = row.node;
+      }
+    },
+    bubble(e, retry) {
+      const mine = e.who === "you";
+      return el("div", { class: "bubble" + (mine ? " you" : ""), "data-id": e.id },
+        e.photo ? el("div", { class: "photo-chip" }, icon("image"), el("span", { dir: "auto", text: e.photo.name })) : null,
+        richText(e.text || ""),
+        (e.buttons || []).length ? el("div", { class: "row" }, e.buttons.map((b) => b.url
+          ? el("a", { class: "btn", href: b.url, target: "_blank", rel: "noopener noreferrer", text: b.text })
+          : el("button", { text: b.text, onclick: (ev) => this.send(b.send, ev.currentTarget) }))) : null,
+        el("div", { class: "foot" },
+          el("span", { class: "at", text: new Date(e.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }),
+          mine ? null : el("button", { type: "button", class: "ghost icon sm", "aria-label": "Copy the answer", title: "Copy the answer", onclick: () => copyText(e.text) }, icon("copy")),
+          retry ? el("button", { type: "button", class: "ghost sm", onclick: (ev) => this.again(ev.currentTarget) }, icon("retry"), el("span", { text: "Try again" })) : null));
+    },
+    // The last thing the owner said, said again.
+    again(b) {
+      const mine = [...this.entries.values()].filter((e) => e.who === "you").sort((x, y) => y.id - x.id)[0];
+      if (mine && mine.text.trim()) this.send(mine.text, b); else toast("Nothing to send again: type it once more.", true);
+    },
+    async stop() {
+      this.stopBtn.disabled = true;
+      try { const r = await api("/api/turn/stop", { session: "dashboard__owner" }); toast(r.said || "Stopped."); } catch (e) { toast(e.message, e.status !== 404); } finally { this.stopBtn.disabled = false; this.load(); }
     },
     async send(said, button) {
+      if (this.sending) { this.sending.abort(); return; }
       const t = (said !== undefined ? said : this.input.value).trim();
-      if (!t) return;
+      const photo = said === undefined ? this.photo : null;
+      if (!t && !photo) return;
       const b = button || this.sendBtn;
       b.disabled = true;
       try {
-        await api("/api/chat/send", { text: t });
-        if (said === undefined) { this.input.value = ""; delete this.input.dataset.dirty; }
+        if (photo) {
+          // A photo takes a moment on a slow line: say so, and let it be cancelled.
+          this.sending = new AbortController();
+          this.note.textContent = "Sending photo…";
+          this.sendBtn.replaceChildren(icon("x"), el("span", { text: "Cancel" }));
+          this.sendBtn.setAttribute("aria-label", "Cancel sending the photo");
+          this.sendBtn.disabled = false;
+          await api("/api/chat/photo", { text: t, mime: photo.mime, data: photo.data }, { signal: this.sending.signal });
+          this.detach();
+        } else await api("/api/chat/send", { text: t });
+        if (said === undefined) { this.input.value = ""; this.grow(); delete this.input.dataset.dirty; }
         this.load();
-      } catch (e) { toast(e.message, true); } finally { b.disabled = false; }
+      } catch (e) {
+        if (e.name === "AbortError") toast("Cancelled: the photo wasn't sent.");
+        else toast(e.message, true);
+      } finally {
+        if (this.sending) {
+          this.sending = null;
+          this.note.textContent = "";
+          this.sendBtn.replaceChildren(icon("send"), el("span", { text: "Send" }));
+          this.sendBtn.setAttribute("aria-label", "Send");
+        }
+        b.disabled = false;
+      }
     },
   };
 
@@ -1585,7 +2396,7 @@
       }
       body.append(el("p", { class: "muted small m0" }, "More in ", el("code", { text: x.doc }), "."));
       return el("div", { class: "card tile", id: "channel-" + x.name },
-        el("div", { class: "head" }, s, el("h3", { class: "grow", text: x.title }), tag(st[0], st[1])),
+        el("div", { class: "head" }, s, el("h2", { class: "grow", text: x.title }), tag(st[0], st[1])),
         body);
     },
 
@@ -1651,7 +2462,7 @@
         return el("div", { class: "row" }, el("b", { class: "msg", dir: "auto", text: c.name }),
           el("span", { class: "muted small grow", text: c.kind + " · chat " + c.id }), allow);
       });
-      box.append(
+      setKids(box,
         el("label", { class: "field" }, el("span", { text: "Bot token (from @BotFather)" }), token),
         t.said ? el("div", { class: "said test " + (t.said.ok ? "ok" : "bad") + " msg", dir: "auto", text: t.said.said }) : null,
         chats.length ? el("div", { class: "stack" }, chats) : null,
@@ -1809,7 +2620,7 @@
         this.poll();
       } catch (e) {
         if (e.status === 409 && e.data && e.data.confirm) {
-          if (window.confirm(e.data.confirm)) return this.run(true);
+          if (await ask({ title: "Run this command?", text: e.data.confirm, confirm: "Run it", danger: true })) return this.run(true);
         } else if (e.status === 403) {
           toast(e.message + (e.data && e.data.page ? " · on this page: " + e.data.page : ""), true);
         } else toast(e.message, true);
@@ -1895,9 +2706,9 @@
         c.problem ? el("div", { class: "alert bad" }, el("div", { class: "body" },
           el("div", { class: "what", text: "The file doesn't load" + (c.problem.line ? " (line " + c.problem.line + ")" : "") }),
           el("div", { class: "fix msg", dir: "auto", text: c.problem.error }))) : null,
-        (c.fields || []).length ? el("div", { class: "card" }, el("h3", { class: "mt0", text: "Settings" }), c.fields.map(row)) : null,
+        (c.fields || []).length ? el("div", { class: "card" }, el("h2", { class: "mt0", text: "Settings" }), c.fields.map(row)) : null,
         el("div", { class: "card" },
-          el("h3", { class: "mt0", text: "The file" }),
+          el("h2", { class: "mt0", text: "The file" }),
           el("p", { class: "muted small", text: "Secrets show as placeholders and stay as they are when you save. Commands, gates, secret routing and who gets in can only change on the machine." }),
           c.readable === false ? el("div", { class: "empty", text: "The file can't be read." }) : raw,
           said,
@@ -1906,15 +2717,127 @@
   };
 
 
+  // ---- Memory (M47): what the bot remembers, searchable, forgettable ------
+  // Keyword search on the server (no model, no embedding call): the page
+  // works when every model is down. The text is the owner's and the bot's:
+  // in dir="auto" elements, never parsed as HTML.
+
+  sections.memory = {
+    live: true,
+    every: 30,
+    mount(root) {
+      this.box = el("div");
+      this.seq = 0;
+      this.q = el("input", {
+        type: "search", dir: "auto", autocomplete: "off", spellcheck: "false", class: "grow",
+        placeholder: tr("Search what your bot remembers"), "aria-label": tr("Search what your bot remembers"),
+      });
+      let wait = null;
+      this.q.oninput = () => { clearTimeout(wait); wait = setTimeout(() => this.load(), 300); };
+      this.q.onkeydown = (e) => { if (e.key === "Escape" && this.q.value) { this.q.value = ""; this.load(); } };
+      root.append(secHead(tr("Memory"), tr("what it remembers")), el("div", { class: "row search" }, icon("search"), this.q), this.box);
+    },
+    async load() {
+      const q = this.q.value.trim();
+      const mine = ++this.seq;
+      let r;
+      try {
+        r = await api("/api/memory" + (q ? "?q=" + encodeURIComponent(q) : ""));
+      } catch (e) { return mine === this.seq ? sectionError(this.box, e) : null; }
+      if (mine !== this.seq) return null;
+      setKids(this.box,
+        !r.available ? empty(tr("Nothing remembered yet"), tr("Your bot remembers what you tell it to (\"remember that I like my coffee black\") and what it learns while it works."))
+          : !r.memories.length ? empty(q ? tr("Nothing matches that") : tr("Nothing remembered yet"), q ? tr("Try fewer or different words.") : tr("Tell your bot \"remember that…\" in Chat, and it shows up here."))
+            : el("div", { class: "plain-list" }, r.memories.map((m) => this.item(m))));
+      return r;
+    },
+    item(m) {
+      const b = button(tr("Forget"), { icon: "trash", kind: "ghost", aria: tr("Forget this memory") });
+      b.onclick = async () => { if (await act("memory/forget", { id: m.id }, b)) this.load(); };
+      return el("div", { class: "card memory" },
+        el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t msg", dir: "auto", text: m.text }),
+            el("div", { class: "d" }, (m.tags || []).map((g) => el("span", { class: "tag", dir: "auto", text: g })), " ", ago(m.at))),
+          b));
+    },
+  };
+
+  // ---- Settings (M47): look, language, backup ------------------------------
+
+  const bytes = (n) => (n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(0) + " KB" : (n / 1048576).toFixed(1) + " MB");
+
+  sections.settings = {
+    every: 0,
+    mount(root) {
+      this.box = el("div", { class: "stack" });
+      this.files = el("div");
+      root.append(secHead(tr("Settings"), tr("look, language, backup")), this.box);
+    },
+    async load() {
+      let r;
+      try {
+        r = await api("/api/backups");
+      } catch (e) { r = null; }
+      this.draw(r);
+      // A backup runs in the background: look again until it is done.
+      clearTimeout(this.poll);
+      if (r && r.running) this.poll = setTimeout(() => { if (current === "settings") this.load(); }, 1500);
+    },
+    draw(r) {
+      const theme = window.ferruleTheme;
+      const look = card({ title: tr("Appearance"), icon: "sun" },
+        el("p", { class: "muted small mt0", text: tr("Follows your device until you pick one.") }),
+        theme ? chips(tr("Appearance"), [["auto", tr("System")], ["paper", tr("Light")], ["forge", tr("Dark")]], theme.pick(),
+          (v) => { theme.set(v); themeButtonLabel(); this.draw(r); }) : null);
+      const lang = card({ title: tr("Language"), icon: "globe" },
+        el("p", { class: "muted small mt0", text: tr("Hebrew reads right to left. What you and your bot write always follows its own direction.") }),
+        chips(tr("Language"), [["en", "English"], ["he", "עברית"]], LANG, (v) => { if (v !== LANG && window.ferruleLang) window.ferruleLang.set(v); }));
+      const list = r && r.files && r.files.length
+        ? el("div", { class: "plain-list" }, r.files.map((f) => el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t mono", dir: "ltr", text: f.name }),
+            el("div", { class: "d", text: bytes(f.bytes) + " · " + ago(f.at) })),
+          el("a", { class: "btn", href: BASE + "/api/backups/download?name=" + encodeURIComponent(f.name), download: f.name, "aria-label": tr("Download") + " " + f.name }, icon("download"), tr("Download")),
+          button(tr("Delete"), { icon: "trash", kind: "ghost", aria: tr("Delete") + " " + f.name, onclick: async (e) => { if (await act("backups/delete", { name: f.name }, e.currentTarget)) this.load(); } }))))
+        : null;
+      const running = !!(r && r.running);
+      const go = button(running ? tr("Backing up…") : tr("Back up now"), { icon: "backup", kind: "primary", onclick: () => this.backup() });
+      if (running || !r) go.disabled = true;
+      const bak = card({ title: tr("Backup"), icon: "backup" },
+        el("p", { class: "muted small mt0", text: tr("One file with your bot's memory, chats, tasks and settings. Keys and passwords are left out. The last three are kept.") }),
+        r && r.error ? el("div", { class: "alert bad" }, el("div", { class: "body" }, el("div", { class: "what msg", dir: "auto", text: r.error }))) : null,
+        r ? (r.files.length ? null : el("p", { class: "muted small", text: tr("No backup yet. Press the button to make one.") })) : el("p", { class: "muted small", text: tr("Backups aren't available in this process.") }),
+        list, el("div", { class: "row mt" }, go));
+      const more = card({ title: tr("Getting started"), icon: "help" },
+        el("div", { class: "row" },
+          button(tr("Show the setup checklist again"), { onclick: () => { home.show(); toast(tr("The checklist is back on Home.")); } }),
+          button(tr("Keyboard shortcuts"), { onclick: () => shortcuts() }),
+          button(tr("Sign out"), { icon: "power", onclick: () => document.getElementById("logout").click() })));
+      setKids(this.box, look, lang, bak, more);
+    },
+    async backup() {
+      const r = await act("backup", {});
+      if (r) this.load();
+    },
+  };
+
+
   // ---- navigation and polling --------------------------------------------
   // A phone gets a bottom bar of five (the rest in a sheet under "More");
   // from 900 px, a sidebar with everything. Same sections, same URLs.
+  // The groups put what a beginner touches daily first (D3).
 
-  const order = ["health", "chat", "models", "connections", "channels", "console", "config", "routing", "usage", "tasks", "logs", "extensions", "agents"];
-  const TABS = ["health", "chat", "models", "connections"];
-  const RUN = ["health", "chat", "models", "connections", "channels", "console", "config"];
+  const GROUPS = [
+    [/*tr*/"Everyday", ["health", "chat", "tasks", "memory", "usage"]],
+    [/*tr*/"Setup", ["channels", "connections", "models"]],
+    [/*tr*/"Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
+  ];
+  const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
+  const TABS = ["health", "chat", "tasks", "usage"];
   const ICON_OF = { health: "health" };
-  const SUB = { channels: "where people reach the agent", console: "ferrule commands", config: "the file, secrets hidden", routing: "which model for what", usage: "spend and caps", tasks: "scheduled runs", logs: "what happened", extensions: "skills, tools, MCP", agents: "sub-agents" };
+  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
+  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", memory: /*tr*/"Memory", usage: /*tr*/"Usage", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
   let timer = null;
@@ -1922,11 +2845,11 @@
   let lastHealth = null;
   const badges = {};
 
-  const title = (s) => sections[s].title || s[0].toUpperCase() + s.slice(1);
+  const title = (s) => tr(NAMES[s] || sections[s].title || s[0].toUpperCase() + s.slice(1));
 
   function navLink(s, withSub) {
     const a = el("a", { href: "#" + s }, icon(ICON_OF[s] || s), el("span", { text: title(s) }),
-      withSub && SUB[s] ? el("span", { class: "sub muted small", text: SUB[s] }) : null);
+      withSub && SUB[s] ? el("span", { class: "sub muted small", text: tr(SUB[s]) }) : null);
     a.dataset.s = s;
     a.onclick = (e) => { e.preventDefault(); closeSheet(); show(s); };
     return a;
@@ -1934,37 +2857,56 @@
 
   function buildNav() {
     const rail = document.getElementById("rail");
+    const groups = (link) => GROUPS.map(([name, list]) => {
+      const mine = list.filter((s) => sections[s] && link.keep(s));
+      return mine.length ? frag(el("div", { class: "group", text: tr(name) }), mine.map((s) => link.make(s))) : null;
+    });
     setKids(rail,
-      el("div", { class: "group", text: "Run" }), RUN.map((s) => navLink(s)),
-      el("div", { class: "group", text: "More" }), order.filter((s) => !RUN.includes(s)).map((s) => navLink(s)),
+      groups({ keep: () => true, make: (s) => navLink(s) }),
       el("div", { class: "rail-foot" },
-        frag(el("b", { text: "session" }), el("br"), "12 h max · idle 30 min", el("br"),
-          el("b", { text: "login" }), el("br"), "one-use link")));
+        frag(el("b", { text: tr("session") }), el("br"), tr("12 h max · idle 30 min"), el("br"),
+          el("b", { text: tr("login") }), el("br"), tr("one-use link"))));
     rail.hidden = false;
     const tabs = document.getElementById("tabs");
-    const more = el("a", { href: "#more" }, icon("more"), el("span", { text: "More" }));
+    const more = el("a", { href: "#more", "aria-haspopup": "dialog" }, icon("more"), el("span", { text: tr("More") }));
     more.dataset.s = "more";
     more.onclick = (e) => { e.preventDefault(); openSheet(); };
-    tabs.replaceChildren(...TABS.map((s) => navLink(s)), more);
+    tabs.replaceChildren(...TABS.filter((s) => sections[s]).map((s) => navLink(s)), more);
     tabs.hidden = false;
     const sheet = document.getElementById("sheet");
-    sheet.replaceChildren(el("div", { class: "panel", role: "dialog", "aria-label": "More" },
-      el("div", { class: "grip" }), order.filter((s) => !TABS.includes(s)).map((s) => navLink(s, true))));
+    sheet.replaceChildren(el("div", { class: "panel", role: "dialog", "aria-modal": "true", "aria-label": tr("All sections") },
+      el("div", { class: "grip" }),
+      groups({ keep: (s) => !TABS.includes(s), make: (s) => navLink(s, true) })));
     sheet.onclick = (e) => { if (e.target === sheet) closeSheet(); };
     markNav();
   }
-  function openSheet() { document.getElementById("sheet").hidden = false; }
-  function closeSheet() { document.getElementById("sheet").hidden = true; }
+  let sheetFrom = null;
+  function openSheet() {
+    const sheet = document.getElementById("sheet");
+    sheetFrom = document.activeElement;
+    sheet.hidden = false;
+    const first = sheet.querySelector("a");
+    if (first) first.focus();
+  }
+  function closeSheet() {
+    const sheet = document.getElementById("sheet");
+    if (sheet.hidden) return;
+    sheet.hidden = true;
+    if (sheetFrom && sheetFrom.isConnected && sheetFrom.focus) sheetFrom.focus();
+    sheetFrom = null;
+  }
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 
   function markNav() {
     for (const a of document.querySelectorAll("#rail a, #tabs a, #sheet a")) {
       const s = a.dataset.s;
-      a.classList.toggle("on", s === current || (s === "more" && !TABS.includes(current)));
+      const on = s === current;
+      a.classList.toggle("on", on || (s === "more" && !TABS.includes(current)));
+      if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
       const n = s === "more" ? order.filter((x) => !TABS.includes(x)).reduce((t, x) => t + (badges[x] || 0), 0) : badges[s] || 0;
       let dot = a.querySelector(".dot");
       if (n && !dot) { dot = el("span", { class: "dot" }); a.append(dot); }
-      if (dot) { if (n) { dot.textContent = n > 9 ? "9+" : String(n); dot.setAttribute("aria-label", n + " need you"); } else dot.remove(); }
+      if (dot) { if (n) { dot.textContent = n > 9 ? "9+" : String(n); dot.setAttribute("aria-label", fill("%s need you", n)); } else dot.remove(); }
     }
   }
 
@@ -1978,6 +2920,9 @@
     if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
     markNav();
     window.scrollTo(0, 0);
+    // A route change moves focus to the page, so a keyboard or screen-reader
+    // user starts at its top instead of on the link they just used.
+    if (!(opts && opts.focus === false)) document.getElementById("main").focus({ preventScroll: true });
     if (opts && opts.tile && sections[name].focus) sections[name].focus(opts.tile, true);
     refresh();
   }
@@ -2029,7 +2974,8 @@
       badges.connections = probs.filter((p) => p.section === "connections").length;
       if (ap) badges.chat = ap.approvals.length;
       markNav();
-      setKids(banner, problems(probs));
+      // Home draws the problems itself, under its status sentence.
+      setKids(banner, name === "health" ? null : frag(problems(probs.filter((p) => p.section === name)), otherProblems(probs.filter((p) => p.section !== name))));
       if (!(auto === true && !s.every) && (s.live || !typing())) await s.load(lastHealth);
     } catch (e) {
       if (!csrf) return;
@@ -2055,6 +3001,124 @@
     if (document.hidden) stopPolling(); else if (csrf) refresh();
   });
 
+  // ---- the command palette (D12) -------------------------------------------
+  // `/` or Ctrl/⌘-K: every section and the handful of things worth a
+  // shortcut, matched by substring, ignoring case and accents. An ARIA
+  // combobox over a listbox, so a screen reader hears the highlighted row.
+
+  const fold = (t) => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  function themeButtonLabel() {
+    const b = document.getElementById("theme");
+    const t = window.ferruleTheme;
+    if (!t) { b.hidden = true; return; }
+    const p = t.pick();
+    b.textContent = p === "auto" ? tr("auto") : p === "paper" ? tr("paper") : tr("forge");
+    b.title = tr("Theme:") + " " + (p === "auto" ? tr("follows the system") : p === "paper" ? tr("light") : tr("dark"));
+  }
+
+  // Each action: what it is called, words it also answers to, an icon, and
+  // `when` (absent = always). `run` may be async.
+  const PALETTE_ACTIONS = [
+    { label: /*tr*/"Run doctor", words: "check health problems", icon: "health",
+      run: async () => { show("health"); await act("doctor/run", {}); } },
+    { label: /*tr*/"Stop the running turn", words: "cancel halt", icon: "stop",
+      when: () => busyTurns().length > 0,
+      run: async () => { for (const t of busyTurns()) await act("turn/stop", { session: t.session }); } },
+    { label: /*tr*/"Attach a photo", words: "picture image send upload camera", icon: "image",
+      run: () => { show("chat"); if (sections.chat.pick) sections.chat.pick(); else sections.chat.wantPick = true; } },
+    { label: /*tr*/"New task", words: "add create schedule remind every daily", icon: "plus",
+      run: () => { show("tasks"); newTask(); } },
+    { label: /*tr*/"Back up now", words: "backup save export download", icon: "backup",
+      run: () => { show("settings"); sections.settings.backup(); } },
+    { label: /*tr*/"Switch language", words: "hebrew english עברית language rtl", icon: "globe",
+      run: () => { if (window.ferruleLang) window.ferruleLang.set(LANG === "he" ? "en" : "he"); } },
+    { label: /*tr*/"Switch theme", words: "dark light appearance paper forge", icon: "sun",
+      run: () => { if (window.ferruleTheme) { window.ferruleTheme.next(); themeButtonLabel(); } } },
+    { label: /*tr*/"Sign out", words: "log out", icon: "power",
+      run: () => document.getElementById("logout").click() },
+    { label: /*tr*/"Keyboard shortcuts", words: "help keys ?", icon: "search",
+      run: () => shortcuts() },
+  ];
+  const busyTurns = () => ((lastHealth && lastHealth.turns) || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
+
+  function paletteItems() {
+    const go = order.map((s) => ({ label: title(s), words: (SUB[s] || "") + " " + s + " go open", icon: ICON_OF[s] || s, hint: tr("Go to"), run: () => show(s) }));
+    return go.concat(PALETTE_ACTIONS.filter((a) => !a.when || a.when()).map((a) => Object.assign({}, a, { label: tr(a.label) })));
+  }
+
+  function palette() {
+    if (document.querySelector("dialog.pal") || !csrf) return;
+    const back = document.activeElement;
+    const items = paletteItems().map((it, i) => Object.assign({ id: "pal-" + i, key: fold(it.label + " " + (it.words || "")) }, it));
+    let shown = items;
+    let at = 0;
+    const d = el("dialog", { class: "dlg pal", "aria-label": tr("Search and commands") });
+    const list = el("ul", { class: "pal-list", id: "pal-list", role: "listbox", "aria-label": tr("Results") });
+    const box = el("input", {
+      type: "text", class: "pal-input", role: "combobox", "aria-expanded": "true", "aria-controls": "pal-list",
+      "aria-autocomplete": "list", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
+      placeholder: tr("Go to a page or run a command…"), "aria-label": tr("Search and commands"),
+    });
+    const paint = () => {
+      list.replaceChildren(...(shown.length ? shown.map((it, i) => {
+        const li = el("li", { id: it.id, role: "option", class: i === at ? "on" : null, "aria-selected": i === at ? "true" : "false" },
+          icon(it.icon), el("span", { class: "l", text: it.label }), it.hint ? el("span", { class: "muted small", text: it.hint }) : null);
+        li.onclick = () => choose(it);
+        li.onmousemove = () => { if (at !== i) { at = i; paint(); } };
+        return li;
+      }) : [el("li", { class: "empty", role: "presentation", text: tr("Nothing matches.") })]));
+      if (shown[at]) box.setAttribute("aria-activedescendant", shown[at].id); else box.removeAttribute("aria-activedescendant");
+      const on = list.querySelector(".on");
+      if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest" });
+    };
+    const choose = (it) => { d.close(); Promise.resolve(it.run()).catch((e) => toast(e.message, true)); };
+    box.oninput = () => {
+      const q = fold(box.value).trim();
+      shown = q ? items.filter((it) => q.split(/\s+/).every((w) => it.key.includes(w))) : items;
+      at = 0;
+      paint();
+    };
+    box.onkeydown = (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (shown.length) at = (at + (e.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length;
+        paint();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (shown[at]) choose(shown[at]);
+      }
+    };
+    d.append(box, list);
+    d.addEventListener("close", () => { d.remove(); if (back && back.isConnected && back.focus && !document.activeElement.closest("#main")) back.focus(); });
+    d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+    document.body.append(d);
+    paint();
+    d.showModal();
+    box.focus();
+  }
+
+  function shortcuts() {
+    const rows = [["/", tr("Search pages and commands")], ["Ctrl K  ·  ⌘ K", tr("The same, from anywhere")], ["?", tr("This list")], ["Esc", tr("Close what's open")]];
+    const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
+    d.append(el("form", { method: "dialog" },
+      el("h2", { id: "dlg-title", text: tr("Keyboard shortcuts") }),
+      el("dl", { class: "keys" }, rows.map(([k, v]) => frag(el("dt", null, el("kbd", { text: k })), el("dd", { text: v })))),
+      el("div", { class: "row" }, el("button", { class: "primary", text: tr("Done") }))));
+    d.addEventListener("close", () => d.remove());
+    document.body.append(d);
+    d.showModal();
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (!csrf || e.defaultPrevented) return;
+    const inField = e.target && (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable);
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); palette(); return; }
+    if (inField || e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return;
+    if (e.key === "/") { e.preventDefault(); palette(); }
+    else if (e.key === "?") { e.preventDefault(); shortcuts(); }
+  });
+
   window.ferrule = { el, api, sections, show };
 
   // The collar mark and the theme toggle: present before any login, so
@@ -2067,13 +3131,32 @@
       el("circle", { class: "sweep", cx: 13, cy: 13, r: 9.5 }));
     document.getElementById("mark").replaceChildren(s);
     // auto (the system's) → paper → forge; theme.js applied it before paint.
-    const b = document.getElementById("theme");
     const t = window.ferruleTheme;
-    const label = (p) => { b.textContent = p; b.title = "Theme: " + (p === "auto" ? "follows the system" : p === "paper" ? "light" : "dark"); };
-    if (t) { label(t.pick()); b.onclick = () => label(t.next()); } else b.hidden = true;
+    themeButtonLabel();
+    if (t) document.getElementById("theme").onclick = () => { t.next(); themeButtonLabel(); };
+    // The skip link: a plain "#main" would put a non-section in the address
+    // bar, which a reload reads as a login token.
+    document.querySelector(".skip").onclick = (e) => { e.preventDefault(); document.getElementById("main").focus(); };
+    const find = document.getElementById("find");
+    find.append(icon("search"));
+    find.onclick = () => palette();
+  }
+
+  // The words in index.html, in the chosen language.
+  function translateShell() {
+    if (!HE) return;
+    const set = (sel, fn) => { const n = document.querySelector(sel); if (n) fn(n); };
+    set(".skip", (n) => { n.textContent = tr("Skip to content"); });
+    set("#logout", (n) => { n.textContent = tr("Log out"); });
+    set("#find", (n) => { n.setAttribute("aria-label", tr("Search and commands (press /)")); n.title = tr("Search and commands (press /)"); });
+    set("#rail", (n) => n.setAttribute("aria-label", tr("Sections")));
+    set("#tabs", (n) => n.setAttribute("aria-label", tr("Quick sections")));
+    set("#main > p", (n) => { n.textContent = tr("Loading…"); });
   }
 
   async function start() {
+    await loadLang();
+    translateShell();
     bootChrome();
     // A login link carries its token after '#': the browser never sends it
     // to a server, and it's gone from the address bar at once. A section
@@ -2091,12 +3174,13 @@
     logout.hidden = false;
     logout.onclick = async () => {
       try { await api("/api/logout", {}); } catch (_) { /* gone anyway */ }
-      loggedOut("Logged out.");
+      loggedOut(tr("Logged out."));
     };
     document.getElementById("live").hidden = false;
+    document.getElementById("find").hidden = false;
     MANAGED = await api("/api/managed").catch(() => ({ on: false }));
     buildNav();
-    show(order.includes(hash) ? hash : "health");
+    show(order.includes(hash) ? hash : "health", { focus: false });
   }
 
   document.addEventListener("DOMContentLoaded", start);

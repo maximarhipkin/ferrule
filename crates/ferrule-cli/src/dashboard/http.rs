@@ -11,6 +11,37 @@ const MAX_HEAD: usize = 16 * 1024;
 const MAX_BODY: usize = 64 * 1024;
 const READ_DEADLINE: Duration = Duration::from_secs(10);
 
+/// What one request may weigh and how long it may take to arrive.
+#[derive(Debug, Clone, Copy)]
+pub struct Limit {
+    pub body: usize,
+    pub deadline: Duration,
+}
+
+impl Default for Limit {
+    fn default() -> Self {
+        Self {
+            body: MAX_BODY,
+            deadline: READ_DEADLINE,
+        }
+    }
+}
+
+/// The request line and headers, read before the body: enough for the
+/// caller to decide how much body it will accept (M47: a photo).
+#[derive(Debug)]
+pub struct Head {
+    pub method: String,
+    /// Without the query.
+    pub path: String,
+    /// Lower-case names.
+    pub headers: BTreeMap<String, String>,
+}
+
+/// At most this many big bodies are read at once, so a few slow uploads
+/// can't hold the memory of many.
+static BIG: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
 #[derive(Debug, Clone)]
 pub struct Request {
     pub method: String,
@@ -29,11 +60,25 @@ impl Request {
 
     /// A cookie's value.
     pub fn cookie(&self, name: &str) -> Option<&str> {
-        self.header("cookie")?.split(';').find_map(|c| {
-            let (k, v) = c.trim().split_once('=')?;
-            (k == name).then_some(v)
-        })
+        cookie_in(self.header("cookie")?, name)
     }
+}
+
+impl Head {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).map(String::as_str)
+    }
+
+    pub fn cookie(&self, name: &str) -> Option<&str> {
+        cookie_in(self.header("cookie")?, name)
+    }
+}
+
+fn cookie_in<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    header.split(';').find_map(|c| {
+        let (k, v) = c.trim().split_once('=')?;
+        (k == name).then_some(v)
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +87,8 @@ pub struct Response {
     pub content_type: &'static str,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// A file sent from disk instead of `body` (a backup, M47).
+    pub file: Option<std::path::PathBuf>,
 }
 
 impl Response {
@@ -51,7 +98,15 @@ impl Response {
             content_type,
             headers: Vec::new(),
             body: body.into(),
+            file: None,
         }
+    }
+
+    /// `path`'s bytes, streamed. Never cached: it is the owner's data.
+    pub fn file(path: std::path::PathBuf, content_type: &'static str) -> Self {
+        let mut r = Self::new(200, content_type, Vec::new());
+        r.file = Some(path);
+        r.with_header("Cache-Control", "no-store".into())
     }
 
     pub fn json(status: u16, value: &serde_json::Value) -> Self {
@@ -71,6 +126,7 @@ impl Response {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -88,17 +144,45 @@ fn reason(status: u16) -> &'static str {
 
 /// Reads one request; `Err` holds the status to answer with (or 0: the
 /// connection went away, answer nothing).
-pub async fn read(stream: &mut TcpStream) -> Result<Request, u16> {
-    tokio::time::timeout(READ_DEADLINE, read_inner(stream))
+/// `limit` sees the head and says how big a body it may have; only a
+/// caller that has checked the session (and asks for more than the usual
+/// 64 KB) gets a bigger one.
+pub async fn read(stream: &mut TcpStream, limit: impl Fn(&Head) -> Limit) -> Result<Request, u16> {
+    // The head has the same, short deadline whatever the body may be.
+    let mut buf = Vec::with_capacity(2048);
+    let head = match tokio::time::timeout(READ_DEADLINE, read_head(stream, &mut buf)).await {
+        Ok(Ok(head)) => head,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(408),
+    };
+    let allowed = limit(&head.head);
+    let len = head.len;
+    if len > allowed.body {
+        return Err(413);
+    }
+    // A big body is read a few at a time, and not for long.
+    let _slot = if allowed.body > MAX_BODY && len > MAX_BODY {
+        Some(BIG.try_acquire().map_err(|_| 503u16)?)
+    } else {
+        None
+    };
+    tokio::time::timeout(allowed.deadline, read_body(stream, buf, head, len))
         .await
         .unwrap_or(Err(408))
 }
 
-async fn read_inner(stream: &mut TcpStream) -> Result<Request, u16> {
-    let mut buf = Vec::with_capacity(2048);
+struct Parsed {
+    head: Head,
+    query: BTreeMap<String, String>,
+    len: usize,
+    /// Where the body starts in the bytes read so far.
+    body_at: usize,
+}
+
+async fn read_head(stream: &mut TcpStream, buf: &mut Vec<u8>) -> Result<Parsed, u16> {
     let mut chunk = [0u8; 4096];
     let head_end = loop {
-        if let Some(i) = find(&buf, b"\r\n\r\n") {
+        if let Some(i) = find(buf, b"\r\n\r\n") {
             break i;
         }
         if buf.len() > MAX_HEAD {
@@ -130,10 +214,31 @@ async fn read_inner(stream: &mut TcpStream) -> Result<Request, u16> {
     if headers.contains_key("transfer-encoding") {
         return Err(400);
     }
-    if len > MAX_BODY {
-        return Err(413);
-    }
-    let mut body = buf[head_end + 4..].to_vec();
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p.to_string(), parse_query(q)),
+        None => (target, BTreeMap::new()),
+    };
+    Ok(Parsed {
+        head: Head {
+            method,
+            path,
+            headers,
+        },
+        query,
+        len,
+        body_at: head_end + 4,
+    })
+}
+
+async fn read_body(
+    stream: &mut TcpStream,
+    buf: Vec<u8>,
+    parsed: Parsed,
+    len: usize,
+) -> Result<Request, u16> {
+    let mut chunk = [0u8; 16 * 1024];
+    let mut body = Vec::with_capacity(len.max(buf.len() - parsed.body_at));
+    body.extend_from_slice(&buf[parsed.body_at..]);
     while body.len() < len {
         let n = stream.read(&mut chunk).await.map_err(|_| 0u16)?;
         if n == 0 {
@@ -142,14 +247,15 @@ async fn read_inner(stream: &mut TcpStream) -> Result<Request, u16> {
         body.extend_from_slice(&chunk[..n]);
     }
     body.truncate(len);
-    let (path, query) = match target.split_once('?') {
-        Some((p, q)) => (p.to_string(), parse_query(q)),
-        None => (target, BTreeMap::new()),
-    };
+    let Head {
+        method,
+        path,
+        headers,
+    } = parsed.head;
     Ok(Request {
         method,
         path,
-        query,
+        query: parsed.query,
         headers,
         body,
     })
@@ -205,6 +311,25 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
         .headers
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("cache-control"));
+    // A file goes out as it is read; if it can't be opened the answer is
+    // a plain 404 instead of a head with nothing behind it.
+    let (mut file, length) = match &resp.file {
+        Some(path) => match tokio::fs::File::open(path).await {
+            Ok(f) => match f.metadata().await {
+                Ok(m) => {
+                    let n = m.len();
+                    (Some(f), n)
+                }
+                Err(_) => (None, 0),
+            },
+            Err(_) => {
+                let gone =
+                    Response::json(404, &serde_json::json!({ "error": "That file is gone." }));
+                return Box::pin(write(stream, gone)).await;
+            }
+        },
+        None => (None, resp.body.len() as u64),
+    };
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\
          {}X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\
@@ -213,7 +338,7 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
         resp.status,
         reason(resp.status),
         resp.content_type,
-        resp.body.len(),
+        length,
         if cached { "" } else { "Cache-Control: no-store\r\n" },
     );
     for (k, v) in &resp.headers {
@@ -221,7 +346,14 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
     }
     head.push_str("\r\n");
     let _ = stream.write_all(head.as_bytes()).await;
-    let _ = stream.write_all(&resp.body).await;
+    match file.as_mut() {
+        Some(f) => {
+            let _ = tokio::io::copy(f, stream).await;
+        }
+        None => {
+            let _ = stream.write_all(&resp.body).await;
+        }
+    }
     let _ = stream.shutdown().await;
 }
 

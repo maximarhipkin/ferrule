@@ -65,6 +65,8 @@ pub(super) struct Server {
     pub(super) failing: Arc<Mutex<Vec<String>>>,
     pub(super) offline: Arc<AtomicBool>,
     pub(super) calls: Arc<Mutex<Vec<String>>>,
+    /// Every chat request's body, as the model saw it.
+    pub(super) seen: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Server {
@@ -77,11 +79,17 @@ impl Server {
         let failing: Arc<Mutex<Vec<String>>> = Arc::default();
         let offline = Arc::new(AtomicBool::new(false));
         let calls: Arc<Mutex<Vec<String>>> = Arc::default();
-        let (f, o, c) = (failing.clone(), offline.clone(), calls.clone());
+        let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let (f, o, c, b) = (
+            failing.clone(),
+            offline.clone(),
+            calls.clone(),
+            seen.clone(),
+        );
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (f, o, c) = (f.clone(), o.clone(), c.clone());
-                std::thread::spawn(move || serve(label, stream, &f, &o, &c));
+                let (f, o, c, b) = (f.clone(), o.clone(), c.clone(), b.clone());
+                std::thread::spawn(move || serve(label, stream, &f, &o, &c, &b));
             }
         });
         Self {
@@ -89,6 +97,7 @@ impl Server {
             failing,
             offline,
             calls,
+            seen,
         }
     }
 
@@ -99,6 +108,10 @@ impl Server {
 
     pub(super) fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
+    }
+
+    pub(super) fn bodies(&self) -> Vec<Value> {
+        self.seen.lock().unwrap().clone()
     }
 }
 
@@ -145,6 +158,7 @@ fn serve(
     failing: &Mutex<Vec<String>>,
     offline: &AtomicBool,
     calls: &Mutex<Vec<String>>,
+    seen: &Mutex<Vec<Value>>,
 ) {
     let Some((first, _, body)) = read_request(&stream) else {
         return;
@@ -158,6 +172,7 @@ fn serve(
     let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let model = req["model"].as_str().unwrap_or_default().to_string();
     calls.lock().unwrap().push(model.clone());
+    seen.lock().unwrap().push(req.clone());
     let fails = failing
         .lock()
         .unwrap()
@@ -193,6 +208,8 @@ pub(super) struct FakeTelegram {
     pub(super) queue: Arc<Mutex<std::collections::VecDeque<Value>>>,
     pub(super) sent: Arc<Mutex<Vec<Value>>>,
     pub(super) next: Mutex<i64>,
+    /// `file_id` -> bytes, for `getFile` and the file download.
+    pub(super) files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
 }
 
 impl FakeTelegram {
@@ -201,11 +218,12 @@ impl FakeTelegram {
         let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let queue: Arc<Mutex<std::collections::VecDeque<Value>>> = Arc::default();
         let sent: Arc<Mutex<Vec<Value>>> = Arc::default();
-        let (q, s) = (queue.clone(), sent.clone());
+        let files: Arc<Mutex<BTreeMap<String, Vec<u8>>>> = Arc::default();
+        let (q, s, f) = (queue.clone(), sent.clone(), files.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let (q, s) = (q.clone(), s.clone());
-                std::thread::spawn(move || telegram_serve(stream, &q, &s));
+                let (q, s, f) = (q.clone(), s.clone(), f.clone());
+                std::thread::spawn(move || telegram_serve(stream, &q, &s, &f));
             }
         });
         Self {
@@ -213,7 +231,35 @@ impl FakeTelegram {
             queue,
             sent,
             next: Mutex::new(1),
+            files,
         }
+    }
+
+    /// A file Telegram will hand over under `id`.
+    pub(super) fn add_file(&self, id: &str, bytes: &[u8]) {
+        self.files.lock().unwrap().insert(id.into(), bytes.to_vec());
+    }
+
+    /// A photo message from `chat` (the sender is the chat itself): the
+    /// `sizes` Telegram offers, the caption, and the album it belongs to.
+    pub(super) fn say_photo(&self, chat: i64, sizes: Value, caption: &str, album: Option<&str>) {
+        let mut next = self.next.lock().unwrap();
+        *next += 1;
+        let mut message = json!({
+            "message_id": *next, "chat": {"id": chat},
+            "from": {"id": chat, "username": format!("u{chat}")},
+            "photo": sizes, "date": 1700000000,
+        });
+        if !caption.is_empty() {
+            message["caption"] = json!(caption);
+        }
+        if let Some(a) = album {
+            message["media_group_id"] = json!(a);
+        }
+        self.queue
+            .lock()
+            .unwrap()
+            .push_back(json!({"update_id": *next, "message": message}));
     }
 
     pub(super) fn say_from(&self, chat: i64, from: i64, text: &str) {
@@ -262,11 +308,45 @@ fn telegram_serve(
     stream: TcpStream,
     queue: &Mutex<std::collections::VecDeque<Value>>,
     sent: &Mutex<Vec<Value>>,
+    files: &Mutex<BTreeMap<String, Vec<u8>>>,
 ) {
     let Some((first, _, body)) = read_request(&stream) else {
         return;
     };
-    let out = if first.contains("getMe") {
+    if let Some(at) = first.find("/file/bot") {
+        // `/file/bot<token>/photos/<file_id>.jpg`
+        let id = first[at..]
+            .split_whitespace()
+            .next()
+            .and_then(|p| p.rsplit('/').next())
+            .and_then(|f| f.strip_suffix(".jpg"))
+            .unwrap_or_default()
+            .to_string();
+        let bytes = files.lock().unwrap().get(&id).cloned();
+        let mut stream = stream;
+        return match bytes {
+            Some(b) => {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: image/jpeg\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    b.len()
+                );
+                let _ = stream.write_all(&b);
+            }
+            None => respond(stream, "404 Not Found", "{}"),
+        };
+    }
+    let out = if first.contains("getFile") {
+        let id = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null)["file_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if files.lock().unwrap().contains_key(&id) {
+            json!({"ok": true, "result": {"file_id": id, "file_path": format!("photos/{id}.jpg")}})
+        } else {
+            json!({"ok": false, "error_code": 400, "description": "file not found"})
+        }
+    } else if first.contains("getMe") {
         json!({"ok": true, "result": {"id": 123456, "is_bot": true, "username": "m44_bot"}})
     } else if first.contains("getWebhookInfo") {
         json!({"ok": true, "result": {"url": ""}})
@@ -397,7 +477,7 @@ pub(super) fn gateway(home: &Path, env: &[(&str, &str)]) -> Running {
 
 /// `[gateway]` for the fake Telegram (the group -100 and 42, the owner),
 /// local links only, and no reference catalog from the internet.
-fn telegram(tg: &FakeTelegram) -> String {
+pub(super) fn telegram(tg: &FakeTelegram) -> String {
     format!(
         "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"{}\"\ntelegram_allowed_chats = [-100, 42]\n\n[dashboard]\nremote = \"off\"\n",
         tg.url
@@ -406,7 +486,7 @@ fn telegram(tg: &FakeTelegram) -> String {
 
 /// Provider `a` (a-one, a-two) and `b` (b-large, b-small), `fast` =
 /// b/b-small, default_provider `a`; `models` goes into `[models]`.
-fn two(a: &Server, b: &Server, models: &str, extra: &str) -> String {
+pub(super) fn two(a: &Server, b: &Server, models: &str, extra: &str) -> String {
     format!(
         r#"default_provider = "a"
 
@@ -617,7 +697,7 @@ impl Page {
 }
 
 /// The owner asks for a link in their chat and signs in with it.
-fn sign_in(tg: &FakeTelegram, from: usize) -> (usize, Page) {
+pub(super) fn sign_in(tg: &FakeTelegram, from: usize) -> (usize, Page) {
     tg.say(42, "/dashboard");
     let (n, said) = tg.wait_for(42, "Dashboard: ", from);
     let (port, token) = link_in(&said);
@@ -1637,7 +1717,7 @@ fn an_eval_obeys_the_owners_caps_and_kill_switch() {
 // ---- M24: editing from the page ------------------------------------------
 
 /// The audit events on the page's log, newest first.
-fn audited(page: &Page, event: &str) -> Vec<Value> {
+pub(super) fn audited(page: &Page, event: &str) -> Vec<Value> {
     page.read("logs?kind=audit")["rows"]
         .as_array()
         .unwrap()

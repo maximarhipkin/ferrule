@@ -58,6 +58,7 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
 # M28: the host a [web_search] key is bound to.
 url = "2"
 reqwest = { workspace = true }
@@ -74,6 +75,8 @@ semver = "1"
 tempfile = { workspace = true }
 # M41: a consistent copy of each database for `ferrule backup`.
 rusqlite = { workspace = true }
+# M47: a photo from the page arrives as base64.
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
@@ -81,7 +84,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 [dev-dependencies]
 # M36: the tests sign releases as the release job does.
 blake2 = "0.10"
-base64 = "0.22"
 # M35: the mock issuer and Codex backend.
 ferrule-plans = { path = "../ferrule-plans", features = ["mock"] }
 # M32: the plugin fixture is WAT, assembled in the test.

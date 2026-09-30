@@ -87,18 +87,22 @@ struct Parsed {
     unread: Option<&'static str>,
     /// Photos sent together share this; they get one reply, not one each.
     album: Option<String>,
-    /// A voice note or audio file, taken into the inbox when there is one
-    /// (M41), and the caption that came with it.
-    audio: Option<TgAudio>,
+    /// A voice note, audio file or photo, taken into the inbox when there
+    /// is one (M41, M47), and the caption that came with it.
+    file: Option<TgFile>,
 }
 
-/// A voice note or audio file in an update.
-struct TgAudio {
+/// A voice note, audio file or photo in an update.
+struct TgFile {
     file_id: String,
     name: String,
     mime: Option<String>,
     size: Option<u64>,
     caption: String,
+    /// For a photo: every size Telegram offers (`file_id`, `file_size`,
+    /// `width`, `height`), smallest first. The one taken is chosen against
+    /// the inbox's cap, which the parser doesn't know.
+    sizes: Vec<Value>,
 }
 
 pub struct TelegramChannel {
@@ -126,6 +130,8 @@ pub struct TelegramChannel {
     ignored: Mutex<HashMap<i64, Instant>>,
     /// Albums already told their photos weren't read.
     albums: Mutex<HashSet<String>>,
+    /// Albums whose first photo was taken (M47): the rest are dropped.
+    taken: Mutex<HashSet<String>>,
     /// Where voice notes and audio files are saved (M41); `None` leaves
     /// them unread, as before.
     inbox: Option<Inbox>,
@@ -165,6 +171,7 @@ impl TelegramChannel {
             conflict: Mutex::new(None),
             ignored: Mutex::new(HashMap::new()),
             albums: Mutex::new(HashSet::new()),
+            taken: Mutex::new(HashSet::new()),
             inbox: None,
         }
     }
@@ -330,7 +337,9 @@ impl TelegramChannel {
                 if let Some(q) = update.get("callback_query") {
                     self.mark_choice(q).await;
                 }
-                let parsed = self.take_audio(parsed).await;
+                let Some(parsed) = self.take_file(parsed).await else {
+                    continue;
+                };
                 if let Some(kind) = parsed.unread.filter(|_| parsed.msg.text.is_empty()) {
                     self.cannot_read(&parsed, kind).await;
                     continue;
@@ -343,13 +352,57 @@ impl TelegramChannel {
         Ok(true)
     }
 
-    /// A voice note or audio file, saved to the inbox: the message then
-    /// carries it as an attachment with M39's line about it, and is read.
-    async fn take_audio(&self, mut parsed: Parsed) -> Parsed {
-        let (Some(inbox), Some(audio)) = (&self.inbox, parsed.audio.take()) else {
-            return parsed;
+    /// A voice note, audio file or photo, saved to the inbox: the message
+    /// then carries it as an attachment with M39's line about it, and is
+    /// read. `None`: the photo is one more of an album already taken, and
+    /// was answered here.
+    async fn take_file(&self, mut parsed: Parsed) -> Option<Parsed> {
+        let (Some(inbox), Some(mut file)) = (&self.inbox, parsed.file.take()) else {
+            return Some(parsed);
         };
-        let (saved, refused) = match self.download(inbox, &parsed.msg.message_id, &audio).await {
+        if !file.sizes.is_empty() {
+            if let Some(album) = &parsed.album {
+                let first = {
+                    let mut taken = self.taken.lock().unwrap();
+                    if taken.len() > 1000 {
+                        taken.clear();
+                    }
+                    taken.insert(album.clone())
+                };
+                if !first {
+                    self.once_per_album(
+                        &parsed,
+                        "more",
+                        "I only looked at the first photo of that album. Send the others one at a time if you want them read.",
+                    )
+                    .await;
+                    return None;
+                }
+            }
+            match photo_size(&file.sizes, inbox.max_bytes()) {
+                Some((id, size)) => {
+                    file.file_id = id;
+                    file.size = size;
+                }
+                None => {
+                    // The whole photo set is over the cap (or absurd in
+                    // pixels): say why, read the caption.
+                    let refused = vec![
+                        match file.sizes.last().and_then(|p| p["file_size"].as_u64()) {
+                            Some(n) => inbox.too_big(&file.name, n),
+                            None => Refused {
+                                name: file.name.clone(),
+                                why: "Telegram offered no size of it small enough".into(),
+                            },
+                        },
+                    ];
+                    parsed.msg.text = files::with_notes(&file.caption, &[], &refused);
+                    parsed.unread = None;
+                    return Some(parsed);
+                }
+            }
+        }
+        let (saved, refused) = match self.download(inbox, &parsed.msg.message_id, &file).await {
             Ok(s) => (vec![s], vec![]),
             Err(r) => (vec![], vec![r]),
         };
@@ -361,9 +414,9 @@ impl TelegramChannel {
                 name: Some(s.rel.clone()),
             })
             .collect();
-        parsed.msg.text = files::with_notes(&audio.caption, &saved, &refused);
+        parsed.msg.text = files::with_notes(&file.caption, &saved, &refused);
         parsed.unread = None;
-        parsed
+        Some(parsed)
     }
 
     /// `getFile`, then the file itself, capped at the inbox's size.
@@ -371,17 +424,17 @@ impl TelegramChannel {
         &self,
         inbox: &Inbox,
         message_id: &str,
-        audio: &TgAudio,
+        tg: &TgFile,
     ) -> Result<Saved, Refused> {
         let refuse = |why: String| Refused {
-            name: audio.name.clone(),
+            name: tg.name.clone(),
             why,
         };
-        if let Some(n) = audio.size.filter(|n| *n > inbox.max_bytes()) {
-            return Err(inbox.too_big(&audio.name, n));
+        if let Some(n) = tg.size.filter(|n| *n > inbox.max_bytes()) {
+            return Err(inbox.too_big(&tg.name, n));
         }
         let file = self
-            .call("getFile", json!({ "file_id": audio.file_id }))
+            .call("getFile", json!({ "file_id": tg.file_id }))
             .await
             .map_err(|e| refuse(format!("Telegram didn't hand it over ({e})")))?;
         let Some(path) = file.get("file_path").and_then(Value::as_str) else {
@@ -407,13 +460,7 @@ impl TelegramChannel {
             .await
             .map_err(refuse)?;
         inbox
-            .save(
-                "telegram",
-                message_id,
-                &audio.name,
-                audio.mime.as_deref(),
-                &bytes,
-            )
+            .save("telegram", message_id, &tg.name, tg.mime.as_deref(), &bytes)
             .map_err(|e| refuse(format!("it couldn't be saved: {e}")))
     }
 
@@ -428,18 +475,25 @@ impl TelegramChannel {
             chat = %parsed.msg.chat_id,
             "telegram: got a {kind} with no text; ferrule reads only text"
         );
+        let text = format!(
+            "I got your {kind}, but I can only read text for now, so I don't know what's in it. Please type your message instead."
+        );
+        self.once_per_album(parsed, "unread", &text).await;
+    }
+
+    /// `text` as a reply to `parsed`, once per album (`what` tells the
+    /// kinds of reply apart) or, outside an album, every time.
+    async fn once_per_album(&self, parsed: &Parsed, what: &str, text: &str) {
         if let Some(album) = &parsed.album {
             let mut albums = self.albums.lock().unwrap();
             if albums.len() > 1000 {
                 albums.clear();
             }
-            if !albums.insert(album.clone()) {
+            if !albums.insert(format!("{what}:{album}")) {
                 return;
             }
         }
-        let text = format!(
-            "I got your {kind}, but I can only read text for now, so I don't know what's in it. Please type your message instead."
-        );
+        let text = text.to_string();
         let reply = OutboundMessage {
             channel: "telegram".into(),
             chat_id: parsed.msg.chat_id.clone(),
@@ -448,7 +502,7 @@ impl TelegramChannel {
             attachments: vec![],
         };
         if let Err(e) = self.send(reply).await {
-            tracing::warn!(error = %e, "telegram: couldn't say a {kind} wasn't read");
+            tracing::warn!(error = %e, "telegram: couldn't send a reply about {what}");
         }
     }
 
@@ -680,7 +734,7 @@ impl TelegramChannel {
                 msg,
                 unread: None,
                 album: None,
-                audio: None,
+                file: None,
             });
         }
         let message = update.get("message")?;
@@ -728,13 +782,43 @@ impl TelegramChannel {
             },
             unread,
             album,
-            audio: tg_audio(message),
+            file: tg_file(message),
         })
     }
 }
 
-/// The voice note or audio file in a message, if it has one.
-fn tg_audio(message: &Value) -> Option<TgAudio> {
+/// The photo sizes Telegram offers, and the largest one worth taking: at
+/// most 2000 px on a side (a model downscales past that anyway) and within
+/// `cap` bytes. Its `file_id` and size.
+fn photo_size(sizes: &[Value], cap: u64) -> Option<(String, Option<u64>)> {
+    sizes
+        .iter()
+        .rfind(|p| {
+            let side = p["width"].as_u64().max(p["height"].as_u64()).unwrap_or(0);
+            side <= 2000 && p["file_size"].as_u64().is_none_or(|n| n <= cap)
+        })
+        .and_then(|p| Some((p["file_id"].as_str()?.to_string(), p["file_size"].as_u64())))
+}
+
+/// The voice note, audio file or photo in a message, if it has one.
+fn tg_file(message: &Value) -> Option<TgFile> {
+    let caption = || {
+        message
+            .get("caption")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    if let Some(sizes) = message.get("photo").and_then(Value::as_array) {
+        return Some(TgFile {
+            file_id: String::new(),
+            name: "photo.jpg".into(),
+            mime: Some("image/jpeg".into()),
+            size: None,
+            caption: caption(),
+            sizes: sizes.clone(),
+        });
+    }
     let (key, a) = ["voice", "audio"]
         .into_iter()
         .find_map(|k| message.get(k).map(|a| (k, a)))?;
@@ -749,16 +833,13 @@ fn tg_audio(message: &Value) -> Option<TgAudio> {
         ("voice", None) => "voice.ogg".to_string(),
         (_, None) => "audio".to_string(),
     };
-    Some(TgAudio {
+    Some(TgFile {
         file_id,
         name,
         mime,
         size: a.get("file_size").and_then(Value::as_u64),
-        caption: message
-            .get("caption")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        caption: caption(),
+        sizes: vec![],
     })
 }
 
@@ -1179,6 +1260,41 @@ impl Channel for TelegramChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_photo_takes_the_largest_size_a_model_can_use_within_the_cap() {
+        let size = |id: &str, w: u64, n: u64| json!({"file_id": id, "width": w, "height": w / 2, "file_size": n});
+        let sizes = vec![
+            size("s", 90, 1_000),
+            size("m", 320, 20_000),
+            size("x", 1280, 300_000),
+            size("y", 2560, 900_000),
+        ];
+        // 2560 px is more than a model looks at; 1280 is the one.
+        assert_eq!(
+            photo_size(&sizes, 20_000_000),
+            Some(("x".into(), Some(300_000)))
+        );
+        // A tighter cap steps down to what fits.
+        assert_eq!(photo_size(&sizes, 100_000).unwrap().0, "m");
+        // Nothing fits: there is no size to fetch (the caller says why).
+        assert_eq!(photo_size(&sizes, 500), None);
+        assert_eq!(photo_size(&[], 1_000_000), None);
+        // A size that doesn't say how big it is is still taken.
+        let unsized_ = vec![json!({"file_id": "u", "width": 800, "height": 600})];
+        assert_eq!(photo_size(&unsized_, 10), Some(("u".into(), None)));
+    }
+
+    #[test]
+    fn a_photo_message_is_a_jpeg_with_its_caption_and_sizes() {
+        let m = json!({"photo": [{"file_id": "a", "width": 90, "height": 60}], "caption": "what is this?"});
+        let f = tg_file(&m).unwrap();
+        assert_eq!(f.name, "photo.jpg");
+        assert_eq!(f.mime.as_deref(), Some("image/jpeg"));
+        assert_eq!(f.caption, "what is this?");
+        assert_eq!(f.sizes.len(), 1);
+        assert!(tg_file(&json!({"text": "hi"})).is_none());
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::AtomicBool;

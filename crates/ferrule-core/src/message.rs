@@ -38,6 +38,23 @@ pub struct Message {
     /// everything else reads the neutral fields above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<NativeBlocks>,
+    /// Photos the sender attached (M47). History holds the files' paths,
+    /// never the bytes; the driver that serves a call reads and encodes
+    /// them, or writes a note in their place (see [`crate::vision`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageRef>,
+}
+
+/// A photo saved on disk that a user message carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageRef {
+    /// Where the file is (inside the workspace's inbox).
+    pub path: String,
+    /// `image/jpeg`, `image/png`, `image/webp` or `image/gif`.
+    pub mime: String,
+    /// What to call it in a note: the file name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Opaque provider blocks carried with an assistant message (see
@@ -71,6 +88,7 @@ impl Message {
             tool_call_id: None,
             reasoning: None,
             native: None,
+            images: vec![],
         }
     }
     pub fn user(content: impl Into<String>) -> Self {
@@ -81,6 +99,7 @@ impl Message {
             tool_call_id: None,
             reasoning: None,
             native: None,
+            images: vec![],
         }
     }
     pub fn assistant(
@@ -95,6 +114,7 @@ impl Message {
             tool_call_id: None,
             reasoning,
             native: None,
+            images: vec![],
         }
     }
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
@@ -105,6 +125,15 @@ impl Message {
             tool_call_id: Some(tool_call_id.into()),
             reasoning: None,
             native: None,
+            images: vec![],
+        }
+    }
+
+    /// A user message with photos attached.
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ImageRef>) -> Self {
+        Self {
+            images,
+            ..Self::user(content)
         }
     }
 
@@ -180,5 +209,25 @@ mod tests {
 
         let u: Usage = serde_json::from_str(r#"{"input_tokens":5,"output_tokens":1}"#).unwrap();
         assert_eq!((u.cached_input_tokens, u.cache_write_input_tokens), (0, 0));
+    }
+
+    #[test]
+    fn old_transcripts_without_images_still_load() {
+        // An M46 user message: no `images` key.
+        let old: Message =
+            serde_json::from_str(r#"{"role":"user","content":"hello","tool_calls":[]}"#).unwrap();
+        assert!(old.images.is_empty());
+        assert!(!serde_json::to_string(&old).unwrap().contains("images"));
+        // With photos it round-trips, and a plain message stays plain.
+        let m = Message::user_with_images(
+            "look",
+            vec![ImageRef {
+                path: "inbox/a.png".into(),
+                mime: "image/png".into(),
+                name: None,
+            }],
+        );
+        let back: Message = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.images, m.images);
     }
 }
