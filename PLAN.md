@@ -5419,8 +5419,13 @@ boundary, and the panel updates a bot by swapping the image tag. Branch
 - **7 Docs.** `docs/docker.md`; additions to `dashboard.md`, `sandbox.md`,
   `channels.md`, the README, the roadmap and this file.
 
-**Tests.** 1659 → 1705 passed, 0 failed, 29 ignored (was 28; the new one is
-the real-page browser peak test).
+**Tests.** 1659 → 1705 passed on the branch, 1714 after merging M42 (main),
+0 failed, 29 ignored (was 28; the new one is the real-page browser peak
+test).
+
+**Merge with M42.** One conflict in `main.rs`: M42 made `verify_command` a
+list, so the managed check became `if !(planning || commands_off)` around
+the loop. PLAN.md and the roadmap kept both sides.
 
 **Eval.** `eval run evals/starter --variant ab`, real binary, mock model:
 engineered 20/20, naive 11/20, $0.98 total, unchanged.
@@ -5446,3 +5451,50 @@ Telegram bot, no panel. The first CI release run is the first real build.
 
 **Follow-ups.** Build and run the image on a machine with Docker and fill
 in the real sizes; cosign signing; subdomain routing.
+
+### 2026-09-30 — M42 harness engineering, parts 1–4 (Kimi)
+
+**Scope.** A pass over the learn-harness-engineering course (14 lectures)
+and its Claude Code / Codex / DeepSeek / Pi harness breakdowns, scored
+against ferrule; close the gaps found. Design and the part 5–7 designs
+(goal loops whole, graph routing, pluggable compaction + session tree):
+`docs/m42-harness-engineering.md`.
+
+**What was built.**
+- **The repo dogfoods:** a root `AGENTS.md` directory page (verify
+  commands, hard invariants, conventions, map) and a `Makefile` —
+  `make check` = fmt-check + clippy + `cargo test --workspace --locked`.
+- **Layered context baseline** (`ferrule-core::baseline`): the config
+  dir, then every workspace parent from the root down, then the
+  workspace; broadest first in the prompt, the 16k cap spent most-
+  specific-first; a lone workspace file behaves exactly as before (the
+  eval fixture keeps the flat loader). CLI wires it in
+  `build_agent_from`.
+- **Layered verification:** `[agent] verify_command` takes a string or a
+  list run in order (one built-in Stop check each, first failure sent
+  back naming the command); `ferrule run --verify CMD` (repeatable)
+  overrides the config for the run, threaded through `run_once` →
+  `run_root` → `build_root` → `build_agent_from`. `hooks list` shows
+  every check; the learn gate takes the first.
+- **Model-visible means logged:** compaction writes a `fold` transcript
+  record (summary + kept-tail count); `read_messages` applies folds, so a
+  resume replays the compacted state instead of resurrecting the folded
+  past; `read_all_logged` is the append-only audit view. `search_history`
+  parses the file itself and is unaffected.
+
+**Tests.** New: 4 baseline unit tests, 1 transcript fold unit test, 2
+verify it-tests (`hooks::verify_command_accepts_a_list…`,
+`hooks::run_verify_flag_overrides…`), 2 it-tests in
+`ferrule-core/tests/it/history.rs` (the invariant across a compacting
+run; resume replays compacted state). Full workspace suite green per
+crate (the run exceeds one shell timeout, so it ran in batches), clippy
+and fmt clean.
+
+**Behavior change to note.** Resuming a compacted session (gateway,
+supervisor, `run --resume` of an approved plan) now continues from the
+compacted view. Old transcripts without fold records read exactly as
+before.
+
+**Not done.** Subdirectory baselines loaded on demand by the file tools;
+parts 5–7 in the design doc; subdirectory `AGENTS.md` discovery tests
+against real repos.

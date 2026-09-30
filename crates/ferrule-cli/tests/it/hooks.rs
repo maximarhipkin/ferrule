@@ -273,6 +273,94 @@ fn verify_command_is_the_built_in_stop_check_and_behaves_as_before() {
 }
 
 #[test]
+fn verify_command_accepts_a_list_and_runs_the_checks_in_order() {
+    // Two checks: the second runs only once the first passes, and each
+    // failure goes back naming the command that failed.
+    let script: Script = Arc::new(|req: &Value| {
+        let last = last(req);
+        let said = text(&last);
+        if last["role"] == "user" && said.contains("first-check") {
+            return call("write_file", json!({"path": "one.txt", "content": "1"}));
+        }
+        if last["role"] == "user" && said.contains("second-check") {
+            return call("write_file", json!({"path": "two.txt", "content": "2"}));
+        }
+        if last["role"] == "tool" {
+            return answer("DONE");
+        }
+        call("write_file", json!({"path": "a.txt", "content": "draft"}))
+    });
+    let (url, seen) = model_server(script);
+    let dir = home_with(
+        &url,
+        "[agent]\nverify_command = [\n  \"test -f one.txt || { echo first-check; exit 1; }\",\n  \"test -f two.txt || { echo second-check; exit 1; }\",\n]\n",
+    );
+    let home = dir.path();
+    let (out, _) = run_ok(home, &["run", "make the change"]);
+    assert!(out.contains("final: DONE"), "{out}");
+
+    let seen = seen.lock().unwrap();
+    // write, finish (first fails), fix, finish (second fails), fix, finish
+    // (both pass): six calls.
+    assert_eq!(seen.len(), 6, "{seen:#?}");
+    let first_back = text(&last(&seen[2]));
+    assert!(
+        first_back.starts_with("[ferrule] `test -f one.txt"),
+        "{first_back}"
+    );
+    let second_back = text(&last(&seen[4]));
+    assert!(
+        second_back.starts_with("[ferrule] `test -f two.txt"),
+        "{second_back}"
+    );
+    // Both checks show as built-in Stop hooks, in order.
+    let (list, _) = run_ok(home, &["hooks", "list"]);
+    let one = list.find("test -f one.txt").unwrap();
+    let two = list.find("test -f two.txt").unwrap();
+    assert!(one < two, "{list}");
+}
+
+#[test]
+fn run_verify_flag_overrides_the_configured_check() {
+    let script: Script = Arc::new(|req: &Value| {
+        let last = last(req);
+        let said = text(&last);
+        if last["role"] == "user" && said.contains("flag-check") {
+            return call("write_file", json!({"path": "v.txt", "content": "ok"}));
+        }
+        if last["role"] == "tool" {
+            return answer("DONE");
+        }
+        call("write_file", json!({"path": "a.txt", "content": "draft"}))
+    });
+    let (url, seen) = model_server(script);
+    let dir = home_with(
+        &url,
+        "[agent]\nverify_command = \"test -f config.txt || { echo config-check; exit 1; }\"\n",
+    );
+    let home = dir.path();
+    let (out, _) = run_ok(
+        home,
+        &[
+            "run",
+            "--verify",
+            "test -f v.txt || { echo flag-check; exit 1; }",
+            "make the change",
+        ],
+    );
+    assert!(out.contains("final: DONE"), "{out}");
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 4, "{seen:#?}");
+    let sent_back = text(&last(&seen[2]));
+    assert!(
+        sent_back.starts_with("[ferrule] `test -f v.txt"),
+        "{sent_back}"
+    );
+    assert!(!sent_back.contains("config-check"), "{sent_back}");
+}
+
+#[test]
 fn a_pre_tool_use_hook_that_exits_2_blocks_the_call_and_the_model_sees_why() {
     let script: Script = Arc::new(|req: &Value| {
         let last = last(req);

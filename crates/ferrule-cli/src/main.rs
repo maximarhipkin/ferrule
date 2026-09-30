@@ -161,6 +161,11 @@ enum Cmd {
         /// once approved (docs/m19-trust-cost.md §8)
         #[arg(long)]
         plan: bool,
+        /// A check ferrule runs itself before this run may finish after
+        /// changing files; a failure goes back to the model. Repeatable —
+        /// several run in order. Wins over `[agent] verify_command`
+        #[arg(long, value_name = "CMD")]
+        verify: Vec<String>,
     },
     /// Interactive chat session (Ctrl-D to exit)
     Chat {
@@ -856,6 +861,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             max_iterations,
             show_reasoning,
             plan,
+            verify,
         } => {
             // A ref: `--provider X` still means X's own model.
             let provider = model.or(provider);
@@ -863,7 +869,15 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             if plan {
                 plan::run(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
             } else {
-                run_once(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
+                run_once(
+                    &prompt,
+                    provider,
+                    workspace,
+                    max_iterations,
+                    show_reasoning,
+                    verify,
+                )
+                .await?;
             }
         }
         Cmd::Chat {
@@ -1041,6 +1055,7 @@ async fn build_root(
     max_iterations: usize,
     session_id: &str,
     task_shape: &str,
+    verify: Option<Vec<String>>,
 ) -> Result<(Agent, Option<Arc<ferrule_agents::Supervisor>>)> {
     let (cfg, _) = config::Config::load()?;
     let sandbox = shared_sandbox(&cfg)?;
@@ -1070,6 +1085,7 @@ async fn build_root(
         &mcp_tools,
         ledger,
         None,
+        verify,
     )?;
     let build = child_builder(max_iterations, mcp_tools);
     let Some(sup) = agents::supervisor(&cfg, provider_name, sink, build)? else {
@@ -1091,6 +1107,7 @@ fn child_builder(max_iterations: usize, mcp_tools: self_extend::Extensions) -> a
             &mcp_tools,
             tag,
             Some(spec),
+            None,
         )
     })
 }
@@ -1169,6 +1186,7 @@ fn mcp_dir_name(server_name: &str) -> String {
 /// session id so the gateway's `Router` — which owns transcript lifecycle
 /// for resumable sessions — can hand in the exact same transcript it just
 /// read history from, instead of this function creating a second one.
+#[allow(clippy::too_many_arguments)]
 fn build_agent_from(
     scope: models::Scope,
     workspace: PathBuf,
@@ -1177,8 +1195,13 @@ fn build_agent_from(
     mcp_tools: &self_extend::Extensions,
     ledger: Option<ledger::LedgerTag>,
     child: Option<&ferrule_agents::ChildSpec>,
+    verify: Option<Vec<String>>,
 ) -> Result<Agent> {
-    let (cfg, cfg_path) = config::Config::load()?;
+    let (mut cfg, cfg_path) = config::Config::load()?;
+    // `ferrule run --verify CMD` wins over `[agent] verify_command`.
+    if let Some(verify) = verify {
+        cfg.agent.verify_command = verify;
+    }
     // M21: the model is picked per call from the agent's scope; the one
     // it would run on now sets the harness profile (M25: routed, the
     // smallest window of the tiers), and a missing key is an error now
@@ -1359,10 +1382,12 @@ fn build_agent_from(
         system.push_str(&format!("\n\n[Browser]\n{}", browser_note(&cfg.browser)));
     }
 
-    // Context baseline: living documentation written for agents (AGENTS.md et al).
+    // Context baseline: living documentation written for agents (AGENTS.md
+    // et al), layered: the instance's config dir (user level), then every
+    // parent of the workspace, then the workspace itself.
     let baseline = match remote {
         Some(r) => r.baseline.clone(),
-        None => ferrule_core::load_context_baseline(&tool_ctx.workspace),
+        None => ferrule_core::load_context_baseline_layered(&tool_ctx.workspace, cfg_path.parent()),
     };
     if let Some((name, content)) = baseline {
         system.push_str(&format!(
@@ -1370,14 +1395,32 @@ fn build_agent_from(
         ));
     }
 
-    // Validation: ferrule runs the check itself when a run that changed
-    // files tries to finish, and sends a failure back to be fixed.
-    if let Some(cmd) = &cfg.agent.verify_command {
-        system.push_str(&format!(
-            "\n\n[Validation policy] When you finish after changing files, ferrule runs `{cmd}`. \
-             If it fails you get its output back and keep working: fix forward, don't revert. \
-             You can run it yourself with the shell tool before finishing."
-        ));
+    // Validation: ferrule runs the checks itself, in order, when a run
+    // that changed files tries to finish, and sends a failure back to be
+    // fixed.
+    if !cfg.agent.verify_command.is_empty() {
+        let policy = if cfg.agent.verify_command.len() == 1 {
+            let cmd = &cfg.agent.verify_command[0];
+            format!(
+                "When you finish after changing files, ferrule runs `{cmd}`. \
+                 If it fails you get its output back and keep working: fix forward, don't revert. \
+                 You can run it yourself with the shell tool before finishing."
+            )
+        } else {
+            let steps = cfg
+                .agent
+                .verify_command
+                .iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(", then ");
+            format!(
+                "When you finish after changing files, ferrule runs {steps}, in that order. \
+                 If one fails you get its output back and keep working: fix forward, don't revert. \
+                 You can run them yourself with the shell tool before finishing."
+            )
+        };
+        system.push_str(&format!("\n\n[Validation policy] {policy}"));
     }
 
     // Agent Skills: names + descriptions in the prompt, full instructions
@@ -1454,20 +1497,22 @@ fn build_agent_from(
     let lint_sandbox = sandbox.clone();
     let commit_sandbox = sandbox.clone();
     let commands_off = managed::user_commands_off(&sandbox).is_some();
-    if let (Some(cmd), false) = (&cfg.agent.verify_command, planning || commands_off) {
+    if !(planning || commands_off) {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
-        agent = match remote {
-            Some(r) => agent.with_verifier(Arc::new(ferrule_ssh::RemoteVerifier {
-                link: r.link.clone(),
-                command: cmd.clone(),
-                timeout,
-            })),
-            None => agent.with_verifier(Arc::new(CommandVerifier::new(
-                cmd.clone(),
-                sandbox,
-                timeout,
-            ))),
-        };
+        for cmd in &cfg.agent.verify_command {
+            agent = match remote {
+                Some(r) => agent.with_verifier(Arc::new(ferrule_ssh::RemoteVerifier {
+                    link: r.link.clone(),
+                    command: cmd.clone(),
+                    timeout,
+                })),
+                None => agent.with_verifier(Arc::new(CommandVerifier::new(
+                    cmd.clone(),
+                    sandbox.clone(),
+                    timeout,
+                ))),
+            };
+        }
     }
     // M18: a sub-agent's hooks are its root's, added by the supervisor.
     // A planning run fires none: hooks run as the owner, outside the
@@ -1896,6 +1941,7 @@ async fn run_once(
     workspace: PathBuf,
     max_iterations: usize,
     show_reasoning: bool,
+    verify: Vec<String>,
 ) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
     let answer = run_root(
@@ -1906,6 +1952,11 @@ async fn run_once(
         show_reasoning,
         &session_id,
         false,
+        if verify.is_empty() {
+            None
+        } else {
+            Some(verify)
+        },
     )
     .await?;
     finish_run(answer)
@@ -1922,6 +1973,7 @@ pub(crate) struct RootRun {
 /// Runs `prompt` as the root of `session_id` until it and the agents it
 /// started are done. With `resume`, the session's transcript is replayed
 /// first (an approved plan runs on what its exploration read).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_root(
     prompt: &str,
     provider: Option<String>,
@@ -1930,6 +1982,7 @@ pub(crate) async fn run_root(
     show_reasoning: bool,
     session_id: &str,
     resume: bool,
+    verify: Option<Vec<String>>,
 ) -> Result<Result<RootRun, String>> {
     let history = if resume {
         let sessions_dir = config::data_dir()?.join("sessions");
@@ -1939,8 +1992,15 @@ pub(crate) async fn run_root(
     } else {
         Vec::new()
     };
-    let (mut agent, sup) =
-        build_root(provider, workspace, max_iterations, session_id, "run").await?;
+    let (mut agent, sup) = build_root(
+        provider,
+        workspace,
+        max_iterations,
+        session_id,
+        "run",
+        verify,
+    )
+    .await?;
     for m in history
         .into_iter()
         .filter(|m| m.role != ferrule_core::Role::System)
@@ -2063,8 +2123,15 @@ const CHAT_COMMANDS: &[(&str, &str)] = &[
 async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
     let mut session_id = uuid::Uuid::new_v4().to_string();
     let undo_dir = dunce::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
-    let (mut agent, mut sup) =
-        build_root(provider.clone(), workspace.clone(), 60, &session_id, "chat").await?;
+    let (mut agent, mut sup) = build_root(
+        provider.clone(),
+        workspace.clone(),
+        60,
+        &session_id,
+        "chat",
+        None,
+    )
+    .await?;
     // M27: the answer prints as the model writes it.
     let stream = config::Config::load()
         .map(|(cfg, _)| cfg.agent.stream)
@@ -2115,8 +2182,15 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
             }
             agent.end_session("new", &spawn_renderer(false)).await;
             let old = std::mem::replace(&mut session_id, uuid::Uuid::new_v4().to_string());
-            (agent, sup) =
-                build_root(provider.clone(), workspace.clone(), 60, &session_id, "chat").await?;
+            (agent, sup) = build_root(
+                provider.clone(),
+                workspace.clone(),
+                60,
+                &session_id,
+                "chat",
+                None,
+            )
+            .await?;
             streamed = stream.then(|| {
                 let (sink, streamed) = chat_stream();
                 agent.set_reply_stream(Some(sink));
@@ -2361,6 +2435,7 @@ async fn gateway_factory(
             Some(transcript),
             &mcp_tools,
             tag,
+            None,
             None,
         )
         .map_err(|e| fail(e.to_string()))?;

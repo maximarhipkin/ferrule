@@ -78,7 +78,7 @@ pub fn build(config: &HooksConfig, workspace: &Path, data_dir: &Path) -> Loaded 
 /// trust state, and the last `runs` runs from the audit log.
 pub fn render_list(
     config: &HooksConfig,
-    verify_command: Option<&str>,
+    verify_commands: &[String],
     workspace: &Path,
     data_dir: &Path,
     runs: usize,
@@ -90,7 +90,7 @@ pub fn render_list(
         &TrustStore::in_data_dir(data_dir),
     );
     let mut rows: Vec<(ferrule_core::HookEvent, &str, String, String)> = Vec::new();
-    if let Some(check) = verify_command {
+    for check in verify_commands {
         rows.push((
             ferrule_core::HookEvent::Stop,
             "builtin",
@@ -216,7 +216,13 @@ mod tests {
         assert_eq!(loaded.set.hooks().len(), 1);
         assert_eq!(loaded.set.limits.max_stop_blocks, 5);
         assert!(loaded.notice.unwrap().contains("haven't trusted it yet"));
-        let list = render_list(&config, Some("cargo test"), ws.path(), data.path(), 5);
+        let list = render_list(
+            &config,
+            &["cargo test".to_string()],
+            ws.path(),
+            data.path(),
+            5,
+        );
         assert!(list.contains("workspace (won't run)"), "{list}");
         assert!(list.contains("verify_command: cargo test"), "{list}");
 

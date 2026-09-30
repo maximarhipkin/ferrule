@@ -27,7 +27,7 @@ pub mod triggers;
 pub mod verify;
 
 pub use agent::{Agent, AgentConfig, ContextOverflow, RetryPolicy};
-pub use baseline::load_context_baseline;
+pub use baseline::{load_context_baseline, load_context_baseline_layered};
 pub use error::{CoreError, FailureClass};
 pub use event::AgentEvent;
 pub use guard::{Guard, GuardedCall, Verdict};

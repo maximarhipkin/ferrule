@@ -25,6 +25,8 @@ struct Model {
     turns: Mutex<usize>,
     summaries: Mutex<usize>,
     requests: Mutex<Vec<String>>,
+    /// Every turn request, exactly as answered (summaries not included).
+    raw: Mutex<Vec<CompletionRequest>>,
 }
 
 impl Model {
@@ -36,6 +38,7 @@ impl Model {
             turns: Mutex::new(0),
             summaries: Mutex::new(0),
             requests: Mutex::new(Vec::new()),
+            raw: Mutex::new(Vec::new()),
         })
     }
 }
@@ -55,6 +58,7 @@ impl Provider for Model {
             )
         } else {
             self.requests.lock().unwrap().push(visible(&req));
+            self.raw.lock().unwrap().push(req.clone());
             let turn = {
                 let mut t = self.turns.lock().unwrap();
                 *t += 1;
@@ -243,6 +247,113 @@ async fn after_compaction_the_agent_answers_from_dropped_history() {
             AgentEvent::ToolResultsShortened { .. }
         )),
         0
+    );
+}
+
+/// (d) Model-visible means logged: every message of every request the
+/// model answered — before and after a compaction — appears in the session
+/// transcript. The one exception is the system prompt, rebuilt with the
+/// agent each time by design (`append_system_prompt`).
+#[tokio::test]
+async fn everything_the_model_saw_is_in_the_transcript() {
+    let padding = "background noise ".repeat(90);
+    let lookup = Lookup(vec![
+        ("vault", format!("The vault code is 7319. {padding}")),
+        ("weather", format!("It is sunny. {padding}")),
+        ("traffic", format!("Roads are clear. {padding}")),
+        ("news", format!("Nothing happened. {padding}")),
+    ]);
+    let model = Model::new(|_, turn| match turn {
+        1 => call("1", "lookup", json!({"what": "vault"})),
+        2 => call("2", "lookup", json!({"what": "weather"})),
+        3 => call("3", "lookup", json!({"what": "traffic"})),
+        4 => call("4", "lookup", json!({"what": "news"})),
+        _ => say("done looking"),
+    });
+    let config = AgentConfig {
+        compaction_keep_last: 4,
+        ..Default::default()
+    };
+    // No search tool: nothing is shortened to a preview, so every request
+    // message must match a logged one verbatim.
+    let mut s = setup(model.clone(), lookup, 1_200, config, true, false);
+    let (_, events) = run(&mut s.agent, "Look around, then say done.").await;
+    assert!(count(&events, |e| matches!(e, AgentEvent::Compacted { .. })) >= 1);
+
+    let logged: Vec<serde_json::Value> = s
+        .transcript
+        .as_ref()
+        .unwrap()
+        .read_all_logged()
+        .unwrap()
+        .iter()
+        .map(|m| serde_json::to_value(m).unwrap())
+        .collect();
+    // The compaction summary really is logged: a resume sees it too.
+    assert!(logged.iter().any(|m| m
+        .get("content")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| c.starts_with("[Compaction summary of earlier session]"))));
+
+    let raw = model.raw.lock().unwrap();
+    assert!(raw.len() >= 5, "several turns ran: {}", raw.len());
+    for req in raw.iter() {
+        for m in &req.messages {
+            if m.role == Role::System {
+                continue;
+            }
+            let v = serde_json::to_value(m).unwrap();
+            assert!(
+                logged.contains(&v),
+                "a message the model saw is not in the transcript: {v}"
+            );
+        }
+    }
+}
+
+/// (e) A resume replays the compacted state, not the resurrected past:
+/// read_messages applies the fold records compaction writes.
+#[tokio::test]
+async fn a_resume_replays_the_compacted_state() {
+    let padding = "background noise ".repeat(90);
+    let lookup = Lookup(vec![
+        ("vault", format!("The vault code is 7319. {padding}")),
+        ("weather", format!("It is sunny. {padding}")),
+        ("traffic", format!("Roads are clear. {padding}")),
+        ("news", format!("Nothing happened. {padding}")),
+    ]);
+    let model = Model::new(|_, turn| match turn {
+        1 => call("1", "lookup", json!({"what": "vault"})),
+        2 => call("2", "lookup", json!({"what": "weather"})),
+        3 => call("3", "lookup", json!({"what": "traffic"})),
+        4 => call("4", "lookup", json!({"what": "news"})),
+        _ => say("done looking"),
+    });
+    let config = AgentConfig {
+        compaction_keep_last: 4,
+        ..Default::default()
+    };
+    let mut s = setup(model.clone(), lookup, 1_200, config, true, false);
+    let (_, events) = run(&mut s.agent, "Look around, then say done.").await;
+    assert!(count(&events, |e| matches!(e, AgentEvent::Compacted { .. })) >= 1);
+
+    let resumed = s.transcript.as_ref().unwrap().read_messages().unwrap();
+    let joined = resumed
+        .iter()
+        .filter_map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("[Compaction summary of earlier session]"));
+    assert!(
+        !joined.contains("The vault code is 7319"),
+        "the folded-away first result stays folded on resume"
+    );
+    let all = s.transcript.as_ref().unwrap().read_all_logged().unwrap();
+    assert!(
+        resumed.len() < all.len(),
+        "the fold really folded: {} resumed vs {} logged",
+        resumed.len(),
+        all.len()
     );
 }
 
