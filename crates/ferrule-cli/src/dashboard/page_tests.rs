@@ -204,14 +204,17 @@ fn every_icon_used_exists() {
     asked.extend(quoted_after(JS, "icon: "));
     asked.extend(quoted_after(JS, "ICON_OF = { health: "));
     // Each section is drawn with the icon of its own name.
-    let order = JS
-        .split("const order = [")
+    let groups = JS
+        .split("const GROUPS = [")
         .nth(1)
         .unwrap()
-        .split(']')
+        .split("\n  ];")
         .next()
         .unwrap();
-    asked.extend(order.split(',').map(|s| s.trim().trim_matches('"')));
+    for line in groups.lines() {
+        let names = line.split_once(", [").map_or("", |(_, l)| l);
+        asked.extend(names.split('"').skip(1).step_by(2));
+    }
     assert!(asked.len() > 10, "found only {} icon uses", asked.len());
     let missing: Vec<&&str> = asked
         .iter()
@@ -286,4 +289,123 @@ fn every_tip_has_a_definition() {
         missing.is_empty(),
         "tip() words with no definition: {missing:?}"
     );
+}
+
+const API: &str = include_str!("api.rs");
+
+/// The paths `api::route` answers, read from its two `match` blocks: a line
+/// that starts a match arm (or continues an `|` list) and the quoted names
+/// before its `=>`.
+fn routes() -> Vec<String> {
+    let start = API.find("pub async fn route").expect("route()");
+    let end = API[start..]
+        .find("// ---- Health")
+        .expect("the Health marker")
+        + start;
+    let mut out = Vec::new();
+    for line in API[start..end].lines() {
+        let t = line.trim_start();
+        if !(t.starts_with('"') || t.starts_with("| \"")) {
+            continue;
+        }
+        let head = t.split("=>").next().unwrap_or(t);
+        for (i, part) in head.split('"').enumerate() {
+            if i % 2 == 1 && !part.is_empty() {
+                out.push(part.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Routes the page has no button for, and why. Anything else that stops
+/// being called by `app.js` is an ability lost by accident (D15).
+const NOT_CALLED_BY_NAME: &[(&str, &str)] = &[
+    (
+        "console/parity",
+        "the console page never used it; `ferrule console` tests read it",
+    ),
+    (
+        "eval/estimate",
+        "the eval card starts a run without asking for the estimate first; only tests use it",
+    ),
+    (
+        "run/cancel",
+        "runs are followed on the page, but only doctor and eval have a Cancel, through their own routes",
+    ),
+];
+
+#[test]
+fn every_route_is_used_by_the_page() {
+    let routes = routes();
+    assert!(
+        routes.len() > 60,
+        "the parser found too few routes: {routes:?}"
+    );
+    let mut unused = Vec::new();
+    for r in &routes {
+        if NOT_CALLED_BY_NAME.iter().any(|(n, _)| n == r) {
+            continue;
+        }
+        // `"/api/telegram/" + path` builds its routes from a prefix.
+        let prefix = r.rsplit_once('/').map(|(p, _)| format!("\"/api/{p}/\""));
+        let called = JS.contains(&format!("/api/{r}"))
+            || JS.contains(&format!("\"{r}\""))
+            || prefix.is_some_and(|p| JS.contains(&p));
+        if !called {
+            unused.push(r.clone());
+        }
+    }
+    assert!(
+        unused.is_empty(),
+        "app.js no longer calls: {unused:?}. Put it back, or say why in NOT_CALLED_BY_NAME."
+    );
+}
+
+#[test]
+fn the_page_uses_no_native_dialogs() {
+    for banned in [
+        "window.confirm(",
+        "window.prompt(",
+        "window.alert(",
+        "window.open(",
+    ] {
+        assert!(!JS.contains(banned), "app.js calls {banned}");
+    }
+    for line in JS.lines() {
+        let t = line.trim_start();
+        if t.starts_with("//") {
+            continue;
+        }
+        for banned in ["confirm(", "prompt(", "alert("] {
+            for (at, _) in line.match_indices(banned) {
+                let before = line[..at].chars().next_back();
+                let ok = before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+                assert!(ok, "app.js calls a native dialog: {line}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_index_has_landmarks_and_a_skip_link() {
+    assert!(HTML.contains("<html lang=\"en\">"));
+    assert!(HTML.contains("<header"), "no header landmark");
+    assert!(
+        HTML.contains("<main id=\"main\" tabindex=\"-1\""),
+        "main must take focus on a route change"
+    );
+    let navs = HTML.matches("<nav ").count();
+    assert_eq!(navs, 2, "two navs (sidebar, phone bar)");
+    for nav in HTML.split("<nav ").skip(1) {
+        assert!(
+            nav.split('>').next().unwrap().contains("aria-label="),
+            "a nav without a label"
+        );
+    }
+    // The skip link is the first focusable thing and points at main.
+    let skip = HTML.find("class=\"skip\"").expect("a skip link");
+    assert!(skip < HTML.find("<header").unwrap());
+    assert!(HTML.contains("href=\"#main\""));
+    assert!(HTML.contains("id=\"toast\"") && HTML.contains("aria-live="));
 }

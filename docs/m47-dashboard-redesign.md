@@ -1223,3 +1223,36 @@ also in the final report.
 12. **Part 3: the setup test uses a fresh fake Telegram for its second
     gateway.** One fake shared by two gateways in turn was flaky (the first
     process can still be mid-poll and swallow the update).
+13. **Part 4: the palette starts with what exists.** `PALETTE_ACTIONS` holds
+    only actions the page can already do (go to a section, switch theme,
+    stop the running turn, sign out, the shortcut list). "New task",
+    "Attach a photo", "Back up now" and "Switch language" arrive with their
+    features in Part 5, so no palette entry ever leads nowhere.
+14. **Part 4: `vision` on `/api/models` moved to 5a.** Step 15 wrote the
+    field before `Entry::sees_images()` exists. It ships with the provider
+    layer, and the Models "sees photos" badge with it.
+15. **Part 4: Memory and Settings show in the nav only once they exist.**
+    `GROUPS` lists a section only if `sections[name]` is defined, so the
+    nav needs no edit when 5c adds them.
+16. **Part 4: `#toast` keeps its id.** The plan called it `#toasts`; the
+    browser check, the CSS and `toast()` all use `#toast`.
+17. **Part 4: the route guard has a short allow-list.** `console/parity`,
+    `eval/estimate` and `run/cancel` are served but the page never called
+    them (each has its reason in `NOT_CALLED_BY_NAME`). Routes that end in
+    a name (`telegram/<verb>`) count as used when the page builds
+    `"/api/telegram/"` plus the verb. Paths in `app.js` must therefore be
+    literal strings, not `base + "/enable"`; a first draft of the
+    extensions switches was caught by exactly this test.
+18. **Part 4: the problems banner is per section.** With the whole list on
+    every page, the two mock-model notices filled a 390 px screen before
+    the section began. Home still lists every problem. Elsewhere the
+    section's own problems show in full and the rest are one line that
+    leads to Home (`otherProblems`).
+19. **Part 4: Models, Channels and Connections keep their Part 2/3 layout.**
+    They already have tiles, per-option folds (`.opt`) and the step panels
+    that Home reuses (correction 9). Re-wrapping them in an "Advanced"
+    fold would have made the Home step panels and the browser check's
+    `details[open] input[name="key"]` path deeper for no gain, so only
+    Usage, Tasks, Logs, Extensions and Agents were rewritten with the new
+    `advanced()`, `chips()` and `toggle()` pieces. The Logs "kinds" select
+    became three chips (Everything, Problems, Changes).

@@ -12,6 +12,7 @@
 <script src="/app.js" defer></script>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <header id="top">
   <div class="brand">
     <span id="mark" aria-hidden="true"></span>
@@ -21,15 +22,16 @@
   </div>
   <div class="top-right">
     <span id="live" class="live" hidden><span class="led ok pulse" id="live-led"></span><span id="uptime"></span></span>
+    <button id="find" class="ghost icon" type="button" aria-label="Search and commands (press /)" title="Search and commands (press /)" aria-keyshortcuts="/ Control+K Meta+K" hidden></button>
     <button id="theme" class="ghost" type="button" title="Theme: follows the system until you pick one">auto</button>
     <button id="logout" class="ghost" type="button" hidden>Log out</button>
   </div>
 </header>
 <div id="shell">
   <nav id="rail" aria-label="Sections" hidden></nav>
-  <main id="main"><p class="muted">Loading…</p></main>
+  <main id="main" tabindex="-1"><p class="muted">Loading…</p></main>
 </div>
-<nav id="tabs" aria-label="Sections" hidden></nav>
+<nav id="tabs" aria-label="Quick sections" hidden></nav>
 <div id="sheet" hidden></div>
 <div id="toast" role="status" aria-live="polite"></div>
 </body>

@@ -271,6 +271,78 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     return "a tip opens its sentence";
   });
 
+  // M47 part 4: the shell. The palette opens from the keyboard, finds a
+  // page by a few letters, and focus lands on the page; the phone bar has
+  // five items and its More sheet is a real dialog.
+  const key = async (k, code, mods = 0) => {
+    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, modifiers: mods, windowsVirtualKeyCode: { Enter: 13, Escape: 27 }[k] || k.toUpperCase().charCodeAt(0) });
+    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, modifiers: mods });
+  };
+  await run("the palette finds a page", async () => {
+    await js(`window.ferrule.show("health"); document.activeElement && document.activeElement.blur()`);
+    await key("k", "KeyK", 2);
+    await until("the palette", () => js(`return !!document.querySelector("dialog.pal[open] input[role=combobox]")`), 5);
+    await cdp("Input.insertText", { text: "tas" });
+    const first = await js(`const o = document.querySelector("dialog.pal li[role=option]"); const i = document.querySelector("dialog.pal input"); return o && [o.textContent, i.getAttribute("aria-activedescendant") === o.id, i.getAttribute("aria-expanded")]`);
+    if (!first || !/Tasks/.test(first[0]) || !first[1]) throw new Error("the first result is " + JSON.stringify(first));
+    await key("Enter", "Enter");
+    await until("Tasks", () => js(`return location.hash === "#tasks" && !document.querySelector("dialog.pal")`), 8);
+    const focus = await js(`return document.activeElement && document.activeElement.id`);
+    if (focus !== "main") throw new Error("focus is on " + focus + ", not #main");
+    await key("/", "Slash");
+    const again = await js(`return !!document.querySelector("dialog.pal[open]")`);
+    if (!again) throw new Error("/ did not open the palette");
+    await key("Escape", "Escape");
+    await until("it to close", () => js(`return !document.querySelector("dialog.pal")`), 5);
+    return "Ctrl-K, tas, Enter → #tasks with focus in #main; / opens it and Esc closes it";
+  });
+
+  await run("the phone bar and its More sheet", async () => {
+    await size(390, 844);
+    await js(`window.ferrule.show("health")`);
+    const n = await js(`return [...document.querySelectorAll("#tabs a")].map((a) => a.textContent.trim())`);
+    if (n.length !== 5) throw new Error("the bar has " + n.join(","));
+    const cur = await js(`return document.querySelectorAll('#tabs a[aria-current="page"]').length`);
+    if (cur !== 1) throw new Error("aria-current on " + cur + " items");
+    await js(`document.querySelector('#tabs a[href="#more"]').click()`);
+    await until("the sheet", () => js(`return !document.getElementById("sheet").hidden && document.getElementById("sheet").contains(document.activeElement)`), 5).catch(async (e) => {
+      throw new Error(e.message + ": " + (await js(`const sh = document.getElementById("sheet"); return JSON.stringify([sh.hidden, document.activeElement.outerHTML.slice(0, 80), sh.querySelectorAll("a").length])`)));
+    });
+    const groups = await js(`return [...document.querySelectorAll("#sheet .group")].map((g) => g.textContent)`);
+    if (groups.length < 2) throw new Error("groups in the sheet: " + groups);
+    await key("Escape", "Escape");
+    await until("the sheet to close", () => js(`return document.getElementById("sheet").hidden`), 5);
+    const wide = await js(`return document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await size(1280, 900);
+    if (wide > 1) throw new Error("the page scrolls sideways by " + wide + " px");
+    return n.join(" · ") + "; the sheet opens, closes on Esc; groups " + groups.join("/");
+  });
+
+  // A task card built from a made-up task (the fixture has none): the
+  // schedule reads in words, the switch is a real switch, the raw line and
+  // the destructive buttons sit behind Advanced.
+  await run("a task card reads in words", async () => {
+    await js(`window.ferrule.show("tasks")`);
+    await until("Tasks", () => js(`return location.hash === "#tasks" && !!document.querySelector("#main .sec-head")`), 8);
+    const r = await js(`
+      const t = { id: "t1", name: "Morning summary", kind: "cron", schedule: "0 9 * * 1-5", timezone: "Asia/Jerusalem", enabled: true, builtin: false,
+        next_run_at: Math.floor(Date.now() / 1000) + 3600, destination: "telegram", model: null,
+        runs: [{ status: "failed", detail: "the model was down", started_at: Math.floor(Date.now() / 1000) - 60 }] };
+      const card = window.ferrule.sections.tasks.item(t);
+      document.getElementById("main").append(card);
+      const sw = card.querySelector('button[role="switch"]');
+      const adv = card.querySelector("details.advanced");
+      return { text: card.textContent, on: sw && sw.getAttribute("aria-checked"), label: sw && sw.getAttribute("aria-label"),
+        advOpen: adv && adv.open, del: [...(adv ? adv.querySelectorAll("button") : [])].some((b) => b.textContent === "Delete"),
+        deleteOutside: [...card.querySelectorAll("button")].some((b) => b.textContent === "Delete" && !adv.contains(b)) };`);
+    if (!/Weekdays at 09:00/.test(r.text)) throw new Error("no schedule in words: " + r.text);
+    if (r.on !== "true" || !/Pause/.test(r.label)) throw new Error("the switch: " + JSON.stringify(r));
+    if (r.advOpen || !r.del || r.deleteOutside) throw new Error("Advanced fold wrong: " + JSON.stringify(r));
+    if (!/the model was down/.test(r.text)) throw new Error("a failed run isn't said");
+    await js(`window.ferrule.show("health")`);
+    return "Weekdays at 09:00, an on/off switch, Delete only under Advanced";
+  });
+
   await run("dismiss a notice", async () => {
     const before = await get("/api/health");
     const target = (before.problems || []).find((p) => p.id && p.closable);

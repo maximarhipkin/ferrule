@@ -66,6 +66,7 @@
     document.getElementById("sheet").hidden = true;
     document.getElementById("logout").hidden = true;
     document.getElementById("live").hidden = true;
+    document.getElementById("find").hidden = true;
     document.body.classList.remove("running");
     const main = document.getElementById("main");
     main.replaceChildren(el("div", { class: "card" },
@@ -413,6 +414,29 @@
     return d;
   }
 
+  // The knobs most people never need, folded away under one word. Open or
+  // shut, it stays that way across the polls' redraws.
+  function advanced(key, hint, ...body) {
+    return disc("adv-" + key, "advanced",
+      frag("Advanced", hint ? el("span", { class: "muted small", text: " · " + hint }) : null),
+      el("div", { class: "details-body stack" }, ...body));
+  }
+
+  // A choice of one, as a row of pressed/unpressed buttons.
+  function chips(label, options, value, onpick) {
+    return el("div", { class: "chips", role: "group", "aria-label": label },
+      options.map(([v, t]) => el("button", {
+        type: "button", class: "chip", "aria-pressed": String(v === value), text: t,
+        onclick: () => onpick(v),
+      })));
+  }
+
+  // An on/off switch that says what it switches. The caller does the POST.
+  function toggle(label, on, onclick) {
+    return el("button", { type: "button", class: "switch", role: "switch", "aria-checked": String(!!on), "aria-label": label, onclick },
+      el("span", { class: "knob" }));
+  }
+
   // A button that copies `value`; says so, or selects it to copy by hand.
   function copyBtn(value) {
     const b = el("button", { text: "Copy" });
@@ -479,6 +503,15 @@
   function problems(list) {
     if (!list || !list.length) return null;
     return el("div", {}, list.map(notice));
+  }
+
+  // Away from Home, only this section's problems show in full; the rest are
+  // one line that leads there, so a phone's first screen is the section.
+  function otherProblems(list) {
+    if (!list.length) return null;
+    return el("a", { class: "strip", href: "#health" }, icon("alert"),
+      el("span", { class: "grow", text: list.length + (list.length === 1 ? " other thing needs" : " other things need") + " your attention" }),
+      el("span", { text: "Home" }), icon("chevron"));
   }
 
   function hiddenNotices(list) {
@@ -1534,18 +1567,58 @@
     },
   };
 
+  // "0 9 * * *" in words. Anything it can't say plainly stays as the cron
+  // line, which the Advanced fold always shows.
+  const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  function scheduleWords(t) {
+    if (t.kind !== "cron") {
+      const d = new Date(t.schedule);
+      return isNaN(d) ? "Once, " + t.schedule : "Once, " + d.toLocaleString([], { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    }
+    const f = String(t.schedule).trim().split(/\s+/);
+    if (f.length !== 5) return t.schedule;
+    const [mi, ho, dom, mo, dow] = f;
+    const two = (n) => String(n).padStart(2, "0");
+    let m;
+    if (/^\*\/\d+$/.test(mi) && ho === "*" && dom === "*" && mo === "*" && dow === "*") return "Every " + mi.slice(2) + " minutes";
+    if (/^\d+$/.test(mi) && ho === "*" && dom === "*" && mo === "*" && dow === "*") return mi === "0" ? "Every hour" : "Every hour, at :" + two(mi);
+    if (!/^\d+$/.test(mi) || !/^\d+$/.test(ho) || dom !== "*" || mo !== "*") return t.schedule;
+    const at = " at " + two(ho) + ":" + two(mi);
+    if (dow === "*") return "Every day" + at;
+    if (dow === "1-5") return "Weekdays" + at;
+    if (dow === "0,6" || dow === "6,0") return "Weekends" + at;
+    if ((m = /^[0-7]$/.exec(dow))) return "Every " + DAYS[Number(dow) % 7] + at;
+    return t.schedule;
+  }
+  const clock = (unix) => new Date(unix * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+
+  // A chart with the numbers under it for a screen reader, which cannot
+  // read bars.
+  function chart(title, points, fmt, cap) {
+    const svg = bars(points, fmt, cap);
+    svg.setAttribute("aria-label", title + ": " + points.map((p) => p.k + " " + fmt(p.v)).join(", "));
+    return frag(svg,
+      el("table", { class: "sr" }, el("caption", { text: title }),
+        el("tbody", {}, points.map((p) => el("tr", {}, el("th", { scope: "row", text: p.k }), el("td", { text: fmt(p.v) }))))));
+  }
+
   sections.usage = {
     every: 30,
     days: "7",
     mount(root) {
       this.box = el("div");
-      const pick = el("select", {}, [["1", "today"], ["7", "7 days"], ["30", "30 days"]].map(([v, t]) => el("option", { value: v, text: t })));
-      pick.value = this.days;
-      pick.onchange = () => { this.days = pick.value; this.load(); };
-      // Outside the box the poll redraws, so a half-typed cap survives it.
+      this.more = el("div", { class: "stack" });
+      this.pick = el("div");
+      // Outside the boxes the poll redraws, so a half-typed cap survives it.
       const edit = el("details", { class: "card", ontoggle: (e) => { if (e.target.open) capsEditor(e.target); } },
         el("summary", { text: "Edit caps" }));
-      root.append(secHead("Usage", "the ledger · every call accounted for", pick), this.box, edit);
+      this.drawPick();
+      root.append(secHead("Usage", "what your bot has spent"), this.pick, this.box,
+        advanced("usage", "tokens, prices, every model", this.more, edit));
+    },
+    drawPick() {
+      setKids(this.pick, chips("Range", [["1", "Today"], ["7", "7 days"], ["30", "30 days"]], this.days,
+        (v) => { this.days = v; this.drawPick(); this.load(); }));
     },
     async load() {
       let u;
@@ -1554,27 +1627,29 @@
       } catch (e) { return sectionError(this.box, e); }
       const t = u.total;
       const dayCap = u.caps ? (u.caps.caps || []).find((c) => c.cap === "usd_per_day" && c.limit > 0) : null;
+      const window_ = this.days === "1" ? "today" : "in the last " + this.days + " days";
       const group = (rows) => table(["", "calls", "tokens", "cost"], rows.map((r) => ({ cells: [
         text(r.key),
         el("span", { class: "mono", text: String(r.calls) }),
         el("span", { class: "mono", text: num(r.input_tokens + r.output_tokens) }),
         el("span", { class: "mono", text: usd(r.usd) }),
       ]})), [1, 2, 3]);
-      setKids(this.box, 
+      setKids(this.box,
         el("div", { class: "stats" },
-          stat("cost", usd(t.usd), u.malformed ? u.malformed + " unreadable lines" : "all lines read"),
-          stat("calls", String(t.calls), "errors " + u.error_pct + "% · retried " + u.retry_pct + "%"),
+          stat("Spent", usd(t.usd), window_),
+          stat("Calls to a model", String(t.calls), u.error_pct ? u.error_pct + "% went wrong" : "none went wrong")),
+        u.caps ? capsCard(u.caps, el("span", { class: "muted small", text: "A cap stops your bot from spending more. Change them under Advanced." })) : null,
+        t.calls ? card({ title: "Cost per day" }, chart("Cost per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.usd })), usd, dayCap ? dayCap.limit : 0))
+          : empty("Nothing spent " + window_, "Once your bot answers something, the cost shows up here."));
+      setKids(this.more,
+        el("div", { class: "stats" },
           stat("tokens in", num(t.input_tokens), num(t.cached_input_tokens) + " cached"),
           stat("tokens out", num(t.output_tokens), "cache hit " + u.cache_hit_pct + "%"),
-          stat("latency", "p50 " + u.p50_ms + " ms", "p95 " + u.p95_ms + " ms")),
+          stat("latency", "p50 " + u.p50_ms + " ms", "p95 " + u.p95_ms + " ms"),
+          stat("retried", u.retry_pct + "%", u.malformed ? u.malformed + " unreadable lines" : "all lines read")),
         el("p", { class: "muted small", text: "egress refused: " + (u.egress_refused.count ? u.egress_refused.count + " · " + u.egress_refused.hosts.map((h) => h.host + " ×" + h.count).join(", ") : "none") }),
-        u.caps ? el("h3", { text: "Caps" }) : null,
-        u.caps ? capsCard(u.caps, el("span", { class: "muted small", text: "Edit caps below — 0 turns one off." })) : null,
-        el("div", { class: "grid2" },
-          el("div", {}, el("h3", { text: "Cost per day" }),
-            bars(u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.usd })), usd, dayCap ? dayCap.limit : 0)),
-          el("div", {}, el("h3", { text: "Tokens per day" }),
-            bars(u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.input_tokens + d.output_tokens })), num))),
+        el("h3", { text: "Tokens per day" }),
+        chart("Tokens per day", u.per_day.map((d) => ({ k: String(d.key).slice(-5), v: d.input_tokens + d.output_tokens })), num),
         el("h3", { text: "Per model" }),
         u.per_model.length ? table(["model", "calls", "errors", "cache", "p50 / p95", "cost"], u.per_model.map((r) => ({ cells: [
           frag(el("span", { class: "mono", text: r.provider + "/" + r.model }), el("span", { class: "sub", text: r.shape })),
@@ -1600,31 +1675,40 @@
       try {
         r = await api("/api/tasks");
       } catch (e) { return sectionError(this.box, e); }
-      setKids(this.box, 
-        secHead("Tasks", r.tasks.length + " scheduled · gates skip at zero token cost"),
+      setKids(this.box,
+        secHead("Tasks", r.tasks.length ? r.tasks.length + " scheduled" : "things your bot does on a schedule"),
         r.paused ? el("div", { class: "alert bad" },
           el("div", { class: "body" }, el("div", { class: "what", text: "The kill switch is on: nothing runs." }))) : null,
-        r.tasks.length ? r.tasks.map((t) => el("div", { class: "task" },
-          el("div", { class: "head" },
-            el("span", { class: "name msg", dir: "auto", text: t.name || t.id }),
-            tag(t.kind),
-            t.enabled ? tag("on", "ok") : tag("paused", "warn"),
-            t.builtin ? tag("built in") : null,
-            el("span", { class: "spacer grow" }),
-            el("span", { class: "cron", text: t.schedule + (t.kind === "cron" ? "  ·  " + t.timezone : "") })),
+        r.tasks.length ? el("div", { class: "plain-list" }, r.tasks.map((t) => this.item(t)))
+          : empty("No tasks yet", "A task is something your bot does by itself, like a morning summary. Ask it in Chat: \"every weekday at 9, summarise my unread mail\"."));
+    },
+    item(t) {
+      const next = t.enabled && t.next_run_at != null ? "Next: " + clock(t.next_run_at) + " (" + ago(t.next_run_at) + ")" : t.enabled ? "" : "Paused";
+      const last = t.runs.length ? t.runs[0] : null;
+      return el("div", { class: "card task" },
+        el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t msg", dir: "auto", text: t.name || t.id }),
+            el("div", { class: "d", text: scheduleWords(t) + (next ? " · " + next : "") })),
+          toggle((t.enabled ? "Pause " : "Resume ") + (t.name || t.id), t.enabled,
+            (e) => act(t.enabled ? "tasks/pause" : "tasks/resume", { id: t.id }, e.currentTarget)),
+          btn("Run now", "tasks/run", { id: t.id })),
+        last && last.status !== "succeeded" && last.status !== "running" ? el("p", { class: "small mt0 " + (last.status === "skipped" ? "warn" : "bad") },
+          "Last run " + last.status + " " + ago(last.started_at) + (last.detail ? ": " : ""), last.detail ? text(last.detail) : null) : null,
+        advanced("task-" + t.id, "schedule line, model, history",
           kv([
-            ["next", t.enabled ? el("span", { class: "mono", text: ago(t.next_run_at) }) : tag("paused", "warn")],
+            ["kind", tag(t.kind)],
+            ["schedule", el("span", { class: "cron", text: t.schedule + (t.kind === "cron" ? "  ·  " + t.timezone : "") })],
             ["delivers to", text(t.destination)],
             ["model", el("span", { class: "mono", text: t.model || "the default" })],
+            t.builtin ? ["built in", "yes"] : null,
           ]),
           t.runs.length ? el("div", { class: "runs" }, t.runs.map((x) => el("span", {
             class: "run-dot " + (x.status === "succeeded" ? "ok" : x.status === "skipped" ? "warn" : x.status === "running" ? "" : "bad"),
             title: (x.detail || "") + " · " + ago(x.started_at),
           }, x.status + " · " + ago(x.started_at)))) : el("p", { class: "muted small", text: "never ran" }),
           t.runs.slice(0, 1).map((x) => x.detail ? el("div", { class: "muted small msg mt", dir: "auto", text: x.detail }) : null),
-          el("div", { class: "row mt" },
-            t.enabled ? btn("Pause", "tasks/pause", { id: t.id }) : btn("Resume", "tasks/resume", { id: t.id }, "primary"),
-            btn("Run now", "tasks/run", { id: t.id }),
+          el("div", { class: "row" },
             askBtn("Schedule", "tasks/schedule", t.kind === "cron" ? "Cron schedule (5 fields), then optionally a space and an IANA timezone:" : "When (RFC 3339):",
               t.kind === "cron" ? t.schedule + " " + t.timezone : t.schedule, (v) => {
                 const [schedule, timezone] = t.kind === "cron" ? splitTz(v) : [v.trim(), null];
@@ -1632,41 +1716,44 @@
               }),
             askBtn("Model", "tasks/model", "The model it runs on (provider/model, a provider or an alias), or \"default\":",
               t.model || "default", (v) => ({ id: t.id, model: v.trim() })),
-            t.builtin ? null : btn("Delete", "tasks/delete", { id: t.id }, "danger"))))
-          : el("div", { class: "empty", text: "no tasks" }));
+            t.builtin ? null : btn("Delete", "tasks/delete", { id: t.id }, "danger"))));
     },
   };
 
   sections.logs = {
     every: 0,
     page: 0,
+    kindV: "all",
     mount(root) {
-      this.kind = el("select", {}, [["all", "everything"], ["audit", "audit log"], ["warn", "warnings and errors"]].map(([v, t]) => el("option", { value: v, text: t })));
-      this.q = el("input", { type: "search", placeholder: "filter — Hebrew works as-is", dir: "auto", size: "28" });
+      this.pick = el("div");
+      this.q = el("input", { type: "search", placeholder: "search — Hebrew works as-is", dir: "auto", "aria-label": "Search the log", size: "28" });
       this.box = el("div");
       const go = () => { this.page = 0; this.load(); };
-      this.kind.onchange = go;
       this.q.addEventListener("change", go);
-      root.append(secHead("Logs", "audit + warnings · redacted · never transcripts"),
-        el("div", { class: "row" }, this.kind, this.q, el("button", { text: "Reload", onclick: () => this.load() })),
+      this.drawPick = () => setKids(this.pick, chips("Show", [["all", "Everything"], ["warn", "Problems"], ["audit", "Changes"]], this.kindV,
+        (v) => { this.kindV = v; this.drawPick(); go(); }));
+      this.drawPick();
+      root.append(secHead("Logs", "what happened · secrets and chats never appear here"),
+        this.pick, el("div", { class: "row mt" }, this.q, button("Reload", { kind: "ghost", icon: "retry", onclick: () => this.load() })),
         this.box);
     },
     async load() {
       let r;
       try {
-        r = await api("/api/logs?" + new URLSearchParams({ kind: this.kind.value, q: this.q.value, page: this.page }));
+        r = await api("/api/logs?" + new URLSearchParams({ kind: this.kindV, q: this.q.value, page: this.page }));
       } catch (e) { return sectionError(this.box, e); }
       const pages = Math.max(1, Math.ceil(r.total / r.per_page));
       const lvl = (x) => {
         const l = String(x.level).toLowerCase();
         return /error|fail|engage/.test(l) ? "bad" : /warn/.test(l) ? "warn" : x.kind === "audit" ? "audit" : "info";
       };
-      setKids(this.box, 
+      setKids(this.box,
         r.rows.length ? el("div", { class: "logwrap" }, r.rows.map((x) =>
           el("div", { class: "logline" },
             el("span", { class: "when", text: String(x.at).replace("T", " ").slice(5, 19) }),
             el("span", { class: "lvl " + lvl(x), text: x.level }),
-            el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text))))) : el("div", { class: "empty", text: "no log lines match" }),
+            el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text)))))
+          : empty("Nothing matches", this.q.value ? "Try a shorter search." : "Nothing of this kind has happened yet."),
         el("div", { class: "pager" },
           el("button", { text: "← Newer", disabled: this.page === 0, onclick: () => { this.page--; this.load(); } }),
           el("span", { text: "page " + (r.page + 1) + " of " + pages + " · " + r.total + " entries" }),
@@ -1683,56 +1770,54 @@
         x = await api("/api/settings");
       } catch (e) { return sectionError(this.box, e); }
       const w = x.workspace_hooks;
-      setKids(this.box, 
-        secHead("Extensions", "mcp · skills · hooks — every change is an audit line"),
-        el("h3", { text: "MCP servers" }),
-        x.mcp.length ? table(["name", "runs", "origin", ""], x.mcp.map((m) => ({ dead: m.disabled, cells: [
-          frag(el("strong", { text: m.name }), m.disabled ? frag(" ", tag("off", "warn")) : null),
-          el("span", { class: "mono small", text: m.runs }),
-          tag(m.origin),
-          el("div", { class: "row" },
-            m.origin === "configured" ? (m.disabled ? btn("Enable", "mcp/enable", { name: m.name }) : btn("Disable", "mcp/disable", { name: m.name })) : null,
-            btn("Remove", "mcp/remove", { name: m.name }, "danger")),
-        ]}))) : el("div", { class: "empty", text: "none configured" }),
+      const workspace = w ? el("div", { class: "alert block " + (w.trusted ? "ok" : "warn") },
+        el("div", { class: "row" },
+          el("strong", { text: "Workspace hooks" }),
+          el("code", { text: w.file }),
+          w.trusted ? tag("trusted", "ok") : tag(w.trusted_sha ? "changed since trusted" : "not trusted", "warn")),
+        kv([
+          ["SHA-256", el("code", { text: w.sha })],
+          w.trusted_sha && !w.trusted ? ["trusted", el("code", { text: w.trusted_sha })] : null,
+          w.project ? null : ["note", "They won't run until [hooks] project = true is in the config."],
+        ]),
+        w.parse_error ? el("p", { class: "bad msg", dir: "auto", text: w.parse_error }) : null,
+        w.hooks.length ? table(["event", "matcher", "command"], w.hooks.map((h) => ({ cells: [
+          tag(h.event), el("span", { class: "mono", text: h.matcher || "*" }), el("code", { text: h.command }),
+        ]}))) : null,
+        w.diff ? frag(
+          el("h4", { text: "What changed since it was trusted" }),
+          el("pre", {}, w.diff.map((d) => el("div", { class: d.op === "+" ? "diff-add" : d.op === "-" ? "diff-del" : "diff-ctx", text: d.op + " " + d.line }))))
+          : el("details", {}, el("summary", { text: "The file" }), el("pre", { class: "msg", dir: "auto", text: w.text })),
+        el("div", { class: "row" },
+          w.trusted || w.parse_error ? null : btn("Trust this version", "hooks/trust", { sha: w.sha }, "primary"),
+          w.trusted_sha ? btn("Untrust", "hooks/untrust", {}, "danger") : null,
+          el("span", { class: "muted small", text: "Trust is pinned to the hash: any later edit needs trusting again." }))) : null;
+      // Literal paths, so the guard test can see every one.
+      const switchFor = (name, off, on_path, off_path) => toggle((off ? "Turn on " : "Turn off ") + name, !off,
+        (e) => act(off ? on_path : off_path, { name }, e.currentTarget));
+      setKids(this.box,
+        secHead("Extensions", "add-ons your bot can use"),
+        el("h3", { text: "Tools from other programs" }),
+        el("p", { class: "muted small m0" }, "Programs that give your bot new tools, called ", tip("MCP"), " servers."),
+        x.mcp.length ? el("div", { class: "plain-list" }, x.mcp.map((m) => el("div", { class: "item" + (m.disabled ? " dead" : "") },
+          el("div", { class: "grow" }, el("div", { class: "t", text: m.name }), el("div", { class: "d", text: m.origin === "configured" ? "added in the config" : "from " + m.origin })),
+          m.origin === "configured" ? switchFor(m.name, m.disabled, "mcp/enable", "mcp/disable") : tag(m.origin)))) : empty("None connected", "Nothing is adding tools right now."),
         el("h3", { text: "Skills" }),
-        !x.skills_enabled ? el("div", { class: "empty", text: "skills are off" })
-          : x.skills.length ? table(["skill", "scope", "what", ""], x.skills.map((s) => ({
-            dead: s.disabled,
-            cells: [
-              frag(el("span", { class: "mono", text: s.name }), s.disabled ? frag(" ", tag("off", "warn")) : null),
-              tag(s.scope),
-              text(s.description),
-              s.disabled ? btn("Enable", "skills/enable", { name: s.name }) : btn("Disable", "skills/disable", { name: s.name }),
-            ],
-          }))) : el("div", { class: "empty", text: "none found" }),
+        !x.skills_enabled ? empty("Skills are off", "Turn them on in the config to let your bot learn how-to guides.")
+          : x.skills.length ? el("div", { class: "plain-list" }, x.skills.map((s) => el("div", { class: "item" + (s.disabled ? " dead" : "") },
+            el("div", { class: "grow" }, el("div", { class: "t mono", text: s.name }), el("div", { class: "d" }, text(s.description))),
+            switchFor(s.name, s.disabled, "skills/enable", "skills/disable")))) : empty("No skills found", "A skill is a how-to guide your bot reads when it needs it."),
         x.skills_disabled.length ? el("p", { class: "muted small" }, "Disabled in the config: ",
           x.skills_disabled.map((n, i) => frag(i ? " · " : "", n, " ", btn("Enable", "skills/enable", { name: n })))) : null,
-        el("h3", { text: "Hooks" }),
-        x.hooks.length ? table(["event", "matcher", "command"], x.hooks.map((h) => ({ cells: [
-          tag(h.event), el("span", { class: "mono", text: h.matcher || "*" }), el("code", { text: h.command }),
-        ]}))) : el("div", { class: "empty", text: "none in the config" }),
-        w ? el("div", { class: "alert block " + (w.trusted ? "ok" : "warn") },
-          el("div", { class: "row" },
-            el("strong", { text: "Workspace hooks" }),
-            el("code", { text: w.file }),
-            w.trusted ? tag("trusted", "ok") : tag(w.trusted_sha ? "changed since trusted" : "not trusted", "warn")),
-          kv([
-            ["SHA-256", el("code", { text: w.sha })],
-            w.trusted_sha && !w.trusted ? ["trusted", el("code", { text: w.trusted_sha })] : null,
-            w.project ? null : ["note", "They won't run until [hooks] project = true is in the config."],
-          ]),
-          w.parse_error ? el("p", { class: "bad msg", dir: "auto", text: w.parse_error }) : null,
-          w.hooks.length ? table(["event", "matcher", "command"], w.hooks.map((h) => ({ cells: [
+        w && !w.trusted ? workspace : null,
+        advanced("extensions", "hooks, removing, trust",
+          el("h3", { text: "Hooks" }),
+          x.hooks.length ? table(["event", "matcher", "command"], x.hooks.map((h) => ({ cells: [
             tag(h.event), el("span", { class: "mono", text: h.matcher || "*" }), el("code", { text: h.command }),
-          ]}))) : null,
-          w.diff ? frag(
-            el("h4", { text: "What changed since it was trusted" }),
-            el("pre", {}, w.diff.map((d) => el("div", { class: d.op === "+" ? "diff-add" : d.op === "-" ? "diff-del" : "diff-ctx", text: d.op + " " + d.line }))))
-            : el("details", {}, el("summary", { text: "The file" }), el("pre", { class: "msg", dir: "auto", text: w.text })),
-          el("div", { class: "row" },
-            w.trusted || w.parse_error ? null : btn("Trust this version", "hooks/trust", { sha: w.sha }, "primary"),
-            w.trusted_sha ? btn("Untrust", "hooks/untrust", {}, "danger") : null,
-            el("span", { class: "muted small", text: "Trust is pinned to the hash: any later edit needs trusting again." }))) : null);
+          ]}))) : el("div", { class: "empty", text: "none in the config" }),
+          w && w.trusted ? workspace : null,
+          x.mcp.length ? frag(el("h3", { text: "Remove a tool server" }),
+            el("div", { class: "row" }, x.mcp.map((m) => btn("Remove " + m.name, "mcp/remove", { name: m.name }, "danger")))) : null));
     },
   };
 
@@ -1744,16 +1829,21 @@
       try {
         r = await api("/api/agents");
       } catch (e) { return sectionError(this.box, e); }
-      setKids(this.box, 
-        secHead("Agents", "sub-agents · read-only · isolated contexts, summaries back only"),
-        r.agents.length ? table(["agent", "status", "task", "tokens", "model"], r.agents.map((a) => ({ cells: [
-          frag(el("strong", { text: a.name }), el("span", { class: "sub", text: a.role + " · depth " + a.depth })),
-          a.status === "running" ? frag(led("ok pulse"), " ", tag("running", "ok")) : tag(a.status, a.status === "failed" ? "bad" : null),
-          text(a.task),
-          el("span", { class: "mono", text: num(a.tokens) }),
-          el("span", { class: "mono small", text: a.model || "–" }),
-        ]})), [3]) : el("div", { class: "empty", text: "no sub-agents running" }),
-        el("p", { class: "muted small", text: "spawn_agent / wait / resume / close — planner, worker and verifier roles, a worktree per child, tree limits and a shared budget." }));
+      setKids(this.box,
+        secHead("Agents", "helpers your bot starts for a big job"),
+        r.agents.length ? el("div", { class: "plain-list" }, r.agents.map((a) => el("div", { class: "item" },
+          a.status === "running" ? led("ok pulse") : null,
+          el("div", { class: "grow" }, el("div", { class: "t", text: a.name }), el("div", { class: "d" }, text(a.task))),
+          a.status === "running" ? tag("running", "ok") : tag(a.status, a.status === "failed" ? "bad" : null))))
+          : empty("No helpers running", "When your bot splits a big job, its helpers show up here."),
+        advanced("agents", "role, depth, tokens, model",
+          r.agents.length ? table(["agent", "role", "tokens", "model"], r.agents.map((a) => ({ cells: [
+            el("strong", { text: a.name }),
+            a.role + " · depth " + a.depth,
+            el("span", { class: "mono", text: num(a.tokens) }),
+            el("span", { class: "mono small", text: a.model || "–" }),
+          ]})), [2]) : null,
+          el("p", { class: "muted small", text: "Helpers are read-only: each works in its own room and sends back a summary. A planner, a worker and a verifier, with limits and a shared budget." })));
     },
   };
 
@@ -2209,12 +2299,17 @@
   // ---- navigation and polling --------------------------------------------
   // A phone gets a bottom bar of five (the rest in a sheet under "More");
   // from 900 px, a sidebar with everything. Same sections, same URLs.
+  // The groups put what a beginner touches daily first (D3).
 
-  const order = ["health", "chat", "models", "connections", "channels", "console", "config", "routing", "usage", "tasks", "logs", "extensions", "agents"];
-  const TABS = ["health", "chat", "models", "connections"];
-  const RUN = ["health", "chat", "models", "connections", "channels", "console", "config"];
+  const GROUPS = [
+    ["Everyday", ["health", "chat", "tasks", "memory", "usage"]],
+    ["Setup", ["channels", "connections", "models"]],
+    ["Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
+  ];
+  const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
+  const TABS = ["health", "chat", "tasks", "usage"];
   const ICON_OF = { health: "health" };
-  const SUB = { channels: "where people reach the agent", console: "ferrule commands", config: "the file, secrets hidden", routing: "which model for what", usage: "spend and caps", tasks: "scheduled runs", logs: "what happened", extensions: "skills, tools, MCP", agents: "sub-agents" };
+  const SUB = { health: "how the bot is doing", chat: "talk to it here", tasks: "things it does on a schedule", memory: "what it remembers", usage: "spend and caps", channels: "where people reach the agent", connections: "services it can use", models: "which brain it thinks with", logs: "what happened", agents: "sub-agents", extensions: "skills, tools, MCP", routing: "which model for what", console: "ferrule commands", config: "the file, secrets hidden", settings: "look, language, backup" };
   let current = "health";
   let MANAGED = { on: false };
   let timer = null;
@@ -2234,33 +2329,52 @@
 
   function buildNav() {
     const rail = document.getElementById("rail");
+    const groups = (link) => GROUPS.map(([name, list]) => {
+      const mine = list.filter((s) => sections[s] && link.keep(s));
+      return mine.length ? frag(el("div", { class: "group", text: name }), mine.map((s) => link.make(s))) : null;
+    });
     setKids(rail,
-      el("div", { class: "group", text: "Run" }), RUN.map((s) => navLink(s)),
-      el("div", { class: "group", text: "More" }), order.filter((s) => !RUN.includes(s)).map((s) => navLink(s)),
+      groups({ keep: () => true, make: (s) => navLink(s) }),
       el("div", { class: "rail-foot" },
         frag(el("b", { text: "session" }), el("br"), "12 h max · idle 30 min", el("br"),
           el("b", { text: "login" }), el("br"), "one-use link")));
     rail.hidden = false;
     const tabs = document.getElementById("tabs");
-    const more = el("a", { href: "#more" }, icon("more"), el("span", { text: "More" }));
+    const more = el("a", { href: "#more", "aria-haspopup": "dialog" }, icon("more"), el("span", { text: "More" }));
     more.dataset.s = "more";
     more.onclick = (e) => { e.preventDefault(); openSheet(); };
-    tabs.replaceChildren(...TABS.map((s) => navLink(s)), more);
+    tabs.replaceChildren(...TABS.filter((s) => sections[s]).map((s) => navLink(s)), more);
     tabs.hidden = false;
     const sheet = document.getElementById("sheet");
-    sheet.replaceChildren(el("div", { class: "panel", role: "dialog", "aria-label": "More" },
-      el("div", { class: "grip" }), order.filter((s) => !TABS.includes(s)).map((s) => navLink(s, true))));
+    sheet.replaceChildren(el("div", { class: "panel", role: "dialog", "aria-modal": "true", "aria-label": "All sections" },
+      el("div", { class: "grip" }),
+      groups({ keep: (s) => !TABS.includes(s), make: (s) => navLink(s, true) })));
     sheet.onclick = (e) => { if (e.target === sheet) closeSheet(); };
     markNav();
   }
-  function openSheet() { document.getElementById("sheet").hidden = false; }
-  function closeSheet() { document.getElementById("sheet").hidden = true; }
+  let sheetFrom = null;
+  function openSheet() {
+    const sheet = document.getElementById("sheet");
+    sheetFrom = document.activeElement;
+    sheet.hidden = false;
+    const first = sheet.querySelector("a");
+    if (first) first.focus();
+  }
+  function closeSheet() {
+    const sheet = document.getElementById("sheet");
+    if (sheet.hidden) return;
+    sheet.hidden = true;
+    if (sheetFrom && sheetFrom.isConnected && sheetFrom.focus) sheetFrom.focus();
+    sheetFrom = null;
+  }
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 
   function markNav() {
     for (const a of document.querySelectorAll("#rail a, #tabs a, #sheet a")) {
       const s = a.dataset.s;
-      a.classList.toggle("on", s === current || (s === "more" && !TABS.includes(current)));
+      const on = s === current;
+      a.classList.toggle("on", on || (s === "more" && !TABS.includes(current)));
+      if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
       const n = s === "more" ? order.filter((x) => !TABS.includes(x)).reduce((t, x) => t + (badges[x] || 0), 0) : badges[s] || 0;
       let dot = a.querySelector(".dot");
       if (n && !dot) { dot = el("span", { class: "dot" }); a.append(dot); }
@@ -2278,6 +2392,9 @@
     if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
     markNav();
     window.scrollTo(0, 0);
+    // A route change moves focus to the page, so a keyboard or screen-reader
+    // user starts at its top instead of on the link they just used.
+    if (!(opts && opts.focus === false)) document.getElementById("main").focus({ preventScroll: true });
     if (opts && opts.tile && sections[name].focus) sections[name].focus(opts.tile, true);
     refresh();
   }
@@ -2330,7 +2447,7 @@
       if (ap) badges.chat = ap.approvals.length;
       markNav();
       // Home draws the problems itself, under its status sentence.
-      setKids(banner, name === "health" ? null : problems(probs));
+      setKids(banner, name === "health" ? null : frag(problems(probs.filter((p) => p.section === name)), otherProblems(probs.filter((p) => p.section !== name))));
       if (!(auto === true && !s.every) && (s.live || !typing())) await s.load(lastHealth);
     } catch (e) {
       if (!csrf) return;
@@ -2356,6 +2473,116 @@
     if (document.hidden) stopPolling(); else if (csrf) refresh();
   });
 
+  // ---- the command palette (D12) -------------------------------------------
+  // `/` or Ctrl/⌘-K: every section and the handful of things worth a
+  // shortcut, matched by substring, ignoring case and accents. An ARIA
+  // combobox over a listbox, so a screen reader hears the highlighted row.
+
+  const fold = (t) => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+  function themeButtonLabel() {
+    const b = document.getElementById("theme");
+    const t = window.ferruleTheme;
+    if (!t) { b.hidden = true; return; }
+    const p = t.pick();
+    b.textContent = p;
+    b.title = "Theme: " + (p === "auto" ? "follows the system" : p === "paper" ? "light" : "dark");
+  }
+
+  // Each action: what it is called, words it also answers to, an icon, and
+  // `when` (absent = always). `run` may be async.
+  const PALETTE_ACTIONS = [
+    { label: "Run doctor", words: "check health problems", icon: "health",
+      run: async () => { show("health"); await act("doctor/run", {}); } },
+    { label: "Stop the running turn", words: "cancel halt", icon: "stop",
+      when: () => busyTurns().length > 0,
+      run: async () => { for (const t of busyTurns()) await act("turn/stop", { session: t.session }); } },
+    { label: "Switch theme", words: "dark light appearance paper forge", icon: "sun",
+      run: () => { if (window.ferruleTheme) { window.ferruleTheme.next(); themeButtonLabel(); } } },
+    { label: "Sign out", words: "log out", icon: "power",
+      run: () => document.getElementById("logout").click() },
+    { label: "Keyboard shortcuts", words: "help keys ?", icon: "search",
+      run: () => shortcuts() },
+  ];
+  const busyTurns = () => ((lastHealth && lastHealth.turns) || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
+
+  function paletteItems() {
+    const go = order.map((s) => ({ label: title(s), words: (SUB[s] || "") + " go open", icon: ICON_OF[s] || s, hint: "Go to", run: () => show(s) }));
+    return go.concat(PALETTE_ACTIONS.filter((a) => !a.when || a.when()));
+  }
+
+  function palette() {
+    if (document.querySelector("dialog.pal") || !csrf) return;
+    const back = document.activeElement;
+    const items = paletteItems().map((it, i) => Object.assign({ id: "pal-" + i, key: fold(it.label + " " + (it.words || "")) }, it));
+    let shown = items;
+    let at = 0;
+    const d = el("dialog", { class: "dlg pal", "aria-label": "Search and commands" });
+    const list = el("ul", { class: "pal-list", id: "pal-list", role: "listbox", "aria-label": "Results" });
+    const box = el("input", {
+      type: "text", class: "pal-input", role: "combobox", "aria-expanded": "true", "aria-controls": "pal-list",
+      "aria-autocomplete": "list", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
+      placeholder: "Go to a page or run a command…", "aria-label": "Search and commands",
+    });
+    const paint = () => {
+      list.replaceChildren(...(shown.length ? shown.map((it, i) => {
+        const li = el("li", { id: it.id, role: "option", class: i === at ? "on" : null, "aria-selected": i === at ? "true" : "false" },
+          icon(it.icon), el("span", { class: "l", text: it.label }), it.hint ? el("span", { class: "muted small", text: it.hint }) : null);
+        li.onclick = () => choose(it);
+        li.onmousemove = () => { if (at !== i) { at = i; paint(); } };
+        return li;
+      }) : [el("li", { class: "empty", role: "presentation", text: "Nothing matches." })]));
+      if (shown[at]) box.setAttribute("aria-activedescendant", shown[at].id); else box.removeAttribute("aria-activedescendant");
+      const on = list.querySelector(".on");
+      if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest" });
+    };
+    const choose = (it) => { d.close(); Promise.resolve(it.run()).catch((e) => toast(e.message, true)); };
+    box.oninput = () => {
+      const q = fold(box.value).trim();
+      shown = q ? items.filter((it) => q.split(/\s+/).every((w) => it.key.includes(w))) : items;
+      at = 0;
+      paint();
+    };
+    box.onkeydown = (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (shown.length) at = (at + (e.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length;
+        paint();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (shown[at]) choose(shown[at]);
+      }
+    };
+    d.append(box, list);
+    d.addEventListener("close", () => { d.remove(); if (back && back.isConnected && back.focus && !document.activeElement.closest("#main")) back.focus(); });
+    d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+    document.body.append(d);
+    paint();
+    d.showModal();
+    box.focus();
+  }
+
+  function shortcuts() {
+    const rows = [["/", "Search pages and commands"], ["Ctrl K  ·  ⌘ K", "The same, from anywhere"], ["?", "This list"], ["Esc", "Close what's open"]];
+    const d = el("dialog", { class: "dlg", "aria-labelledby": "dlg-title" });
+    d.append(el("form", { method: "dialog" },
+      el("h3", { id: "dlg-title", text: "Keyboard shortcuts" }),
+      el("dl", { class: "keys" }, rows.map(([k, v]) => frag(el("dt", null, el("kbd", { text: k })), el("dd", { text: v })))),
+      el("div", { class: "row" }, el("button", { class: "primary", text: "Done" }))));
+    d.addEventListener("close", () => d.remove());
+    document.body.append(d);
+    d.showModal();
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (!csrf || e.defaultPrevented) return;
+    const inField = e.target && (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable);
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); palette(); return; }
+    if (inField || e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return;
+    if (e.key === "/") { e.preventDefault(); palette(); }
+    else if (e.key === "?") { e.preventDefault(); shortcuts(); }
+  });
+
   window.ferrule = { el, api, sections, show };
 
   // The collar mark and the theme toggle: present before any login, so
@@ -2368,10 +2595,15 @@
       el("circle", { class: "sweep", cx: 13, cy: 13, r: 9.5 }));
     document.getElementById("mark").replaceChildren(s);
     // auto (the system's) → paper → forge; theme.js applied it before paint.
-    const b = document.getElementById("theme");
     const t = window.ferruleTheme;
-    const label = (p) => { b.textContent = p; b.title = "Theme: " + (p === "auto" ? "follows the system" : p === "paper" ? "light" : "dark"); };
-    if (t) { label(t.pick()); b.onclick = () => label(t.next()); } else b.hidden = true;
+    themeButtonLabel();
+    if (t) document.getElementById("theme").onclick = () => { t.next(); themeButtonLabel(); };
+    // The skip link: a plain "#main" would put a non-section in the address
+    // bar, which a reload reads as a login token.
+    document.querySelector(".skip").onclick = (e) => { e.preventDefault(); document.getElementById("main").focus(); };
+    const find = document.getElementById("find");
+    find.append(icon("search"));
+    find.onclick = () => palette();
   }
 
   async function start() {
@@ -2395,9 +2627,10 @@
       loggedOut("Logged out.");
     };
     document.getElementById("live").hidden = false;
+    document.getElementById("find").hidden = false;
     MANAGED = await api("/api/managed").catch(() => ({ on: false }));
     buildNav();
-    show(order.includes(hash) ? hash : "health");
+    show(order.includes(hash) ? hash : "health", { focus: false });
   }
 
   document.addEventListener("DOMContentLoaded", start);
