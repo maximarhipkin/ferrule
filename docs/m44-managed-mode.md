@@ -458,6 +458,95 @@ daemon, no root):
 - Chromium at `/usr/bin/chromium` starts only with `--no-sandbox` there.
 - The scratch config and temp dirs were deleted.
 
+### 9.2 Measurements (Part 6, 2026-09-30)
+
+All on the dev container of §9.1: 4 vCPU (Intel Haswell), 7.7 GiB, kernel
+7.0.0, Docker's default seccomp profile, Debian 12. Release binary built
+with `cargo build --release -p ferrule-cli`. Numbers are from `/proc`, by
+`scripts/m44-measure.sh` (`scripts/m44_measure.py`): a fake OpenAI-compatible
+model whose first reply is a `shell` tool call
+(`echo m44 && head -c 20000000 /dev/zero | wc -c`) and whose second is "done",
+a fake Telegram, `[gateway.http]` on, **in managed mode** with a policy file.
+Two runs, one per `sandbox` policy:
+
+| measurement | `sandbox = "os"` | `sandbox = "container"` |
+|---|---|---|
+| idle RSS, 30 s after `/healthz` first answers (Telegram polling, HTTP API and page listening, no turn) | 24.0 MiB | 24.1 MiB |
+| gateway peak over one turn (`VmHWM` after `clear_refs`) | 25.9 MiB | 26.4 MiB |
+| whole-tree peak over one turn (50 ms samples) | 25.9 MiB | 26.4 MiB |
+| the turn | 0.06 s | 0.06 s |
+| release binary (glibc, x86_64) | 33.2 MiB (34 782 352 B) | |
+
+- **The tree peak equals the gateway's peak**: the shell (`head | wc`) lives
+  for a few milliseconds and is smaller than the gateway's own growth, so the
+  50 ms sampler never catches it. The turn is a mock, so this says what the
+  runtime costs, not what a real conversation with a long context does: a
+  real turn adds the model's reply and tool output, which are held in memory
+  while it runs.
+- **Why managed mode in the script** (a change from the plan, which had no
+  `[managed]`): outside managed mode the page is only up after `/dashboard`
+  is asked for in a chat, so `/healthz` has nothing to answer it. Managed
+  mode is what the image runs anyway.
+- **Bots per 16 GiB, idle.** `floor((16 GiB − 1.5 GiB) / (idle RSS + 8 MiB))`
+  = `floor(14 848 MiB / (24.1 + 8) MiB)` = **462 bots**. The assumptions:
+  no browser open (it closes when idle); no turn running; 1.5 GiB kept for
+  the OS, Docker and page cache; 8 MiB per container for Docker's own
+  shim/cgroup overhead (an assumption, not measured, since there's no Docker
+  daemon here); RSS counts shared library pages once per process, which
+  over-counts when several bots share the same image.
+  With one turn running in 10% of the bots (26.4 MiB): 0.9 × 24.1 + 0.1 × 26.4
+  = 24.3 MiB, `floor(14 848 / 32.3)` = **459 bots**. A real turn with a long
+  context or a big tool result would move this line more than the mock does.
+  The limit in practice is the model's rate limits and the disk, not memory.
+- **Image sizes: estimated, not built** (no Docker daemon here).
+  - The musl static binary **could not be built** here: the `ring` crate needs
+    `x86_64-linux-musl-gcc`, and `musl-tools` isn't installed. The numbers
+    below use the glibc release binary (33.2 MiB; 12.4 MiB gzipped). A musl
+    binary is close to that size.
+  - `debian:bookworm-slim`, linux/amd64, from the registry manifest: one
+    layer, 28 238 443 B = **26.9 MiB compressed**.
+  - The plain image's extra packages (git, curl, ca-certificates, tini,
+    tzdata and what they need, minus what slim already has): 52 packages,
+    134.6 MiB installed, from `dpkg-query` on this Debian 12 host. Compressed
+    at an assumed 0.3: ~40 MiB.
+  - **Plain image: about 80 MiB compressed** (26.9 + 40 + 12.4), **about
+    245 MiB on disk** (slim's ~75 MiB, plus 134.6, plus 33.2).
+  - **`-browser` image:** Chromium and the packages it needs beyond slim: 215
+    packages, **721.6 MiB installed** (from `apt-cache depends --recurse`
+    and `dpkg-query`; `chromium` alone is 279 MiB, `chromium-common` 64 MiB),
+    ~240 MiB compressed at the same 0.3, plus agent-browser's static musl
+    binary (17.2 MiB, ~6 MiB gzipped). **About 330 MiB compressed, about 1.0
+    GiB on disk.** The ratio 0.3 is an assumption: real layers may differ by
+    a third either way.
+
+**The browser (6.4).** agent-browser needs 0.38 or newer (`docs/browser.md`).
+The one on this container's PATH, 0.27.1, has no `mcp` command, so
+`the_agent_drives_a_real_chrome_inside_the_sandbox` failed with
+"mcp connection closed" until 0.38.1 was installed into a scratch prefix
+(`npm i --prefix /workspace/agent/.ab-m44 agent-browser@0.38.1`).
+With it, and `FERRULE_REQUIRE_BROWSER_TEST=1`:
+
+- default: **passes** (2.3 s), Chrome's own sandbox off, because the test's
+  check says "this is a container, where agent-browser turns Chrome's sandbox
+  off";
+- with Chrome's sandbox forced on
+  (`FERRULE_TEST_CHROME_SANDBOX=on`, added to that test): **also passes**
+  (1.9 s). That is not what §9.1 predicted. agent-browser itself adds
+  `--no-sandbox` when it sees a container, so ferrule's flag doesn't decide
+  in a container. The profile was created under the state dir.
+- `browser_peak_rss_on_a_real_page` (new, `#[ignore]`, network): a real page
+  (the Rust article on en.wikipedia.org), `idle_timeout_secs = 5`.
+  **Peak, summed over the tree: 1 359.5 MiB** (11 Chromium processes, three
+  agent-browser processes, one node). That sum counts shared pages once per
+  process, so the real footprint is lower. **12 s after the last call:
+  64.8 MiB**, node and the agent-browser daemon only; no Chromium left, which
+  the test asserts. Chrome behind this container's TLS-intercepting egress
+  proxy didn't trust the proxy's CA, so the run passed
+  `FERRULE_TEST_CHROME_ARGS=--ignore-certificate-errors` (a test-only
+  variable that adds to `AGENT_BROWSER_ARGS`). So: about ten bots can have a page
+  open at once per 16 GiB, and the browser variant costs about 65 MiB more
+  per bot once it has been used.
+
 ## Plan
 
 For the builder (this session, continuing on Sonnet 5.5). Every decision
@@ -1870,11 +1959,14 @@ no network except the browser page (6.4).
 2. `m44-measure.sh` builds `ferrule` in release
    (`cargo build --release -p ferrule-cli`, the shared
    `CARGO_TARGET_DIR`). It writes a temp home with
-   `[managed]`-less config:
+   a config (built as managed mode, with a policy file, see §9.2: outside
+   it the page isn't up, so `/healthz` has nothing to answer):
    - the fake model;
    - `[gateway] telegram_token_env`, `telegram_base_url` and one allowed chat;
    - `[gateway.http]` on a free port;
-   - `[sandbox] mode = "auto"`.
+   - a policy file with `sandbox = "os"` (or `"container"`, by
+     `--sandbox`) in place of `[sandbox] mode = "auto"`, since managed mode
+     refuses `mode = "off"` and takes the policy's key.
 
    Then it starts `ferrule gateway`, and makes an HTTP key with
    `ferrule channels keys add m44`.
