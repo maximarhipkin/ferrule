@@ -5535,3 +5535,45 @@ fmt clean.
 **Not done.** `--schedule` on a goal loop (compose with the cron
 scheduler); a `goal list` / `goal abandon` admin surface; the gateway
 channels don't start goal loops (CLI-only this round).
+
+### 2026-09-30 — M42 part 6: agent graphs (Kimi)
+
+**Scope.** L14's graph engineering over the M12 primitives: nodes,
+edges, shared state, routing — and the routing is deterministic Rust,
+never a model. Design and format: `docs/m42-harness-engineering.md` §6.
+
+**What was built.**
+- `ferrule graph run FILE` (`crates/ferrule-cli/src/graph.rs`): a TOML
+  graph of `[[nodes]]` (`agent` on worker/planner/verifier roles,
+  `check` — the `verify_command` judge in the sandbox, `approval` — a
+  human gate) and `[[edges]]` (`on: pass|fail|always`). Flags:
+  `--goal`, `--model`, `--workspace`, `--max-iterations`, `--max-steps`,
+  `--yes`.
+- The runner registers a synthetic root in the agents store and drives
+  `Supervisor::spawn`/`changed` directly: fan-out spawns in parallel,
+  fan-in waits for **all** inputs (the supervisor's `wait` returns at
+  the first finisher — the join loops on the store instead), a straggler
+  past its `timeout_secs` is closed and failed.
+- Feedback arcs computed greedily in declaration order: a fail edge back
+  re-fires an earlier node (capped by `max_attempts`) with the check's
+  failure output carried in `{{prev}}` as the repair instruction;
+  feedback edges don't gate first runs and don't count as a way out when
+  success is computed.
+- Verifier agents route on a final `VERDICT: PASS|FAIL` line, unclear
+  fails closed. Success = `succeed_when` or every terminal node passing;
+  the report names every node's pass/fail/never-ran, exit 0/2.
+- Templates in `task`/`message`: `{{goal}}`, `{{prev}}`, `{{attempt}}`.
+- Dashboard console parity row (`graph run`: change, `--yes` for
+  approvals) plus its m37 doc row — the parity test enforces both.
+
+**Tests.** 4 unit (feedback arcs, validation messages, verdict parsing)
++ 7 integration (`tests/it/graph.rs`: linear, rollback to the cap,
+rollback with repair succeeding, verifier verdict routing + fail-closed,
+fan-out/fan-in join, approval approved/denied, missing-node refused).
+Two real bugs caught on the way: wait-for-one vs wait-for-all, and both
+directions of a cycle marked feedback. ferrule-cli 368+138, clippy and
+fmt clean.
+
+**Not done.** A cut graph restarts (no run-state resume); gateway
+channels can't start graphs; no `graph list`/`graph stop`; approval asks
+at the terminal, not in the owner's chat.

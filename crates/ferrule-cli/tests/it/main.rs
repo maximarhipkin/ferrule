@@ -9,6 +9,7 @@ mod claude_plan;
 mod dashboard;
 mod eval;
 mod goal;
+mod graph;
 mod health;
 mod hooks;
 mod install_sh;
