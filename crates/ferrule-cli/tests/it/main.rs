@@ -8,6 +8,7 @@ mod channels;
 mod claude_plan;
 mod dashboard;
 mod eval;
+mod goal;
 mod health;
 mod hooks;
 mod install_sh;

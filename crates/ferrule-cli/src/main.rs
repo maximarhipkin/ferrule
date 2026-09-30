@@ -13,6 +13,7 @@ mod egress;
 mod embedding;
 mod eval;
 mod filewrite;
+mod goal;
 mod health;
 mod hooks_cli;
 mod import;
@@ -140,7 +141,8 @@ enum Cmd {
     },
     /// Run a one-shot task
     Run {
-        prompt: String,
+        #[arg(required_unless_present_any = ["goal", "resume"])]
+        prompt: Option<String>,
         #[arg(long)]
         provider: Option<String>,
         /// This run's model: `provider/model`, a provider, an alias or a
@@ -166,6 +168,15 @@ enum Cmd {
         /// several run in order. Wins over `[agent] verify_command`
         #[arg(long, value_name = "CMD")]
         verify: Vec<String>,
+        /// Goal-loop mode: the prompt is the goal, the `--verify` checks
+        /// are the independent judge, and a run the budget cuts short ends
+        /// goal-pending, resumable with `--resume` (docs/m42-harness-engineering.md)
+        #[arg(long, conflicts_with = "plan")]
+        goal: bool,
+        /// Resume a goal loop by session id (the prompt, if any, is extra
+        /// guidance for this round)
+        #[arg(long, value_name = "SESSION", conflicts_with = "plan")]
+        resume: Option<String>,
     },
     /// Interactive chat session (Ctrl-D to exit)
     Chat {
@@ -862,15 +873,43 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             show_reasoning,
             plan,
             verify,
+            goal,
+            resume,
         } => {
             // A ref: `--provider X` still means X's own model.
             let provider = model.or(provider);
             let workspace = remote::workspace(workspace, false).await?;
             if plan {
-                plan::run(&prompt, provider, workspace, max_iterations, show_reasoning).await?;
+                plan::run(
+                    prompt.as_deref().unwrap_or_default(),
+                    provider,
+                    workspace,
+                    max_iterations,
+                    show_reasoning,
+                )
+                .await?;
+            } else if goal || resume.is_some() {
+                let prepared = goal::prepare(prompt, verify, resume)?;
+                eprintln!(
+                    "goal loop session {} — resume with: ferrule run --resume {}",
+                    prepared.session_id, prepared.session_id
+                );
+                let answer = run_root(
+                    &prepared.prompt,
+                    provider,
+                    workspace,
+                    max_iterations,
+                    show_reasoning,
+                    &prepared.session_id,
+                    prepared.resume,
+                    Some(prepared.verify),
+                )
+                .await?;
+                goal::report(&prepared.session_id);
+                finish_run(answer)?;
             } else {
                 run_once(
-                    &prompt,
+                    prompt.as_deref().unwrap_or_default(),
                     provider,
                     workspace,
                     max_iterations,
@@ -1202,6 +1241,10 @@ fn build_agent_from(
     if let Some(verify) = verify {
         cfg.agent.verify_command = verify;
     }
+    // A goal loop's session has a `<sid>.goal.json` beside its transcript:
+    // its judge runs even when nothing changed, and every verdict is
+    // recorded for the next resume (docs/m42-harness-engineering.md §5).
+    let goal = transcript.as_ref().and_then(goal::for_transcript);
     // M21: the model is picked per call from the agent's scope; the one
     // it would run on now sets the harness profile (M25: routed, the
     // smallest window of the tiers), and a missing key is an error now
@@ -1422,6 +1465,9 @@ fn build_agent_from(
         };
         system.push_str(&format!("\n\n[Validation policy] {policy}"));
     }
+    if let Some(g) = &goal {
+        system.push_str(&format!("\n\n{}", goal::prompt_block(&g.state)));
+    }
 
     // Agent Skills: names + descriptions in the prompt, full instructions
     // loaded on demand through the activate_skill tool. Rescanned per agent,
@@ -1472,6 +1518,7 @@ fn build_agent_from(
         AgentConfig {
             max_iterations,
             parallel_tools: cfg.agent.parallel_tools.max(1),
+            verify_without_changes: goal.is_some(),
             ..Default::default()
         },
         tool_ctx,
@@ -1501,16 +1548,18 @@ fn build_agent_from(
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
         for cmd in &cfg.agent.verify_command {
             agent = match remote {
-                Some(r) => agent.with_verifier(Arc::new(ferrule_ssh::RemoteVerifier {
-                    link: r.link.clone(),
-                    command: cmd.clone(),
-                    timeout,
-                })),
-                None => agent.with_verifier(Arc::new(CommandVerifier::new(
-                    cmd.clone(),
-                    sandbox.clone(),
-                    timeout,
-                ))),
+                Some(r) => agent.with_verifier(goal::record_verdicts(
+                    Arc::new(ferrule_ssh::RemoteVerifier {
+                        link: r.link.clone(),
+                        command: cmd.clone(),
+                        timeout,
+                    }),
+                    &goal,
+                )),
+                None => agent.with_verifier(goal::record_verdicts(
+                    Arc::new(CommandVerifier::new(cmd.clone(), sandbox.clone(), timeout)),
+                    &goal,
+                )),
             };
         }
     }

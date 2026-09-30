@@ -1,7 +1,7 @@
 # M42 — harness engineering, applied to ourselves
 
-**Status.** Parts 1–4 built this session (2026-09-30); parts 5–7 are
-designs, not started.
+**Status.** Parts 1–5 built (2026-09-30); parts 6–7 are designs, not
+started.
 
 **Source.** A pass over
 [learn-harness-engineering](https://github.com/walkinglabs/learn-harness-engineering)
@@ -84,22 +84,37 @@ already-overfull window).
   every message of every recorded provider request — except the system
   prompt, rebuilt per agent by design — appears verbatim in the log.
 
-## Part 5 — goal loops, whole (design)
+## Part 5 — goal loops, whole (done)
 
-Part 3's `--verify` is the one-shot slice. The full form, from L13: a
-loop that keeps working a goal across sessions until the judge passes or
-the budget runs out, with its state on disk.
+Part 3's `--verify` was the one-shot slice; this is the full form, from
+L13: a loop that keeps working a goal across sessions until the judge
+passes or the budget runs out, with its state on disk.
 
-- `ferrule run --goal "..." --verify CMD`: on a failed verify at the
-  iteration or time cap, the run ends in a `goal-pending` status (not a
-  failure), and `--resume` picks it up with the folded transcript and the
-  loop state (attempts, last failure tail).
-- Loop state as a small JSON beside the session transcript: goal, verify
-  commands, attempts, spend so far, last judge output. The scheduler's
-  cron tasks are the timer-loop half already; a `--schedule` on a goal
-  loop composes the two.
-- The maker-checker split is already the verifier sub-agent role (M12);
-  a goal loop names it: the judge is never the agent doing the work.
+- `ferrule run --goal --verify CMD "the goal"` starts a loop: the prompt
+  is the goal, the `--verify` checks (or `[agent] verify_command` when no
+  flag is given) are the independent judge, the budget
+  (`--max-iterations`, the caps) is the stopping condition. A goal
+  without a judge is refused up front.
+- Loop state lives in `<data>/sessions/<sid>.goal.json`: goal, judge
+  commands, judge runs so far, the judge's latest failing word,
+  timestamps. Every verdict is recorded as it happens — the judge's word
+  is the loop's memory across sessions.
+- The judge runs at finish **whether or not the run changed files**
+  (new `AgentConfig::verify_without_changes`, set only for goal loops):
+  a goal like "all tests green" can be met by a run that edits nothing,
+  and an idempotent judge proves it.
+- A run the budget cuts short ends `goal pending` (exit 2, as any
+  incomplete run) with the resume command printed; `ferrule run --resume
+  <sid>` continues with the folded transcript plus a prompt carrying the
+  judge's last word and any extra owner guidance. A met goal prints
+  `goal met` with the judge-run count.
+- The maker-checker rule is in the system prompt: the agent is told the
+  judge — not it — decides done-ness, and to finish and let the judge
+  speak.
+
+Still open from the L13 design: `--schedule` on a goal loop (compose
+with the cron scheduler for timer-driven retries), and a `goal list` /
+`goal abandon` admin surface.
 
 ## Part 6 — graph routing over ferrule-agents (design)
 

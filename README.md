@@ -134,6 +134,12 @@ harness, for every model it drives:
   that changed files can't finish until the checks pass; a failure goes
   back to the model with the tail of the output. `ferrule run --verify
   CMD` overrides the config for one run.
+- **Goal loops.** `ferrule run --goal --verify "cargo test" "make the
+  suite green"` keeps working the goal until the judge — never the agent
+  itself — says it's met. The judge runs even when nothing changed, every
+  verdict is kept on disk, and a run the budget cuts short ends
+  `goal pending`: `ferrule run --resume <session>` picks it up with the
+  judge's last word.
 - **Never stuck.** Transient provider errors are retried with capped,
   jittered backoff (honouring `Retry-After`). A stuck detector — the same
   call 4×, the same failure 3×, two calls ping-ponging 6× — warns the model

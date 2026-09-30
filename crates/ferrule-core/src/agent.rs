@@ -57,6 +57,10 @@ pub struct AgentConfig {
     /// M27: at most this many read-only tool calls from one response run
     /// at the same time. 1 runs every call one after another, as before.
     pub parallel_tools: usize,
+    /// Run the built-in checks at finish even when no file changed
+    /// (a goal loop's judge decides done-ness whether or not the run
+    /// edited anything). Off, checks gate on file changes (M9).
+    pub verify_without_changes: bool,
 }
 
 /// What the loop does when the context outgrows the profile's trigger.
@@ -85,6 +89,7 @@ impl Default for AgentConfig {
             detect_stuck: true,
             shorten_tool_results_over: 4_000,
             parallel_tools: 4,
+            verify_without_changes: false,
         }
     }
 }
@@ -1074,7 +1079,9 @@ impl Agent {
         let mut unverified = false;
         // Files changed since the check last passed (a Stop hook can send
         // the model back after a pass; the check reruns only on new edits).
-        let mut needs_check = false;
+        // A goal loop starts true: its judge runs at finish whether or not
+        // the run edited anything.
+        let mut needs_check = self.config.verify_without_changes;
         let mut failed_checks = 0;
         // Times Stop hooks sent this run back, and whether the last finish
         // was sent back by any (the payload's `stop_hook_active`).

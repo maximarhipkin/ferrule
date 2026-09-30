@@ -5498,3 +5498,40 @@ before.
 **Not done.** Subdirectory baselines loaded on demand by the file tools;
 parts 5–7 in the design doc; subdirectory `AGENTS.md` discovery tests
 against real repos.
+
+### 2026-09-30 — M42 part 5: goal loops (Kimi)
+
+**Scope.** The full L13 goal loop on top of part 3's `--verify`: a goal,
+an independent judge, a stopping condition — across sessions. Design:
+`docs/m42-harness-engineering.md` §5.
+
+**What was built.**
+- `ferrule run --goal --verify CMD "…"` starts a loop (the prompt is the
+  goal; the judge comes from `--verify` or `[agent] verify_command`; a
+  goal without a judge is refused up front). `Run`'s prompt is optional
+  now, required unless `--goal`/`--resume`.
+- Loop state in `<data>/sessions/<sid>.goal.json` (goal, judge commands,
+  attempts, the judge's latest failing word, timestamps), written
+  atomically; a `RecordingVerifier` wraps each check and records every
+  verdict as it happens.
+- New `AgentConfig::verify_without_changes` (default off): the judge
+  runs at finish even when the run edited nothing — set only for goal
+  loops, so an idempotent goal can be met by a no-change run.
+- A budget cut ends `goal pending` (exit 2, as any incomplete run) with
+  the resume command printed; `ferrule run --resume <sid>` continues the
+  same session (folded transcript from part 4) with a prompt carrying
+  the judge's last word plus optional owner guidance. A satisfied judge
+  prints `goal met` with the run count.
+- The system prompt's `[Goal loop]` block states the maker-checker rule:
+  the judge decides done-ness, never the agent.
+
+**Tests.** 2 unit (`goal.rs`: state roundtrip, resume prompt) + 5
+integration (`ferrule-cli/tests/it/goal.rs`: judge-to-pass with state
+assertions, budget-cut pending then resume-to-met, judge runs with no
+changes, no-judge refused, config-supplied judge). ferrule-cli 335+121,
+ferrule-core 123+33, gateway/agents/eval/learn suites green; clippy and
+fmt clean.
+
+**Not done.** `--schedule` on a goal loop (compose with the cron
+scheduler); a `goal list` / `goal abandon` admin surface; the gateway
+channels don't start goal loops (CLI-only this round).

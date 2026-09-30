@@ -944,9 +944,9 @@ needing no shell.
 
 ### M42 — harness engineering, applied to ourselves
 
-**Status.** Parts 1–4 built (`docs/m42-harness-engineering.md`, from a
+**Status.** Parts 1–5 built (`docs/m42-harness-engineering.md`, from a
 pass over the learn-harness-engineering course and its Claude Code /
-Codex / DeepSeek / Pi breakdowns); parts 5–7 designed there, not started.
+Codex / DeepSeek / Pi breakdowns); parts 6–7 designed there, not started.
 - **The repo dogfoods:** a root `AGENTS.md` directory page and a
   `Makefile` whose `make check` is the green predicate.
 - **Layered context baseline:** user-level (config dir) → workspace
@@ -958,11 +958,16 @@ Codex / DeepSeek / Pi breakdowns); parts 5–7 designed there, not started.
 - **Model-visible means logged:** compaction writes a `fold` record, a
   resume replays the compacted state, and an invariant test asserts every
   model-visible message is in the log.
+- **Goal loops:** `ferrule run --goal --verify CMD "…"` works the goal
+  until the judge passes or the budget runs out, judging even when
+  nothing changed; a cut-short run ends `goal pending` and
+  `ferrule run --resume <sid>` continues it with the judge's last word.
 
 **Done means.** An agent fresh to this repo runs `make check` and knows
 the rules; a layered config dirs' rules reach every session; a run can't
-finish until an ordered list of checks passes; and nothing the model sees
-is missing from the transcript.
+finish until an ordered list of checks passes; nothing the model sees is
+missing from the transcript; and a goal typed once keeps being worked
+across sessions until an independent judge says it's met.
 
 ## Other open tracks
 
