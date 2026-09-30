@@ -2579,7 +2579,7 @@ async fn run_gateway(
         match dash.bind(cfg.dashboard.port).await {
             Ok(port) => {
                 dashboard::cli::write_marker(port);
-                tracing::info!(port, "dashboard on 127.0.0.1");
+                tracing::info!(port, "dashboard on {}", cfg.dashboard.bind);
                 let (d, h) = (dash.clone(), hub.clone());
                 tokio::spawn(async move {
                     if let Some(text) = d.relink_after_restart().await {

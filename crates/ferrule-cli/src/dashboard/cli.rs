@@ -93,11 +93,12 @@ pub async fn cmd(op: Option<DashCmd>) -> Result<()> {
             let minutes = std::time::Duration::from_secs(cfg.dashboard.link_minutes.max(1) * 60);
             if !remote {
                 let token = links.mint(None, minutes)?;
-                println!("http://127.0.0.1:{port}/login#{token}");
+                println!("{}", super::link_url(&cfg.dashboard, port, &token));
                 println!(
                     "One login, valid for {} min.",
                     cfg.dashboard.link_minutes.max(1)
                 );
+                no_public_address(&cfg);
                 return Ok(());
             }
             let cloudflared = super::cloudflared(&cfg);
@@ -123,12 +124,23 @@ pub async fn cmd(op: Option<DashCmd>) -> Result<()> {
                     None,
                     std::time::Duration::from_secs(cfg.dashboard.link_minutes.max(1) * 60),
                 )?;
-                println!("http://127.0.0.1:{port}/login#{token}");
+                println!("{}", super::link_url(&cfg.dashboard, port, &token));
+                no_public_address(&cfg);
                 println!("(the running gateway's dashboard; `ferrule dashboard link --remote` for another device)");
                 return Ok(());
             }
             standalone(cfg, links).await
         }
+    }
+}
+
+/// Managed mode with no public address: the link only works inside the
+/// container, so say where it is opened from.
+fn no_public_address(cfg: &Config) {
+    if crate::managed::on() && cfg.dashboard.public_url.is_none() {
+        println!(
+            "This bot has no public address yet (FERRULE_PUBLIC_URL); open it from the panel."
+        );
     }
 }
 

@@ -11,9 +11,11 @@ pub mod cli;
 pub mod config_page;
 pub mod console;
 pub mod door;
+mod healthz;
 pub mod http;
 pub mod models_page;
 pub mod notices;
+pub mod panel;
 mod public;
 pub mod runs;
 #[cfg(test)]
@@ -29,7 +31,7 @@ use http::{Request, Response};
 pub use public::Public;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
@@ -173,7 +175,57 @@ pub struct Dashboard {
     /// The last logged-in request or login.
     last_used: Mutex<Instant>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// `[dashboard] public_url`, parsed: the proxy's host, origin and path prefix.
+    public: Option<Public>,
+    /// A non-loopback bind without `public_url`: only /healthz and /busyz answer.
+    health_only: AtomicBool,
+    /// index.html with the base path in it, made once.
+    index: String,
+    /// The panel's key: managed mode with a panel secret and a bot id.
+    panel: Option<panel::Key>,
+    nonces: panel::Nonces,
+    /// For /healthz's `uptime_secs`.
+    #[allow(dead_code)] // M44 part 5
+    started: Instant,
     pub ctx: Ctx,
+}
+
+const HEALTH_ONLY: &str = "this bot's page has no public address: set FERRULE_PUBLIC_URL (or [dashboard] public_url) to the URL it is opened at";
+
+/// The page's HTML for a page served under `base` ("" or "/b/<id>"): the
+/// base path in a meta tag for the script, and in every asset's address.
+fn index_for(base: &str) -> String {
+    let mut html = INDEX.replacen(
+        "<meta charset=\"utf-8\">",
+        &format!("<meta charset=\"utf-8\">\n<meta name=\"ferrule-base\" content=\"{base}/\">"),
+        1,
+    );
+    for (attr, path) in [
+        ("src", "/theme.js"),
+        ("href", "/fonts/plex-sans-400.woff2"),
+        ("href", "/app.css"),
+        ("src", "/app.js"),
+    ] {
+        html = html.replacen(
+            &format!("{attr}=\"{path}\""),
+            &format!("{attr}=\"{base}{path}\""),
+            1,
+        );
+    }
+    html
+}
+
+/// A login link: at the public address when there is one, else on
+/// loopback.
+pub fn link_url(settings: &DashboardConfig, port: u16, token: &str) -> String {
+    match settings
+        .public_url
+        .as_deref()
+        .and_then(|u| Public::parse(u).ok())
+    {
+        Some(p) => format!("{}{}/login#{token}", p.origin, p.base),
+        None => format!("http://127.0.0.1:{port}/login#{token}"),
+    }
 }
 
 impl Drop for Dashboard {
@@ -190,6 +242,22 @@ fn minutes(n: u64) -> Duration {
 
 impl Dashboard {
     pub fn new(settings: DashboardConfig, links: Links, ctx: Ctx) -> Arc<Self> {
+        Self::new_with(settings, links, ctx, panel::Key::from_managed())
+    }
+
+    /// [`Dashboard::new`] with the panel's key given (the tests').
+    pub fn new_with(
+        settings: DashboardConfig,
+        links: Links,
+        ctx: Ctx,
+        panel: Option<panel::Key>,
+    ) -> Arc<Self> {
+        let public = settings
+            .public_url
+            .as_deref()
+            .and_then(|u| Public::parse(u).ok());
+        let index = index_for(public.as_ref().map_or("", |p| p.base.as_str()));
+        let nonces = panel::Nonces::at(links.file_beside("nonces.json"));
         let sessions = Sessions::beside(
             &links,
             minutes(settings.idle_minutes),
@@ -204,6 +272,12 @@ impl Dashboard {
             tunnel_host: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
             tasks: Mutex::new(Vec::new()),
+            public,
+            health_only: AtomicBool::new(false),
+            index,
+            panel,
+            nonces,
+            started: Instant::now(),
             ctx,
         })
     }
@@ -212,28 +286,42 @@ impl Dashboard {
         &self.settings
     }
 
+    /// The address the page is opened at, when `[dashboard] public_url` says.
+    pub fn public(&self) -> Option<&Public> {
+        self.public.as_ref()
+    }
+
     /// The port it listens on; 0 before [`Dashboard::bind`].
     pub fn port(&self) -> u16 {
         self.port.load(Ordering::Relaxed)
     }
 
-    /// Listens on `127.0.0.1:<port>` (never any other address) and serves
+    /// Listens on `[dashboard] bind` (127.0.0.1 unless set) and serves
     /// until dropped; also closes the tunnel once it's idle. With port 0,
     /// the port it used last time comes first, so a saved `ssh -L` still
     /// reaches it after a restart.
     pub async fn bind(self: &Arc<Self>, port: u16) -> Result<u16> {
+        let ip: std::net::IpAddr = self
+            .settings
+            .bind
+            .parse()
+            .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         let last = (port == 0).then(|| self.sessions.last_port()).flatten();
         let listener = match last {
-            Some(last) => match TcpListener::bind(("127.0.0.1", last)).await {
+            Some(last) => match TcpListener::bind((ip, last)).await {
                 Ok(l) => l,
-                Err(_) => TcpListener::bind(("127.0.0.1", 0)).await?,
+                Err(_) => TcpListener::bind((ip, 0)).await?,
             },
-            None => TcpListener::bind(("127.0.0.1", port))
+            None => TcpListener::bind((ip, port))
                 .await
-                .with_context(|| format!("listening on 127.0.0.1:{port}"))?,
+                .with_context(|| format!("listening on {ip}:{port}"))?,
         };
         let port = listener.local_addr()?.port();
         self.port.store(port, Ordering::Relaxed);
+        if !ip.is_loopback() && self.public.is_none() {
+            self.health_only.store(true, Ordering::Relaxed);
+            tracing::warn!("the dashboard listens on {ip}:{port} without [dashboard] public_url (FERRULE_PUBLIC_URL): only /healthz and /busyz answer");
+        }
         self.sessions.remember_port(port);
         let weak = Arc::downgrade(self);
         let serve = tokio::spawn(async move {
@@ -302,7 +390,7 @@ impl Dashboard {
     /// A login link for this machine's browser.
     pub fn local_link(&self) -> Result<String> {
         let token = self.links.mint(None, minutes(self.settings.link_minutes))?;
-        Ok(format!("http://127.0.0.1:{}/login#{token}", self.port()))
+        Ok(link_url(&self.settings, self.port(), &token))
     }
 
     /// A login link through the tunnel, opening it first if needed.
@@ -317,6 +405,7 @@ impl Dashboard {
 
     /// Opens the quick tunnel (or keeps the open one): its host.
     pub async fn open_tunnel(&self) -> Result<String> {
+        crate::managed::forbid("a tunnel", "the panel's proxy is the way in")?;
         if self.settings.remote != "tunnel" {
             bail!(
                 "[dashboard] remote is \"{}\", not \"tunnel\"",
@@ -358,17 +447,26 @@ impl Dashboard {
     /// tunnel can be opened, and none was sent in the last 10 minutes: a
     /// new tunnel and the owner's message with its one-time link.
     pub async fn relink_after_restart(&self) -> Option<String> {
-        let gone = match self
-            .sessions
-            .retire_tunnel_sessions(self.links.revoked_ms(), Duration::from_secs(600))
-        {
+        let keep: Vec<String> = self
+            .public
+            .iter()
+            .map(|p| auth::host_key(&p.host))
+            .collect();
+        let gone = match self.sessions.retire_tunnel_sessions(
+            self.links.revoked_ms(),
+            Duration::from_secs(600),
+            &keep,
+        ) {
             Ok(g) => g?,
             Err(e) => {
                 tracing::warn!("dashboard sessions: {e:#}");
                 return None;
             }
         };
-        if self.settings.remote != "tunnel" || !self.ctx.cloudflared.possible() {
+        if crate::managed::on()
+            || self.settings.remote != "tunnel"
+            || !self.ctx.cloudflared.possible()
+        {
             tracing::info!(
                 "{gone} dashboard tunnel session(s) ended with the restart; no tunnel to reopen"
             );
@@ -390,6 +488,9 @@ impl Dashboard {
     /// and sessions were made for (a tunnel `ferrule dashboard link
     /// --remote` opened from another process).
     fn host_allowed(&self, host: &str) -> bool {
+        if self.public.as_ref().is_some_and(|p| p.host == host) {
+            return true;
+        }
         let port = self.port();
         if [
             format!("127.0.0.1:{port}"),
@@ -420,6 +521,9 @@ impl Dashboard {
 
     /// The origin a same-origin request from `host` carries.
     fn origin_for(&self, host: &str) -> String {
+        if let Some(p) = self.public.as_ref().filter(|p| p.host == host) {
+            return p.origin.clone();
+        }
         if self.is_loopback(host) {
             format!("http://{host}")
         } else {
@@ -427,7 +531,53 @@ impl Dashboard {
         }
     }
 
-    pub async fn handle(&self, req: Request) -> Response {
+    /// Whether a cookie for `host` is `Secure`: as the public address says,
+    /// else unless it is loopback.
+    fn secure_for(&self, host: &str) -> bool {
+        match self.public.as_ref().filter(|p| p.host == host) {
+            Some(p) => p.secure,
+            None => !self.is_loopback(host),
+        }
+    }
+
+    /// The cookie's `Path`: the public address's prefix, else `/`.
+    fn cookie_path(&self, host: &str) -> String {
+        match self.public.as_ref().filter(|p| p.host == host) {
+            Some(p) => format!("{}/", p.base),
+            None => "/".into(),
+        }
+    }
+
+    /// The path without the public address's prefix; a proxy that strips
+    /// it itself sends paths that don't have it, and those stay as they are.
+    fn strip_base(&self, path: &str) -> String {
+        let Some(base) = self
+            .public
+            .as_ref()
+            .map(|p| p.base.as_str())
+            .filter(|b| !b.is_empty())
+        else {
+            return path.to_string();
+        };
+        if path == base {
+            return "/".into();
+        }
+        match path.strip_prefix(base) {
+            Some(rest) if rest.starts_with('/') => rest.to_string(),
+            _ => path.to_string(),
+        }
+    }
+
+    pub async fn handle(&self, mut req: Request) -> Response {
+        req.path = self.strip_base(&req.path);
+        match req.path.as_str() {
+            "/healthz" => return healthz::healthz(self, &req),
+            "/busyz" => return healthz::busyz(self, &req),
+            _ => {}
+        }
+        if self.health_only.load(Ordering::Relaxed) {
+            return Response::text(421, HEALTH_ONLY);
+        }
         let host = req.header("host").unwrap_or("").to_ascii_lowercase();
         if !self.host_allowed(&host) {
             return Response::text(421, "unknown host");
@@ -435,7 +585,7 @@ impl Dashboard {
         let get = req.method == "GET" || req.method == "HEAD";
         match (req.method.as_str(), req.path.as_str()) {
             (_, "/" | "/login" | "/index.html") if get => {
-                return Response::new(200, "text/html; charset=utf-8", INDEX)
+                return Response::new(200, "text/html; charset=utf-8", self.index.clone())
             }
             (_, "/app.js") if get => {
                 return Response::new(200, "text/javascript; charset=utf-8", APP_JS)
@@ -498,15 +648,19 @@ impl Dashboard {
             }
         }
         self.touch();
-        let secure = !self.is_loopback(&host);
+        let secure = self.secure_for(&host);
         match (get, req.path.as_str()) {
-            (true, "/api/session") => Response::json(200, &json!({ "csrf": granted.csrf })),
+            (true, "/api/session") => {
+                Response::json(200, &json!({ "csrf": granted.csrf, "user": granted.user }))
+            }
             (false, "/api/logout") => {
                 if let Some(c) = cookie {
                     self.sessions.close(c);
                 }
-                Response::json(200, &json!({ "ok": true }))
-                    .with_header("Set-Cookie", auth::clear_cookie(secure))
+                Response::json(200, &json!({ "ok": true })).with_header(
+                    "Set-Cookie",
+                    auth::clear_cookie(secure, &self.cookie_path(&host)),
+                )
             }
             _ => match self.api(get, &req, &body).await {
                 Some((status, mut value)) => {
@@ -518,8 +672,51 @@ impl Dashboard {
         }
     }
 
+    /// A panel token: signed, for this bot, unexpired and never used before.
+    fn panel_login(&self, host: &str, token: &str) -> Response {
+        let Some(key) = &self.panel else {
+            tracing::warn!("panel sign-in refused: no panel secret or bot id on this bot");
+            return refuse(401, panel::REFUSED);
+        };
+        let now = auth::now_secs();
+        let claims = match panel::verify(token, key, now)
+            .and_then(|c| self.nonces.spend(&c.nonce, c.exp, now).map(|()| c))
+        {
+            Ok(c) => c,
+            Err(why) => {
+                tracing::warn!("panel sign-in refused: {why}");
+                return refuse(401, panel::REFUSED);
+            }
+        };
+        let (cookie, csrf) =
+            match self
+                .sessions
+                .open(host, self.links.revoked_ms(), Some(&claims.user))
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("dashboard sessions: {e:#}");
+                    return refuse(503, "the session store can't be written; try again");
+                }
+            };
+        tracing::info!(user = %claims.user, "panel sign-in");
+        self.touch();
+        Response::json(200, &json!({ "csrf": csrf })).with_header(
+            "Set-Cookie",
+            auth::set_cookie(
+                &cookie,
+                self.secure_for(host),
+                minutes(self.settings.session_hours * 60),
+                &self.cookie_path(host),
+            ),
+        )
+    }
+
     fn login(&self, host: &str, body: &Value) -> Response {
         let token = body.get("token").and_then(Value::as_str).unwrap_or("");
+        if token.starts_with(panel::PREFIX) {
+            return self.panel_login(host, token);
+        }
         let used = match self.links.consume(token) {
             Ok(u) => u,
             Err(e) => {
@@ -529,7 +726,7 @@ impl Dashboard {
         };
         match used {
             Some(u) if u.host.as_deref().is_none_or(|h| h == host) => {
-                let (cookie, csrf) = match self.sessions.open(host, self.links.revoked_ms()) {
+                let (cookie, csrf) = match self.sessions.open(host, self.links.revoked_ms(), None) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!("dashboard sessions: {e:#}");
@@ -537,10 +734,14 @@ impl Dashboard {
                     }
                 };
                 self.touch();
-                let secure = !self.is_loopback(host);
                 Response::json(200, &json!({ "csrf": csrf })).with_header(
                     "Set-Cookie",
-                    auth::set_cookie(&cookie, secure, minutes(self.settings.session_hours * 60)),
+                    auth::set_cookie(
+                        &cookie,
+                        self.secure_for(host),
+                        minutes(self.settings.session_hours * 60),
+                        &self.cookie_path(host),
+                    ),
                 )
             }
             _ => refuse(
@@ -801,7 +1002,7 @@ mod tests {
         let (_d, d) = dash();
         let (cookie, _) = login(&d).await;
         d.sessions
-            .open("a-b.trycloudflare.com", d.links.revoked_ms())
+            .open("a-b.trycloudflare.com", d.links.revoked_ms(), None)
             .unwrap();
         assert_eq!(d.sessions.live(d.links.revoked_ms()), 2);
         // No cloudflared here: nothing to reopen, so no message.
@@ -853,5 +1054,203 @@ mod tests {
         let mut v = json!({"a": ["x sk-SEEDED-SECRET y", {"b": "sk-SEEDED-SECRET"}], "n": 1});
         redact_value(&mut v, &r);
         assert!(!v.to_string().contains("SEEDED"));
+    }
+
+    const PANEL_SECRET: &[u8] = b"test-panel-secret-0123456789abcdef0123";
+
+    fn panel_dash(public: &str) -> (tempfile::TempDir, Arc<Dashboard>) {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = DashboardConfig {
+            public_url: Some(public.to_string()),
+            ..DashboardConfig::default()
+        };
+        let d = Dashboard::new_with(
+            settings,
+            Links::at(dir.path().join("links.json")),
+            Ctx::bare(Arc::new(Redactor::new(["sk-SEEDED-SECRET".to_string()]))),
+            Some(panel::Key::new(PANEL_SECRET, "b_test")),
+        );
+        (dir, d)
+    }
+
+    fn panel_token(exp_from_now: i64, nonce: &str, secret: &[u8], bot: &str) -> String {
+        let exp = auth::now_secs() as i64 + exp_from_now;
+        panel::sign(
+            &json!({ "bot": bot, "user": "u_1", "exp": exp, "nonce": nonce }),
+            secret,
+        )
+    }
+
+    async fn panel_post(d: &Dashboard, path: &str, token: &str, origin: &str) -> Response {
+        d.handle(req(
+            "POST",
+            path,
+            &[JSON, ("host", "bots.test"), ("origin", origin)],
+            &json!({ "token": token }).to_string(),
+        ))
+        .await
+    }
+
+    fn header(r: &Response, name: &str) -> String {
+        r.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_good_token_opens_a_session() {
+        let (_dir, d) = panel_dash("http://bots.test/b/b_test/");
+        let t = panel_token(60, "0123456789abcdef", PANEL_SECRET, "b_test");
+        let r = panel_post(&d, "/b/b_test/api/login", &t, "http://bots.test").await;
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+        let cookie = header(&r, "Set-Cookie");
+        assert!(cookie.contains("Path=/b/b_test/"), "{cookie}");
+        assert!(!cookie.contains("Secure"), "{cookie}");
+        let r = d
+            .handle(req(
+                "GET",
+                "/b/b_test/api/session",
+                &[
+                    ("host", "bots.test"),
+                    ("cookie", cookie.split(';').next().unwrap()),
+                ],
+                "",
+            ))
+            .await;
+        assert_eq!(r.status, 200);
+        let v: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(v["user"], "u_1");
+    }
+
+    #[tokio::test]
+    async fn a_bad_panel_token_is_refused_the_same_way_every_time() {
+        let (_dir, d) = panel_dash("http://bots.test/b/b_test/");
+        let bad = [
+            (
+                "expired",
+                panel_token(-5, "0123456789abcde1", PANEL_SECRET, "b_test"),
+            ),
+            (
+                "signature",
+                panel_token(60, "0123456789abcde2", b"another", "b_test"),
+            ),
+            (
+                "other bot",
+                panel_token(60, "0123456789abcde3", PANEL_SECRET, "b_other"),
+            ),
+            (
+                "too far ahead",
+                panel_token(600, "0123456789abcde4", PANEL_SECRET, "b_test"),
+            ),
+        ];
+        for (what, t) in bad {
+            let r = panel_post(&d, "/api/login", &t, "http://bots.test").await;
+            assert_eq!(r.status, 401, "{what}");
+            let v: Value = serde_json::from_slice(&r.body).unwrap();
+            assert_eq!(v["error"], panel::REFUSED, "{what}");
+        }
+        // A replay: the second use of a good one.
+        let t = panel_token(60, "0123456789abcde5", PANEL_SECRET, "b_test");
+        assert_eq!(
+            panel_post(&d, "/api/login", &t, "http://bots.test")
+                .await
+                .status,
+            200
+        );
+        let r = panel_post(&d, "/api/login", &t, "http://bots.test").await;
+        assert_eq!(r.status, 401);
+        let v: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(v["error"], panel::REFUSED);
+    }
+
+    #[tokio::test]
+    async fn without_a_panel_key_panel_tokens_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = DashboardConfig {
+            public_url: Some("http://bots.test/".into()),
+            ..DashboardConfig::default()
+        };
+        let d = Dashboard::new_with(
+            settings,
+            Links::at(dir.path().join("links.json")),
+            Ctx::bare(Arc::new(Redactor::new([]))),
+            None,
+        );
+        let t = panel_token(60, "0123456789abcdef", PANEL_SECRET, "b_test");
+        let r = panel_post(&d, "/api/login", &t, "http://bots.test").await;
+        assert_eq!(r.status, 401);
+    }
+
+    #[tokio::test]
+    async fn the_page_works_under_a_path_prefix() {
+        let (_dir, d) = panel_dash("https://bots.test/b/b_test/");
+        let get = |path: &str| req("GET", path, &[("host", "bots.test")], "");
+        let r = d.handle(get("/b/b_test/")).await;
+        assert_eq!(r.status, 200);
+        assert!(String::from_utf8_lossy(&r.body).contains("content=\"/b/b_test/\""));
+        assert_eq!(d.handle(get("/b/b_test/app.js")).await.status, 200);
+        // A proxy that strips the prefix itself.
+        assert_eq!(d.handle(get("/app.js")).await.status, 200);
+        let t = panel_token(60, "0123456789abcdef", PANEL_SECRET, "b_test");
+        let r = panel_post(&d, "/b/b_test/api/login", &t, "https://bots.test").await;
+        assert_eq!(r.status, 200);
+        let cookie = header(&r, "Set-Cookie");
+        assert!(
+            cookie.contains("Secure") && cookie.contains("Path=/b/b_test/"),
+            "{cookie}"
+        );
+        let t = panel_token(60, "0123456789abcde9", PANEL_SECRET, "b_test");
+        let r = panel_post(&d, "/b/b_test/api/login", &t, "http://bots.test").await;
+        assert_eq!(r.status, 403);
+        assert!(String::from_utf8_lossy(&r.body).contains("wrong origin"));
+    }
+
+    #[test]
+    fn the_index_carries_the_base() {
+        let html = index_for("/b/b_x");
+        for want in [
+            "content=\"/b/b_x/\"",
+            "src=\"/b/b_x/theme.js\"",
+            "href=\"/b/b_x/fonts/plex-sans-400.woff2\"",
+            "href=\"/b/b_x/app.css\"",
+            "src=\"/b/b_x/app.js\"",
+        ] {
+            assert!(html.contains(want), "{want} in {html}");
+        }
+        assert!(index_for("").contains("src=\"/app.js\""));
+    }
+
+    #[tokio::test]
+    async fn a_non_loopback_bind_without_a_public_url_answers_health_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = DashboardConfig {
+            bind: "0.0.0.0".into(),
+            ..DashboardConfig::default()
+        };
+        let d = Dashboard::new_with(
+            settings,
+            Links::at(dir.path().join("links.json")),
+            Ctx::bare(Arc::new(Redactor::new([]))),
+            None,
+        );
+        if d.bind(0).await.is_err() {
+            eprintln!("skipped: can't bind 0.0.0.0 here");
+            return;
+        }
+        let port = d.port();
+        let r = d
+            .handle(req(
+                "GET",
+                "/",
+                &[("host", &format!("127.0.0.1:{port}"))],
+                "",
+            ))
+            .await;
+        assert_eq!(r.status, 421);
+        assert!(String::from_utf8_lossy(&r.body).contains("has no public address"));
+        let r = d.handle(req("GET", "/healthz", &[], "")).await;
+        assert_ne!(r.status, 421);
     }
 }

@@ -7,6 +7,8 @@
 "use strict";
 (function () {
   let csrf = null;
+  // Served under a prefix behind the panel's proxy (M44): every address the page asks for starts with it.
+  const BASE = (document.querySelector('meta[name="ferrule-base"]')?.content || "/").replace(/\/$/, "");
 
   // ---- helpers -----------------------------------------------------------
 
@@ -43,7 +45,7 @@
       if (csrf) opts.headers["X-Ferrule-Csrf"] = csrf;
       opts.body = JSON.stringify(body);
     }
-    const r = await fetch(path, opts);
+    const r = await fetch(BASE + path, opts);
     let data = {};
     try { data = await r.json(); } catch (_) { /* not JSON */ }
     if (r.status === 401) { loggedOut(data.error); throw new Error(data.error || "not logged in"); }
@@ -2002,7 +2004,7 @@
     // name after '#' is just navigation, from a saved tab.
     const hash = location.hash.length > 1 ? location.hash.slice(1) : "";
     if (hash && !order.includes(hash)) {
-      history.replaceState(null, "", "/");
+      history.replaceState(null, "", BASE + "/");
       try {
         csrf = (await api("/api/login", { token: hash })).csrf;
       } catch (e) { loggedOut(e.message); return; }
