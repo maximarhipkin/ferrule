@@ -54,12 +54,14 @@ ENV FERRULE_MANAGED=1 \
     FERRULE_CONFIG=/data/ferrule.toml \
     FERRULE_DASHBOARD_BIND=0.0.0.0 \
     FERRULE_DASHBOARD_PORT=8080 \
+    FERRULE_HTTP_BIND=0.0.0.0 \
     HOME=/data/home \
     LANG=C.UTF-8
 USER 10001:10001
 WORKDIR /data
 VOLUME ["/data"]
 EXPOSE 8080
+EXPOSE 8788
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["ferrule", "health", "--probe"]

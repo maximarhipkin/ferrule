@@ -19,7 +19,7 @@ use support::{discord, email, matrix, mattermost, signal, slack, wait, whatsapp}
 const LIMIT: Duration = Duration::from_secs(30);
 
 /// Echoes the last user message, so each channel's answer is its own.
-fn model_server() -> (String, Arc<Mutex<Vec<Value>>>) {
+pub(super) fn model_server() -> (String, Arc<Mutex<Vec<Value>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "http://127.0.0.1:{}/v1",

@@ -29,6 +29,8 @@ pub const PANEL_SECRET_ENV: &str = "FERRULE_PANEL_SECRET";
 pub const PUBLIC_URL_ENV: &str = "FERRULE_PUBLIC_URL";
 pub const DASHBOARD_BIND_ENV: &str = "FERRULE_DASHBOARD_BIND";
 pub const DASHBOARD_PORT_ENV: &str = "FERRULE_DASHBOARD_PORT";
+/// The HTTP API's bind address (`0.0.0.0` in the image, so the proxy reaches it).
+pub const HTTP_BIND_ENV: &str = "FERRULE_HTTP_BIND";
 
 /// Said wherever the Claude plan is refused in managed mode.
 pub const NO_CLAUDE_PLAN: &str = "The Claude plan isn't available on a hosted bot. Anthropic's terms allow \

@@ -1522,9 +1522,12 @@ The Telegram flow below is the gap. The HTTP API only needs a bind (4.9).
    (:52–58), and `EXPOSE 8788` next to `EXPOSE 8080`. The same env goes in
    2.17's `env_remove` list (already listed).
 7. Test in ferrule-cli `channels/http.rs`:
-   `the_http_bind_comes_from_the_settings_and_is_checked`. It covers
-   `bind = "0.0.0.0"` and `"all"` through `config` with an explicit
-   settings value. Don't set the env var in a unit test.
+   `the_http_bind_comes_from_the_settings_and_is_checked`. The choice is a
+   small `bind_of(env, setting)` that `config` calls, so the test hands it
+   both values and never sets the env var. It covers `"0.0.0.0"`, the env
+   winning over the file, and `"all"`, `"localhost"`, `"0.0.0.0:80"` and
+   `"300.1.1.1"` refused. The card's `check` refuses the same values before
+   they are saved.
 
 **4.6 How each change is picked up** (goes into `docs/docker.md`, 7.1)
 

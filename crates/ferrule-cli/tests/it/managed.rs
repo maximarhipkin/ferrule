@@ -5,7 +5,10 @@ use std::path::Path;
 
 use serde_json::json;
 
-use super::dashboard::{command, describe, gateway, home, http, http_as, link_in, login, plain};
+use super::channels::model_server;
+use super::dashboard::{
+    command, describe, gateway, home, http, http_as, link_in, login, plain, FakeTelegram,
+};
 
 fn policy(dir: &Path, text: &str) -> String {
     let path = dir.join("policy.toml");
@@ -63,6 +66,21 @@ fn doctor_shows_managed_mode_and_the_policy() {
     );
 }
 
+/// `dashboard link` with the managed env, once the gateway is up.
+/// (`restarted_port` runs it without the env.)
+fn managed_link(dir: &Path, env: &[(&str, &str)]) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let out = command(dir, &["dashboard", "link"], env).output().unwrap();
+        let text = plain(&out.stdout);
+        if out.status.success() && text.contains("/login#") {
+            return text;
+        }
+        assert!(std::time::Instant::now() < deadline, "{}", describe(&out));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 #[test]
 fn a_managed_first_start_serves_the_dashboard_with_no_model_or_channel() {
     let dir = home("");
@@ -84,20 +102,7 @@ fn a_managed_first_start_serves_the_dashboard_with_no_model_or_channel() {
         ("FERRULE_POLICY", pol.as_str()),
         ("FERRULE_BOT_ID", "b_test"),
     ];
-    // `restarted_port` runs `dashboard link` without the env, so the wait
-    // is done here with it.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let link = loop {
-        let out = command(dir.path(), &["dashboard", "link"], &env)
-            .output()
-            .unwrap();
-        let text = plain(&out.stdout);
-        if out.status.success() && text.contains("/login#") {
-            break text;
-        }
-        assert!(std::time::Instant::now() < deadline, "{}", describe(&out));
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    };
+    let link = managed_link(dir.path(), &env);
     let toml = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
     assert!(
         toml.starts_with("# Written by ferrule on a managed bot's first start"),
@@ -266,4 +271,77 @@ fn the_panel_secret_is_not_passed_to_children() {
         );
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
+}
+
+#[test]
+fn a_telegram_token_is_tested_saved_and_a_chat_allowed() {
+    let (model, _) = model_server();
+    let tg = FakeTelegram::start();
+    let dir = home(&format!(
+        "default_provider = \"mock\"\n\n[providers.mock]\nbase_url = \"{model}\"\napi_key_env = \"FERRULE_TEST_KEY\"\nmodel = \"scripted\"\n\n[skills]\nenabled = false\n\n[gateway]\ntelegram_base_url = \"{}\"\n\n[dashboard]\nremote = \"off\"\n",
+        tg.url
+    ));
+    let pol = policy(dir.path(), "reason = \"beta\"\nsandbox = \"container\"\n");
+    let env = [
+        ("FERRULE_MANAGED", "1"),
+        ("FERRULE_POLICY", pol.as_str()),
+        ("FERRULE_BOT_ID", "b_test"),
+    ];
+    let _gw = gateway(dir.path(), &env);
+    let (port, token) = link_in(&managed_link(dir.path(), &env));
+    let page = login(port, &token).expect("the link signs in");
+
+    let good = "123456:TESTtokenTESTtokenTEST00";
+    let (s, v) = page.post("telegram/test", json!({ "token": good }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["name"], "m44_bot", "{v}");
+
+    // A token that isn't one is refused before anything is called.
+    let (s, v) = page.post("telegram/test", json!({ "token": "nope" }));
+    assert_eq!(s, 400, "{v}");
+    let (s, _) = page.post("telegram/save", json!({ "token": "" }));
+    assert_eq!(s, 400);
+
+    let (s, v) = page.post("telegram/save", json!({ "token": good }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["restart"], true, "{v}");
+    let toml = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+    assert!(
+        toml.contains("telegram_token_env = \"TELEGRAM_BOT_TOKEN\""),
+        "{toml}"
+    );
+    let secrets = std::fs::read_to_string(dir.path().join("data/private/secrets.env")).unwrap();
+    assert!(
+        secrets.contains(&format!("TELEGRAM_BOT_TOKEN={good}")),
+        "{secrets}"
+    );
+    assert!(!toml.contains(good), "{toml}");
+
+    tg.say(4242, "hello bot");
+    let (s, v) = page.post("telegram/wait", json!({ "token": good }));
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["chats"][0]["id"], 4242, "{v}");
+    let next = v["next"].clone();
+    assert!(next.is_number(), "{v}");
+
+    let (s, v) = page.post(
+        "telegram/allow",
+        json!({ "token": good, "chat": 4242, "next": next }),
+    );
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["restart"], true, "{v}");
+    let toml = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+    assert!(toml.contains("telegram_allowed_chats = [4242]"), "{toml}");
+    let sent = tg.all();
+    assert!(
+        sent.contains("\"chat_id\":4242") && sent.contains("\u{2705} Connected"),
+        "{sent}"
+    );
+
+    // Allowing it again changes nothing.
+    let (s, _) = page.post("telegram/allow", json!({ "token": good, "chat": 4242 }));
+    assert_eq!(s, 200);
+    let again = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
+    assert_eq!(again.matches("4242").count(), 1, "{again}");
 }

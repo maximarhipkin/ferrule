@@ -266,7 +266,13 @@ fn telegram_serve(
     let Some((first, _, body)) = read_request(&stream) else {
         return;
     };
-    let out = if first.contains("getUpdates") {
+    let out = if first.contains("getMe") {
+        json!({"ok": true, "result": {"id": 123456, "is_bot": true, "username": "m44_bot"}})
+    } else if first.contains("getWebhookInfo") {
+        json!({"ok": true, "result": {"url": ""}})
+    } else if first.contains("deleteWebhook") {
+        json!({"ok": true, "result": true})
+    } else if first.contains("getUpdates") {
         let mut updates: Vec<Value> = queue.lock().unwrap().drain(..).collect();
         if updates.is_empty() {
             std::thread::sleep(Duration::from_millis(100));

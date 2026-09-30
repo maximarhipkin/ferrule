@@ -186,7 +186,14 @@ pub fn remove(ctx: &Ctx, body: &Value) -> Answer {
     if card::spec(name).is_none() {
         return bad(
             400,
-            format!("{} is taken out with `ferrule setup`", info.title),
+            if crate::managed::on() {
+                format!(
+                    "{} can't be taken out on this page yet; a new token replaces the old one",
+                    info.title
+                )
+            } else {
+                format!("{} is taken out with `ferrule setup`", info.title)
+            },
         );
     }
     let Some(cfg) = config(ctx) else {
@@ -284,7 +291,7 @@ fn audit_key(ctx: &Ctx, event: &str, key: &str) {
     }
 }
 
-fn audit(ctx: &Ctx, event: &str, channel: &str) {
+pub(super) fn audit(ctx: &Ctx, event: &str, channel: &str) {
     if let Some(hub) = &ctx.hub {
         hub.audit().record(
             chrono::Utc::now(),

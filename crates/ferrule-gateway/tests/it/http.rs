@@ -24,6 +24,7 @@ struct Api {
 fn config(dir: &std::path::Path, rate: u32) -> HttpConfig {
     HttpConfig {
         dir: dir.join("http"),
+        bind: [127, 0, 0, 1].into(),
         port: 0,
         requests_per_minute: rate,
         tunnel: None,

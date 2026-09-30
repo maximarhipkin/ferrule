@@ -18,6 +18,7 @@ pub mod notices;
 pub mod panel;
 mod public;
 pub mod runs;
+mod telegram;
 #[cfg(test)]
 pub mod testing;
 
