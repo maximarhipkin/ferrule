@@ -273,7 +273,7 @@ td{padding:9px var(--sp-3);border-bottom:var(--hair);vertical-align:top}
 tr:last-child td{border-bottom:0}
 tr.dead td{opacity:.6}
 .num{text-align:end;white-space:nowrap}
-td .sub,.sub{display:block;color:var(--muted);font-size:var(--fs-sm)}
+td .sub,.sub{display:block;color:var(--muted);font-size:var(--fs-sm);overflow-wrap:anywhere}
 /* on a phone a table with class "cards" becomes a stack of cards; each cell
    is labelled from its data-label, so nothing scrolls sideways */
 @media (max-width:639px){

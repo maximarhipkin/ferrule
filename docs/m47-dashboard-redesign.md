@@ -1502,3 +1502,9 @@ also in the final report.
       failed. The folder is now on the never-backed-up list with the other
       run-time state (`backup::CACHES`): a restored lock means nothing. This
       also fixed `ferrule backup` on Windows with a gateway running.
+50. **Part 7: a long path on Config (CI, macOS).** The Config page prints
+    the config file's path in a `.sub` line. CI's macOS temp path
+    (`/var/folders/…/ferrule-browser-check-…/ferrule.toml`) is one 76-character
+    word, and pushed the page 19 px wider than a phone. Linux's shorter
+    path hid it. `.sub` now breaks anywhere, like the other places that
+    show a path. The fit check passes on a real user's long home path too.
