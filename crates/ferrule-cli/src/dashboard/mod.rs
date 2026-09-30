@@ -186,7 +186,6 @@ pub struct Dashboard {
     panel: Option<panel::Key>,
     nonces: panel::Nonces,
     /// For /healthz's `uptime_secs`.
-    #[allow(dead_code)] // M44 part 5
     started: Instant,
     pub ctx: Ctx,
 }
@@ -1221,6 +1220,33 @@ mod tests {
             assert!(html.contains(want), "{want} in {html}");
         }
         assert!(index_for("").contains("src=\"/app.js\""));
+    }
+
+    #[tokio::test]
+    async fn health_answers_before_the_host_check_and_without_a_session() {
+        let d = Dashboard::new_with(
+            DashboardConfig::default(),
+            Links::at(tempfile::tempdir().unwrap().path().join("links.json")),
+            Ctx::bare(Arc::new(Redactor::new([]))),
+            None,
+        );
+        let r = d
+            .handle(req("GET", "/healthz", &[("host", "evil.test")], ""))
+            .await;
+        assert!(r.status != 421 && r.status != 401, "{}", r.status);
+        let v: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        // No gateway behind this page: it says so.
+        assert_eq!(v["status"], "failing");
+        assert_eq!(r.status, 503);
+        let r = d
+            .handle(req("POST", "/healthz", &[("host", "evil.test")], ""))
+            .await;
+        assert_eq!(r.status, 405);
+        let r = d
+            .handle(req("GET", "/busyz", &[("host", "evil.test")], ""))
+            .await;
+        assert_eq!(r.status, 200);
     }
 
     #[tokio::test]

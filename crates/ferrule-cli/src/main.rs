@@ -202,6 +202,12 @@ enum Cmd {
     /// What the running gateway is doing: turns, spend, schedule, channels
     /// and recent errors (the same report `/status` answers in a chat)
     Status,
+    /// How the running gateway is: /healthz, no model call
+    Health {
+        /// One line, and exit 1 unless ok or degraded
+        #[arg(long)]
+        probe: bool,
+    },
     /// Write a .tar.gz of this instance's data and config, secrets left
     /// out unless asked (docs/backup.md)
     Backup {
@@ -677,16 +683,29 @@ fn main() -> Result<()> {
         .name("ferrule-main".into())
         .stack_size(8 << 20)
         .spawn(move || {
-            tokio::runtime::Builder::new_multi_thread()
+            let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .thread_stack_size(8 << 20)
-                .build()?
-                .block_on(dispatch(cli.cmd))
+                .build()?;
+            let out = rt.block_on(dispatch(cli.cmd));
+            if lifecycle::restart_requested() {
+                // A blocking task (a stuck tool) must not hold the restart.
+                rt.shutdown_timeout(Duration::from_secs(5));
+            } else {
+                drop(rt);
+            }
+            out
         })?
         .join()
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     // The last spans of a chat, a gateway or a task run (M33).
     telemetry::shutdown();
+    // M44: a restart from the page or a config change runs ferrule again in
+    // this process, so a container's init never sees it exit.
+    #[cfg(unix)]
+    if lifecycle::restart_requested() && done.is_ok() {
+        lifecycle::reexec();
+    }
     done
 }
 
@@ -898,6 +917,11 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 apply,
             })
             .await?
+        }
+        Cmd::Health { probe } => {
+            if !dashboard::cli::health(probe)? {
+                std::process::exit(1);
+            }
         }
         Cmd::Status => {
             if !health::status_cmd()? {
@@ -2596,6 +2620,8 @@ async fn run_gateway(
     } else {
         None
     };
+    let drain_router = router.clone();
+    let stopper = restarts.clone();
     let mut gateway = Gateway::new(router)
         .with_restarts(restarts)
         .with_health(health.clone())
@@ -2654,6 +2680,20 @@ async fn run_gateway(
         r = gateway.run() => r,
         why = shutdown_signal() => {
             tracing::info!("{why}: shutting down");
+            // M44: nothing new comes in; running turns get their grace.
+            stopper.stop_all();
+            scheduler_handle.abort();
+            tokio::select! {
+                _ = lifecycle::drain(&drain_router, cfg.gateway.stop_grace()) => {}
+                again = shutdown_signal() => {
+                    tracing::warn!("{again} again: stopping now");
+                    health.shutdown();
+                    if dash.is_some() {
+                        dashboard::cli::remove_marker();
+                    }
+                    std::process::exit(0);
+                }
+            }
             Ok(())
         }
     };

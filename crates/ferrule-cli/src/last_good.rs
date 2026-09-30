@@ -127,7 +127,9 @@ pub fn owner_line(path: &Path, why: &str) -> String {
 
 /// Under a service manager that restarts on exit.
 pub fn supervised() -> bool {
-    std::env::var_os("INVOCATION_ID").is_some()
+    // M44: a managed bot starts itself again (`lifecycle::reexec`).
+    crate::managed::on()
+        || std::env::var_os("INVOCATION_ID").is_some()
         || std::env::var("XPC_SERVICE_NAME").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
@@ -146,6 +148,10 @@ pub fn watch(file: PathBuf, tell: impl Fn(String) + Send + 'static) {
                         file.display()
                     ));
                     tokio::time::sleep(Duration::from_secs(2)).await;
+                    if crate::managed::on() {
+                        crate::lifecycle::request_restart();
+                        return;
+                    }
                     std::process::exit(0);
                 }
                 tell(format!(

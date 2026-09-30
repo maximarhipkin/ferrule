@@ -36,7 +36,6 @@ pub struct Live {
     /// M37: a channel's loop started again from the page.
     pub restarts: Arc<ferrule_gateway::ChannelRestarts>,
     /// Why commands are refused here (managed mode), for /healthz.
-    #[allow(dead_code)] // /healthz reads it (M44 part 5)
     pub commands_off: Option<String>,
 }
 
@@ -1116,16 +1115,27 @@ fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
             "The gateway runs in a terminal, not as a service, so nothing would start it again: restart it there.",
         );
     }
+    let managed = crate::managed::on();
     need!(confirmed(
         body,
-        "Restart the gateway? Running turns stop. If you're on the tunnel address, this page stops \
-         working and a new link comes to your chat within a minute."
-            .to_string()
+        if managed {
+            "Restart the bot? Running turns get a few seconds to finish, then they stop; reload \
+             this page in a few seconds."
+                .to_string()
+        } else {
+            "Restart the gateway? Running turns stop. If you're on the tunnel address, this page \
+             stops working and a new link comes to your chat within a minute."
+                .to_string()
+        }
     ));
-    tokio::spawn(async {
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await;
         tracing::info!("restart asked for from the dashboard");
-        terminate_self();
+        if managed {
+            crate::lifecycle::request_restart();
+        } else {
+            terminate_self();
+        }
     });
     ok(json!({ "ok": true, "said": "Restarting…" }))
 }

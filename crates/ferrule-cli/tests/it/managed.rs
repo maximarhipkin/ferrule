@@ -282,10 +282,12 @@ fn a_telegram_token_is_tested_saved_and_a_chat_allowed() {
         tg.url
     ));
     let pol = policy(dir.path(), "reason = \"beta\"\nsandbox = \"container\"\n");
+    let health_port = free_port().to_string();
     let env = [
         ("FERRULE_MANAGED", "1"),
         ("FERRULE_POLICY", pol.as_str()),
         ("FERRULE_BOT_ID", "b_test"),
+        ("FERRULE_DASHBOARD_PORT", health_port.as_str()),
     ];
     let _gw = gateway(dir.path(), &env);
     let (port, token) = link_in(&managed_link(dir.path(), &env));
@@ -344,4 +346,217 @@ fn a_telegram_token_is_tested_saved_and_a_chat_allowed() {
     assert_eq!(s, 200);
     let again = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
     assert_eq!(again.matches("4242").count(), 1, "{again}");
+
+    // The page's restart runs the bot again in this process, and the token
+    // it saved reaches the channel: chat 4242 is answered, with no terminal.
+    #[cfg(target_os = "linux")]
+    {
+        let (s, v) = page.post("gateway/restart", json!({ "confirm": true }));
+        assert_eq!(s, 200, "{v}");
+        let health_port: u16 = health_port.parse().unwrap();
+        // Down first (the old dashboard is gone), then up.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while try_health(health_port).is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the bot never stopped"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        wait_health(health_port, |_| true);
+        tg.say(4242, "hi again");
+        let (_, text) = tg.wait_for(4242, "ECHO", 0);
+        assert!(text.contains("hi again"), "{text}");
+    }
+}
+
+/// A port nothing listens on right now.
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// `/healthz` on `port` (raw, no panic when nothing answers).
+fn try_health(port: u16) -> Option<serde_json::Value> {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect_timeout(
+        &([127, 0, 0, 1], port).into(),
+        std::time::Duration::from_secs(2),
+    )
+    .ok()?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok()?;
+    write!(
+        s,
+        "GET /healthz HTTP/1.1\r\nhost: x.test\r\nconnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).ok()?;
+    serde_json::from_str(raw.split_once("\r\n\r\n")?.1).ok()
+}
+
+fn wait_health(port: u16, ok: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
+    loop {
+        if let Some(v) = try_health(port) {
+            if ok(&v) {
+                return v;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "/healthz on {port} never got there"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn health_and_busy_answer_on_the_bind_address() {
+    let dir = home("");
+    std::fs::remove_file(dir.path().join("ferrule.toml")).unwrap();
+    let pol = policy(dir.path(), "reason = \"beta\"\nsandbox = \"container\"\n");
+    let port = free_port().to_string();
+    let _gw = gateway(
+        dir.path(),
+        &[
+            ("FERRULE_MANAGED", "1"),
+            ("FERRULE_POLICY", pol.as_str()),
+            ("FERRULE_BOT_ID", "b_test"),
+            ("FERRULE_PUBLIC_URL", "http://bots.test/b/b_test/"),
+            ("FERRULE_DASHBOARD_BIND", "127.0.0.1"),
+            ("FERRULE_DASHBOARD_PORT", port.as_str()),
+        ],
+    );
+    let port: u16 = port.parse().unwrap();
+    let v = wait_health(port, |_| true);
+    assert_eq!(v["managed"], true, "{v}");
+    assert_eq!(v["status"], "degraded", "{v}");
+    assert!(
+        v["reasons"][0].as_str().unwrap().contains("no model"),
+        "{v}"
+    );
+
+    let (s, headers, body) = http_as(port, "anything.test", "GET", "/healthz", &[], "");
+    assert_eq!(s, 200, "{body}");
+    assert_eq!(headers["cache-control"], "no-store");
+    let (s, _, body) = http_as(port, "bots.test", "GET", "/b/b_test/healthz", &[], "");
+    assert_eq!(s, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["managed"], true, "{v}");
+    let (s, _, body) = http_as(port, "bots.test", "GET", "/busyz", &[], "");
+    assert_eq!(s, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["busy"],
+        false
+    );
+    assert_eq!(
+        http_as(port, "bots.test", "POST", "/healthz", &[], "").0,
+        405
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_drains_and_exits_zero() {
+    let dir = home("");
+    std::fs::remove_file(dir.path().join("ferrule.toml")).unwrap();
+    let pol = policy(dir.path(), "reason = \"beta\"\nsandbox = \"container\"\n");
+    let port = free_port().to_string();
+    let env = [
+        ("FERRULE_MANAGED", "1"),
+        ("FERRULE_POLICY", pol.as_str()),
+        ("FERRULE_BOT_ID", "b_test"),
+        ("FERRULE_DASHBOARD_PORT", port.as_str()),
+        ("RUST_LOG", "info"),
+    ];
+    let log = dir.path().join("gateway.log");
+    let mut cmd = command(dir.path(), &["gateway"], &env);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap());
+    let mut child = cmd.spawn().unwrap();
+    wait_health(port.parse().unwrap(), |_| true);
+    let marker = dir.path().join("data/gateway/dashboard.json");
+    assert!(marker.exists());
+    let pid = child.id().to_string();
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!(
+                "still running after SIGTERM:\n{}",
+                plain(&std::fs::read(&log).unwrap())
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let text = plain(&std::fs::read(&log).unwrap());
+    assert_eq!(status.code(), Some(0), "{text}");
+    assert!(text.contains("SIGTERM: shutting down"), "{text}");
+    assert!(text.contains("stopping:"), "{text}");
+    assert!(!marker.exists(), "the marker stays");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_managed_restart_runs_again_in_the_same_process() {
+    let dir = home("");
+    std::fs::remove_file(dir.path().join("ferrule.toml")).unwrap();
+    let pol = policy(dir.path(), "reason = \"beta\"\nsandbox = \"container\"\n");
+    let port = free_port().to_string();
+    let env = [
+        ("FERRULE_MANAGED", "1"),
+        ("FERRULE_POLICY", pol.as_str()),
+        ("FERRULE_BOT_ID", "b_test"),
+        ("FERRULE_DASHBOARD_PORT", port.as_str()),
+        ("RUST_LOG", "info"),
+    ];
+    let log = dir.path().join("gateway.log");
+    let mut cmd = command(dir.path(), &["gateway"], &env);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap());
+    let mut child = cmd.spawn().unwrap();
+    let port: u16 = port.parse().unwrap();
+    let before = wait_health(port, |v| v["uptime_secs"].as_u64().unwrap_or(0) >= 3);
+    let up = before["uptime_secs"].as_u64().unwrap();
+
+    let (link_port, token) = link_in(&managed_link(dir.path(), &env[..3]));
+    let page = login(link_port, &token).expect("the link signs in");
+    let (s, v) = page.post("gateway/restart", json!({}));
+    assert_eq!(s, 409, "{v}");
+    assert!(
+        v["confirm"]
+            .as_str()
+            .unwrap()
+            .starts_with("Restart the bot?"),
+        "{v}"
+    );
+    let (s, v) = page.post("gateway/restart", json!({ "confirm": true }));
+    assert_eq!(s, 200, "{v}");
+
+    // Down for a moment, then up again with a small uptime.
+    let after = wait_health(port, |v| v["uptime_secs"].as_u64().unwrap_or(99) < up);
+    assert_eq!(after["managed"], true, "{after}");
+    // The same process: it never exited.
+    assert!(child.try_wait().unwrap().is_none(), "the process exited");
+    let text = plain(&std::fs::read(&log).unwrap());
+    assert_eq!(text.matches("gateway starting").count(), 2, "{text}");
+    assert!(text.contains("stopping:"), "{text}");
+    assert!(!text.contains("the restart couldn't start"), "{text}");
+    let _ = child.kill();
+    let _ = child.wait();
 }

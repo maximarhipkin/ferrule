@@ -427,3 +427,110 @@ fn a_changed_or_damaged_archive_is_refused_before_anything_moves() {
     let o = ferrule(root, &["restore", out.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
 }
+
+/// `ferrule` with the data dir and the config file named outright, as a
+/// container has them.
+fn ferrule_in(root: &Path, data: &Path, config: &Path, args: &[&str]) -> Output {
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_ferrule"))
+        .args(args)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("FERRULE_CONFIG", config)
+        .env("FERRULE_DATA_DIR", data)
+        .env_remove("FERRULE_ROOT")
+        .env_remove("FERRULE_INSTANCE")
+        .env("NO_COLOR", "1")
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn a_config_inside_the_data_dir_is_stored_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let data = root.join("data");
+    std::fs::create_dir_all(data.join("sessions")).unwrap();
+    std::fs::write(data.join("sessions/a.jsonl"), "{}\n").unwrap();
+    let config = data.join("ferrule.toml");
+    std::fs::write(&config, CONFIG).unwrap();
+    let out = root.join("b.tar.gz");
+    let o = ferrule_in(
+        root,
+        &data,
+        &config,
+        &["backup", "--out", out.to_str().unwrap()],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    let names: Vec<String> = entries(&out).into_iter().map(|(n, _)| n).collect();
+    assert!(
+        names.contains(&"config/config.toml".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&"data/sessions/a.jsonl".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "data/ferrule.toml"),
+        "stored twice: {names:?}"
+    );
+
+    // A restore onto a machine with nothing brings both back.
+    let data2 = root.join("data2");
+    let config2 = data2.join("ferrule.toml");
+    let o = ferrule_in(root, &data2, &config2, &["restore", out.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(std::fs::read_to_string(&config2).unwrap(), CONFIG);
+    assert!(data2.join("sessions/a.jsonl").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backup_restores_into_an_empty_data_dir_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let data = root.join("data");
+    std::fs::create_dir_all(data.join("sessions")).unwrap();
+    std::fs::write(data.join("sessions/a.jsonl"), "{}\n").unwrap();
+    let config = root.join("cfg/ferrule.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, CONFIG).unwrap();
+    let out = root.join("b.tar.gz");
+    let o = ferrule_in(
+        root,
+        &data,
+        &config,
+        &["backup", "--out", out.to_str().unwrap()],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+
+    // A mount point: empty, in a parent nobody can write.
+    let mount_parent = root.join("mnt");
+    let mount = mount_parent.join("data");
+    std::fs::create_dir_all(&mount).unwrap();
+    std::fs::set_permissions(&mount_parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let unwritable = std::fs::File::create(mount_parent.join("probe")).is_err();
+    let config2 = root.join("cfg2/ferrule.toml");
+    let o = ferrule_in(root, &mount, &config2, &["restore", out.to_str().unwrap()]);
+    let names = listing(&mount_parent);
+    let left = listing(&mount);
+    // Put the permission back so the temp dir can go.
+    std::fs::set_permissions(&mount_parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if !unwritable {
+        eprintln!("skipped: the chmod doesn't bind (running as root)");
+        return;
+    }
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(std::fs::read_to_string(&config2).unwrap(), CONFIG);
+    assert!(mount.join("sessions/a.jsonl").is_file());
+    let siblings: Vec<&String> = names.iter().filter(|n| !n.contains('/')).collect();
+    assert_eq!(siblings, ["data"], "{names:?}");
+    assert!(!left.iter().any(|n| n.starts_with(".restore-")), "{left:?}");
+}

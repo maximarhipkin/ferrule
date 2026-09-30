@@ -1640,6 +1640,10 @@ One commit: `M44 part 5: health and lifecycle — /healthz, /busyz, ferrule heal
    `ferrule_health_reads_the_running_gateway`. A gateway with no model
    gives exit 0, and stdout starts with `degraded: no model is set up yet`.
    After the gateway is killed, the result is exit 1 and "failing".
+   (Built as: the gateway has the fake Telegram as its channel, because a
+   gateway outside managed mode refuses to start with no channel; the
+   only reason is then the model. The SIGTERM test signals with `kill
+   -TERM`, not `libc::kill`, so the test needs no `libc` call.)
 
 **5.3 `/busyz` and `/healthz` in the gateway test**
 

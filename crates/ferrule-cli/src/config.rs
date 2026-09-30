@@ -455,7 +455,6 @@ pub struct GatewayConfig {
     pub typing: Option<bool>,
     /// SIGTERM: how long running turns get to finish before they're stopped (default 20).
     #[serde(default)]
-    #[allow(dead_code)] // read by the SIGTERM drain (M44 part 5)
     pub stop_grace_secs: Option<u64>,
     /// Enable the stdin/stdout local channel (mostly for smoke-testing the
     /// gateway itself without any external service).
@@ -533,7 +532,6 @@ impl GatewayConfig {
     }
 
     /// How long a SIGTERM lets running turns finish.
-    #[allow(dead_code)] // M44 part 5
     pub fn stop_grace(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.stop_grace_secs.unwrap_or(20))
     }

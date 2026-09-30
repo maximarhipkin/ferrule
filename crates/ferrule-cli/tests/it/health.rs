@@ -723,3 +723,68 @@ fn a_heartbeat_that_fails_is_a_warning_and_the_gateway_keeps_answering() {
     tg.say(42, "hello");
     tg.wait_for(42, "PLAIN", n);
 }
+
+#[test]
+fn ferrule_health_reads_the_running_gateway() {
+    use super::dashboard::{command, describe as show, home as bare_home, plain as clean};
+    let tg = super::dashboard::FakeTelegram::start();
+    let dir = bare_home(&format!(
+        r#"default_provider = "mock"
+
+[providers.mock]
+base_url = "http://127.0.0.1:9/v1"
+api_key_env = "FERRULE_TEST_NO_SUCH_KEY"
+model = "scripted"
+
+[skills]
+enabled = false
+
+[sandbox]
+mode = "off"
+
+[gateway]
+telegram_token_env = "FERRULE_TEST_TG"
+telegram_base_url = "{}"
+telegram_allowed_chats = [42]
+
+[dashboard]
+remote = "off"
+"#,
+        tg.url
+    ));
+    // Nothing runs yet.
+    let out = command(dir.path(), &["health"], &[]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    let gw = super::dashboard::gateway(dir.path(), &[]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let text = loop {
+        let out = command(dir.path(), &["health"], &[]).output().unwrap();
+        if out.status.success() {
+            break clean(&out.stdout);
+        }
+        assert!(std::time::Instant::now() < deadline, "{}", show(&out));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert!(
+        text.starts_with("degraded: no model is set up yet"),
+        "{text}"
+    );
+    assert!(text.contains("version "), "{text}");
+    let out = command(dir.path(), &["health", "--probe"], &[])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert!(!clean(&out.stdout).contains("version "), "{}", show(&out));
+
+    // Killed: the marker's pid is gone, or nothing answers on its port.
+    drop(gw);
+    let out = command(dir.path(), &["health"], &[]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    let text = clean(&out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        text.contains("failing") || err.contains("no gateway is running"),
+        "{}",
+        show(&out)
+    );
+}

@@ -235,8 +235,17 @@ pub fn backup(out: Option<PathBuf>, include_secrets: bool) -> Result<()> {
     let staging = tempfile::tempdir_in(&out_dir).context("a temp dir beside the backup")?;
     let mut left_out = Vec::new();
     let mut sources: Vec<(String, PathBuf)> = Vec::new();
+    let config_from = config::config_path()?.filter(|p| p.is_file());
+    // A config inside the data dir (a container's /data) is stored once,
+    // under `config`, not again as `data/<rel>` (M44).
+    let config_canon = config_from
+        .as_ref()
+        .and_then(|p| dunce::canonicalize(p).ok());
     for (rel, path) in walk(&data)? {
         if path == out || path == partial || is_cache(&rel) {
+            continue;
+        }
+        if config_canon.is_some() && dunce::canonicalize(&path).ok() == config_canon {
             continue;
         }
         if is_secret(&rel) && !include_secrets {
@@ -255,7 +264,6 @@ pub fn backup(out: Option<PathBuf>, include_secrets: bool) -> Result<()> {
         };
         sources.push((format!("data/{rel}"), path));
     }
-    let config_from = config::config_path()?.filter(|p| p.is_file());
     if let Some(p) = &config_from {
         sources.push((CONFIG.to_string(), p.clone()));
     }
@@ -584,14 +592,24 @@ pub fn restore(file: &Path, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    std::fs::create_dir_all(parent)?;
-    let staging = tempfile::Builder::new()
-        .prefix(&format!(".{name}.restore-"))
-        .tempdir_in(parent)?;
+    // An empty data dir (a container's /data, a mount point whose parent
+    // can't be written) is filled in place: nothing to move aside (M44).
+    let in_place = data.is_dir() && std::fs::read_dir(&data)?.next().is_none();
+    let staging = if in_place {
+        tempfile::Builder::new()
+            .prefix(".restore-")
+            .tempdir_in(&data)
+            .with_context(|| format!("a temp dir in {}", data.display()))?
+    } else {
+        std::fs::create_dir_all(parent)?;
+        tempfile::Builder::new()
+            .prefix(&format!(".{name}.restore-"))
+            .tempdir_in(parent)?
+    };
     let manifest = read_archive(file, Some(staging.path()))?;
 
     // Everything checked out: now the swap.
-    let had_data = data.exists();
+    let had_data = data.exists() && !in_place;
     if had_data {
         std::fs::rename(&data, &aside).with_context(|| {
             format!(
@@ -601,7 +619,9 @@ pub fn restore(file: &Path, dry_run: bool) -> Result<()> {
         })?;
     }
     let restored = staging.path().join("data");
-    let moved = if restored.is_dir() {
+    let moved = if in_place {
+        move_entries(&restored, &data)
+    } else if restored.is_dir() {
         std::fs::rename(&restored, &data)
     } else {
         std::fs::create_dir_all(&data)
@@ -667,6 +687,18 @@ pub fn restore(file: &Path, dry_run: bool) -> Result<()> {
             "Downloaded models stay in {}; move `models` back to skip downloading them again.",
             aside.display()
         );
+    }
+    Ok(())
+}
+
+/// Moves what is in `from` (if it exists) into the existing `to`.
+fn move_entries(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !from.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        std::fs::rename(entry.path(), to.join(entry.file_name()))?;
     }
     Ok(())
 }

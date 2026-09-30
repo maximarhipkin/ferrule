@@ -10,6 +10,7 @@ use ferrule_core::failure::Kind;
 use ferrule_core::{Agent, AgentEvent, CoreError, Guard, GuardedCall, Role, Transcript, Verdict};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
@@ -75,6 +76,8 @@ pub struct Router {
     transcription: Option<Transcription>,
     /// M41: "typing…" while a turn runs.
     typing: bool,
+    /// M44: the bot is stopping. No new message is taken (`close`).
+    closing: AtomicBool,
 }
 
 struct Lane {
@@ -162,6 +165,20 @@ const RESET_WAIT: Duration = Duration::from_secs(10);
 pub const NEW_HINT: &str =
     "It failed the same way last time, so the conversation itself may be what's rejected: send /new to start a fresh conversation";
 
+/// What a bot's stop did (M44).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Drained {
+    /// Chats with waiting messages that were told the bot is stopping.
+    pub notified: usize,
+    /// Turns that outlived the grace and were ended.
+    pub stopped: usize,
+    /// Turns still running after that (a lane that would not wind down).
+    pub left: usize,
+}
+
+/// How long a drain waits for stopped turns to wind down.
+const DRAIN_WIND_DOWN: Duration = Duration::from_secs(5);
+
 /// One lane as `/status` and the watchdog see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaneSnapshot {
@@ -235,6 +252,7 @@ impl Router {
             pacing: StreamPacing::default(),
             transcription: None,
             typing: false,
+            closing: AtomicBool::new(false),
         }
     }
 
@@ -274,6 +292,118 @@ impl Router {
     /// Notified whenever a lane starts or finishes a turn.
     pub fn changed(&self) -> Arc<Notify> {
         self.changed.clone()
+    }
+
+    /// M44: no new message from now on. The messages waiting behind running
+    /// turns are dropped, and their chats told `notice`. Returns how many
+    /// chats were told. A running turn goes on; [`Router::drain`] waits for it.
+    pub async fn close(&self, notice: &str) -> usize {
+        self.closing.store(true, Ordering::SeqCst);
+        let mut told = Vec::new();
+        {
+            let lanes = self.lanes.lock().unwrap();
+            for lane in lanes.values() {
+                let mut st = lane.state.lock().unwrap();
+                st.retired = true;
+                if st.queued > 0 {
+                    st.queued = 0;
+                    told.push((lane.channel.clone(), lane.chat_id.clone()));
+                }
+            }
+        }
+        let mut sent = 0;
+        for (channel, chat_id) in told {
+            let Some(ch) = self.channels.get(&channel) else {
+                continue;
+            };
+            let out = OutboundMessage {
+                channel,
+                chat_id,
+                text: notice.into(),
+                reply_to: None,
+                attachments: vec![],
+            };
+            if let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(3), ch.send(out)).await {
+                sent += 1;
+            }
+        }
+        self.changed.notify_waiters();
+        sent
+    }
+
+    /// M44: [`Router::close`] was called.
+    pub fn closing(&self) -> bool {
+        self.closing.load(Ordering::SeqCst)
+    }
+
+    /// Lanes running a turn.
+    pub fn running(&self) -> usize {
+        self.lanes
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|l| l.state.lock().unwrap().busy_since.is_some())
+            .count()
+    }
+
+    /// Messages waiting behind running turns.
+    pub fn queued(&self) -> usize {
+        self.lanes
+            .lock()
+            .unwrap()
+            .values()
+            .map(|l| l.state.lock().unwrap().queued)
+            .sum()
+    }
+
+    /// Ends every running turn, as the dashboard's Stop does: how many.
+    pub fn stop_all(&self, by: &str) -> usize {
+        let lanes = self.lanes.lock().unwrap();
+        let mut n = 0;
+        for lane in lanes.values() {
+            if lane.state.lock().unwrap().busy_since.is_some() {
+                lane.guard.stop(by);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// M44: a bot's stop. [`Router::close`], then the running turns get
+    /// `grace` to finish; the ones still going are ended (their chats are
+    /// told, as for Stop) and given a few seconds to wind down.
+    pub async fn drain(&self, notice: &str, grace: Duration) -> Drained {
+        let notified = self.close(notice).await;
+        self.wait_idle(grace).await;
+        let stopped = if self.running() > 0 {
+            self.stop_all("a bot restart")
+        } else {
+            0
+        };
+        if stopped > 0 {
+            self.wait_idle(DRAIN_WIND_DOWN).await;
+        }
+        Drained {
+            notified,
+            stopped,
+            left: self.running(),
+        }
+    }
+
+    async fn wait_idle(&self, limit: Duration) {
+        let deadline = tokio::time::Instant::now() + limit;
+        while self.running() > 0 && tokio::time::Instant::now() < deadline {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.running() == 0 {
+                break;
+            }
+            tokio::select! {
+                _ = &mut notified => {}
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
     }
 
     /// Every lane that is running a turn or has messages waiting.
@@ -402,6 +532,9 @@ impl Router {
         session_id: &str,
         msg: &InboundMessage,
     ) -> Result<(mpsc::Sender<LaneJob>, Arc<Mutex<LaneState>>), GatewayError> {
+        if self.closing() {
+            return Err(GatewayError::SessionClosed(session_id.to_string()));
+        }
         let mut lanes = self.lanes.lock().unwrap();
         if let Some(lane) = lanes.get(session_id) {
             if !lane.tx.is_closed() {
@@ -543,6 +676,9 @@ impl Router {
     /// sub-agents finishing. False when there's no such chat or its queue
     /// is full.
     pub fn wake(&self, session_id: &str, text: String) -> bool {
+        if self.closing() {
+            return false;
+        }
         let lanes = self.lanes.lock().unwrap();
         let Some(lane) = lanes.get(session_id) else {
             return false;
@@ -1611,6 +1747,114 @@ mod tests {
         wait_until(|| router.snapshot().iter().all(|l| l.busy_for.is_none())).await;
         // An idle lane has nothing to stop.
         assert!(!router.stop(&sid, "the dashboard"));
+    }
+
+    /// Answers "slow" after `delay`; echoes anything else at once.
+    struct SlowProvider(Duration);
+    #[async_trait]
+    impl Provider for SlowProvider {
+        fn name(&self) -> &str {
+            "slow"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let last = req
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::User)
+                .and_then(|m| m.content.clone())
+                .unwrap_or_default();
+            if last == "slow" {
+                sleep(self.0).await;
+            }
+            Ok(CompletionResponse {
+                message: Message::assistant(Some(format!("echo: {last}")), vec![], None),
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    fn slow_router(dir: &Path, delay: Duration) -> (Router, Arc<RecordingChannel>) {
+        let recorder = RecordingChannel::new();
+        let mut channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
+        channels.insert("test".into(), recorder.clone());
+        let factory: AgentFactory = Arc::new(move |_sid, transcript| {
+            Ok(Agent::new(
+                Arc::new(SlowProvider(delay)),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                Some(transcript),
+            )
+            .with_system_prompt("test"))
+        });
+        (Router::new(dir, factory, channels), recorder)
+    }
+
+    #[tokio::test]
+    async fn closing_refuses_new_messages_and_tells_queued_chats() {
+        let dir = tempfile::tempdir().unwrap();
+        let (router, recorder) = slow_router(dir.path(), Duration::from_millis(400));
+        router.dispatch(inbound("chat-1", "slow")).await.unwrap();
+        router.dispatch(inbound("chat-1", "after")).await.unwrap();
+        wait_until(|| router.running() == 1).await;
+        assert_eq!((router.running(), router.queued()), (1, 1));
+        assert!(!router.closing());
+        assert_eq!(router.close("N").await, 1);
+        assert!(router.closing());
+        assert_eq!(router.queued(), 0);
+        assert!(matches!(
+            router.dispatch(inbound("chat-1", "late")).await,
+            Err(GatewayError::SessionClosed(_))
+        ));
+        assert!(matches!(
+            router.dispatch(inbound("chat-2", "late")).await,
+            Err(GatewayError::SessionClosed(_))
+        ));
+        assert!(!router.wake(&session::session_id("test", "chat-1"), "x".into()));
+        // The running turn ends normally; the queued message never runs.
+        wait_until(|| router.running() == 0).await;
+        sleep(Duration::from_millis(50)).await;
+        let texts = recorder.texts();
+        assert!(texts.contains(&"N".to_string()), "{texts:?}");
+        assert!(texts.contains(&"echo: slow".to_string()), "{texts:?}");
+        assert!(!texts.contains(&"echo: after".to_string()), "{texts:?}");
+    }
+
+    #[tokio::test]
+    async fn drain_lets_a_short_turn_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        let (router, recorder) = slow_router(dir.path(), Duration::from_millis(200));
+        router.dispatch(inbound("chat-1", "slow")).await.unwrap();
+        wait_until(|| router.running() == 1).await;
+        let got = router.drain("N", Duration::from_secs(2)).await;
+        assert_eq!(
+            got,
+            Drained {
+                notified: 0,
+                stopped: 0,
+                left: 0
+            }
+        );
+        wait_until(|| recorder.texts().contains(&"echo: slow".to_string())).await;
+    }
+
+    #[tokio::test]
+    async fn drain_stops_a_turn_that_outlives_the_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let (router, recorder) = slow_router(dir.path(), Duration::from_secs(10));
+        router.dispatch(inbound("chat-1", "slow")).await.unwrap();
+        wait_until(|| router.running() == 1).await;
+        let got = router.drain("N", Duration::from_millis(300)).await;
+        assert_eq!(got.stopped, 1, "{got:?}");
+        assert_eq!(got.left, 0, "{got:?}");
+        wait_until(|| !recorder.texts().is_empty()).await;
+        let texts = recorder.texts();
+        assert!(
+            texts[0].starts_with("Stopped from a bot restart: I ended this turn."),
+            "{texts:?}"
+        );
     }
 
     #[tokio::test]

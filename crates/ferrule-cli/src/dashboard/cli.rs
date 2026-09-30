@@ -63,6 +63,78 @@ pub fn gateway_port() -> Option<u16> {
     (crate::health::pid_alive(m.pid) != Some(false)).then_some(m.port)
 }
 
+/// `ferrule health`: asks the gateway on this machine for /healthz over a
+/// plain TCP connection (no proxy, no HTTP client), and prints what it
+/// says. `false` when it is `failing` or nothing answers.
+pub fn health(probe: bool) -> Result<bool> {
+    let port = match gateway_port()
+        .or_else(|| {
+            std::env::var(crate::managed::DASHBOARD_PORT_ENV)
+                .ok()
+                .and_then(|v| v.trim().parse::<u16>().ok())
+                .filter(|p| *p != 0)
+        })
+        .or_else(|| {
+            Config::load()
+                .ok()
+                .map(|(c, _)| c.dashboard.port)
+                .filter(|p| *p != 0)
+        }) {
+        Some(p) => p,
+        None => bail!("no gateway is running here (no dashboard port found)"),
+    };
+    let body = match healthz_body(port) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("failing: nothing answers on 127.0.0.1:{port}: {e}");
+            return Ok(false);
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .with_context(|| format!("127.0.0.1:{port}/healthz didn't answer JSON"))?;
+    let status = v["status"].as_str().unwrap_or("failing");
+    let reasons: Vec<&str> = v["reasons"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|r| r.as_str()).collect())
+        .unwrap_or_default();
+    if reasons.is_empty() {
+        println!("{status}");
+    } else {
+        println!("{status}: {}", reasons.join("; "));
+    }
+    if !probe {
+        println!(
+            "version {}, up {}s, {} turn(s) running, {} queued",
+            v["version"].as_str().unwrap_or("?"),
+            v["uptime_secs"].as_u64().unwrap_or(0),
+            v["turns"].as_u64().unwrap_or(0),
+            v["queued"].as_u64().unwrap_or(0),
+        );
+    }
+    Ok(status != "failing")
+}
+
+/// The body of `GET /healthz`, whatever its status.
+fn healthz_body(port: u16) -> std::io::Result<String> {
+    use std::io::{Read, Write};
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+    use std::time::Duration;
+    let limit = Duration::from_secs(3);
+    let mut s = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), limit)?;
+    s.set_read_timeout(Some(limit))?;
+    s.set_write_timeout(Some(limit))?;
+    write!(
+        s,
+        "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw)?;
+    let text = String::from_utf8_lossy(&raw);
+    text.split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .ok_or_else(|| std::io::Error::other("no HTTP answer"))
+}
+
 pub async fn cmd(op: Option<DashCmd>) -> Result<()> {
     let (cfg, _) = Config::load()?;
     let links = super::auth::Links::at(super::auth::Links::default_path()?);
