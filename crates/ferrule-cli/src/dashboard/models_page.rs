@@ -266,6 +266,11 @@ pub(super) async fn provider_save(ctx: &Ctx, body: &Value) -> Answer {
         Ok(w) => w,
         Err(e) => return bad(400, e),
     };
+    if let Some(why) =
+        crate::managed::kind_refusal(&w.name, &crate::managed::kind_of(w.plan, &w.base_url))
+    {
+        return bad(403, why);
+    }
     if w.plan.is_some() {
         return bad(400, format!("`{}` is on a plan, it takes no key", w.name));
     }

@@ -172,6 +172,7 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     let chat_on =
         telegram_on || discord_on || slack_on || m39_channels(&mut r, &cfg, offline).await;
     let backend = sandbox(&mut r, &cfg, &secrets_path);
+    managed_check(&mut r, &cfg);
     let confined = backend != Backend::None;
     mcp(&mut r, &cfg, backend);
     plugins_check(&mut r);
@@ -190,18 +191,103 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
     trust_check(&mut r, &cfg, chat_on);
-    service_check(&mut r, &path, chat_on)?;
-    instances_check(&mut r, &cfg);
-    update_check(&mut r, &cfg, offline).await;
+    let managed = crate::managed::on();
+    if !managed {
+        service_check(&mut r, &path, chat_on)?;
+        instances_check(&mut r, &cfg);
+        update_check(&mut r, &cfg, offline).await;
+    } else {
+        r.note("updates", "the panel changes the image");
+    }
     repairs_check(&mut r);
     health_check(&mut r, &cfg, chat_on);
     r.note("backup", crate::backup::doctor_line());
     connections_check(&mut r, &cfg);
     editing_check(&mut r, &cfg);
-    ssh_check(&mut r, &cfg, offline).await;
+    if !managed {
+        ssh_check(&mut r, &cfg, offline).await;
+    }
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
     Ok(r.finish())
+}
+
+/// M44: managed mode, the policy in force and what protects commands.
+fn managed_check(r: &mut Report, cfg: &config::Config) {
+    use crate::managed;
+    let state = managed::state();
+    if !state.on() {
+        r.note("managed", "managed mode: off");
+        return;
+    }
+    let from = match state.source {
+        Some(managed::Source::Env) => "FERRULE_MANAGED",
+        _ => "[managed] in the config",
+    };
+    r.ok("managed", format!("managed mode: on (from {from})"));
+    match &state.bot_id {
+        Some(id) => r.ok("managed", format!("bot: {id}")),
+        None => r.warn(
+            "managed",
+            "no bot id: panel sign-in is refused until FERRULE_BOT_ID is set",
+        ),
+    }
+    if managed::panel_secret().is_some() {
+        r.ok("managed", "panel secret: set");
+    } else {
+        r.note(
+            "managed",
+            "panel secret: not set (panel sign-in is off; `ferrule dashboard link` still works)",
+        );
+    }
+    if let Some(e) = state.policy_error() {
+        r.fail("managed", format!("the policy can't be read: {e}"));
+    }
+    if let Some(path) = &state.policy_path {
+        r.note("managed", format!("policy: {}", tilde(path)));
+        if std::fs::OpenOptions::new().append(true).open(path).is_ok() {
+            r.warn(
+                "managed",
+                "the policy file is writable by the bot's own user: mount it read-only (`:ro`)",
+            );
+        }
+    }
+    if let Some(policy) = managed::policy() {
+        for lock in policy.locks() {
+            r.note("managed", lock);
+        }
+    }
+    if let Ok(sandbox) = Sandbox::new(crate::sandbox_policy(cfg)) {
+        let sandbox = managed::guard(sandbox);
+        r.note(
+            "managed",
+            format!(
+                "commands are protected by: {}",
+                managed::protection(&sandbox)
+            ),
+        );
+        if let (Backend::Landlock { .. }, Err(why)) =
+            (sandbox.backend(), sandbox.unix_enforcement())
+        {
+            r.warn(
+                "managed",
+                format!(
+                    "Unix sockets: not enforced ({why}); never mount the Docker socket into a bot"
+                ),
+            );
+        }
+    }
+    if cfg
+        .dashboard
+        .public_url
+        .as_deref()
+        .is_some_and(|u| u.trim().starts_with("http://"))
+    {
+        r.note(
+            "managed",
+            "the public URL is plain http: the session cookie isn't Secure; put TLS in front",
+        );
+    }
 }
 
 /// M34: every provider on a local server (docs/local-models.md): what

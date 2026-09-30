@@ -154,6 +154,9 @@ pub async fn test(ctx: &Ctx, body: &Value) -> Answer {
 /// Save: the secrets to `secrets.env`, the rest to `[gateway.<name>]`.
 pub fn save(ctx: &Ctx, body: &Value) -> Answer {
     let spec = need!(spec_of(body));
+    if let Some(why) = crate::managed::channel_refusal(spec.name) {
+        return bad(403, why);
+    }
     let place = need!(setup_place(ctx));
     if let Err(e) = card::save(spec, &place, &values(body)) {
         return bad(400, e);

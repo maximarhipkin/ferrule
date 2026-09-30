@@ -20,6 +20,9 @@ pub fn server(cfg: &config::Config) -> Result<Option<McpServerConfig>> {
     if !b.enabled {
         return Ok(None);
     }
+    if let Some(why) = crate::shared_sandbox(cfg)?.refusal() {
+        bail!("{why}");
+    }
     if cfg.mcp.servers.iter().any(|s| s.name == mcp::SERVER_NAME) {
         bail!("an [[mcp.servers]] entry is already named `browser`; rename it");
     }

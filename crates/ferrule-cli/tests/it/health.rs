@@ -347,6 +347,16 @@ fn gateway_env(home: &Path, env: &[(&str, &str)]) -> Running {
         "NOTIFY_SOCKET",
         "WATCHDOG_USEC",
         "WATCHDOG_PID",
+        "FERRULE_MANAGED",
+        "FERRULE_POLICY",
+        "FERRULE_BOT_ID",
+        "FERRULE_PANEL_SECRET",
+        "FERRULE_PUBLIC_URL",
+        "FERRULE_DASHBOARD_BIND",
+        "FERRULE_DASHBOARD_PORT",
+        "FERRULE_HTTP_BIND",
+        "FERRULE_BROWSER",
+        "FERRULE_BROWSER_CHROME_SANDBOX",
     ] {
         cmd.env_remove(var);
     }

@@ -14,6 +14,7 @@ pub mod door;
 pub mod http;
 pub mod models_page;
 pub mod notices;
+mod public;
 pub mod runs;
 #[cfg(test)]
 pub mod testing;
@@ -25,6 +26,7 @@ use ferrule_connections::cloudflared::Cloudflared;
 use ferrule_connections::tunnel::{self, Tunnel};
 use ferrule_gateway::Redactor;
 use http::{Request, Response};
+pub use public::Public;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};

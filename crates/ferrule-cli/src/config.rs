@@ -453,6 +453,10 @@ pub struct GatewayConfig {
     /// M41: "typing…" in the chat while a turn runs. Unset = on.
     #[serde(default)]
     pub typing: Option<bool>,
+    /// SIGTERM: how long running turns get to finish before they're stopped (default 20).
+    #[serde(default)]
+    #[allow(dead_code)] // read by the SIGTERM drain (M44 part 5)
+    pub stop_grace_secs: Option<u64>,
     /// Enable the stdin/stdout local channel (mostly for smoke-testing the
     /// gateway itself without any external service).
     #[serde(default)]
@@ -526,6 +530,12 @@ impl GatewayConfig {
     /// Whether chats see "typing…" while a turn runs (on unless turned off).
     pub fn typing(&self) -> bool {
         self.typing.unwrap_or(true)
+    }
+
+    /// How long a SIGTERM lets running turns finish.
+    #[allow(dead_code)] // M44 part 5
+    pub fn stop_grace(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.stop_grace_secs.unwrap_or(20))
     }
 }
 
@@ -632,6 +642,11 @@ pub struct Config {
     pub agent: AgentSettings,
     #[serde(default)]
     pub gateway: GatewayConfig,
+    /// M44: one bot per container, run by a panel.
+    /// Read from the raw file by `managed::resolve`; here so the section is a known key.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub managed: crate::managed::ManagedConfig,
     #[serde(default)]
     pub scheduler: SchedulerConfig,
     #[serde(default)]
@@ -1221,6 +1236,13 @@ pub struct DashboardConfig {
     pub enabled: bool,
     /// 0: any free port (written to `<data>/gateway/dashboard.json`).
     pub port: u16,
+    /// Where the page listens: 127.0.0.1 unless a container needs 0.0.0.0
+    /// (FERRULE_DASHBOARD_BIND). Anything else answers /healthz only until
+    /// `public_url` is set.
+    pub bind: String,
+    /// The address the page is opened at behind a proxy, prefix included
+    /// (FERRULE_PUBLIC_URL).
+    pub public_url: Option<String>,
     /// `tunnel`: `/dashboard` opens a cloudflared quick tunnel for the
     /// phone; `off`: local links only.
     pub remote: String,
@@ -1237,6 +1259,8 @@ impl Default for DashboardConfig {
         Self {
             enabled: true,
             port: 0,
+            bind: "127.0.0.1".into(),
+            public_url: None,
             remote: "tunnel".into(),
             idle_minutes: 30,
             session_hours: 12,
@@ -1436,6 +1460,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 
 # [gateway]
 # typing = true                             # "typing…" in the chat while a turn runs
+# stop_grace_secs = 20                      # SIGTERM: running turns get this long, then they're stopped
 # local = true                              # enable the stdin/stdout channel
 # telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
 # telegram_allowed_chats = []               # chat ids the bot answers; empty =
@@ -1451,6 +1476,15 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # slack_allowed_users = []                  # member ids (U…) whose DMs it answers
 # slack_allowed_channels = []               # channels where an @mention reaches it
 # slack_stream = true
+
+# [managed]            # M44: one bot per container, run by a panel (docs/m44-managed-mode.md)
+# enabled = false      # or FERRULE_MANAGED=1
+# policy = "/etc/ferrule/policy.toml"   # or FERRULE_POLICY
+# bot_id = "b_4f2a"    # or FERRULE_BOT_ID
+
+# [dashboard]
+# bind = "127.0.0.1"                        # a container needs 0.0.0.0 (FERRULE_DASHBOARD_BIND)
+# public_url = "https://bots.example.com/b/b_4f2a/"   # behind a proxy (FERRULE_PUBLIC_URL)
 
 # [scheduler]
 # tick_interval_secs = 30   # how often to check for due tasks
@@ -1730,6 +1764,37 @@ impl Config {
     /// `[web_search]`'s and `[memory]`'s keys, bound to their endpoint's
     /// host in `[secrets]` unless the owner bound them there already.
     pub fn finish(mut self) -> Result<Self> {
+        let set = |var: &str| {
+            std::env::var(var)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        if let Some(v) = set(crate::managed::DASHBOARD_BIND_ENV) {
+            if v.parse::<std::net::IpAddr>().is_err() {
+                bail!("FERRULE_DASHBOARD_BIND must be an IP address like 0.0.0.0, not `{v}`");
+            }
+            self.dashboard.bind = v;
+        }
+        if let Some(v) = set(crate::managed::DASHBOARD_PORT_ENV) {
+            let Ok(port) = v.parse::<u16>() else {
+                bail!("FERRULE_DASHBOARD_PORT must be a port number, not `{v}`");
+            };
+            self.dashboard.port = port;
+        }
+        if let Some(v) = set(crate::managed::PUBLIC_URL_ENV) {
+            self.dashboard.public_url = Some(v);
+        }
+        let bind = &self.dashboard.bind;
+        if bind.parse::<std::net::IpAddr>().is_err() {
+            bail!("[dashboard] bind must be an IP address like 127.0.0.1 or 0.0.0.0, not `{bind}`");
+        }
+        if let Some(v) = &self.dashboard.public_url {
+            if let Err(e) = crate::dashboard::Public::parse(v) {
+                bail!("[dashboard] public_url must be an http(s) URL like https://bots.example.com/b/b_4f2a/, not `{v}`: {e}");
+            }
+        }
+        crate::managed::apply(&mut self);
         self.check_providers()?;
         self.memory.hybrid()?;
         self.egress.policy()?;
@@ -1812,6 +1877,9 @@ impl Config {
             .providers
             .get(&name)
             .ok_or_else(|| anyhow!("provider `{name}` not in config"))?;
+        if let Some(why) = crate::managed::provider_refusal(&name, cfg) {
+            bail!(why)
+        }
         if cfg.plan.is_some() {
             // A plan's credential is read per call from its own store.
             return Ok((name, cfg, String::new()));
@@ -2132,6 +2200,27 @@ model = "gpt-5.5"
         assert!(cfg.gateway.typing());
         let cfg: Config = toml::from_str("[gateway]\ntyping = false").unwrap();
         assert!(!cfg.gateway.typing());
+    }
+
+    #[test]
+    fn the_dashboard_bind_and_public_url_are_checked() {
+        let finish = |t: &str| toml::from_str::<Config>(t).unwrap().finish();
+        let e = finish("[dashboard]\nbind = \"all\"")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("[dashboard] bind must be an IP address"), "{e}");
+        let e = finish("[dashboard]\npublic_url = \"ftp://x/\"")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("[dashboard] public_url must be an http(s) URL"),
+            "{e}"
+        );
+        let cfg =
+            finish("[dashboard]\nbind = \"0.0.0.0\"\npublic_url = \"https://b.example.com/b/1/\"")
+                .unwrap();
+        assert_eq!(cfg.dashboard.bind, "0.0.0.0");
+        assert_eq!(cfg.gateway.stop_grace().as_secs(), 20);
     }
 
     #[test]

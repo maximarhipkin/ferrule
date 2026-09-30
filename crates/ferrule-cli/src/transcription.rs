@@ -210,11 +210,20 @@ pub fn build(cfg: &Config, sink: Option<Arc<dyn LedgerSink>>) -> Result<Transcri
         Choice::Off { plan_only, .. } => Transcription::Off {
             how: how_to_turn_on(plan_only),
         },
-        Choice::Command { template } => Transcription::On(Arc::new(CommandTranscriber {
-            template,
-            timeout,
-            ledger: ledger(0.0),
-        })),
+        Choice::Command { template } => {
+            let off = crate::shared_sandbox(cfg)
+                .ok()
+                .and_then(|s| crate::managed::user_commands_off(&s));
+            if let Some(why) = off {
+                tracing::warn!("[transcription] command doesn't run: {why}");
+                return Ok(Transcription::Off { how: why });
+            }
+            Transcription::On(Arc::new(CommandTranscriber {
+                template,
+                timeout,
+                ledger: ledger(0.0),
+            }))
+        }
         Choice::OpenAi {
             base_url, key_env, ..
         } => Transcription::On(Arc::new(OpenAiTranscriber {

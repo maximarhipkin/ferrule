@@ -173,6 +173,8 @@ pub struct Catalog {
     pinned: BTreeMap<String, String>,
     /// M25: `[routing]`, its tiers resolved.
     pub routing: routing::Routing,
+    /// M44: providers the panel's policy forbids, with its reason.
+    pub managed: BTreeMap<String, String>,
 }
 
 impl Catalog {
@@ -197,6 +199,7 @@ impl Catalog {
             exact: cfg.models.exact.clone(),
             pinned: BTreeMap::new(),
             routing: routing::Routing::default(),
+            managed: crate::managed::blocked_providers(cfg),
         };
         cat.pinned = cat
             .exact
@@ -264,6 +267,9 @@ impl Catalog {
     /// `provider/model`, its bare model id, its provider, or an alias for
     /// it). Phrased to follow "`ref` is …".
     pub fn denied(&self, e: &Entry) -> Option<String> {
+        if let Some(why) = self.managed.get(&e.provider) {
+            return Some(format!("not allowed on this bot: {why}"));
+        }
         let reference = e.reference();
         for w in &self.deny {
             let w = w.trim();
@@ -1136,6 +1142,18 @@ model = "vendor/shared"
 
     fn cfg(text: &str) -> Config {
         toml::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn a_provider_the_policy_forbids_is_denied_with_the_reason() {
+        let mut cat = Catalog::from_config(&cfg(CONFIG));
+        cat.managed.insert("b".into(), "beta".into());
+        let on = |p: &str| {
+            let e = cat.entries.iter().find(|e| e.provider == p).unwrap();
+            cat.denied(e)
+        };
+        assert_eq!(on("b").as_deref(), Some("not allowed on this bot: beta"));
+        assert_eq!(on("a"), None);
     }
 
     fn models(text: &str) -> (tempfile::TempDir, Models) {

@@ -60,15 +60,15 @@ fn call(name: &str, args: Value) -> Value {
 /// `<label>:<model>`, or a `sleep 30` for a task saying HANG; `GET
 /// /models` answers with the recorded OpenRouter list. `failing` models
 /// (or `*`) answer 503, and `offline` refuses `/models`.
-struct Server {
-    url: String,
-    failing: Arc<Mutex<Vec<String>>>,
-    offline: Arc<AtomicBool>,
-    calls: Arc<Mutex<Vec<String>>>,
+pub(super) struct Server {
+    pub(super) url: String,
+    pub(super) failing: Arc<Mutex<Vec<String>>>,
+    pub(super) offline: Arc<AtomicBool>,
+    pub(super) calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl Server {
-    fn start(label: &'static str) -> Self {
+    pub(super) fn start(label: &'static str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!(
             "http://127.0.0.1:{}/v1",
@@ -92,12 +92,12 @@ impl Server {
         }
     }
 
-    fn fail(&self, model: &str) -> &Self {
+    pub(super) fn fail(&self, model: &str) -> &Self {
         self.failing.lock().unwrap().push(model.into());
         self
     }
 
-    fn calls(&self) -> Vec<String> {
+    pub(super) fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
 }
@@ -188,15 +188,15 @@ fn serve(
 
 // ---- A fake Telegram -----------------------------------------------------
 
-struct FakeTelegram {
-    url: String,
-    queue: Arc<Mutex<std::collections::VecDeque<Value>>>,
-    sent: Arc<Mutex<Vec<Value>>>,
-    next: Mutex<i64>,
+pub(super) struct FakeTelegram {
+    pub(super) url: String,
+    pub(super) queue: Arc<Mutex<std::collections::VecDeque<Value>>>,
+    pub(super) sent: Arc<Mutex<Vec<Value>>>,
+    pub(super) next: Mutex<i64>,
 }
 
 impl FakeTelegram {
-    fn start() -> Self {
+    pub(super) fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let queue: Arc<Mutex<std::collections::VecDeque<Value>>> = Arc::default();
@@ -216,7 +216,7 @@ impl FakeTelegram {
         }
     }
 
-    fn say_from(&self, chat: i64, from: i64, text: &str) {
+    pub(super) fn say_from(&self, chat: i64, from: i64, text: &str) {
         let mut next = self.next.lock().unwrap();
         *next += 1;
         self.queue.lock().unwrap().push_back(json!({
@@ -227,13 +227,13 @@ impl FakeTelegram {
         }));
     }
 
-    fn say(&self, chat: i64, text: &str) {
+    pub(super) fn say(&self, chat: i64, text: &str) {
         self.say_from(chat, chat, text)
     }
 
     /// A message to `chat` containing `needle`, after the first `from`
     /// sent anywhere: where it was and its text.
-    fn wait_for(&self, chat: i64, needle: &str, from: usize) -> (usize, String) {
+    pub(super) fn wait_for(&self, chat: i64, needle: &str, from: usize) -> (usize, String) {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             {
@@ -253,7 +253,7 @@ impl FakeTelegram {
         }
     }
 
-    fn all(&self) -> String {
+    pub(super) fn all(&self) -> String {
         serde_json::to_string(&*self.sent.lock().unwrap()).unwrap()
     }
 }
@@ -284,7 +284,7 @@ fn telegram_serve(
 
 // ---- The binary ----------------------------------------------------------
 
-fn plain(bytes: &[u8]) -> String {
+pub(super) fn plain(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut out = String::new();
     let mut chars = text.chars();
@@ -302,7 +302,7 @@ fn plain(bytes: &[u8]) -> String {
     out
 }
 
-fn home(config: &str) -> tempfile::TempDir {
+pub(super) fn home(config: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     for d in ["work", "data", "home", "tmp"] {
         std::fs::create_dir_all(dir.path().join(d)).unwrap();
@@ -311,7 +311,7 @@ fn home(config: &str) -> tempfile::TempDir {
     dir
 }
 
-fn command(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
+pub(super) fn command(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ferrule"));
     cmd.args(args)
         .current_dir(home.join("work"))
@@ -340,6 +340,16 @@ fn command(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
         "NOTIFY_SOCKET",
         "WATCHDOG_USEC",
         "WATCHDOG_PID",
+        "FERRULE_MANAGED",
+        "FERRULE_POLICY",
+        "FERRULE_BOT_ID",
+        "FERRULE_PANEL_SECRET",
+        "FERRULE_PUBLIC_URL",
+        "FERRULE_DASHBOARD_BIND",
+        "FERRULE_DASHBOARD_PORT",
+        "FERRULE_HTTP_BIND",
+        "FERRULE_BROWSER",
+        "FERRULE_BROWSER_CHROME_SANDBOX",
     ] {
         cmd.env_remove(var);
     }
@@ -349,11 +359,11 @@ fn command(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
     cmd
 }
 
-fn ferrule(home: &Path, args: &[&str]) -> Output {
+pub(super) fn ferrule(home: &Path, args: &[&str]) -> Output {
     command(home, args, &[]).output().unwrap()
 }
 
-fn describe(out: &Output) -> String {
+pub(super) fn describe(out: &Output) -> String {
     format!(
         "status {:?}\nstdout:\n{}\nstderr:\n{}",
         out.status.code(),
@@ -362,7 +372,7 @@ fn describe(out: &Output) -> String {
     )
 }
 
-struct Running(std::process::Child);
+pub(super) struct Running(pub(super) std::process::Child);
 
 impl Drop for Running {
     fn drop(&mut self) {
@@ -371,7 +381,7 @@ impl Drop for Running {
     }
 }
 
-fn gateway(home: &Path, env: &[(&str, &str)]) -> Running {
+pub(super) fn gateway(home: &Path, env: &[(&str, &str)]) -> Running {
     let mut cmd = command(home, &["gateway"], env);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -428,10 +438,11 @@ mode = "off"
 
 // ---- The page, as a browser would use it --------------------------------
 
-/// One HTTP/1.1 request to the dashboard: the status, the headers and
-/// the body.
-fn http(
+/// One HTTP/1.1 request to the dashboard, with `host` as its Host: the
+/// status, the headers and the body.
+pub(super) fn http_as(
     port: u16,
+    host: &str,
     method: &str,
     path: &str,
     headers: &[(&str, &str)],
@@ -440,7 +451,7 @@ fn http(
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(90))).unwrap();
     let mut req = format!(
-        "{method} {path} HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nconnection: close\r\ncontent-length: {}\r\n",
+        "{method} {path} HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\ncontent-length: {}\r\n",
         body.len()
     );
     for (k, v) in headers {
@@ -476,6 +487,24 @@ fn http(
     (status, out, body)
 }
 
+/// [`http_as`] as the loopback address.
+pub(super) fn http(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (u16, BTreeMap<String, String>, String) {
+    http_as(
+        port,
+        &format!("127.0.0.1:{port}"),
+        method,
+        path,
+        headers,
+        body,
+    )
+}
+
 fn unchunk(mut s: &str) -> String {
     let mut out = String::new();
     while let Some((size, rest)) = s.split_once("\r\n") {
@@ -490,7 +519,7 @@ fn unchunk(mut s: &str) -> String {
 }
 
 /// `http://127.0.0.1:<port>/login#<token>` in `text`.
-fn link_in(text: &str) -> (u16, String) {
+pub(super) fn link_in(text: &str) -> (u16, String) {
     let at = text.find("http://127.0.0.1:").expect("a link") + "http://127.0.0.1:".len();
     let rest = &text[at..];
     let (port, rest) = rest.split_once("/login#").expect("a login link");
@@ -498,18 +527,18 @@ fn link_in(text: &str) -> (u16, String) {
     (port.parse().unwrap(), token)
 }
 
-struct Page {
-    port: u16,
-    cookie: String,
-    csrf: String,
+pub(super) struct Page {
+    pub(super) port: u16,
+    pub(super) cookie: String,
+    pub(super) csrf: String,
 }
 
-fn origin(port: u16) -> String {
+pub(super) fn origin(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
 /// Signs in with a link's token; the status when refused.
-fn login(port: u16, token: &str) -> Result<Page, u16> {
+pub(super) fn login(port: u16, token: &str) -> Result<Page, u16> {
     let o = origin(port);
     let (status, headers, body) = http(
         port,
@@ -530,24 +559,24 @@ fn login(port: u16, token: &str) -> Result<Page, u16> {
 }
 
 impl Page {
-    fn get_raw(&self, path: &str) -> (u16, String) {
+    pub(super) fn get_raw(&self, path: &str) -> (u16, String) {
         let (s, _, b) = http(self.port, "GET", path, &[("cookie", &self.cookie)], "");
         (s, b)
     }
 
-    fn get(&self, path: &str) -> (u16, Value) {
+    pub(super) fn get(&self, path: &str) -> (u16, Value) {
         let (s, b) = self.get_raw(&format!("/api/{path}"));
         (s, serde_json::from_str(&b).unwrap_or(Value::String(b)))
     }
 
     /// A GET that must answer 200.
-    fn read(&self, path: &str) -> Value {
+    pub(super) fn read(&self, path: &str) -> Value {
         let (s, v) = self.get(path);
         assert_eq!(s, 200, "GET {path}: {v}");
         v
     }
 
-    fn post(&self, path: &str, body: Value) -> (u16, Value) {
+    pub(super) fn post(&self, path: &str, body: Value) -> (u16, Value) {
         let o = origin(self.port);
         let (s, _, b) = http(
             self.port,
@@ -565,7 +594,7 @@ impl Page {
     }
 
     /// Polls `path` until `ok` holds, for up to 30 s.
-    fn until(&self, path: &str, ok: impl Fn(&Value) -> bool) -> Value {
+    pub(super) fn until(&self, path: &str, ok: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let v = self.read(path);
@@ -794,7 +823,7 @@ fn a_named_instances_page_says_which_and_its_console_runs_there() {
 
 /// The port of a freshly started gateway's page, from `ferrule dashboard
 /// link` once it answers.
-fn restarted_port(home: &Path) -> u16 {
+pub(super) fn restarted_port(home: &Path) -> u16 {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let out = ferrule(home, &["dashboard", "link"]);

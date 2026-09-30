@@ -611,7 +611,8 @@ what it has; the changes below are all there is to do to it.
    pub const PUBLIC_URL_ENV: &str = "FERRULE_PUBLIC_URL";
    pub const DASHBOARD_BIND_ENV: &str = "FERRULE_DASHBOARD_BIND";
    pub const DASHBOARD_PORT_ENV: &str = "FERRULE_DASHBOARD_PORT";
-   pub const HTTP_BIND_ENV: &str = "FERRULE_HTTP_BIND";
+   // HTTP_BIND_ENV is added in Part 4, where it is first read (an unused
+   // constant fails clippy).
    ```
 8. **New functions** (each `pub`, with a one-line doc comment):
    - `kind_of(plan: Option<Plan>, base_url: &str) -> String`: the draft's
@@ -653,8 +654,8 @@ what it has; the changes below are all there is to do to it.
      the sandbox"), so under `sandbox = "os"` they'd be the one
      unsandboxed door.
    - `guard(sandbox: Sandbox) -> Sandbox`: `match commands(sandbox.is_active(), sandbox.degraded()) { Ok(()) => sandbox, Err(why) => sandbox.refuse(why) }`.
-   - `hidden_for(s: &State) -> Vec<String>`: the policy path as a string
-     when `s.on()` and a path is set, else empty.
+   - `hidden_for(s: &State) -> Vec<PathBuf>`: the policy path (it is what
+     `Policy.hidden` holds) when `s.on()` and a path is set, else empty.
    - `cap_refusal_under(p: &Policy, key: &str, new: f64) -> Option<String>`,
      for the keys `max_usd_per_day`, `max_usd_per_run` and
      `max_tokens_per_day`, with the policy's cap for that key (`None` when
@@ -1066,7 +1067,7 @@ are under `crates/ferrule-cli/src/dashboard/` unless said otherwise.
 1. `#[derive(Debug, Clone, PartialEq, Eq)] pub struct Public { pub host: String, pub origin: String, pub base: String, pub secure: bool }`.
 2. `pub fn parse(url: &str) -> anyhow::Result<Public>`, in this order:
    1. On the trimmed raw text, before any URL parsing (which would fold
-      `..` away): refuse `?`, `#`, `@`, any whitespace, or a `/`-separated
+      `..` away): refuse `?`, `#`, `@`, `%`, any whitespace, or a `/`-separated
       segment equal to `..`, with
       `bail!("no query, fragment, user name or `..` in it")`.
    2. `url::Url::parse(raw).context("not a URL")?`. The scheme is `http` or
@@ -1086,7 +1087,7 @@ are under `crates/ferrule-cli/src/dashboard/` unless said otherwise.
      secure;
    - `https://x.io:443/` gives host `x.io`;
    - each of `ftp://x/`, `https://x/a?b=1`, `https://x/#a`, `https://u@x/`,
-     `https://x/a/../b`, `https://x/a b`, `https://x/%2e/` and `not a url`
+     `https://x/a/../b`, `https://x/a b`, `https://x/%2e/` (a `%` is refused before parsing, which would fold `%2e` into `.` and hide the `..`) and `not a url`
      is `Err`.
 
 **3.2 The dashboard knows its public address** (`mod.rs`)
@@ -1411,9 +1412,8 @@ The Telegram flow below is the gap. The HTTP API only needs a bind (4.9).
      call. Empty gives `bad(400, "paste the bot token first")`. When
      `!probe::plausible_bot_token(token)`:
      `bad(400, "that isn't a bot token (digits:letters)")`.
-   - `base` is `super::api::config(ctx).and_then(|c| c.gateway.telegram_base_url.clone()).unwrap_or_else(|| "https://api.telegram.org".into())`.
-     Use the constant the gateway already has for the default, if there is
-     one. The client is `probe::client()`, and the probe is
+   - `base` is `super::api::config(ctx).and_then(|c| c.gateway.telegram_base_url.clone())`: it is a `String` with a
+     serde default already, so there is no fallback to write. The client is `probe::client()`, and the probe is
      `probe::Telegram { http: &client, base_url: &base, token }`.
 3. `test`:
    - `get_me()` gives the `name`;

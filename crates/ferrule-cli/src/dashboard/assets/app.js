@@ -453,6 +453,11 @@
         secHead("Home", (h.problems || []).length ? (h.problems.length + " to look at") : "all quiet",
           btn("Run doctor", "doctor/run", {}),
           kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
+        MANAGED.on ? el("div", { class: "card" },
+          el("h3", { text: "Managed" }),
+          el("p", { class: "muted small", dir: "auto", text: MANAGED.reason }),
+          (MANAGED.locks || []).length ? el("ul", {}, ...MANAGED.locks.map((l) => el("li", { dir: "auto", text: l }))) : null,
+          el("p", { class: "small", text: "Commands: " + MANAGED.protection })) : null,
         approvalsCard(approvals),
         hiddenNotices(h.hidden),
         el("div", { class: "stats" },
@@ -780,6 +785,10 @@
           };
           box.append(el("div", { class: "row" }, b));
         }
+        return box;
+      }
+      if (p.plan === "claude-code" && !p.connected && MANAGED.on) {
+        box.append(el("p", { class: "muted small", text: MANAGED.claude_plan }));
         return box;
       }
       if (p.plan === "claude-code" && !p.connected) {
@@ -1829,6 +1838,7 @@
   const ICON_OF = { health: "health" };
   const SUB = { channels: "where people reach the agent", console: "ferrule commands", config: "the file, secrets hidden", routing: "which model for what", usage: "spend and caps", tasks: "scheduled runs", logs: "what happened", extensions: "skills, tools, MCP", agents: "sub-agents" };
   let current = "health";
+  let MANAGED = { on: false };
   let timer = null;
   let banner = null;
   let lastHealth = null;
@@ -2006,6 +2016,7 @@
       loggedOut("Logged out.");
     };
     document.getElementById("live").hidden = false;
+    MANAGED = await api("/api/managed").catch(() => ({ on: false }));
     buildNav();
     show(order.includes(hash) ? hash : "health");
   }

@@ -21,7 +21,9 @@ mod instances;
 mod last_good;
 mod learn;
 mod ledger;
+mod lifecycle;
 mod local;
+mod managed;
 mod mcp_add;
 mod mcp_config;
 mod memory_tools;
@@ -580,6 +582,8 @@ fn main() -> Result<()> {
     // On Windows, ferrule is also the sandbox's launcher (M26): run as
     // `ferrule __sandbox-launch <program> <args…>`, it never gets here.
     ferrule_sandbox::launch::intercept();
+    // M44: what a restart in place starts with, before any secret is taken out.
+    lifecycle::snapshot_env();
     // M35: an exported Claude plan token goes to the claude child only, not
     // to hooks, MCP servers or commands, which inherit this environment.
     ferrule_plans::claude::token::take_exported();
@@ -657,6 +661,10 @@ fn main() -> Result<()> {
         }
     }
     secrets::load_into_env();
+    // M44: the panel's secret leaves the environment before any thread
+    // starts, so no child inherits it.
+    managed::take_panel_secret();
+    let _ = managed::state();
     // M36: the Codex client version is learned and cached in the data dir.
     ferrule_providers::codex::version::configure(config::data_dir_path().as_deref(), true);
     // The command's future is polled on this thread. Windows gives a main
@@ -682,7 +690,57 @@ fn main() -> Result<()> {
     done
 }
 
+/// M44: what a managed bot's CLI won't do (docs/m44-managed-mode.md).
+fn managed_gate(cmd: &Cmd) -> Result<()> {
+    if !managed::on() {
+        return Ok(());
+    }
+    match cmd {
+        Cmd::Setup { .. } => managed::forbid(
+            "`ferrule setup`",
+            "set the bot up from its dashboard; the container runtime is the service",
+        )?,
+        Cmd::Update { .. } => managed::forbid(
+            "`ferrule update`",
+            "the panel updates a bot by changing its image",
+        )?,
+        Cmd::Ssh { .. } => managed::forbid(
+            "SSH workspaces",
+            "keys to other machines don't go into a hosted bot",
+        )?,
+        Cmd::Instances { .. } => managed::forbid(
+            "named instances",
+            "a managed bot is one container with one bot",
+        )?,
+        Cmd::Login {
+            which: subscription::login::Which::Claude,
+            ..
+        } => bail!(managed::NO_CLAUDE_PLAN),
+        Cmd::Dashboard {
+            op: Some(dashboard::cli::DashCmd::Link { remote: true }),
+        } => managed::forbid("a tunnel", "the panel's proxy is the way in")?,
+        _ => {}
+    }
+    if let Some(p) = managed::policy().filter(|p| !p.extensions) {
+        let why = format!("the policy turns extensions off: {}", p.why());
+        match cmd {
+            Cmd::Mcp {
+                op: mcp_add::McpCmd::Add(_),
+            } => managed::forbid("`ferrule mcp add`", &why)?,
+            Cmd::Plugins {
+                op: plugins_cli::PluginsCmd::Add { .. },
+            } => managed::forbid("`ferrule plugins add`", &why)?,
+            Cmd::Extensions {
+                op: self_extend::ExtCmd::Approve { .. } | self_extend::ExtCmd::Resume { .. },
+            } => managed::forbid("approving an extension", &why)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 async fn dispatch(cmd: Cmd) -> Result<()> {
+    managed_gate(&cmd)?;
     match cmd {
         // Handled in `main`, before anything else starts.
         Cmd::ClaudeMcp => unreachable!("claude-mcp runs before dispatch"),
@@ -802,7 +860,27 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             workspace,
             max_iterations,
         } => {
+            if managed::on() {
+                managed::check()?;
+                if let Some(p) = config::config_path()? {
+                    managed::first_start(&p)?;
+                }
+                if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+                    if !home.exists() {
+                        std::fs::create_dir_all(&home)?;
+                    }
+                }
+                if workspace.as_deref().is_some_and(|w| w.starts_with("ssh:")) {
+                    return Err(managed::refused(
+                        "an SSH workspace",
+                        "keys to other machines don't go into a hosted bot",
+                    ));
+                }
+            }
             let workspace = remote::workspace(workspace, true).await?;
+            if managed::on() {
+                std::fs::create_dir_all(&workspace)?;
+            }
             run_gateway(provider, workspace, max_iterations).await?;
         }
         Cmd::Update {
@@ -1112,7 +1190,13 @@ fn build_agent_from(
     }
     let (read_only, reading_mcp) = agents::narrows(child);
     let broker = shared_broker(&cfg)?;
-    registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone())));
+    match managed::user_commands_off(&sandbox) {
+        None => registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone()))),
+        Some(why) => {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| tracing::warn!("the shell tool is off: {why}"));
+        }
+    }
     if planning && !sandbox.is_active() {
         registry.remove("shell");
     }
@@ -1345,7 +1429,8 @@ fn build_agent_from(
         .with_guard(guard);
     let lint_sandbox = sandbox.clone();
     let commit_sandbox = sandbox.clone();
-    if let (Some(cmd), false) = (&cfg.agent.verify_command, planning) {
+    let commands_off = managed::user_commands_off(&sandbox).is_some();
+    if let (Some(cmd), false) = (&cfg.agent.verify_command, planning || commands_off) {
         let timeout = Duration::from_secs(cfg.agent.verify_timeout_secs);
         agent = match remote {
             Some(r) => agent.with_verifier(Arc::new(ferrule_ssh::RemoteVerifier {
@@ -1367,7 +1452,10 @@ fn build_agent_from(
         let mut hooks = hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?;
         // M29: the project's linter after each edit, built in (so a
         // sub-agent inherits it with the rest), in the sandbox.
-        if cfg.agent.lint == config::LintMode::Auto && remote.is_none() {
+        if cfg.agent.lint == config::LintMode::Auto
+            && remote.is_none()
+            && managed::user_commands_off(&lint_sandbox).is_none()
+        {
             hooks.add(
                 ferrule_hooks::LintHook::new(
                     lint_sandbox,
@@ -1380,7 +1468,12 @@ fn build_agent_from(
     }
     // M29: one commit of the run's own files per run, in the sandbox. A
     // sub-agent works in its own worktree; its root commits for the tree.
-    if cfg.agent.auto_commit && child.is_none() && !planning && remote.is_none() {
+    if cfg.agent.auto_commit
+        && child.is_none()
+        && !planning
+        && remote.is_none()
+        && commit_sandbox.refusal().is_none()
+    {
         let commit = autocommit::AutoCommit::new(
             &hooks_workspace,
             commit_sandbox,
@@ -1423,6 +1516,7 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
         }
     }
     policy.state_dir = config::data_dir().ok().map(|d| d.join("sandbox"));
+    policy.hidden.extend(managed::hidden_for(managed::state()));
     policy
 }
 
@@ -1500,7 +1594,7 @@ fn browser_note(b: &ferrule_mcp::BrowserConfig) -> String {
 /// Built (and probed) once per process — the gateway builds an agent per
 /// session and shouldn't fork a probe for each. A `[sandbox]` edit takes a
 /// restart to apply.
-fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
+pub(crate) fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
     static SANDBOX: OnceLock<Arc<Sandbox>> = OnceLock::new();
     if let Some(sandbox) = SANDBOX.get() {
         return Ok(sandbox.clone());
@@ -1515,6 +1609,7 @@ fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
             .with_env(broker.child_env())
             .with_egress(Some(tool_egress(broker)?));
     }
+    let sandbox = managed::guard(sandbox);
     Ok(SANDBOX.get_or_init(|| Arc::new(sandbox)).clone())
 }
 
@@ -2284,8 +2379,20 @@ async fn run_gateway(
     )
     .await?;
 
-    let named_channels = build_channels(&cfg, Some(&workspace))?;
-    if named_channels.is_empty() {
+    let mut named_channels = build_channels(&cfg, Some(&workspace))?;
+    if let Some(policy) = managed::policy() {
+        named_channels.retain(|name, _| {
+            let keep = policy.allows_channel(name);
+            if !keep {
+                tracing::warn!(
+                    "channel `{name}` doesn't start: the policy doesn't allow it: {}",
+                    policy.why()
+                );
+            }
+            keep
+        });
+    }
+    if named_channels.is_empty() && !managed::on() {
         bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true`, `telegram_token_env`, `discord_token_env`, `slack_bot_token_env` or a `[gateway.<channel>]` table (whatsapp, matrix, email, signal, mattermost, http) in the config");
     }
     let owners = trust::owners(&cfg);
@@ -2360,6 +2467,10 @@ async fn run_gateway(
         Duration::from_secs(cfg.scheduler.gate_timeout_secs),
         cfg.scheduler.gate_workspace.clone(),
     )?;
+    let scheduler = match managed::user_commands_off(&*shared_sandbox(&cfg)?) {
+        Some(why) => scheduler.refuse_gates(why),
+        None => scheduler,
+    };
     // M19: the owner's warnings and questions go out through the owner's
     // chat channels (M31), and
     // the scheduler waits while the kill switch is on.
@@ -2396,14 +2507,16 @@ async fn run_gateway(
         Arc::new(update::notice::HubOwner(hub.clone())),
     );
     // M36: a line per update or rollback, and what's out (docs/updates.md).
-    update::notice::spawn(
-        update::notice::Watch::new(
-            config::data_dir()?,
-            &cfg.update,
-            update::claude::Claude::from_config(&cfg, &config::data_dir()?),
-        ),
-        Arc::new(update::notice::HubOwner(hub.clone())),
-    );
+    if !managed::on() {
+        update::notice::spawn(
+            update::notice::Watch::new(
+                config::data_dir()?,
+                &cfg.update,
+                update::claude::Claude::from_config(&cfg, &config::data_dir()?),
+            ),
+            Arc::new(update::notice::HubOwner(hub.clone())),
+        );
+    }
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = Arc::new(learn::register(
         &cfg,
@@ -2455,6 +2568,9 @@ async fn run_gateway(
                     fixed: provider.clone(),
                     retire: retirer(lanes.clone()),
                     restarts: restarts.clone(),
+                    commands_off: shared_sandbox(&cfg)
+                        .ok()
+                        .and_then(|s| s.refusal().map(str::to_string)),
                 }),
                 chat: page_chat.clone(),
                 ..dashboard::Ctx::from_config(&cfg)
@@ -2764,6 +2880,10 @@ async fn tasks_run_now(
         Duration::from_secs(cfg.scheduler.gate_timeout_secs),
         cfg.scheduler.gate_workspace.clone(),
     )?;
+    let scheduler = match managed::user_commands_off(&*shared_sandbox(&cfg)?) {
+        Some(why) => scheduler.refuse_gates(why),
+        None => scheduler,
+    };
     let scheduler = learn::register(&cfg, scheduler, &workspace, provider, false);
 
     let outcome = scheduler.execute(&task).await;

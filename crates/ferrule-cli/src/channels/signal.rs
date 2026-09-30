@@ -45,6 +45,10 @@ pub fn on_path(name: &str) -> Option<PathBuf> {
 /// The signal-cli to run: `signal_cli` (a path, or a name on PATH), else
 /// `signal-cli` on PATH.
 pub fn program(s: &Signal) -> Option<PathBuf> {
+    // signal-cli is a JVM ferrule would spawn outside the sandbox.
+    if crate::managed::on() {
+        return None;
+    }
     match s
         .signal_cli
         .as_deref()
@@ -65,7 +69,7 @@ pub fn config(s: &Signal, workspace: Option<&Path>) -> Result<SignalConfig> {
         bail!("[gateway.signal] account: {e}");
     }
     let daemon = match (&s.url, workspace) {
-        (None, Some(_)) => Some(Daemon {
+        (None, Some(_)) if !crate::managed::on() => Some(Daemon {
             // A missing program is the channel's problem on the dashboard
             // and in doctor, not a gateway that won't start.
             program: program(s)

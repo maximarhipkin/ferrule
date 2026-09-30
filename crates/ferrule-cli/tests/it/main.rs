@@ -15,6 +15,7 @@ mod instances;
 mod learn;
 mod live_fixes;
 mod local_models;
+mod managed;
 mod mcp_add;
 mod memory;
 mod models;

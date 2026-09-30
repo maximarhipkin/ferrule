@@ -35,6 +35,9 @@ pub struct Live {
     pub retire: Retire,
     /// M37: a channel's loop started again from the page.
     pub restarts: Arc<ferrule_gateway::ChannelRestarts>,
+    /// Why commands are refused here (managed mode), for /healthz.
+    #[allow(dead_code)] // /healthz reads it (M44 part 5)
+    pub commands_off: Option<String>,
 }
 
 pub(super) type Answer = Option<(u16, Value)>;
@@ -90,6 +93,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
     if get {
         return match path {
             "health" => ok(health(ctx)),
+            "managed" => ok(managed_view(ctx)),
             "connections" => connections(ctx).await,
             "connections/checklist" => connections_checklist(ctx).await,
             "models" => models(ctx),
@@ -123,8 +127,12 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "models/default" | "models/pin" | "models/unpin" | "models/fallback" | "models/add"
         | "models/remove" | "models/test" => model_op(ctx, path, body).await,
         "models/provider" => super::models_page::provider_save(ctx, body).await,
-        "plans/chatgpt/start" => super::models_page::chatgpt_start(ctx).await,
+        "plans/chatgpt/start" => match crate::managed::kind_refusal("chatgpt", "chatgpt") {
+            Some(why) => bad(403, why),
+            None => super::models_page::chatgpt_start(ctx).await,
+        },
         "plans/chatgpt/cancel" => super::models_page::chatgpt_cancel(ctx),
+        "plans/claude" if crate::managed::on() => bad(403, crate::managed::NO_CLAUDE_PLAN),
         "plans/claude" => super::models_page::claude_token(ctx, body),
         "routing/set" | "routing/unset" => routing_op(ctx, path, body),
         "catalog/add" => catalog_add(ctx, body).await,
@@ -1297,6 +1305,32 @@ fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     }
 }
 
+/// `GET /api/managed`: whether this bot is run by a panel, and what the
+/// panel's policy locks.
+fn managed_view(ctx: &Ctx) -> Value {
+    use crate::managed;
+    let state = managed::state();
+    let Some(policy) = managed::policy() else {
+        return json!({ "on": false });
+    };
+    let protection = match super::api::config(ctx).map(|c| crate::shared_sandbox(&c)) {
+        Some(Ok(s)) => managed::protection(&s),
+        Some(Err(e)) => format!("unknown: {e}"),
+        None => "unknown: no config".into(),
+    };
+    json!({
+        "on": true,
+        "source": state.source,
+        "bot_id": state.bot_id,
+        "reason": policy.why(),
+        "policy": policy,
+        "locks": policy.locks(),
+        "protection": protection,
+        "panel_secret": managed::panel_secret().is_some(),
+        "claude_plan": managed::NO_CLAUDE_PLAN,
+    })
+}
+
 pub(super) fn config(ctx: &Ctx) -> Option<Config> {
     let text = std::fs::read_to_string(ctx.config_path.as_ref()?).ok()?;
     toml::from_str(&text).ok()
@@ -1808,6 +1842,9 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                     return bad(400, format!("{key} must be a number"));
                 };
                 changes.push((key.clone(), v));
+            }
+            if let Some(why) = crate::settings_admin::caps_refusal(&changes) {
+                return bad(403, why);
             }
             match s.caps_question(&changes) {
                 Ok(Some(q)) => need!(confirmed(body, q)),
