@@ -99,7 +99,7 @@
   --rail-w:232px;
   --focus:2px solid var(--copper);
 }
-@media (pointer:fine){:root{--tap:40px}}
+@media (pointer:fine) and (min-width:900px){:root{--tap:40px}}
 @media (prefers-reduced-motion:reduce){:root{--dur-fast:0s; --dur:0s}}
 
 *{box-sizing:border-box}

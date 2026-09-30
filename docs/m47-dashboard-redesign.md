@@ -1488,3 +1488,17 @@ also in the final report.
     Console's command chips had no border once they were made 44 px; the
     Backup button touched the file list. All fixed in this part; the
     numbers are in "Verified, and how".
+49. **Part 7: what CI found.** Two things, both fixed in the follow-up
+    commit.
+    - **macOS:** correction 45 was not true. `--tap` dropped to 40 px for
+      any `(pointer:fine)`, and Chromium on macOS reports a fine pointer
+      even when emulating a phone, so the header buttons were 40 px at
+      390 px. The 40 px size now needs a fine pointer **and** a screen 900
+      px or wider.
+    - **Windows:** a backup made from the page, which runs inside the
+      gateway, tried to read `agents.owners/*.lock`. Each is held open with
+      a byte-range lock for as long as its process runs, and Windows refuses
+      to read a locked range (`os error 33`), so all three backup tests
+      failed. The folder is now on the never-backed-up list with the other
+      run-time state (`backup::CACHES`): a restored lock means nothing. This
+      also fixed `ferrule backup` on Windows with a gateway running.

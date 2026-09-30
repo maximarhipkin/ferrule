@@ -38,6 +38,9 @@ pub const CACHES: &[&str] = &[
     "sandbox",
     "gateway/running.json",
     "gateway/status.txt",
+    // One lock file per running process, held open for as long as it runs;
+    // on Windows a held lock can't be read, and a restored one means nothing.
+    "agents.owners",
     "backup.json",
     // The page's own backups (M47): a backup never holds the last one.
     "backups",
@@ -741,6 +744,7 @@ mod tests {
         assert!(is_cache("models/qwen.gguf"));
         assert!(is_cache("memory.db-wal"));
         assert!(is_cache("gateway/running.json"));
+        assert!(is_cache("agents.owners/7f4f.lock"));
         assert!(!is_cache("modelsfile"));
         assert!(!is_cache("tasks.db"));
         assert!(!is_cache("sessions/telegram_1.jsonl"));
