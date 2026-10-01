@@ -989,7 +989,7 @@
         v.models.length ? table(["model", "price / 1M", "context", "state", ""], v.models.map((r) => ({
           dead: !r.key_present,
           cells: [
-            frag(el("strong", { text: r.reference }), r.default ? frag(" ", tag("default", "copper")) : null,
+            frag(el("strong", { text: r.reference }), r.default ? frag(" ", tag("default", "accent")) : null,
               el("span", { class: "sub", text: (r.aliases.length ? "alias: " + r.aliases.join(", ") + " · " : "") + r.driver })),
             r.pricing
               ? frag(el("span", { class: "mono", text: price(r.pricing) }), r.price_source ? el("span", { class: "sub", text: r.price_source }) : null)
@@ -1151,7 +1151,7 @@
     provider(p) {
       const head = el("div", { class: "row" },
         el("strong", { class: "grow", text: p.title }),
-        p.connected ? (p.ready ? tag("ready", "ok") : tag("not ready", "bad")) : p.key_set ? tag("key saved", "copper") : null);
+        p.connected ? (p.ready ? tag("ready", "ok") : tag("not ready", "bad")) : p.key_set ? tag("key saved", "accent") : null);
       const box = el("div", { class: "card" }, head);
       if (p.plan === "chatgpt" && !p.connected) {
         const f = this.chatgpt;
@@ -1261,7 +1261,7 @@
         el("h2", { text: "Tiers" }),
         v.tiers.length ? table(["", "tier", "model", "price / 1M", "context", "key"], v.tiers.map((t, i) => ({ cells: [
           el("span", { class: "mono muted", text: String(i + 1) }),
-          tag(i === 0 ? "cheap" : i === v.tiers.length - 1 ? "strong" : "mid", i === 0 ? "copper" : null),
+          tag(i === 0 ? "cheap" : i === v.tiers.length - 1 ? "strong" : "mid", i === 0 ? "accent" : null),
           el("span", { class: "mono", text: t.reference }),
           el("span", { class: "mono", text: t.pricing ? price(t.pricing) : "price unknown" }),
           el("span", { class: "mono", text: t.context_window ? num(t.context_window) : "–" }),
