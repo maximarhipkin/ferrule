@@ -123,7 +123,9 @@ async fn run_inner(op: &Op, ctx: &Ctx, by: &str, here: &ChatRef) -> Result<Strin
         Op::Connections => connections(ctx).await,
         Op::ConfigGet { key } => config_get(ctx, key.as_deref()).await,
         Op::Backup => backup(ctx, by).await,
-        Op::UpdateCheck | Op::Update | Op::Restart => Err("not built yet".into()),
+        Op::UpdateCheck | Op::Update | Op::Restart => {
+            Err(format!("`{}` runs through the tool, not here", op.name()))
+        }
         _ => Err(format!("`{}` has no runner", op.name())),
     }
 }
@@ -158,10 +160,12 @@ async fn status(ctx: &Ctx) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-async fn doctor(ctx: &Ctx) -> Result<String, String> {
+/// Runs doctor and reads its report: the lines worth saying, and the
+/// fixes that are ops.
+pub async fn doctor_with_fixes(ctx: &Ctx) -> Result<(String, Vec<Op>), String> {
     let id = match api::act(ctx, "doctor/run", &json!({}), "doctor").await {
         Some((200, v)) => v["id"].as_str().unwrap_or_default().to_string(),
-        other => return said(other),
+        other => return said(other).map(|t| (t, Vec::new())),
     };
     let Some(run) = ctx.runs.get(&id) else {
         return Err("doctor started but its run is gone".into());
@@ -174,22 +178,20 @@ async fn doctor(ctx: &Ctx) -> Result<String, String> {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let report = api::doctor_report(&run.output()).ok_or("doctor gave no report")?;
-    let mut lines = Vec::new();
-    for item in report["items"].as_array().into_iter().flatten() {
-        let level = item["level"].as_str().unwrap_or("");
-        if !matches!(level, "warn" | "fail") {
-            continue;
-        }
-        lines.push(format!(
-            "{level}: {} — {}",
-            item["what"].as_str().unwrap_or(""),
-            item["detail"].as_str().unwrap_or("")
-        ));
-    }
+    let (lines, fixes) = super::doctor::read(&report);
     if lines.is_empty() {
-        return Ok("Doctor found nothing wrong.".into());
+        return Ok(("Doctor found nothing wrong.".into(), fixes));
     }
-    Ok(lines.join("\n"))
+    Ok((lines.join("\n"), fixes))
+}
+
+async fn doctor(ctx: &Ctx) -> Result<String, String> {
+    let (mut text, fixes) = doctor_with_fixes(ctx).await?;
+    if !fixes.is_empty() {
+        let names: Vec<&str> = fixes.iter().map(Op::name).collect();
+        text.push_str(&format!("\nFixes I can make: {}", names.join(", ")));
+    }
+    Ok(text)
 }
 
 fn audit(ctx: &Ctx, limit: usize) -> Result<String, String> {

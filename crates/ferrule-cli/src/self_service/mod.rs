@@ -11,20 +11,28 @@
 //! whoever asks.
 
 mod describe;
+mod doctor;
+mod door;
+pub mod promise;
+mod restart;
 mod run;
 mod tool;
+mod update;
 
 #[cfg(test)]
 mod tests;
 
+pub use door::SelfServiceDoor;
 pub use tool::AdminTool;
 
 use crate::dashboard::{Ctx, Dashboard};
+use crate::update::apply::Apply;
+use ferrule_gateway::Router;
 use ferrule_trust::{ChatRef, Hub};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 /// How long a card waits for the owner.
@@ -349,7 +357,14 @@ pub struct Admin {
     pub hub: Arc<Hub>,
     bound: OnceLock<Bound>,
     ask_for: Duration,
+    /// The gateway's lanes: a restart waits for the asking turn to end.
+    router: OnceLock<Weak<Router>>,
+    /// What the update ops install with; tests point it at a mock.
+    updater: OnceLock<Updater>,
 }
+
+/// The apply flow to use and whether the update units are installed.
+type Updater = Arc<dyn Fn() -> Result<(Apply<'static>, bool), String> + Send + Sync>;
 
 impl Admin {
     pub fn new(hub: Arc<Hub>) -> Arc<Self> {
@@ -357,6 +372,8 @@ impl Admin {
             hub,
             bound: OnceLock::new(),
             ask_for: ASK_FOR,
+            router: OnceLock::new(),
+            updater: OnceLock::new(),
         })
     }
 
@@ -367,13 +384,37 @@ impl Admin {
             hub,
             bound: OnceLock::new(),
             ask_for,
+            router: OnceLock::new(),
+            updater: OnceLock::new(),
         })
+    }
+
+    #[cfg(test)]
+    pub fn set_updater(&self, f: Updater) {
+        let _ = self.updater.set(f);
     }
 
     /// The gateway builds its agents before the page; the page's context
     /// is bound once it exists. A second bind is ignored.
     pub fn bind_page(&self, dash: Arc<Dashboard>) {
         let _ = self.bound.set(Bound::Page(dash));
+    }
+
+    pub fn bind_router(&self, router: Weak<Router>) {
+        let _ = self.router.set(router);
+    }
+
+    pub(crate) fn router(&self) -> Weak<Router> {
+        self.router.get().cloned().unwrap_or_default()
+    }
+
+    /// This process's update flow, from the config.
+    pub(crate) fn apply(&self, ctx: &Ctx) -> Result<(Apply<'static>, bool), String> {
+        if let Some(f) = self.updater.get() {
+            return f();
+        }
+        let data = ctx.data.clone().ok_or("there's no data dir here")?;
+        Ok((update::real_apply(data)?, crate::update::units_installed()))
     }
 
     pub fn bind_own(&self, ctx: Ctx) {

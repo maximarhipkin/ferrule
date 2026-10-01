@@ -389,3 +389,84 @@ fn the_description_names_every_op() {
         );
     }
 }
+
+fn said(chat: &str, sender: &str, text: &str) -> ferrule_gateway::InboundMessage {
+    ferrule_gateway::InboundMessage {
+        channel: "telegram".into(),
+        chat_id: chat.into(),
+        sender: "someone".into(),
+        sender_id: Some(sender.into()),
+        message_id: "1".into(),
+        text: text.into(),
+        attachments: vec![],
+        reply_to: None,
+        ts: 0,
+    }
+}
+
+#[tokio::test]
+async fn the_door_takes_update_only_from_the_owner() {
+    use ferrule_gateway::Interceptor;
+    let rig = Rig::new(long());
+    let door = SelfServiceDoor::new(rig.admin.clone());
+    assert!(door.intercept(&said("42", "42", "hello")).await.is_none());
+    assert!(door.intercept(&said("42", "42", "/new")).await.is_none());
+    assert_eq!(
+        door.intercept(&said("7", "7", "/update")).await.unwrap(),
+        "Only the owner can update Ferrule."
+    );
+    assert_eq!(
+        door.intercept(&said("7", "7", "/Restart@ferrule_bot"))
+            .await
+            .unwrap(),
+        "Only the owner can restart Ferrule."
+    );
+    assert_eq!(
+        door.intercept(&said("7", "7", "/doctor")).await.unwrap(),
+        "Only the owner can check Ferrule."
+    );
+    assert!(rig.told.0.lock().unwrap().is_empty(), "nobody was asked");
+}
+
+#[tokio::test]
+async fn a_group_is_sent_to_the_private_chat() {
+    use ferrule_gateway::Interceptor;
+    let rig = Rig::new(long());
+    let door = SelfServiceDoor::new(rig.admin.clone());
+    let said = door
+        .intercept(&said("-1001", "42", "/update"))
+        .await
+        .unwrap();
+    assert!(said.starts_with("Ask me in our private chat"), "{said}");
+    assert!(rig.told.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_door_answers_at_once_and_works_after() {
+    use ferrule_gateway::Interceptor;
+    let s = crate::update::tests::setup().await;
+    let rig = Rig::new(long());
+    let s = Arc::new(s);
+    let shared = s.clone();
+    rig.admin.set_updater(Arc::new(move || {
+        Ok((crate::update::tests::apply(&shared, None), false))
+    }));
+    let door = SelfServiceDoor::new(rig.admin.clone());
+    let started = std::time::Instant::now();
+    let reply = door.intercept(&said("42", "42", "/update")).await.unwrap();
+    assert!(started.elapsed() < Duration::from_millis(100));
+    assert_eq!(reply, "Checking for a new Ferrule…");
+    let card = rig.asked().await;
+    assert!(card.contains("Install Ferrule v0.6.0"), "{card}");
+    // The owner says no: nothing is installed and the chat is told so.
+    assert!(rig.reply("no").is_some());
+    for _ in 0..200 {
+        if rig.told.0.lock().unwrap().len() > 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let told = rig.told.0.lock().unwrap().clone();
+    assert!(told.last().unwrap().contains("nothing changed"), "{told:?}");
+    assert_eq!(std::fs::read(&s.exe).unwrap(), b"old");
+}

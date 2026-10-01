@@ -2817,6 +2817,7 @@ async fn run_gateway(
             .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
     );
     files.bind(&router);
+    admin.bind_router(Arc::downgrade(&router));
     // A chat whose agents report while it's idle is run again, and its
     // answer goes to the chat.
     if let Some(sup) = &sup {
@@ -2871,6 +2872,15 @@ async fn run_gateway(
         selfcheck::Check::new(&cfg, config::data_dir()?, adapters.clone()),
         Arc::new(update::notice::HubOwner(hub.clone())),
     );
+    // M48: a restart the owner asked for from a chat is kept here, a few
+    // seconds in, once the channels are up.
+    {
+        let (data, owner) = (config::data_dir()?, update::notice::HubOwner(hub.clone()));
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            self_service::promise::on_start(&data, &owner);
+        });
+    }
     // M36: a line per update or rollback, and what's out (docs/updates.md).
     if !managed::on() {
         update::notice::spawn(
@@ -2987,6 +2997,7 @@ async fn run_gateway(
             plan: Some(plan),
             undo: Some(undo),
         }))
+        .with_interceptor(Arc::new(self_service::SelfServiceDoor::new(admin.clone())))
         .with_interceptor(Arc::new(settings_door::SettingsDoor {
             settings: settings_admin::Settings::new(
                 config::config_path()?.unwrap_or_default(),

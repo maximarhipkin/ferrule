@@ -10,7 +10,7 @@ pub mod state;
 pub mod swap;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::service;
 use anyhow::{anyhow, bail, Context, Result};
@@ -391,7 +391,7 @@ pub fn held_by(others: &[(String, Option<bool>)]) -> Option<&str> {
 
 /// Not this user's to replace: a system service's binary, run by root's
 /// units — the default's or any named instance's (M38).
-fn someone_elses(exe: &Path) -> Option<String> {
+pub(crate) fn someone_elses(exe: &Path) -> Option<String> {
     if service::is_root() || !cfg!(target_os = "linux") {
         return None;
     }

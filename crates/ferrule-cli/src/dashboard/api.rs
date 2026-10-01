@@ -1193,7 +1193,7 @@ fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
 
 /// The same clean shutdown as `systemctl stop`, which the service follows
 /// with a start.
-fn terminate_self() {
+pub(crate) fn terminate_self() {
     #[cfg(unix)]
     // SAFETY: signalling our own pid; the gateway's handler shuts down.
     unsafe {

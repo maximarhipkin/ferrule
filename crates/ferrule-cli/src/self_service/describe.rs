@@ -352,7 +352,9 @@ pub async fn describe(op: &Op, ctx: &Ctx, here: &ChatRef) -> Result<String, Stri
             }
             format!("Disconnect {name}: its saved sign-in is deleted and its tools go away.")
         }
-        Op::Update | Op::Restart => return Err("not built yet".into()),
+        Op::Update | Op::Restart => {
+            return Err(format!("`{}` is described by the tool", op.name()))
+        }
         _ => return Err(format!("`{}` doesn't ask", op.name())),
     })
 }

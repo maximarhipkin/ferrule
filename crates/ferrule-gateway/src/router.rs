@@ -348,6 +348,15 @@ impl Router {
             .count()
     }
 
+    /// This session's lane is running a turn.
+    pub fn busy(&self, session_id: &str) -> bool {
+        self.lanes
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|l| l.state.lock().unwrap().busy_since.is_some())
+    }
+
     /// Messages waiting behind running turns.
     pub fn queued(&self) -> usize {
         self.lanes
@@ -1833,6 +1842,19 @@ mod tests {
             .with_system_prompt("test"))
         });
         (Router::new(dir, factory, channels), recorder)
+    }
+
+    #[tokio::test]
+    async fn busy_is_per_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let (router, _rec) = slow_router(dir.path(), Duration::from_millis(300));
+        let one = session::session_id("test", "chat-1");
+        let two = session::session_id("test", "chat-2");
+        assert!(!router.busy(&one));
+        router.dispatch(inbound("chat-1", "slow")).await.unwrap();
+        wait_until(|| router.busy(&one)).await;
+        assert!(!router.busy(&two));
+        wait_until(|| !router.busy(&one)).await;
     }
 
     #[tokio::test]
