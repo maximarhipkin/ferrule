@@ -346,13 +346,13 @@ impl Models {
     ) -> anyhow::Result<Done> {
         let model = model.trim();
         if model.is_empty() {
-            anyhow::bail!("say which model: `ferrule model add {provider}/<model>`");
+            anyhow::bail!("say which model, as {provider}/<model>");
         }
         let reference = format!("{provider}/{model}");
         self.edit_config(|t, cat| {
             if !cat.entries.iter().any(|e| e.provider == provider) {
                 anyhow::bail!(
-                    "there's no provider `{provider}` (connected: {}); add it with `ferrule setup`",
+                    "there's no provider `{provider}` (connected: {}); add it on the dashboard's Models page",
                     providers(cat)
                 );
             }
@@ -377,7 +377,7 @@ impl Models {
         );
         let named = alias.map(|a| format!(", as `{a}`")).unwrap_or_default();
         Ok(self.done(format!(
-            "{reference} is connected{named}. `ferrule model test {reference}` makes one call to check it."
+            "{reference} is connected{named}. A test makes one call to check it (/model test {reference} in a chat)."
         )))
     }
 
@@ -394,7 +394,7 @@ impl Models {
             let reference = e.reference();
             if e.primary {
                 anyhow::bail!(
-                    "{reference} is `{}`'s own model; change it, or remove the provider, in `ferrule setup`",
+                    "{reference} is `{}`'s own model; change it, or remove the provider, on the dashboard's Models page",
                     e.provider
                 );
             }
@@ -403,7 +403,7 @@ impl Models {
                 .is_ok_and(|(d, _)| d.reference() == reference)
             {
                 anyhow::bail!(
-                    "{reference} is the default; pick another first with `ferrule model default <ref>`"
+                    "{reference} is the default; pick another default first"
                 );
             }
             let mut dropped = Vec::new();
@@ -677,12 +677,18 @@ pub fn explain(e: &Entry, err: &CoreError) -> String {
     let detail: String = msg.chars().take(200).collect();
     match status {
         Some(401 | 403) if e.plan.is_some() => format!(
-            "the plan refused the sign-in (HTTP {}): run `ferrule login {}`",
+            "the plan refused the sign-in (HTTP {}): sign in again ({})",
             status.unwrap(),
-            e.plan.map_or("", |p| p.login_word())
+            e.plan.map_or(
+                "the dashboard's Models page",
+                |p| match p {
+                    crate::config::Plan::Chatgpt => "/login chatgpt in a chat, or the dashboard's Models page",
+                    crate::config::Plan::ClaudeCode => "the dashboard's Models page",
+                },
+            )
         ),
         Some(401 | 403) => format!(
-            "the key was refused (HTTP {}). Check `${}`, or replace it in `ferrule setup`",
+            "the key was refused (HTTP {}). Check `${}`, or replace the key on the dashboard's Models page",
             status.unwrap(),
             e.key_env
         ),

@@ -379,3 +379,13 @@ fn the_definition_lists_every_op_and_takes_no_extra_field() {
     assert!(!rig.tool().needs_approval());
     let _: &Path = rig.config.as_path();
 }
+
+#[test]
+fn the_description_names_every_op() {
+    for op in READ_OPS.iter().chain(CHANGE_OPS) {
+        assert!(
+            ferrule_agents::prompts::ADMIN_DESCRIPTION.contains(op),
+            "{op} is missing from the tool description"
+        );
+    }
+}

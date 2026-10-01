@@ -130,7 +130,7 @@ async fn status_says_the_sign_in_and_the_usage_windows() {
         toml::from_str("[providers.chatgpt]\nplan = \"chatgpt\"\nmodel = \"gpt-5.5\"\n").unwrap();
     assert_eq!(
         status_lines_at(&cfg, &private, &data),
-        ["chatgpt: not signed in — `ferrule login chatgpt`"]
+        ["chatgpt: not signed in — send /login chatgpt"]
     );
 
     let state = mock::Shared::default();

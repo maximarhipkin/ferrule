@@ -440,7 +440,7 @@ fn read_archive(file: &Path, into: Option<&Path>) -> Result<Manifest> {
     if manifest.format > FORMAT {
         bail!(
             "this backup was made by ferrule {} in a newer format than this ferrule ({}) reads. \
-             Run `ferrule update`, then restore it.",
+             Update Ferrule first (/update in a chat), then restore it.",
             manifest.ferrule_version,
             env!("CARGO_PKG_VERSION")
         );
@@ -450,7 +450,7 @@ fn read_archive(file: &Path, into: Option<&Path>) -> Result<Manifest> {
         if release_line(&theirs) > release_line(&mine) {
             bail!(
                 "this backup was made by ferrule {theirs}, newer than this ferrule ({mine}), \
-                 and it may not read that data. Run `ferrule update`, then restore it."
+                 and it may not read that data. Update Ferrule first (/update in a chat), then restore it."
             );
         }
     }

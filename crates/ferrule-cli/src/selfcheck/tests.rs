@@ -106,7 +106,7 @@ async fn a_failing_update_check_a_pinned_rollback_and_a_quiet_channel_are_proble
         "the update check has failed for 4 days: github.com: connection refused"
     );
     assert!(
-        p["pinned"].contains("`ferrule update --to v0.6.1`"),
+        p["pinned"].contains("the next release is offered as usual"),
         "{p:?}"
     );
     assert!(

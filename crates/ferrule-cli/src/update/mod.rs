@@ -460,7 +460,7 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
         ),
         (false, _) => (
             Tone::Note,
-            format!("{current}; you're told when a release is out, `ferrule update` installs it"),
+            format!("{current}; you're told when a release is out, /update installs it"),
         ),
     });
     match (state.last_check, state.last_check_ok) {
@@ -503,11 +503,10 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
                 Tone::Warn,
                 format!(
                     "{} didn't start properly {} ago and was rolled back ({}); \
-                     `ferrule update --to v{}` retries it",
+                     the next release is offered as usual",
                     e.to,
                     ago(e.at),
                     release::clip(&e.notes, 160),
-                    e.to
                 ),
             ),
             _ => (

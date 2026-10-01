@@ -249,8 +249,8 @@ type PlanSource = Box<dyn Fn() -> Result<Arc<ChatGpt>> + Send + Sync>;
 
 const CLAUDE_IN_CHAT: &str =
     "The Claude plan can't be signed in from a chat: Anthropic's sign-in has \
-     to complete in its own flow. Run `ferrule login claude` on the server. \
-     Never paste a Claude token into a chat.";
+     to complete in its own flow. Open the dashboard's Models page (/dashboard \
+     sends the link) and sign in there. Never paste a Claude token into a chat.";
 
 impl PlanDoor {
     /// `issuer`: `[plans.chatgpt] issuer`, "" for OpenAI's.
@@ -267,12 +267,12 @@ impl PlanDoor {
         match word.as_str() {
             "claude" | "claude-code" | "anthropic" if login => return CLAUDE_IN_CHAT.into(),
             "claude" | "claude-code" | "anthropic" => {
-                return "Run `ferrule logout claude` on the server.".into()
+                return "The Claude plan signs out on the dashboard's Models page (/dashboard sends the link).".into()
             }
             "chatgpt" | "openai" | "codex" => {}
             _ => {
                 return format!(
-                    "Usage: {cmd} chatgpt. (The Claude plan signs in on the server: `ferrule login claude`.)"
+                    "Usage: {cmd} chatgpt. (The Claude plan signs in on the dashboard's Models page.)"
                 )
             }
         }
@@ -295,8 +295,8 @@ impl PlanDoor {
             Ok(Some(code)) => code,
             Ok(None) => {
                 return "Device sign-in is off for this ChatGPT account. Turn it on in ChatGPT \
-                        (Settings → Security) and send /login chatgpt again, or run \
-                        `ferrule login chatgpt --browser` on the server."
+                        (Settings → Security) and send /login chatgpt again, or sign in \
+                        on the dashboard's Models page."
                     .into()
             }
             Err(e) => return format!("Couldn't start the sign-in: {e:#}"),
@@ -525,7 +525,7 @@ mod tests {
             .await
             .unwrap();
         assert!(said.contains("Device sign-in is off"), "{said}");
-        assert!(said.contains("ferrule login chatgpt --browser"), "{said}");
+        assert!(said.contains("dashboard's Models page"), "{said}");
     }
 
     #[test]

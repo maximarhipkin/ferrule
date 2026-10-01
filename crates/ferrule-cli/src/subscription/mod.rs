@@ -194,7 +194,7 @@ pub fn state(plan: Plan) -> SignIn {
     }
 }
 
-/// "signed in" or "not signed in — `ferrule login chatgpt`", for a
+/// "signed in" or "not signed in — send /login chatgpt", for a
 /// provider line in setup.
 pub fn sign_in_word(plan: Plan) -> String {
     words(plan, state(plan))
@@ -203,7 +203,14 @@ pub fn sign_in_word(plan: Plan) -> String {
 fn words(plan: Plan, state: SignIn) -> String {
     match state {
         s @ SignIn::In { .. } => s.word(),
-        s => format!("{} — `ferrule login {}`", s.word(), plan.login_word()),
+        s => format!(
+            "{} — {}",
+            s.word(),
+            match plan {
+                Plan::Chatgpt => "send /login chatgpt",
+                Plan::ClaudeCode => "sign in again on the dashboard's Models page",
+            }
+        ),
     }
 }
 

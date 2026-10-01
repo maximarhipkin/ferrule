@@ -155,49 +155,50 @@ impl Kind {
                  I'll try again with the newest version on the next message."
             }
             Kind::ClaudeTooOld => {
-                "the claude CLI on the server is too old for Claude's servers and couldn't be updated by itself. \
-                 On the server: `claude update`."
+                "the claude CLI is too old for Claude's servers and couldn't update itself; \
+                 I try again on the next message. /doctor shows what's wrong."
             }
             Kind::ClaudeMissing => {
                 "the claude CLI isn't installed where I look for it. \
-                 `ferrule doctor` on the server says where it went."
+                 /doctor says where it went."
             }
             Kind::ChatgptSignin => {
                 "the ChatGPT plan's sign-in expired or was revoked. \
-                 Sign in again: send /login chatgpt here, or run `ferrule login chatgpt` on the server."
+                 Sign in again: send /login chatgpt here."
             }
             Kind::ClaudeSignin => {
                 "the Claude plan's sign-in expired or was revoked. \
-                 Run `ferrule login claude` on the server (Claude's sign-in can't be done from a chat)."
+                 Sign in again on the dashboard's Models page (/dashboard sends the link)."
             }
             Kind::UsageLimit => {
-                "the plan's usage limit is reached. Set `[models] fallback` so another model answers until it resets."
+                "the plan's usage limit is reached. Send /model fallback <model> so another model answers until it resets."
             }
             Kind::RateLimited => {
                 "the model provider is rate-limiting us. Try again in a few minutes, \
-                 or set `[models] fallback` so another model answers when this one is busy."
+                 or send /model fallback <model> so another model answers when this one is busy."
             }
             Kind::Overloaded | Kind::Server | Kind::Timeout | Kind::Connect => {
                 "the model provider isn't answering right now. Please try again in a few minutes."
             }
             Kind::ModelGone => {
                 "this model isn't available any more (it may have been renamed or retired). \
-                 Pick another: /model here, or `ferrule model default` on the server."
+                 Pick another: /model."
             }
             Kind::ContextTooLong => {
                 "this conversation is too long for the model. Pick one with a bigger window: /model."
             }
             Kind::Auth => {
-                "the model provider refused the API key. `ferrule doctor` on the server checks it, \
-                 `ferrule setup` replaces it."
+                "the model provider refused the API key. /doctor checks it; \
+                 the dashboard's Models page replaces it (/dashboard sends the link)."
             }
             Kind::Refused => "the model refused to answer this.",
             Kind::DiskFull => {
-                "the server's disk is full, so I can't save anything. Free some space on it."
+                "the disk is full, so I can't save anything. /doctor says how full; \
+                 deleting old backups on the dashboard's Backup page frees some."
             }
             Kind::DataUnwritable => {
                 "I can't write to my data folder (no permission, or it's read-only). \
-                 `ferrule doctor` on the server says which."
+                 /doctor says which."
             }
             Kind::BadRequest | Kind::Malformed | Kind::Unknown => {
                 "something went wrong on the way to the model."
@@ -572,14 +573,43 @@ mod tests {
     #[test]
     fn the_owner_is_told_how_to_sign_in_where_that_works() {
         assert!(Kind::ChatgptSignin.chat_words().contains("/login chatgpt"));
-        assert!(Kind::ChatgptSignin
-            .chat_words()
-            .contains("ferrule login chatgpt"));
-        // Claude's sign-in never works from a chat.
+        // Claude's sign-in never works from a chat: the dashboard has it.
         assert!(!Kind::ClaudeSignin.chat_words().contains("/login"));
         assert!(Kind::ClaudeSignin
             .chat_words()
-            .contains("ferrule login claude"));
+            .contains("dashboard's Models page"));
+    }
+
+    #[test]
+    fn no_chat_words_send_the_owner_to_a_terminal() {
+        let all = [
+            Kind::ClientTooOld,
+            Kind::ClaudeTooOld,
+            Kind::ClaudeMissing,
+            Kind::ChatgptSignin,
+            Kind::ClaudeSignin,
+            Kind::UsageLimit,
+            Kind::RateLimited,
+            Kind::Overloaded,
+            Kind::Server,
+            Kind::Timeout,
+            Kind::Connect,
+            Kind::ModelGone,
+            Kind::ContextTooLong,
+            Kind::Auth,
+            Kind::Refused,
+            Kind::BadRequest,
+            Kind::Malformed,
+            Kind::DiskFull,
+            Kind::DataUnwritable,
+            Kind::Unknown,
+        ];
+        for kind in all {
+            let words = kind.chat_words();
+            for bad in ["`ferrule ", "on the server", "terminal"] {
+                assert!(!words.contains(bad), "{kind:?}: {words}");
+            }
+        }
     }
 
     #[test]

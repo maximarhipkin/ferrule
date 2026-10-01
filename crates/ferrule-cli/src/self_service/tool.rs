@@ -39,7 +39,7 @@ impl Tool for AdminTool {
         let ops: Vec<&str> = READ_OPS.iter().chain(CHANGE_OPS).copied().collect();
         ToolDefinition {
             name: "ferrule_admin".into(),
-            description: "Look at or change Ferrule itself: its models, settings, tasks, skills, connections, backups and updates. A change is shown to the owner, who approves it with a tap in this chat; it runs only after that.".into(),
+            description: ferrule_agents::prompts::ADMIN_DESCRIPTION.into(),
             parameters: json!({
                 "type": "object",
                 "properties": {

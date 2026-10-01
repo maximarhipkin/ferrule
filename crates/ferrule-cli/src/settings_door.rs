@@ -24,7 +24,7 @@ const MCP_USAGE: &str = "Usage:\n\
 const SKILLS_USAGE: &str = "Usage:\n\
 /skills: the skills\n\
 /skills off <name>, /skills on <name>: stop offering one, or offer it again";
-const HOOKS: &str = "Workspace hooks are trusted on the dashboard (Extensions, with the diff and the SHA-256) or with `ferrule hooks trust` at a terminal — not from a chat.";
+const HOOKS: &str = "To trust this workspace's hooks, ask me: I show you the exact commands and their fingerprint on a card to approve. Or use the dashboard's Extensions page (/dashboard sends the link).";
 
 impl SettingsDoor {
     fn is_owner(&self, msg: &InboundMessage) -> bool {
@@ -308,6 +308,7 @@ command = "mcp-files"
         assert_eq!(events(&door, "settings.skill"), 1);
 
         let hooks = door.intercept(&msg("42", "/hooks trust")).await.unwrap();
-        assert!(hooks.contains("ferrule hooks trust"), "{hooks}");
+        assert!(!hooks.contains("ferrule hooks trust"), "{hooks}");
+        assert!(hooks.contains("fingerprint on a card"), "{hooks}");
     }
 }

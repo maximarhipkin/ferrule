@@ -2700,6 +2700,7 @@ async fn gateway_factory(
         // M48: the owner's own chat can change Ferrule, with the owner's tap.
         if let Some(admin) = &admin {
             if let Some(here) = self_service::offered(&admin.hub, session_id) {
+                agent.append_system_prompt(ferrule_agents::prompts::OWNER_ADMIN);
                 agent.register_tool(Arc::new(self_service::AdminTool::new(
                     admin.clone(),
                     session_id,

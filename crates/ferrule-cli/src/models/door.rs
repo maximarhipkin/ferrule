@@ -56,7 +56,7 @@ impl ModelDoor {
             ("tiers", "") | ("route", "") => {
                 let text = super::routing_admin::render(&self.models.view().routing);
                 return if text.is_empty() {
-                    "Routing isn't set up: `ferrule model route` suggests a cheap/strong pair."
+                    "Routing isn't set up: the dashboard's Routing page suggests a cheap/strong pair."
                         .into()
                 } else {
                     text.trim_start().to_string()
