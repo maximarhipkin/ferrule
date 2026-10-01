@@ -210,7 +210,20 @@ M37 made the page the place you run your agent from. The design is in
   together with its provider's key, and the key is tested first.
 - **Chat** is your agent in its own session (`dashboard__owner`). Replies
   stream in, and buttons work as they do on Telegram. Approval questions
-  from any chat are listed above it, with **Allow** and **Refuse**.
+  from any chat, on every channel, are listed above it with **Allow** and
+  **Refuse**, what each one will change, and a countdown to when it times
+  out; the Chat tab in the navigation carries a count badge while any are
+  waiting. A line starting with `/` goes to the same commands a chat has
+  (`/update`, `/restart`, `/doctor`, …).
+- **Updates and Restart.** Home shows a row when a newer Ferrule is out
+  (looked up once every ten minutes), with **Install**: it asks first, runs
+  the same install as `/update` ([updates.md](updates.md#from-a-chat)), and
+  the page reconnects by itself when the gateway is back. The Doctor's
+  updates finding has **Check for an update**. **Restart** (Home, and the
+  Telegram card) now also works with no service manager on Linux and macOS,
+  by re-executing in place; on Windows without the service it says it can't
+  and changes nothing. On a managed bot both update controls are refused
+  (the panel updates a bot by changing its image).
 - **Console** runs `ferrule` commands, as at the machine. The line is
   split without a shell and parsed like the CLI's own, and it runs with
   its input closed. Completion comes from the CLI's own command tree.
@@ -389,8 +402,9 @@ public_url = "https://bots.example.com/b/b_4f2a/"   # FERRULE_PUBLIC_URL
 - **The Telegram card** sets up the channel with no terminal: paste the
   bot's token and **Test** it (`getMe`; it also clears a webhook), **Save**,
   **Wait for a message** and **Allow** the chat that writes, then
-  **Restart**, which re-executes the gateway in place. Channels are built
-  once at start, which is why a restart is needed.
+  **Restart**, which re-executes the gateway in place (or has the service
+  manager do it). Channels are built once at start, which is why a restart
+  is needed.
 - **The Managed card** shows the policy's locks and their reason; a locked
   control is greyed out with that reason, and the API refuses it with 403
   and the same words. The Claude plan is refused.

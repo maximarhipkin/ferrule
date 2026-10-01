@@ -866,6 +866,20 @@ that convention yet — ask before introducing one).
       Settings; gzip for the page's own files.
     - Not verified live: a real phone over the tunnel, real vision
       providers.
+  - **M48 self-service from chat and dashboard**: **built** (2026-10-01,
+    branch `m48-self-service`, PR to main open, not merged). Design, plan,
+    corrections and what was verified: `docs/m48-self-service.md`; user docs
+    `docs/channels.md`, `docs/updates.md`, `docs/dashboard.md`.
+    - `ferrule_admin` agent tool in the owner's chats, run in the gateway
+      outside the shell sandbox; each change shows a card and waits for one
+      tap (buttons on Telegram), single-use and bound to that change.
+    - `/update`, `/restart`, `/doctor` from a chat, a promise that says
+      where it came back, an in-place re-exec without a service on unix.
+    - One command list for `/help` and Telegram's per-scope `/` menu.
+    - Dashboard: Approvals inbox with countdown, Home update row, Restart
+      without a service; managed bots keep every lock.
+    - Not verified live: a real Telegram client, a real release install, a
+      real systemd restart.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -5590,6 +5604,37 @@ fmt clean.
 **Not done.** A cut graph restarts (no run-state resume); gateway
 channels can't start graphs; no `graph list`/`graph stop`; approval asks
 at the terminal, not in the owner's chat.
+
+### 2026-10-01 — M48 self-service from chat and dashboard (Devi, Sonnet 5.5)
+
+**Scope.** Max runs Ferrule from Telegram and the dashboard and never wants
+to log in to the server: the bot does everything from the conversation,
+asks in the chat when something needs approval, fixes and updates itself,
+and every owner command is in Telegram's `/` menu. Branch
+`m48-self-service`; design, plan, corrections and what was verified in
+`docs/m48-self-service.md`.
+
+**What was built** (one commit per part).
+- **1 The `ferrule_admin` tool.** Typed ops run in the gateway outside the
+  shell sandbox.
+- **2 Approvals in the conversation.** Owner-only, single-use, bound to the
+  op; buttons on Telegram.
+- **3 Default behaviour.** The prompt, the tool description, the hints.
+- **4 `/update`, `/restart`, `/doctor`**, the promise, rollback notes.
+- **5 The Telegram menu.** One list for `/help` and the menu, per scope.
+- **6 The dashboard.** Update routes, Restart without a service, Approvals
+  inbox, Home update row.
+- **7 Managed locks** for every op.
+- **8 The e2e test, docs and the final checks.**
+
+**Tests.** 1791 → 1846 passed, 0 failed, 29 ignored. fmt and clippy clean.
+Browser check 25/25 (at Part 6).
+
+**Not verified live.** A real Telegram client; a real release install; a
+real systemd restart; a real sandbox denial.
+
+**Follow-ups.** No auto-rollback for an update with no service manager;
+a live pass on a phone.
 
 ### 2026-09-30 — M47 the dashboard, redesigned (Devi, Opus 5.5 plan / Sonnet 5.5 build)
 

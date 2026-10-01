@@ -1,8 +1,8 @@
 # M48 — self-service from chat and dashboard
 
-Status: **planned**. The plan below was written first; it is built in
-eight parts, one commit each, on `m48-self-service` (cut from `main` at
-a499480). "Corrections made while building" will list where the code
+Status: **built** (2026-10-01). The plan below was written first; it was
+built in eight parts, one commit each, on `m48-self-service` (cut from
+`main` at a499480). "Corrections made while building" lists where the code
 corrected the plan, and "Verified, and how" what was actually run.
 
 ## Why
@@ -1648,3 +1648,76 @@ each one is for.
     binding, which is tested by "still starting".
   - Each changed phrase is grepped across `crates/` and `docs/` (step
     21).
+
+## Corrections made while building
+
+Where the code departed from the plan above, and why.
+
+- **A task-local actor instead of `by` parameters.** The approver's
+  identity travels with the turn (a task-local), so the audit line names
+  who approved without every op taking a `by` argument.
+- **The dashboard chat passes `/…` commands through** to the same doors a
+  channel has, so `/update` and `/restart` work from the page's Chat.
+- **`promise::{on_start, expire}` take `&dyn Owner`**, not the hub, so the
+  tests can record what is said; `Promise` stores the channel and chat as
+  strings and rebuilds the `ChatRef`.
+- **`check_runs`**: the new binary's `--version` runs before the swap, not
+  after, so a binary that can't start never replaces the working one.
+- **`/restart`'s door** replies "Asking you to confirm the restart…" before
+  the card, so the chat is never silent while the card builds.
+- **No auto-rollback on the unit-less in-process update path.** Nothing
+  watches a hand-run gateway; only `ferrule.previous` is kept. The update
+  units keep their rollback.
+- **`HANDLES` consts are `#[cfg(test)]`** on most doors: only the tests read
+  them.
+- **The restore refusal text** now says "/update in a chat".
+- **The Telegram menu has four scopes**, including a `chat` scope for the
+  owner, because a chat scope outranks the others.
+- **`Op::managed_refusal_under` takes a `kind_of` closure** that resolves a
+  model name to `(provider name, kind)`, so the lock on a managed bot's
+  provider kinds applies to a model named by alias or by plan.
+- **The door refuses `/update` on a managed bot at once**, before the
+  network check, so the chat hears the reason and never sees "newest".
+- **`update/check` returns `said`**, the same sentence the chat gets, so the
+  doctor's fix button toasts it.
+- **Home looks for an update once per ten minutes**, client-side, not on
+  every redraw.
+- **A test-only `RESTARTED` flag** in `dashboard/api.rs`: under
+  `#[cfg(test)]` the restart route sets it instead of signalling the
+  process.
+
+## Verified, and how
+
+- **Full suite.** `cargo test --workspace --no-fail-fast`: **1846 passed, 0
+  failed, 29 ignored** (before: 1791 / 0 / 29). `cargo fmt --all --check`
+  and `cargo clippy --workspace --all-targets -- -D warnings` clean.
+- **The end-to-end test**, `models::the_owner_switches_the_default_model_
+  from_telegram_with_one_tap`: the model is down (503), the owner says
+  "switch the default", exactly one card is sent, one tap approves it,
+  `ferrule.toml` has the new default, the audit names the chat and the
+  approval code, no text tells the owner to paste a command or open a
+  terminal, and the next message is answered by the new default with no
+  call to the dead model.
+- **Approvals, per behaviour** (`self_service` unit tests): a read runs
+  without asking; a change asks with the exact change and runs only after
+  the tap; a refusal and no answer in time each change nothing; a second
+  change waits for the first answer; an unknown model is refused before
+  anyone is asked; the digest follows every argument; the tool is offered
+  only in the owner's private chat; `managed_refusals_cover_the_locked_ops`.
+  Per-op approval tests for the trust layer are in `ferrule-trust`.
+- **The config write beside a sandbox**: `the_tool_writes_the_config_
+  whatever_the_shell_may` makes `ferrule.toml` read-only and an approved op
+  still replaces it (a fresh file beside it, then a rename). `models::` has
+  13 tests, including a managed bot refusing `/update` with the reason and
+  sending no keyboard.
+- **Menu**: `help_and_the_telegram_menu_are_one_list` and the per-scope
+  tests in `ferrule-gateway::menu`.
+- **Dashboard**: 88 unit tests and 30 `it dashboard` tests; the browser
+  check passed 25/25 at Part 6.
+- **The eval**: see the final report (`ferrule eval run evals/starter
+  --variant ab`).
+
+**Not verified live.** A real Telegram client's menu and buttons; a real
+GitHub release install; a real systemd restart and rollback; a real sandbox
+denial (the tool's config write was tested with a read-only file, not
+under bubblewrap).

@@ -57,14 +57,14 @@ The apply job checks for a release, updates `claude` when it's due, then
 (keeping the old one as `ferrule.previous`), restarts the service, and
 watches it. If the new gateway isn't healthy within 180 seconds, the old
 binary goes back, the service restarts again, and the bad version is
-**pinned**: it is never tried automatically again. `ferrule update --to
-<tag>` retries it and unpins it.
+**pinned**: it is never tried automatically again. Sending `/update` in your
+chat (or `ferrule update --to <tag>` in a terminal) retries it and unpins it.
 
 You hear about it once, in your chat:
 
 - "Updated Ferrule 0.7.0 → 0.7.1: <the release notes' first line>"
 - "Ferrule 0.7.1 didn't start properly, so I went back to 0.7.0 and won't
-  try 0.7.1 again. `ferrule update --to v0.7.1` retries it."
+  try 0.7.1 again." Send `/update` to try it again.
 
 A quiet check says nothing.
 
@@ -85,10 +85,42 @@ you as an approval button; Allow asks the apply unit to install it now.
 A gateway run by hand, and every Windows install (there is no Windows
 service yet), checks daily itself and tells you once per release: "Ferrule
 v0.7.1 is out: run `ferrule update`". `ferrule update` then does it all in
-the foreground. On Windows the running `ferrule.exe` is renamed aside
+the foreground. Without a service, send `/update` in your chat and the
+gateway does the same: it asks you first, installs, and on Linux and macOS
+re-executes itself in place with the new binary, then tells you it's back.
+On Windows the running `ferrule.exe` is renamed aside
 (`ferrule.exe.<hex>.old`, deleted at the next start) and the new one takes
-its place; restart ferrule yourself. Nothing watches a hand-run gateway, so
-there is no rollback there.
+its place; restart ferrule yourself (`/restart` says so when it can't do it).
+Nothing watches a hand-run gateway, so there is no rollback there beyond
+the old binary, kept as `ferrule.previous`.
+
+### From a chat
+
+The owner can update from the conversation, with no terminal:
+
+- **Ask.** `/update` (or "update yourself" to the agent, which uses the
+  `ferrule_admin` tool) looks for a release first. With nothing newer it
+  says "Ferrule 0.12.0 is the newest; nothing to do." and asks nothing.
+  With one, a card names the version, the release notes' first line, what
+  restarts, and that running turns get up to ten minutes to finish. On
+  Telegram it has Allow and Deny buttons; on other channels you answer in
+  words. The card times out and is refused, with nothing changed.
+- **Install.** After Allow, the install runs once the turn is over. With the
+  update units it asks the apply job (idle wait, swap, watch, rollback as
+  above). Without them the gateway swaps the binary itself, checks that the
+  new one starts (`--version`) before the swap, and re-executes.
+- **The promise.** Before it restarts, the gateway writes a small note
+  (`<data>/self-service/promise.json`: the chat and what was asked). The next
+  gateway reads it, and says where you asked: "Back after the update: now
+  on Ferrule 0.12.1 (was 0.12.0)." If the update did not take, or the
+  version rolled back, the same chat hears that instead ("Ferrule 0.12.1
+  didn't start properly, so I went back to 0.12.0 and won't try 0.12.1
+  again."). An update note nobody claims is dropped after a while, with the line "I
+  restarted, but couldn't confirm the update; /status shows the version."
+- **Managed bots.** A bot run by the Ferrule panel is updated by changing
+  its image, so `/update` says so and asks nothing.
+
+The dashboard's Home page has the same Check and Install ([dashboard.md](dashboard.md)).
 
 ### Several instances on one binary
 
