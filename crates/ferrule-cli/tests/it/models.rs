@@ -28,6 +28,18 @@ fn reply(label: &str, req: &Value) -> Value {
     if system.contains("## You are agent") {
         return answer(&format!("CHILD {label}:{model}"));
     }
+    let last_user = messages
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "user")
+        .map(text)
+        .unwrap_or_default();
+    if last_user.contains("SWITCH_DEFAULT") {
+        return match messages.last() {
+            Some(m) if m["role"] == "tool" => answer(&format!("ADMIN_DONE {}", text(m))),
+            _ => admin_call(json!({"op": "model_default", "model": "b/b-large"})),
+        };
+    }
     let task = messages
         .iter()
         .find(|m| m["role"] == "user")
@@ -64,6 +76,26 @@ fn spawn(model: &str) -> Value {
                         "name": "spawn_agent",
                         "arguments": json!({"task": "find the answer", "worktree": false, "model": model}).to_string(),
                     },
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10},
+    })
+}
+
+/// The model asks for the admin tool (this file's servers only; the eval's
+/// mock is untouched).
+fn admin_call(args: Value) -> Value {
+    json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": format!("call_admin_{}", nanos()),
+                    "type": "function",
+                    "function": {"name": "ferrule_admin", "arguments": args.to_string()},
                 }],
             },
             "finish_reason": "tool_calls",
@@ -331,6 +363,50 @@ impl FakeTelegram {
         self.say_from(chat, chat, text)
     }
 
+    /// `from` taps the first button of `card`, a recorded `sendMessage`.
+    fn tap(&self, from: i64, card: &Value) {
+        let mut next = self.next.lock().unwrap();
+        *next += 1;
+        let chat: i64 = card["chat_id"].as_str().unwrap().parse().unwrap();
+        self.queue.lock().unwrap().push_back(json!({
+            "update_id": *next,
+            "callback_query": {
+                "id": format!("cb{}", *next),
+                "from": {"id": from, "username": "owner"},
+                "message": {
+                    "message_id": 1, "chat": {"id": chat}, "date": 1700000000,
+                    "text": card["text"], "reply_markup": card["reply_markup"],
+                },
+                "data": card["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+            },
+        }));
+    }
+
+    /// A message to `chat` with a non-empty inline keyboard, once there is
+    /// one after the first `from` messages.
+    fn wait_for_card(&self, chat: i64, from: usize) -> Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            {
+                let sent = self.sent.lock().unwrap();
+                let found = sent.iter().skip(from).find(|m| {
+                    m["chat_id"] == chat.to_string().as_str()
+                        && m["reply_markup"]["inline_keyboard"]
+                            .as_array()
+                            .is_some_and(|rows| !rows.is_empty())
+                });
+                if let Some(card) = found {
+                    return card.clone();
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "no card to {chat}; sent: {sent:#?}"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Waits for a message to `chat` containing `needle`, after the first
     /// `from` messages sent anywhere; returns where it was and its text.
     fn wait_for(&self, chat: i64, needle: &str, from: usize) -> (usize, String) {
@@ -445,6 +521,65 @@ fn telegram(tg: &FakeTelegram) -> String {
         "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"{}\"\ntelegram_allowed_chats = [-100, 42]\n",
         tg.url
     )
+}
+
+#[test]
+fn the_owner_switches_the_default_model_from_telegram_with_one_tap() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    a.fail_with(503);
+    let tg = FakeTelegram::start();
+    let config = two(&a, &b, &telegram(&tg)).replace(
+        "[models.aliases]",
+        "[models]\nfallback = [\"b\"]\n\n[models.aliases]",
+    );
+    let dir = home(&config);
+    let home = dir.path();
+    let _gw = gateway(home);
+
+    tg.say(42, "the model is down, SWITCH_DEFAULT");
+    let card = tg.wait_for_card(42, 0);
+    assert!(
+        card["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("yes ")),
+        "{card}"
+    );
+    tg.tap(42, &card);
+    tg.wait_for(42, "ADMIN_DONE Approved and done:", 0);
+
+    let sent = tg.sent.lock().unwrap().clone();
+    let cards = sent
+        .iter()
+        .filter(|m| {
+            m["chat_id"] == "42"
+                && m["reply_markup"]["inline_keyboard"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty())
+        })
+        .count();
+    assert_eq!(cards, 1, "one approval: {sent:#?}");
+    for m in &sent {
+        let text = m["text"].as_str().unwrap_or_default();
+        for pasted in ["`ferrule ", "terminal", "next message exactly"] {
+            assert!(!text.contains(pasted), "{pasted:?} in {text:?}");
+        }
+    }
+    let config = std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
+    assert!(config.contains(r#"default = "b/b-large""#), "{config}");
+    let audit = std::fs::read_to_string(home.join("data/trust/audit.jsonl")).unwrap();
+    assert!(audit.contains("telegram chat 42 (approved "), "{audit}");
+    assert!(audit.contains("model.default"), "{audit}");
+    assert!(
+        audit.contains("\"op\":\"model_default:"),
+        "approval_asked carries the op: {audit}"
+    );
+
+    // The new default answers, and the model that was down isn't asked.
+    let before = a.calls();
+    let n = tg.sent.lock().unwrap().len();
+    tg.say(42, "and now?");
+    tg.wait_for(42, "B:b-large", n);
+    assert_eq!(a.calls(), before);
 }
 
 #[test]
