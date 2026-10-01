@@ -270,6 +270,8 @@ async fn an_unknown_model_is_refused_before_anyone_is_asked() {
     assert!(rig.told.0.lock().unwrap().is_empty());
 }
 
+// Unix: Windows refuses to rename over a read-only file, and has no shell sandbox to get around.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_tool_writes_the_config_whatever_the_shell_may() {
     // The tool runs in the host, not in the shell's sandbox: a config file

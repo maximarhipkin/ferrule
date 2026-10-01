@@ -203,6 +203,8 @@ mod tests {
         ChatRef::new("telegram", "42")
     }
 
+    // The in-chat update says "not on Windows yet" there (see `apply`).
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_update_from_the_chat_installs_and_promises_the_chat() {
         let s = setup().await;
@@ -227,6 +229,8 @@ mod tests {
         );
     }
 
+    // The in-chat update says "not on Windows yet" there (see `apply`).
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_busy_bot_gives_up_after_the_wait_and_changes_nothing() {
         let s = setup().await;

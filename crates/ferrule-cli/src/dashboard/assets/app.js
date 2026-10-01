@@ -838,7 +838,7 @@
       if (this.update && Date.now() - this.update.at < 600000) return;
       this.checking = true;
       try {
-        const r = await api("/api/update/check", {});
+        const r = await api("/api/update/check", { quiet: true });
         this.update = { at: Date.now(), found: r.found, current: r.current, headline: r.headline };
       } catch (e) {
         this.update = { at: Date.now(), found: null };

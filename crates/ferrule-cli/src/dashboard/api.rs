@@ -227,7 +227,7 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "telegram/allow" => super::telegram::allow(ctx, body).await,
         "config/restore" => config_restore(ctx, body),
         "gateway/restart" => gateway_restart(ctx, body),
-        "update/check" => update_check(ctx).await,
+        "update/check" => update_check(ctx, body).await,
         "update/start" => update_start(ctx, body).await,
         _ => None,
     }
@@ -1204,7 +1204,10 @@ fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
 static RESTARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// What Home's update row shows: this version, and the release that is out.
-async fn update_check(ctx: &Ctx) -> Answer {
+///
+/// `{"quiet": true}` is Home looking by itself: a lookup that failed (offline,
+/// rate-limited) is "nothing found", not an error, so the browser logs no 502.
+async fn update_check(ctx: &Ctx, body: &Value) -> Answer {
     if let Some(no) = update_refusal(crate::managed::on()) {
         return Some(no);
     }
@@ -1220,6 +1223,9 @@ async fn update_check(ctx: &Ctx) -> Answer {
             "found": found.as_ref().map(|r| r.tag.clone()),
             "headline": found.as_ref().map(|r| r.headline()).unwrap_or_default(),
         })),
+        Err(_) if body["quiet"].as_bool() == Some(true) => {
+            ok(json!({ "ok": true, "found": null, "offline": true }))
+        }
         Err(e) => bad(502, ctx.redactor.redact(&e)),
     }
 }
