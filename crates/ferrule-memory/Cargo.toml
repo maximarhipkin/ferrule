@@ -1,6 +1,6 @@
 [package]
 name = "ferrule-memory"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 description = "SQLite hybrid memory: FTS5 BM25 keyword recall merged with vector recall"
 license = "MIT OR Apache-2.0"
