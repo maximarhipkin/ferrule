@@ -1621,8 +1621,8 @@ Models, Connections, Logs and Settings, at both widths, in both themes)
 and so were the Hebrew Home and Settings at both widths: the rail and the
 sidebar mirror, the chevron in a select sits on the left, and the arrows
 in the pager and the strip flip. The browser check measures the 44 px
-targets and the Hebrew line height on every page, so those are not left to
-the eye. The overflow menu is driven
+targets on every section at 390 px and one line's height with and without
+Hebrew, so those are not left to the eye. The overflow menu is driven
 with the keyboard by the browser check (open, arrows, End, Escape, a press
 outside).
 
