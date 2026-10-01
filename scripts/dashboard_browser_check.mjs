@@ -15,7 +15,11 @@
 // API calls before it settles) as one JSON line.
 //
 //     node scripts/dashboard_browser_check.mjs --bin target/debug/ferrule [--chromium PATH] [--shots docs/assets/m37]
-//         [--shots-all docs/assets/m47/after] [--measure]
+//         [--shots-all docs/assets/m47/after] [--shots-format webp] [--shots-quality 45] [--measure]
+//
+// `--shots-format webp` (M49) saves WebP instead of JPEG: a phone shot is
+// scaled to 1.5x, a desktop one stays 1x, and a Hebrew pair (Home and
+// Settings, light) is added.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, get as httpGet } from "node:http";
@@ -42,6 +46,9 @@ const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1
 const BIN = opt("--bin") && resolve(opt("--bin"));
 const SHOTS = opt("--shots") && resolve(opt("--shots"));
 const SHOTS_ALL = opt("--shots-all") && resolve(opt("--shots-all"));
+const SHOTS_FORMAT = opt("--shots-format") || "jpeg";
+const SHOTS_QUALITY = Number(opt("--shots-quality") || 70);
+if (!["jpeg", "webp"].includes(SHOTS_FORMAT)) throw new Error("--shots-format is jpeg or webp");
 const MEASURE = argv.includes("--measure");
 const CHROMIUM = opt("--chromium") || ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"].find((c) => spawnSync(c, ["--version"]).status === 0);
 if (!BIN) { console.error("usage: dashboard_browser_check.mjs --bin <ferrule> [--chromium PATH] [--shots DIR]"); process.exit(2); }
@@ -558,6 +565,13 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     mkdirSync(SHOTS_ALL, { recursive: true });
     let n = 0;
     const names = await js(`return Object.keys(window.ferrule.sections)`);
+    const ext = SHOTS_FORMAT === "webp" ? "webp" : "jpg";
+    async function shoot(w, h) {
+      const o = { format: SHOTS_FORMAT, quality: SHOTS_QUALITY };
+      // A phone is drawn at 2x; 1.5x keeps it sharp at two thirds the bytes.
+      if (SHOTS_FORMAT === "webp") o.clip = { x: 0, y: 0, width: w, height: h, scale: w < 600 ? 0.75 : 1 };
+      return Buffer.from((await cdp("Page.captureScreenshot", o)).data, "base64");
+    }
     for (const [w, h] of [[390, 844], [1280, 800]]) {
       await size(w, h);
       for (const theme of ["paper", "forge"]) {
@@ -565,13 +579,29 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
         for (const name of names) {
           await js(`window.ferrule.show(${JSON.stringify(name)})`);
           await sleep(1100);
-          const r = await cdp("Page.captureScreenshot", { format: "jpeg", quality: 70 });
-          writeFileSync(join(SHOTS_ALL, `${name}-${w}-${theme === "paper" ? "light" : "dark"}.jpg`), Buffer.from(r.data, "base64"));
+          writeFileSync(join(SHOTS_ALL, `${name}-${w}-${theme === "paper" ? "light" : "dark"}.${ext}`), await shoot(w, h));
           n++;
         }
       }
     }
     await js(`document.documentElement.dataset.theme = "paper"`);
+    if (SHOTS_FORMAT === "webp") {
+      await js(`localStorage.setItem("ferrule-lang", "he"); location.reload()`);
+      await sleep(500);
+      await until("the page in Hebrew", () => js(`return document.documentElement.dir === "rtl" && !document.getElementById("rail").hidden`), 20);
+      for (const [w, h] of [[390, 844], [1280, 800]]) {
+        await size(w, h);
+        for (const name of ["health", "settings"]) {
+          await js(`window.ferrule.show(${JSON.stringify(name)})`);
+          await sleep(1100);
+          writeFileSync(join(SHOTS_ALL, `${name}-${w}-light-he.${ext}`), await shoot(w, h));
+          n++;
+        }
+      }
+      await js(`localStorage.removeItem("ferrule-lang"); location.reload()`);
+      await sleep(500);
+      await until("the page in English again", () => js(`return document.documentElement.dir === "ltr" && !document.getElementById("rail").hidden`), 20);
+    }
     step("screenshots of every section", true, n + " in " + SHOTS_ALL.slice(ROOT.length + 1));
   }
 
