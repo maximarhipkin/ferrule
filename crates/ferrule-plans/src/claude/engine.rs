@@ -61,6 +61,7 @@ pub const BRIDGED_TOOLS: &[&str] = &[
     "board",
     "post_to_board",
     "read_board",
+    "ferrule_admin",
 ];
 
 /// How the engine runs claude. One per configured model.

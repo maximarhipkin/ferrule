@@ -24,7 +24,22 @@ use std::time::{Duration, SystemTime};
 /// Who the audit log says made a change from the page.
 pub const BY: &str = "dashboard";
 
+tokio::task_local! {
+    /// Who a change made through `act` is audited as (M48: the chat tool
+    /// acts as "telegram chat 42 (approved a3)", not as the page).
+    static ACTOR: String;
+}
+
+/// Who the audit log says made the change in hand: the page, unless `act`
+/// was called for someone else.
+pub fn by() -> String {
+    ACTOR
+        .try_with(String::clone)
+        .unwrap_or_else(|_| BY.to_string())
+}
+
 /// What only the running gateway has.
+#[derive(Clone)]
 pub struct Live {
     pub router: Weak<Router>,
     pub health: Arc<Health>,
@@ -39,13 +54,13 @@ pub struct Live {
     pub commands_off: Option<String>,
 }
 
-pub(super) type Answer = Option<(u16, Value)>;
+pub(crate) type Answer = Option<(u16, Value)>;
 
-pub(super) fn ok(v: Value) -> Answer {
+pub(crate) fn ok(v: Value) -> Answer {
     Some((200, v))
 }
 
-pub(super) fn bad(status: u16, why: impl std::fmt::Display) -> Answer {
+pub(crate) fn bad(status: u16, why: impl std::fmt::Display) -> Answer {
     Some((status, json!({ "error": why.to_string() })))
 }
 
@@ -63,7 +78,7 @@ pub(super) fn confirmed(body: &Value, question: String) -> Result<(), Answer> {
     }
 }
 
-pub(super) fn arg<'a>(body: &'a Value, key: &str) -> Result<&'a str, Answer> {
+pub(crate) fn arg<'a>(body: &'a Value, key: &str) -> Result<&'a str, Answer> {
     body.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
@@ -123,6 +138,33 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             _ => None,
         };
     }
+    act(ctx, path, body, BY).await
+}
+
+/// A page's GET, for the chat tool: the same view, as JSON.
+pub(crate) async fn read(ctx: &Ctx, path: &str) -> Result<Value, String> {
+    let req = Request {
+        method: "GET".into(),
+        path: format!("/api/{path}"),
+        query: BTreeMap::new(),
+        headers: BTreeMap::new(),
+        body: Vec::new(),
+    };
+    match route(ctx, true, &req, &Value::Null).await {
+        Some((200, v)) => Ok(v),
+        Some((_, v)) => Err(v["error"].as_str().unwrap_or("it failed").to_string()),
+        None => Err(format!("`{path}` isn't available")),
+    }
+}
+
+/// Every change the page can make, as `by` (M48: the chat's admin tool
+/// calls this after the owner's approval, so a change is one code path
+/// whoever asks, and the audit row names who did).
+pub(crate) async fn act(ctx: &Ctx, path: &str, body: &Value, by: &str) -> Answer {
+    ACTOR.scope(by.to_string(), post(ctx, path, body)).await
+}
+
+async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     match path {
         "turn/stop" => stop_turn(ctx, body),
         "kill/on" | "kill/off" => kill(ctx, path == "kill/on", body),
@@ -636,7 +678,7 @@ fn stop_turn(ctx: &Ctx, body: &Value) -> Answer {
     let Some(router) = live.router.upgrade() else {
         return missing("the gateway");
     };
-    if router.stop(session, BY) {
+    if router.stop(session, &by()) {
         ok(json!({ "ok": true, "said": "Stopped." }))
     } else {
         bad(404, "nothing is running there now")
@@ -661,12 +703,12 @@ fn kill(ctx: &Ctx, on: bool, body: &Value) -> Answer {
             .get("reason")
             .and_then(Value::as_str)
             .map(|r| clip(r, 200));
-        match hub.engage(BY, reason) {
+        match hub.engage(&by(), reason) {
             Ok(_) => ok(json!({ "ok": true, "said": "The kill switch is on." })),
             Err(e) => bad(500, e),
         }
     } else {
-        match hub.clear(BY) {
+        match hub.clear(&by()) {
             Ok(true) => ok(json!({ "ok": true, "said": "The kill switch is off." })),
             Ok(false) => ok(json!({ "ok": true, "said": "It was already off." })),
             Err(e) => bad(500, e),
@@ -1195,7 +1237,7 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         }
         "models/default" => {
             let word = need!(arg(body, "model"));
-            let d = m.set_default(word, BY);
+            let d = m.set_default(word, &by());
             if d.is_ok() {
                 retire(ctx, None);
             }
@@ -1206,9 +1248,9 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
             // A chat on Telegram unless the page names another channel.
             let channel = arg(body, "channel").unwrap_or("telegram");
             let d = if path == "models/pin" {
-                m.pin(channel, chat, need!(arg(body, "model")), BY)
+                m.pin(channel, chat, need!(arg(body, "model")), &by())
             } else {
-                m.unpin(channel, chat, BY)
+                m.unpin(channel, chat, &by())
             };
             if d.is_ok() {
                 retire(
@@ -1232,7 +1274,7 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
             if let Err(e) = super::models_page::check_fallback(&m.catalog(), &words) {
                 return bad(400, e);
             }
-            m.set_fallback(&words, BY)
+            m.set_fallback(&words, &by())
         }
         "models/add" => {
             let provider = need!(arg(body, "provider"));
@@ -1241,7 +1283,7 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 .get("alias")
                 .and_then(Value::as_str)
                 .filter(|a| !a.trim().is_empty());
-            m.add_model(provider, model, alias, BY)
+            m.add_model(provider, model, alias, &by())
         }
         _ => {
             let word = need!(arg(body, "model"));
@@ -1249,7 +1291,7 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 body,
                 format!("Remove {word}? Pins and fallback entries naming it stop working.")
             ));
-            let d = m.remove_model(word, BY);
+            let d = m.remove_model(word, &by());
             if d.is_ok() {
                 retire(ctx, None);
             }
@@ -1296,7 +1338,7 @@ fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         return missing("the models");
     };
     let done = if path == "routing/unset" {
-        m.unset_routing(BY)
+        m.unset_routing(&by())
     } else {
         let Some(tiers) = body.get("tiers").and_then(Value::as_array) else {
             return bad(400, "`tiers` is missing: the models, cheap first");
@@ -1317,7 +1359,7 @@ fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 None => return bad(400, "`strong_daily_usd` is dollars a day, or null"),
             },
         };
-        m.set_routing(&tiers, de_escalate, cap, BY)
+        m.set_routing(&tiers, de_escalate, cap, &by())
     };
     match done {
         Ok(d) => {
@@ -1432,7 +1474,7 @@ async fn catalog_add(ctx: &Ctx, body: &Value) -> Answer {
                 .find(|l| l.provider.is_none() && l.find(id).is_some())
         });
     match m
-        .add_from_catalog(&provider, id, as_what, listing, BY)
+        .add_from_catalog(&provider, id, as_what, listing, &by())
         .await
     {
         Ok(d) => {
@@ -1452,7 +1494,7 @@ async fn fill_prices(ctx: &Ctx) -> Answer {
     let Some((_, listings)) = listings(ctx, false).await else {
         return missing("the config");
     };
-    match m.fill_prices(&listings, BY) {
+    match m.fill_prices(&listings, &by()) {
         Ok(f) => {
             ok(json!({ "ok": true, "said": f.said, "filled": f.filled, "unknown": f.unknown }))
         }
@@ -1512,7 +1554,7 @@ async fn eval_op(ctx: &Ctx, start: bool, body: &Value) -> Answer {
         data: data.clone(),
         hub: hub.clone(),
         estimate: e,
-        by: BY.into(),
+        by: by(),
     };
     match ctx.evals.start(setup) {
         Ok(()) => ok(
@@ -1707,15 +1749,15 @@ fn task_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     };
     let id = need!(arg(body, "id"));
     let done = match path {
-        "tasks/pause" => t.pause(id, BY),
-        "tasks/resume" => t.resume(id, BY),
-        "tasks/run" => t.run_now(id, BY),
+        "tasks/pause" => t.pause(id, &by()),
+        "tasks/resume" => t.resume(id, &by()),
+        "tasks/run" => t.run_now(id, &by()),
         _ => {
             need!(confirmed(
                 body,
                 format!("Delete task {id} and its run history? This can't be undone.")
             ));
-            t.delete(id, BY)
+            t.delete(id, &by())
         }
     };
     match done {
@@ -1734,7 +1776,7 @@ fn task_edit(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     let done = if path == "tasks/schedule" {
         let schedule = need!(arg(body, "schedule"));
         let tz = body.get("timezone").and_then(Value::as_str);
-        t.set_schedule(id, schedule, tz, BY)
+        t.set_schedule(id, schedule, tz, &by())
     } else {
         let word = need!(arg(body, "model"));
         let model = if word == "default" {
@@ -1748,7 +1790,7 @@ fn task_edit(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 Err(why) => return bad(400, format!("{word}: {why}")),
             }
         };
-        t.set_model(id, model, BY)
+        t.set_model(id, model, &by())
     };
     match done {
         Ok(said) => ok(json!({ "ok": true, "said": said })),
@@ -1849,7 +1891,7 @@ async fn task_add(ctx: &Ctx, body: &Value) -> Answer {
         chat_id,
         model,
     };
-    match t.add(new, BY) {
+    match t.add(new, &by()) {
         Ok((task, next)) => {
             let when = next
                 .and_then(|n| chrono::DateTime::from_timestamp(n, 0))
@@ -1989,7 +2031,7 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 Ok(None) => {}
                 Err(e) => return bad(400, format!("{e:#}")),
             }
-            s.set_caps(&changes, BY)
+            s.set_caps(&changes, &by())
         }
         "mcp/disable" | "mcp/enable" => {
             let name = need!(arg(body, "name"));
@@ -2000,7 +2042,7 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                     format!("Turn off `{name}`? Running agents lose its tools within seconds.")
                 ));
             }
-            s.mcp_set_disabled(name, off, BY)
+            s.mcp_set_disabled(name, off, &by())
         }
         "mcp/remove" => {
             let name = need!(arg(body, "name"));
@@ -2008,11 +2050,11 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 body,
                 format!("Remove `{name}`? Adding it back means `ferrule mcp add` again.")
             ));
-            s.mcp_remove(name, BY).await
+            s.mcp_remove(name, &by()).await
         }
         "skills/disable" | "skills/enable" => {
             let name = need!(arg(body, "name"));
-            let d = s.skill_set_disabled(name, path == "skills/disable", BY);
+            let d = s.skill_set_disabled(name, path == "skills/disable", &by());
             if d.is_ok() {
                 // The skill catalog is in the prompt: chats get a new one.
                 retire(ctx, None);
@@ -2027,9 +2069,9 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                  Trust the file with exactly this hash?"
                     .to_string()
             ));
-            s.hooks_trust(sha, BY)
+            s.hooks_trust(sha, &by())
         }
-        _ => s.hooks_untrust(BY),
+        _ => s.hooks_untrust(&by()),
     };
     match done {
         Ok(d) => ok(json!({ "ok": true, "said": d.said, "view": d.view })),

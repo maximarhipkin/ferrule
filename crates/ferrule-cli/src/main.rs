@@ -37,6 +37,7 @@ mod probe;
 mod remote;
 mod secrets;
 mod self_extend;
+mod self_service;
 mod selfcheck;
 mod service;
 mod settings_admin;
@@ -2646,6 +2647,7 @@ async fn gateway_factory(
     workspace: PathBuf,
     max_iterations: usize,
     files: Arc<ferrule_gateway::tools::FileOut>,
+    admin: Option<Arc<self_service::Admin>>,
 ) -> Result<(
     ferrule_gateway::AgentFactory,
     Option<Arc<ferrule_agents::Supervisor>>,
@@ -2694,6 +2696,16 @@ async fn gateway_factory(
                 hidden_paths(),
             )));
         }
+        // M48: the owner's own chat can change Ferrule, with the owner's tap.
+        if let Some(admin) = &admin {
+            if let Some(here) = self_service::offered(&admin.hub, session_id) {
+                agent.register_tool(Arc::new(self_service::AdminTool::new(
+                    admin.clone(),
+                    session_id,
+                    here,
+                )));
+            }
+        }
         match &factory_sup {
             Some(sup) => sup
                 .attach_root(agent, session_id, &workspace)
@@ -2715,12 +2727,14 @@ async fn run_gateway(
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let files = Arc::new(ferrule_gateway::tools::FileOut::default());
+    let admin = self_service::Admin::new(trust::hub(&cfg)?);
     let (agent_factory, sup) = gateway_factory(
         &cfg,
         provider.clone(),
         workspace.clone(),
         max_iterations,
         files.clone(),
+        Some(admin.clone()),
     )
     .await?;
 
@@ -2905,25 +2919,27 @@ async fn run_gateway(
     // M37: the page restarts a channel's loop.
     let restarts = Arc::new(ferrule_gateway::ChannelRestarts::default());
     // M22: the page on 127.0.0.1, and `/dashboard` before every other door.
+    let live = dashboard::api::Live {
+        router: lanes.clone(),
+        health: health.clone(),
+        channels: adapters.clone(),
+        fixed: provider.clone(),
+        retire: retirer(lanes.clone()),
+        restarts: restarts.clone(),
+        commands_off: shared_sandbox(&cfg)
+            .ok()
+            .and_then(|s| s.refusal().map(str::to_string)),
+    };
+    let make_ctx = || dashboard::Ctx {
+        live: Some(live.clone()),
+        chat: page_chat.clone(),
+        ..dashboard::Ctx::from_config(&cfg)
+    };
     let dash = if cfg.dashboard.enabled {
         let dash = dashboard::Dashboard::new(
             cfg.dashboard.clone(),
             dashboard::auth::Links::at(dashboard::auth::Links::default_path()?),
-            dashboard::Ctx {
-                live: Some(dashboard::api::Live {
-                    router: lanes.clone(),
-                    health: health.clone(),
-                    channels: adapters.clone(),
-                    fixed: provider.clone(),
-                    retire: retirer(lanes.clone()),
-                    restarts: restarts.clone(),
-                    commands_off: shared_sandbox(&cfg)
-                        .ok()
-                        .and_then(|s| s.refusal().map(str::to_string)),
-                }),
-                chat: page_chat.clone(),
-                ..dashboard::Ctx::from_config(&cfg)
-            },
+            make_ctx(),
         );
         match dash.bind(cfg.dashboard.port).await {
             Ok(port) => {
@@ -2945,6 +2961,12 @@ async fn run_gateway(
     } else {
         None
     };
+    // M48: the chat tool changes things through the page's own handlers,
+    // the page's context when the page is on, else one of its own.
+    match &dash {
+        Some(dash) => admin.bind_page(dash.clone()),
+        None => admin.bind_own(make_ctx()),
+    }
     let drain_router = router.clone();
     let stopper = restarts.clone();
     let mut gateway = Gateway::new(router)
@@ -3224,6 +3246,7 @@ async fn tasks_run_now(
         workspace.clone(),
         max_iterations,
         files,
+        None,
     )
     .await?;
 

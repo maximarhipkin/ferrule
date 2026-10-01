@@ -30,6 +30,10 @@ struct Pending {
     chat: ChatRef,
     what: String,
     asked: Instant,
+    /// How long it may wait, when the asker said (M48).
+    timeout: Option<Duration>,
+    /// What an admin question is bound to: `{op}:{digest}` (M48).
+    op: Option<String>,
     tx: oneshot::Sender<Answer>,
 }
 
@@ -42,6 +46,10 @@ pub struct Waiting {
     pub what: String,
     /// Seconds since it was asked.
     pub secs: u64,
+    /// Seconds before it expires, for a question that has a timeout.
+    pub left_secs: Option<u64>,
+    /// The admin op it is bound to (`model_default:3fa9c1…`), if any.
+    pub op: Option<String>,
 }
 
 #[derive(Default)]
@@ -88,6 +96,18 @@ impl Approvals {
         chat: impl Into<ChatRef>,
         what: &str,
     ) -> (String, oneshot::Receiver<Answer>) {
+        self.open_for(chat, what, None, None)
+    }
+
+    /// `open`, saying how long the question may wait and which admin op it
+    /// is bound to (M48): the dashboard's inbox shows both.
+    pub fn open_for(
+        &self,
+        chat: impl Into<ChatRef>,
+        what: &str,
+        timeout: Option<Duration>,
+        op: Option<String>,
+    ) -> (String, oneshot::Receiver<Answer>) {
         let chat = chat.into();
         let mut inner = self.inner.lock().unwrap();
         let (tx, rx) = oneshot::channel();
@@ -110,6 +130,8 @@ impl Approvals {
             chat,
             what: what.to_string(),
             asked: Instant::now(),
+            timeout,
+            op,
             tx,
         });
         (code, rx)
@@ -143,6 +165,10 @@ impl Approvals {
                 chat: p.chat.clone(),
                 what: p.what.clone(),
                 secs: p.asked.elapsed().as_secs(),
+                left_secs: p
+                    .timeout
+                    .map(|t| t.saturating_sub(p.asked.elapsed()).as_secs()),
+                op: p.op.clone(),
             })
             .collect()
     }

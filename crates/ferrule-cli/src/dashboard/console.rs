@@ -539,7 +539,7 @@ pub fn run(ctx: &Ctx, body: &Value) -> Answer {
             audit(
                 ctx,
                 "console_refused",
-                json!({ "by": "dashboard", "line": line, "why": e }),
+                json!({ "by": super::api::by(), "line": line, "why": e }),
             );
             return bad(400, e);
         }
@@ -555,7 +555,7 @@ pub fn run(ctx: &Ctx, body: &Value) -> Answer {
         audit(
             ctx,
             "console_refused",
-            json!({ "by": "dashboard", "line": line, "why": why }),
+            json!({ "by": super::api::by(), "line": line, "why": why }),
         );
         let hint = PARITY
             .iter()
@@ -590,7 +590,7 @@ pub fn run(ctx: &Ctx, body: &Value) -> Answer {
     audit(
         ctx,
         "console_run",
-        json!({ "by": "dashboard", "line": label, "class": class_name(class) }),
+        json!({ "by": super::api::by(), "line": label, "class": class_name(class) }),
     );
     let hub = ctx.hub.clone();
     let done_label = label.clone();
@@ -603,7 +603,7 @@ pub fn run(ctx: &Ctx, body: &Value) -> Answer {
                 None,
                 None,
                 json!({
-                    "by": "dashboard",
+                    "by": super::api::by(),
                     "line": done_label,
                     "class": class_s,
                     "code": run.code(),

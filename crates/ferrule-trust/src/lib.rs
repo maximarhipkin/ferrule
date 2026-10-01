@@ -24,7 +24,7 @@ pub use classify::{classify, classify_command, Gated, Kind};
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use config::{order_owners, TrustConfig, OWNER_CHANNELS};
 pub use guard::{Route, TrustGuard};
-pub use hub::{Hub, Intercept, Notifier, Prompter};
+pub use hub::{Hub, Intercept, Notifier, Prompter, Question};
 pub use kill::{KillSwitch, StopInfo};
 pub use meter::{Meter, Spend};
 pub use plan::{Plan, PlanStatus, PlanStore};

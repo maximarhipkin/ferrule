@@ -91,6 +91,19 @@ struct RunState {
     spend: Spend,
 }
 
+/// A question for `Hub::ask_in`.
+pub struct Question<'a> {
+    /// What the audit log calls it.
+    pub subject: &'a str,
+    /// What the inbox and the replies call it.
+    pub what: &'a str,
+    /// The words the owner reads.
+    pub text: &'a str,
+    pub timeout: Duration,
+    /// `{op}:{digest}` for an admin change: the question is bound to it.
+    pub op: Option<&'a str>,
+}
+
 pub struct Hub {
     /// The caps can change while the process runs (M24's page and CLI).
     cfg: RwLock<TrustConfig>,
@@ -641,8 +654,39 @@ impl Hub {
         question: &str,
         timeout: Duration,
     ) -> Result<(), String> {
+        self.ask_in(
+            tree,
+            None,
+            Question {
+                subject,
+                what: subject,
+                text: question,
+                timeout,
+                op: None,
+            },
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Asks in `chat` (the primary owner chat when `None`), as `ask_owner`
+    /// does, with the question bound to `q.op` (M48). `Ok` carries the
+    /// code the owner answered.
+    pub async fn ask_in(
+        &self,
+        tree: &str,
+        chat: Option<ChatRef>,
+        q: Question<'_>,
+    ) -> Result<String, String> {
+        let Question {
+            subject,
+            what,
+            text: question,
+            timeout,
+            op,
+        } = q;
         let run = self.run_id(tree);
-        let Some(chat) = self.primary() else {
+        let Some(chat) = chat.or_else(|| self.primary()) else {
             self.answered(
                 tree,
                 &run,
@@ -662,7 +706,9 @@ impl Hub {
                 chat.channel_title()
             ));
         };
-        let (code, rx) = self.approvals.open(&chat, subject);
+        let (code, rx) =
+            self.approvals
+                .open_for(&chat, what, Some(timeout), op.map(str::to_string));
         let mut waiting = Waiting {
             hub: self,
             code: code.clone(),
@@ -678,7 +724,7 @@ impl Hub {
             "approval_asked",
             Some(tree),
             run.as_deref(),
-            json!({"subject": subject, "route": route, "chat": chat.audit_value(), "code": code}),
+            json!({"subject": subject, "route": route, "chat": chat.audit_value(), "code": code, "op": op}),
         );
         let choices = [
             ("Allow".to_string(), format!("yes {code}")),
@@ -691,7 +737,7 @@ impl Hub {
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Answer::Yes)) => {
                 waiting.finish("yes");
-                Ok(())
+                Ok(code)
             }
             Ok(Ok(Answer::No(said))) => {
                 waiting.finish("no");

@@ -3,7 +3,7 @@
 //! agent's tools use: search is the store's keyword ranking, so nothing
 //! here calls a model or an embedder.
 
-use super::api::{bad, confirmed, need, ok, Answer, BY};
+use super::api::{bad, confirmed, need, ok, Answer};
 use super::http::Request;
 use super::Ctx;
 use ferrule_memory::MemoryStore;
@@ -85,7 +85,7 @@ pub async fn forget(ctx: &Ctx, body: &Value) -> Answer {
             "memory.forget",
             None,
             None,
-            json!({ "id": id, "by": BY }),
+            json!({ "id": id, "by": super::api::by() }),
         );
     }
     let older = deleted.len() - 1;

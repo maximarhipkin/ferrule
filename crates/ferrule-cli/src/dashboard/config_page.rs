@@ -334,7 +334,7 @@ fn commit(
     audit(
         ctx,
         "config_saved",
-        json!({ "by": "dashboard", "how": how, "sections": sections }),
+        json!({ "by": super::api::by(), "how": how, "sections": sections }),
     );
     ok(json!({ "ok": true, "sections": sections, "restart": restart && !sections.is_empty() }))
 }

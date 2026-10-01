@@ -345,7 +345,7 @@ pub fn answer(ctx: &Ctx, body: &Value) -> Answer {
         },
         None,
         None,
-        json!({ "by": "dashboard", "code": code }),
+        json!({ "by": super::api::by(), "code": code }),
     );
     ok(json!({ "ok": true, "said": ctx.redactor.redact(&said) }))
 }
