@@ -555,7 +555,8 @@
         led("warn pulse"),
         el("div", { class: "body" },
           el("div", { class: "t msg", dir: "auto", text: a.what }),
-          el("div", { class: "d", text: a.chat + " · asked " + secs(a.secs) + " ago" })),
+          el("div", { class: "d" }, a.chat + " · asked " + secs(a.secs) + " ago",
+            a.left_secs != null ? el("span", { class: "muted", text: " · " + secs(a.left_secs) + " left" }) : null)),
         el("div", { class: "row" },
           btn("Allow", "approvals/answer", { code: a.code, allow: true }, "primary"),
           btn("Refuse", "approvals/answer", { code: a.code, allow: false }, "danger")))));
@@ -765,6 +766,30 @@
       ]);
       this.last = { h, approvals, setup };
       this.draw();
+      this.lookForUpdate(h);
+    },
+    // Once in ten minutes, and not on a managed bot (its image is updated
+    // from the panel): is a new Ferrule out?
+    async lookForUpdate(h) {
+      if (MANAGED.on || !h.gateway || this.checking) return;
+      if (this.update && Date.now() - this.update.at < 600000) return;
+      this.checking = true;
+      try {
+        const r = await api("/api/update/check", {});
+        this.update = { at: Date.now(), found: r.found, current: r.current, headline: r.headline };
+      } catch (e) {
+        this.update = { at: Date.now(), found: null };
+      }
+      this.checking = false;
+      this.draw();
+    },
+    updateRow() {
+      const u = this.update;
+      if (!u || !u.found) return null;
+      return el("div", { class: "card" },
+        el("div", { class: "row" },
+          el("p", { class: "lead grow", dir: "auto", text: "Ferrule " + u.found + " is out (this is v" + u.current + ")" + (u.headline ? ": " + u.headline : "") }),
+          btn("Install", "update/start", {}, "primary")));
     },
     draw() {
       if (!this.last) return;
@@ -806,6 +831,7 @@
         problems(h.problems),
         showList ? checklist(setup) : null,
         approvalsCard(approvals),
+        this.updateRow(),
         el("div", { class: "quick" }, QUICK.map(([sec, ic, t, d]) => el("button", { type: "button", class: "quick-tile", onclick: () => show(sec) },
           icon(ic), el("span", { class: "t", text: t }), el("span", { class: "d", text: d }))),
           tgOpen && !showList ? el("button", { type: "button", class: "quick-tile", onclick: () => show("channels", { tile: "telegram" }) },

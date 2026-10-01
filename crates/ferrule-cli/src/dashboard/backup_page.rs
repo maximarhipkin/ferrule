@@ -3,7 +3,7 @@
 //! file that leaves through the page never holds a key. The files live in
 //! `<data>/backups/`, which a backup itself leaves out.
 
-use super::api::{bad, confirmed, need, ok, Answer, BY};
+use super::api::{bad, confirmed, need, ok, Answer};
 use super::http::{Request, Response};
 use super::Ctx;
 use serde_json::{json, Value};
@@ -49,16 +49,13 @@ pub fn start(ctx: &Ctx) -> Answer {
     );
     let job = ctx.backups.clone();
     let hub = ctx.hub.clone();
+    // The task has no `act` scope of its own: say who asked now.
+    let by = super::api::by();
     tokio::spawn(async move {
         let out = dir.join(&name);
         let done = tokio::task::spawn_blocking({
             let dir = dir.clone();
-            move || {
-                std::fs::create_dir_all(&dir)?;
-                crate::backup::backup(Some(out), false)?;
-                prune(&dir, KEEP);
-                anyhow::Ok(())
-            }
+            move || make(&dir, out)
         })
         .await;
         let error = match done {
@@ -72,7 +69,7 @@ pub fn start(ctx: &Ctx) -> Answer {
                 "backup.made",
                 None,
                 None,
-                json!({ "file": name, "by": BY, "ok": error.is_none() }),
+                json!({ "file": name, "by": by, "ok": error.is_none() }),
             );
         }
         let mut job = job.lock().unwrap();
@@ -83,6 +80,33 @@ pub fn start(ctx: &Ctx) -> Answer {
         202,
         json!({ "ok": true, "said": "Backing up… this takes a few seconds." }),
     ))
+}
+
+/// Waits for the backup `start` began, up to `limit`: its error, if any.
+pub(crate) async fn finished(ctx: &Ctx, limit: std::time::Duration) -> Result<(), String> {
+    let until = std::time::Instant::now() + limit;
+    loop {
+        {
+            let job = ctx.backups.lock().unwrap();
+            if !job.running {
+                return job.error.clone().map_or(Ok(()), Err);
+            }
+        }
+        if std::time::Instant::now() >= until {
+            return Err(
+                "it is still running; the dashboard's Backup page shows when it's done".into(),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Writes one backup to `out` in `dir` and prunes the old ones.
+pub(crate) fn make(dir: &Path, out: PathBuf) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    crate::backup::backup(Some(out), false)?;
+    prune(dir, KEEP);
+    Ok(())
 }
 
 /// The backups there are, newest first: `(name, bytes, modified)`.
@@ -190,7 +214,7 @@ pub fn delete(ctx: &Ctx, body: &Value) -> Answer {
             "backup.deleted",
             None,
             None,
-            json!({ "file": name, "by": BY }),
+            json!({ "file": name, "by": super::api::by() }),
         );
     }
     ok(json!({ "ok": true, "said": "Deleted the backup." }))

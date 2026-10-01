@@ -39,6 +39,7 @@ mod probe;
 mod remote;
 mod secrets;
 mod self_extend;
+mod self_service;
 mod selfcheck;
 mod service;
 mod settings_admin;
@@ -2256,40 +2257,6 @@ async fn close_tree(sup: &ferrule_agents::Supervisor, root: &str) {
     }
 }
 
-/// `/help`'s lines for the commands this binary's interceptors answer
-/// (M41), after the gateway's own `/new`, `/status` and `/help`.
-const CHAT_COMMANDS: &[(&str, &str)] = &[
-    (
-        "/stop",
-        "stop every run now; nothing new starts until /resume",
-    ),
-    ("/resume", "let runs start again (owner)"),
-    (
-        "/plan <task>",
-        "explore read-only, then ask before running the plan",
-    ),
-    (
-        "/goal <what done looks like>",
-        "a loop that runs until the judge says so (owner)",
-    ),
-    (
-        "/graph <file>",
-        "run an agent graph; its gates ask here (owner)",
-    ),
-    ("/undo", "revert the agent's last commit (owner)"),
-    ("/model", "show or switch the model"),
-    ("/login, /logout", "sign in to a ChatGPT or Claude plan"),
-    ("/connect, /connections", "connected services"),
-    (
-        "/skills, /mcp, /hooks, /caps",
-        "what's installed, and spending caps",
-    ),
-    (
-        "/dashboard",
-        "a link to the dashboard (owner's private chat)",
-    ),
-];
-
 /// `ferrule sessions`: the sessions dir as a table, newest first; a branch
 /// shows the parent it forked from (M42 part 7).
 fn sessions(all: bool) -> Result<()> {
@@ -2553,6 +2520,7 @@ fn build_channels(
             TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone())
                 .with_allowed_chats(cfg.gateway.telegram_allowed_chats.clone())
                 .with_owner(trust::owner_chat(cfg))
+                .with_menu(self_service::menu::all(cfg.dashboard.enabled))
                 .with_conflict_after(Duration::from_secs(
                     cfg.health.telegram_conflict_secs.max(1),
                 ))
@@ -2661,6 +2629,7 @@ async fn gateway_factory(
     workspace: PathBuf,
     max_iterations: usize,
     files: Arc<ferrule_gateway::tools::FileOut>,
+    admin: Option<Arc<self_service::Admin>>,
 ) -> Result<(
     ferrule_gateway::AgentFactory,
     Option<Arc<ferrule_agents::Supervisor>>,
@@ -2668,6 +2637,7 @@ async fn gateway_factory(
     let sandbox = shared_sandbox(cfg)?;
     let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
+    mcp_tools.ask_the_owner(trust::hub(cfg)?);
     let ledger_sink = ledger::build_sink(cfg);
     // M21: a scheduled task's own model, read per call from tasks.db so
     // `ferrule tasks model` reaches a lane that's already running.
@@ -2709,6 +2679,17 @@ async fn gateway_factory(
                 hidden_paths(),
             )));
         }
+        // M48: the owner's own chat can change Ferrule, with the owner's tap.
+        if let Some(admin) = &admin {
+            if let Some(here) = self_service::offered(&admin.hub, session_id) {
+                agent.append_system_prompt(ferrule_agents::prompts::OWNER_ADMIN);
+                agent.register_tool(Arc::new(self_service::AdminTool::new(
+                    admin.clone(),
+                    session_id,
+                    here,
+                )));
+            }
+        }
         match &factory_sup {
             Some(sup) => sup
                 .attach_root(agent, session_id, &workspace)
@@ -2730,12 +2711,14 @@ async fn run_gateway(
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let files = Arc::new(ferrule_gateway::tools::FileOut::default());
+    let admin = self_service::Admin::new(trust::hub(&cfg)?);
     let (agent_factory, sup) = gateway_factory(
         &cfg,
         provider.clone(),
         workspace.clone(),
         max_iterations,
         files.clone(),
+        Some(admin.clone()),
     )
     .await?;
 
@@ -2816,6 +2799,7 @@ async fn run_gateway(
             .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
     );
     files.bind(&router);
+    admin.bind_router(Arc::downgrade(&router));
     // A chat whose agents report while it's idle is run again, and its
     // answer goes to the chat.
     if let Some(sup) = &sup {
@@ -2870,6 +2854,15 @@ async fn run_gateway(
         selfcheck::Check::new(&cfg, config::data_dir()?, adapters.clone()),
         Arc::new(update::notice::HubOwner(hub.clone())),
     );
+    // M48: a restart the owner asked for from a chat is kept here, a few
+    // seconds in, once the channels are up.
+    {
+        let (data, owner) = (config::data_dir()?, update::notice::HubOwner(hub.clone()));
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            self_service::promise::on_start(&data, &owner);
+        });
+    }
     // M36: a line per update or rollback, and what's out (docs/updates.md).
     if !managed::on() {
         update::notice::spawn(
@@ -2920,25 +2913,27 @@ async fn run_gateway(
     // M37: the page restarts a channel's loop.
     let restarts = Arc::new(ferrule_gateway::ChannelRestarts::default());
     // M22: the page on 127.0.0.1, and `/dashboard` before every other door.
+    let live = dashboard::api::Live {
+        router: lanes.clone(),
+        health: health.clone(),
+        channels: adapters.clone(),
+        fixed: provider.clone(),
+        retire: retirer(lanes.clone()),
+        restarts: restarts.clone(),
+        commands_off: shared_sandbox(&cfg)
+            .ok()
+            .and_then(|s| s.refusal().map(str::to_string)),
+    };
+    let make_ctx = || dashboard::Ctx {
+        live: Some(live.clone()),
+        chat: page_chat.clone(),
+        ..dashboard::Ctx::from_config(&cfg)
+    };
     let dash = if cfg.dashboard.enabled {
         let dash = dashboard::Dashboard::new(
             cfg.dashboard.clone(),
             dashboard::auth::Links::at(dashboard::auth::Links::default_path()?),
-            dashboard::Ctx {
-                live: Some(dashboard::api::Live {
-                    router: lanes.clone(),
-                    health: health.clone(),
-                    channels: adapters.clone(),
-                    fixed: provider.clone(),
-                    retire: retirer(lanes.clone()),
-                    restarts: restarts.clone(),
-                    commands_off: shared_sandbox(&cfg)
-                        .ok()
-                        .and_then(|s| s.refusal().map(str::to_string)),
-                }),
-                chat: page_chat.clone(),
-                ..dashboard::Ctx::from_config(&cfg)
-            },
+            make_ctx(),
         );
         match dash.bind(cfg.dashboard.port).await {
             Ok(port) => {
@@ -2960,6 +2955,12 @@ async fn run_gateway(
     } else {
         None
     };
+    // M48: the chat tool changes things through the page's own handlers,
+    // the page's context when the page is on, else one of its own.
+    match &dash {
+        Some(dash) => admin.bind_page(dash.clone()),
+        None => admin.bind_own(make_ctx()),
+    }
     let drain_router = router.clone();
     let stopper = restarts.clone();
     let mut gateway = Gateway::new(router.clone())
@@ -2978,6 +2979,7 @@ async fn run_gateway(
             plan: Some(plan),
             undo: Some(undo),
         }))
+        .with_interceptor(Arc::new(self_service::SelfServiceDoor::new(admin.clone())))
         .with_interceptor(Arc::new(settings_door::SettingsDoor {
             settings: settings_admin::Settings::new(
                 config::config_path()?.unwrap_or_default(),
@@ -3016,11 +3018,7 @@ async fn run_gateway(
             owner: trust::owner_chat(&cfg),
         }));
     }
-    gateway = gateway.with_help(
-        CHAT_COMMANDS
-            .iter()
-            .map(|(c, w)| (c.to_string(), w.to_string())),
-    );
+    gateway = gateway.with_menu(self_service::menu::all(cfg.dashboard.enabled));
     for channel in adapters {
         gateway.add_channel(channel);
     }
@@ -3251,6 +3249,7 @@ async fn tasks_run_now(
         workspace.clone(),
         max_iterations,
         files,
+        None,
     )
     .await?;
 

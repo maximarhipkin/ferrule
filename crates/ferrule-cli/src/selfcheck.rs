@@ -79,9 +79,13 @@ impl Check {
                 found.insert(
                     format!("signin:{}", plan.as_str()),
                     format!(
-                        "{plan}: {} — on the server: `ferrule login {}`",
+                        "{plan}: {} — {}",
                         s.word(),
-                        plan.login_word()
+                        match plan {
+                            crate::config::Plan::Chatgpt => "/login chatgpt here",
+                            crate::config::Plan::ClaudeCode =>
+                                "sign in again on the dashboard's Models page (/dashboard sends the link)",
+                        }
                     ),
                 );
             }
@@ -168,8 +172,8 @@ impl Check {
             found.insert(
                 "pinned".into(),
                 format!(
-                    "{} didn't start properly and is pinned, so {} keeps running; `ferrule update --to v{}` retries it",
-                    e.to, e.from, e.to
+                    "{} didn't start properly and is pinned, so {} keeps running; the next release is offered as usual",
+                    e.to, e.from
                 ),
             );
         }

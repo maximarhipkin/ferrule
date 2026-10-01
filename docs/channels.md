@@ -4,7 +4,8 @@ Ferrule answers you where you already talk. One gateway daemon runs every
 channel that has credentials. Every channel keeps the same rules:
 
 - **You are the owner.** The first person you pair becomes the channel's
-  owner, and only the owner can approve a tool call.
+  owner, and only the owner can approve a tool call or a change to
+  Ferrule itself (on Telegram, with a button).
 - **Strangers are ignored.** Only people on `allowed_users` (or paired with
   a one-time code from `ferrule setup`) get an answer. Anyone else gets
   nothing.
@@ -982,17 +983,41 @@ sees them):
 | `/new` (or `/reset`) | Starts a fresh conversation in this chat. A running turn is stopped, and messages waiting behind it are dropped (the reply says how many). The old transcript stays on disk as `sessions/<chat>.<UTC time>.jsonl`. It's kept, not replayed. Memory, tasks and settings stay. |
 | `/status` | What ferrule is doing right now. |
 | `/help` | The commands this chat answers. |
-| `/stop`, `/resume`, `/model`, `/undo`, `/plan`, … | As before; `/help` lists the ones this gateway has. |
+| `/stop`, `/resume` | Stop every run now; let runs start again. |
+| `/plan <task>`, `/undo` | Explore first, then ask; revert the agent's last commit. |
+| `/goal <what done looks like>`, `/graph <file>` | A loop that runs until the judge says so; run an agent graph, whose gates ask here. |
+| `/model` | Show or switch the model. |
+| `/update`, `/restart`, `/doctor` | Check for a new Ferrule and install it; restart; check the setup and offer fixes. Each asks first and tells you in the same chat when it's done ([updates.md](updates.md#from-a-chat)). |
+| `/login`, `/logout`, `/connect`, `/connections`, `/skills`, `/mcp`, `/hooks`, `/caps` | Plans, services, extensions and spending caps. |
+| `/dashboard` | A link to the dashboard (the owner's private chat). |
+
+`/help` and Telegram's menu are one list, so a command that works is in
+both. `/help` lists the ones this gateway has; the owner-only commands are
+only shown to the owner.
 
 When a turn fails the same way twice in a row (the same 4xx from the
 model), the error ends with a hint to send `/new`. The conversation itself
 is then the likely problem: something in it that the provider rejects, or
 a history that no longer fits.
 
-Telegram shows `/new`, `/stop`, `/status` and `/help` in the bot's command
-menu (set when the gateway starts). Discord gets `/new` and `/help` as slash
-commands when `ferrule setup` registers them ([discord.md](discord.md)).
-`ferrule chat` takes `/new` too.
+Telegram's `/` menu is set when the gateway starts, per scope: groups and
+anyone else get `/new`, `/stop`, `/status` and `/help`; private chats, and
+the owner's own chat even if those were cleared, get the full list. Discord
+gets `/new` and `/help` as slash commands when `ferrule setup` registers
+them ([discord.md](discord.md)). `ferrule chat` takes `/new` too.
+
+### Changing Ferrule from the conversation
+
+The owner's chats give the agent a `ferrule_admin` tool: switch the default
+model or a fallback, set a spending cap, turn a skill or MCP server on or
+off, trust a workspace's hooks, check for and install an update, restart.
+It runs in the gateway, not in the shell sandbox, so it can write
+`ferrule.toml` even where the shell can't. Every change shows the owner the
+exact change on a card first and waits for a tap (Allow on Telegram, a
+reply elsewhere); an approval covers that one change, in that chat, once.
+The agent never asks you to paste a command or open a terminal for
+something it can do this way. Only the owner's own chat (and the dashboard's Chat) gets the tool; groups and other people don't.
+Nothing secret is ever printed on a card or in a result.
 
 ## Photos
 

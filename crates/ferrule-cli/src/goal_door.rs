@@ -24,6 +24,9 @@ pub struct GoalDoor {
 }
 
 impl GoalDoor {
+    #[cfg(test)]
+    pub const HANDLES: &'static [&'static str] = &["goal"];
+
     fn start(&self, msg: &InboundMessage, text: &str) -> Option<String> {
         let lane_chat = uuid::Uuid::new_v4().to_string();
         let session = ferrule_gateway::session::session_id(GOAL_CHANNEL, &lane_chat);

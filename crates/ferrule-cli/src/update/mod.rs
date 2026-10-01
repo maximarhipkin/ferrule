@@ -10,7 +10,7 @@ pub mod state;
 pub mod swap;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::service;
 use anyhow::{anyhow, bail, Context, Result};
@@ -391,7 +391,7 @@ pub fn held_by(others: &[(String, Option<bool>)]) -> Option<&str> {
 
 /// Not this user's to replace: a system service's binary, run by root's
 /// units — the default's or any named instance's (M38).
-fn someone_elses(exe: &Path) -> Option<String> {
+pub(crate) fn someone_elses(exe: &Path) -> Option<String> {
     if service::is_root() || !cfg!(target_os = "linux") {
         return None;
     }
@@ -460,7 +460,7 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
         ),
         (false, _) => (
             Tone::Note,
-            format!("{current}; you're told when a release is out, `ferrule update` installs it"),
+            format!("{current}; you're told when a release is out, /update installs it"),
         ),
     });
     match (state.last_check, state.last_check_ok) {
@@ -503,11 +503,10 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
                 Tone::Warn,
                 format!(
                     "{} didn't start properly {} ago and was rolled back ({}); \
-                     `ferrule update --to v{}` retries it",
+                     the next release is offered as usual",
                     e.to,
                     ago(e.at),
                     release::clip(&e.notes, 160),
-                    e.to
                 ),
             ),
             _ => (

@@ -30,7 +30,7 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// A minisign key made in the test: prehashed Ed25519, as `minisign -S -H`.
-struct Key {
+pub(crate) struct Key {
     pair: ring::signature::Ed25519KeyPair,
     id: [u8; 8],
 }
@@ -100,7 +100,7 @@ fn script(version: &str) -> Vec<u8> {
 }
 
 /// A GitHub-shaped release server on localhost.
-struct Mock {
+pub(crate) struct Mock {
     base: String,
     routes: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     releases: Vec<serde_json::Value>,
@@ -524,7 +524,7 @@ fn runs_wants_the_version_it_was_promised() {
 }
 
 /// The gateway's marker, as a running gateway writes it.
-fn mark(data: &Path, version: &str, busy: bool, up_for: u64) {
+pub(crate) fn mark(data: &Path, version: &str, busy: bool, up_for: u64) {
     let marker = RunningMarker {
         pid: std::process::id(),
         version: version.into(),
@@ -565,16 +565,16 @@ impl Service for FakeService {
     }
 }
 
-struct Setup {
+pub(crate) struct Setup {
     _dir: tempfile::TempDir,
-    exe: PathBuf,
-    data: PathBuf,
-    state_dir: PathBuf,
-    mock: Mock,
-    key: Key,
+    pub(crate) exe: PathBuf,
+    pub(crate) data: PathBuf,
+    pub(crate) state_dir: PathBuf,
+    pub(crate) mock: Mock,
+    pub(crate) key: Key,
 }
 
-async fn setup() -> Setup {
+pub(crate) async fn setup() -> Setup {
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -595,7 +595,7 @@ async fn setup() -> Setup {
     }
 }
 
-fn apply<'a>(s: &Setup, service: Option<&'a dyn Service>) -> Apply<'a> {
+pub(crate) fn apply<'a>(s: &Setup, service: Option<&'a dyn Service>) -> Apply<'a> {
     let mut a = Apply::new_defaults(
         s.mock.source(&s.key),
         s.exe.clone(),
@@ -848,6 +848,7 @@ fn events_are_capped_and_numbered() {
 #[derive(Default)]
 struct FakeOwner {
     told: Mutex<Vec<String>>,
+    told_in: Mutex<Vec<(String, String)>>,
     asked: Mutex<Vec<String>>,
     allow: bool,
 }
@@ -856,6 +857,13 @@ struct FakeOwner {
 impl Owner for FakeOwner {
     fn tell(&self, text: String) {
         self.told.lock().unwrap().push(text);
+    }
+
+    fn tell_in(&self, chat: &ferrule_trust::ChatRef, text: String) {
+        self.told_in
+            .lock()
+            .unwrap()
+            .push((format!("{}:{}", chat.channel, chat.chat), text));
     }
 
     async fn ask(&self, _subject: &str, question: &str) -> bool {
@@ -910,7 +918,8 @@ async fn each_update_is_told_once_and_old_news_isnt_told_on_a_first_start() {
     w.tick(&owner).await.unwrap();
     let lines = told(&fake);
     assert_eq!(lines.len(), 3, "{lines:?}");
-    assert!(lines[1].contains("went back to 0.5.1") && lines[1].contains("--to v0.6.0"));
+    assert!(lines[1].contains("went back to 0.5.1"), "{lines:?}");
+    assert!(!lines[1].contains("--to"), "no command to paste: {lines:?}");
     assert!(lines[2].starts_with("Ferrule 0.7.0 is out but wasn't installed"));
 
     // A state that started over (a reinstall): only what's recent.
@@ -1626,4 +1635,38 @@ fn a_sibling_with_auto_off_holds_the_units_runs() {
         super::held_by(&[on("a", None), on("b", Some(false))]),
         Some("b")
     );
+}
+
+#[tokio::test]
+async fn a_rollback_is_told_in_the_chat_that_asked() {
+    use crate::self_service::promise::{self, Kind};
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path();
+    std::fs::create_dir_all(data.join("update")).unwrap();
+    let state_dir = super::state_dir(data);
+    let mut state = State::default();
+    state.push(EventKind::RolledBack, "0.5.1", "0.6.0", "no");
+    state.save(&state_dir).unwrap();
+    let chat = ferrule_trust::ChatRef::new("telegram", "42");
+    promise::make(
+        data,
+        &chat,
+        Kind::Update {
+            from: "0.5.1".into(),
+            after: 0,
+        },
+    )
+    .unwrap();
+    let fake = Arc::new(FakeOwner::default());
+    let owner: Arc<dyn Owner> = fake.clone();
+    watch(data, true, None, Source::new("http://127.0.0.1:9"))
+        .tick(&owner)
+        .await
+        .unwrap();
+    let said = fake.told_in.lock().unwrap().clone();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(said[0].0, "telegram:42");
+    assert!(said[0].1.contains("went back to 0.5.1"), "{said:?}");
+    assert!(told(&fake).is_empty(), "not also said to the owner");
+    assert!(!promise::exists(data), "the promise is used up");
 }

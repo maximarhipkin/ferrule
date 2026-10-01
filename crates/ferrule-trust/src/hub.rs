@@ -91,6 +91,19 @@ struct RunState {
     spend: Spend,
 }
 
+/// A question for `Hub::ask_in`.
+pub struct Question<'a> {
+    /// What the audit log calls it.
+    pub subject: &'a str,
+    /// What the inbox and the replies call it.
+    pub what: &'a str,
+    /// The words the owner reads.
+    pub text: &'a str,
+    pub timeout: Duration,
+    /// `{op}:{digest}` for an admin change: the question is bound to it.
+    pub op: Option<&'a str>,
+}
+
 pub struct Hub {
     /// The caps can change while the process runs (M24's page and CLI).
     cfg: RwLock<TrustConfig>,
@@ -577,6 +590,26 @@ impl Hub {
         )
     }
 
+    /// Sends `text` to `chat` when it is an owner chat, else to the primary
+    /// owner chat; doesn't wait.
+    pub fn tell_in(&self, chat: &ChatRef, text: String) {
+        if !self.owners().contains(chat) {
+            return self.tell_owner(text);
+        }
+        let Some(n) = self.notifier() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let chat = chat.clone();
+        rt.spawn(async move {
+            if let Err(e) = n.send_to(&chat, &text).await {
+                tracing::warn!("trust: couldn't tell the owner ({e})");
+            }
+        });
+    }
+
     /// Sends the owner a message and doesn't wait; a failure is logged.
     pub fn tell_owner(&self, text: String) {
         let (Some(n), Some(chat)) = (self.notifier(), self.primary()) else {
@@ -641,8 +674,39 @@ impl Hub {
         question: &str,
         timeout: Duration,
     ) -> Result<(), String> {
+        self.ask_in(
+            tree,
+            None,
+            Question {
+                subject,
+                what: subject,
+                text: question,
+                timeout,
+                op: None,
+            },
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Asks in `chat` (the primary owner chat when `None`), as `ask_owner`
+    /// does, with the question bound to `q.op` (M48). `Ok` carries the
+    /// code the owner answered.
+    pub async fn ask_in(
+        &self,
+        tree: &str,
+        chat: Option<ChatRef>,
+        q: Question<'_>,
+    ) -> Result<String, String> {
+        let Question {
+            subject,
+            what,
+            text: question,
+            timeout,
+            op,
+        } = q;
         let run = self.run_id(tree);
-        let Some(chat) = self.primary() else {
+        let Some(chat) = chat.or_else(|| self.primary()) else {
             self.answered(
                 tree,
                 &run,
@@ -662,7 +726,9 @@ impl Hub {
                 chat.channel_title()
             ));
         };
-        let (code, rx) = self.approvals.open(&chat, subject);
+        let (code, rx) =
+            self.approvals
+                .open_for(&chat, what, Some(timeout), op.map(str::to_string));
         let mut waiting = Waiting {
             hub: self,
             code: code.clone(),
@@ -678,7 +744,7 @@ impl Hub {
             "approval_asked",
             Some(tree),
             run.as_deref(),
-            json!({"subject": subject, "route": route, "chat": chat.audit_value(), "code": code}),
+            json!({"subject": subject, "route": route, "chat": chat.audit_value(), "code": code, "op": op}),
         );
         let choices = [
             ("Allow".to_string(), format!("yes {code}")),
@@ -691,7 +757,7 @@ impl Hub {
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Answer::Yes)) => {
                 waiting.finish("yes");
-                Ok(())
+                Ok(code)
             }
             Ok(Ok(Answer::No(said))) => {
                 waiting.finish("no");
@@ -772,6 +838,17 @@ impl Hub {
     /// Reads a message from an allowed chat before it reaches a session:
     /// `/stop`, `/resume`, `/plan`, and replies to pending approvals.
     pub fn intercept(&self, chat: impl Into<ChatRef>, text: &str) -> Intercept {
+        self.intercept_from(chat, text, true)
+    }
+
+    /// `intercept`, knowing whether the sender is the owner (M48): only the
+    /// owner's `yes`/`no` answers a question.
+    pub fn intercept_from(
+        &self,
+        chat: impl Into<ChatRef>,
+        text: &str,
+        by_owner: bool,
+    ) -> Intercept {
         let chat = chat.into();
         let t = text.trim();
         let (cmd, rest) = match t.split_once(char::is_whitespace) {
@@ -783,8 +860,10 @@ impl Hub {
             "/stop" => {
                 let reason = (!rest.is_empty()).then(|| rest.to_string());
                 return Intercept::Reply(match self.engage(&chat.to_string(), reason) {
-                    Ok(_) => "Stopped: every run halts now, and nothing new starts until /resume (or `ferrule stop --clear` on the machine).".into(),
-                    Err(e) => format!("Couldn't write the stop file ({e}). Run `ferrule stop` on the machine."),
+                    Ok(_) => {
+                        "Stopped: every run halts now, and nothing new starts until /resume.".into()
+                    }
+                    Err(e) => format!("Couldn't write the stop file ({e}); nothing was stopped."),
                 });
             }
             "/resume" => {
@@ -806,7 +885,7 @@ impl Hub {
             "/plan" => return Intercept::Plan(rest.to_string()),
             _ => {}
         }
-        match self.approvals.answer(&chat, text) {
+        match self.approvals.answer_from(&chat, text, by_owner) {
             Some(reply) => Intercept::Reply(reply),
             None => Intercept::Pass,
         }

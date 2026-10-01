@@ -24,7 +24,22 @@ use std::time::{Duration, SystemTime};
 /// Who the audit log says made a change from the page.
 pub const BY: &str = "dashboard";
 
+tokio::task_local! {
+    /// Who a change made through `act` is audited as (M48: the chat tool
+    /// acts as "telegram chat 42 (approved a3)", not as the page).
+    static ACTOR: String;
+}
+
+/// Who the audit log says made the change in hand: the page, unless `act`
+/// was called for someone else.
+pub fn by() -> String {
+    ACTOR
+        .try_with(String::clone)
+        .unwrap_or_else(|_| BY.to_string())
+}
+
 /// What only the running gateway has.
+#[derive(Clone)]
 pub struct Live {
     pub router: Weak<Router>,
     pub health: Arc<Health>,
@@ -39,13 +54,13 @@ pub struct Live {
     pub commands_off: Option<String>,
 }
 
-pub(super) type Answer = Option<(u16, Value)>;
+pub(crate) type Answer = Option<(u16, Value)>;
 
-pub(super) fn ok(v: Value) -> Answer {
+pub(crate) fn ok(v: Value) -> Answer {
     Some((200, v))
 }
 
-pub(super) fn bad(status: u16, why: impl std::fmt::Display) -> Answer {
+pub(crate) fn bad(status: u16, why: impl std::fmt::Display) -> Answer {
     Some((status, json!({ "error": why.to_string() })))
 }
 
@@ -63,7 +78,7 @@ pub(super) fn confirmed(body: &Value, question: String) -> Result<(), Answer> {
     }
 }
 
-pub(super) fn arg<'a>(body: &'a Value, key: &str) -> Result<&'a str, Answer> {
+pub(crate) fn arg<'a>(body: &'a Value, key: &str) -> Result<&'a str, Answer> {
     body.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
@@ -123,6 +138,33 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             _ => None,
         };
     }
+    act(ctx, path, body, BY).await
+}
+
+/// A page's GET, for the chat tool: the same view, as JSON.
+pub(crate) async fn read(ctx: &Ctx, path: &str) -> Result<Value, String> {
+    let req = Request {
+        method: "GET".into(),
+        path: format!("/api/{path}"),
+        query: BTreeMap::new(),
+        headers: BTreeMap::new(),
+        body: Vec::new(),
+    };
+    match route(ctx, true, &req, &Value::Null).await {
+        Some((200, v)) => Ok(v),
+        Some((_, v)) => Err(v["error"].as_str().unwrap_or("it failed").to_string()),
+        None => Err(format!("`{path}` isn't available")),
+    }
+}
+
+/// Every change the page can make, as `by` (M48: the chat's admin tool
+/// calls this after the owner's approval, so a change is one code path
+/// whoever asks, and the audit row names who did).
+pub(crate) async fn act(ctx: &Ctx, path: &str, body: &Value, by: &str) -> Answer {
+    ACTOR.scope(by.to_string(), post(ctx, path, body)).await
+}
+
+async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     match path {
         "turn/stop" => stop_turn(ctx, body),
         "kill/on" | "kill/off" => kill(ctx, path == "kill/on", body),
@@ -185,6 +227,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
         "telegram/allow" => super::telegram::allow(ctx, body).await,
         "config/restore" => config_restore(ctx, body),
         "gateway/restart" => gateway_restart(ctx, body),
+        "update/check" => update_check(ctx).await,
+        "update/start" => update_start(ctx, body).await,
         _ => None,
     }
 }
@@ -361,7 +405,7 @@ pub fn health(ctx: &Ctx) -> Value {
             .filter(|(t, _)| *t == crate::update::Tone::Warn)
         {
             problems.push(json!({
-                "fixes": [{ "label": "Check for an update", "action": "console/run", "body": { "line": "update --check" } }],
+                "fixes": [{ "label": "Check for an update", "action": "update/check", "body": {} }],
                 "what": ctx.redactor.redact(line),
                 "fix": "`ferrule doctor` shows the update state; docs/updates.md explains it.",
                 "section": "health",
@@ -636,7 +680,7 @@ fn stop_turn(ctx: &Ctx, body: &Value) -> Answer {
     let Some(router) = live.router.upgrade() else {
         return missing("the gateway");
     };
-    if router.stop(session, BY) {
+    if router.stop(session, &by()) {
         ok(json!({ "ok": true, "said": "Stopped." }))
     } else {
         bad(404, "nothing is running there now")
@@ -661,12 +705,12 @@ fn kill(ctx: &Ctx, on: bool, body: &Value) -> Answer {
             .get("reason")
             .and_then(Value::as_str)
             .map(|r| clip(r, 200));
-        match hub.engage(BY, reason) {
+        match hub.engage(&by(), reason) {
             Ok(_) => ok(json!({ "ok": true, "said": "The kill switch is on." })),
             Err(e) => bad(500, e),
         }
     } else {
-        match hub.clear(BY) {
+        match hub.clear(&by()) {
             Ok(true) => ok(json!({ "ok": true, "said": "The kill switch is off." })),
             Ok(false) => ok(json!({ "ok": true, "said": "It was already off." })),
             Err(e) => bad(500, e),
@@ -1041,7 +1085,7 @@ pub fn doctor_report(out: &str) -> Option<Value> {
                 { "label": "Restore the last good config", "action": "config/restore", "body": {} }
             ]),
             "updates" => json!([
-                { "label": "Check for an update", "action": "console/run", "body": { "line": "update --check" } }
+                { "label": "Check for an update", "action": "update/check", "body": {} }
             ]),
             "models" | "provider" | "keys" | "routing" => {
                 json!([{ "label": "Open Models", "section": "models" }])
@@ -1112,19 +1156,22 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
     }
 }
 
-/// Only under a service that starts it again: the process ends cleanly
-/// and the service brings it back on the file as it is now.
+/// Restarts the gateway: under a service, the process ends cleanly and
+/// the service starts it again; unsupervised on Unix (the container's
+/// init, a terminal), it runs itself again.
 fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
+    use crate::self_service::restart::{how, How};
     if ctx.live.is_none() {
         return missing("the gateway");
     }
-    if !crate::last_good::supervised() {
+    let managed = crate::managed::on();
+    let how = how(managed, crate::last_good::supervised(), cfg!(unix));
+    if how == How::Unavailable {
         return bad(
             409,
-            "The gateway runs in a terminal, not as a service, so nothing would start it again: restart it there.",
+            "Restarting from the page isn't available on Windows without the service; nothing changed.",
         );
     }
-    let managed = crate::managed::on();
     need!(confirmed(
         body,
         if managed {
@@ -1140,18 +1187,119 @@ fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await;
         tracing::info!("restart asked for from the dashboard");
-        if managed {
-            crate::lifecycle::request_restart();
-        } else {
-            terminate_self();
+        #[cfg(test)]
+        {
+            RESTARTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        #[cfg(not(test))]
+        if let Err(e) = crate::self_service::restart::now() {
+            tracing::warn!("restart from the dashboard: {e}");
         }
     });
     ok(json!({ "ok": true, "said": "Restarting…" }))
 }
 
+/// A restart the tests asked for (the process isn't signalled in a test).
+#[cfg(test)]
+static RESTARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What Home's update row shows: this version, and the release that is out.
+async fn update_check(ctx: &Ctx) -> Answer {
+    if let Some(no) = update_refusal(crate::managed::on()) {
+        return Some(no);
+    }
+    let apply = match update_flow(ctx) {
+        Ok(a) => a,
+        Err(e) => return bad(409, e),
+    };
+    match crate::self_service::update::check(&apply).await {
+        Ok(found) => ok(json!({
+            "ok": true,
+            "said": crate::self_service::update::check_text(&apply.current, found.as_ref()),
+            "current": apply.current.to_string(),
+            "found": found.as_ref().map(|r| r.tag.clone()),
+            "headline": found.as_ref().map(|r| r.headline()).unwrap_or_default(),
+        })),
+        Err(e) => bad(502, ctx.redactor.redact(&e)),
+    }
+}
+
+const UPDATE_WHY: &str = "the panel updates a bot by changing its image";
+
+/// A managed bot is updated from the panel, by changing its image.
+fn update_refusal(managed: bool) -> Answer {
+    if managed {
+        bad(403, crate::managed::refused("Updating", UPDATE_WHY))
+    } else {
+        None
+    }
+}
+
+fn update_flow(ctx: &Ctx) -> Result<crate::update::apply::Apply<'static>, String> {
+    let data = ctx.data.clone().ok_or("there's no data dir here")?;
+    crate::self_service::update::real_apply(data)
+}
+
+/// Installs the newest release after the owner's confirm; the page loses
+/// the connection at the restart and reconnects by itself.
+async fn update_start(ctx: &Ctx, body: &Value) -> Answer {
+    use crate::self_service::{restart, update};
+    if let Some(no) = update_refusal(crate::managed::on()) {
+        return Some(no);
+    }
+    if ctx.live.is_none() {
+        return missing("the gateway");
+    }
+    let apply = match update_flow(ctx) {
+        Ok(a) => a,
+        Err(e) => return bad(409, e),
+    };
+    let found = match update::check(&apply).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return ok(json!({ "ok": true, "said": update::newest(&apply.current) })),
+        Err(e) => return bad(502, ctx.redactor.redact(&e)),
+    };
+    need!(confirmed(
+        body,
+        format!(
+            "Install Ferrule {}? Running turns get up to 10 minutes to finish, then it restarts. \
+             This page reconnects by itself.",
+            found.tag
+        )
+    ));
+    let chat = ctx
+        .hub
+        .as_ref()
+        .and_then(|h| h.primary())
+        .unwrap_or_else(|| ferrule_trust::ChatRef::new("dashboard", "owner"));
+    let hub = ctx.hub.clone();
+    let units = crate::update::units_installed();
+    tokio::spawn(async move {
+        let tell = |text: String| {
+            if let Some(h) = &hub {
+                h.tell_in(&chat, text);
+            }
+        };
+        match update::install(apply, units, &chat).await {
+            update::Applied::Restarting { exe, .. } => {
+                crate::lifecycle::set_reexec_path(exe);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if let Err(e) = restart::now() {
+                    tell(e);
+                }
+            }
+            update::Applied::Said(text) => tell(text),
+        }
+    });
+    ok(json!({
+        "ok": true,
+        "said": format!("Installing Ferrule {}; this page reconnects when it's back.", found.tag),
+    }))
+}
+
 /// The same clean shutdown as `systemctl stop`, which the service follows
 /// with a start.
-fn terminate_self() {
+pub(crate) fn terminate_self() {
     #[cfg(unix)]
     // SAFETY: signalling our own pid; the gateway's handler shuts down.
     unsafe {
@@ -1195,7 +1343,7 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         }
         "models/default" => {
             let word = need!(arg(body, "model"));
-            let d = m.set_default(word, BY);
+            let d = m.set_default(word, &by());
             if d.is_ok() {
                 retire(ctx, None);
             }
@@ -1206,9 +1354,9 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
             // A chat on Telegram unless the page names another channel.
             let channel = arg(body, "channel").unwrap_or("telegram");
             let d = if path == "models/pin" {
-                m.pin(channel, chat, need!(arg(body, "model")), BY)
+                m.pin(channel, chat, need!(arg(body, "model")), &by())
             } else {
-                m.unpin(channel, chat, BY)
+                m.unpin(channel, chat, &by())
             };
             if d.is_ok() {
                 retire(
@@ -1232,7 +1380,7 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
             if let Err(e) = super::models_page::check_fallback(&m.catalog(), &words) {
                 return bad(400, e);
             }
-            m.set_fallback(&words, BY)
+            m.set_fallback(&words, &by())
         }
         "models/add" => {
             let provider = need!(arg(body, "provider"));
@@ -1241,7 +1389,7 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 .get("alias")
                 .and_then(Value::as_str)
                 .filter(|a| !a.trim().is_empty());
-            m.add_model(provider, model, alias, BY)
+            m.add_model(provider, model, alias, &by())
         }
         _ => {
             let word = need!(arg(body, "model"));
@@ -1249,7 +1397,7 @@ async fn model_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 body,
                 format!("Remove {word}? Pins and fallback entries naming it stop working.")
             ));
-            let d = m.remove_model(word, BY);
+            let d = m.remove_model(word, &by());
             if d.is_ok() {
                 retire(ctx, None);
             }
@@ -1296,7 +1444,7 @@ fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         return missing("the models");
     };
     let done = if path == "routing/unset" {
-        m.unset_routing(BY)
+        m.unset_routing(&by())
     } else {
         let Some(tiers) = body.get("tiers").and_then(Value::as_array) else {
             return bad(400, "`tiers` is missing: the models, cheap first");
@@ -1317,7 +1465,7 @@ fn routing_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 None => return bad(400, "`strong_daily_usd` is dollars a day, or null"),
             },
         };
-        m.set_routing(&tiers, de_escalate, cap, BY)
+        m.set_routing(&tiers, de_escalate, cap, &by())
     };
     match done {
         Ok(d) => {
@@ -1432,7 +1580,7 @@ async fn catalog_add(ctx: &Ctx, body: &Value) -> Answer {
                 .find(|l| l.provider.is_none() && l.find(id).is_some())
         });
     match m
-        .add_from_catalog(&provider, id, as_what, listing, BY)
+        .add_from_catalog(&provider, id, as_what, listing, &by())
         .await
     {
         Ok(d) => {
@@ -1452,7 +1600,7 @@ async fn fill_prices(ctx: &Ctx) -> Answer {
     let Some((_, listings)) = listings(ctx, false).await else {
         return missing("the config");
     };
-    match m.fill_prices(&listings, BY) {
+    match m.fill_prices(&listings, &by()) {
         Ok(f) => {
             ok(json!({ "ok": true, "said": f.said, "filled": f.filled, "unknown": f.unknown }))
         }
@@ -1512,7 +1660,7 @@ async fn eval_op(ctx: &Ctx, start: bool, body: &Value) -> Answer {
         data: data.clone(),
         hub: hub.clone(),
         estimate: e,
-        by: BY.into(),
+        by: by(),
     };
     match ctx.evals.start(setup) {
         Ok(()) => ok(
@@ -1707,15 +1855,15 @@ fn task_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     };
     let id = need!(arg(body, "id"));
     let done = match path {
-        "tasks/pause" => t.pause(id, BY),
-        "tasks/resume" => t.resume(id, BY),
-        "tasks/run" => t.run_now(id, BY),
+        "tasks/pause" => t.pause(id, &by()),
+        "tasks/resume" => t.resume(id, &by()),
+        "tasks/run" => t.run_now(id, &by()),
         _ => {
             need!(confirmed(
                 body,
                 format!("Delete task {id} and its run history? This can't be undone.")
             ));
-            t.delete(id, BY)
+            t.delete(id, &by())
         }
     };
     match done {
@@ -1734,7 +1882,7 @@ fn task_edit(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     let done = if path == "tasks/schedule" {
         let schedule = need!(arg(body, "schedule"));
         let tz = body.get("timezone").and_then(Value::as_str);
-        t.set_schedule(id, schedule, tz, BY)
+        t.set_schedule(id, schedule, tz, &by())
     } else {
         let word = need!(arg(body, "model"));
         let model = if word == "default" {
@@ -1748,7 +1896,7 @@ fn task_edit(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 Err(why) => return bad(400, format!("{word}: {why}")),
             }
         };
-        t.set_model(id, model, BY)
+        t.set_model(id, model, &by())
     };
     match done {
         Ok(said) => ok(json!({ "ok": true, "said": said })),
@@ -1849,7 +1997,7 @@ async fn task_add(ctx: &Ctx, body: &Value) -> Answer {
         chat_id,
         model,
     };
-    match t.add(new, BY) {
+    match t.add(new, &by()) {
         Ok((task, next)) => {
             let when = next
                 .and_then(|n| chrono::DateTime::from_timestamp(n, 0))
@@ -1989,7 +2137,7 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 Ok(None) => {}
                 Err(e) => return bad(400, format!("{e:#}")),
             }
-            s.set_caps(&changes, BY)
+            s.set_caps(&changes, &by())
         }
         "mcp/disable" | "mcp/enable" => {
             let name = need!(arg(body, "name"));
@@ -2000,7 +2148,7 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                     format!("Turn off `{name}`? Running agents lose its tools within seconds.")
                 ));
             }
-            s.mcp_set_disabled(name, off, BY)
+            s.mcp_set_disabled(name, off, &by())
         }
         "mcp/remove" => {
             let name = need!(arg(body, "name"));
@@ -2008,11 +2156,11 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 body,
                 format!("Remove `{name}`? Adding it back means `ferrule mcp add` again.")
             ));
-            s.mcp_remove(name, BY).await
+            s.mcp_remove(name, &by()).await
         }
         "skills/disable" | "skills/enable" => {
             let name = need!(arg(body, "name"));
-            let d = s.skill_set_disabled(name, path == "skills/disable", BY);
+            let d = s.skill_set_disabled(name, path == "skills/disable", &by());
             if d.is_ok() {
                 // The skill catalog is in the prompt: chats get a new one.
                 retire(ctx, None);
@@ -2027,9 +2175,9 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                  Trust the file with exactly this hash?"
                     .to_string()
             ));
-            s.hooks_trust(sha, BY)
+            s.hooks_trust(sha, &by())
         }
-        _ => s.hooks_untrust(BY),
+        _ => s.hooks_untrust(&by()),
     };
     match done {
         Ok(d) => ok(json!({ "ok": true, "said": d.said, "view": d.view })),
@@ -2854,6 +3002,74 @@ command = "echo hi"
         assert_eq!(std::fs::read_to_string(prev).unwrap(), "broken = [");
         let (_, v) = call(&ctx, "POST config/restore", json!({})).await;
         assert!(v["said"].as_str().unwrap().contains("already"));
+    }
+
+    #[test]
+    fn update_routes_are_refused_when_managed() {
+        let (status, v) = update_refusal(true).expect("refused");
+        assert_eq!(status, 403);
+        assert_eq!(
+            v["error"],
+            "Updating is off on a managed bot: the panel updates a bot by changing its image"
+        );
+        assert!(update_refusal(false).is_none());
+    }
+
+    #[test]
+    fn the_update_fix_is_the_update_check_route() {
+        assert_eq!(
+            crate::self_service::doctor::fix_op("update/check", &json!({})),
+            Some(crate::self_service::Op::UpdateCheck)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_restart_route_restarts_unsupervised_on_unix() {
+        use crate::self_service::restart::{how, How};
+        assert_eq!(how(false, false, true), How::Reexec);
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        ctx.live = Some(Live {
+            router: std::sync::Weak::new(),
+            health: Arc::new(ferrule_gateway::Health::new("t", Default::default())),
+            channels: vec![],
+            fixed: None,
+            retire: Arc::new(|_| {}),
+            restarts: Arc::new(ferrule_gateway::ChannelRestarts::default()),
+            commands_off: None,
+        });
+        // It asks first, and no longer says "run it in a terminal".
+        let (s, v) = call(&ctx, "POST gateway/restart", json!({})).await;
+        assert_eq!(s, 409, "{v}");
+        assert!(v["confirm"].is_string(), "{v}");
+        RESTARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (s, v) = call(&ctx, "POST gateway/restart", json!({"confirm": true})).await;
+        assert_eq!(s, 200, "{v}");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(RESTARTED.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn approvals_list_says_how_long_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        let hub = hub(dir.path());
+        ctx.hub = Some(hub.clone());
+        let chat = ferrule_trust::ChatRef::new("telegram", "42");
+        let (_code, _rx) = hub.approvals().open_for(
+            &chat,
+            "Make m the default",
+            Some(Duration::from_secs(600)),
+            Some("model_default:abc".to_string()),
+        );
+        let (_, v) = call(&ctx, "approvals", json!({})).await;
+        let rows = v["approvals"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let left = rows[0]["left_secs"].as_u64().unwrap();
+        assert!((590..=600).contains(&left), "{left}");
+        assert_eq!(rows[0]["subject"], "model_default");
+        assert_eq!(rows[0]["op"], "model_default:abc");
     }
 
     #[tokio::test]

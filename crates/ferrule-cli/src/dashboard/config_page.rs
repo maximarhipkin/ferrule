@@ -321,7 +321,7 @@ fn commit(
             return Some((
                 403,
                 json!({
-                    "error": format!("`{field}` can't be changed from the page: it runs something on the machine, lets someone in, or decides where a secret goes. Change it in a terminal (`ferrule config edit`)."),
+                    "error": format!("`{field}` can't be changed from the chat or the Config page: it runs something on the machine, lets someone in, or decides where a secret goes. Channels, hooks and keys have their own pages on the dashboard."),
                     "field": field,
                 }),
             ));
@@ -334,7 +334,7 @@ fn commit(
     audit(
         ctx,
         "config_saved",
-        json!({ "by": "dashboard", "how": how, "sections": sections }),
+        json!({ "by": super::api::by(), "how": how, "sections": sections }),
     );
     ok(json!({ "ok": true, "sections": sections, "restart": restart && !sections.is_empty() }))
 }

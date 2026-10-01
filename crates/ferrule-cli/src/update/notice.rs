@@ -27,6 +27,10 @@ const ASK_FOR: Duration = Duration::from_secs(12 * 3600);
 #[async_trait]
 pub trait Owner: Send + Sync {
     fn tell(&self, text: String);
+    /// To the chat that asked for something, if it is an owner chat.
+    fn tell_in(&self, _chat: &ferrule_trust::ChatRef, text: String) {
+        self.tell(text);
+    }
     /// `true` on Allow.
     async fn ask(&self, subject: &str, question: &str) -> bool;
 }
@@ -38,6 +42,10 @@ pub struct HubOwner(pub Arc<ferrule_trust::Hub>);
 impl Owner for HubOwner {
     fn tell(&self, text: String) {
         self.0.tell_owner(text);
+    }
+
+    fn tell_in(&self, chat: &ferrule_trust::ChatRef, text: String) {
+        self.0.tell_in(chat, text);
     }
 
     async fn ask(&self, subject: &str, question: &str) -> bool {
@@ -127,11 +135,18 @@ impl Watch {
             if event.kind == EventKind::ClaudeUpdated {
                 told.claude_failed = None;
             }
+            if let Some(chat) = crate::self_service::promise::claim_for(&self.data, event) {
+                if let Some(text) = chat_text(event, &release::current().to_string()) {
+                    owner.tell_in(&chat, text);
+                }
+                continue;
+            }
             if let Some(text) = event_text(event) {
                 owner.tell(text);
             }
         }
         told.id = last;
+        crate::self_service::promise::expire(&self.data, owner.as_ref());
         self.offer(&state, &mut told, owner).await;
         told.save(&self.data)
     }
@@ -211,7 +226,7 @@ pub fn event_text(e: &Event) -> Option<String> {
         EventKind::Updated => format!("Updated Ferrule {} → {}: {}", e.from, e.to, e.notes),
         EventKind::RolledBack => format!(
             "Ferrule {to} didn't start properly, so I went back to {from} and won't try {to} \
-             again. `ferrule update --to v{to}` retries it.",
+             again.",
             to = e.to,
             from = e.from
         ),
@@ -232,10 +247,32 @@ pub fn event_text(e: &Event) -> Option<String> {
     })
 }
 
+/// The line for an event the owner asked for from a chat: the same
+/// outcome, said where they asked. `running` is this process's version.
+pub fn chat_text(e: &Event, running: &str) -> Option<String> {
+    match e.kind {
+        EventKind::Updated if running == e.to => Some(format!(
+            "Back after the update: now on Ferrule {} (was {}).",
+            e.to, e.from
+        )),
+        EventKind::Updated => Some(format!(
+            "Ferrule {} is installed (was {}), but this process still runs {running}: send /restart.",
+            e.to, e.from
+        )),
+        _ => event_text(e),
+    }
+}
+
 /// Tell and ask from the gateway, every ten minutes.
 pub fn spawn(watch: Watch, owner: Arc<dyn Owner>) -> tokio::task::JoinHandle<()> {
+    // After an update from a chat, the owner is waiting to hear it worked.
+    let wait = if crate::self_service::promise::exists(&watch.data) {
+        Duration::from_secs(5)
+    } else {
+        FIRST
+    };
     tokio::spawn(async move {
-        tokio::time::sleep(FIRST).await;
+        tokio::time::sleep(wait).await;
         loop {
             if let Err(e) = watch.tick(&owner).await {
                 tracing::debug!("update notices: {e:#}");

@@ -22,6 +22,9 @@ pub struct GraphDoor {
 }
 
 impl GraphDoor {
+    #[cfg(test)]
+    pub const HANDLES: &'static [&'static str] = &["graph"];
+
     fn start(&self, msg: &InboundMessage, file: &str, yes: bool) -> Option<String> {
         let Some(sup) = self.supervisor.clone() else {
             return Some("A graph needs sub-agents: set `[agents] enabled = true`.".into());

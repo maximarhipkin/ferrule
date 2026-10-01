@@ -421,7 +421,7 @@ fn a_changed_or_damaged_archive_is_refused_before_anything_moves() {
     newer[0].1 = serde_json::to_vec(&manifest).unwrap();
     let file = root.join("newer.tar.gz");
     write_entries(&file, &newer);
-    refused(root, &file, "ferrule update");
+    refused(root, &file, "Update Ferrule first (/update in a chat)");
 
     // The good one still restores.
     let o = ferrule(root, &["restore", out.to_str().unwrap()]);

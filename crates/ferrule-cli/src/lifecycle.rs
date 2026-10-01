@@ -14,6 +14,30 @@ type Snapshot = (Vec<(OsString, OsString)>, Vec<OsString>);
 
 static SNAP: OnceLock<Snapshot> = OnceLock::new();
 static RESTART: AtomicBool = AtomicBool::new(false);
+static REEXEC: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// After an in-process update: the path of the new binary. `/proc/self/exe`
+/// would start the old one again, because the file it names was replaced.
+pub fn set_reexec_path(p: std::path::PathBuf) {
+    let _ = REEXEC.set(p);
+}
+
+/// What `reexec` starts: the path set after an update, else today's choice.
+fn reexec_target() -> std::path::PathBuf {
+    target_of(REEXEC.get())
+}
+
+fn target_of(set: Option<&std::path::PathBuf>) -> std::path::PathBuf {
+    set.cloned().unwrap_or_else(default_target)
+}
+
+fn default_target() -> std::path::PathBuf {
+    if cfg!(target_os = "linux") {
+        std::path::PathBuf::from("/proc/self/exe")
+    } else {
+        std::env::current_exe().unwrap_or_else(|_| "ferrule".into())
+    }
+}
 
 /// Keeps the env and args as `main` got them, before any secret was taken
 /// out, so a restart in place can start ferrule with the same ones.
@@ -68,19 +92,36 @@ pub fn restart_requested() -> bool {
 pub fn reexec() -> ! {
     use std::os::unix::process::CommandExt;
     let (env, args) = snapshot();
-    let exe = if cfg!(target_os = "linux") {
-        std::path::PathBuf::from("/proc/self/exe")
-    } else {
-        std::env::current_exe().unwrap_or_else(|_| "ferrule".into())
+    let exe = reexec_target();
+    let build = |exe: &std::path::Path| {
+        let mut cmd = std::process::Command::new(exe);
+        if let Some(arg0) = args.first() {
+            cmd.arg0(arg0);
+        }
+        cmd.args(args.iter().skip(1))
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)));
+        cmd
     };
-    let mut cmd = std::process::Command::new(exe);
-    if let Some(arg0) = args.first() {
-        cmd.arg0(arg0);
+    let err = build(&exe).exec();
+    tracing::error!("the restart couldn't exec {}: {err}", exe.display());
+    if cfg!(target_os = "linux") && exe.as_os_str() != "/proc/self/exe" {
+        let err = build(std::path::Path::new("/proc/self/exe")).exec();
+        eprintln!("the restart couldn't start ferrule again: {err}");
+    } else {
+        eprintln!("the restart couldn't start ferrule again: {err}");
     }
-    cmd.args(args.iter().skip(1))
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k, v)));
-    let err = cmd.exec();
-    eprintln!("the restart couldn't start ferrule again: {err}");
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reexec_prefers_the_path_set_after_an_update() {
+        let new = std::path::PathBuf::from("/opt/ferrule/ferrule");
+        assert_eq!(target_of(Some(&new)), new);
+        assert_eq!(target_of(None), default_target());
+    }
 }

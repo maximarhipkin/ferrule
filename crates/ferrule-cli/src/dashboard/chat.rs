@@ -312,6 +312,10 @@ pub fn approvals(ctx: &Ctx) -> Answer {
                 "chat": format!("{}:{}", w.chat.channel, w.chat.chat),
                 "what": ctx.redactor.redact(&w.what),
                 "secs": w.secs,
+                "left_secs": w.left_secs,
+                // What kind of question: the admin op's name, else empty.
+                "subject": w.op.as_deref().and_then(|o| o.split(':').next()).unwrap_or(""),
+                "op": w.op,
             })
         })
         .collect();
@@ -345,7 +349,7 @@ pub fn answer(ctx: &Ctx, body: &Value) -> Answer {
         },
         None,
         None,
-        json!({ "by": "dashboard", "code": code }),
+        json!({ "by": super::api::by(), "code": code }),
     );
     ok(json!({ "ok": true, "said": ctx.redactor.redact(&said) }))
 }

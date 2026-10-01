@@ -16,16 +16,6 @@ const ACK_WAIT: Duration = Duration::from_secs(2);
 /// probably about to answer.
 pub const BUSY_NOTICE_AFTER: Duration = Duration::from_secs(3);
 
-/// The chat commands the gateway answers itself (M41 `/help`), before the
-/// ones the embedding binary adds with [`Gateway::with_help`].
-pub const HELP: &[(&str, &str)] = &[
-    (
-        "/new",
-        "start a fresh conversation; the old one is saved and memory stays (also /reset)",
-    ),
-    ("/help", "this list"),
-];
-
 /// Ties one or more channel adapters to a `Router`. Every adapter pushes
 /// onto the same inbound funnel and runs concurrently as its own tokio task;
 /// the gateway's only job is fan-in + dispatch, mirroring NanoClaw's
@@ -38,8 +28,8 @@ pub struct Gateway {
     redactor: Arc<Redactor>,
     health: Option<Arc<Health>>,
     restarts: Arc<ChannelRestarts>,
-    /// `/help`'s lines after the gateway's own (M41).
-    help: Vec<(String, String)>,
+    /// The commands `/help` lists (M48); also Telegram's menu.
+    menu: Vec<crate::menu::Command>,
 }
 
 /// M37: a channel's inbound loop, started again from the dashboard. The
@@ -143,33 +133,20 @@ impl Gateway {
             redactor: Arc::new(Redactor::default()),
             health: None,
             restarts: Arc::default(),
-            help: Vec::new(),
+            menu: crate::menu::BUILT_IN.to_vec(),
         }
     }
 
-    /// Adds `(command, what it does)` lines to `/help` (M41), for the
-    /// commands the interceptors answer.
-    pub fn with_help(mut self, lines: impl IntoIterator<Item = (String, String)>) -> Self {
-        self.help.extend(lines);
+    /// The commands `/help` lists: the gateway's own and the ones the
+    /// interceptors answer (M48).
+    pub fn with_menu(mut self, cmds: Vec<crate::menu::Command>) -> Self {
+        self.menu = cmds;
         self
     }
 
     /// `/help`'s answer.
     fn help_text(&self) -> String {
-        let mut lines: Vec<(String, String)> = HELP
-            .iter()
-            .map(|(c, w)| (c.to_string(), w.to_string()))
-            .collect();
-        if self.health.is_some() {
-            lines.insert(1, ("/status".into(), "what I'm doing right now".into()));
-        }
-        lines.extend(self.help.iter().cloned());
-        let mut text = String::from("Commands:");
-        for (command, what) in lines {
-            text.push_str(&format!("\n{command} — {what}"));
-        }
-        text.push_str("\n\nAnything else is a message for me.");
-        text
+        crate::menu::help_text(&self.menu, self.health.is_some())
     }
 
     /// M37: where the dashboard restarts a channel's loop.

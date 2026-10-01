@@ -1020,6 +1020,30 @@ phone or with a real vision provider.
 model and a channel, say hello, and set a task from a phone, and every
 ability the old page had is still reachable.
 
+### M48 — self-service from chat and dashboard
+
+**Status.** Built (`docs/m48-self-service.md`; user docs `docs/channels.md`,
+`docs/updates.md`, `docs/dashboard.md`). PR to `main` open, not merged. Not
+tried with a real Telegram client, a real release install or a real systemd
+restart.
+- **The agent changes Ferrule itself**: a `ferrule_admin` tool in the
+  owner's chats (model, fallback, caps, skills, MCP, hooks, update,
+  restart), run in the gateway outside the shell sandbox, one card and one
+  tap per change.
+- **Approvals in the conversation**: owner-only, single-use, bound to the
+  exact change, with Allow/Deny buttons on Telegram and a countdown.
+- **`/update`, `/restart`, `/doctor`** from any owner chat, a promise that
+  survives the restart and says where it came back, a rollback note, and an
+  in-place re-exec without a service on Linux and macOS.
+- **One command list** for `/help` and Telegram's `/` menu, per scope.
+- **The dashboard** has an Approvals inbox, Home's update row and a Restart
+  that works without a service. Managed bots keep every lock.
+
+**Done means.** The owner runs Ferrule from Telegram and the dashboard and
+never has to log in to the server: when something needs approval, the bot
+asks in the chat, a tap approves it, and it carries on; it never says "paste
+this command".
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a

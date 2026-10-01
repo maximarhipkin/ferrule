@@ -29,6 +29,9 @@ const USAGE: &str = "Usage:\n\
 A ref is provider/model, a provider, an alias, a model id or a tier (tier:cheap, tier:strong).";
 
 impl ModelDoor {
+    #[cfg(test)]
+    pub const HANDLES: &'static [&'static str] = &["model"];
+
     /// The owner chat, or the owner writing in a group.
     fn is_owner(&self, msg: &InboundMessage) -> bool {
         crate::trust::owner_in(&self.hub, msg).is_some()
@@ -56,7 +59,7 @@ impl ModelDoor {
             ("tiers", "") | ("route", "") => {
                 let text = super::routing_admin::render(&self.models.view().routing);
                 return if text.is_empty() {
-                    "Routing isn't set up: `ferrule model route` suggests a cheap/strong pair."
+                    "Routing isn't set up: the dashboard's Routing page suggests a cheap/strong pair."
                         .into()
                 } else {
                     text.trim_start().to_string()

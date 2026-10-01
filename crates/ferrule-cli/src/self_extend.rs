@@ -161,6 +161,47 @@ impl Extensions {
             self.manager.set_approver(Arc::new(TtyApprover));
         }
     }
+
+    /// The gateway: ask the owner in their chat (M48), instead of leaving
+    /// every agent install request queued for the page.
+    pub fn ask_the_owner(&self, hub: Arc<ferrule_trust::Hub>) {
+        self.manager.set_approver(Arc::new(HubApprover { hub }));
+    }
+}
+
+/// Asks the owner through the trust hub: Allow/Refuse in their chat. A
+/// flagged install is never asked about here (the owner reads the flagged
+/// text in `ferrule extensions approve` or on the page); no answer leaves
+/// it queued.
+struct HubApprover {
+    hub: Arc<ferrule_trust::Hub>,
+}
+
+#[async_trait::async_trait]
+impl Approver for HubApprover {
+    async fn decide(&self, pending: &Pending) -> Option<bool> {
+        if !pending.findings.is_empty() {
+            return None;
+        }
+        let asked = self
+            .hub
+            .ask_owner(
+                "extensions",
+                "extension install",
+                &format!(
+                    "The agent wants to install {} ({}).",
+                    pending.request.describe(),
+                    pending.reason
+                ),
+                crate::self_service::ASK_FOR,
+            )
+            .await;
+        match asked {
+            Ok(()) => Some(true),
+            Err(e) if e.starts_with("the owner refused") => Some(false),
+            Err(_) => None,
+        }
+    }
 }
 
 /// Build the process's manager: connect the configured servers (scanned,
@@ -496,6 +537,69 @@ mod tests {
             let want = crate::mcp_dir_name(name);
             assert_eq!(ferrule_extensions::layout::mcp_dir_name(name), want);
         }
+    }
+
+    struct Said;
+
+    #[async_trait::async_trait]
+    impl ferrule_trust::Notifier for Said {
+        async fn send(&self, _chat: i64, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_install_request_asks_the_owner_and_a_refusal_denies_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Arc::new(
+            ferrule_trust::Hub::new(
+                Default::default(),
+                dir.path(),
+                &dir.path().join("ledger.jsonl"),
+                Arc::new(ferrule_trust::SystemClock),
+                vec![],
+            )
+            .unwrap(),
+        );
+        hub.set_owner(Some(42));
+        hub.set_notifier(Some(Arc::new(Said)));
+        let approver = HubApprover { hub: hub.clone() };
+        let pending = Pending {
+            id: "p1".into(),
+            created_at: String::new(),
+            reason: "not allow-listed".into(),
+            request: ferrule_extensions::Request::Skill(ferrule_extensions::SkillRequest {
+                source: "git:https://example.com/org/skills".into(),
+                path: None,
+                replace: false,
+            }),
+            findings: vec![],
+        };
+        let answerer = {
+            let hub = hub.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Some(w) = hub.approvals().list().first() {
+                        assert!(w.what.contains("extension install"), "{}", w.what);
+                        hub.approvals().decide(&w.code, false, "no");
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+        };
+        assert_eq!(approver.decide(&pending).await, Some(false));
+        answerer.await.unwrap();
+        // A flagged request is left for the owner's full review.
+        let mut flagged = pending.clone();
+        flagged.findings = vec![ferrule_extensions::Finding {
+            rule: "r".into(),
+            level: ferrule_extensions::Level::Warn,
+            item: "i".into(),
+            field: "body".into(),
+            excerpt: "x".into(),
+        }];
+        assert_eq!(approver.decide(&flagged).await, None);
     }
 
     struct Fixed(&'static str, bool);

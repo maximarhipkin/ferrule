@@ -51,7 +51,7 @@ impl CoreError {
         if lower.contains("no endpoints found that support tool use") {
             return Some(
                 "this model has no endpoint on OpenRouter that supports tools, and ferrule needs tools. \
-                 Pick another model (a `:free` one is often the cause): /model here, or `ferrule model default`."
+                 Pick another model (a `:free` one is often the cause): /model."
                     .into(),
             );
         }

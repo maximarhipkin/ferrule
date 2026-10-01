@@ -286,7 +286,7 @@ fn audit_key(ctx: &Ctx, event: &str, key: &str) {
             event,
             None,
             None,
-            json!({ "channel": "http", "key": key, "by": super::api::BY }),
+            json!({ "channel": "http", "key": key, "by": super::api::by() }),
         );
     }
 }
@@ -298,7 +298,7 @@ pub(super) fn audit(ctx: &Ctx, event: &str, channel: &str) {
             event,
             None,
             None,
-            json!({ "channel": channel, "by": super::api::BY }),
+            json!({ "channel": channel, "by": super::api::by() }),
         );
     }
 }
