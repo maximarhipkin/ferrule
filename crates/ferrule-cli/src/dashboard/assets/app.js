@@ -593,7 +593,7 @@
   function otherProblems(list) {
     if (!list.length) return null;
     return el("a", { class: "strip", href: "#health" }, icon("alert"),
-      el("span", { class: "grow", text: list.length + (list.length === 1 ? " other thing needs" : " other things need") + " your attention" }),
+      el("span", { class: "grow", dir: "auto", text: list.length + (list.length === 1 ? " other thing needs" : " other things need") + " your attention" }),
       el("span", { text: "Home" }), icon("chevron"));
   }
 

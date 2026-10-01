@@ -401,6 +401,46 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     return "connected; the key is gone from the page and the API; Test says it works";
   });
 
+  await run("the overflow menu opens and closes", async () => {
+    const has = () => js(`return !!document.querySelector("#main .menu > button")`);
+    let where = "models";
+    await js(`window.ferrule.show("models")`);
+    if (!(await until("a model row's menu", has, 8).catch(() => false))) {
+      where = "health"; // the hero's menu, while the kill switch is off
+      await js(`window.ferrule.show("health")`);
+      await until("the hero's menu", has, 8);
+    }
+    const open = await js(`
+      const t = document.querySelector("#main .menu > button"), l = t.parentElement.querySelector(".menu-list");
+      t.click();
+      return [t.getAttribute("aria-expanded"), l.hidden, document.activeElement === l.querySelector("[role=menuitem]")];`);
+    if (open.join() !== "true,false,true") throw new Error("after a click: expanded, hidden, first item focused = " + open);
+    // It survives a poll's redraw, and the arrows, End and a press outside work.
+    await sleep(3500);
+    const kept = await js(`
+      const l = document.querySelector("#main .menu-list:not([hidden])");
+      if (!l) return "gone after a poll";
+      const items = [...l.querySelectorAll("[role=menuitem]")], key = (k) => l.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+      key("End"); const last = document.activeElement === items[items.length - 1];
+      key("ArrowDown"); const wrapped = document.activeElement === items[0];
+      key("ArrowUp"); const back = document.activeElement === items[items.length - 1];
+      return last && wrapped && back ? "ok" : "End/ArrowDown/ArrowUp: " + [last, wrapped, back];`);
+    if (kept !== "ok") throw new Error(kept);
+    const outside = await js(`
+      const t = document.querySelector("#main .menu > button"), l = t.parentElement.querySelector(".menu-list");
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      const closed = l.hidden && t.getAttribute("aria-expanded") === "false";
+      t.click();
+      return closed;`);
+    if (!outside) throw new Error("a press outside didn't close the menu");
+    const shut = await js(`
+      const t = document.querySelector("#main .menu > button"), l = t.parentElement.querySelector(".menu-list");
+      l.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return [t.getAttribute("aria-expanded"), l.hidden, document.activeElement === t];`);
+    if (shut.join() !== "false,true,true") throw new Error("after Escape: expanded, hidden, trigger focused = " + shut);
+    return "on " + where + ": a click opens it on its first item, it stays open for 3.5 s, the arrows and End move, a press outside or Escape closes it";
+  });
+
   await run("run a console command", async () => {
     await js(`window.ferrule.show("console")`);
     await until("the console", () => js(`return !!document.querySelector(".console-line input")`));
@@ -527,6 +567,8 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
       const out = wide > 1 ? [...document.querySelectorAll("body *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.left < -1 || r.right > cw + 1); }).slice(0, 6).map((e) => e.tagName + "." + e.className + "#" + e.id + "<" + (e.parentElement && e.parentElement.outerHTML.slice(0, 160)) + "> " + Math.round(e.getBoundingClientRect().left) + ".." + Math.round(e.getBoundingClientRect().right)) : [];
       return { wide, lang: document.documentElement.lang, out, nav: [...document.querySelectorAll("#rail a")].map((a) => a.textContent.trim()).join("|") };`);
     if (bad.lang !== "he" || bad.wide > 1) throw new Error(JSON.stringify(bad));
+    const flip = await js(`const i = document.querySelector("#main .ico.flip, #rail .ico.flip"); return i ? getComputedStyle(i).transform : "none-found"`);
+    if (!/matrix\(-1/.test(flip)) throw new Error("a .flip icon isn't mirrored in RTL: " + flip);
     if (SHOTS) {
       await size(390, 844); await js(`window.ferrule.show("tasks")`); await sleep(800);
       const r = await cdp("Page.captureScreenshot", { format: "png" });
@@ -537,6 +579,18 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     await sleep(500);
     await until("the page in English again", () => js(`return document.documentElement.dir === "ltr" && !document.getElementById("rail").hidden`), 20);
     return "dir=rtl, nav in Hebrew, no sideways scroll; back to English";
+  });
+
+  await run("Hebrew doesn't change the line height", async () => {
+    const h = await js(`
+      const mk = (t) => { const p = document.createElement("p"); p.textContent = t; p.style.cssText = "position:absolute;visibility:hidden;margin:0;white-space:nowrap"; document.body.append(p); return p; };
+      const a = mk("Default model"), b = mk("Default model עברית");
+      await document.fonts.ready; await document.fonts.load("1em Heebo", "א");
+      const r = [a.getBoundingClientRect().height, b.getBoundingClientRect().height, document.fonts.check("1em Heebo", "א")];
+      a.remove(); b.remove(); return r;`);
+    if (!h[2]) throw new Error("Heebo didn't load");
+    if (Math.abs(h[0] - h[1]) > 0.5) throw new Error("a line with Hebrew is " + h[1] + " px, without " + h[0]);
+    return "one line is " + h[0] + " px with or without Hebrew";
   });
 
   if (SHOTS) {
