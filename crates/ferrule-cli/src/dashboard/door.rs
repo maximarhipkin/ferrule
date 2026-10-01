@@ -13,6 +13,9 @@ pub struct DashboardDoor {
 }
 
 impl DashboardDoor {
+    #[cfg(test)]
+    pub const HANDLES: &'static [&'static str] = &["dashboard"];
+
     fn owner_chat(&self, msg: &InboundMessage) -> Option<bool> {
         crate::trust::owner_in(&self.hub, msg)
     }

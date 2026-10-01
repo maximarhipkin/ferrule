@@ -52,15 +52,6 @@ const IGNORED_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// counts (its documented limit; Discord has 2000, Slack 4000).
 pub const MESSAGE_LIMIT: usize = 4096;
 
-/// The command menu ferrule registers with `setMyCommands` (M41): the ones
-/// anyone in the chat may send. Telegram wants them without the slash.
-pub const MENU: &[(&str, &str)] = &[
-    ("new", "Start a fresh conversation (the old one is saved)"),
-    ("stop", "Stop what I'm doing"),
-    ("status", "What I'm doing right now"),
-    ("help", "The commands"),
-];
-
 /// Why a poll failed: `Retry` heals by itself (network, Telegram's own 5xx,
 /// a rate limit, a bad body); `Conflict` is a 409, which needs the owner if
 /// it lasts; `Fatal` never heals (the token was rejected).
@@ -124,6 +115,8 @@ pub struct TelegramChannel {
     /// Where notices about the bot itself go (M19c): a conflict, a
     /// removed webhook.
     owner: Option<i64>,
+    /// What `setMyCommands` registers (M48).
+    menu: Vec<crate::menu::Command>,
     conflict_after: Duration,
     conflict: Mutex<Option<Conflict>>,
     /// When each ignored chat was last logged.
@@ -167,6 +160,7 @@ impl TelegramChannel {
             backoff_max: BACKOFF_MAX,
             last_ok_poll: Mutex::new(None),
             owner: None,
+            menu: crate::menu::BUILT_IN.to_vec(),
             conflict_after: CONFLICT_AFTER,
             conflict: Mutex::new(None),
             ignored: Mutex::new(HashMap::new()),
@@ -203,6 +197,13 @@ impl TelegramChannel {
     /// webhook that was removed. `None`: it's only logged.
     pub fn with_owner(mut self, chat: Option<i64>) -> Self {
         self.owner = chat;
+        self
+    }
+
+    /// The commands under the `/` button: the owner's private chat gets
+    /// all of them, a group only the ones anyone may send.
+    pub fn with_menu(mut self, cmds: Vec<crate::menu::Command>) -> Self {
+        self.menu = cmds;
         self
     }
 
@@ -544,15 +545,16 @@ impl TelegramChannel {
     /// M41: the command menu under the chat's `/` button. Best effort: a
     /// bot without it works the same, so a failure is only logged.
     async fn set_commands(&self) {
-        let commands: Vec<Value> = MENU
-            .iter()
-            .map(|(command, description)| json!({"command": command, "description": description}))
-            .collect();
-        let call = self.call("setMyCommands", json!({ "commands": commands }));
-        match tokio::time::timeout(Duration::from_secs(5), call).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => tracing::debug!(error = %e, "telegram: couldn't set the command menu"),
-            Err(_) => tracing::debug!("telegram: setting the command menu timed out"),
+        for body in crate::menu::telegram_scopes(&self.menu, self.owner) {
+            let scope = body["scope"]["type"].as_str().unwrap_or("").to_string();
+            let call = self.call("setMyCommands", body);
+            match tokio::time::timeout(Duration::from_secs(5), call).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, scope, "telegram: couldn't set the command menu")
+                }
+                Err(_) => tracing::warn!(scope, "telegram: setting the command menu timed out"),
+            }
         }
     }
 
@@ -1773,8 +1775,8 @@ mod tests {
     struct Bot {
         url: String,
         calls: Arc<Mutex<Vec<(String, Value)>>>,
-        /// The last `setMyCommands` body (M41), kept apart from `calls`.
-        menu: Arc<Mutex<Option<Value>>>,
+        /// Every `setMyCommands` body (M48), kept apart from `calls`.
+        menus: Arc<Mutex<Vec<Value>>>,
     }
 
     impl Bot {
@@ -1783,8 +1785,8 @@ mod tests {
             let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
             let calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
             let log = calls.clone();
-            let menu: Arc<Mutex<Option<Value>>> = Arc::default();
-            let set_menu = menu.clone();
+            let menus: Arc<Mutex<Vec<Value>>> = Arc::default();
+            let set_menu = menus.clone();
             let webhook = Arc::new(Mutex::new(webhook.to_string()));
             let polls = Arc::new(Mutex::new(std::collections::VecDeque::from(polls)));
             std::thread::spawn(move || {
@@ -1834,7 +1836,7 @@ mod tests {
                             json!({"ok": true, "result": {"url": *webhook.lock().unwrap()}}),
                         ),
                         "setMyCommands" => {
-                            *set_menu.lock().unwrap() = Some(body);
+                            set_menu.lock().unwrap().push(body);
                             (200, json!({"ok": true, "result": true}))
                         }
                         _ => {
@@ -1853,7 +1855,7 @@ mod tests {
                     let _ = stream.write_all(resp.as_bytes());
                 }
             });
-            Self { url, calls, menu }
+            Self { url, calls, menus }
         }
 
         /// The texts sent to `chat`.
@@ -1962,23 +1964,96 @@ mod tests {
         assert!(bot.methods().is_empty(), "{:?}", bot.methods());
     }
 
+    /// The gateway's three, `stop` for everyone, and sixteen for the owner.
+    fn full_menu() -> Vec<crate::menu::Command> {
+        use crate::menu::{Command, Shown, BUILT_IN};
+        const OWNER: [&str; 16] = [
+            "resume",
+            "plan",
+            "undo",
+            "model",
+            "update",
+            "restart",
+            "doctor",
+            "login",
+            "logout",
+            "connect",
+            "connections",
+            "skills",
+            "mcp",
+            "hooks",
+            "caps",
+            "dashboard",
+        ];
+        let one = |name: &'static str, shown| Command {
+            name,
+            args: "",
+            menu: "A command",
+            help: "a command",
+            shown,
+        };
+        let mut v = BUILT_IN.to_vec();
+        v.push(one("stop", Shown::Everywhere));
+        v.extend(OWNER.iter().map(|n| one(n, Shown::Private)));
+        v
+    }
+
+    fn names(body: &Value) -> Vec<&str> {
+        body["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["command"].as_str().unwrap())
+            .collect()
+    }
+
     #[tokio::test]
-    async fn the_command_menu_is_registered_at_start() {
+    async fn the_menu_is_registered_per_scope() {
+        let bot = Bot::start("", vec![updates(vec![json!({"text": "hi"})])]);
+        let channel = Arc::new(
+            TelegramChannel::with_base_url("TESTTOKEN", &bot.url)
+                .with_allowed_chats(vec![9999, 42])
+                .with_owner(Some(42))
+                .with_menu(full_menu())
+                .with_fast_retries(Duration::from_millis(500)),
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        let run = channel.clone();
+        let handle = tokio::spawn(async move { run.run(tx).await });
+        timeout(Duration::from_secs(3), rx.recv()).await.unwrap();
+        until("four menus", || bot.menus.lock().unwrap().len() == 4).await;
+        handle.abort();
+        let menus = bot.menus.lock().unwrap().clone();
+        let kinds: Vec<&str> = menus
+            .iter()
+            .map(|m| m["scope"]["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["default", "all_group_chats", "all_private_chats", "chat"]
+        );
+        assert_eq!(names(&menus[0]), ["new", "status", "help", "stop"]);
+        assert_eq!(names(&menus[2]).len(), 20);
+        assert_eq!(names(&menus[3]).len(), 20);
+        assert_eq!(menus[3]["scope"]["chat_id"], 42);
+    }
+
+    #[tokio::test]
+    async fn groups_get_the_short_list() {
         let bot = Bot::start("", vec![updates(vec![json!({"text": "hi"})])]);
         let channel = channel(&bot);
         let (tx, mut rx) = mpsc::channel(8);
         let run = channel.clone();
         let handle = tokio::spawn(async move { run.run(tx).await });
         timeout(Duration::from_secs(3), rx.recv()).await.unwrap();
+        until("the menus", || bot.menus.lock().unwrap().len() == 4).await;
         handle.abort();
-        let menu = bot.menu.lock().unwrap().clone().expect("setMyCommands");
-        let names: Vec<&str> = menu["commands"]
-            .as_array()
-            .unwrap()
+        let menus = bot.menus.lock().unwrap().clone();
+        let group = menus
             .iter()
-            .map(|c| c["command"].as_str().unwrap())
-            .collect();
-        assert_eq!(names, ["new", "stop", "status", "help"]);
+            .find(|m| m["scope"]["type"] == "all_group_chats")
+            .unwrap();
+        assert_eq!(names(group), ["new", "status", "help"]);
     }
 
     #[tokio::test]

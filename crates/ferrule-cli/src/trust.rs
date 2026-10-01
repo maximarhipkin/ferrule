@@ -331,6 +331,12 @@ pub struct OwnerDoor {
     pub undo: Option<Arc<dyn Fn() -> String + Send + Sync>>,
 }
 
+impl OwnerDoor {
+    /// The commands read here (the hub reads `/stop`, `/resume` and `/plan`).
+    #[cfg(test)]
+    pub const HANDLES: &'static [&'static str] = &["stop", "resume", "plan", "undo"];
+}
+
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for OwnerDoor {
     async fn intercept(&self, msg: &ferrule_gateway::InboundMessage) -> Option<String> {

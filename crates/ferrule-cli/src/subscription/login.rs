@@ -253,6 +253,9 @@ const CLAUDE_IN_CHAT: &str =
      sends the link) and sign in there. Never paste a Claude token into a chat.";
 
 impl PlanDoor {
+    #[cfg(test)]
+    pub const HANDLES: &'static [&'static str] = &["login", "logout"];
+
     /// `issuer`: `[plans.chatgpt] issuer`, "" for OpenAI's.
     pub fn new(hub: Arc<Hub>, issuer: String) -> Self {
         Self {

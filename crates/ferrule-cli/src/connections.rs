@@ -284,6 +284,9 @@ pub struct ConnectionsDoor {
 }
 
 impl ConnectionsDoor {
+    #[cfg(test)]
+    pub const HANDLES: &'static [&'static str] = &["connect", "connections", "disconnect"];
+
     fn actor(&self, msg: &InboundMessage) -> Actor {
         let chat = Chat {
             channel: msg.channel.clone(),

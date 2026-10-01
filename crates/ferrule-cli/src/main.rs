@@ -2250,32 +2250,6 @@ async fn close_tree(sup: &ferrule_agents::Supervisor, root: &str) {
     }
 }
 
-/// `/help`'s lines for the commands this binary's interceptors answer
-/// (M41), after the gateway's own `/new`, `/status` and `/help`.
-const CHAT_COMMANDS: &[(&str, &str)] = &[
-    (
-        "/stop",
-        "stop every run now; nothing new starts until /resume",
-    ),
-    ("/resume", "let runs start again (owner)"),
-    (
-        "/plan <task>",
-        "explore read-only, then ask before running the plan",
-    ),
-    ("/undo", "revert the agent's last commit (owner)"),
-    ("/model", "show or switch the model"),
-    ("/login, /logout", "sign in to a ChatGPT or Claude plan"),
-    ("/connect, /connections", "connected services"),
-    (
-        "/skills, /mcp, /hooks, /caps",
-        "what's installed, and spending caps",
-    ),
-    (
-        "/dashboard",
-        "a link to the dashboard (owner's private chat)",
-    ),
-];
-
 /// `ferrule sessions`: the sessions dir as a table, newest first; a branch
 /// shows the parent it forked from (M42 part 7).
 fn sessions(all: bool) -> Result<()> {
@@ -2539,6 +2513,7 @@ fn build_channels(
             TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone())
                 .with_allowed_chats(cfg.gateway.telegram_allowed_chats.clone())
                 .with_owner(trust::owner_chat(cfg))
+                .with_menu(self_service::menu::all(cfg.dashboard.enabled))
                 .with_conflict_after(Duration::from_secs(
                     cfg.health.telegram_conflict_secs.max(1),
                 ))
@@ -3024,11 +2999,7 @@ async fn run_gateway(
             owner: trust::owner_chat(&cfg),
         }));
     }
-    gateway = gateway.with_help(
-        CHAT_COMMANDS
-            .iter()
-            .map(|(c, w)| (c.to_string(), w.to_string())),
-    );
+    gateway = gateway.with_menu(self_service::menu::all(cfg.dashboard.enabled));
     for channel in adapters {
         gateway.add_channel(channel);
     }

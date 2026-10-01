@@ -27,6 +27,9 @@ const SKILLS_USAGE: &str = "Usage:\n\
 const HOOKS: &str = "To trust this workspace's hooks, ask me: I show you the exact commands and their fingerprint on a card to approve. Or use the dashboard's Extensions page (/dashboard sends the link).";
 
 impl SettingsDoor {
+    #[cfg(test)]
+    pub const HANDLES: &'static [&'static str] = &["caps", "mcp", "skills", "hooks"];
+
     fn is_owner(&self, msg: &InboundMessage) -> bool {
         crate::trust::owner_in(&self.hub, msg).is_some()
     }

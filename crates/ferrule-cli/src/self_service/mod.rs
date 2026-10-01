@@ -13,6 +13,7 @@
 mod describe;
 mod doctor;
 mod door;
+pub mod menu;
 pub mod promise;
 mod restart;
 mod run;

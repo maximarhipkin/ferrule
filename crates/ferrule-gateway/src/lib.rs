@@ -12,6 +12,7 @@ pub mod channels;
 pub mod error;
 pub mod gateway;
 pub mod health;
+pub mod menu;
 pub mod message;
 pub mod router;
 pub mod scheduler;
@@ -30,7 +31,7 @@ pub use channels::{
     SignalChannel, SlackChannel, TelegramChannel, WhatsAppChannel,
 };
 pub use error::GatewayError;
-pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI, HELP};
+pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI};
 pub use health::{
     Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, RunningMarker,
     StallHook,
