@@ -688,7 +688,11 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
   });
 
   await run("the keyboard gets in", async () => {
-    await js(`window.ferrule.show("health"); document.activeElement && document.activeElement.blur(); window.scrollTo(0, 0)`);
+    await js(`window.ferrule.show("health")`);
+    // Let Home draw first: a redraw after the blur moves Chrome's starting point.
+    await sleep(900);
+    // Park the starting point on <body>, so Tab goes to the first control.
+    await js(`document.activeElement && document.activeElement.blur(); document.body.tabIndex = -1; document.body.focus(); document.body.removeAttribute("tabindex"); window.scrollTo(0, 0)`);
     await key("Tab", "Tab");
     const first = await js(`const a = document.activeElement; return a && [a.tagName, a.getAttribute("href"), a.textContent.trim()]`);
     if (!first || first[0] !== "A" || first[1] !== "#main") throw new Error("the first Tab lands on " + JSON.stringify(first));

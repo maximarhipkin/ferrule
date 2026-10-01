@@ -286,9 +286,9 @@
 
   // What a list says when it has nothing: what is missing, why, and what to do.
   function empty(what, hint, ...actions) {
-    return el("div", { class: "empty" }, icon("info"),
+    return el("div", { class: "empty" }, el("span", { class: "empty-ico" }, icon("info")),
       el("div", { class: "what", text: what }),
-      hint ? el("div", { text: hint }) : null,
+      hint ? el("div", { class: "hint", text: hint }) : null,
       actions.length ? el("div", { class: "row" }, actions) : null);
   }
 
@@ -328,8 +328,7 @@
   function secHead(title, sub, ...controls) {
     const ctrls = controls.filter(Boolean);
     return el("div", { class: "sec-head" },
-      el("h1", { text: title }),
-      sub ? el("span", { class: "sub", text: sub }) : null,
+      el("div", { class: "titles" }, el("h1", { text: title }), sub ? el("span", { class: "sub", text: sub }) : null),
       ctrls.length ? frag(el("span", { class: "spacer" }), ...ctrls) : null);
   }
 

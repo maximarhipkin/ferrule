@@ -1302,7 +1302,12 @@ Every value comes from D4; this is the order and the selectors.
      dialog[open], #toast > *{animation:none}`.
 4. **Spacing:** the section, card and stack gaps from D7. Card padding
    is 16px, and 20px in the `@media (min-width:900px)` block.
-5. **The strip** (`.strip`) follows D7.
+5. **The strip** (`.strip`) follows D7. Also, in the same part, accent
+   was taken off the quick-tile icons, the console prompt and the `audit`
+   log level (D2: accent only for what you can press or have picked), and
+   the browser check's "the keyboard gets in" now waits for Home to draw
+   and parks focus on `<body>` first: in shots mode the first Tab landed on
+   "Run doctor" because a redraw moved Chrome's sequential-focus start.
 6. **Rings** (≈511–519) follow D7.
 7. **Check:**
    - Run BROWSER, then take a peek set and view every section once at
