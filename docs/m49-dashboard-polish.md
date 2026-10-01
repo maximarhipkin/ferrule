@@ -849,6 +849,8 @@ one for every check M49 adds.
    ```
    If the sizes differ by more than 1 % (another fonttools version), go
    on, and record the real sizes in the doc instead of the spike's.
+   (Built: 23,560 / 7,268 / 16,376 B, 47,204 B in all; the hashes differ
+   from the spike's, the sizes are within 1 %.)
 2. **Swap the files** in `crates/ferrule-cli/src/dashboard/assets/fonts/`:
    - `git rm` the five `plex-*.woff2`, then copy in the three new ones.
    - Rebuild `OFL.txt`:
@@ -856,7 +858,7 @@ one for every check M49 adds.
      A=crates/ferrule-cli/src/dashboard/assets/fonts
      { head -1 /tmp/m49-fonts/inter-OFL.txt; head -1 /tmp/m49-fonts/heebo-OFL.txt; head -1 /tmp/m49-fonts/geistmono-OFL.txt; echo
        sed -n '/^This Font Software is licensed/,$p' /tmp/m49-fonts/inter-OFL.txt; } > $A/OFL.txt
-     grep -c '^Copyright' $A/OFL.txt   # 3
+     grep -n '^Copyright' $A/OFL.txt   # lines 1-3 are ours; 67 and 73 are the licence body's own
      ```
      If an upstream first line isn't its copyright line, write the three
      lines from D1 by hand instead.

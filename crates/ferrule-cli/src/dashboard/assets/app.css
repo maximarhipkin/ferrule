@@ -10,22 +10,19 @@
    test `tokens_meet_wcag_aa` reads those blocks and checks the contrast
    of every pair that carries text, in both themes.
 
-   Type: IBM Plex Sans 400/600, Plex Sans Hebrew behind a unicode-range
-   (fetched only when the page shows Hebrew), Plex Mono 400. OFL 1.1, see
-   /fonts/OFL.txt. Sizes are rem, so the reader's own text size wins.
+   Type: Inter (Latin) and Heebo (Hebrew, behind a unicode-range, so
+   only a page showing Hebrew fetches it), Geist Mono for code; one
+   variable file each, weights 400-600. OFL 1.1, see /fonts/OFL.txt.
+   Sizes are rem, so the reader's own text size wins.
    Layout uses logical properties (start/end), so Hebrew and Arabic
    mirror without a second stylesheet. */
 
-@font-face{font-family:"Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url(fonts/plex-sans-400.woff2) format("woff2");
-  unicode-range:U+0000,U+000D,U+0020-007E,U+00A0-00FF,U+0131,U+0152-0153,U+02C6,U+02DA,U+02DC,U+2013-2014,U+2018-201A,U+201C-201E,U+2020-2022,U+2026,U+2030,U+2039-203A,U+2044,U+20AC,U+2122,U+2212,U+FB01-FB02}
-@font-face{font-family:"Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url(fonts/plex-sans-600.woff2) format("woff2");
-  unicode-range:U+0000,U+000D,U+0020-007E,U+00A0-00FF,U+0131,U+0152-0153,U+02C6,U+02DA,U+02DC,U+2013-2014,U+2018-201A,U+201C-201E,U+2020-2022,U+2026,U+2030,U+2039-203A,U+2044,U+20AC,U+2122,U+2212,U+FB01-FB02}
-@font-face{font-family:"Plex Sans";font-style:normal;font-weight:400;font-display:swap;src:url(fonts/plex-sans-hebrew-400.woff2) format("woff2");
-  unicode-range:U+0590-05FF,U+FB1D-FB4F,U+20AA}
-@font-face{font-family:"Plex Sans";font-style:normal;font-weight:600;font-display:swap;src:url(fonts/plex-sans-hebrew-600.woff2) format("woff2");
-  unicode-range:U+0590-05FF,U+FB1D-FB4F,U+20AA}
-@font-face{font-family:"Plex Mono";font-style:normal;font-weight:400;font-display:swap;src:url(fonts/plex-mono-400.woff2) format("woff2");
-  unicode-range:U+0000,U+000D,U+0020-007E,U+00A0-00FF,U+0131,U+0152-0153,U+02C6,U+02DA,U+02DC,U+2013-2014,U+2018-201A,U+201C-201E,U+2020-2022,U+2026,U+2030,U+2039-203A,U+2044,U+20AC,U+2122,U+2212,U+FB01-FB02}
+@font-face{font-family:"Inter";font-style:normal;font-weight:400 600;font-display:swap;src:url(fonts/inter-latin.woff2) format("woff2");
+  unicode-range:U+0000,U+000D,U+0020-007E,U+00A0-00FF,U+0131,U+0152-0153,U+02C6,U+02DA,U+02DC,U+2013-2014,U+2018-201A,U+201C-201E,U+2020-2022,U+2026,U+2030,U+2039-203A,U+2044,U+20AC,U+2122,U+2190-2193,U+2212,U+2318,U+2713,U+2717,U+FB01-FB02}
+@font-face{font-family:"Heebo";font-style:normal;font-weight:400 600;font-display:swap;src:url(fonts/heebo-hebrew.woff2) format("woff2");
+  unicode-range:U+0590-05FF,U+FB1D-FB4F,U+20AA;ascent-override:97%;descent-override:24%;line-gap-override:0%}
+@font-face{font-family:"Geist Mono";font-style:normal;font-weight:400 600;font-display:swap;src:url(fonts/geist-mono-latin.woff2) format("woff2");
+  unicode-range:U+0000,U+000D,U+0020-007E,U+00A0-00FF,U+0131,U+0152-0153,U+02C6,U+02DA,U+02DC,U+2013-2014,U+2018-201A,U+201C-201E,U+2020-2022,U+2026,U+2030,U+2039-203A,U+2044,U+20AC,U+2122,U+2190-2193,U+2212,U+2318,U+2713,U+2717,U+FB01-FB02,U+2500-257F}
 
 
 :root{
@@ -89,8 +86,8 @@
   --fw-normal:400; --fw-strong:600;
   --r-sm:6px; --r-md:10px; --r-lg:14px; --r-full:999px;
   --hair:1px solid var(--line);
-  --sans:"Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  --mono:"Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:"Inter","Heebo",system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans Arabic",sans-serif;
+  --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   --dur-fast:.12s; --dur:.2s; --ease:cubic-bezier(.2,.7,.2,1);
   --z-top:20; --z-nav:30; --z-sheet:40; --z-toast:50; --z-dialog:60;
   --tap:44px;
