@@ -15,6 +15,7 @@ pub fn fix_op(action: &str, body: &Value) -> Option<Op> {
         },
         "config/restore" => Op::ConfigRestore,
         "gateway/restart" => Op::Restart,
+        "update/check" => Op::UpdateCheck,
         "console/run" if body["line"].as_str() == Some("update --check") => Op::UpdateCheck,
         _ => return None,
     })

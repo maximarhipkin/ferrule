@@ -11,14 +11,14 @@
 //! whoever asks.
 
 mod describe;
-mod doctor;
+pub(crate) mod doctor;
 mod door;
 pub mod menu;
 pub mod promise;
-mod restart;
+pub(crate) mod restart;
 mod run;
 mod tool;
-mod update;
+pub(crate) mod update;
 
 #[cfg(test)]
 mod tests;

@@ -227,6 +227,8 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "telegram/allow" => super::telegram::allow(ctx, body).await,
         "config/restore" => config_restore(ctx, body),
         "gateway/restart" => gateway_restart(ctx, body),
+        "update/check" => update_check(ctx).await,
+        "update/start" => update_start(ctx, body).await,
         _ => None,
     }
 }
@@ -403,7 +405,7 @@ pub fn health(ctx: &Ctx) -> Value {
             .filter(|(t, _)| *t == crate::update::Tone::Warn)
         {
             problems.push(json!({
-                "fixes": [{ "label": "Check for an update", "action": "console/run", "body": { "line": "update --check" } }],
+                "fixes": [{ "label": "Check for an update", "action": "update/check", "body": {} }],
                 "what": ctx.redactor.redact(line),
                 "fix": "`ferrule doctor` shows the update state; docs/updates.md explains it.",
                 "section": "health",
@@ -1083,7 +1085,7 @@ pub fn doctor_report(out: &str) -> Option<Value> {
                 { "label": "Restore the last good config", "action": "config/restore", "body": {} }
             ]),
             "updates" => json!([
-                { "label": "Check for an update", "action": "console/run", "body": { "line": "update --check" } }
+                { "label": "Check for an update", "action": "update/check", "body": {} }
             ]),
             "models" | "provider" | "keys" | "routing" => {
                 json!([{ "label": "Open Models", "section": "models" }])
@@ -1154,19 +1156,22 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
     }
 }
 
-/// Only under a service that starts it again: the process ends cleanly
-/// and the service brings it back on the file as it is now.
+/// Restarts the gateway: under a service, the process ends cleanly and
+/// the service starts it again; unsupervised on Unix (the container's
+/// init, a terminal), it runs itself again.
 fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
+    use crate::self_service::restart::{how, How};
     if ctx.live.is_none() {
         return missing("the gateway");
     }
-    if !crate::last_good::supervised() {
+    let managed = crate::managed::on();
+    let how = how(managed, crate::last_good::supervised(), cfg!(unix));
+    if how == How::Unavailable {
         return bad(
             409,
-            "The gateway runs in a terminal, not as a service, so nothing would start it again: restart it there.",
+            "Restarting from the page isn't available on Windows without the service; nothing changed.",
         );
     }
-    let managed = crate::managed::on();
     need!(confirmed(
         body,
         if managed {
@@ -1182,13 +1187,114 @@ fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await;
         tracing::info!("restart asked for from the dashboard");
-        if managed {
-            crate::lifecycle::request_restart();
-        } else {
-            terminate_self();
+        #[cfg(test)]
+        {
+            RESTARTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        #[cfg(not(test))]
+        if let Err(e) = crate::self_service::restart::now() {
+            tracing::warn!("restart from the dashboard: {e}");
         }
     });
     ok(json!({ "ok": true, "said": "Restarting…" }))
+}
+
+/// A restart the tests asked for (the process isn't signalled in a test).
+#[cfg(test)]
+static RESTARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What Home's update row shows: this version, and the release that is out.
+async fn update_check(ctx: &Ctx) -> Answer {
+    if let Some(no) = update_refusal(crate::managed::on()) {
+        return Some(no);
+    }
+    let apply = match update_flow(ctx) {
+        Ok(a) => a,
+        Err(e) => return bad(409, e),
+    };
+    match crate::self_service::update::check(&apply).await {
+        Ok(found) => ok(json!({
+            "ok": true,
+            "said": crate::self_service::update::check_text(&apply.current, found.as_ref()),
+            "current": apply.current.to_string(),
+            "found": found.as_ref().map(|r| r.tag.clone()),
+            "headline": found.as_ref().map(|r| r.headline()).unwrap_or_default(),
+        })),
+        Err(e) => bad(502, ctx.redactor.redact(&e)),
+    }
+}
+
+const UPDATE_WHY: &str = "the panel updates a bot by changing its image";
+
+/// A managed bot is updated from the panel, by changing its image.
+fn update_refusal(managed: bool) -> Answer {
+    if managed {
+        bad(403, crate::managed::refused("Updating", UPDATE_WHY))
+    } else {
+        None
+    }
+}
+
+fn update_flow(ctx: &Ctx) -> Result<crate::update::apply::Apply<'static>, String> {
+    let data = ctx.data.clone().ok_or("there's no data dir here")?;
+    crate::self_service::update::real_apply(data)
+}
+
+/// Installs the newest release after the owner's confirm; the page loses
+/// the connection at the restart and reconnects by itself.
+async fn update_start(ctx: &Ctx, body: &Value) -> Answer {
+    use crate::self_service::{restart, update};
+    if let Some(no) = update_refusal(crate::managed::on()) {
+        return Some(no);
+    }
+    if ctx.live.is_none() {
+        return missing("the gateway");
+    }
+    let apply = match update_flow(ctx) {
+        Ok(a) => a,
+        Err(e) => return bad(409, e),
+    };
+    let found = match update::check(&apply).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return ok(json!({ "ok": true, "said": update::newest(&apply.current) })),
+        Err(e) => return bad(502, ctx.redactor.redact(&e)),
+    };
+    need!(confirmed(
+        body,
+        format!(
+            "Install Ferrule {}? Running turns get up to 10 minutes to finish, then it restarts. \
+             This page reconnects by itself.",
+            found.tag
+        )
+    ));
+    let chat = ctx
+        .hub
+        .as_ref()
+        .and_then(|h| h.primary())
+        .unwrap_or_else(|| ferrule_trust::ChatRef::new("dashboard", "owner"));
+    let hub = ctx.hub.clone();
+    let units = crate::update::units_installed();
+    tokio::spawn(async move {
+        let tell = |text: String| {
+            if let Some(h) = &hub {
+                h.tell_in(&chat, text);
+            }
+        };
+        match update::install(apply, units, &chat).await {
+            update::Applied::Restarting { exe, .. } => {
+                crate::lifecycle::set_reexec_path(exe);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if let Err(e) = restart::now() {
+                    tell(e);
+                }
+            }
+            update::Applied::Said(text) => tell(text),
+        }
+    });
+    ok(json!({
+        "ok": true,
+        "said": format!("Installing Ferrule {}; this page reconnects when it's back.", found.tag),
+    }))
 }
 
 /// The same clean shutdown as `systemctl stop`, which the service follows
@@ -2896,6 +3002,74 @@ command = "echo hi"
         assert_eq!(std::fs::read_to_string(prev).unwrap(), "broken = [");
         let (_, v) = call(&ctx, "POST config/restore", json!({})).await;
         assert!(v["said"].as_str().unwrap().contains("already"));
+    }
+
+    #[test]
+    fn update_routes_are_refused_when_managed() {
+        let (status, v) = update_refusal(true).expect("refused");
+        assert_eq!(status, 403);
+        assert_eq!(
+            v["error"],
+            "Updating is off on a managed bot: the panel updates a bot by changing its image"
+        );
+        assert!(update_refusal(false).is_none());
+    }
+
+    #[test]
+    fn the_update_fix_is_the_update_check_route() {
+        assert_eq!(
+            crate::self_service::doctor::fix_op("update/check", &json!({})),
+            Some(crate::self_service::Op::UpdateCheck)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_restart_route_restarts_unsupervised_on_unix() {
+        use crate::self_service::restart::{how, How};
+        assert_eq!(how(false, false, true), How::Reexec);
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        ctx.live = Some(Live {
+            router: std::sync::Weak::new(),
+            health: Arc::new(ferrule_gateway::Health::new("t", Default::default())),
+            channels: vec![],
+            fixed: None,
+            retire: Arc::new(|_| {}),
+            restarts: Arc::new(ferrule_gateway::ChannelRestarts::default()),
+            commands_off: None,
+        });
+        // It asks first, and no longer says "run it in a terminal".
+        let (s, v) = call(&ctx, "POST gateway/restart", json!({})).await;
+        assert_eq!(s, 409, "{v}");
+        assert!(v["confirm"].is_string(), "{v}");
+        RESTARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (s, v) = call(&ctx, "POST gateway/restart", json!({"confirm": true})).await;
+        assert_eq!(s, 200, "{v}");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(RESTARTED.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn approvals_list_says_how_long_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        let hub = hub(dir.path());
+        ctx.hub = Some(hub.clone());
+        let chat = ferrule_trust::ChatRef::new("telegram", "42");
+        let (_code, _rx) = hub.approvals().open_for(
+            &chat,
+            "Make m the default",
+            Some(Duration::from_secs(600)),
+            Some("model_default:abc".to_string()),
+        );
+        let (_, v) = call(&ctx, "approvals", json!({})).await;
+        let rows = v["approvals"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let left = rows[0]["left_secs"].as_u64().unwrap();
+        assert!((590..=600).contains(&left), "{left}");
+        assert_eq!(rows[0]["subject"], "model_default");
+        assert_eq!(rows[0]["op"], "model_default:abc");
     }
 
     #[tokio::test]
