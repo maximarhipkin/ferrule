@@ -192,6 +192,19 @@ enum Cmd {
         /// `workspace`, else `.`
         #[arg(long)]
         workspace: Option<String>,
+        /// Branch a session: this chat starts from that session's state
+        /// (compaction folds applied), the parent untouched
+        #[arg(long, value_name = "SESSION")]
+        fork: Option<String>,
+        /// Take only the fork's first N messages
+        #[arg(long, requires = "fork", value_name = "N")]
+        at: Option<usize>,
+    },
+    /// List sessions, newest first — with each branch's parent
+    Sessions {
+        /// Include archived sessions and show more than the latest 20
+        #[arg(long)]
+        all: bool,
     },
     /// Run a declarative agent graph: nodes (agents, checks, approvals)
     /// and edges (pass/fail/always, rollback on fail) from a TOML file
@@ -960,9 +973,14 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             provider,
             model,
             workspace,
+            fork,
+            at,
         } => {
             let workspace = remote::workspace(workspace, false).await?;
-            chat(model.or(provider), workspace).await?;
+            chat(model.or(provider), workspace, fork, at).await?;
+        }
+        Cmd::Sessions { all } => {
+            sessions(all)?;
         }
         Cmd::Graph { op } => match op {
             GraphCmd::Run {
@@ -1606,6 +1624,21 @@ fn build_agent_from(
         agent =
             agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(map, tokens)));
     }
+    // M42 part 7: compactions summarized by another (cheaper) model — the
+    // built-in checklist template as a strategy on a routed provider.
+    if let Some(word) = &cfg.agent.compaction_model {
+        models
+            .resolve(word)
+            .map_err(|e| anyhow!("[agent] compaction_model = {word:?}: {e}"))?;
+        let scope = models::Scope::for_session("compaction")
+            .fixed(Some(word.clone()), "[agent] compaction_model");
+        let provider = Arc::new(models::RoutedProvider::new(
+            models.clone(),
+            scope,
+            entry.provider.clone(),
+        ));
+        agent = agent.with_compactor(Arc::new(ferrule_core::TemplateCompactor::new(provider)));
+    }
     agent = agent
         .with_ledger(
             ledger.sink,
@@ -2242,7 +2275,77 @@ const CHAT_COMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
-async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
+/// `ferrule sessions`: the sessions dir as a table, newest first; a branch
+/// shows the parent it forked from (M42 part 7).
+fn sessions(all: bool) -> Result<()> {
+    let dir = config::data_dir()?.join("sessions");
+    let mut rows: Vec<(std::time::SystemTime, String, Option<String>, String)> = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        if !all && stem.contains('.') {
+            continue; // archived by /new
+        }
+        // Meta and the first user line, without reading the whole file.
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut parent = None;
+        let mut first = String::new();
+        for l in text.lines().take(200) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else {
+                continue;
+            };
+            match v.get("type").and_then(|t| t.as_str()) {
+                Some("meta") if v["key"].as_str() == Some("parent") => {
+                    parent = v["value"].as_str().map(str::to_string);
+                }
+                Some("message")
+                    if first.is_empty() && v["message"]["role"].as_str() == Some("user") =>
+                {
+                    first = v["message"]["content"]
+                        .as_str()
+                        .and_then(|c| c.lines().next())
+                        .unwrap_or("")
+                        .to_string();
+                }
+                _ => {}
+            }
+        }
+        let mtime = path
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        rows.push((mtime, stem, parent, first));
+    }
+    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+    if rows.is_empty() {
+        println!("No sessions yet.");
+        return Ok(());
+    }
+    for (mtime, id, parent, first) in rows.iter().take(if all { rows.len() } else { 20 }) {
+        let when = chrono::DateTime::<chrono::Local>::from(*mtime).format("%Y-%m-%d %H:%M");
+        let branch = parent
+            .as_deref()
+            .map(|p| format!(" ↳ {p}"))
+            .unwrap_or_default();
+        let first: String = first.chars().take(70).collect();
+        println!("{id}  {when}{branch}  {first}");
+    }
+    Ok(())
+}
+
+async fn chat(
+    provider: Option<String>,
+    workspace: PathBuf,
+    fork: Option<String>,
+    at: Option<usize>,
+) -> Result<()> {
     let mut session_id = uuid::Uuid::new_v4().to_string();
     let undo_dir = dunce::canonicalize(&workspace).unwrap_or_else(|_| workspace.clone());
     let (mut agent, mut sup) = build_root(
@@ -2254,6 +2357,27 @@ async fn chat(provider: Option<String>, workspace: PathBuf) -> Result<()> {
         None,
     )
     .await?;
+    // M42 part 7: a branched session starts from its parent's state.
+    if let Some(parent) = &fork {
+        let sessions_dir = config::data_dir()?.join("sessions");
+        let source = ferrule_core::Transcript::open(&sessions_dir, parent)?;
+        let branch = source.fork(&session_id, at)?;
+        let taken = branch.read_messages()?.len();
+        for m in branch
+            .read_messages()?
+            .into_iter()
+            .filter(|m| m.role != ferrule_core::Role::System)
+        {
+            agent.messages.push(m);
+        }
+        println!(
+            "forked {parent} into {session_id} — {taken} messages{}",
+            match at {
+                Some(n) => format!(", at {n}"),
+                None => String::new(),
+            }
+        );
+    }
     // M27: the answer prints as the model writes it.
     let stream = config::Config::load()
         .map(|(cfg, _)| cfg.agent.stream)

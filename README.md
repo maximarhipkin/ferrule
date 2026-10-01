@@ -129,6 +129,8 @@ harness, for every model it drives:
 - **Structured compaction.** Tool results are deduplicated for free before
   a checklist summary spends any tokens — and your original request is
   pinned into the summary verbatim, so long runs don't drift off-task.
+  `[agent] compaction_model` summarizes on a cheaper model; the summary
+  step is a replaceable strategy (`Compactor`).
 - **The build is the judge.** With `[agent] verify_command = "cargo test"`
   (or a list run in order, `["cargo fmt --check", "cargo test"]`), a run
   that changed files can't finish until the checks pass; a failure goes
@@ -230,7 +232,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 
 | | |
 |---|---|
-| **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts, compaction, and reasoning retention. |
+| **Agent loop** | ReAct loop with typed lifecycle events, resumable JSONL transcripts (a resume replays the compacted state; `ferrule chat --fork` branches a session, `ferrule sessions` shows the tree), compaction, and reasoning retention. |
 | **Providers & models** | Three drivers: native Anthropic Messages (prompt caching, optional extended thinking), OpenAI Responses (the Codex models, reasoning effort) and OpenAI-compatible Chat for OpenAI, Google Gemini, Kimi, DeepSeek, OpenRouter, Groq, Ollama, llama.cpp, vLLM. Several models live at once, a default, a model per chat, task or sub-agent, `/model` from Telegram, an optional fallback on any provider error, and the ledger records the model that actually answered, cache reads and writes included. Optional routing: start every turn on a cheap model and move up to a stronger one only on a failure (a failed check, broken tool calls, going in circles, `/model strong`), with a daily cap on the strong spend. All three drivers stream, read-only tool calls run in parallel, and the prompt prefix stays byte-stable so the cache hits ([`docs/models.md`](docs/models.md), [`docs/m23-drivers.md`](docs/m23-drivers.md), [`docs/routing.md`](docs/routing.md), [`docs/speed.md`](docs/speed.md)). |
 | **Subscriptions** | Sign in with the plan you already pay for instead of an API key. **ChatGPT plan:** `ferrule login chatgpt` (device code, browser or a pasted URL, also `/login chatgpt` in your own Telegram chat); the token is sealed and refreshed, and the model runs in Ferrule's own loop with every tool, gate and the sandbox. **Claude plan:** each turn runs the unmodified `claude` CLI, as Anthropic's terms require, signed in through Claude's own flow or a `claude setup-token`; Ferrule's memory, tasks and messaging are bridged in over MCP and its approvals still apply. Plan turns cost $0 in the ledger, with the notional price beside them, and a usage limit falls back to your next model ([`docs/subscriptions.md`](docs/subscriptions.md)). |
 | **Local models** | `ferrule setup` finds Ollama, llama.cpp, LM Studio and vLLM on this machine, compares the context window the server really gives with what the harness needs, and says how to fix a small one (on Ollama it can make a larger-window copy of the model, on a yes). A probe tells "this model can't call tools" apart from "its template is broken", and doctor and `/status` keep checking after setup ([`docs/local-models.md`](docs/local-models.md)). |

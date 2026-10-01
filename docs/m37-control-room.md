@@ -397,6 +397,7 @@ The table is `PARITY` in `dashboard/console.rs`, copied here.
 | `update` | fix buttons + console | change | needs `--yes` (the page's confirm is the yes) or `--check` |
 | `run` | console | change | one agent turn, with its tools |
 | `graph run` | console | change | an agent graph, end to end; approval nodes need `--yes` here |
+| `sessions` | console | read | with each branch's parent |
 | `chat` | Chat | refused | a REPL isn't a console command: use the Chat page |
 | `memory add` | console | change |  |
 | `memory search` | console | read |  |

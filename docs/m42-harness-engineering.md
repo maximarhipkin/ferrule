@@ -1,7 +1,6 @@
 # M42 — harness engineering, applied to ourselves
 
-**Status.** Parts 1–6 built (2026-09-30); part 7 is a design, not
-started.
+**Status.** All seven parts built (2026-09-30).
 
 **Source.** A pass over
 [learn-harness-engineering](https://github.com/walkinglabs/learn-harness-engineering)
@@ -179,20 +178,29 @@ Still open: a run's own resumable state (a cut graph restarts), gateway
 channels starting graphs, `graph list`/`graph stop` for long ones, and
 approval routed to the owner's chat instead of the terminal.
 
-## Part 7 — pluggable compaction and a session tree (design)
+## Part 7 — pluggable compaction and a session tree (done)
 
 Pi's two state-layer ideas, mapped to ferrule:
 
-- **Compaction as a strategy.** Today's pipeline (dedupe → checklist
-  summary, goal pinned verbatim) is hard-coded in `agent.rs`. Make it a
-  trait with the built-in as the default: a `PreCompact` hook (M18) may
-  already observe; a strategy would let a config choose *how* — e.g. a
-  different (cheaper) model for the summary, or topic-based folding. The
-  fold record from part 4 is strategy-agnostic, so the log format doesn't
-  change.
-- **Session tree.** Transcripts are linear with resume; `/new` (M41)
-  starts fresh. Pi stores sessions as trees: branch from any turn. The
-  fold record already makes transcripts a structured log; a `parent` +
-  `fork_at` meta pair on a transcript plus `ferrule chat --fork SESSION
-  --at N` gives branching without touching the per-session file format
-  (each branch is its own file, pointing back).
+- **Compaction as a strategy.** `ferrule_core::compactor::Compactor` is
+  the seam (`summarize(transcript_text) -> summary`); the agent keeps the
+  built-in checklist pipeline on its own model when none is set, and the
+  fold record doesn't change either way. The first strategy is
+  `TemplateCompactor` — the same template on a *different* model, wired
+  as `[agent] compaction_model = "fast"` (resolved and validated at agent
+  build, routed through the model catalog with fallbacks). Pi's other
+  examples (topic-based folding, a custom prompt) are now one trait impl
+  away. A strategy's calls don't get ledger rows yet (the agent's
+  `call_provider` path, which owns ledger/retries, stays the default
+  path's).
+- **Session tree.** A transcript forks: `Transcript::open` reads a
+  session without writing to it, `fork(session_id, at)` writes a new
+  transcript with `parent`/`fork_at` meta and the fold-applied messages
+  up to `at` (all of them when unset). `ferrule chat --fork SESSION
+  [--at N]` starts a branch from that state — the parent is never
+  touched — and `ferrule sessions` lists the tree, newest first, a branch
+  showing `↳ <parent>`. Archived (`/new`) sessions show with `--all`.
+
+Still open: forking from a *pre-compaction* point (the folded past is in
+the log but the fork view is fold-applied), `chat --resume`, and a TUI
+tree view.

@@ -9,7 +9,8 @@ use ferrule_core::provider::{CompletionRequest, CompletionResponse};
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use ferrule_core::{
     Agent, AgentConfig, AgentEvent, ContextOverflow, CoreError, HarnessProfile, Message, Provider,
-    Role, SearchHistoryTool, SessionRecall, ToolRegistry, Transcript, Usage, SEARCH_HISTORY,
+    Role, SearchHistoryTool, SessionRecall, TemplateCompactor, ToolRegistry, Transcript, Usage,
+    SEARCH_HISTORY,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -354,6 +355,51 @@ async fn a_resume_replays_the_compacted_state() {
         "the fold really folded: {} resumed vs {} logged",
         resumed.len(),
         all.len()
+    );
+}
+
+/// (f) A compaction strategy: the summary comes from the compactor's own
+/// model, not the agent's (M42 part 7) — and the agent's model never sees
+/// the summarizing call.
+#[tokio::test]
+async fn a_custom_compactor_writes_the_summary() {
+    let padding = "background noise ".repeat(90);
+    let lookup = Lookup(vec![
+        ("vault", format!("The vault code is 7319. {padding}")),
+        ("weather", format!("It is sunny. {padding}")),
+        ("traffic", format!("Roads are clear. {padding}")),
+        ("news", format!("Nothing happened. {padding}")),
+    ]);
+    let model = Model::new(|_, turn| match turn {
+        1 => call("1", "lookup", json!({"what": "vault"})),
+        2 => call("2", "lookup", json!({"what": "weather"})),
+        3 => call("3", "lookup", json!({"what": "traffic"})),
+        4 => call("4", "lookup", json!({"what": "news"})),
+        _ => say("done looking"),
+    });
+    let cheap = Model::new(|_, _| say("SUMMARY-BY-CHEAP-MODEL"));
+    let config = AgentConfig {
+        compaction_keep_last: 4,
+        ..Default::default()
+    };
+    let s = setup(model.clone(), lookup, 1_200, config, true, false);
+    let mut agent = s
+        .agent
+        .with_compactor(Arc::new(TemplateCompactor::new(cheap.clone())));
+    let (_, events) = run(&mut agent, "Look around, then say done.").await;
+
+    assert!(count(&events, |e| matches!(e, AgentEvent::Compacted { .. })) >= 1);
+    assert_eq!(*model.summaries.lock().unwrap(), 0, "the agent's model");
+    assert!(
+        *cheap.summaries.lock().unwrap() >= 1,
+        "the compactor's model"
+    );
+    let requests = model.requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.contains("Goal: see request. Progress: some lookups done.")),
+        "the summary in the context is the compactor's provider's"
     );
 }
 

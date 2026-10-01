@@ -5637,3 +5637,37 @@ speaker.
 **Follow-ups.** Translate the server's own sentences; a proofreading pass
 on the Hebrew; a live check on a phone.
 
+### 2026-09-30 — M42 part 7: pluggable compaction + session tree (Kimi)
+
+**Scope.** Pi's two state-layer ideas from the M42 design, completing the
+milestone (`docs/m42-harness-engineering.md` §7).
+
+**What was built.**
+- **The compaction strategy seam** (`ferrule-core::compactor`): a
+  `Compactor` trait (`summarize` the folded head); the agent keeps the
+  built-in checklist pipeline on its own model when no strategy is set,
+  and the fold record is unchanged either way. `TemplateCompactor` is the
+  first strategy — the same template on another model — wired as
+  `[agent] compaction_model`, validated at agent build and run through a
+  routed provider (the catalog's fallbacks apply).
+- **Session tree:** `Transcript::open` reads a session without writing;
+  `fork(session_id, at)` writes a new transcript with `parent`/`fork_at`
+  meta plus the fold-applied messages up to `at`; `ferrule chat --fork
+  SESSION [--at N]` starts a branch from that state (the parent never
+  touched); `ferrule sessions [--all]` lists the tree, newest first,
+  branches marked `↳ <parent>`, archived `/new` sessions behind `--all`.
+  Dashboard console parity row for `sessions` (read) + its m37 doc row.
+
+**Tests.** 1 transcript unit (fork prefix + metas + open-never-writes), 1
+core it (`a_custom_compactor_writes_the_summary`: the summary comes from
+the compactor's model, the agent's own model never sees the call), 1 cli
+it (run → sessions lists it → chat --fork --at → branch names its parent;
+forking a missing session is refused). ferrule-core 124+34, ferrule-cli
+368+139, gateway/agents green; clippy and fmt clean.
+
+**Not done.** Forking from a pre-compaction point (the fork view is
+fold-applied); `chat --resume`; strategy calls get no ledger rows (the
+default path's `call_provider` owns ledger/retries); a TUI tree view.
+
+**M42 is complete: all seven parts built.**
+

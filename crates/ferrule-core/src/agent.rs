@@ -325,6 +325,9 @@ pub struct Agent {
     triggers: Option<Arc<dyn PromptTriggers>>,
     /// The current run's goal is a person's message ([`Agent::run_user`]).
     from_person: bool,
+    /// How compaction summarizes the folded head; None is the built-in
+    /// pipeline on the agent's own model (M42 part 7).
+    compactor: Option<Arc<dyn crate::compactor::Compactor>>,
 }
 
 impl Agent {
@@ -369,7 +372,15 @@ impl Agent {
             shown: Default::default(),
             triggers: None,
             from_person: false,
+            compactor: None,
         }
+    }
+
+    /// How compaction summarizes: a strategy instead of the built-in
+    /// pipeline (e.g. the checklist template on a cheaper model).
+    pub fn with_compactor(mut self, compactor: Arc<dyn crate::compactor::Compactor>) -> Self {
+        self.compactor = Some(compactor);
+        self
     }
 
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
@@ -1995,21 +2006,27 @@ impl Agent {
         input.trigger = Some("auto".into());
         self.fire(tx, HookEvent::PreCompact, input.clone()).await;
 
-        let summary_req = CompletionRequest {
-            messages: vec![Message::user(format!(
-                "{COMPACTION_TEMPLATE}{transcript_text}"
-            ))],
-            tools: vec![],
-            max_output_tokens: Some(4096),
-            temperature: Some(0.0),
-            stream: None,
+        let summary = match &self.compactor {
+            // A strategy (M42 part 7) owns its model and its errors; the
+            // fold record it produces is the same either way.
+            Some(compactor) => compactor.summarize(&transcript_text).await?,
+            None => {
+                let summary_req = CompletionRequest {
+                    messages: vec![Message::user(format!(
+                        "{COMPACTION_TEMPLATE}{transcript_text}"
+                    ))],
+                    tools: vec![],
+                    max_output_tokens: Some(4096),
+                    temperature: Some(0.0),
+                    stream: None,
+                };
+                self.call_provider(tx, summary_req, iteration, "compaction")
+                    .await?
+                    .message
+                    .content
+                    .unwrap_or_default()
+            }
         };
-        let summary = self
-            .call_provider(tx, summary_req, iteration, "compaction")
-            .await?
-            .message
-            .content
-            .unwrap_or_default();
 
         let mut rebuilt = Vec::with_capacity(keep + 2);
         if let Some(sys) = self

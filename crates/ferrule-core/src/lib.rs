@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod baseline;
+pub mod compactor;
 pub mod error;
 pub mod event;
 pub mod failure;
@@ -29,6 +30,7 @@ pub mod vision;
 
 pub use agent::{Agent, AgentConfig, ContextOverflow, RetryPolicy};
 pub use baseline::{load_context_baseline, load_context_baseline_layered};
+pub use compactor::{Compactor, TemplateCompactor};
 pub use error::{CoreError, FailureClass};
 pub use event::AgentEvent;
 pub use guard::{Guard, GuardedCall, Verdict};

@@ -419,6 +419,11 @@ pub struct AgentSettings {
     /// `Name <email>`, the author and committer of agent commits.
     #[serde(default = "default_auto_commit_author")]
     pub auto_commit_author: String,
+    /// M42: summarize compactions on this model (an alias, a ref, a
+    /// provider's own) instead of the agent's — the checklist template,
+    /// cheaper eyes. Unset: the agent's model summarizes.
+    #[serde(default)]
+    pub compaction_model: Option<String>,
 }
 
 fn default_auto_commit_author() -> String {
@@ -451,6 +456,7 @@ impl Default for AgentSettings {
             auto_commit: false,
             auto_commit_branch: Default::default(),
             auto_commit_author: default_auto_commit_author(),
+            compaction_model: None,
         }
     }
 }
@@ -1479,6 +1485,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # stream = true                   # replies grow as the model writes (Telegram, `ferrule chat`)
 # edit_file = true                # offer edit_file (SEARCH/REPLACE); write_file stays either way
 # repo_map_tokens = 1024          # repo map budget in a code repo (tokens); 0 = no map
+# compaction_model = "fast"       # summarize compactions on this model instead of the agent's
 # lint = "auto"                   # after an edit, run the project's linter (rustfmt/ruff/gofmt/eslint/tsc) if installed and configured; "off"
 # lint_timeout_secs = 10
 # auto_commit = false            # commit each run's own files (never yours) to git; `ferrule undo` reverts

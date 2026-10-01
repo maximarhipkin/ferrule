@@ -23,6 +23,7 @@ mod mcp_add;
 mod memory;
 mod models;
 mod plugins;
+mod sessions;
 mod ssh;
 mod trust;
 mod vision;

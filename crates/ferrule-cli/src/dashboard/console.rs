@@ -70,6 +70,7 @@ pub const PARITY: &[Leaf] = &[
         "console",
         "an agent graph, end to end; approval nodes need `--yes` here",
     ),
+    leaf("sessions", Read, "console", "with each branch's parent"),
     leaf(
         "chat",
         Refused("a REPL isn't a console command: use the Chat page"),

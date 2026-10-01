@@ -944,9 +944,9 @@ needing no shell.
 
 ### M42 — harness engineering, applied to ourselves
 
-**Status.** Parts 1–6 built (`docs/m42-harness-engineering.md`, from a
-pass over the learn-harness-engineering course and its Claude Code /
-Codex / DeepSeek / Pi breakdowns); part 7 designed there, not started.
+**Status.** All seven parts built (`docs/m42-harness-engineering.md`,
+from a pass over the learn-harness-engineering course and its Claude
+Code / Codex / DeepSeek / Pi breakdowns).
 - **The repo dogfoods:** a root `AGENTS.md` directory page and a
   `Makefile` whose `make check` is the green predicate.
 - **Layered context baseline:** user-level (config dir) → workspace
@@ -967,6 +967,10 @@ Codex / DeepSeek / Pi breakdowns); part 7 designed there, not started.
   edge back is a rollback with the check's output as the repair
   instruction; fan-out in parallel, fan-in on every input. Deterministic
   Rust routes; the agents work.
+- **Pluggable compaction and a session tree:** `[agent] compaction_model`
+  summarizes on a cheaper model through the new `Compactor` seam, and
+  `ferrule chat --fork SESSION [--at N]` branches a session (the parent
+  untouched), with `ferrule sessions` showing the tree.
 
 **Done means.** An agent fresh to this repo runs `make check` and knows
 the rules; a layered config dirs' rules reach every session; a run can't
