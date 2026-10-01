@@ -39,6 +39,18 @@ pub const COMMANDS: &[Command] = &[
         "explore read-only, then ask before running the plan",
     ),
     owner(
+        "goal",
+        " <what done looks like>",
+        "Loop until the goal is met",
+        "a loop that runs until the judge says so (owner)",
+    ),
+    owner(
+        "graph",
+        " <file>",
+        "Run an agent graph",
+        "run an agent graph; its gates ask here (owner)",
+    ),
+    owner(
         "undo",
         "",
         "Undo my last commit",
@@ -141,7 +153,7 @@ mod tests {
             .map(|c| c["command"].as_str().unwrap())
             .collect();
         assert_eq!(in_help, in_menu);
-        assert_eq!(in_menu.len(), 20);
+        assert_eq!(in_menu.len(), 22);
         assert!(in_menu.contains(&"dashboard"), "/dashboard is in the menu");
         assert!(!all(false).iter().any(|c| c.name == "dashboard"));
     }
@@ -165,8 +177,9 @@ mod tests {
     #[test]
     fn every_command_in_the_list_has_a_door() {
         use crate::{
-            connections::ConnectionsDoor, dashboard::door::DashboardDoor, models::ModelDoor,
-            settings_door::SettingsDoor, subscription::login::PlanDoor, trust::OwnerDoor,
+            connections::ConnectionsDoor, dashboard::door::DashboardDoor, goal_door::GoalDoor,
+            graph_door::GraphDoor, models::ModelDoor, settings_door::SettingsDoor,
+            subscription::login::PlanDoor, trust::OwnerDoor,
         };
         let doors: Vec<&str> = [
             OwnerDoor::HANDLES,
@@ -175,6 +188,8 @@ mod tests {
             PlanDoor::HANDLES,
             ConnectionsDoor::HANDLES,
             SettingsDoor::HANDLES,
+            GoalDoor::HANDLES,
+            GraphDoor::HANDLES,
             super::super::SelfServiceDoor::HANDLES,
         ]
         .concat();

@@ -5,7 +5,7 @@
 //! `/status` and `ferrule status` while the other two keep answering.
 
 #[path = "../../../ferrule-gateway/tests/it/support/mod.rs"]
-mod support;
+pub(crate) mod support;
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};

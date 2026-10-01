@@ -184,6 +184,17 @@ pub fn prepare(
     verify: Vec<String>,
     resume: Option<String>,
 ) -> Result<Prepared> {
+    prepare_as(prompt, verify, resume, None)
+}
+
+/// [`prepare`], with the caller choosing the session id (the gateway's
+/// goal door: the loop's router lane is named for it).
+pub fn prepare_as(
+    prompt: Option<String>,
+    verify: Vec<String>,
+    resume: Option<String>,
+    session: Option<String>,
+) -> Result<Prepared> {
     let sessions = crate::config::data_dir()?.join("sessions");
     match resume {
         Some(session_id) => {
@@ -220,7 +231,7 @@ pub fn prepare(
                      `[agent] verify_command`"
                 );
             }
-            let session_id = uuid::Uuid::new_v4().to_string();
+            let session_id = session.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             save(
                 &sessions,
                 &session_id,
@@ -234,6 +245,31 @@ pub fn prepare(
             })
         }
     }
+}
+
+/// Every open loop's (session id, state), for `/goal` with no argument.
+pub fn open_loops() -> Vec<(String, LoopState)> {
+    let Ok(sessions) = crate::config::data_dir().map(|d| d.join("sessions")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&sessions) else {
+        return Vec::new();
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let Some(sid) = name.strip_suffix(".goal.json") else {
+            continue;
+        };
+        if let Ok(Some(state)) = load(&sessions, sid) {
+            if !state.judge_satisfied() {
+                out.push((sid.to_string(), state));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.1.updated.cmp(&b.1.updated));
+    out
 }
 
 /// The loop's truthful status line, printed after the run's own ending.

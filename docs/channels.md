@@ -985,6 +985,7 @@ sees them):
 | `/help` | The commands this chat answers. |
 | `/stop`, `/resume` | Stop every run now; let runs start again. |
 | `/plan <task>`, `/undo` | Explore first, then ask; revert the agent's last commit. |
+| `/goal <what done looks like>`, `/graph <file>` | A loop that runs until the judge says so; run an agent graph, whose gates ask here. |
 | `/model` | Show or switch the model. |
 | `/update`, `/restart`, `/doctor` | Check for a new Ferrule and install it; restart; check the setup and offer fixes. Each asks first and tells you in the same chat when it's done ([updates.md](updates.md#from-a-chat)). |
 | `/login`, `/logout`, `/connect`, `/connections`, `/skills`, `/mcp`, `/hooks`, `/caps` | Plans, services, extensions and spending caps. |

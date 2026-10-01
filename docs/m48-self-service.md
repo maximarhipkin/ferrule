@@ -1689,7 +1689,9 @@ Where the code departed from the plan above, and why.
 ## Verified, and how
 
 - **Full suite.** `cargo test --workspace --no-fail-fast`: **1846 passed, 0
-  failed, 29 ignored** (before: 1791 / 0 / 29). `cargo fmt --all --check`
+  failed, 29 ignored** on the branch (before: 1791 / 0 / 29), and **1850 /
+  0 / 29** after merging `main` with M43 (`/goal` and `/graph` joined the one
+  command list and its door check). `cargo fmt --all --check`
   and `cargo clippy --workspace --all-targets -- -D warnings` clean.
 - **The end-to-end test**, `models::the_owner_switches_the_default_model_
   from_telegram_with_one_tap`: the model is down (503), the owner says
@@ -1714,8 +1716,9 @@ Where the code departed from the plan above, and why.
   tests in `ferrule-gateway::menu`.
 - **Dashboard**: 88 unit tests and 30 `it dashboard` tests; the browser
   check passed 25/25 at Part 6.
-- **The eval**: see the final report (`ferrule eval run evals/starter
-  --variant ab`).
+- **The eval**, `ferrule eval run evals/starter --variant ab` with the mock
+  model, release build, before merging M43: engineered 20/20, naive 11/20
+  (+45 pts), $0.98 for 150 calls, the same as the baseline.
 
 **Not verified live.** A real Telegram client's menu and buttons; a real
 GitHub release install; a real systemd restart and rollback; a real sandbox

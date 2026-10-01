@@ -980,6 +980,22 @@ sessions until an independent judge says it's met; and a multi-agent task
 can be drawn as a graph — rollback edges and a human gate included — and
 run by deterministic routing, not by prompting.
 
+### M43 — channels drive loops and graphs
+
+**Status.** Built (`docs/m43-channels-drive-loops.md`).
+- **`/goal` in any chat** (owner): starts a goal loop on its own router
+  lane (a pseudo-channel, the scheduler's pattern), the judge from
+  `[agent] verify_command`, the ending reported to the chat it started
+  in; `/goal` alone lists the open loops.
+- **`/graph <file> [--yes]`** (owner): the graph runs on the gateway's
+  shared supervisor, and its approval nodes ask the owner's chat through
+  the trust hub's `ask_owner` — buttons, timeout, audit — failing closed
+  on a refusal or no answer.
+
+**Done means.** Max starts a loop from Telegram with `/goal make the
+suite green`, taps Allow when a graph's gate asks, and reads "goal met"
+in the same chat.
+
 ### M47 — the dashboard, redesigned
 
 **Status.** Built (`docs/m47-dashboard-redesign.md`; user docs
