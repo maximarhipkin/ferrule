@@ -278,10 +278,10 @@ fn the_page_loads_nothing_from_elsewhere() {
     }
     // In the script an address may only be a link the reader clicks, a
     // placeholder, or the SVG namespace: never something the page fetches.
-    for line in JS
-        .lines()
-        .filter(|l| l.contains("http://") || l.contains("https://"))
-    {
+    // A comment line (the icons' licence names its source) is not code.
+    for line in JS.lines().filter(|l| {
+        !l.trim_start().starts_with("//") && (l.contains("http://") || l.contains("https://"))
+    }) {
         assert!(
             line.contains("2000/svg") || line.contains("href:") || line.contains("placeholder"),
             "the script names an address it may load: {line}"

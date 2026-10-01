@@ -1555,7 +1555,7 @@ Every value comes from D4; this is the order and the selectors.
 | `the_index_carries_the_base` | `mod.rs` | path changed | the preload is prefixed under the M44 base |
 | `tokens_meet_wcag_aa` | `page_tests.rs` | changed | the accent tokens in place of copper. on-accent on the accent and on its hover. The ring on bg and panel at 3:1. **New:** `--control` (field border, switch track) on every surface at 3:1. |
 | `svg_tokens_draw_in_their_theme_colours` | `page_tests.rs` | new | the chevron is drawn in `--muted` and the tick in `--on-accent`, in each theme. The data URIs keep their namespace and stay parseable. |
-| `the_page_loads_nothing_from_elsewhere` | `page_tests.rs` | relaxed | the SVG namespace string is allowed, and nothing else from another origin |
+| `the_page_loads_nothing_from_elsewhere` | `page_tests.rs` | relaxed | the SVG namespace string is allowed, and a `//` comment line may name a URL (the icons licence does); nothing else from another origin |
 | `every_colour_is_a_token`, `every_icon_used_exists`, `every_route_is_used_by_the_page`, `every_shell_string_has_a_hebrew_version` | `page_tests.rs` | unchanged | still pass with the new CSS, icons, menu and removed theme keys |
 | Browser: "Hebrew doesn't change the line height" | `scripts/dashboard_browser_check.mjs` | new | the Heebo overrides keep a mixed line the same height as an English one |
 | Browser: the RTL mirror assertion | same | new, inside "Hebrew reads right to left" | `.flip` icons are mirrored |

@@ -150,11 +150,11 @@ img,svg{max-width:100%}
 }
 .brand{display:flex;align-items:center;gap:var(--sp-2)}
 .word{font:var(--fw-strong) var(--fs-lg)/1 var(--sans);letter-spacing:.01em}
-.ver{font:var(--fs-sm) var(--mono);color:var(--muted)}
-.inst{font:var(--fs-sm) var(--mono);padding:1px 6px;border:var(--hair);border-radius:var(--r-sm)}
+.ver{font:var(--fs-sm) var(--sans);color:var(--muted)}
+.inst{font:var(--fs-sm) var(--sans);padding:1px 6px;border:var(--hair);border-radius:var(--r-sm)}
 #mark{display:inline-flex}
 .top-right{margin-inline-start:auto;display:flex;align-items:center;gap:var(--sp-2)}
-.live{display:flex;align-items:center;gap:6px;font:var(--fs-sm) var(--mono);color:var(--muted);white-space:nowrap}
+.live{display:flex;align-items:center;gap:6px;font:var(--fs-sm) var(--sans);color:var(--muted);white-space:nowrap}
 .top-right button{white-space:nowrap}
 @media (max-width:420px){#uptime,.ver{display:none}}
 
@@ -194,7 +194,7 @@ body.running .collar .sweep{opacity:1;animation:sweep 2.6s linear infinite}
   position:absolute;top:8px;inset-inline-start:calc(50% + 8px);min-width:17px;height:17px;padding:0 4px;border-radius:var(--r-full);
   background:var(--bad);color:var(--panel);font:var(--fw-strong) var(--fs-xs)/17px var(--sans);text-align:center;
 }
-.ico{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;inline-size:18px;block-size:18px}
+.ico{fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none;inline-size:16px;block-size:16px}
 
 /* the More sheet */
 #sheet{position:fixed;inset:0;z-index:var(--z-sheet);background:var(--scrim);display:flex;align-items:flex-end}
@@ -659,6 +659,11 @@ dialog.dlg.wide{width:min(520px,calc(100vw - 24px))}
 .preview .err{color:var(--bad)}
 .preview .next{margin:var(--sp-2) 0 0;padding-inline-start:var(--sp-5);color:var(--ink-2)}
 .item .btn{flex:none}
+.fb-row{flex-wrap:nowrap}
+.fb-row > select{flex:1 1 0;inline-size:0;min-width:0}
+.key-row > input{flex:1 1 12rem;min-width:0}
+.item.file .t{overflow-wrap:anywhere}
+@media (max-width:639px){.item.file{flex-wrap:wrap}.item.file > .grow{flex:1 0 100%}}
 
 /* A finger's size for the small controls: --h-sm, --h-md and --tap are all 44
    px where a finger, not a mouse, is the likely pointer (see the tokens). */

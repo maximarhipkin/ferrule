@@ -219,6 +219,62 @@
     return b;
   }
 
+  // The rare actions of a row, behind one "more" button. The first item takes
+  // focus on open; the arrows, Home, End and Escape move through it; a press
+  // outside closes it. An item is a button, so a destructive one still asks.
+  let openMenu = null;
+  function menu(label, items) {
+    const list = el("div", { class: "menu-list", role: "menu", hidden: true });
+    const trigger = el("button", { type: "button", class: "ghost icon sm", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": label, title: label }, icon("more"));
+    const wrap = el("div", { class: "menu" }, trigger, list);
+    const rows = () => Array.from(list.querySelectorAll("[role=menuitem]"));
+    function close(back) {
+      if (list.hidden) return;
+      list.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+      document.removeEventListener("pointerdown", outside, true);
+      if (openMenu === close) openMenu = null;
+      if (back) trigger.focus();
+    }
+    function outside(e) { if (!wrap.contains(e.target)) close(false); }
+    function open() {
+      if (openMenu && openMenu !== close) openMenu(false);
+      list.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      openMenu = close;
+      document.addEventListener("pointerdown", outside, true);
+      const r = rows();
+      if (r.length) r[0].focus();
+    }
+    for (const it of items.filter(Boolean)) {
+      const b = el("button", { type: "button", role: "menuitem", tabindex: "-1", class: it.kind || null },
+        it.icon ? icon(it.icon) : null, el("span", { text: it.label }));
+      b.onclick = () => {
+        close(true);
+        if (it.onclick) it.onclick(trigger);
+        else act(it.path, typeof it.body === "function" ? it.body() : it.body, trigger);
+      };
+      list.append(b);
+    }
+    trigger.onclick = () => { if (list.hidden) open(); else close(true); };
+    trigger.onkeydown = (e) => {
+      if (e.key === "ArrowDown") { e.preventDefault(); if (list.hidden) open(); }
+    };
+    list.onkeydown = (e) => {
+      const r = rows();
+      const at = r.indexOf(document.activeElement);
+      if (e.key === "ArrowDown") r[(at + 1) % r.length].focus();
+      else if (e.key === "ArrowUp") r[(at - 1 + r.length) % r.length].focus();
+      else if (e.key === "Home") r[0].focus();
+      else if (e.key === "End") r[r.length - 1].focus();
+      else if (e.key === "Escape") close(true);
+      else if (e.key === "Tab") close(false);
+      else return;
+      if (e.key !== "Tab") e.preventDefault();
+    };
+    return wrap;
+  }
+
   // A card with an optional head: an icon, a title, and things on the right.
   function card(head, ...body) {
     const h = head && (head.title || head.icon || head.right)
@@ -359,69 +415,76 @@
 
   // ---- M37 pieces --------------------------------------------------------
 
-  // Line icons, one path each, drawn in currentColor on a 24-pixel grid.
-  // Every one is drawn here; nothing is fetched. A test checks that each
-  // name the page asks for exists.
+  // Icons: Lucide 1.49.0 (https://lucide.dev), ISC licence,
+  // Copyright (c) 2026 Lucide Icons and Contributors. The icons derived
+  // from Feather are MIT, Copyright (c) 2013-present Cole Bemis.
+  // Each is cut down to one path for icon() below. Drawn in currentColor on
+  // a 24-pixel grid; nothing is fetched. A test checks that each name the
+  // page asks for exists.
   const ICONS = {
     // the sections
-    health: "M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6",
-    chat: "M4 5h16v11H9l-5 4z",
-    models: "M7 7h10v10H7zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4",
-    channels: "M4 5h11v8H8l-4 3zM9 16v1h7l4 3v-9h-3",
-    connections: "M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1",
-    more: "M5 12h.01M12 12h.01M19 12h.01",
-    console: "M4 6l6 6-6 6M12 18h8",
-    config: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4",
-    routing: "M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9c0 6-12 3-12 6",
-    usage: "M4 20V10M10 20V4M16 20v-7M2 20h20",
-    tasks: "M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2",
-    logs: "M4 6h16M4 12h16M4 18h10",
-    extensions: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
-    agents: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8M4 21a8 8 0 0 1 16 0",
-    memory: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6",
-    settings: "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6M12 5a7 7 0 1 0 0 14 7 7 0 0 0 0-14M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1",
+    health: "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+    chat: "M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z",
+    models: "M12 20v2M12 2v2M17 20v2M17 2v2M2 12h2M2 17h2M2 7h2M20 12h2M20 17h2M20 7h2M7 20v2M7 2v2M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2zM9 8h6a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-6a1 1 0 0 1 -1 -1v-6a1 1 0 0 1 1 -1z",
+    channels: "M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2zM20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1",
+    connections: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+    more: "M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
+    console: "M12 19h8M4 17l6-6-6-6",
+    config: "M10 5H3M12 19H3M14 3v4M16 17v4M21 12h-9M21 19h-5M21 5h-7M8 10v4M8 12H3",
+    routing: "M3 19a3 3 0 1 0 6 0a3 3 0 1 0 -6 0M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15M15 5a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
+    usage: "M3 3v16a2 2 0 0 0 2 2h16M18 17V9M13 17V5M8 17v-3",
+    tasks: "M13 5h8M13 12h8M13 19h8M3 17l2 2 4-4M3 7l2 2 4-4",
+    logs: "M3 5h1M3 12h1M3 19h1M8 5h1M8 12h1M8 19h1M13 5h8M13 12h8M13 19h8",
+    extensions: "M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z",
+    agents: "M12 8V4H8M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2zM2 14h2M20 14h2M15 13v2M9 13v2",
+    memory: "M12 18V5M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5M17.997 5.125a4 4 0 0 1 2.526 5.77M18 18a4 4 0 0 0 2-7.464M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517M6 18a4 4 0 0 1-2-7.464M6.003 5.125a4 4 0 0 0-2.526 5.77",
+    settings: "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
     // things a button does
-    search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14M16 16l4 4",
-    camera: "M4 8h3l2-3h6l2 3h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7",
-    image: "M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9.5h.01",
-    copy: "M8 8h11v12H8zM5 16V4h11",
-    check: "M5 12.5l4.5 4.5L19 7",
-    x: "M6 6l12 12M18 6L6 18",
-    retry: "M20 12a8 8 0 1 1-2.6-5.9M20 4v4h-4",
-    stop: "M7 7h10v10H7z",
-    send: "M12 19V5M6 11l6-6 6 6",
-    play: "M8 5l11 7-11 7z",
-    pause: "M8 5v14M16 5v14",
-    plus: "M12 5v14M5 12h14",
-    edit: "M4 20l1-4L16 5l3 3L8 19zM14 7l3 3",
-    trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
-    download: "M12 4v11M7 11l5 5 5-5M5 20h14",
-    external: "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6",
-    power: "M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0",
-    chevron: "M9 6l6 6-6 6",
+    search: "M21 21l-4.34-4.34M3 11a8 8 0 1 0 16 0a8 8 0 1 0 -16 0",
+    camera: "M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4zM9 13a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
+    image: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2zM7 9a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21",
+    copy: "M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2zM4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2",
+    check: "M20 6 9 17l-5-5",
+    x: "M18 6 6 18M6 6l12 12",
+    retry: "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5",
+    stop: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2z",
+    send: "M5 12l7-7 7 7M12 19V5",
+    up: "M5 12l7-7 7 7M12 19V5",
+    down: "M12 5v14M19 12l-7 7-7-7",
+    play: "M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z",
+    pause: "M15 3h3a1 1 0 0 1 1 1v16a1 1 0 0 1 -1 1h-3a1 1 0 0 1 -1 -1v-16a1 1 0 0 1 1 -1zM6 3h3a1 1 0 0 1 1 1v16a1 1 0 0 1 -1 1h-3a1 1 0 0 1 -1 -1v-16a1 1 0 0 1 1 -1z",
+    plus: "M5 12h14M12 5v14",
+    edit: "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497zM15 5l4 4",
+    trash: "M10 11v6M14 11v6M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2",
+    download: "M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5",
+    external: "M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6",
+    power: "M12 2v10M18.4 6.6a9 9 0 1 1-12.77.04",
+    chevron: "M9 18l6-6-6-6",
     "chevron-down": "M6 9l6 6 6-6",
+    "chevron-left": "M15 18l-6-6 6-6",
     // things a place is
-    sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
-    moon: "M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z",
-    monitor: "M3 5h18v11H3zM8 20h8M12 16v4",
-    globe: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18",
-    clock: "M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
-    calendar: "M4 6h16v14H4zM4 10h16M8 3v4M16 3v4",
-    backup: "M3 5h18v4H3zM5 9v10h14V9M10 13h4",
-    file: "M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6",
-    key: "M8 11a4 4 0 1 0 0 8 4 4 0 0 0 0-8M11 12l9-9M16 7l3 3M14 9l2 2",
-    lock: "M6 11h12v9H6zM8 11V8a4 4 0 0 1 8 0v3",
-    telegram: "M21 4L3 11l6 2 2 7 3-5 5 4zM9 13l12-9",
+    sun: "M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41",
+    moon: "M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401",
+    monitor: "M4 3h16a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-16a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2zM8 21L16 21M12 17L12 21",
+    globe: "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20",
+    clock: "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0M12 6v6l4 2",
+    calendar: "M8 2v3M16 2v3M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2zM3 9h18",
+    backup: "M3 3h18a1 1 0 0 1 1 1v3a1 1 0 0 1 -1 1h-18a1 1 0 0 1 -1 -1v-3a1 1 0 0 1 1 -1zM4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4",
+    file: "M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2zM14 2v5a1 1 0 0 0 1 1h5M10 9H8M16 13H8M16 17H8",
+    key: "M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4zM16 7.5a0.5 0.5 0 1 0 1 0a0.5 0.5 0 1 0 -1 0",
+    lock: "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-7a2 2 0 0 1 2 -2zM7 11V7a5 5 0 0 1 10 0v4",
+    telegram: "M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11zM21.854 2.147l-10.94 10.939",
     // things the page says
-    alert: "M12 3l10 18H2zM12 10v5M12 18h.01",
-    info: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 11v5M12 8h.01",
-    help: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01",
+    alert: "M21.73 18l-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3M12 9v4M12 17h.01",
+    info: "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0M12 16v-4M12 8h.01",
+    help: "M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01",
   };
   // Decoration by default (hidden from a screen reader); with a label it
   // is an image of its own.
+  const FLIP = new Set(["chevron", "chevron-left", "logs", "tasks", "chat", "channels"]);
   function icon(name, label) {
-    const s = el("svg", { class: "ico" + (name === "chevron" ? " flip" : ""), viewBox: "0 0 24 24", "aria-hidden": label ? null : "true", role: label ? "img" : null, "aria-label": label || null });
-    s.append(el("path", { d: ICONS[name] || ICONS.more, "stroke-width": name === "more" ? 3 : null }));
+    const s = el("svg", { class: "ico" + (FLIP.has(name) ? " flip" : ""), viewBox: "0 0 24 24", "aria-hidden": label ? null : "true", role: label ? "img" : null, "aria-label": label || null });
+    s.append(el("path", { d: ICONS[name] || ICONS.more }));
     return s;
   }
 
@@ -511,13 +574,14 @@
       if (p.section && p.section !== current) fixes.push(el("button", { text: "Open " + p.section, onclick: () => show(p.section) }));
     }
     return el("div", { class: "alert " + sev, "data-notice": p.id || null },
+      icon("alert"),
       el("div", { class: "body" },
         el("div", { class: "what msg", dir: "auto", text: p.what }),
         p.fix ? el("div", { class: "fix msg", dir: "auto", text: p.fix }) : null,
         p.back ? el("div", { class: "fix", text: "Back: it's still true a day later." }) : null,
         fixes.length ? el("div", { class: "row" }, fixes) : null),
-      p.id && p.closable ? el("button", { class: "x", title: "Hide for a day", "aria-label": "Hide for a day", text: "×",
-        onclick: (e) => act("notices/dismiss", { id: p.id }, e.currentTarget) }) : null);
+      p.id && p.closable ? el("button", { type: "button", class: "x ghost icon sm", title: "Hide for a day", "aria-label": "Hide for a day",
+        onclick: (e) => act("notices/dismiss", { id: p.id }, e.currentTarget) }, icon("x")) : null);
   }
 
   function problems(list) {
@@ -821,7 +885,8 @@
           el("div", { class: "row" }, led(level),
             el("p", { class: "lead grow", role: "status", text: said }),
             btn("Run doctor", "doctor/run", {}),
-            kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary") : btn("Kill switch on", "kill/on", {}, "danger")) : null),
+            kill ? (kill.on ? btn("Kill switch off", "kill/off", {}, "primary")
+              : menu("More actions", [{ label: "Kill switch on", path: "kill/on", body: {}, kind: "danger", icon: "power" }])) : null),
           el("p", { class: "muted small m0", text: [h.version ? "v" + h.version : null, h.uptime ? "up " + h.uptime : null, lanes].filter(Boolean).join(" · ") })),
         MANAGED.on ? el("div", { class: "card" },
           el("h2", { text: "Managed" }),
@@ -929,9 +994,12 @@
       this.recommend();
     },
     // The estimate is the confirm's question; the run's progress polls in.
+    startEval(model, provider, busy) {
+      return act("eval/start", { model, provider, suite: this.suite.value }, busy).then(() => this.loadEval());
+    },
     evalButton(model, provider) {
       const b = el("button", { text: "Evaluate" });
-      b.onclick = () => act("eval/start", { model, provider, suite: this.suite.value }, b).then(() => this.loadEval());
+      b.onclick = () => this.startEval(model, provider, b);
       return b;
     },
     async loadEval() {
@@ -1003,10 +1071,11 @@
                 r.key_present ? tag("ready", "ok") : tag(r.key_env + " not set", "bad"),
                 r.plan ? el("span", { class: "sub", text: r.plan + " plan" + (r.usage ? " · " + r.usage : "") }) : null),
             el("div", { class: "row" },
-              r.default ? null : btn("Default", "models/default", { model: r.reference }),
-              btn("Test", "models/test", { model: r.reference }),
-              this.evalButton(r.reference),
-              btn("Remove", "models/remove", { model: r.reference }, "danger")),
+              btn("Test", "models/test", { model: r.reference }, "sm"),
+              menu("More for " + r.reference, [
+                r.default ? null : { label: "Make default", path: "models/default", body: { model: r.reference } },
+                { label: "Evaluate", onclick: (t) => this.startEval(r.reference, undefined, t) },
+                { label: "Remove", path: "models/remove", body: { model: r.reference }, kind: "danger" }])),
           ],
         })), [2]) : el("div", { class: "empty", text: "no models connected" }),
         el("h2", { text: "Pins" }),
@@ -1031,15 +1100,15 @@
           })()));
     },
     addButtons(row) {
-      const ev = this.evalButton(row.id, row.provider || undefined);
-      if (!row.provider) return el("div", { class: "row" }, el("span", { class: "muted", text: "price reference" }), ev);
-      if (row.connected) return el("div", { class: "row" }, tag("connected", "ok"), ev);
+      if (!row.provider) return el("div", { class: "row" }, el("span", { class: "muted", text: "price reference" }), this.evalButton(row.id));
+      if (row.connected) return el("div", { class: "row" }, tag("connected", "ok"), this.evalButton(row.id, row.provider));
       const body = (as) => ({ provider: row.provider, id: row.id, as });
       return el("div", { class: "row" },
-        ev,
-        btn("Add", "catalog/add", body("model")),
-        btn("Default", "catalog/add", body("default"), "primary"),
-        btn("Fallback", "catalog/add", body("fallback")));
+        btn("Add", "catalog/add", body("model"), "sm"),
+        menu("More for " + row.id, [
+          { label: "Add as default", path: "catalog/add", body: body("default") },
+          { label: "Add as fallback", path: "catalog/add", body: body("fallback") },
+          { label: "Evaluate", onclick: (t) => this.startEval(row.id, row.provider, t) }]));
     },
     async catalog(force) {
       const q = new URLSearchParams({ search: this.search.value, tools: this.tools.value, sort: this.sort.value });
@@ -1113,11 +1182,11 @@
         s.value = ref;
         s.onchange = () => { this.fb[i] = s.value; edited(); };
         const move = (d) => { const j = i + d; [this.fb[i], this.fb[j]] = [this.fb[j], this.fb[i]]; edited(); };
-        return el("div", { class: "row" },
+        return el("div", { class: "row fb-row" },
           el("span", { class: "mono muted", text: String(i + 1) }), s,
-          el("button", { class: "ghost", text: "↑", title: "Earlier", "aria-label": "Earlier", disabled: i === 0, onclick: () => move(-1) }),
-          el("button", { class: "ghost", text: "↓", title: "Later", "aria-label": "Later", disabled: i === this.fb.length - 1, onclick: () => move(1) }),
-          el("button", { class: "ghost", text: "×", title: "Take out", "aria-label": "Take out", onclick: () => { this.fb.splice(i, 1); edited(); } }));
+          el("button", { type: "button", class: "ghost icon sm", title: "Earlier", "aria-label": "Earlier", disabled: i === 0, onclick: () => move(-1) }, icon("up")),
+          el("button", { type: "button", class: "ghost icon sm", title: "Later", "aria-label": "Later", disabled: i === this.fb.length - 1, onclick: () => move(1) }, icon("down")),
+          el("button", { type: "button", class: "ghost icon sm", title: "Take out", "aria-label": "Take out", onclick: () => { this.fb.splice(i, 1); edited(); } }, icon("x")));
       });
       const unused = others.filter((m) => !this.fb.includes(m.reference));
       const save = el("button", { class: "primary", text: "Save the fallback list", disabled: !this.fbEdited });
@@ -1180,23 +1249,23 @@
         const b = el("button", { class: "primary", text: "Check and save" });
         b.onclick = () => { const v = t.value.trim(); wipeSecrets(box); if (v) act("plans/claude", { token: v }, b); };
         box.append(el("p", { class: "muted small", text: "Run `claude setup-token` on any machine signed in to your Claude plan and paste the token it prints." }),
-          el("div", { class: "row" }, t, b));
+          el("div", { class: "row key-row" }, t, b));
         return box;
       }
       if (p.needs_key) {
-        const k = el("input", { type: "password", name: "key", autocomplete: "new-password", placeholder: p.connected ? "a new key replaces the saved one" : "paste the key", "data-secret": "1" });
+        const k = el("input", { type: "password", name: "key", autocomplete: "new-password", placeholder: p.connected ? "paste a new key" : "paste the key", "data-secret": "1" });
         const b = el("button", { class: p.connected ? null : "primary", text: p.connected ? "Replace key" : "Test and save" });
         b.onclick = () => { const v = k.value.trim(); wipeSecrets(box); if (v) act("models/provider", { provider: p.name, key: v }, b).then(() => this.loadChoices()); };
         box.append(frag(
           p.key_url ? el("p", { class: "small" }, el("a", { href: p.key_url, target: "_blank", rel: "noopener", text: "Get a key" }),
             el("span", { class: "muted", text: " · tested before it's saved; it never comes back to this page" })) : null,
-          el("div", { class: "row" }, k, b)));
+          el("div", { class: "row key-row" }, k, b)));
       } else if (!p.connected) {
         box.append(el("div", { class: "row" }, btn("Connect", "models/provider", { provider: p.name }, "primary")));
       }
       if (p.connected || p.key_set) {
         const list = el("div");
-        const b = el("button", { text: "List its models" });
+        const b = el("button", { class: "ghost sm", text: "List its models" });
         b.onclick = async () => {
           b.disabled = true;
           try {
@@ -1998,9 +2067,9 @@
             el("span", { class: "txt", dir: "auto" }, x.tree ? el("span", { class: "muted", text: x.tree + "  " }) : null, text(x.text)))))
           : empty("Nothing matches", this.q.value ? "Try a shorter search." : "Nothing of this kind has happened yet."),
         el("div", { class: "pager" },
-          el("button", { text: "← Newer", disabled: this.page === 0, onclick: () => { this.page--; this.load(); } }),
+          el("button", { type: "button", disabled: this.page === 0, onclick: () => { this.page--; this.load(); } }, icon("chevron-left"), el("span", { text: "Newer" })),
           el("span", { text: "page " + (r.page + 1) + " of " + pages + " · " + r.total + " entries" }),
-          el("button", { text: "Older →", disabled: this.page + 1 >= pages, onclick: () => { this.page++; this.load(); } })));
+          el("button", { type: "button", disabled: this.page + 1 >= pages, onclick: () => { this.page++; this.load(); } }, el("span", { text: "Older" }), icon("chevron"))));
     },
   };
 
@@ -2820,7 +2889,7 @@
         el("p", { class: "muted small mt0", text: tr("Hebrew reads right to left. What you and your bot write always follows its own direction.") }),
         chips(tr("Language"), [["en", "English"], ["he", "עברית"]], LANG, (v) => { if (v !== LANG && window.ferruleLang) window.ferruleLang.set(v); }));
       const list = r && r.files && r.files.length
-        ? el("div", { class: "plain-list" }, r.files.map((f) => el("div", { class: "item" },
+        ? el("div", { class: "plain-list" }, r.files.map((f) => el("div", { class: "item file" },
           el("div", { class: "grow" },
             el("div", { class: "t mono", dir: "ltr", text: f.name }),
             el("div", { class: "d", text: bytes(f.bytes) + " · " + ago(f.at) })),
@@ -2969,6 +3038,7 @@
     const main = document.getElementById("main");
     const f = document.activeElement;
     if (f && /^(INPUT|SELECT|TEXTAREA)$/.test(f.tagName) && main.contains(f)) return true;
+    if (main.querySelector(".menu-list:not([hidden])")) return true;
     return !!main.querySelector("[data-dirty]");
   }
 
@@ -3039,8 +3109,10 @@
     const t = window.ferruleTheme;
     if (!t) { b.hidden = true; return; }
     const p = t.pick();
-    b.textContent = p === "auto" ? tr("auto") : p === "paper" ? tr("paper") : tr("forge");
-    b.title = tr("Theme:") + " " + (p === "auto" ? tr("follows the system") : p === "paper" ? tr("light") : tr("dark"));
+    b.replaceChildren(icon(p === "auto" ? "monitor" : p === "paper" ? "sun" : "moon"));
+    const w = tr("Theme:") + " " + (p === "auto" ? tr("follows the system") : p === "paper" ? tr("light") : tr("dark"));
+    b.title = w;
+    b.setAttribute("aria-label", w);
   }
 
   // Each action: what it is called, words it also answers to, an icon, and
@@ -3165,6 +3237,7 @@
     document.querySelector(".skip").onclick = (e) => { e.preventDefault(); document.getElementById("main").focus(); };
     const find = document.getElementById("find");
     find.append(icon("search"));
+    document.getElementById("logout").append(icon("power"));
     find.onclick = () => palette();
   }
 
@@ -3173,7 +3246,7 @@
     if (!HE) return;
     const set = (sel, fn) => { const n = document.querySelector(sel); if (n) fn(n); };
     set(".skip", (n) => { n.textContent = tr("Skip to content"); });
-    set("#logout", (n) => { n.textContent = tr("Log out"); });
+    set("#logout", (n) => { n.title = tr("Log out"); n.setAttribute("aria-label", tr("Log out")); });
     set("#find", (n) => { n.setAttribute("aria-label", tr("Search and commands (press /)")); n.title = tr("Search and commands (press /)"); });
     set("#rail", (n) => n.setAttribute("aria-label", tr("Sections")));
     set("#tabs", (n) => n.setAttribute("aria-label", tr("Quick sections")));
