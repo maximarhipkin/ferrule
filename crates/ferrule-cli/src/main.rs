@@ -2655,6 +2655,7 @@ async fn gateway_factory(
     let sandbox = shared_sandbox(cfg)?;
     let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
+    mcp_tools.ask_the_owner(trust::hub(cfg)?);
     let ledger_sink = ledger::build_sink(cfg);
     // M21: a scheduled task's own model, read per call from tasks.db so
     // `ferrule tasks model` reaches a lane that's already running.

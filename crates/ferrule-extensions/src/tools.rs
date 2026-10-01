@@ -124,7 +124,7 @@ fn outcome_text(o: Outcome, kind: &str) -> String {
             s
         }
         Outcome::Pending { id } => format!(
-            "pending approval: {id} — ask the owner to run 'ferrule extensions approve {id}'. Nothing is installed until then."
+            "pending approval: {id} — the owner was asked in their chat; if it's still pending, they review it on the dashboard's Extensions page. Nothing is installed until then."
         ),
     }
 }

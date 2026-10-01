@@ -331,7 +331,8 @@ async fn a_non_listed_source_waits_and_denying_it_leaves_nothing() {
         .unwrap()
         .content;
     assert!(
-        text.starts_with("pending approval: ") && text.contains("ferrule extensions approve"),
+        text.starts_with("pending approval: ")
+            && text.contains("the owner was asked in their chat"),
         "{text}"
     );
 

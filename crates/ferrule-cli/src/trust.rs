@@ -114,6 +114,12 @@ pub fn owner_in(hub: &Hub, msg: &ferrule_gateway::InboundMessage) -> Option<bool
     (msg.sender_id.as_deref() == Some(owner.chat.as_str())).then_some(false)
 }
 
+/// Whether `msg` is the owner's: the dashboard's chat is the owner's by
+/// its sign-in, any other channel by `owner_in` (M48).
+pub fn by_owner(hub: &Hub, msg: &ferrule_gateway::InboundMessage) -> bool {
+    msg.channel == "dashboard" || owner_in(hub, msg).is_some()
+}
+
 /// The channels whose chats the owner's commands are read in.
 pub fn is_chat_channel(channel: &str) -> bool {
     ferrule_trust::config::OWNER_CHANNELS.contains(&channel)
@@ -261,7 +267,7 @@ impl LedgerSink for NoLedger {
 /// Sends the owner's warnings and questions through the gateway's chat
 /// channels, each to its own: a Telegram chat through Telegram, a Discord
 /// one through Discord. Questions get Allow/Refuse buttons on Discord and
-/// Slack; Telegram's stay text, as before M31.
+/// Slack; Telegram's too since M48.
 pub struct ChannelNotifier(pub HashMap<String, Arc<dyn ferrule_gateway::Channel>>);
 
 impl ChannelNotifier {
@@ -303,9 +309,6 @@ impl ferrule_trust::Notifier for ChannelNotifier {
         text: &str,
         choices: &[(String, String)],
     ) -> Result<(), String> {
-        if chat.channel == "telegram" {
-            return self.deliver(chat, text, &[]).await;
-        }
         let buttons: Vec<_> = choices
             .iter()
             .map(|(label, reply)| ferrule_gateway::Button {
@@ -331,7 +334,12 @@ pub struct OwnerDoor {
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for OwnerDoor {
     async fn intercept(&self, msg: &ferrule_gateway::InboundMessage) -> Option<String> {
-        if !is_chat_channel(&msg.channel) {
+        if !is_chat_channel(&msg.channel) && msg.channel != "dashboard" {
+            return None;
+        }
+        // The page's chat only has its answers read here: its commands are
+        // its own.
+        if msg.channel == "dashboard" && msg.text.trim_start().starts_with('/') {
             return None;
         }
         let chat = match msg.channel.as_str() {
@@ -354,7 +362,8 @@ impl ferrule_gateway::Interceptor for OwnerDoor {
                 None => "/undo isn't available in this gateway.".into(),
             });
         }
-        match self.hub.intercept(chat.clone(), &msg.text) {
+        let owner = by_owner(&self.hub, msg);
+        match self.hub.intercept_from(chat.clone(), &msg.text, owner) {
             ferrule_trust::Intercept::Pass => None,
             ferrule_trust::Intercept::Reply(r) => Some(r),
             ferrule_trust::Intercept::Plan(task) => Some(match &self.plan {
@@ -574,4 +583,141 @@ pub fn pricer(
         }
         prices(&r.provider, &r.model).map(|p| p.cost_usd(r))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferrule_gateway::Interceptor;
+    use std::sync::Mutex;
+
+    fn hub() -> (tempfile::TempDir, Arc<Hub>) {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Arc::new(
+            Hub::new(
+                Default::default(),
+                dir.path(),
+                &dir.path().join("ledger.jsonl"),
+                Arc::new(ferrule_trust::SystemClock),
+                vec![],
+            )
+            .unwrap(),
+        );
+        (dir, hub)
+    }
+
+    fn said(channel: &str, chat: &str, text: &str) -> ferrule_gateway::InboundMessage {
+        ferrule_gateway::InboundMessage {
+            channel: channel.into(),
+            chat_id: chat.into(),
+            sender: "max".into(),
+            sender_id: None,
+            message_id: "1".into(),
+            text: text.into(),
+            attachments: vec![],
+            reply_to: None,
+            ts: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_dashboard_chats_allow_approves_and_never_reaches_the_agent() {
+        let (_dir, hub) = hub();
+        let chat = ChatRef::new("dashboard", "owner");
+        let (code, mut rx) = hub.approvals().open(chat, "change the default");
+        let door = OwnerDoor {
+            hub,
+            plan: None,
+            undo: None,
+        };
+        let reply = door
+            .intercept(&said("dashboard", "owner", &format!("yes {code}")))
+            .await
+            .expect("answered at the door, not passed to the agent");
+        assert!(reply.starts_with("Approved"), "{reply}");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ferrule_trust::approval::Answer::Yes)
+        ));
+        // The page's own commands and its ordinary text still pass on.
+        assert!(door
+            .intercept(&said("dashboard", "owner", "/model"))
+            .await
+            .is_none());
+        assert!(door
+            .intercept(&said("dashboard", "owner", "hello"))
+            .await
+            .is_none());
+    }
+
+    #[derive(Default)]
+    struct Buttons {
+        with: Mutex<Vec<(String, Vec<String>)>>,
+        plain: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ferrule_gateway::Channel for Buttons {
+        fn name(&self) -> &str {
+            "telegram"
+        }
+        fn capabilities(&self) -> ferrule_gateway::ChannelCapabilities {
+            ferrule_gateway::ChannelCapabilities {
+                buttons: true,
+                ..Default::default()
+            }
+        }
+        async fn run(
+            &self,
+            _tx: tokio::sync::mpsc::Sender<ferrule_gateway::InboundMessage>,
+        ) -> Result<(), ferrule_gateway::GatewayError> {
+            Ok(())
+        }
+        async fn send(
+            &self,
+            msg: ferrule_gateway::OutboundMessage,
+        ) -> Result<(), ferrule_gateway::GatewayError> {
+            self.plain.lock().unwrap().push(msg.text);
+            Ok(())
+        }
+        async fn send_buttons(
+            &self,
+            msg: ferrule_gateway::OutboundMessage,
+            buttons: &[ferrule_gateway::Button],
+        ) -> Result<(), ferrule_gateway::GatewayError> {
+            let labels = buttons
+                .iter()
+                .map(|b| match &b.action {
+                    ferrule_gateway::ButtonAction::Command(c) => c.clone(),
+                    ferrule_gateway::ButtonAction::Url(u) => u.clone(),
+                })
+                .collect();
+            self.with.lock().unwrap().push((msg.text, labels));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn telegram_questions_carry_buttons() {
+        let channel = Arc::new(Buttons::default());
+        let notifier = ChannelNotifier(HashMap::from([(
+            "telegram".to_string(),
+            channel.clone() as Arc<dyn ferrule_gateway::Channel>,
+        )]));
+        ferrule_trust::Notifier::send_choices(
+            &notifier,
+            &ChatRef::from(42),
+            "Switch the default?",
+            &[
+                ("Allow".into(), "yes k7".into()),
+                ("Refuse".into(), "no k7".into()),
+            ],
+        )
+        .await
+        .unwrap();
+        let with = channel.with.lock().unwrap();
+        assert_eq!(with.len(), 1, "sent with buttons");
+        assert_eq!(with[0].1, vec!["yes k7".to_string(), "no k7".to_string()]);
+        assert!(channel.plain.lock().unwrap().is_empty());
+    }
 }

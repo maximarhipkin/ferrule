@@ -590,6 +590,26 @@ impl Hub {
         )
     }
 
+    /// Sends `text` to `chat` when it is an owner chat, else to the primary
+    /// owner chat; doesn't wait.
+    pub fn tell_in(&self, chat: &ChatRef, text: String) {
+        if !self.owners().contains(chat) {
+            return self.tell_owner(text);
+        }
+        let Some(n) = self.notifier() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let chat = chat.clone();
+        rt.spawn(async move {
+            if let Err(e) = n.send_to(&chat, &text).await {
+                tracing::warn!("trust: couldn't tell the owner ({e})");
+            }
+        });
+    }
+
     /// Sends the owner a message and doesn't wait; a failure is logged.
     pub fn tell_owner(&self, text: String) {
         let (Some(n), Some(chat)) = (self.notifier(), self.primary()) else {
@@ -818,6 +838,17 @@ impl Hub {
     /// Reads a message from an allowed chat before it reaches a session:
     /// `/stop`, `/resume`, `/plan`, and replies to pending approvals.
     pub fn intercept(&self, chat: impl Into<ChatRef>, text: &str) -> Intercept {
+        self.intercept_from(chat, text, true)
+    }
+
+    /// `intercept`, knowing whether the sender is the owner (M48): only the
+    /// owner's `yes`/`no` answers a question.
+    pub fn intercept_from(
+        &self,
+        chat: impl Into<ChatRef>,
+        text: &str,
+        by_owner: bool,
+    ) -> Intercept {
         let chat = chat.into();
         let t = text.trim();
         let (cmd, rest) = match t.split_once(char::is_whitespace) {
@@ -829,8 +860,10 @@ impl Hub {
             "/stop" => {
                 let reason = (!rest.is_empty()).then(|| rest.to_string());
                 return Intercept::Reply(match self.engage(&chat.to_string(), reason) {
-                    Ok(_) => "Stopped: every run halts now, and nothing new starts until /resume (or `ferrule stop --clear` on the machine).".into(),
-                    Err(e) => format!("Couldn't write the stop file ({e}). Run `ferrule stop` on the machine."),
+                    Ok(_) => {
+                        "Stopped: every run halts now, and nothing new starts until /resume.".into()
+                    }
+                    Err(e) => format!("Couldn't write the stop file ({e}); nothing was stopped."),
                 });
             }
             "/resume" => {
@@ -852,7 +885,7 @@ impl Hub {
             "/plan" => return Intercept::Plan(rest.to_string()),
             _ => {}
         }
-        match self.approvals.answer(&chat, text) {
+        match self.approvals.answer_from(&chat, text, by_owner) {
             Some(reply) => Intercept::Reply(reply),
             None => Intercept::Pass,
         }
