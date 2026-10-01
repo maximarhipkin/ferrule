@@ -183,11 +183,14 @@ direction either way. The Hebrew file is fetched only when chosen. The
 sentences the server writes (a problem's explanation, for one) are still
 English.
 
-![Settings on a desktop](assets/m47/after/settings-1280-light.jpg)
+![Settings on a desktop](assets/m49/after/settings-1280-light.webp)
 
-Sixty screenshots (fifteen pages, 390 and 1280 px, light and dark) are in
-[assets/m47/after](assets/m47/after/), with the pre-redesign ones in
-[assets/m47/before](assets/m47/before/).
+Sixty-four screenshots (fifteen pages at 390 and 1280 px, light and dark,
+plus Home and Settings in Hebrew) are in
+[assets/m49/after](assets/m49/after/), with the pre-M49 ones in
+[assets/m49/before](assets/m49/before/). The M47 sets are in
+[assets/m47](assets/m47/). Regenerate with
+`scripts/m49_shots.sh <ferrule binary> <out dir>`.
 
 ## The control room (M37)
 
@@ -241,13 +244,22 @@ M37 made the page the place you run your agent from. The design is in
 - **Everything works with every model down.** Nothing on the page calls
   a model, except Chat and the model tests you press.
 
-**Fonts** are IBM Plex Sans (400 and 600), with Plex Sans Hebrew loaded
-only for Hebrew text, and IBM Plex Mono 400. They're served from the
-binary as woff2 with a one-year cache: about 129 KB in all, and about
-60 KB for a page with no Hebrew. Their licence is at `/fonts/OFL.txt`.
-Icons are inline SVG paths in the script. Type sizes are 13, 15, 17, 20,
-24 and 30 px. Text written by you or the agent sits in `dir="auto"`
-elements and is set with `textContent` only.
+**Fonts** are Inter for Latin text, Heebo for Hebrew (fetched only when
+the page shows Hebrew) and Geist Mono for code: one variable woff2 each,
+weights 400–600, served from the binary with a one-year cache. They come
+to about 47 KB in all, and about 40 KB for a page with no Hebrew. Arabic
+uses the system's font. Their licence is at `/fonts/OFL.txt`. Icons are
+Lucide, as inline SVG paths in the script. Type sizes are 12, 13, 15 (14
+on a desktop), 16, 18, 20–22 and 28 px. Text written by you or the agent
+sits in `dir="auto"` elements and is set with `textContent` only.
+
+**Colours** are neutral greys with one indigo accent for what you can
+press or have picked; green, amber and red mark status. Light and dark
+are designed separately, and a unit test checks every text pair against
+WCAG AA in both. Controls are one set: selects, inputs and buttons share
+a height (36 px with a mouse, 44 px on a phone), and a row's rarer
+actions sit behind **⋯**. The design and its numbers are in
+[m49-dashboard-polish.md](m49-dashboard-polish.md).
 
 ## Several instances
 
@@ -483,5 +495,7 @@ node scripts/dashboard_browser_check.mjs --bin target/debug/ferrule [--chromium 
 
 `--shots` saves the screenshots of Home, Connections, Models, Chat and
 Console at 390 and 1280 px. `--shots-all DIR` (M47) saves every section at
-both sizes in light and dark as JPEGs. `--measure` prints a cold load of
+both sizes in light and dark as JPEGs. `--shots-format webp` and `--shots-quality N` (M49)
+switch the format, and `scripts/m49_shots.sh <binary> <dir>` runs it as
+WebP at quality 45 with Home and Settings in Hebrew added. `--measure` prints a cold load of
 Home at 390 px: first paint, bytes on the wire and API calls.

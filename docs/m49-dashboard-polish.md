@@ -1,7 +1,7 @@
 # M49 — dashboard visual polish
 
-**Status:** plan written 2026-10-01 (Opus 5.5); the build follows in the
-same session (Sonnet 5.5). Branch `m49-dashboard-polish`, cut from main `0786e4a`
+**Status:** built 2026-10-01 (planned on Opus 5.5, built on Sonnet 5.5;
+see Verification below). Branch `m49-dashboard-polish`, cut from main `0786e4a`
 (M48 merged as PR #40).
 
 ## Why
@@ -1550,6 +1550,116 @@ Every value comes from D4; this is the order and the selectors.
    - Don't merge, and don't wait for CI.
 6. Write the final report, with the sections the common rules list.
    Delete `/tmp/m49-*`.
+
+## Verification
+
+What was measured on the finished branch, and what was not.
+
+**Tests.** `cargo test --workspace --no-fail-fast`: 1850 passed before,
+1852 after, 0 failed, 29 ignored (the real-network ones). The browser check
+(`scripts/dashboard_browser_check.mjs`, real Chromium, the mock model): 25
+checks before, 27 after, plus the screenshots and the section scans in
+shots mode (28 with `--shots-all`). fmt and clippy `-D warnings` are clean.
+The three new checks are the overflow menu with the keyboard, the line
+height with and without Hebrew, and the RTL mirror.
+
+**Cold load of Home at 390 px** (`--measure`, cache off, the same rig):
+
+| | Before | After |
+|---|---|---|
+| Bytes on the wire (assets) | 107,321 | 90,970 |
+| First contentful paint | 100 ms | 76 ms |
+| DOMContentLoaded | 92 ms | 63 ms |
+| API calls | 7 | 7 |
+
+`app.css` grew from 9.7 KB to 11.2 KB on the wire and `app.js` from 52.6 KB
+to 54.8 KB (the icon set and the menu). The font went from two Plex files
+to one Inter file, which pays for it.
+
+**Font bytes** (woff2 in the binary).
+
+| | Before (Plex) | After |
+|---|---|---|
+| Latin sans | 20,984 + 22,260 (400, 600) | 23,560 (variable, 400–600) |
+| Mono | 17,268 | 16,376 (Geist Mono, variable) |
+| Hebrew | 33,260 + 35,152 | 7,268 (Heebo, variable) |
+| All | 128,924 | 47,204 |
+| Page with no Hebrew | 60,512 | 39,936 |
+
+**Screenshots.** `du -cb docs/assets/m49/*/*` is 2,980,406 bytes (before
+1,492,026, after 1,488,380), under the 3 MB budget. Both sets are WebP at
+quality 40; the before set was first taken at 45 and re-encoded to make the
+two fit together. The before set's Chat at 390 in the light theme shows a
+blank band above the header: the window was scrolled when it was taken. The
+shot rig now resets the scroll first, and the after set doesn't have it.
+
+**Contrast**, recomputed from the built `app.css` (WCAG 2 relative
+luminance; a soft tint blended over the surface it sits on). The unit test
+`tokens_meet_wcag_aa` enforces these thresholds. Every pair
+passes:
+
+| Pair | Light | Dark | Needs |
+|---|---|---|---|
+| ink / bg | 16.55 | 16.73 | 4.5 |
+| muted / panel | 6.41 | 6.04 | 4.5 |
+| muted / panel-2 | 5.83 | 5.64 | 4.5 |
+| muted / panel-3 | 5.29 | 4.95 | 4.5 |
+| accent-strong / panel-2 | 7.19 | 7.77 | 4.5 |
+| ok / ok-soft over panel-2 | 5.47 | 6.15 | 4.5 |
+| warn / warn-soft over panel-2 | 4.66 | 6.78 | 4.5 |
+| bad / bad-soft over panel-2 | 4.88 | 5.14 | 4.5 |
+| accent-strong / accent-soft over panel-2 | 6.31 | 6.44 | 4.5 |
+| steel / panel | 6.46 | 7.49 | 4.5 |
+| on-accent / accent | 6.29 | 5.06 | 4.5 |
+| on-accent / accent-hover | 7.90 | 4.70 | 4.5 |
+| panel / bad (badge, danger button) | 6.14 | 6.68 | 4.5 |
+| control / bg, panel, panel-2 (field borders) | 3.15, 3.38, 3.07 | 3.60, 3.39, 3.16 | 3.0 |
+| ring / bg, panel (focus) | 5.87, 6.29 | 6.22, 5.86 | 3.0 |
+
+**Checked by hand.** A sample of the after shots was opened (Home, Chat,
+Models, Connections, Logs and Settings, at both widths, in both themes)
+and so were the Hebrew Home and Settings at both widths: the rail and the
+sidebar mirror, the chevron in a select sits on the left, and the arrows
+in the pager and the strip flip. The browser check measures the 44 px
+targets and the Hebrew line height on every page, so those are not left to
+the eye. The overflow menu is driven
+with the keyboard by the browser check (open, arrows, End, Escape, a press
+outside).
+
+**Corrections made while building** (the plan doc was fixed in the same
+commits):
+
+- The plan's `grep -c '^Copyright'` on the font licence expected 3 and
+  gives 5; the check now uses `grep -n` and says why.
+- `the_page_loads_nothing_from_elsewhere` failed on the licence comment's
+  URL in `app.js`; it now skips `//` comment lines.
+- Accent colour crept into the quick-tile icons, the console prompt and the
+  audit level; it was removed so the accent only marks what you can press
+  or have picked.
+- A flex item with `min-width:0` still adds its intrinsic width to a grid
+  card; the fallback row's select needs `inline-size:0` as well.
+- The keyboard check was racy in shots mode; it now waits and parks focus
+  on `<body>`.
+- The shot rig shot a blank band when the window was left scrolled; it now
+  resets the scroll.
+
+**Not verified.**
+
+- Real iOS Safari, and real phones: the rig is desktop Chromium with a
+  390 px viewport.
+- The native option list of a select in the dark theme: it is drawn by the
+  browser outside the page, so the headless screenshots don't show it.
+  `color-scheme:dark` is set, which is what makes it dark.
+- Windows' Segoe fallback for Arabic, and Arabic in general: Hebrew was
+  checked, Arabic uses the same `dir="auto"` and mirroring rules.
+- A real tunnel, and a real path prefix on a real reverse proxy (the tests
+  and the rig cover the prefix on loopback).
+
+**Follow-ups.** The strip's "other thing needs your attention" and "Home",
+and the pager's "Newer" and "Older", are not in the Hebrew dictionary yet.
+Many `.alert` blocks other than the notice in `notice()` have no icon.
+`bubble.you` and the usage bars keep the accent, as the "what you said"
+colour and as data.
 
 ## Tests, at a glance
 

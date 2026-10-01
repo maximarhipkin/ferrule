@@ -880,6 +880,20 @@ that convention yet — ask before introducing one).
       without a service; managed bots keep every lock.
     - Not verified live: a real Telegram client, a real release install, a
       real systemd restart.
+  - **M49 dashboard visual polish**: **built** (2026-10-01, branch
+    `m49-dashboard-polish`, PR to main open, not merged). Design, plan,
+    corrections and what was verified: `docs/m49-dashboard-polish.md`; user
+    docs `docs/dashboard.md`.
+    - Fonts: Inter, Heebo (Hebrew only) and Geist Mono, one variable woff2
+      each, 47 KB in all instead of 129 KB; the OFL licence ships.
+    - Palette: zinc neutrals and one indigo accent, light and dark designed
+      apart; copper only in the collar mark; contrast tested numerically,
+      field borders and the focus ring included.
+    - Controls: one height, radius and border; custom-styled native select,
+      44 px targets on a phone, a `⋯` overflow menu for rare actions.
+    - Lucide icons as inline SVG, empty states, reduced motion, RTL mirror.
+    - 64 before and 64 after screenshots in `docs/assets/m49/`.
+    - Not verified live: real iOS Safari, a real tunnel, Arabic.
   - Also standing: a native **Windows sandbox** is being researched
     (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
     strategy doc (§4): `web_search`, keyword-triggered skills,
@@ -5604,6 +5618,39 @@ fmt clean.
 **Not done.** A cut graph restarts (no run-state resume); gateway
 channels can't start graphs; no `graph list`/`graph stop`; approval asks
 at the terminal, not in the owner's chat.
+
+### 2026-10-01 — M49 dashboard visual polish (Devi, Opus 5.5 plan / Sonnet 5.5 build)
+
+**Scope.** Max found the page's selects and buttons amateur and wanted the
+fonts (English and Hebrew), the colours and the controls redone to the
+restraint of Linear, Vercel and Stripe, in light and dark, at 390 and 1280
+px. Branch `m49-dashboard-polish`; design, plan, corrections and what was
+verified in `docs/m49-dashboard-polish.md`.
+
+**What was built** (one commit per part).
+- **1 Baseline.** The shot options and the before set (64).
+- **2 Fonts.** Inter, Heebo, Geist Mono, one variable woff2 each; the
+  licence ships; 129 KB → 47 KB.
+- **3 Palette.** Neutral greys, one indigo accent, copper only in the mark;
+  contrast test covers field borders and the ring.
+- **4 Controls.** Buttons, fields, custom select and checkbox, segmented
+  chips, switches, tags, alerts, cards, dialogs, toasts in one system.
+- **5 Icons and the menu.** Lucide inline icons, `menu()` for rare
+  actions, icon buttons for glyphs.
+- **6 Layout.** Page headers, empty states, spacing and motion.
+- **7 RTL.** Mirroring, the Hebrew line box, overflow menu checks.
+- **8 After screenshots** (64, WebP, 2.98 MB with the before set).
+- **9 Docs.**
+
+**Tests.** 1850 → 1852 passed, 0 failed, 29 ignored. Browser check 25 → 27
+checks. Cold load of Home: 107 KB → 91 KB on the wire, FCP 100 → 76 ms.
+Eval engineered 20/20, naive 11/20, $0.98. fmt and clippy clean.
+
+**Not verified live.** Real iOS Safari; the native option list of a select
+in dark; Arabic and Windows' Segoe fallback; a real tunnel.
+
+**Follow-ups.** Hebrew strings for the strip and the pager; icons on the
+alerts that `notice()` doesn't draw.
 
 ### 2026-10-01 — M48 self-service from chat and dashboard (Devi, Sonnet 5.5)
 

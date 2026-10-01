@@ -1044,6 +1044,26 @@ never has to log in to the server: when something needs approval, the bot
 asks in the chat, a tap approves it, and it carries on; it never says "paste
 this command".
 
+### M49 — dashboard visual polish
+
+**Status.** Built (`docs/m49-dashboard-polish.md`; user docs
+`docs/dashboard.md`). PR to `main` open, not merged. Not tried on real iOS
+Safari or over a real tunnel.
+- **New fonts**: Inter, Heebo for Hebrew and Geist Mono, one variable woff2
+  each, 47 KB in all instead of 129 KB, with the OFL licence in the binary.
+- **One palette**: neutral greys and a single indigo accent, light and dark
+  designed apart; copper stays only in the logo mark.
+- **One control system**: selects, buttons, inputs, switches and tags share
+  a height, radius and border; 44 px targets on a phone; a `⋯` menu holds a
+  row's rare actions.
+- **Lucide icons** as inline SVG, quieter empty states, reduced motion and
+  a right-to-left mirror that keeps the Hebrew line height.
+- **Before and after screenshots** (64 each) are in `docs/assets/m49/`.
+
+**Done means.** The fonts are replaced and the licence ships; every control
+is in one style; contrast is tested, including the field borders; before
+and after shots are in the tree; every test passes.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
