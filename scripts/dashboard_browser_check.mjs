@@ -621,6 +621,11 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     const names = await js(`return Object.keys(window.ferrule.sections)`);
     const ext = SHOTS_FORMAT === "webp" ? "webp" : "jpg";
     async function shoot(w, h) {
+      // The clip is in page coordinates: a window left scrolled (Chat scrolls
+      // its own log into view) would shoot a blank band above the header.
+      const was = await js(`const y = window.scrollY; window.scrollTo(0, 0); return y`);
+      if (was > 0) console.log("  (window was scrolled " + Math.round(was) + " px; reset for the shot)");
+      await sleep(150);
       const o = { format: SHOTS_FORMAT, quality: SHOTS_QUALITY };
       // A phone is drawn at 2x; 1.5x keeps it sharp at two thirds the bytes.
       if (SHOTS_FORMAT === "webp") o.clip = { x: 0, y: 0, width: w, height: h, scale: w < 600 ? 0.75 : 1 };
