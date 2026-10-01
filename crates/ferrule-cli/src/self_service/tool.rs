@@ -3,7 +3,7 @@
 
 use super::describe::{describe, resolve};
 use super::run::run;
-use super::{promise, restart, update, Admin, Op, CHANGE_OPS, READ_OPS};
+use super::{locks, promise, restart, update, Admin, Op, CHANGE_OPS, READ_OPS};
 use crate::dashboard::Ctx;
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
@@ -102,6 +102,9 @@ const STARTING: &str = "Ferrule is still starting; ask again in a few seconds.";
 /// A read-only op, at once.
 async fn read_op(admin: &Admin, ctx: &Ctx, op: &Op, here: &ChatRef) -> Result<String, String> {
     if let Op::UpdateCheck = op {
+        if let Some(why) = locks::refusal(op, ctx) {
+            return Err(why);
+        }
         let (apply, _) = admin.apply(ctx)?;
         let found = update::check(&apply).await?;
         return Ok(update::check_text(&apply.current, found.as_ref()));
@@ -134,6 +137,9 @@ pub(super) async fn ask_and_run(
     let op = resolve(op, ctx)
         .await
         .map_err(|e| format!("Not asked: {e}"))?;
+    if let Some(why) = locks::refusal(&op, ctx) {
+        return Err(format!("Not asked: {why}"));
+    }
     let card = match &op {
         Op::Update => {
             let (apply, units) = admin.apply(ctx).map_err(|e| format!("Not asked: {e}"))?;

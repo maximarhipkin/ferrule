@@ -425,7 +425,13 @@ impl Drop for Running {
 }
 
 fn gateway(home: &Path) -> Running {
+    gateway_with(home, &[])
+}
+
+/// The gateway with extra environment (a managed bot's, for one).
+fn gateway_with(home: &Path, env: &[(&str, &str)]) -> Running {
     let mut cmd = command(home, &["gateway"]);
+    cmd.envs(env.iter().copied());
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -439,6 +445,41 @@ fn telegram(tg: &FakeTelegram) -> String {
         "\n[gateway]\ntelegram_token_env = \"FERRULE_TEST_TG\"\ntelegram_base_url = \"{}\"\ntelegram_allowed_chats = [-100, 42]\n",
         tg.url
     )
+}
+
+#[test]
+fn a_managed_bot_refuses_a_chat_update_with_the_reason() {
+    let (a, b) = (Server::start("A"), Server::start("B"));
+    let tg = FakeTelegram::start();
+    let dir = home(&two(&a, &b, &telegram(&tg)));
+    let home = dir.path();
+    let policy = home.join("policy.toml");
+    std::fs::write(&policy, "reason = \"beta\"\n").unwrap();
+    let policy = policy.display().to_string();
+    let _gw = gateway_with(
+        home,
+        &[
+            ("FERRULE_MANAGED", "1"),
+            ("FERRULE_POLICY", policy.as_str()),
+            ("FERRULE_BOT_ID", "b_test"),
+        ],
+    );
+
+    tg.say(42, "/update");
+    let (_, said) = tg.wait_for(
+        42,
+        "Updating is off on a managed bot: the panel updates a bot by changing its image",
+        0,
+    );
+    assert!(!said.is_empty());
+    // Nothing was asked: no message to 42 carries a button.
+    for m in tg.sent.lock().unwrap().iter() {
+        let keyboard = &m["reply_markup"]["inline_keyboard"];
+        assert!(
+            keyboard.as_array().is_none_or(|rows| rows.is_empty()),
+            "{m}"
+        );
+    }
 }
 
 #[test]

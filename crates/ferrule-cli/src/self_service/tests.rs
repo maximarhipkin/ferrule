@@ -470,3 +470,96 @@ async fn the_door_answers_at_once_and_works_after() {
     assert!(told.last().unwrap().contains("nothing changed"), "{told:?}");
     assert_eq!(std::fs::read(&s.exe).unwrap(), b"old");
 }
+
+#[test]
+fn managed_refusals_cover_the_locked_ops() {
+    let p = crate::managed::Policy {
+        reason: Some("beta".into()),
+        shell: false,
+        extensions: false,
+        providers: Some(vec!["openai".into()]),
+        max_usd_per_day: Some(5.0),
+        ..Default::default()
+    };
+    let kinds = |m: &str| match m {
+        "a/gpt" => Some(("a".to_string(), "openai".to_string())),
+        "b/or" => Some(("b".to_string(), "openrouter".to_string())),
+        _ => None,
+    };
+    let why = |op: Op| op.managed_refusal_under(&p, &kinds);
+    let updating =
+        "Updating is off on a managed bot: the panel updates a bot by changing its image";
+    assert_eq!(why(Op::Update).as_deref(), Some(updating));
+    assert_eq!(why(Op::UpdateCheck).as_deref(), Some(updating));
+    assert_eq!(
+        why(Op::ConfigSet {
+            key: "update.auto".into(),
+            value: json!(true)
+        })
+        .as_deref(),
+        Some(updating)
+    );
+    assert_eq!(
+        why(Op::ConfigSet {
+            key: "agent.stream".into(),
+            value: json!(true)
+        }),
+        None
+    );
+    assert!(why(Op::HooksTrust { sha: "x".into() })
+        .unwrap()
+        .contains("shell off"));
+    let caps = |k: &str, v: f64| Op::Caps {
+        caps: [(k.to_string(), v)].into(),
+    };
+    assert!(why(caps("max_usd_per_day", 50.0))
+        .unwrap()
+        .contains("can't go above $5.00"));
+    assert_eq!(why(caps("max_usd_per_day", 3.0)), None);
+    assert_eq!(why(caps("max_usd_per_run", 99.0)), None);
+    for op in [
+        Op::McpOn { name: "fs".into() },
+        Op::SkillOn { name: "s".into() },
+    ] {
+        assert_eq!(
+            why(op).as_deref(),
+            Some("extensions are off on a managed bot: beta")
+        );
+    }
+    assert_eq!(why(Op::McpOff { name: "fs".into() }), None);
+    assert!(why(Op::ModelDefault {
+        model: "b/or".into()
+    })
+    .unwrap()
+    .contains("provider `b` is not allowed"));
+    assert_eq!(
+        why(Op::ModelDefault {
+            model: "a/gpt".into()
+        }),
+        None
+    );
+    assert_eq!(
+        why(Op::ModelDefault {
+            model: "unknown".into()
+        }),
+        None
+    );
+    assert!(why(Op::ModelHere {
+        model: Some("b/or".into())
+    })
+    .is_some());
+    assert_eq!(why(Op::ModelHere { model: None }), None);
+    assert!(why(Op::ModelFallback {
+        models: vec!["a/gpt".into(), "b/or".into()]
+    })
+    .is_some());
+    for op in [
+        Op::Restart,
+        Op::Backup,
+        Op::ConfigRestore,
+        Op::HooksUntrust,
+        Op::TaskDelete { id: "t".into() },
+    ] {
+        assert_eq!(why(op), None);
+    }
+}

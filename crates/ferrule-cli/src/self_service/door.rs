@@ -20,6 +20,12 @@ impl SelfServiceDoor {
 
     /// `/update`: check, then the card.
     async fn update(admin: Arc<Admin>, here: ChatRef, session: String) {
+        if let Some(why) = admin
+            .ctx()
+            .and_then(|ctx| super::locks::refusal(&Op::Update, ctx))
+        {
+            return admin.hub.tell_in(&here, why);
+        }
         let said = match Self::check(&admin).await {
             Err(e) => Some(e),
             Ok(None) => None,

@@ -13,6 +13,7 @@
 mod describe;
 pub(crate) mod doctor;
 mod door;
+mod locks;
 pub mod menu;
 pub mod promise;
 pub(crate) mod restart;
