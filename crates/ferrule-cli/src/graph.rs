@@ -269,6 +269,9 @@ struct Exec<'a> {
     sandbox: Arc<Sandbox>,
     check_timeout: Duration,
     auto_approve: bool,
+    /// The owner's chat answers approvals (the gateway); None: the
+    /// terminal, or `--yes`.
+    hub: Option<&'a Arc<ferrule_trust::Hub>>,
 }
 
 impl Exec<'_> {
@@ -390,7 +393,30 @@ impl Exec<'_> {
         }
     }
 
-    fn approval(&self, _node: &Node, message: String) -> Outcome {
+    /// An approval node: the owner's chat when a hub is wired (M43), else
+    /// `--yes`, else a terminal question.
+    async fn approval(&self, node: &Node, message: String) -> Outcome {
+        if let Some(hub) = self.hub {
+            let timeout = Duration::from_secs(hub.config().approval_timeout_secs);
+            return match hub
+                .ask_owner(
+                    self.root,
+                    &format!("graph node {:?}", node.id),
+                    &message,
+                    timeout,
+                )
+                .await
+            {
+                Ok(()) => Outcome {
+                    verdict: Verdict::Pass,
+                    summary: "approved in the owner's chat".into(),
+                },
+                Err(why) => Outcome {
+                    verdict: Verdict::Fail,
+                    summary: why,
+                },
+            };
+        }
         if self.auto_approve {
             return Outcome {
                 verdict: Verdict::Pass,
@@ -431,38 +457,111 @@ fn verdict_of(result: &str) -> Verdict {
 /// What an inbound edge's source last came to, for `{{prev}}`.
 const PREV_PER_NODE: usize = 1_500;
 
-/// Run a graph to its end. Returns the process exit code: 0 when the
-/// success condition held, 2 otherwise (a truthful status either way).
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    file: &Path,
-    goal: Option<String>,
-    model: Option<String>,
-    workspace: PathBuf,
-    max_iterations: usize,
-    max_steps: Option<usize>,
-    auto_approve: bool,
-) -> Result<i32> {
+/// Everything a graph run needs, beyond the file.
+pub struct RunOpts {
+    /// Wins over the file's `goal`.
+    pub goal: Option<String>,
+    /// The model the graph's agents run on when a node names none (a
+    /// graph built on the process's shared supervisor ignores this: the
+    /// role models and the default rule there).
+    pub model: Option<String>,
+    pub workspace: PathBuf,
+    pub max_iterations: usize,
+    /// Wins over the file's `max_steps`.
+    pub max_steps: Option<usize>,
+    /// Approve every approval node without asking (a hub, when wired,
+    /// asks first).
+    pub auto_approve: bool,
+    /// The process's shared supervisor (the gateway's): reuse it instead
+    /// of claiming the agents store with a new one.
+    pub supervisor: Option<Arc<Supervisor>>,
+    /// Approvals asked in the owner's chat (the gateway's hub).
+    pub hub: Option<Arc<ferrule_trust::Hub>>,
+    /// Collect the report instead of printing it live (a chat door reads
+    /// it when the run ends).
+    pub quiet: bool,
+}
+
+/// How a graph run ended: the exit code (0 = the success condition held)
+/// and every line it had to say, ANSI codes stripped for chat delivery.
+pub struct GraphReport {
+    pub code: i32,
+    pub lines: Vec<String>,
+}
+
+/// The run's output: printed live on a terminal, collected either way.
+struct Says {
+    quiet: bool,
+    lines: Vec<String>,
+}
+
+impl Says {
+    fn say(&mut self, line: String) {
+        if !self.quiet {
+            println!("{line}");
+        }
+        self.lines.push(unstyled(&line));
+    }
+}
+
+/// The line without its terminal colours.
+fn unstyled(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Run a graph to its end.
+pub async fn run(file: &Path, opts: RunOpts) -> Result<GraphReport> {
     let text =
         std::fs::read_to_string(file).with_context(|| format!("can't read {}", file.display()))?;
     let graph = parse(&text)?;
-    let goal = goal
+    let goal = opts
+        .goal
+        .clone()
         .or(graph.goal.clone())
         .map(|g| g.trim().to_string())
         .filter(|g| !g.is_empty())
         .unwrap_or_else(|| "(no goal given)".into());
-    let max_steps = max_steps.unwrap_or(graph.max_steps);
+    let max_steps = opts.max_steps.unwrap_or(graph.max_steps);
 
     let (cfg, _) = crate::config::Config::load()?;
     let sandbox = crate::shared_sandbox(&cfg)?;
-    let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
-    let servers = crate::mcp_servers(&cfg);
-    let mcp_tools = crate::connect_mcp_servers(&servers, sandbox.clone(), &workspace).await?;
-    let sink = crate::ledger::build_sink(&cfg);
-    let build = crate::child_builder(max_iterations, mcp_tools);
-    let Some(sup) = crate::agents::supervisor(&cfg, model, sink, build)? else {
-        bail!("a graph needs sub-agents: set `[agents] enabled = true`");
+    let workspace = dunce::canonicalize(&opts.workspace).unwrap_or(opts.workspace.clone());
+    // The gateway hands its shared supervisor over; the terminal run builds
+    // its own (one process, one claim on the agents store).
+    let own_sup = match &opts.supervisor {
+        Some(_) => None,
+        None => {
+            let servers = crate::mcp_servers(&cfg);
+            let mcp_tools =
+                crate::connect_mcp_servers(&servers, sandbox.clone(), &workspace).await?;
+            let sink = crate::ledger::build_sink(&cfg);
+            let build = crate::child_builder(opts.max_iterations, mcp_tools);
+            let Some(sup) = crate::agents::supervisor(&cfg, opts.model.clone(), sink, build)?
+            else {
+                bail!("a graph needs sub-agents: set `[agents] enabled = true`");
+            };
+            Some(sup)
+        }
     };
+    let sup = opts
+        .supervisor
+        .as_ref()
+        .or(own_sup.as_ref())
+        .unwrap()
+        .clone();
 
     // The runner is the tree's root: a deterministic orchestrator, not an
     // agent — it routes, it never decides the work.
@@ -499,15 +598,20 @@ pub async fn run(
         workspace: &workspace,
         sandbox,
         check_timeout: Duration::from_secs(cfg.agent.verify_timeout_secs),
-        auto_approve,
+        auto_approve: opts.auto_approve,
+        hub: opts.hub.as_ref(),
     };
 
-    println!(
+    let mut says = Says {
+        quiet: opts.quiet,
+        lines: Vec::new(),
+    };
+    says.say(format!(
         "\x1b[90mgraph {} — {} nodes, {} edges, root {root}\x1b[0m",
         file.display(),
         graph.nodes.len(),
         graph.edges.len()
-    );
+    ));
 
     let n = graph.nodes.len();
     let mut outcomes: Vec<Option<Outcome>> = std::iter::repeat_with(|| None).take(n).collect();
@@ -520,7 +624,9 @@ pub async fn run(
 
     loop {
         if steps >= max_steps {
-            println!("\x1b[1;33mstopped:\x1b[0m the step cap ({max_steps}) ran out");
+            says.say(format!(
+                "\x1b[1;33mstopped:\x1b[0m the step cap ({max_steps}) ran out"
+            ));
             break;
         }
         let runnable: Vec<usize> = (0..n)
@@ -572,7 +678,7 @@ pub async fn run(
             match node.kind.as_str() {
                 "check" => {
                     let out = exec.check(node).await;
-                    report(node, attempts[i], &out);
+                    says.say(report(node, attempts[i], &out));
                     outcomes[i] = Some(out);
                     epoch += 1;
                     completed_at[i] = epoch;
@@ -585,8 +691,8 @@ pub async fn run(
                         &prev,
                         attempts[i],
                     );
-                    let out = exec.approval(node, message);
-                    report(node, attempts[i], &out);
+                    let out = exec.approval(node, message).await;
+                    says.say(report(node, attempts[i], &out));
                     outcomes[i] = Some(out);
                     epoch += 1;
                     completed_at[i] = epoch;
@@ -609,7 +715,7 @@ pub async fn run(
                 match exec.spawn_agent(node, task) {
                     Ok(id) => jobs.push((i, id)),
                     Err(out) => {
-                        report(node, attempts[i], &out);
+                        says.say(report(node, attempts[i], &out));
                         outcomes[i] = Some(out);
                         epoch += 1;
                         completed_at[i] = epoch;
@@ -618,7 +724,7 @@ pub async fn run(
                 }
             }
             for (i, out) in exec.wait_agents(jobs).await {
-                report(&graph.nodes[i], attempts[i], &out);
+                says.say(report(&graph.nodes[i], attempts[i], &out));
                 outcomes[i] = Some(out);
                 epoch += 1;
                 completed_at[i] = epoch;
@@ -627,7 +733,12 @@ pub async fn run(
         }
     }
 
-    Ok(finish(&graph, &outcomes))
+    let (code, last) = finish(&graph, &outcomes);
+    says.say(last);
+    Ok(GraphReport {
+        code,
+        lines: says.lines,
+    })
 }
 
 /// Marks the edges out of `node` whose condition its verdict met.
@@ -666,23 +777,23 @@ fn prev(graph: &Graph, outcomes: &[Option<Outcome>], node: usize) -> String {
     }
 }
 
-fn report(node: &Node, attempt: usize, out: &Outcome) {
+fn report(node: &Node, attempt: usize, out: &Outcome) -> String {
     let (mark, colour) = match out.verdict {
         Verdict::Pass => ("✓", "1;32"),
         Verdict::Fail => ("✗", "1;31"),
     };
     let first = out.summary.lines().next().unwrap_or("").trim();
     let first: String = first.chars().take(100).collect();
-    println!(
+    format!(
         "\x1b[{colour}m{mark}\x1b[0m {} ({}, attempt {attempt}) {} — {first}",
         node.id,
         node.kind,
         out.verdict.name()
-    );
+    )
 }
 
 /// The run's own verdict and its truthful summary line.
-fn finish(graph: &Graph, outcomes: &[Option<Outcome>]) -> i32 {
+fn finish(graph: &Graph, outcomes: &[Option<Outcome>]) -> (i32, String) {
     let summary = |i: usize| {
         format!(
             "{} {}",
@@ -713,11 +824,15 @@ fn finish(graph: &Graph, outcomes: &[Option<Outcome>]) -> i32 {
     };
     let report: Vec<String> = (0..graph.nodes.len()).map(summary).collect();
     if success {
-        println!("\x1b[1;32mgraph: goal met\x1b[0m ({})", report.join(", "));
-        0
+        (
+            0,
+            format!("\x1b[1;32mgraph: goal met\x1b[0m ({})", report.join(", ")),
+        )
     } else {
-        println!("\x1b[1;33mgraph: not met\x1b[0m ({})", report.join(", "));
-        2
+        (
+            2,
+            format!("\x1b[1;33mgraph: not met\x1b[0m ({})", report.join(", ")),
+        )
     }
 }
 

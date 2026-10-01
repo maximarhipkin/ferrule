@@ -5671,3 +5671,38 @@ default path's `call_provider` owns ledger/retries); a TUI tree view.
 
 **M42 is complete: all seven parts built.**
 
+### 2026-10-01 — M43 channels drive loops and graphs (Kimi)
+
+**Scope.** The owner's chat starts and gates what M42 built at the
+terminal. Design: `docs/m43-channels-drive-loops.md`.
+
+**What was built.**
+- **`/goal` door** (`goal_door.rs`, a gateway interceptor): owner-only;
+  starts a loop on its own router lane under the reserved pseudo-channel
+  `goal` (the scheduler's M3 no-double-delivery pattern), the lane
+  session id naming the goal state file so the agent factory picks the
+  loop up exactly like a CLI run (judge without file changes, verdicts
+  recorded). The ending — met / pending / errored — is delivered to the
+  originating chat through the door's own channel handles. `/goal` alone
+  lists open loops (`goal::open_loops`). `goal::prepare_as` lets the
+  caller name the session.
+- **`/graph <file> [--yes]` door** (`graph_door.rs`): owner-only, the
+  path relative to the workspace, the graph on the gateway's **shared**
+  supervisor. `graph::run` now takes `RunOpts` (optional supervisor —
+  one claim per process on the agents store; `hub` for approvals;
+  `quiet` collects the ANSI-stripped report) and returns a `GraphReport`
+  (code + lines). Approval nodes with a hub ask the owner's chat through
+  `ask_owner` (buttons, timeout, audit), failing closed on a refusal.
+- `/help` lists both; the report goes to the chat that started the work.
+
+**Tests.** `tests/it/doors.rs` against the real gateway + fake Telegram:
+chat-started loop reports Goal met (state file asserted: goal, one judge
+run, `goal__` session), failing judge → Goal pending with the resume
+command, chat-started graph → `graph: goal met`, stranger's `/goal`
+starts nothing, `/goal` lists empty. The support mock module is shared
+with `channels.rs` (`pub(crate) mod support`, no duplicate-mod). Full
+cli suite 383+166, clippy and fmt clean.
+
+**Not done.** Approvals for terminal-run graphs still ask at the
+terminal (the notifier lives in the gateway process); no `/graph stop`
+from a chat; loops/graphs from the HTTP channel hold no webhook.

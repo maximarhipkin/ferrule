@@ -14,7 +14,9 @@ mod embedding;
 mod eval;
 mod filewrite;
 mod goal;
+mod goal_door;
 mod graph;
+mod graph_door;
 mod health;
 mod hooks_cli;
 mod import;
@@ -1000,18 +1002,23 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                         .map(PathBuf::from)
                         .unwrap_or_else(|| PathBuf::from(".")),
                 };
-                let code = graph::run(
+                let report = graph::run(
                     &file,
-                    goal,
-                    model,
-                    workspace,
-                    max_iterations,
-                    max_steps,
-                    yes,
+                    graph::RunOpts {
+                        goal,
+                        model,
+                        workspace,
+                        max_iterations,
+                        max_steps,
+                        auto_approve: yes,
+                        supervisor: None,
+                        hub: None,
+                        quiet: false,
+                    },
                 )
                 .await?;
-                if code != 0 {
-                    std::process::exit(code);
+                if report.code != 0 {
+                    std::process::exit(report.code);
                 }
             }
         },
@@ -2261,6 +2268,14 @@ const CHAT_COMMANDS: &[(&str, &str)] = &[
         "/plan <task>",
         "explore read-only, then ask before running the plan",
     ),
+    (
+        "/goal <what done looks like>",
+        "a loop that runs until the judge says so (owner)",
+    ),
+    (
+        "/graph <file>",
+        "run an agent graph; its gates ask here (owner)",
+    ),
     ("/undo", "revert the agent's last commit (owner)"),
     ("/model", "show or switch the model"),
     ("/login, /logout", "sign in to a ChatGPT or Claude plan"),
@@ -2888,7 +2903,7 @@ async fn run_gateway(
     let plan = plan::chats(
         router.clone(),
         hub.clone(),
-        chat_channels,
+        chat_channels.clone(),
         workspace.clone(),
     );
     // M29's `/undo` from the owner's chat, like `ferrule undo`.
@@ -2947,7 +2962,7 @@ async fn run_gateway(
     };
     let drain_router = router.clone();
     let stopper = restarts.clone();
-    let mut gateway = Gateway::new(router)
+    let mut gateway = Gateway::new(router.clone())
         .with_restarts(restarts)
         .with_health(health.clone())
         .with_redactor(Arc::new(health::redactor(&cfg)));
@@ -2968,7 +2983,7 @@ async fn run_gateway(
                 config::config_path()?.unwrap_or_default(),
                 config::data_dir().ok(),
                 Some(hub.clone()),
-                Some(workspace),
+                Some(workspace.clone()),
             ),
             hub: hub.clone(),
             retire: retirer(lanes.clone()),
@@ -2979,9 +2994,21 @@ async fn run_gateway(
         )))
         .with_interceptor(Arc::new(models::ModelDoor {
             models: models::shared()?,
-            hub,
+            hub: hub.clone(),
             fixed: provider,
             retire: retirer(lanes.clone()),
+        }))
+        .with_interceptor(Arc::new(goal_door::GoalDoor {
+            hub: hub.clone(),
+            router: router.clone(),
+            channels: chat_channels.clone(),
+        }))
+        .with_interceptor(Arc::new(graph_door::GraphDoor {
+            hub: hub.clone(),
+            channels: chat_channels.clone(),
+            supervisor: sup.clone(),
+            workspace: workspace.clone(),
+            max_iterations,
         }));
     if let Some(conns) = connections::shared(&cfg) {
         gateway = gateway.with_interceptor(Arc::new(connections::ConnectionsDoor {

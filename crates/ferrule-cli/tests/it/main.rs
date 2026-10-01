@@ -8,6 +8,7 @@ mod channels;
 mod claude_plan;
 mod dashboard;
 mod dashboard_m47;
+mod doors;
 mod eval;
 mod goal;
 mod graph;
