@@ -15,7 +15,11 @@
 // API calls before it settles) as one JSON line.
 //
 //     node scripts/dashboard_browser_check.mjs --bin target/debug/ferrule [--chromium PATH] [--shots docs/assets/m37]
-//         [--shots-all docs/assets/m47/after] [--measure]
+//         [--shots-all docs/assets/m47/after] [--shots-format webp] [--shots-quality 45] [--measure]
+//
+// `--shots-format webp` (M49) saves WebP instead of JPEG: a phone shot is
+// scaled to 1.5x, a desktop one stays 1x, and a Hebrew pair (Home and
+// Settings, light) is added.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, get as httpGet } from "node:http";
@@ -42,6 +46,9 @@ const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1
 const BIN = opt("--bin") && resolve(opt("--bin"));
 const SHOTS = opt("--shots") && resolve(opt("--shots"));
 const SHOTS_ALL = opt("--shots-all") && resolve(opt("--shots-all"));
+const SHOTS_FORMAT = opt("--shots-format") || "jpeg";
+const SHOTS_QUALITY = Number(opt("--shots-quality") || 70);
+if (!["jpeg", "webp"].includes(SHOTS_FORMAT)) throw new Error("--shots-format is jpeg or webp");
 const MEASURE = argv.includes("--measure");
 const CHROMIUM = opt("--chromium") || ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"].find((c) => spawnSync(c, ["--version"]).status === 0);
 if (!BIN) { console.error("usage: dashboard_browser_check.mjs --bin <ferrule> [--chromium PATH] [--shots DIR]"); process.exit(2); }
@@ -394,6 +401,46 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     return "connected; the key is gone from the page and the API; Test says it works";
   });
 
+  await run("the overflow menu opens and closes", async () => {
+    const has = () => js(`return !!document.querySelector("#main .menu > button")`);
+    let where = "models";
+    await js(`window.ferrule.show("models")`);
+    if (!(await until("a model row's menu", has, 8).catch(() => false))) {
+      where = "health"; // the hero's menu, while the kill switch is off
+      await js(`window.ferrule.show("health")`);
+      await until("the hero's menu", has, 8);
+    }
+    const open = await js(`
+      const t = document.querySelector("#main .menu > button"), l = t.parentElement.querySelector(".menu-list");
+      t.click();
+      return [t.getAttribute("aria-expanded"), l.hidden, document.activeElement === l.querySelector("[role=menuitem]")];`);
+    if (open.join() !== "true,false,true") throw new Error("after a click: expanded, hidden, first item focused = " + open);
+    // It survives a poll's redraw, and the arrows, End and a press outside work.
+    await sleep(3500);
+    const kept = await js(`
+      const l = document.querySelector("#main .menu-list:not([hidden])");
+      if (!l) return "gone after a poll";
+      const items = [...l.querySelectorAll("[role=menuitem]")], key = (k) => l.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+      key("End"); const last = document.activeElement === items[items.length - 1];
+      key("ArrowDown"); const wrapped = document.activeElement === items[0];
+      key("ArrowUp"); const back = document.activeElement === items[items.length - 1];
+      return last && wrapped && back ? "ok" : "End/ArrowDown/ArrowUp: " + [last, wrapped, back];`);
+    if (kept !== "ok") throw new Error(kept);
+    const outside = await js(`
+      const t = document.querySelector("#main .menu > button"), l = t.parentElement.querySelector(".menu-list");
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      const closed = l.hidden && t.getAttribute("aria-expanded") === "false";
+      t.click();
+      return closed;`);
+    if (!outside) throw new Error("a press outside didn't close the menu");
+    const shut = await js(`
+      const t = document.querySelector("#main .menu > button"), l = t.parentElement.querySelector(".menu-list");
+      l.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return [t.getAttribute("aria-expanded"), l.hidden, document.activeElement === t];`);
+    if (shut.join() !== "false,true,true") throw new Error("after Escape: expanded, hidden, trigger focused = " + shut);
+    return "on " + where + ": a click opens it on its first item, it stays open for 3.5 s, the arrows and End move, a press outside or Escape closes it";
+  });
+
   await run("run a console command", async () => {
     await js(`window.ferrule.show("console")`);
     await until("the console", () => js(`return !!document.querySelector(".console-line input")`));
@@ -520,6 +567,8 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
       const out = wide > 1 ? [...document.querySelectorAll("body *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.left < -1 || r.right > cw + 1); }).slice(0, 6).map((e) => e.tagName + "." + e.className + "#" + e.id + "<" + (e.parentElement && e.parentElement.outerHTML.slice(0, 160)) + "> " + Math.round(e.getBoundingClientRect().left) + ".." + Math.round(e.getBoundingClientRect().right)) : [];
       return { wide, lang: document.documentElement.lang, out, nav: [...document.querySelectorAll("#rail a")].map((a) => a.textContent.trim()).join("|") };`);
     if (bad.lang !== "he" || bad.wide > 1) throw new Error(JSON.stringify(bad));
+    const flip = await js(`const i = document.querySelector("#main .ico.flip, #rail .ico.flip"); return i ? getComputedStyle(i).transform : "none-found"`);
+    if (!/matrix\(-1/.test(flip)) throw new Error("a .flip icon isn't mirrored in RTL: " + flip);
     if (SHOTS) {
       await size(390, 844); await js(`window.ferrule.show("tasks")`); await sleep(800);
       const r = await cdp("Page.captureScreenshot", { format: "png" });
@@ -530,6 +579,18 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     await sleep(500);
     await until("the page in English again", () => js(`return document.documentElement.dir === "ltr" && !document.getElementById("rail").hidden`), 20);
     return "dir=rtl, nav in Hebrew, no sideways scroll; back to English";
+  });
+
+  await run("Hebrew doesn't change the line height", async () => {
+    const h = await js(`
+      const mk = (t) => { const p = document.createElement("p"); p.textContent = t; p.style.cssText = "position:absolute;visibility:hidden;margin:0;white-space:nowrap"; document.body.append(p); return p; };
+      const a = mk("Default model"), b = mk("Default model עברית");
+      await document.fonts.ready; await document.fonts.load("1em Heebo", "א");
+      const r = [a.getBoundingClientRect().height, b.getBoundingClientRect().height, document.fonts.check("1em Heebo", "א")];
+      a.remove(); b.remove(); return r;`);
+    if (!h[2]) throw new Error("Heebo didn't load");
+    if (Math.abs(h[0] - h[1]) > 0.5) throw new Error("a line with Hebrew is " + h[1] + " px, without " + h[0]);
+    return "one line is " + h[0] + " px with or without Hebrew";
   });
 
   if (SHOTS) {
@@ -558,6 +619,18 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     mkdirSync(SHOTS_ALL, { recursive: true });
     let n = 0;
     const names = await js(`return Object.keys(window.ferrule.sections)`);
+    const ext = SHOTS_FORMAT === "webp" ? "webp" : "jpg";
+    async function shoot(w, h) {
+      // The clip is in page coordinates: a window left scrolled (Chat scrolls
+      // its own log into view) would shoot a blank band above the header.
+      const was = await js(`const y = window.scrollY; window.scrollTo(0, 0); return y`);
+      if (was > 0) console.log("  (window was scrolled " + Math.round(was) + " px; reset for the shot)");
+      await sleep(150);
+      const o = { format: SHOTS_FORMAT, quality: SHOTS_QUALITY };
+      // A phone is drawn at 2x; 1.5x keeps it sharp at two thirds the bytes.
+      if (SHOTS_FORMAT === "webp") o.clip = { x: 0, y: 0, width: w, height: h, scale: w < 600 ? 0.75 : 1 };
+      return Buffer.from((await cdp("Page.captureScreenshot", o)).data, "base64");
+    }
     for (const [w, h] of [[390, 844], [1280, 800]]) {
       await size(w, h);
       for (const theme of ["paper", "forge"]) {
@@ -565,13 +638,29 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
         for (const name of names) {
           await js(`window.ferrule.show(${JSON.stringify(name)})`);
           await sleep(1100);
-          const r = await cdp("Page.captureScreenshot", { format: "jpeg", quality: 70 });
-          writeFileSync(join(SHOTS_ALL, `${name}-${w}-${theme === "paper" ? "light" : "dark"}.jpg`), Buffer.from(r.data, "base64"));
+          writeFileSync(join(SHOTS_ALL, `${name}-${w}-${theme === "paper" ? "light" : "dark"}.${ext}`), await shoot(w, h));
           n++;
         }
       }
     }
     await js(`document.documentElement.dataset.theme = "paper"`);
+    if (SHOTS_FORMAT === "webp") {
+      await js(`localStorage.setItem("ferrule-lang", "he"); location.reload()`);
+      await sleep(500);
+      await until("the page in Hebrew", () => js(`return document.documentElement.dir === "rtl" && !document.getElementById("rail").hidden`), 20);
+      for (const [w, h] of [[390, 844], [1280, 800]]) {
+        await size(w, h);
+        for (const name of ["health", "settings"]) {
+          await js(`window.ferrule.show(${JSON.stringify(name)})`);
+          await sleep(1100);
+          writeFileSync(join(SHOTS_ALL, `${name}-${w}-light-he.${ext}`), await shoot(w, h));
+          n++;
+        }
+      }
+      await js(`localStorage.removeItem("ferrule-lang"); location.reload()`);
+      await sleep(500);
+      await until("the page in English again", () => js(`return document.documentElement.dir === "ltr" && !document.getElementById("rail").hidden`), 20);
+    }
     step("screenshots of every section", true, n + " in " + SHOTS_ALL.slice(ROOT.length + 1));
   }
 
@@ -658,7 +747,11 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
   });
 
   await run("the keyboard gets in", async () => {
-    await js(`window.ferrule.show("health"); document.activeElement && document.activeElement.blur(); window.scrollTo(0, 0)`);
+    await js(`window.ferrule.show("health")`);
+    // Let Home draw first: a redraw after the blur moves Chrome's starting point.
+    await sleep(900);
+    // Park the starting point on <body>, so Tab goes to the first control.
+    await js(`document.activeElement && document.activeElement.blur(); document.body.tabIndex = -1; document.body.focus(); document.body.removeAttribute("tabindex"); window.scrollTo(0, 0)`);
     await key("Tab", "Tab");
     const first = await js(`const a = document.activeElement; return a && [a.tagName, a.getAttribute("href"), a.textContent.trim()]`);
     if (!first || first[0] !== "A" || first[1] !== "#main") throw new Error("the first Tab lands on " + JSON.stringify(first));

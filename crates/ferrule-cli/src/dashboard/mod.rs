@@ -49,29 +49,23 @@ const APP_CSS: &str = include_str!("assets/app.css");
 const THEME_JS: &str = include_str!("assets/theme.js");
 /// The page's fixed words in Hebrew: fetched only when Hebrew is chosen.
 const LANG_HE: &str = include_str!("assets/lang-he.js");
-/// IBM Plex (OFL 1.1), served from the binary so the page never depends on
-/// a font CDN: Sans and Mono cut to Latin-1, Sans Hebrew whole, each loaded
-/// only when the page has a character in its `unicode-range`.
+/// Inter, Heebo and Geist Mono (OFL 1.1), served from the binary so the page
+/// never depends on a font CDN. Each is one variable file (weights 400–600)
+/// cut to the characters in its `unicode-range`: Inter and Geist Mono to
+/// Latin, Heebo to Hebrew, which only a page showing Hebrew fetches. They are
+/// cached for a year as immutable, so a changed font must get a new file name.
 const FONTS: &[(&str, &[u8])] = &[
     (
-        "plex-sans-400.woff2",
-        include_bytes!("assets/fonts/plex-sans-400.woff2"),
+        "inter-latin.woff2",
+        include_bytes!("assets/fonts/inter-latin.woff2"),
     ),
     (
-        "plex-sans-600.woff2",
-        include_bytes!("assets/fonts/plex-sans-600.woff2"),
+        "heebo-hebrew.woff2",
+        include_bytes!("assets/fonts/heebo-hebrew.woff2"),
     ),
     (
-        "plex-sans-hebrew-400.woff2",
-        include_bytes!("assets/fonts/plex-sans-hebrew-400.woff2"),
-    ),
-    (
-        "plex-sans-hebrew-600.woff2",
-        include_bytes!("assets/fonts/plex-sans-hebrew-600.woff2"),
-    ),
-    (
-        "plex-mono-400.woff2",
-        include_bytes!("assets/fonts/plex-mono-400.woff2"),
+        "geist-mono-latin.woff2",
+        include_bytes!("assets/fonts/geist-mono-latin.woff2"),
     ),
 ];
 const FONT_LICENSE: &str = include_str!("assets/fonts/OFL.txt");
@@ -213,7 +207,7 @@ fn index_for(base: &str) -> String {
     );
     for (attr, path) in [
         ("src", "/theme.js"),
-        ("href", "/fonts/plex-sans-400.woff2"),
+        ("href", "/fonts/inter-latin.woff2"),
         ("href", "/app.css"),
         ("src", "/app.js"),
     ] {
@@ -1056,7 +1050,7 @@ mod tests {
                 .map(|(_, v)| v.clone())
         };
         let r = d
-            .handle(req("GET", "/fonts/plex-sans-400.woff2", &[], ""))
+            .handle(req("GET", "/fonts/inter-latin.woff2", &[], ""))
             .await;
         assert_eq!((r.status, r.content_type), (200, "font/woff2"));
         assert_eq!(&r.body[..4], b"wOF2");
@@ -1083,6 +1077,57 @@ mod tests {
         }
         let r = d.handle(req("GET", "/api/session", &[], "")).await;
         assert_eq!(cache(&r), None);
+    }
+
+    #[tokio::test]
+    async fn the_new_fonts_and_their_licence_ship() {
+        // M49: Inter, Heebo and Geist Mono replace IBM Plex. Each file is a
+        // real woff2, cached for a year, and small; the licence names all three.
+        let (_d, d) = dash();
+        let caps = [
+            ("inter-latin.woff2", 26_000),
+            ("heebo-hebrew.woff2", 9_000),
+            ("geist-mono-latin.woff2", 18_000),
+        ];
+        assert_eq!(FONTS.len(), caps.len());
+        for (name, cap) in caps {
+            let r = d
+                .handle(req("GET", &format!("/fonts/{name}"), &[], ""))
+                .await;
+            assert_eq!((r.status, r.content_type), (200, "font/woff2"), "{name}");
+            assert_eq!(&r.body[..4], b"wOF2", "{name}");
+            assert_eq!(header(&r, "Cache-Control"), FOREVER, "{name}");
+            assert!(
+                r.body.len() < cap,
+                "{name} is {} bytes, over {cap}",
+                r.body.len()
+            );
+        }
+        let r = d.handle(req("GET", "/fonts/OFL.txt", &[], "")).await;
+        assert_eq!(
+            (r.status, r.content_type),
+            (200, "text/plain; charset=utf-8")
+        );
+        assert_eq!(header(&r, "Cache-Control"), FOREVER);
+        let licence = String::from_utf8_lossy(&r.body);
+        for who in [
+            "The Inter Project Authors",
+            "The Heebo Project Authors",
+            "The Geist Project Authors",
+            "SIL OPEN FONT LICENSE Version 1.1",
+        ] {
+            assert!(licence.contains(who), "OFL.txt lacks {who}");
+        }
+        for (what, src) in [
+            ("app.css", APP_CSS),
+            ("index.html", INDEX),
+            ("OFL.txt", FONT_LICENSE),
+        ] {
+            assert!(
+                !src.contains("Plex") && !src.contains("plex-"),
+                "{what} still names Plex"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1457,7 +1502,7 @@ mod tests {
         for want in [
             "content=\"/b/b_x/\"",
             "src=\"/b/b_x/theme.js\"",
-            "href=\"/b/b_x/fonts/plex-sans-400.woff2\"",
+            "href=\"/b/b_x/fonts/inter-latin.woff2\"",
             "href=\"/b/b_x/app.css\"",
             "src=\"/b/b_x/app.js\"",
         ] {

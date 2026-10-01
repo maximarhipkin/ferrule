@@ -93,7 +93,7 @@ fn tokens_meet_wcag_aa() {
                 "ink",
                 "ink-2",
                 "muted",
-                "copper-strong",
+                "accent-strong",
                 "ok",
                 "warn",
                 "bad",
@@ -101,9 +101,9 @@ fn tokens_meet_wcag_aa() {
                 check(format!("{text} on {s}"), get(text, under), under, 4.5);
             }
             // The tinted backgrounds of tags, notices and status pills.
-            for k in ["ok", "warn", "bad", "copper"] {
+            for k in ["ok", "warn", "bad", "accent"] {
                 let soft = get(&format!("{k}-soft"), under);
-                let text = if k == "copper" { "copper-strong" } else { k };
+                let text = if k == "accent" { "accent-strong" } else { k };
                 check(
                     format!("{text} on {k}-soft over {s}"),
                     get(text, under),
@@ -116,23 +116,23 @@ fn tokens_meet_wcag_aa() {
         check("muted on panel-3".into(), get("muted", panel3), panel3, 4.5);
         let panel = solid("panel");
         check("steel on panel".into(), get("steel", panel), panel, 4.5);
-        for b in ["copper", "copper-strong"] {
+        // The primary button prints on-accent on the fill and on its hover.
+        for b in ["accent", "accent-hover"] {
             check(
-                format!("on-copper on {b}"),
-                solid("on-copper"),
+                format!("on-accent on {b}"),
+                solid("on-accent"),
                 solid(b),
                 4.5,
             );
         }
         // The count badge and the danger button print the panel colour on it.
         check("panel on bad".into(), solid("panel"), solid("bad"), 4.5);
-        // Not text, but the focus ring and the active tab must be seen.
-        check(
-            "copper on bg (focus ring)".into(),
-            solid("copper"),
-            solid("bg"),
-            3.0,
-        );
+        // Not text, but they must be seen (WCAG 1.4.11, 3:1): the focus ring,
+        // and the border of a field, a checkbox and the off switch.
+        for s in surfaces {
+            check(format!("ring on {s}"), solid("ring"), solid(s), 3.0);
+            check(format!("control on {s}"), solid("control"), solid(s), 3.0);
+        }
     }
     assert!(
         failures.is_empty(),
@@ -168,6 +168,41 @@ fn every_colour_is_a_token() {
     // blocks above are the only places rgba() may appear.
     let rules = &after[after.find("*{box-sizing").unwrap()..];
     assert!(!rules.contains("rgba("), "an rgba() in a rule, not a token");
+}
+
+#[test]
+fn svg_tokens_draw_in_their_theme_colours() {
+    // A data: image can't read a CSS variable, so the stroke of the select
+    // chevron is spelled out per theme. Tie it to the token it stands for,
+    // and keep the characters that would break `tokens()` out of it.
+    let stroke = |v: &str| {
+        let i = v.find("stroke='%23").expect("a hex stroke") + "stroke='%23".len();
+        format!("#{}", &v[i..i + 6])
+    };
+    for (theme, t) in themes() {
+        let chevron = &t["chevron"];
+        assert!(
+            chevron.contains("xmlns='http://www.w3.org/2000/svg'"),
+            "{theme}: no xmlns"
+        );
+        assert!(!chevron.contains('}'), "{theme}: a `}}` in a data URI");
+        assert_eq!(
+            stroke(chevron),
+            t["muted"],
+            "{theme}: chevron colour is not --muted"
+        );
+    }
+    let t = tokens(CSS, ":root");
+    assert_eq!(
+        stroke(&t["checkmark"]),
+        t["on-accent"],
+        "checkmark is not --on-accent"
+    );
+    assert_eq!(
+        themes()[1].1["on-accent"],
+        t["on-accent"],
+        "the checkmark is defined once, so --on-accent must match in both themes"
+    );
 }
 
 fn quoted_after<'a>(src: &'a str, marker: &str) -> Vec<&'a str> {
@@ -225,8 +260,11 @@ fn every_icon_used_exists() {
 
 #[test]
 fn the_page_loads_nothing_from_elsewhere() {
-    assert!(!CSS.contains("http://") && !CSS.contains("https://") && !CSS.contains("@import"));
-    assert!(!CSS.contains("url(http") && !CSS.contains("url(//"));
+    // The one address the stylesheet may spell is the SVG namespace inside
+    // an inline `data:` image (it names a format, nothing is fetched).
+    let css = CSS.replace("xmlns='http://www.w3.org/2000/svg'", "");
+    assert!(!css.contains("http://") && !css.contains("https://") && !css.contains("@import"));
+    assert!(!css.contains("url(http") && !css.contains("url(//"));
     for line in HTML.lines() {
         for attr in ["src=", "href="] {
             for part in line.split(attr).skip(1) {
@@ -240,10 +278,10 @@ fn the_page_loads_nothing_from_elsewhere() {
     }
     // In the script an address may only be a link the reader clicks, a
     // placeholder, or the SVG namespace: never something the page fetches.
-    for line in JS
-        .lines()
-        .filter(|l| l.contains("http://") || l.contains("https://"))
-    {
+    // A comment line (the icons' licence names its source) is not code.
+    for line in JS.lines().filter(|l| {
+        !l.trim_start().starts_with("//") && (l.contains("http://") || l.contains("https://"))
+    }) {
         assert!(
             line.contains("2000/svg") || line.contains("href:") || line.contains("placeholder"),
             "the script names an address it may load: {line}"
