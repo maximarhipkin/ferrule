@@ -5879,7 +5879,7 @@ Telegram path (a real bot token) wasn't exercised; only the mocks were.
 - MCP stdio: the request write sits outside the timeout, and a cut-off
   write breaks the connection until restart.
 
-### 2026-10-19 — three host-side sandbox escapes closed (Claude, Opus 5.5)
+### 2026-10-19 — four host-side sandbox escapes closed (Claude, Opus 5.5)
 
 **Scope.** The three gaps the 2026-10-19 whole-repo review left under
 "Open" (each needed a design call): ferrule's own git honouring a
@@ -5924,8 +5924,22 @@ Tests: `proxy::an_encoded_body_from_a_bound_host_is_withheld` (before:
 200 with the real token), `any_coding_but_identity_or_chunked_is_found`.
 Docs: `docs/research-credential-gateway.md` §2, §3, §5, §6.
 
-**Checks.** `make check` exits 0 on macOS (third run). The first two
-failed only on `ferrule-cli` `managed::sigterm_drains_and_exits_zero`
+**core.worktree (`7a1f431`), found while fixing the above.** A worker
+may write its repo's git dir (so it can commit); with
+`extensions.worktreeConfig` it could set `core.worktree` for its own
+worktree to any directory, and close's host-side `add -A` + commit then
+put that directory's files, read as the owner, on the kept branch. (For
+the main worktree the redirected top usually isn't a repo, so the
+snapshot's `-C top` calls failed rather than leaked; the linked-worktree
+path did leak.) `host_git` now pins `--work-tree` to the directory
+holding the `.git` git found whenever repo-scope config sets
+`core.worktree`; `-c core.worktree` can't override it. Refusing was
+rejected: submodules set `core.worktree = ../../../sub` in their own
+config. Test: `worktree::a_work_tree_moved_by_the_repos_config_doesnt_move_what_close_commits`
+(before: the branch held the outside `creds`, not `lib.rs`/`new.rs`).
+
+**Checks.** `make check` exits 0 on macOS, last run with `7a1f431` in.
+Two earlier runs (before the core.worktree fix) failed only on `ferrule-cli` `managed::sigterm_drains_and_exits_zero`
 (`assert!(marker.exists())`), with load average 10–14 from other
 sessions' builds; the test passes alone, in its full binary, and with
 `--workspace` features, on this branch and on `dc837a7` alike. Linux and
@@ -5933,13 +5947,6 @@ Windows are left to CI: on Windows the worktree test's filters run
 through Git Bash with forward-slash paths.
 
 **Open (found, not fixed).**
-- `core.worktree` in a sandbox-written `.git/config` moves git's top
-  level: `rev-parse --show-toplevel` and `ls-files --others` then point at
-  any directory (checked by hand), and `snapshot()` copies those untracked
-  files into the verifier's readable snapshot, as the owner. Needs a
-  call: refuse a repo-scope `core.worktree` in `host_git` (breaks
-  submodule gitdirs, which set it), or check the top level stays inside
-  the workspace.
 - `managed::sigterm_drains_and_exits_zero` races under load: the
   gateway serves `/healthz` once `dash.bind()` returns and writes
   `dashboard.json` after (`main.rs`, `write_marker`), but the test asserts
