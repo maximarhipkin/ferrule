@@ -12,7 +12,8 @@ pub const MAX_TIMEOUT_SECS: u64 = 600;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookEntry {
-    /// Run through the platform's shell, as the owner, outside the sandbox.
+    /// Run through the platform's shell: a user hook as the owner, outside
+    /// the sandbox; a workspace hook in it.
     pub command: String,
     /// Tool name, source, trigger or role; `|`-separated names or globs.
     #[serde(default)]

@@ -283,7 +283,7 @@ pub async fn describe(op: &Op, ctx: &Ctx, here: &ChatRef) -> Result<String, Stri
                 return Err("these hooks are too long to show on a card; the dashboard's Extensions page shows them in full and trusts them there".into());
             }
             format!(
-                "Trust the hooks in {} (fingerprint {}). They run as you, outside the sandbox, whenever an agent works here:\n{text}",
+                "Trust the hooks in {} (fingerprint {}). They run in the sandbox, like the agent's commands, whenever an agent works here:\n{text}",
                 h["file"].as_str().unwrap_or("the workspace"),
                 &sha[..sha.len().min(12)]
             )

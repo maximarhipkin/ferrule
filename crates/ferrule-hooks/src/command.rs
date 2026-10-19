@@ -1,10 +1,11 @@
-//! A command hook: the platform's shell runs it as the owner, outside the
-//! sandbox, with the payload as JSON on stdin. On timeout the whole
-//! process tree is killed, not just the shell at the top.
+//! A command hook: the platform's shell runs it with the payload as JSON
+//! on stdin — as the owner, outside the sandbox, or in the sandbox when it
+//! has one (a workspace's hooks). On timeout the whole process tree is
+//! killed, not just the shell at the top.
 
 use ferrule_core::lifecycle::{HookHandler, HookInput, HookRun};
 use ferrule_core::tool::ToolContext;
-use ferrule_sandbox::Shell;
+use ferrule_sandbox::{Sandbox, Shell};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,6 +23,8 @@ const DRAIN_GRACE: Duration = Duration::from_secs(2);
 pub struct CommandHook {
     pub command: String,
     pub timeout: Duration,
+    /// Where it runs; `None` is as the owner.
+    pub sandbox: Option<Arc<Sandbox>>,
 }
 
 impl CommandHook {
@@ -29,6 +32,7 @@ impl CommandHook {
         CommandHook {
             command: command.into(),
             timeout,
+            sandbox: None,
         }
     }
 }
@@ -42,11 +46,27 @@ impl HookHandler for CommandHook {
     async fn run(&self, input: &HookInput, ctx: &ToolContext) -> HookRun {
         let payload = serde_json::to_vec(input).unwrap_or_default();
         let shell = Shell::get();
-        let mut cmd = Command::new(&shell.program);
+        let mut cmd = match &self.sandbox {
+            Some(sandbox) => {
+                match sandbox.command(&shell.program, shell.args(&self.command), &ctx.workspace) {
+                    Ok(cmd) => Command::from(cmd),
+                    Err(e) => {
+                        return HookRun {
+                            spawn_error: Some(e.to_string()),
+                            ..Default::default()
+                        }
+                    }
+                }
+            }
+            None => {
+                let mut cmd = Command::new(&shell.program);
+                cmd.args(shell.args(&self.command));
+                cmd
+            }
+        };
         #[cfg(unix)]
         cmd.process_group(0);
-        cmd.args(shell.args(&self.command))
-            .current_dir(&ctx.workspace)
+        cmd.current_dir(&ctx.workspace)
             .env("FERRULE_PROJECT_DIR", &ctx.workspace)
             // Claude Code's name for it, so its hook scripts port over.
             .env("CLAUDE_PROJECT_DIR", &ctx.workspace)

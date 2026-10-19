@@ -369,8 +369,10 @@ is picked up and re-scanned (M13's hook).
   (`.ferrule/hooks.toml`) need `[hooks] project = true` and `ferrule
   hooks trust`, at a terminal, pinned to the file's SHA-256; any edit
   untrusts them, and the owner is told what won't run.
-- **Hooks run with the owner's privileges, outside the sandbox.** The
-  model can't add, edit or enable one: no tool touches hook config, the
+- **Hooks from the owner's config run with the owner's privileges,
+  outside the sandbox; a workspace's run in the sandbox** (since
+  2026-10-19: the trusted file pins command lines, not the scripts they
+  run, which the model can edit). The model can't add, edit or enable one: no tool touches hook config, the
   trust record is under `private/`, and `trust` needs a terminal.
 - Sub-agents inherit PreToolUse/PostToolUse; SubagentStart/Stop fire in
   the parent. Every run goes to `<data dir>/hooks/runs.jsonl`; `ferrule

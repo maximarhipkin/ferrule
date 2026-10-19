@@ -1684,7 +1684,7 @@ fn build_agent_from(
     // A planning run fires none: hooks run as the owner, outside the
     // read-only sandbox plan mode promises (docs/m19-trust-cost.md §13).
     if child.is_none() && !planning {
-        let mut hooks = hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?;
+        let mut hooks = hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace, &sandbox)?;
         // M29: the project's linter after each edit, built in (so a
         // sub-agent inherits it with the rest), in the sandbox.
         if cfg.agent.lint == config::LintMode::Auto

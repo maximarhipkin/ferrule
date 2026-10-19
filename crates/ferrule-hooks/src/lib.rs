@@ -4,9 +4,11 @@
 //! the payload and what a hook's result means are in
 //! `ferrule_core::lifecycle`.
 //!
-//! Hooks run as the owner, outside the sandbox. Nothing here is reachable
-//! from a tool: config comes from the trusted config file, and the trust
-//! record lives under `<data dir>/private/`.
+//! The user's hooks run as the owner, outside the sandbox; a workspace's
+//! run in it, because the trusted `.ferrule/hooks.toml` pins only their
+//! command lines, not the scripts those name, which the model can edit.
+//! Nothing here is reachable from a tool: config comes from the trusted
+//! config file, and the trust record lives under `<data dir>/private/`.
 
 pub mod audit;
 pub mod command;
@@ -21,6 +23,7 @@ pub use lint::LintHook;
 pub use trust::{load_workspace, TrustStore, WorkspaceState};
 
 use ferrule_core::lifecycle::{Hook, HookLimits, HookSet, HookSource, Matcher};
+use ferrule_sandbox::Sandbox;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -37,31 +40,36 @@ fn add(
     config: &HooksConfig,
     entries: Vec<(ferrule_core::HookEvent, &HookEntry)>,
     source: HookSource,
+    sandbox: Option<&Arc<Sandbox>>,
 ) {
     for (event, entry) in entries {
+        let mut hook = CommandHook::new(entry.command.clone(), config.timeout(entry));
+        hook.sandbox = sandbox.cloned();
         set.add(Hook::new(
             event,
             Matcher::parse(entry.matcher.as_deref()),
             source,
-            Arc::new(CommandHook::new(
-                entry.command.clone(),
-                config.timeout(entry),
-            )),
+            Arc::new(hook),
         ));
     }
 }
 
 /// The hooks for an agent in `workspace`: the user's, then the workspace's
-/// if they're switched on and trusted. Every run is logged under
-/// `data_dir`.
-pub fn build(config: &HooksConfig, workspace: &Path, data_dir: &Path) -> Loaded {
+/// if they're switched on and trusted, run in `sandbox`. Every run is
+/// logged under `data_dir`.
+pub fn build(
+    config: &HooksConfig,
+    workspace: &Path,
+    data_dir: &Path,
+    sandbox: &Arc<Sandbox>,
+) -> Loaded {
     let mut set = HookSet::new()
         .with_audit(Arc::new(JsonlAudit::in_data_dir(data_dir)))
         .with_limits(HookLimits {
             max_context_chars: config.max_context_chars,
             max_stop_blocks: config.max_stop_blocks,
         });
-    add(&mut set, config, config.entries(), HookSource::User);
+    add(&mut set, config, config.entries(), HookSource::User, None);
     let state = load_workspace(
         workspace,
         config.project,
@@ -69,7 +77,13 @@ pub fn build(config: &HooksConfig, workspace: &Path, data_dir: &Path) -> Loaded 
     );
     let notice = state.notice(workspace);
     if let WorkspaceState::Trusted(ws) = &state {
-        add(&mut set, config, ws.entries(), HookSource::Workspace);
+        add(
+            &mut set,
+            config,
+            ws.entries(),
+            HookSource::Workspace,
+            Some(sandbox),
+        );
     }
     Loaded { set, notice }
 }
@@ -131,7 +145,7 @@ pub fn render_list(
     if rows.is_empty() {
         out.push_str("No hooks configured.\n");
     } else {
-        out.push_str("Hooks (they run as you, outside the sandbox):\n");
+        out.push_str("Hooks (user hooks run as you; workspace hooks in the sandbox):\n");
         for (event, source, matcher, command) in &rows {
             let _ = writeln!(
                 out,
@@ -212,7 +226,8 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = build(&config, ws.path(), data.path());
+        let sandbox = Arc::new(Sandbox::off());
+        let loaded = build(&config, ws.path(), data.path(), &sandbox);
         assert_eq!(loaded.set.hooks().len(), 1);
         assert_eq!(loaded.set.limits.max_stop_blocks, 5);
         assert!(loaded.notice.unwrap().contains("haven't trusted it yet"));
@@ -229,10 +244,45 @@ mod tests {
         TrustStore::in_data_dir(data.path())
             .trust(ws.path())
             .unwrap();
-        let loaded = build(&config, ws.path(), data.path());
+        let loaded = build(&config, ws.path(), data.path(), &sandbox);
         assert!(loaded.notice.is_none());
         let commands: Vec<String> = loaded.set.hooks().iter().map(|h| h.command()).collect();
         assert_eq!(commands, ["user-guard", "ws-guard"]);
         assert_eq!(loaded.set.hooks()[1].source, HookSource::Workspace);
+    }
+
+    /// A trusted hooks file pins its commands, not the scripts they run,
+    /// which the model can edit: those run in the sandbox. Here the
+    /// sandbox refuses everything, so only the user's hook runs.
+    #[tokio::test]
+    async fn workspace_hooks_run_in_the_sandbox_and_user_hooks_as_the_owner() {
+        let ws = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ws.path().join(".ferrule")).unwrap();
+        std::fs::write(
+            trust::workspace_file(ws.path()),
+            "[[PreToolUse]]\ncommand = \"exit 3\"\n",
+        )
+        .unwrap();
+        TrustStore::in_data_dir(data.path())
+            .trust(ws.path())
+            .unwrap();
+        let config: HooksConfig =
+            toml::from_str("project = true\n[[PreToolUse]]\ncommand = \"exit 0\"\n").unwrap();
+        let sandbox = Arc::new(Sandbox::off().refuse("sandboxed"));
+
+        let loaded = build(&config, ws.path(), data.path(), &sandbox);
+        let ctx = ferrule_core::ToolContext {
+            workspace: ws.path().to_path_buf(),
+            ..Default::default()
+        };
+        let input = ferrule_core::lifecycle::HookInput::default();
+        let [user, workspace] = loaded.set.hooks() else {
+            panic!("two hooks expected");
+        };
+        let run = user.handler.run(&input, &ctx).await;
+        assert_eq!((run.exit_code, run.spawn_error), (Some(0), None));
+        let run = workspace.handler.run(&input, &ctx).await;
+        assert_eq!(run.spawn_error.as_deref(), Some("sandboxed"));
     }
 }
