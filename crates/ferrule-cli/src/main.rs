@@ -1635,7 +1635,8 @@ fn build_agent_from(
             agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(map, tokens)));
     }
     // M42 part 7: compactions summarized by another (cheaper) model — the
-    // built-in checklist template as a strategy on a routed provider.
+    // built-in checklist pipeline on a routed provider, so the call keeps
+    // the agent's retries, ledger row, budget and kill switch.
     if let Some(word) = &cfg.agent.compaction_model {
         models
             .resolve(word)
@@ -1647,7 +1648,7 @@ fn build_agent_from(
             scope,
             entry.provider.clone(),
         ));
-        agent = agent.with_compactor(Arc::new(ferrule_core::TemplateCompactor::new(provider)));
+        agent = agent.with_compaction_provider(provider);
     }
     agent = agent
         .with_ledger(

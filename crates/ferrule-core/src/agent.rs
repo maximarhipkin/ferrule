@@ -331,6 +331,8 @@ pub struct Agent {
     /// How compaction summarizes the folded head; None is the built-in
     /// pipeline on the agent's own model (M42 part 7).
     compactor: Option<Arc<dyn crate::compactor::Compactor>>,
+    /// The built-in pipeline's model when it isn't the agent's own.
+    compaction_provider: Option<Arc<dyn Provider>>,
 }
 
 impl Agent {
@@ -376,6 +378,7 @@ impl Agent {
             triggers: None,
             from_person: false,
             compactor: None,
+            compaction_provider: None,
         }
     }
 
@@ -383,6 +386,15 @@ impl Agent {
     /// pipeline (e.g. the checklist template on a cheaper model).
     pub fn with_compactor(mut self, compactor: Arc<dyn crate::compactor::Compactor>) -> Self {
         self.compactor = Some(compactor);
+        self
+    }
+
+    /// Summarize compactions on `provider` (`[agent] compaction_model`)
+    /// instead of the agent's own model. The call is the agent's like any
+    /// other: retried, a ledger row, charged to the budget, under the kill
+    /// switch.
+    pub fn with_compaction_provider(mut self, provider: Arc<dyn Provider>) -> Self {
+        self.compaction_provider = Some(provider);
         self
     }
 
@@ -702,6 +714,7 @@ impl Agent {
         iteration: usize,
         call_kind: &str,
     ) -> Result<CompletionResponse, CoreError> {
+        let provider = self.provider_for(call_kind);
         let mut waited = Duration::ZERO;
         let mut attempt = 1;
         // A provider marks each failed model down, so this ends anyway;
@@ -719,7 +732,7 @@ impl Agent {
                 workspace: Some(self.tool_ctx.workspace.clone()),
             };
             let (served, result) =
-                crate::provider::with_call_context(ctx, self.provider.complete_routed(req)).await;
+                crate::provider::with_call_context(ctx, provider.complete_routed(req)).await;
             let latency_ms = start.elapsed().as_millis() as u64;
             let retry_in = match &result {
                 Err(e) => self.config.retry.delay(e, attempt, waited),
@@ -727,10 +740,10 @@ impl Agent {
             };
             // M25: a failure a stronger model may not repeat moves the turn
             // up a tier, and the same request goes again there.
-            let route = self.provider.route_tag();
+            let route = provider.route_tag();
             let escalated = match (&result, retry_in) {
-                (Err(e), None) if self.provider.routes() => crate::routing::escalates_on(e)
-                    .and_then(|class| self.provider.escalate(&Signal::CallFailed(class))),
+                (Err(e), None) if provider.routes() => crate::routing::escalates_on(e)
+                    .and_then(|class| provider.escalate(&Signal::CallFailed(class))),
                 _ => None,
             };
             // Out of retries, and no tier up: the next model in the owner's
@@ -738,7 +751,7 @@ impl Agent {
             // M36 §6.2: any provider error, not only an outage.
             let fell_over = match (&result, retry_in, &escalated) {
                 (Err(e), None, None) if fallbacks < 8 && crate::failure::falls_back(e) => {
-                    self.provider.fail_over(served.as_ref(), e)
+                    provider.fail_over(served.as_ref(), e)
                 }
                 _ => None,
             };
@@ -797,6 +810,15 @@ impl Agent {
             tokio::time::sleep(delay).await;
             waited += delay;
             attempt += 1;
+        }
+    }
+
+    /// The provider a call of this kind runs on: the compaction model's
+    /// for a summary, when one is set (`[agent] compaction_model`).
+    fn provider_for(&self, call_kind: &str) -> &dyn Provider {
+        match (&self.compaction_provider, call_kind) {
+            (Some(p), "compaction") => p.as_ref(),
+            _ => self.provider.as_ref(),
         }
     }
 
@@ -884,7 +906,7 @@ impl Agent {
             origin: ledger.origin.clone(),
             provider: served
                 .map(|s| s.provider.clone())
-                .unwrap_or_else(|| self.provider.name().to_string()),
+                .unwrap_or_else(|| self.provider_for(call_kind).name().to_string()),
             model: served
                 .map(|s| s.model.clone())
                 .unwrap_or_else(|| ledger.model.clone()),
@@ -1135,9 +1157,13 @@ impl Agent {
                 return self.wrap_up(&tx, iteration, StopReason::Budget(why)).await;
             }
             self.deliver_inbox();
-            self.maybe_compact(&tx, iteration).await?;
             let guard = self.guard.clone();
-            let call = self.call_provider(&tx, self.request(), iteration, "turn");
+            // A compaction calls a model too: the kill switch reaches it.
+            let call = async {
+                self.maybe_compact(&tx, iteration).await?;
+                self.call_provider(&tx, self.request(), iteration, "turn")
+                    .await
+            };
             let resp = match unless_halted(guard.as_ref(), call).await {
                 Ok(resp) => resp?,
                 Err(why) => return Ok(self.halt(&tx, iteration, why).await),
@@ -1536,20 +1562,23 @@ impl Agent {
              working for, in their language: say first that you stopped before finishing and why, then what \
              you got done, what is blocking, and the next step or the question they need to answer."
         )));
-        if let Err(e) = self.maybe_compact(tx, iterations).await {
-            warn!("compaction before the status answer failed: {e}");
-        }
-        // The tools stay declared: some APIs refuse a history that holds
-        // tool calls when the request has no tools.
-        let resp = match self
-            .call_provider(tx, self.request(), iterations, "status")
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => {
+        let guard = self.guard.clone();
+        let call = async {
+            if let Err(e) = self.maybe_compact(tx, iterations).await {
+                warn!("compaction before the status answer failed: {e}");
+            }
+            // The tools stay declared: some APIs refuse a history that holds
+            // tool calls when the request has no tools.
+            self.call_provider(tx, self.request(), iterations, "status")
+                .await
+        };
+        let resp = match unless_halted(guard.as_ref(), call).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => {
                 warn!("the status answer failed: {e}");
                 return Err(reason.into_error());
             }
+            Err(halt) => return Ok(self.halt(tx, iterations, halt).await),
         };
         self.add_usage(tx, &resp.usage).await;
         let mut msg = resp.message;
@@ -2039,8 +2068,9 @@ impl Agent {
         self.fire(tx, HookEvent::PreCompact, input.clone()).await;
 
         let summary = match &self.compactor {
-            // A strategy (M42 part 7) owns its model and its errors; the
-            // fold record it produces is the same either way.
+            // A strategy (M42 part 7) owns its model and its errors (no
+            // retry, ledger row or budget charge of the agent's); the fold
+            // record it produces is the same either way.
             Some(compactor) => compactor.summarize(&transcript_text).await?,
             None => {
                 let summary_req = CompletionRequest {
@@ -3080,6 +3110,146 @@ mod tests {
         let summary = agent.messages[0].content.clone().unwrap();
         assert!(summary.starts_with("[Compaction summary"));
         assert!(!summary.contains(&block), "the tail already holds it");
+    }
+
+    /// A profile and config under which four fillers compact.
+    fn compacting() -> (HarnessProfile, AgentConfig) {
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 1_000;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 0.1;
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            retry: fast_retry(3),
+            ..Default::default()
+        };
+        (profile, config)
+    }
+
+    fn fillers() -> impl Iterator<Item = Message> {
+        (0..4).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50))))
+    }
+
+    /// The cheaper model: one 503, then a summary that cost 10 tokens.
+    struct Cheap(Mutex<u32>);
+
+    #[async_trait::async_trait]
+    impl Provider for Cheap {
+        fn name(&self) -> &str {
+            "cheap"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let mut left = self.0.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
+                return Err(CoreError::Transient {
+                    message: "HTTP 503".into(),
+                    retry_after: None,
+                });
+            }
+            Ok(CompletionResponse {
+                message: say("CHEAP SUMMARY"),
+                usage: Usage {
+                    input_tokens: 7,
+                    output_tokens: 3,
+                    ..Usage::default()
+                },
+                stop_reason: None,
+            })
+        }
+    }
+
+    /// `[agent] compaction_model`: the summary runs on its own model, as
+    /// the agent's own call: retried, a ledger row a try, charged to the
+    /// budget.
+    #[tokio::test]
+    async fn a_compaction_model_call_is_retried_recorded_and_charged() {
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
+        let budget = Arc::new(CapBudget {
+            spent: Mutex::new(0),
+            cap: 1_000,
+        });
+        let own = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let (profile, config) = compacting();
+        let mut agent = Agent::new(
+            own.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_compaction_provider(Arc::new(Cheap(Mutex::new(1))))
+        .with_ledger(sink.clone(), "chat", None, "m")
+        .with_budget(budget.clone());
+        agent.messages.extend(fillers());
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+
+        assert!(own.prompts.lock().unwrap().is_empty(), "the agent's model");
+        assert!(agent.messages[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("CHEAP SUMMARY"));
+        let rows: Vec<(String, String, String)> = sink
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| (r.call_kind.clone(), r.outcome.clone(), r.provider.clone()))
+            .collect();
+        let row = |o: &str| ("compaction".to_string(), o.to_string(), "cheap".to_string());
+        assert_eq!(rows, [row("retried"), row("ok")]);
+        assert_eq!(*budget.spent.lock().unwrap(), 10);
+    }
+
+    /// The kill switch reaches a compaction in flight, as it does a turn.
+    #[tokio::test]
+    async fn a_halt_ends_a_compaction_in_flight() {
+        struct Hang;
+        #[async_trait::async_trait]
+        impl Provider for Hang {
+            fn name(&self) -> &str {
+                "hang"
+            }
+            async fn complete(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, CoreError> {
+                std::future::pending().await
+            }
+        }
+        let guard = Arc::new(TestGuard::new());
+        let (profile, config) = compacting();
+        let mut agent = Agent::new(
+            Arc::new(CapturingProvider {
+                prompts: Mutex::new(Vec::new()),
+            }),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_compaction_provider(Arc::new(Hang))
+        .with_guard(guard.clone());
+        agent.messages.extend(fillers());
+        let halt = guard.halt.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            halt.send_replace(Some("Stopped.".into()));
+        });
+        let (tx, _rx) = events();
+        let answer = tokio::time::timeout(Duration::from_secs(10), agent.run("go", tx))
+            .await
+            .expect("the halt ends the compaction")
+            .unwrap();
+        assert_eq!(answer, "Stopped.");
     }
 
     fn fast_retry(max_attempts: u32) -> RetryPolicy {

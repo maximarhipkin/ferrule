@@ -186,13 +186,15 @@ Pi's two state-layer ideas, mapped to ferrule:
   the seam (`summarize(transcript_text) -> summary`); the agent keeps the
   built-in checklist pipeline on its own model when none is set, and the
   fold record doesn't change either way. The first strategy is
-  `TemplateCompactor` — the same template on a *different* model, wired
-  as `[agent] compaction_model = "fast"` (resolved and validated at agent
-  build, routed through the model catalog with fallbacks). Pi's other
-  examples (topic-based folding, a custom prompt) are now one trait impl
-  away. A strategy's calls don't get ledger rows yet (the agent's
-  `call_provider` path, which owns ledger/retries, stays the default
-  path's).
+  `TemplateCompactor` — the same template on any provider it's handed.
+  Pi's other examples (topic-based folding, a custom prompt) are now one
+  trait impl away. A strategy's calls don't get the agent's ledger rows,
+  retries, budget charge or kill switch. `[agent] compaction_model =
+  "fast"` (resolved and validated at agent build, routed through the
+  model catalog with fallbacks) therefore isn't a strategy since
+  2026-10-19: the agent runs its own pipeline on that model
+  (`Agent::with_compaction_provider`), through `call_provider` like every
+  other model call.
 - **Session tree.** A transcript forks: `Transcript::open` reads a
   session without writing to it, `fork(session_id, at)` writes a new
   transcript with `parent`/`fork_at` meta and the fold-applied messages
