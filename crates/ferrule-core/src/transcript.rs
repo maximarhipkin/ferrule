@@ -80,8 +80,7 @@ impl Transcript {
     pub fn read_meta(&self) -> Result<Vec<(String, String)>, CoreError> {
         let text = fs::read_to_string(&self.path)?;
         let mut out = Vec::new();
-        for l in text.lines() {
-            let v: serde_json::Value = serde_json::from_str(l)?;
+        for v in self.records(&text) {
             if v.get("type").and_then(|t| t.as_str()) == Some("meta") {
                 let key = v["key"].as_str().unwrap_or_default().to_string();
                 let value = v["value"].as_str().unwrap_or_default().to_string();
@@ -136,6 +135,23 @@ impl Transcript {
         Ok(())
     }
 
+    /// Each line's record. A line that isn't JSON (torn by a crash or a
+    /// full disk mid-write) is skipped, not fatal: failing here would
+    /// resume the chat with no history at all. Requests are re-paired
+    /// (`agent::paired`), so a call or result lost with it costs nothing
+    /// more. ponytail: the record appended onto a torn line is lost with it.
+    fn records(&self, text: &str) -> Vec<serde_json::Value> {
+        text.lines()
+            .filter_map(|l| match serde_json::from_str(l) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(path = %self.path.display(), error = %e, "transcript: skipping a line that isn't JSON");
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Read back the messages a resume replays: every message record, with
     /// fold records applied — a fold replaces all but the last `kept`
     /// logged messages with its summary, so a resumed session continues
@@ -143,8 +159,7 @@ impl Transcript {
     pub fn read_messages(&self) -> Result<Vec<Message>, CoreError> {
         let text = fs::read_to_string(&self.path)?;
         let mut out: Vec<Message> = Vec::new();
-        for l in text.lines() {
-            let v: serde_json::Value = serde_json::from_str(l)?;
+        for v in self.records(&text) {
             match v.get("type").and_then(|t| t.as_str()) {
                 Some("message") => out.push(serde_json::from_value(v["message"].clone())?),
                 Some("fold") => {
@@ -167,8 +182,7 @@ impl Transcript {
     pub fn read_all_logged(&self) -> Result<Vec<Message>, CoreError> {
         let text = fs::read_to_string(&self.path)?;
         let mut out = Vec::new();
-        for l in text.lines() {
-            let v: serde_json::Value = serde_json::from_str(l)?;
+        for v in self.records(&text) {
             match v.get("type").and_then(|t| t.as_str()) {
                 Some("message") | Some("fold") => {
                     out.push(serde_json::from_value(v["message"].clone())?)
