@@ -481,7 +481,7 @@ is to make Ferrule change itself without the owner meaning it.
 | Update: the re-exec of the new path fails | The process execs `/proc/self/exe` (the old inode), and on start the promise says "Ferrule {to} is installed (was {from}), but this process still runs {current}: send /restart." | the new binary on disk, the old one running |
 | Update (units): the new version doesn't come up | M36 rolls back and pins: "Ferrule {to} didn't start properly, so I went back to {from} and won't try {to} again." in the same chat | the old binary |
 | Restart: unsupervised Windows | "Restarting from the chat isn't available on Windows yet; nothing changed." | running |
-| The promise is stale (a restart over 15 minutes old, an update over 7 hours with no event) | "I restarted, but couldn't confirm the update; /status shows the version." | promise cleared |
+| The promise is stale (a restart over 15 minutes old, an update over 7 hours with no event) | "I couldn't confirm the update: the updater never reported back. /status shows the version I run." | promise cleared |
 | Admin not yet bound at start-up | "Ferrule is still starting; ask again in a few seconds." | nothing changed |
 | Telegram rejects the keyboard | `send_with_buttons` falls back to text; the text still says how to reply | question waits |
 

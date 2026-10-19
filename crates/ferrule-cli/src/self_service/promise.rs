@@ -119,7 +119,7 @@ pub fn expire(data: &Path, owner: &dyn Owner) {
         let _ = take(data);
         owner.tell_in(
             &p.chat(),
-            "I restarted, but couldn't confirm the update; /status shows the version.".into(),
+            "I couldn't confirm the update: the updater never reported back. /status shows the version I run.".into(),
         );
     }
 }
