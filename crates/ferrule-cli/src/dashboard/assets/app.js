@@ -165,6 +165,48 @@
     d.showModal();
   }
 
+  // Where an answer goes: in a connect panel (M50), at the end of the card
+  // the button is in, so it's read where the owner is looking; a toast
+  // otherwise. A failure puts focus on that card's first empty field, a
+  // key that was wiped once sent included, so the fix is one paste away.
+  function sayFor(button, t, bad) {
+    const panel = button && button.closest ? button.closest("dialog.connect") : null;
+    if (!panel) return toast(t, bad ? "bad" : "");
+    const card = button.closest(".card");
+    const host = card && panel.contains(card) ? card : panel.querySelector(".cp-said");
+    const line = el("div", { class: "said " + (bad ? "bad" : "ok"), role: bad ? "alert" : "status", "data-said": "1" }, linkify(t));
+    const old = host.querySelector(":scope > [data-said]");
+    if (old) old.replaceWith(line); else host.append(line);
+    if (bad) {
+      const empty = [...host.querySelectorAll("input:not([type=checkbox]):not([type=hidden]), textarea")].find((i) => !i.value);
+      if (empty) empty.focus();
+    }
+  }
+
+  // M50: one thing to connect, in a dialog (a full screen on a phone): what
+  // it gives the bot, what you need, the steps with real links, its form,
+  // and the answer under the form. `body` is the form the page already
+  // has for it, drawn here unchanged. Closing it redraws the page behind.
+  function connectPanel({ title, intro, need, steps, body }) {
+    const back = document.activeElement;
+    const d = el("dialog", { class: "dlg connect", "aria-labelledby": "cp-title" });
+    const close = el("button", { type: "button", class: "ghost icon", "aria-label": tr("Close"), title: tr("Close"), onclick: () => d.close() }, icon("x"));
+    d.append(
+      el("div", { class: "cp-head" }, el("h2", { id: "cp-title", dir: "auto", text: title }), close),
+      el("div", { class: "cp-body stack" },
+        intro ? el("p", { class: "lead msg", dir: "auto", text: intro }) : null,
+        need ? el("p", { class: "muted small msg", dir: "auto", text: "You need: " + need }) : null,
+        (steps || []).length ? el("ol", { class: "guide" }, steps.map((x) => el("li", {}, typeof x === "string" ? linkify(x) : x))) : null,
+        body,
+        el("div", { class: "cp-said" })));
+    d.addEventListener("close", () => { d.remove(); if (back && back.focus) back.focus(); refresh(); });
+    document.body.append(d);
+    d.showModal();
+    const first = d.querySelector(".cp-body input:not([type=checkbox]), .cp-body button");
+    if (first) first.focus();
+    return d;
+  }
+
   // A POST; a destructive one comes back 409 with its question, and goes
   // again with `confirm` once the owner says yes. The button shows it is
   // working and can't be pressed twice.
@@ -183,7 +225,7 @@
         if (!yes) return null;
         r = await api("/api/" + path, Object.assign({}, body, { confirm: true }));
       }
-      if (r.said) toast(r.said, r.ok === false ? "bad" : "");
+      if (r.said) sayFor(button, r.said, r.ok === false);
       if (r.links) linksDialog(r.links);
       // What was typed next to the button went in: the redraw may drop it.
       const box = button && button.closest(".card, .opt, .check, .alert");
@@ -192,7 +234,7 @@
       refresh();
       return r;
     } catch (e) {
-      toast(e.message, true);
+      sayFor(button, e.message, true);
       return null;
     } finally {
       if (button) button.removeAttribute("aria-busy");
@@ -718,47 +760,62 @@
   // The first-run checklist keeps its open panels between polls: a step's
   // form is drawn once into a box that outlives every redraw of the page.
   const home = {
-    open: null,
-    boxes: {},
-    models: null,
-    channels: null,
     hidden: () => { try { return localStorage.getItem("ferrule-setup-hidden") === "1"; } catch (_) { return false; } },
     hide() { try { localStorage.setItem("ferrule-setup-hidden", "1"); } catch (_) { /* private mode */ } },
     show() { try { localStorage.removeItem("ferrule-setup-hidden"); } catch (_) { /* private mode */ } },
-    box(id) { return this.boxes[id] || (this.boxes[id] = el("div", { class: "step-panel stack" })); },
-    // The Models section's provider forms, drawn into this box: same code,
-    // same calls, so a key typed here is tested and saved the same way.
+    // The Models section's provider forms, drawn into a box of their own:
+    // same code, same calls, so a key typed here is tested and saved the
+    // same way. Three first, for someone who has never picked a model; the
+    // rest one tap away. Once one works, the next step is right there.
     modelPanel() {
-      const fresh = !this.boxes.model;
-      const box = this.box("model");
-      if (!this.models) {
-        const M = this.models = Object.create(sections.models);
-        M.fbEdited = false;
-        M.home = true;
-        M.drawChoices = function () {
-          const ps = (this.choices && this.choices.providers) || [];
-          setKids(box, ps.length ? el("div", { class: "tiles" }, ps.map((p) => this.provider(p))) : el("p", { class: "muted", text: "No provider is listed." }));
-        };
-        M.loadChoices = async function () {
-          try { this.choices = await api("/api/models/choices"); } catch (e) { return sectionError(box, e); }
-          this.drawChoices();
-          refresh();
-        };
-      }
-      if (fresh) this.models.loadChoices();
+      const box = el("div", { class: "stack" });
+      const M = Object.create(sections.models);
+      M.fbEdited = false;
+      M.home = true;
+      M.drawChoices = function () {
+        const ps = (this.choices && this.choices.providers) || [];
+        const picks = BRAINS.map(([name, why]) => [ps.find((p) => p.name === name), why]).filter(([p]) => p);
+        const rest = ps.filter((p) => !BRAINS.some(([name]) => name === p.name));
+        const working = ps.some((p) => p.connected && p.ready);
+        setKids(box,
+          working ? el("div", { class: "said ok row" }, el("span", { class: "grow", text: "Your bot has a brain. Say hello to try it." }),
+            button("Say hello", { kind: "primary", icon: "send", onclick: (e) => hello(e.currentTarget) })) : null,
+          picks.map(([p, why]) => el("div", { class: "stack" }, el("p", { class: "muted small m0", text: why }), this.provider(p))),
+          rest.length ? disc("brains-more", "card", "More providers (" + rest.length + ")",
+            el("div", { class: "tiles details-body" }, rest.map((p) => this.provider(p)))) : null);
+      };
+      M.loadChoices = async function () {
+        try { this.choices = await api("/api/models/choices"); } catch (e) { return sectionError(box, e); }
+        this.drawChoices();
+        refresh();
+      };
+      M.loadChoices();
       return box;
     },
     // The Channels section's Telegram walk-through (token, wait, allow).
     telegramPanel() {
-      const fresh = !this.boxes.telegram;
-      const box = this.box("telegram");
-      if (!this.channels) {
-        const C = this.channels = Object.create(sections.channels);
-        C.said = {};
-        C.load = function () { setKids(box, this.telegram({ configured: false })); };
-      }
-      if (fresh) this.channels.load();
+      const box = el("div");
+      const C = Object.create(sections.channels);
+      C.said = {};
+      C.load = function () { setKids(box, this.telegram({ configured: false })); };
+      C.load();
       return box;
+    },
+    openModel() {
+      connectPanel({ title: "Give your bot a brain", intro: "The model your bot thinks with. A key or a sign-in is tested before it's saved, and it never comes back to this page.",
+        need: "an account with one of these · about 3 minutes", body: this.modelPanel() });
+    },
+    openTelegram() {
+      connectPanel({ title: "Connect Telegram", intro: "Talk to your bot from your phone, in a private chat only you are allowed into.",
+        need: "the Telegram app · about 3 minutes",
+        steps: [
+          frag("In Telegram, open ", el("a", { href: "https://t.me/BotFather", target: "_blank", rel: "noopener", text: "@BotFather" }), " and send /newbot."),
+          "Give it a name, then a username that ends in bot.",
+          "Copy the token BotFather sends, paste it below, then press Test and Save.",
+          "Press Wait for a message and write anything to your new bot, then Allow your chat.",
+          "Press Restart to turn Telegram on.",
+        ],
+        body: this.telegramPanel() });
     },
   };
 
@@ -778,6 +835,23 @@
     return ["ok", "Your bot is running. All quiet."];
   }
 
+  // The three a beginner is offered first (M50): no key at all, one key for
+  // hundreds of models, and Claude.
+  const BRAINS = [
+    ["chatgpt", "No key: sign in with the ChatGPT plan you already pay for."],
+    ["openrouter", "One key, hundreds of models, pay as you go."],
+    ["anthropic", "Claude, with a key from Anthropic's console."],
+  ];
+
+  // The first hello: sent from here, answered in Chat.
+  async function hello(b) {
+    if (b) b.setAttribute("aria-busy", "true");
+    try { await api("/api/chat/send", { text: "Hi! Introduce yourself in two lines." }); } catch (e) { sayFor(b, e.message, true); if (b) b.removeAttribute("aria-busy"); return; }
+    const panel = b && b.closest("dialog");
+    if (panel) panel.close();
+    show("chat");
+  }
+
   function checklist(s) {
     const steps = s.steps;
     const n = steps.filter((x) => x.done).length;
@@ -786,20 +860,13 @@
       if (x.id === "hello") {
         const b = button(x.done ? "Open chat" : "Say hello", { kind: x.done ? null : "primary", icon: "send" });
         b.disabled = !modelDone && !x.done;
-        b.onclick = async () => {
-          if (!x.done) {
-            b.setAttribute("aria-busy", "true");
-            try { await api("/api/chat/send", { text: "Hi! Introduce yourself in two lines." }); } catch (e) { toast(e.message, true); b.removeAttribute("aria-busy"); return; }
-          }
-          show("chat");
-        };
+        b.onclick = () => (x.done ? show("chat") : hello(b));
         return b;
       }
       if (x.done) return null;
-      const opened = home.open === x.id;
-      const b = button(opened ? "Close" : x.id === "model" ? "Set up" : "Connect", { kind: opened ? null : "primary" });
-      b.setAttribute("aria-expanded", String(opened));
-      b.onclick = () => { delete home.boxes[x.id]; home.open = opened ? null : x.id; sections.health.draw(); };
+      const b = button(x.id === "model" ? "Set up" : "Connect", { kind: "primary" });
+      b.setAttribute("aria-haspopup", "dialog");
+      b.onclick = () => (x.id === "model" ? home.openModel() : home.openTelegram());
       return b;
     };
     return el("section", { class: "card accent", "aria-labelledby": "setup-h" },
@@ -815,9 +882,7 @@
           el("div", { class: "t" }, x.label, x.done ? el("span", { class: "sr", text: " (done)" }) : null,
             x.skippable && !x.done ? el("span", { class: "muted small", text: " · optional" }) : null),
           el("div", { class: "d msg", dir: "auto", text: x.detail })),
-        more(x),
-        home.open === x.id && !x.done && x.id !== "hello"
-          ? (x.id === "model" ? home.modelPanel() : home.telegramPanel()) : null))));
+        more(x)))));
   }
 
   const QUICK = [
@@ -1249,7 +1314,7 @@
           const b = el("button", { class: "primary", text: "Sign in" });
           b.onclick = async () => {
             b.disabled = true;
-            try { this.chatgpt = await api("/api/plans/chatgpt/start", {}); this.pollChatgpt(); this.drawChoices(); } catch (e) { toast(e.message, true); b.disabled = false; }
+            try { this.chatgpt = await api("/api/plans/chatgpt/start", {}); this.pollChatgpt(); this.drawChoices(); } catch (e) { sayFor(b, e.message, true); b.disabled = false; }
           };
           box.append(el("div", { class: "row" }, b));
         }
@@ -1270,7 +1335,7 @@
       if (p.needs_key) {
         const k = el("input", { type: "password", name: "key", autocomplete: "new-password", placeholder: p.connected ? "paste a new key" : "paste the key", "data-secret": "1" });
         const b = el("button", { class: p.connected ? null : "primary", text: p.connected ? "Replace key" : "Test and save" });
-        b.onclick = () => { const v = k.value.trim(); wipeSecrets(box); if (v) act("models/provider", { provider: p.name, key: v }, b).then(() => this.loadChoices()); };
+        b.onclick = () => { const v = k.value.trim(); wipeSecrets(box); if (v) act("models/provider", { provider: p.name, key: v }, b).then((r) => { if (r) this.loadChoices(); }); };
         box.append(frag(
           p.key_url ? el("p", { class: "small" }, el("a", { href: p.key_url, target: "_blank", rel: "noopener", text: "Get a key" }),
             el("span", { class: "muted", text: " · tested before it's saved; it never comes back to this page" })) : null,
@@ -1300,8 +1365,8 @@
       while (this.chatgpt && this.chatgpt.state === "waiting") {
         await new Promise((r) => setTimeout(r, 3000));
         try { this.chatgpt = await api("/api/plans/chatgpt/poll"); } catch (_) { break; }
-        if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); break; }
-        if ((current === "models" || (this.home && current === "health")) && !this.fbEdited) this.drawChoices();
+        if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); if (this.home) this.loadChoices(); break; }
+        if ((current === "models" || this.home) && !this.fbEdited) this.drawChoices();
       }
     },
   };
@@ -1683,7 +1748,7 @@
       go.onclick = async () => {
         const vals = values(fields);
         const missing = (o.fields || []).filter((f) => !f.optional && !vals[f.name]).map((f) => f.label);
-        if (missing.length) { toast("Still empty: " + missing.join(", "), true); return; }
+        if (missing.length) { sayFor(go, "Still empty: " + missing.join(", "), true); return; }
         wipeSecrets(box);
         const r = await act("connections/key", { service: o.name, fields: vals, write: write.checked }, go);
         if (!r) return;
