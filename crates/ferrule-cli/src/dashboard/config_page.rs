@@ -47,7 +47,15 @@ fn guarded_key(key: &str) -> bool {
         || k.contains("roots")
         || matches!(
             k.as_str(),
-            "args" | "env" | "binary" | "program" | "cloudflared" | "endpoint" | "issuer"
+            "args"
+                | "env"
+                | "binary"
+                | "program"
+                | "cloudflared"
+                | "endpoint"
+                | "issuer"
+                | "sandbox"
+                | "signal_cli"
         )
         || k.ends_with("_env")
         || k.ends_with("url")
@@ -149,8 +157,36 @@ fn leaves(doc: &DocumentMut) -> BTreeMap<String, String> {
     out
 }
 
+/// A name two tables of one array share (`[[mcp.servers]]`), as a path.
+/// [`walk`] keys those tables by name, so the second would hide what the
+/// first changes from [`guarded_change`].
+fn twice_named(table: &toml_edit::Table, path: &str) -> Option<String> {
+    table.iter().find_map(|(k, item)| {
+        let here = if path.is_empty() {
+            k.to_string()
+        } else {
+            format!("{path}.{k}")
+        };
+        match item {
+            Item::Table(t) => twice_named(t, &here),
+            Item::ArrayOfTables(a) => {
+                let mut seen = std::collections::HashSet::new();
+                a.iter()
+                    .filter_map(|t| t.get("name").and_then(Item::as_str))
+                    .find(|n| !seen.insert(*n))
+                    .map(|n| format!("{here}.[{n}]"))
+                    .or_else(|| a.iter().find_map(|t| twice_named(t, &here)))
+            }
+            _ => None,
+        }
+    })
+}
+
 /// The first field the page may not change that `new` changes.
 fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<String> {
+    if let Some(twice) = twice_named(new.as_table(), "") {
+        return Some(twice);
+    }
     let (a, b) = (leaves(old), leaves(new));
     let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
     keys.sort();
