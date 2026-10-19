@@ -1707,6 +1707,73 @@ fn a_sibling_with_auto_off_holds_the_units_runs() {
     );
 }
 
+/// A chat's /update with the units: the promise, the unit's run with `a`,
+/// then what the gateway's watch tells that chat.
+async fn answered(s: &Setup, a: &Apply<'_>, held: Option<&str>) -> String {
+    use crate::self_service::promise::{self, Kind};
+    let chat = ferrule_trust::ChatRef::new("telegram", "42");
+    let after = State::load(&s.state_dir).events.last().map_or(0, |e| e.id);
+    let from = "0.5.1".to_string();
+    promise::make(&s.data, &chat, Kind::Update { from, after }).unwrap();
+    let _ = super::requested(a, held).await;
+    let fake = Arc::new(FakeOwner::default());
+    let owner: Arc<dyn Owner> = fake.clone();
+    watch(&s.data, true, None, Source::new("http://127.0.0.1:9"))
+        .tick(&owner)
+        .await
+        .unwrap();
+    let said: Vec<String> = fake
+        .told_in
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
+    assert!(!promise::exists(&s.data), "unanswered: {said:?}");
+    assert!(told(&fake).is_empty(), "{:?}", told(&fake));
+    said.join("\n")
+}
+
+#[tokio::test]
+async fn an_update_asked_for_that_installs_nothing_still_answers_the_chat() {
+    let s = setup().await;
+    let service = fake(&s.data, "0.6.0");
+    // The gateway stayed busy.
+    mark(&s.data, "0.5.1", true, 600);
+    let said = answered(&s, &apply(&s, Some(&service)), None).await;
+    assert!(
+        said.starts_with("Ferrule wasn't updated: turns were still running"),
+        "{said}"
+    );
+    std::fs::remove_file(s.data.join("gateway").join(RUNNING_FILE)).unwrap();
+    // Another update holds the lock.
+    let lock = Lock::take(&s.state_dir).unwrap();
+    let said = answered(&s, &apply(&s, Some(&service)), None).await;
+    assert!(said.contains("another update is running"), "{said}");
+    drop(lock);
+    // The check fails.
+    let offline = Apply {
+        source: Source::new("http://127.0.0.1:9"),
+        ..apply(&s, Some(&service))
+    };
+    let said = answered(&s, &offline, None).await;
+    assert!(said.starts_with("Ferrule wasn't updated: "), "{said}");
+    // Nothing newer; then the same, held by a sibling: answered each time.
+    let mut newest = apply(&s, Some(&service));
+    newest.current = v("0.6.0");
+    let said = answered(&s, &newest, None).await;
+    assert_eq!(said, "Ferrule wasn't updated: 0.6.0 is the newest release");
+    let said = answered(&s, &newest, Some("work")).await;
+    assert!(said.contains("`work`"), "{said}");
+    assert_eq!(*service.restarts.lock().unwrap(), 0);
+    // Answers, not standing failures: /status doesn't show them.
+    let report = super::report(&s.data, None, true);
+    assert!(
+        report.iter().all(|(_, l)| !l.contains("wasn't installed")),
+        "{report:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_rollback_is_told_in_the_chat_that_asked() {
     use crate::self_service::promise::{self, Kind};

@@ -119,7 +119,10 @@ The owner can update from the conversation, with no terminal:
 - **Install.** After Allow, the install runs once the turn is over. With the
   update units it asks the apply job (idle wait, swap, watch, rollback as
   above). Without them the gateway swaps the binary itself, checks that the
-  new one starts (`--version`) before the swap, and re-executes.
+  new one starts (`--version`) before the swap, and re-executes. An apply
+  job that installs nothing still answers the chat: "Ferrule wasn't
+  updated: …" with the reason (up to date, turns still running after the
+  wait, a failed check, another update holding the lock).
 - **The promise.** Before it restarts, the gateway writes a small note
   (`<data>/self-service/promise.json`: the chat and what was asked). The next
   gateway reads it, and says where you asked: "Back after the update: now
