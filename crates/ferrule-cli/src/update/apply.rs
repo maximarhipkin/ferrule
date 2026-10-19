@@ -243,6 +243,15 @@ impl Apply<'_> {
                 self.health_for.as_secs()
             ),
         };
+        // A restart command that failed says nothing about the release:
+        // it isn't pinned, so the next run tries it again.
+        if restarted.is_err() {
+            let why = format!("{why}; {from} is back and {to} can be tried again");
+            self.each_state(|state| {
+                state.push(EventKind::Failed, &from, &to, &why);
+            })?;
+            bail!(why);
+        }
         self.each_state(|state| {
             state.pin(&release.tag);
             state.push(EventKind::RolledBack, &from, &to, &why);

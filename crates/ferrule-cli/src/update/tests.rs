@@ -735,6 +735,44 @@ async fn without_a_service_the_binary_is_swapped_and_a_restart_is_owed() {
     );
 }
 
+/// A service whose nth restart does what its closure says.
+struct Scripted<F>(F, Mutex<u32>);
+
+impl<F: Fn(u32) -> Result<()> + Send + Sync> Service for Scripted<F> {
+    fn restart(&self) -> Result<()> {
+        let mut n = self.1.lock().unwrap();
+        *n += 1;
+        (self.0)(*n)
+    }
+}
+
+#[tokio::test]
+async fn a_restart_that_cant_run_rolls_back_without_pinning() {
+    let s = setup().await;
+    // A booted-out launchd job: kickstart can't find it.
+    let service = Scripted(
+        |_| anyhow::bail!("launchctl kickstart failed: Could not find service"),
+        Mutex::new(0),
+    );
+    let e = apply(&s, Some(&service))
+        .run(&Want::default())
+        .await
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("the restart failed"), "{e:#}");
+    assert_eq!(std::fs::read(&s.exe).unwrap(), b"old");
+    let state = State::load(&s.state_dir);
+    assert!(!state.is_pinned("v0.6.0"), "0.6.0 never ran: not its fault");
+    let last = state.events.last().unwrap();
+    assert_eq!((last.kind, last.to.as_str()), (EventKind::Failed, "0.6.0"));
+    assert!(last.notes.contains("Could not find service"), "{last:?}");
+    // The next run tries it again.
+    let fine = fake(&s.data, "0.6.0");
+    assert!(matches!(
+        apply(&s, Some(&fine)).run(&Want::default()).await.unwrap(),
+        Outcome::Updated { .. }
+    ));
+}
+
 #[tokio::test]
 async fn a_refused_release_is_recorded_once() {
     let s = setup().await;

@@ -60,6 +60,13 @@ binary goes back, the service restarts again, and the bad version is
 **pinned**: it is never tried automatically again. Sending `/update` in your
 chat (or `ferrule update --to <tag>` in a terminal) retries it and unpins it.
 
+If **the restart command itself fails** (`systemctl restart`,
+`launchctl`), that says nothing about the release: the old binary goes
+back and nothing is pinned, so the next run tries it again. On macOS a
+gateway job that was booted out (`launchctl bootout`) isn't found by
+`launchctl kickstart`, so the restart loads it again from its plist
+(`launchctl bootstrap`), as `systemctl restart` starts a stopped unit.
+
 You hear about it once, in your chat:
 
 - "Updated Ferrule 0.7.0 → 0.7.1: <the release notes' first line>"
