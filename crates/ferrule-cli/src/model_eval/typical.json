@@ -26,10 +26,10 @@
       "calls": 10
     },
     "config-migration": {
-      "input": 99329,
+      "input": 94433,
       "cached_input": 0,
-      "output": 368,
-      "calls": 8
+      "output": 461,
+      "calls": 11
     },
     "incident-report": {
       "input": 115186,

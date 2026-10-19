@@ -7,7 +7,7 @@
       "Err": "provider returned malformed response: no choices"
     },
     {
-      "Err": "provider error: HTTP 400: context window"
+      "Ok": "second turn"
     },
     {
       "Ok": "second turn"
@@ -19,7 +19,7 @@
       "type": "run_started"
     },
     {
-      "est_tokens": 15,
+      "est_tokens": 42,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -46,7 +46,7 @@
       "type": "tool_call_finished"
     },
     {
-      "est_tokens": 30,
+      "est_tokens": 57,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -71,7 +71,7 @@
       "type": "verify_finished"
     },
     {
-      "est_tokens": 72,
+      "est_tokens": 99,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -96,7 +96,7 @@
       "type": "tool_call_finished"
     },
     {
-      "est_tokens": 85,
+      "est_tokens": 112,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -123,7 +123,7 @@
       "type": "tool_call_finished"
     },
     {
-      "est_tokens": 104,
+      "est_tokens": 131,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -148,7 +148,7 @@
       "type": "tool_call_finished"
     },
     {
-      "est_tokens": 120,
+      "est_tokens": 147,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -175,7 +175,7 @@
       "type": "tool_call_finished"
     },
     {
-      "est_tokens": 137,
+      "est_tokens": 164,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -202,7 +202,7 @@
       "type": "tool_call_finished"
     },
     {
-      "est_tokens": 154,
+      "est_tokens": 181,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -229,7 +229,7 @@
       "type": "tool_call_finished"
     },
     {
-      "est_tokens": 171,
+      "est_tokens": 198,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -257,7 +257,7 @@
       "type": "tool_call_finished"
     },
     {
-      "est_tokens": 190,
+      "est_tokens": 217,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -291,7 +291,7 @@
       "type": "hook_finished"
     },
     {
-      "est_tokens": 215,
+      "est_tokens": 242,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -325,7 +325,7 @@
       "type": "run_started"
     },
     {
-      "est_tokens": 229,
+      "est_tokens": 256,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -334,23 +334,54 @@
       "type": "run_started"
     },
     {
-      "est_tokens": 235,
+      "est_tokens": 262,
       "threshold_tokens": 78400,
       "type": "context_ready"
+    },
+    {
+      "est_tokens_after": 122,
+      "est_tokens_before": 262,
+      "folded_messages": 16,
+      "type": "compacted"
+    },
+    {
+      "cache_write_input_tokens": 0,
+      "cached_input_tokens": 0,
+      "input_tokens": 115,
+      "output_tokens": 10,
+      "type": "usage"
+    },
+    {
+      "text": "second turn",
+      "type": "assistant_text"
+    },
+    {
+      "blocked": false,
+      "command": "nope",
+      "error": null,
+      "event": "Stop",
+      "exit_code": 0,
+      "source": "user",
+      "type": "hook_finished"
+    },
+    {
+      "answer_chars": 11,
+      "iterations": 1,
+      "type": "run_finished"
     },
     {
       "goal": "and again",
       "type": "run_started"
     },
     {
-      "est_tokens": 241,
+      "est_tokens": 134,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
     {
       "cache_write_input_tokens": 0,
       "cached_input_tokens": 0,
-      "input_tokens": 114,
+      "input_tokens": 116,
       "output_tokens": 10,
       "type": "usage"
     },
@@ -536,8 +567,32 @@
     },
     {
       "cached_input_tokens": 0,
-      "call_kind": "turn",
+      "call_kind": "compaction",
       "input_tokens": 114,
+      "iteration": 0,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 0
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 115,
+      "iteration": 0,
+      "model": "the-model",
+      "outcome": "ok",
+      "output_tokens": 10,
+      "provider": "plain",
+      "task_shape": "run",
+      "tool_calls": 0
+    },
+    {
+      "cached_input_tokens": 0,
+      "call_kind": "turn",
+      "input_tokens": 116,
       "iteration": 0,
       "model": "the-model",
       "outcome": "ok",
@@ -1896,135 +1951,21 @@
     {
       "messages": [
         {
+          "content": "Summarize this agent session so work can continue seamlessly. Fill every section (write \"none\" if empty):\n\n## Session Intent\n## Files Touched (full paths)\n## Key Decisions\n## Important Facts Established\n## Active Goals\n## Next Steps\n\nConversation to compress:\nsystem: You are a test agent.\n\nuser: fix the bug\n\nassistant: \n\ntool: [superseded by identical later tool result]\n\nassistant: done\n\nuser: [ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed\n\nassistant: \n\ntool: [superseded by identical later tool result]\n\nassistant: \n\ntool: error: tool `nosuch` not found\n\nassistant: \n\ntool: nothing about null\n\nassistant: \n\ntool: [superseded by identical later tool result]\n\nassistant: \n\ntool: [superseded by identical later tool result]\n\nassistant: \n\ntool: nothing about \"same\"",
+          "role": "user"
+        }
+      ],
+      "tools": []
+    },
+    {
+      "messages": [
+        {
           "content": "You are a test agent.",
           "role": "system"
         },
         {
-          "content": "fix the bug",
+          "content": "[Compaction summary of earlier session]\nsecond turn\n\nContinue from here.",
           "role": "user"
-        },
-        {
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "arguments": {
-                "path": "a.rs"
-              },
-              "id": "c4",
-              "name": "edit"
-            }
-          ]
-        },
-        {
-          "content": "wrote \"a.rs\"",
-          "role": "tool",
-          "tool_call_id": "c4"
-        },
-        {
-          "content": "done",
-          "role": "assistant"
-        },
-        {
-          "content": "[ferrule] `make test` fails, so this isn't done yet. Fix what it reports, then finish again; it runs again when you do.\n\n1 test failed",
-          "role": "user"
-        },
-        {
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "arguments": {},
-              "id": "c4",
-              "name": "look"
-            }
-          ]
-        },
-        {
-          "content": "nothing about null",
-          "role": "tool",
-          "tool_call_id": "c4"
-        },
-        {
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "arguments": {
-                "what": "x"
-              },
-              "id": "c6",
-              "name": "nosuch"
-            }
-          ]
-        },
-        {
-          "content": "error: tool `nosuch` not found",
-          "role": "tool",
-          "tool_call_id": "c6"
-        },
-        {
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "arguments": "not an object",
-              "id": "c4",
-              "name": "look"
-            }
-          ]
-        },
-        {
-          "content": "nothing about null",
-          "role": "tool",
-          "tool_call_id": "c4"
-        },
-        {
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "arguments": {
-                "what": "same"
-              },
-              "id": "c4",
-              "name": "look"
-            }
-          ]
-        },
-        {
-          "content": "nothing about \"same\"",
-          "role": "tool",
-          "tool_call_id": "c4"
-        },
-        {
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "arguments": {
-                "what": "same"
-              },
-              "id": "c4",
-              "name": "look"
-            }
-          ]
-        },
-        {
-          "content": "nothing about \"same\"",
-          "role": "tool",
-          "tool_call_id": "c4"
-        },
-        {
-          "role": "assistant",
-          "tool_calls": [
-            {
-              "arguments": {
-                "what": "same"
-              },
-              "id": "c4",
-              "name": "look"
-            }
-          ]
-        },
-        {
-          "content": "nothing about \"same\"",
-          "role": "tool",
-          "tool_call_id": "c4"
         },
         {
           "role": "assistant",
@@ -2063,6 +2004,64 @@
         {
           "content": "too long",
           "role": "user"
+        }
+      ],
+      "tools": [
+        "edit",
+        "look"
+      ]
+    },
+    {
+      "messages": [
+        {
+          "content": "You are a test agent.",
+          "role": "system"
+        },
+        {
+          "content": "[Compaction summary of earlier session]\nsecond turn\n\nContinue from here.",
+          "role": "user"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "arguments": {
+                "path": "a.rs",
+                "really": true
+              },
+              "id": "c4",
+              "name": "edit"
+            }
+          ]
+        },
+        {
+          "content": "wrote \"a.rs\"",
+          "role": "tool",
+          "tool_call_id": "c4"
+        },
+        {
+          "content": "done now",
+          "role": "assistant"
+        },
+        {
+          "content": "[hook: Stop] This isn't done yet:\n\nsay which file you changed",
+          "role": "user"
+        },
+        {
+          "content": "done: a.rs",
+          "role": "assistant"
+        },
+        {
+          "content": "a malformed answer",
+          "role": "user"
+        },
+        {
+          "content": "too long",
+          "role": "user"
+        },
+        {
+          "content": "second turn",
+          "role": "assistant"
         },
         {
           "content": "and again",

@@ -1,4 +1,4 @@
-use crate::error::CoreError;
+use crate::error::{CoreError, FailureClass};
 use crate::event::AgentEvent;
 use crate::guard::{unless_halted, Guard, GuardedCall, Verdict as GuardVerdict};
 use crate::history::{result_ref, SEARCH_HISTORY};
@@ -565,8 +565,19 @@ impl Agent {
     }
 
     fn est_context_tokens(&self) -> usize {
+        // Every request carries the tool schemas too; an MCP server's can
+        // run to thousands of tokens. ponytail: replayed native blocks
+        // (signed thinking, encrypted reasoning) aren't counted; when that
+        // misses, the provider's "too long" compacts anyway (`call_turn`).
+        let tools: usize = self
+            .tools
+            .definitions()
+            .iter()
+            .map(|t| (t.name.len() + t.description.len() + t.parameters.to_string().len()) / 4)
+            .sum();
         self.messages.iter().map(|m| m.est_tokens()).sum::<usize>()
             + crate::vision::est_tokens(&self.messages)
+            + tools
     }
 
     /// The ledger, when its sink wants trace events this run.
@@ -1161,8 +1172,7 @@ impl Agent {
             // A compaction calls a model too: the kill switch reaches it.
             let call = async {
                 self.maybe_compact(&tx, iteration).await?;
-                self.call_provider(&tx, self.request(), iteration, "turn")
-                    .await
+                self.call_turn(&tx, iteration, "turn").await
             };
             let resp = match unless_halted(guard.as_ref(), call).await {
                 Ok(resp) => resp?,
@@ -1569,8 +1579,7 @@ impl Agent {
             }
             // The tools stay declared: some APIs refuse a history that holds
             // tool calls when the request has no tools.
-            self.call_provider(tx, self.request(), iterations, "status")
-                .await
+            self.call_turn(tx, iterations, "status").await
         };
         let resp = match unless_halted(guard.as_ref(), call).await {
             Ok(Ok(resp)) => resp,
@@ -1991,16 +2000,62 @@ impl Agent {
             .collect()
     }
 
-    /// Compaction: deterministic dedupe first (free), then structured LLM
-    /// summary of everything before the trailing verbatim window.
+    /// The turn's model call (or the status answer's). A provider that
+    /// says the context is too long (the estimate missed: replayed
+    /// reasoning, a window smaller than the profile's) gets one compaction,
+    /// whatever the estimate, and the call once more.
+    async fn call_turn(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iteration: usize,
+        call_kind: &str,
+    ) -> Result<CompletionResponse, CoreError> {
+        match self
+            .call_provider(tx, self.request(), iteration, call_kind)
+            .await
+        {
+            Err(e)
+                if e.class() == FailureClass::ContextTooLong
+                    && self.config.overflow == ContextOverflow::Compact =>
+            {
+                warn!("the provider says the context is too long; compacting, then once more: {e}");
+                match self.compact(tx, iteration, true).await {
+                    Ok(true) => {
+                        self.call_provider(tx, self.request(), iteration, call_kind)
+                            .await
+                    }
+                    Ok(false) => Err(e),
+                    Err(failed) => {
+                        warn!("that compaction failed: {failed}");
+                        Err(e)
+                    }
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Compaction once the context passes the trigger.
     async fn maybe_compact(
         &mut self,
         tx: &mpsc::Sender<AgentEvent>,
         iteration: usize,
     ) -> Result<(), CoreError> {
+        self.compact(tx, iteration, false).await.map(drop)
+    }
+
+    /// Compaction: deterministic dedupe first (free), then structured LLM
+    /// summary of everything before the trailing verbatim window. `force`
+    /// folds whatever the estimate says. Whether the history changed.
+    async fn compact(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iteration: usize,
+        force: bool,
+    ) -> Result<bool, CoreError> {
         let before = self.est_context_tokens();
         let trigger = self.profile.compaction_trigger_tokens();
-        if before <= trigger {
+        if before <= trigger && !force {
             self.emit(
                 tx,
                 AgentEvent::ContextReady {
@@ -2009,28 +2064,28 @@ impl Agent {
                 },
             )
             .await;
-            return Ok(());
+            return Ok(false);
         }
         if self.config.overflow == ContextOverflow::Truncate {
-            self.truncate_front(tx, before, trigger).await;
-            return Ok(());
+            return Ok(self.truncate_front(tx, before, trigger).await > 0);
         }
-        info!(before, trigger, "compacting context");
+        info!(before, trigger, force, "compacting context");
 
         self.dedupe_tool_results();
         // Shortening frees room without a provider call and without losing
         // anything (the full text stays fetchable); when it's enough, the
         // history stays verbatim and no summary is made.
-        if self.shorten_old_tool_results(tx).await > 0 && self.est_context_tokens() <= trigger {
-            return Ok(());
+        let shortened = self.shorten_old_tool_results(tx).await > 0;
+        if shortened && !force && self.est_context_tokens() <= trigger {
+            return Ok(true);
         }
 
         let keep = self.config.compaction_keep_last;
         if self.messages.len() <= keep + 1 {
-            return Ok(()); // nothing foldable
+            return Ok(shortened); // nothing foldable
         }
         let Some(split) = self.fold_point(self.messages.len() - keep) else {
-            return Ok(()); // nothing foldable
+            return Ok(shortened); // nothing foldable
         };
         // The tail that survives the fold, for the transcript's fold record.
         let kept_tail = self.messages.len() - split;
@@ -2168,7 +2223,7 @@ impl Agent {
         if let Some(note) = self.fire(tx, HookEvent::PostCompact, input).await.context {
             self.push(Message::user(format!("[hook: PostCompact]\n{note}")));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Where the summary ends and the verbatim tail starts, near `want`.
@@ -2207,7 +2262,7 @@ impl Agent {
         tx: &mpsc::Sender<AgentEvent>,
         before: usize,
         trigger: usize,
-    ) {
+    ) -> usize {
         let start = match self.messages.first() {
             Some(m) if m.role == crate::message::Role::System => 1,
             _ => 0,
@@ -2247,6 +2302,7 @@ impl Agent {
                 "truncated: {dropped} oldest messages dropped, {before} -> {after} est tokens"
             ));
         }
+        dropped
     }
 
     /// Shorten tool results outside the verbatim tail that are longer than
@@ -3250,6 +3306,129 @@ mod tests {
             .expect("the halt ends the compaction")
             .unwrap();
         assert_eq!(answer, "Stopped.");
+    }
+
+    /// Answers from a script of replies, keeping every request's text.
+    struct Replies {
+        script: Mutex<Vec<Result<Message, CoreError>>>,
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl Replies {
+        fn new(script: Vec<Result<Message, CoreError>>) -> Arc<Self> {
+            Arc::new(Self {
+                script: Mutex::new(script),
+                seen: Mutex::default(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Replies {
+        fn name(&self) -> &str {
+            "replies"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let text = req
+                .messages
+                .iter()
+                .filter_map(|m| m.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.seen.lock().unwrap().push(text);
+            self.script
+                .lock()
+                .unwrap()
+                .remove(0)
+                .map(|message| CompletionResponse {
+                    message,
+                    usage: Usage::default(),
+                    stop_reason: None,
+                })
+        }
+    }
+
+    fn too_long() -> CoreError {
+        CoreError::Provider(
+            "HTTP 400 Bad Request: prompt is too long: 210000 tokens > 200000 maximum".into(),
+        )
+    }
+
+    /// The estimate said it fits; the provider said it doesn't. One
+    /// compaction, whatever the estimate, and the turn once more; a second
+    /// "too long" is the run's error, not a loop.
+    #[tokio::test]
+    async fn a_context_too_long_error_compacts_and_tries_once_more() {
+        let run = |script| async move {
+            let provider = Replies::new(script);
+            let config = AgentConfig {
+                compaction_keep_last: 2,
+                ..Default::default()
+            };
+            let mut agent = Agent::new(
+                provider.clone(),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                config,
+                ToolContext::default(),
+                None,
+            )
+            .with_system_prompt("sys");
+            agent.messages.extend([
+                Message::user("old request"),
+                say("old answer"),
+                Message::user("another"),
+                say("ok"),
+            ]);
+            let (tx, mut rx) = events();
+            let result = agent.run("now", tx).await;
+            let compacted = drain(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Compacted { .. }));
+            let seen = provider.seen.lock().unwrap().clone();
+            (result, compacted, seen)
+        };
+        let (answer, compacted, seen) =
+            run(vec![Err(too_long()), Ok(say("SUMMARY")), Ok(say("done"))]).await;
+        assert_eq!(answer.unwrap(), "done");
+        assert!(compacted);
+        assert_eq!(seen.len(), 3, "turn, summary, turn again");
+        assert!(seen[2].contains("[Compaction summary of earlier session]\nSUMMARY"));
+        assert!(!seen[2].contains("old request"), "{}", seen[2]);
+
+        let (err, _, seen) = run(vec![Err(too_long()), Ok(say("SUMMARY")), Err(too_long())]).await;
+        assert_eq!(err.unwrap_err().class(), FailureClass::ContextTooLong);
+        assert_eq!(seen.len(), 3, "once more, not again and again");
+    }
+
+    /// A tool with a long schema.
+    struct Wordy;
+
+    #[async_trait::async_trait]
+    impl Tool for Wordy {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "wordy".into(),
+                description: "w".repeat(8_000),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn call(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput, CoreError> {
+            Ok(ToolOutput::ok(String::new()))
+        }
+    }
+
+    /// The schemas go with every request, so they count toward the trigger.
+    #[test]
+    fn tool_schemas_count_toward_the_trigger() {
+        let mut agent = make_agent(vec![]);
+        let without = agent.est_context_tokens();
+        agent.register_tool(Arc::new(Wordy));
+        assert!(agent.est_context_tokens() >= without + 2_000);
     }
 
     fn fast_retry(max_attempts: u32) -> RetryPolicy {
