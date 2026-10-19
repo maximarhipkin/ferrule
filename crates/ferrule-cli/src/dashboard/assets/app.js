@@ -809,15 +809,7 @@
     },
     openTelegram() {
       connectPanel({ title: "Connect Telegram", intro: "Talk to your bot from your phone, in a private chat only you are allowed into.",
-        need: "the Telegram app · about 3 minutes",
-        steps: [
-          frag("In Telegram, open ", el("a", { href: "https://t.me/BotFather", target: "_blank", rel: "noopener", text: "@BotFather" }), " and send /newbot."),
-          "Give it a name, then a username that ends in bot.",
-          "Copy the token BotFather sends, paste it below, then press Test and Save.",
-          "Press Wait for a message and write anything to your new bot, then Allow your chat.",
-          "Press Restart to turn Telegram on.",
-        ],
-        body: this.telegramPanel() });
+        need: "the Telegram app · about 3 minutes", steps: tgSteps(), body: this.telegramPanel() });
     },
   };
 
@@ -836,6 +828,15 @@
     if (busy.length) return ["ok pulse", "Your bot is working on " + (busy.length === 1 ? "a message" : busy.length + " messages") + " now."];
     return ["ok", "Your bot is running. All quiet."];
   }
+
+  // Making a Telegram bot, for the panel and the Channels card alike.
+  const tgSteps = () => [
+    frag("In Telegram, open ", el("a", { href: "https://t.me/BotFather", target: "_blank", rel: "noopener", text: "@BotFather" }), " and send /newbot."),
+    "Give it a name, then a username that ends in bot.",
+    "Copy the token BotFather sends, paste it below, then press Test and Save.",
+    "Press Wait for a message and write anything to your new bot, then Allow your chat.",
+    "Press Restart to turn Telegram on.",
+  ];
 
   // The three a beginner is offered first (M50): no key at all, one key for
   // hundreds of models, and Claude.
@@ -1061,7 +1062,9 @@
       this.search.addEventListener("change", go);
       this.tools.onchange = go;
       this.sort.onchange = go;
-      root.append(this.chooseBox, this.box,
+      this.extra = el("div");
+      root.append(this.chooseBox, this.box, this.extra);
+      this.extra.append(
         el("h2", { text: "Evaluate a candidate" }),
         el("div", { class: "card" },
           el("div", { class: "row" }, this.suite,
@@ -1124,6 +1127,8 @@
         return el("div", { class: "row" }, s, b);
       };
       const chat = el("input", { placeholder: "chat id", size: 10, dir: "auto" });
+      const live = ((lastHealth && lastHealth.channels) || []).map((c) => c.name).filter((n) => n !== "dashboard");
+      const where = el("select", { "aria-label": "Channel" }, (live.length ? live : ["telegram"]).map((n) => el("option", { value: n, text: n })));
       const last = (v.last_served || [])[0];
       setKids(this.box, 
         el("h2", { text: "Connected models" }),
@@ -1171,7 +1176,7 @@
           : el("div", { class: "empty", text: "no chat is pinned" }),
         el("h2", { text: "Pin a chat, add a model by id" }),
         el("div", { class: "card" },
-          el("div", { class: "row" }, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value }))),
+          el("div", { class: "row" }, where, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value, channel: where.value }))),
           (() => {
             const p = el("input", { placeholder: "provider", size: 10 });
             const id = el("input", { placeholder: "model id", dir: "auto" });
@@ -1279,6 +1284,15 @@
       const providers = c.providers || [];
       const on = providers.filter((p) => p.connected);
       const off = providers.filter((p) => !p.connected);
+      // Nothing to choose between yet: say so, and the one thing to do.
+      const none = !c.models.length && !on.length && !this.home;
+      if (this.box) this.box.hidden = none;
+      if (this.extra) this.extra.hidden = none;
+      if (none) {
+        return setKids(this.chooseBox, secHead("Models", "none yet"),
+          empty("No brain yet", "Your bot needs a model to think with: a sign-in with a plan you pay for, or a provider's key.",
+            button("Connect a brain", { kind: "primary", onclick: () => home.openModel() })));
+      }
       setKids(this.chooseBox,
         secHead("Models", c.models.length + " connected" + (c.default ? " · default " + c.default : "")),
         el("div", { class: "grid2" },
@@ -1472,12 +1486,15 @@
             el("div", { class: "what", text: "The agent asked for: " + c.asked.join(", ") }),
             el("div", { class: "fix", text: "It waits until you connect it here, and it never sees the token." }),
             el("div", { class: "row" }, c.asked.map((s) => el("button", { class: "primary", text: "Set up " + s, onclick: () => this.focus(s) }))))) : null,
-        this.relayCard(c),
-        list ? this.checklist(list) : null,
         this.pending(c),
         this.connected(c),
         el("h2", { text: "Services" }),
-        el("div", { class: "tiles" }, c.tiles.map((t) => this.tile(c, t))));
+        el("div", { class: "tiles" }, c.tiles.map((t) => this.tile(c, t))),
+        disc("conn-fixed", "card", "For sign-ins that need a fixed address",
+          el("div", { class: "details-body stack" },
+            el("p", { class: "muted small", text: "Key-based ways in never need this. Some sign-ins (Google with your own app, Atlassian's) send you back to an address that must never change." }),
+            this.relayCard(c),
+            list ? this.checklist(list) : null)));
       if (this.target) {
         const node = document.getElementById("tile-" + this.target);
         this.target = null;
@@ -1593,11 +1610,12 @@
         switch (a.action) {
           case "relay_setup":
           case "relay_use":
-            return el("button", { class: "primary", text: a.label, onclick: () => {
+            return el("button", { class: "primary", text: a.label, onclick: async () => {
               this.relayForms = true;
+              opened.add("conn-fixed");
+              await this.load();
               const r = document.getElementById("relay");
               if (r) r.scrollIntoView({ behavior: "smooth" });
-              this.load();
             } });
           case "relay_check": return this.stepsBtn(a.label, "connections/relay/check", () => ({}));
           case "connect": return el("button", { class: "primary", text: a.label, onclick: () => this.focus(a.service) });
@@ -2582,7 +2600,8 @@
       };
       opened.add("chguide:" + x.name);
       C.load();
-      connectPanel({ title: x.title, intro: "Let people reach your bot here. Keys go to the secrets file and never come back to this page.", body: box });
+      connectPanel({ title: x.title, intro: "Let people reach your bot here. Keys go to the secrets file and never come back to this page." +
+        (x.name === "email" ? " This is for emailing your bot like a chat; for the bot to read and send your own Gmail as a tool, connect Gmail under What it can use." : ""), body: box });
     },
     servicePanel(tile, title) {
       const box = el("div");
@@ -2604,7 +2623,8 @@
       };
       S.focus = function (name) { opened.add("opt:" + name); this.load(); };
       S.load();
-      connectPanel({ title, intro: "What your bot may do with it is read-only unless you tick \"allow changes\", and changes still ask you first.", body: box });
+      connectPanel({ title, intro: "What your bot may do with it is read-only unless you tick \"allow changes\", and changes still ask you first." +
+        (tile === "gmail" ? " This lets the bot use your mail as a tool; to email your bot like a chat, use the Email channel under Where you talk to it." : ""), body: box });
     },
   };
 
@@ -2647,7 +2667,8 @@
       const body = el("div", { class: "stack" });
       if (x.why) body.append(el("div", { class: "said " + (st[1] === "bad" ? "bad" : "") + " msg", dir: "auto", text: x.why }));
       if (!x.form && x.name === "telegram") {
-        body.append(this.telegram(x));
+        body.append(disc("chguide:telegram", null, x.configured ? "How it was set up" : "How to set it up",
+          el("ol", { class: "guide" }, tgSteps().map((g) => el("li", {}, typeof g === "string" ? linkify(g) : g)))), this.telegram(x));
       } else if (!x.form) {
         body.append(el("p", { class: "muted small", text: x.configured
           ? "Set up. Change it with `ferrule setup` on the machine."
