@@ -327,6 +327,9 @@ fn find_response(body: Value, id: u64) -> Option<Value> {
 /// Everything else on it (progress, logs, requests to us) is skipped.
 async fn read_sse(mut resp: reqwest::Response, id: u64) -> Result<Value, McpError> {
     let mut buf = String::new();
+    // A character, or a CRLF, can be split across chunks: the bytes of an
+    // unfinished character wait here for the rest of it.
+    let mut raw: Vec<u8> = Vec::new();
     loop {
         while let Some(end) = buf.find("\n\n") {
             let event: String = buf.drain(..end + 2).collect();
@@ -345,7 +348,18 @@ async fn read_sse(mut resp: reqwest::Response, id: u64) -> Result<Value, McpErro
             }
         }
         match resp.chunk().await.map_err(http_error)? {
-            Some(chunk) => buf.push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n")),
+            Some(chunk) => {
+                raw.extend_from_slice(&chunk);
+                let upto = match std::str::from_utf8(&raw) {
+                    Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                    _ => raw.len(),
+                };
+                buf.push_str(&String::from_utf8_lossy(&raw[..upto]));
+                raw.drain(..upto);
+                if buf.contains('\r') {
+                    buf = buf.replace("\r\n", "\n");
+                }
+            }
             None => return Err(McpError::ConnectionClosed),
         }
     }
