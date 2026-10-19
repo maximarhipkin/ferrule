@@ -648,6 +648,13 @@ pub fn restore(file: &Path, dry_run: bool) -> Result<()> {
             }
         }
     }
+    // Made again above with the umask's 0755: secrets are the owner's only.
+    for s in SECRETS {
+        let dir = data.join(s);
+        if dir.is_dir() {
+            crate::secrets::create_private_dir(&dir)?;
+        }
+    }
     let staged_config = staging.path().join(CONFIG);
     let mut config_aside = None;
     if staged_config.is_file() {

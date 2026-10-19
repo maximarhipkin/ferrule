@@ -718,13 +718,7 @@ fn main() -> Result<()> {
         );
     }
     // Root on Linux sets up, and checks, the system service's files.
-    let system_files = match cli.cmd {
-        Cmd::Setup { .. } => true,
-        Cmd::Doctor { .. } | Cmd::Config { .. } | Cmd::Update { .. } | Cmd::Connections { .. } => {
-            svc_names.system_config().exists()
-        }
-        _ => false,
-    };
+    let system_files = on_system_files(&cli.cmd, svc_names.system_config().exists());
     if system_files && service::scope() == service::Scope::System {
         for (name, value) in [
             ("FERRULE_CONFIG", svc_names.system_config()),
@@ -825,6 +819,21 @@ fn managed_gate(cmd: &Cmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Run as root on Linux, the commands that act on the system service's
+/// files (its config and data dir) when there is one; `setup` always.
+fn on_system_files(cmd: &Cmd, system_config: bool) -> bool {
+    match cmd {
+        Cmd::Setup { .. } => true,
+        Cmd::Doctor { .. }
+        | Cmd::Config { .. }
+        | Cmd::Update { .. }
+        | Cmd::Connections { .. }
+        | Cmd::Backup { .. }
+        | Cmd::Restore { .. } => system_config,
+        _ => false,
+    }
 }
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
@@ -1081,7 +1090,19 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             out,
             include_secrets,
         } => backup::backup(out, include_secrets)?,
-        Cmd::Restore { file, dry_run } => backup::restore(&file, dry_run)?,
+        Cmd::Restore { file, dry_run } => {
+            backup::restore(&file, dry_run)?;
+            // Root put back the system service's files: as setup does, its
+            // user owns the data, the config is root:<user> 0640.
+            let svc = service::Svc::current();
+            if !dry_run
+                && svc.scope == service::Scope::System
+                && config::data_dir_path() == Some(svc.system_data())
+            {
+                svc.own_system_files(None)
+                    .context("restored, but giving the files back to the service's user failed")?;
+            }
+        }
         Cmd::Dashboard { op } => dashboard::cli::cmd(op).await?,
         Cmd::Model { op } => models::cmd(op).await?,
         Cmd::Tasks { op } => {
@@ -3869,5 +3890,22 @@ mod tests {
         assert_ne!(dotted, mcp_dir_name("a_b"));
         assert_ne!(mcp_dir_name("../x"), "../x");
         assert!(!mcp_dir_name("").is_empty());
+    }
+
+    #[test]
+    fn sudo_backup_and_restore_use_the_system_services_files() {
+        let backup = Cmd::Backup {
+            out: None,
+            include_secrets: false,
+        };
+        let restore = Cmd::Restore {
+            file: "b.tar.gz".into(),
+            dry_run: false,
+        };
+        for cmd in [&backup, &restore] {
+            assert!(on_system_files(cmd, true));
+            // No system service: root's own instance.
+            assert!(!on_system_files(cmd, false));
+        }
     }
 }
