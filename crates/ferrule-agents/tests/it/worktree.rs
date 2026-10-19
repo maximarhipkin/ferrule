@@ -324,3 +324,44 @@ async fn drivers_and_hooks_planted_in_the_repo_never_run_outside_the_sandbox() {
         "planted commands ran"
     );
 }
+
+/// A worker can write its repo's git dir (so it can commit), and with
+/// `extensions.worktreeConfig` give its worktree a `core.worktree`
+/// anywhere. Close must still commit the worktree's own files, not that
+/// directory's, read as the owner onto a branch the parent can read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_work_tree_moved_by_the_repos_config_doesnt_move_what_close_commits() {
+    let (rig, gate) = gated();
+    let main = repo(&rig);
+    let elsewhere = rig.dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("creds"), "hunter2\n").unwrap();
+    idle_root_in(&rig, "r", &main);
+    let w = spawn_as(&rig.sup, "r", Role::Worker, true);
+    git(
+        &w.workspace,
+        &["config", "extensions.worktreeConfig", "true"],
+    );
+    git(
+        &w.workspace,
+        &[
+            "config",
+            "--worktree",
+            "core.worktree",
+            &elsewhere.to_string_lossy(),
+        ],
+    );
+    std::fs::write(w.workspace.join("new.rs"), "fn b() {}\n").unwrap();
+
+    gate.add_permits(1);
+    rig.sup
+        .wait("r", std::slice::from_ref(&w.id), Some(10))
+        .await
+        .unwrap();
+    rig.sup.close("r", &w.id).await.unwrap();
+    let files = git(
+        &main,
+        &["ls-tree", "--name-only", &format!("ferrule/{}", w.id)],
+    );
+    assert_eq!(files.lines().collect::<Vec<_>>(), ["lib.rs", "new.rs"]);
+}

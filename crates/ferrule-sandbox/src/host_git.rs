@@ -12,12 +12,19 @@
 //! git-lfs (`git lfs install` writes `filter.lfs.*` there) keeps working;
 //! one the repo redefines is off entirely.
 //!
+//! The repo's config can also move the work tree: `core.worktree`, which a
+//! worker can set for its own worktree (its repo's git dir is writable so
+//! it can commit). Then `add -A` reads, as the owner, whatever directory it
+//! names. When the repo's config sets it, the work tree is pinned back with
+//! `--work-tree` to the directory git found the repo from; a submodule's
+//! own `core.worktree` points there anyway.
+//!
 //! A caller that diffs passes `--no-ext-diff --no-textconv`: an empty
 //! `diff.<x>.textconv` isn't "none" to git but a command that fails.
 
 use std::collections::BTreeSet;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -40,14 +47,46 @@ pub fn git(dir: &Path, args: &[&str]) -> io::Result<Output> {
             err.trim().lines().last().unwrap_or_default()
         )));
     }
+    let keys = repo_keys(&listed.stdout);
     let mut cmd = base(dir);
-    for name in repo_filters(&listed.stdout)? {
+    for name in repo_filters(&keys)? {
         for key in ["clean", "smudge", "process"] {
             cmd.arg("-c").arg(format!("filter.{name}.{key}="));
         }
         cmd.arg("-c").arg(format!("filter.{name}.required=false"));
     }
+    // `-c core.worktree` wouldn't override it; `--work-tree` does.
+    if keys.contains(&b"core.worktree".as_slice()) {
+        let top = found_top(dir).ok_or_else(|| {
+            io::Error::other("the repo's git config moves its work tree, and no .git was found")
+        })?;
+        cmd.arg("--work-tree").arg(top);
+    }
     run(cmd.args(args), TIMEOUT)
+}
+
+/// The keys set by config that isn't the owner's (anything but system,
+/// global and command-line: `.git/config`, a worktree's `config.worktree`,
+/// and files they include), from `git config --list --show-scope -z`:
+/// `scope NUL key [LF value] NUL`, repeated.
+fn repo_keys(listing: &[u8]) -> Vec<&[u8]> {
+    let mut fields = listing.split(|&b| b == 0);
+    let mut keys = Vec::new();
+    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
+        if !matches!(scope, b"system" | b"global" | b"command") {
+            keys.push(entry.split(|&b| b == b'\n').next().unwrap_or_default());
+        }
+    }
+    keys
+}
+
+/// Where git finds the repo from `dir`: the nearest directory holding a
+/// `.git`.
+fn found_top(dir: &Path) -> Option<PathBuf> {
+    let dir = dunce::canonicalize(dir).ok()?;
+    dir.ancestors()
+        .find(|d| d.join(".git").exists())
+        .map(Path::to_path_buf)
 }
 
 fn base(dir: &Path) -> Command {
@@ -74,18 +113,10 @@ fn base(dir: &Path) -> Command {
     cmd
 }
 
-/// The filter drivers named by config that isn't the owner's (anything but
-/// system, global and command-line: `.git/config`, a worktree's
-/// `config.worktree`, and files they include), from `git config --list
-/// --show-scope -z`: `scope NUL key [LF value] NUL`, repeated.
-fn repo_filters(listing: &[u8]) -> io::Result<BTreeSet<String>> {
-    let mut fields = listing.split(|&b| b == 0);
+/// The filter drivers the repo's own config keys name.
+fn repo_filters(keys: &[&[u8]]) -> io::Result<BTreeSet<String>> {
     let mut names = BTreeSet::new();
-    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
-        if matches!(scope, b"system" | b"global" | b"command") {
-            continue;
-        }
-        let key = entry.split(|&b| b == b'\n').next().unwrap_or_default();
+    for key in keys {
         let Some(rest) = key.strip_prefix(b"filter.") else {
             continue;
         };
@@ -163,10 +194,13 @@ mod tests {
             worktree\0filter.a.b.smudge\nx\0\
             local\0filter.flag.required\0\
             local\0core.editor\nvi\0";
-        let names: Vec<String> = repo_filters(listing).unwrap().into_iter().collect();
+        let names: Vec<String> = repo_filters(&repo_keys(listing))
+            .unwrap()
+            .into_iter()
+            .collect();
         assert_eq!(names, ["a.b", "evil", "flag"]);
-        assert!(repo_filters(b"local\0filter.a=b.clean\nx\0").is_err());
-        assert!(repo_filters(b"local\0filter.\xff.clean\nx\0").is_err());
+        assert!(repo_filters(&[b"filter.a=b.clean"]).is_err());
+        assert!(repo_filters(&[b"filter.\xff.clean"]).is_err());
     }
 
     #[cfg(unix)]

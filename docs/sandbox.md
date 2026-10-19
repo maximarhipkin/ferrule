@@ -160,6 +160,15 @@ All of them go through one helper, `ferrule_sandbox::host_git`, which:
   `filter.lfs.*` to `~/.gitconfig`). A repo-level LFS install
   (`git lfs install --local`) is turned off for these calls: a worktree
   then holds pointer files;
+- pins the work tree with `--work-tree` to the directory holding the
+  `.git` git found, whenever the repo's config sets `core.worktree`. A
+  worker may write its repo's git dir (so it can commit), so it could give
+  its worktree a `core.worktree` (`extensions.worktreeConfig` plus `git
+  config --worktree`) naming any directory, and closing it would have
+  committed that directory's files, read as you, to a branch the parent
+  can read. `-c core.worktree=…` doesn't override the repo's value;
+  `--work-tree` does. A submodule's own `core.worktree` (`../../../sub`)
+  names that same directory, so submodules keep working;
 - kills a call that runs past 5 minutes (a FIFO planted as `.git/HEAD`
   blocks git's read forever).
 
