@@ -593,6 +593,35 @@ async fn max_tokens_returns_the_text_so_far() {
     assert_eq!(resp.usage.input_tokens, 10);
 }
 
+/// The client's limit is on one read, not the whole call: a stream that
+/// runs past it, a piece at a time, arrives whole.
+#[tokio::test]
+async fn a_long_stream_that_keeps_sending_is_not_cut() {
+    let e = |data: Value| mock::event(data["type"].as_str().unwrap(), &data);
+    let frame = json!({"id": "m", "type": "message", "role": "assistant", "model": MODEL,
+        "content": [], "usage": {"input_tokens": 1}});
+    let mut pieces = vec![
+        e(json!({"type": "message_start", "message": frame})),
+        e(json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}})),
+    ];
+    for word in ["slow ", "but ", "steady"] {
+        pieces.push(e(json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": word}})));
+    }
+    pieces.push(e(json!({"type": "message_stop"})));
+    let mut reply = mock::sse(&pieces.iter().map(String::as_str).collect::<Vec<_>>());
+    reply.pause = Duration::from_millis(150);
+    let (url, _seen) = serve(vec![reply]);
+    let mut p = provider(&url);
+    // Six pieces 150 ms apart: 900 ms in all, past the 400 ms limit.
+    p.client = common::client_idle(Duration::from_millis(400));
+    let mut r = req(vec![Message::user("hi")]);
+    r.stream = Some(DeltaSink::new(|_| {}));
+    let resp = p.complete(r).await.unwrap();
+    assert_eq!(resp.message.content.as_deref(), Some("slow but steady"));
+}
+
 #[test]
 fn visible_thinking_text_goes_to_reasoning() {
     let p = with(DriverOptions::default());

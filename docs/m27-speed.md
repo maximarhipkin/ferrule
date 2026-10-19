@@ -101,7 +101,7 @@ Each driver reassembles the stream into the JSON its non-streaming parser alread
 - The stream breaking mid-way (read error, reset) becomes `CoreError::Transient("stream broke after N events: …")`. `class()` reads it as Server or Timeout, so M19b retries it, M21 falls back on it and M25 escalates on it exactly as on a failed request.
 - A stream that ends with no terminal event (`[DONE]`, `message_stop`, `response.completed`) is Transient, "stream ended early".
 - An error event inside the stream goes through `error_in_body`. Anthropic's `overloaded_error` is therefore Overloaded, and a rate limit is RateLimited.
-- 5 minutes with no bytes at all is Transient, "stream stalled". Anthropic pings, and the others send keep-alives, so this is a dead connection, not a slow model. The client's 10-minute total timeout still caps one call.
+- 5 minutes with no bytes at all is Transient, "stream stalled". Anthropic pings, and the others send keep-alives, so this is a dead connection, not a slow model. It is retried like any transient failure: the retry budget counts only the waits between tries, not the minutes the stalled try took. The client has no deadline on the whole call (a long stream that keeps sending is healthy); a read that waits 10 minutes for a byte fails, which caps the wait for a non-streamed reply.
 
 Each attempt starts with a `Reset` to the reply stream, so a retry, a fallback or an escalation replaces the half-shown text.
 

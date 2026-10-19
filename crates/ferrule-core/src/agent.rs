@@ -105,7 +105,9 @@ pub struct RetryPolicy {
     /// Cap on the computed backoff. A server's `Retry-After` is only held
     /// to the budget.
     pub max_delay: Duration,
-    /// No retry that would start later than this after the first try.
+    /// No retry once the waits between tries would add up to more than
+    /// this. The tries' own time doesn't count: a stream that stalls after
+    /// minutes of work (the stall limit is 5 minutes) still gets its retry.
     pub budget: Duration,
 }
 
@@ -122,8 +124,9 @@ impl Default for RetryPolicy {
 
 impl RetryPolicy {
     /// The wait before trying again after `attempt` (1-based) failed with
-    /// `err`, `elapsed` after the first try started; `None` to give up.
-    pub fn delay(&self, err: &CoreError, attempt: u32, elapsed: Duration) -> Option<Duration> {
+    /// `err`, `waited` already spent waiting between tries; `None` to give
+    /// up.
+    pub fn delay(&self, err: &CoreError, attempt: u32, waited: Duration) -> Option<Duration> {
         let CoreError::Transient { retry_after, .. } = err else {
             return None;
         };
@@ -138,7 +141,7 @@ impl RetryPolicy {
                     .min(self.max_delay),
             ),
         };
-        (elapsed + delay <= self.budget).then_some(delay)
+        (waited + delay <= self.budget).then_some(delay)
     }
 }
 
@@ -699,7 +702,7 @@ impl Agent {
         iteration: usize,
         call_kind: &str,
     ) -> Result<CompletionResponse, CoreError> {
-        let mut first = Instant::now();
+        let mut waited = Duration::ZERO;
         let mut attempt = 1;
         // A provider marks each failed model down, so this ends anyway;
         // the cap guards against one that doesn't.
@@ -719,7 +722,7 @@ impl Agent {
                 crate::provider::with_call_context(ctx, self.provider.complete_routed(req)).await;
             let latency_ms = start.elapsed().as_millis() as u64;
             let retry_in = match &result {
-                Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
+                Err(e) => self.config.retry.delay(e, attempt, waited),
                 Ok(_) => None,
             };
             // M25: a failure a stronger model may not repeat moves the turn
@@ -762,14 +765,14 @@ impl Agent {
                     },
                 )
                 .await;
-                first = Instant::now();
+                waited = Duration::ZERO;
                 attempt = 1;
                 fallbacks += 1;
                 continue;
             }
             if let Some(up) = escalated {
                 self.emit_escalation(tx, up).await;
-                first = Instant::now();
+                waited = Duration::ZERO;
                 attempt = 1;
                 continue;
             }
@@ -792,6 +795,7 @@ impl Agent {
             )
             .await;
             tokio::time::sleep(delay).await;
+            waited += delay;
             attempt += 1;
         }
     }
@@ -3150,6 +3154,52 @@ mod tests {
         assert_eq!(outcomes, ["retried", "retried", "error"]);
     }
 
+    /// Takes longer than the whole retry budget, then stalls, once.
+    struct Stalls(Mutex<bool>);
+
+    #[async_trait::async_trait]
+    impl Provider for Stalls {
+        fn name(&self) -> &str {
+            "stalls"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            if std::mem::take(&mut *self.0.lock().unwrap()) {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                return Err(CoreError::Transient {
+                    message: "stream stalled after 9 events: nothing for 300s (timed out)".into(),
+                    retry_after: None,
+                });
+            }
+            Ok(CompletionResponse {
+                message: say("ok"),
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    /// The budget is for waiting between tries: a stall that comes after
+    /// minutes of streaming (here, past the whole budget) is still retried.
+    #[tokio::test]
+    async fn a_stall_that_comes_after_the_budget_is_still_retried() {
+        let config = AgentConfig {
+            retry: RetryPolicy {
+                budget: Duration::from_millis(20),
+                ..fast_retry(4)
+            },
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            Arc::new(Stalls(Mutex::new(true))),
+            ToolRegistry::new(),
+            HarnessProfile::generic(),
+            config,
+            ToolContext::default(),
+            None,
+        );
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("hi", tx).await.unwrap(), "ok");
+    }
+
     /// Two models: `a/one` fails with `error` on every call until it's
     /// marked down, then `b/two` answers. `fail_over` switches once.
     struct Routing {
@@ -3337,7 +3387,7 @@ mod tests {
         assert_eq!(
             policy.delay(&transient, 1, Duration::from_secs(119)),
             None,
-            "past the budget"
+            "the waits would pass the budget"
         );
         assert_eq!(
             policy.delay(&CoreError::Provider("401".into()), 1, Duration::ZERO),

@@ -7,10 +7,19 @@ use ferrule_core::error::CoreError;
 use serde_json::Value;
 use std::time::Duration;
 
-/// Every driver's client: a 10-minute timeout on the whole call (a
-/// thinking model can take minutes; a stream also has a stall limit).
+/// How long a read may wait for its next byte, the reply's first one
+/// included: a thinking model's non-streamed reply can take minutes.
+const READ_IDLE: Duration = Duration::from_secs(600);
+
+/// Every driver's client. No deadline on the whole call: a stream that
+/// keeps sending is healthy however long it runs. A read that waits
+/// [`READ_IDLE`] fails; a stream also has its own, shorter, stall limit.
 pub(crate) fn client() -> reqwest::Client {
-    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(600));
+    client_idle(READ_IDLE)
+}
+
+pub(crate) fn client_idle(idle: Duration) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder().read_timeout(idle);
     // Test builds only: bypass any ambient proxy (e.g. the sandbox's
     // ONECLI gateway) so tests against a local mock server don't depend
     // on NO_PROXY being set in the environment. Never affects release binaries.
@@ -430,6 +439,8 @@ pub(crate) mod mock {
         /// Promise more bytes than are sent, then hang up: a stream that
         /// dies mid-way.
         pub cut: bool,
+        /// The wait before each piece.
+        pub pause: std::time::Duration,
     }
 
     pub fn ok(body: impl Into<String>) -> Canned {
@@ -443,6 +454,7 @@ pub(crate) mod mock {
             body: body.into(),
             pieces: Vec::new(),
             cut: false,
+            pause: std::time::Duration::from_millis(5),
         }
     }
 
@@ -491,7 +503,7 @@ pub(crate) mod mock {
                 stream.write_all(resp.as_bytes()).unwrap();
                 for piece in &reply.pieces {
                     stream.flush().unwrap();
-                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    std::thread::sleep(reply.pause);
                     // The client may have stopped reading (an error event).
                     if stream.write_all(piece.as_bytes()).is_err() {
                         break;
