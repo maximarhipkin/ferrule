@@ -914,7 +914,14 @@ async fn run_lane(
         let reply_text = match &run_result {
             Ok(answer) => {
                 last_failure = None;
-                answer.clone()
+                if answer.trim().is_empty() {
+                    // A chat refuses an empty message, so this would be
+                    // silence (thinking spent the output budget, or the
+                    // model just stopped).
+                    EMPTY_REPLY.to_string()
+                } else {
+                    answer.clone()
+                }
             }
             Err(e) => {
                 tracing::error!(session = %session_id, error = %e, "agent run failed");
@@ -969,6 +976,9 @@ struct LaneWatch {
     transcription: Option<Transcription>,
     typing: bool,
 }
+
+/// Sent when a run ends with no text at all.
+const EMPTY_REPLY: &str = "(I finished without writing a reply. Ask again if you expected one.)";
 
 /// Said once per chat when a photo arrives and the model can't see it.
 const NO_VISION: &str = "I saved your photo, but the model I'm using can't see images, so I only get the file. Pick a model marked “sees photos” in the dashboard's Models to change that.";
