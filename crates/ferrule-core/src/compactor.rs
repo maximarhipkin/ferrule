@@ -22,9 +22,9 @@ pub trait Compactor: Send + Sync {
 
 /// The built-in pipeline as a strategy: the checklist template on
 /// whatever provider it's given — the agent's own model by default, a
-/// cheaper one when `[agent] compaction_model` names it. One
-/// deterministic call; retries and routing belong to the provider it's
-/// handed (the CLI hands it a routed one).
+/// cheaper one when `[agent] compaction_model` names it. One call;
+/// retries and routing belong to the provider it's handed (the CLI hands
+/// it a routed one).
 pub struct TemplateCompactor {
     provider: Arc<dyn Provider>,
     max_output_tokens: Option<u32>,
@@ -34,7 +34,9 @@ impl TemplateCompactor {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
         Self {
             provider,
-            max_output_tokens: Some(4096),
+            // Unset, as the main calls send it: a reasoning model refuses
+            // `max_tokens`.
+            max_output_tokens: None,
         }
     }
 
@@ -53,7 +55,8 @@ impl Compactor for TemplateCompactor {
             ))],
             tools: vec![],
             max_output_tokens: self.max_output_tokens,
-            temperature: Some(0.0),
+            // None, not 0: reasoning models refuse a temperature.
+            temperature: None,
             stream: None,
         };
         Ok(self

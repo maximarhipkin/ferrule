@@ -2016,8 +2016,12 @@ impl Agent {
                         "{COMPACTION_TEMPLATE}{transcript_text}"
                     ))],
                     tools: vec![],
-                    max_output_tokens: Some(4096),
-                    temperature: Some(0.0),
+                    // The main calls' own settings: a reasoning model
+                    // (OpenAI's gpt-5, o-series) refuses `temperature: 0`
+                    // and `max_tokens` with a 400, and a compaction that
+                    // fails fails again on every later turn.
+                    max_output_tokens: self.config.max_output_tokens,
+                    temperature: self.config.temperature,
                     stream: None,
                 };
                 self.call_provider(tx, summary_req, iteration, "compaction")
