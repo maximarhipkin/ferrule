@@ -303,7 +303,8 @@ that convention yet — ask before introducing one).
     `[hooks] project` plus `ferrule hooks trust` pinned to the file's
     SHA-256, children inheriting PreToolUse/PostToolUse with
     SubagentStart/Stop in the parent, a JSONL audit log and `ferrule
-    hooks list`. Hooks run as the owner, outside the sandbox.
+    hooks list`. User hooks run as the owner, outside the sandbox;
+    workspace hooks run in it (2026-10-19, see that entry).
     `docs/m18-hooks.md` is the design. **Open edges:** a `--config` inside
     a writable workspace is trusted; `[sandbox] mode = "off"` lets the
     shell write the trust record; a workspace hook's relative command
@@ -5877,6 +5878,75 @@ Telegram path (a real bot token) wasn't exercised; only the mocks were.
   can't be fetched blocks the channel; `/cmd@OtherBot` acts in groups.
 - MCP stdio: the request write sits outside the timeout, and a cut-off
   write breaks the connection until restart.
+
+### 2026-10-19 — three host-side sandbox escapes closed (Claude, Opus 5.5)
+
+**Scope.** The three gaps the 2026-10-19 whole-repo review left under
+"Open" (each needed a design call): ferrule's own git honouring a
+sandbox-written `.git/config`, workspace hooks running model-editable
+scripts as the owner, and the proxy forwarding a compressed body from a
+secret-bound host unscrubbed. Worked from `main` in a worktree; one commit
+per hole, each with a test that failed before the fix.
+
+**Git (`874a57f`).** New `ferrule_sandbox::host_git::git(dir, args)`, now
+the only way `ferrule-agents/src/worktree.rs` and
+`ferrule-eval/src/fixture.rs` run git. It lists the config with
+`--show-scope` and empties `clean`/`smudge`/`process` of every filter
+driver defined outside system/global/command config (git-lfs from `git
+lfs install` keeps working; a repo-level LFS install is off for these
+calls); pins `core.hooksPath=/dev/null` (the old
+`$TMPDIR/ferrule-no-git-hooks` was writable by sandboxed commands — found
+while fixing, covered by the same test), fsmonitor and signing off; kills
+a call after 300 s (a FIFO as `.git/HEAD`). The snapshot diff adds
+`--no-textconv` (an empty textconv override makes git fail, so diff
+drivers are handled by flags, not config). Needs git ≥ 2.26. Tests:
+`worktree::drivers_and_hooks_planted_in_the_repo_never_run_outside_the_sandbox`
+(before: smudge, clean, textconv and the hook all ran),
+`fixture::tests::a_filter_planted_before_git_init_never_runs`, two unit
+tests in `host_git`. Docs: `docs/sandbox.md` "Ferrule's own git".
+
+**Hooks (`eb15f40`).** Chose sandboxing over fingerprinting the named
+scripts: a fingerprint can't follow what a hook loads (`make guard`,
+`npm run lint`, imports, a sourced `lib.sh`). `CommandHook` has an
+optional sandbox; `ferrule_hooks::build` takes one and gives it to
+workspace hooks only; the CLI passes the shared sandbox. Trust prompts
+(CLI, dashboard, self-service card) say they run in the sandbox. Test:
+`tests::workspace_hooks_run_in_the_sandbox_and_user_hooks_as_the_owner`
+(a refusing sandbox: the user hook runs, the workspace hook gets the
+refusal; fails with the routing line reverted). Docs: `docs/m18-hooks.md`
+§3 "The fingerprint pins the commands, not the scripts", roadmap line.
+
+**Proxy (`5fd2a05`).** Fail closed, no decoding: any content or transfer
+coding other than identity/chunked, in any header of either name, gets
+502 with the reason, unless the body is empty (HEAD, 304). Also fixes
+`identity` + `gzip` headers slipping through (only the first was read).
+Tests: `proxy::an_encoded_body_from_a_bound_host_is_withheld` (before:
+200 with the real token), `any_coding_but_identity_or_chunked_is_found`.
+Docs: `docs/research-credential-gateway.md` §2, §3, §5, §6.
+
+**Checks.** `make check` exits 0 on macOS (third run). The first two
+failed only on `ferrule-cli` `managed::sigterm_drains_and_exits_zero`
+(`assert!(marker.exists())`), with load average 10–14 from other
+sessions' builds; the test passes alone, in its full binary, and with
+`--workspace` features, on this branch and on `dc837a7` alike. Linux and
+Windows are left to CI: on Windows the worktree test's filters run
+through Git Bash with forward-slash paths.
+
+**Open (found, not fixed).**
+- `core.worktree` in a sandbox-written `.git/config` moves git's top
+  level: `rev-parse --show-toplevel` and `ls-files --others` then point at
+  any directory (checked by hand), and `snapshot()` copies those untracked
+  files into the verifier's readable snapshot, as the owner. Needs a
+  call: refuse a repo-scope `core.worktree` in `host_git` (breaks
+  submodule gitdirs, which set it), or check the top level stays inside
+  the workspace.
+- `managed::sigterm_drains_and_exits_zero` races under load: the
+  gateway serves `/healthz` once `dash.bind()` returns and writes
+  `dashboard.json` after (`main.rs`, `write_marker`), but the test asserts
+  the marker right after the first healthy answer. Wait for the marker
+  in the test, or write it before serving.
+- This entry's PLAN.md neighbour on `main` (the review entry) is
+  uncommitted there; merging this branch may need the two tails joined.
 
 ### 2026-10-19 — agent-loop defects from the review pass (Claude, Opus 5.5)
 
