@@ -100,10 +100,20 @@ Request bodies are never touched.
 
 ### Where it comes back out (response)
 
-Response headers and identity-encoded bodies are scrubbed from real value
-to placeholder. The body scrubber streams: it carries the last `maxlen-1`
-bytes over, so a value split across two chunks is still caught. When the
-lengths differ, `Content-Length` is dropped.
+Response headers and bodies are scrubbed from real value to placeholder.
+The body scrubber streams: it carries the last `maxlen-1` bytes over, so a
+value split across two chunks is still caught. When the lengths differ,
+`Content-Length` is dropped.
+
+A body with any content or transfer coding other than `identity` or
+`chunked` (in any `Content-Encoding` or `Transfer-Encoding` header) isn't
+the bytes the scrubber would see, and the client can decode it. Since
+`Accept-Encoding` was stripped, a host only sends one by ignoring that, so
+the proxy fails closed instead of decoding: **502** with "<host> answered
+with \`gzip\` encoding, which can't be checked for the secret sent to it,
+so the response is withheld". An empty body (a `HEAD` answer, a 304)
+passes, since there's nothing in it to scrub (`server.rs`,
+`scrub_response`).
 
 ### The child's environment
 
@@ -174,9 +184,9 @@ What it can still do:
 - **Reflection through a bound host.** If a bound host stores a request
   header or URL and shows it back in a *different encoding*, the scrubber
   can't recognise it. One example is an echo service returning Basic
-  credentials still base64-encoded (httpbin's `/headers`). Another is a
-  compressed body the host sends even though `Accept-Encoding` was
-  stripped. The header-name filter and the URL opt-in shrink this surface
+  credentials still base64-encoded (httpbin's `/headers`). (A compressed
+  body sent although `Accept-Encoding` was stripped used to be another; it
+  now gets 502, §2.) The header-name filter and the URL opt-in shrink this surface
   to the places a credential normally goes. They don't close it. **Don't
   bind a secret to a host that echoes requests.**
   - An `in_url` secret is exposed to anything on that host that keeps URLs
@@ -285,8 +295,10 @@ others are silent, which doesn't mean the risk doesn't apply to them.
   - Whether Seatbelt stops a command from reading ferrule's environment
     (e.g. `ps eww`) is unverified, because the macOS backend hasn't been
     run on a real Mac yet.
-- **Reflection** in another encoding (§3) and **compressed bodies** sent
-  despite the stripped `Accept-Encoding` pass through unscrubbed.
+- **Reflection** in another encoding (§3) passes through unscrubbed.
+- **A bound host that compresses anyway** (ignoring the stripped
+  `Accept-Encoding`) gets 502 for every response with a body: ferrule
+  doesn't decode, it withholds.
 
 ## 6. Verification
 
@@ -299,7 +311,7 @@ others are silent, which doesn't mean the risk doesn't apply to them.
   - another secret's placeholder left untouched
   - a scrubber value split across chunks
   - CA file modes
-- **Integration tests** (4) run a local TLS origin through the real proxy
+- **Integration tests** run a local TLS origin through the real proxy
   with reqwest, and check:
   - Bearer, Basic and `x-api-key` arrive real
   - a non-credential `x-title` header arrives as the placeholder
@@ -307,6 +319,9 @@ others are silent, which doesn't mean the risk doesn't apply to them.
   - the non-`in_url` query parameter stays a placeholder
   - `Accept-Encoding` is stripped
   - response headers and bodies (including a 200 KB body) are scrubbed
+  - a body with a `Content-Encoding` other than `identity` (also behind an
+    `identity` header) gets 502 without the real value; an empty one
+    passes
   - an unbound host gets a blind tunnel
   - a wrong proxy token gets 407, and a dead host gets 502
 - **End to end** (`cargo test -p ferrule-proxy -- --ignored`): curl through

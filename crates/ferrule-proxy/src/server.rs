@@ -21,7 +21,7 @@ use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, Request, Response, StatusCode, Uri, Version};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt as _, Full};
-use hyper::body::Incoming;
+use hyper::body::{Body as _, Incoming};
 use hyper::client::conn::http1::SendRequest;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -486,7 +486,7 @@ async fn forward(
             ))
         }
     };
-    Ok(scrub_response(resp, swaps))
+    Ok(scrub_response(resp, swaps, &origin.host))
 }
 
 /// One absolute-form `http://` request, forwarded on a fresh connection.
@@ -601,7 +601,7 @@ async fn plain_http(
         )
     };
     match (sent.await, swaps) {
-        (Ok(resp), Some(swaps)) => scrub_response(resp, swaps),
+        (Ok(resp), Some(swaps)) => scrub_response(resp, swaps, &host),
         (Ok(resp), None) => {
             let (mut parts, body) = resp.into_parts();
             strip_hop_by_hop(&mut parts.headers);
@@ -622,8 +622,20 @@ fn is_loopback(host: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
-fn scrub_response(resp: Response<Incoming>, swaps: Arc<Swaps>) -> Response<ProxyBody> {
+fn scrub_response(resp: Response<Incoming>, swaps: Arc<Swaps>, host: &str) -> Response<ProxyBody> {
     let (mut parts, body) = resp.into_parts();
+    // A coded body isn't the bytes the scrubber would see, and the client
+    // can decode it: the real secret would get through. Compressed despite
+    // the stripped Accept-Encoding, so withheld rather than decoded.
+    if let Some(coding) = coding(&parts.headers).filter(|_| !body.is_end_stream()) {
+        return text(
+            StatusCode::BAD_GATEWAY,
+            &format!(
+                "ferrule proxy: {host} answered with `{coding}` encoding, which can't be checked \
+                 for the secret sent to it, so the response is withheld\n"
+            ),
+        );
+    }
     strip_hop_by_hop(&mut parts.headers);
     for value in parts.headers.values_mut() {
         if let Some(fake) = swaps
@@ -633,20 +645,25 @@ fn scrub_response(resp: Response<Incoming>, swaps: Arc<Swaps>) -> Response<Proxy
             *value = fake;
         }
     }
-    let encoded = parts
-        .headers
-        .get(header::CONTENT_ENCODING)
-        .is_some_and(|v| !v.as_bytes().eq_ignore_ascii_case(b"identity"));
-    let body = if encoded {
-        // Compressed despite the stripped Accept-Encoding: can't scrub it.
-        body.boxed()
-    } else {
-        if !swaps.same_lengths() {
-            parts.headers.remove(header::CONTENT_LENGTH);
-        }
-        Scrubbed::new(body, swaps).boxed()
-    };
-    Response::from_parts(parts, body)
+    if !swaps.same_lengths() {
+        parts.headers.remove(header::CONTENT_LENGTH);
+    }
+    Response::from_parts(parts, Scrubbed::new(body, swaps).boxed())
+}
+
+/// The first content or transfer coding that isn't `identity` or
+/// `chunked`, across every header of either name.
+fn coding(headers: &HeaderMap) -> Option<String> {
+    [header::CONTENT_ENCODING, header::TRANSFER_ENCODING]
+        .iter()
+        .flat_map(|name| headers.get_all(name))
+        .flat_map(|v| {
+            String::from_utf8_lossy(v.as_bytes())
+                .split(',')
+                .map(|c| c.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .find(|c| !matches!(c.as_str(), "" | "identity" | "chunked"))
 }
 
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
@@ -769,6 +786,31 @@ mod tests {
             HeaderValue::from_static("Basic ???"),
         );
         assert!(!authorized(&h, expected));
+    }
+
+    #[test]
+    fn any_coding_but_identity_or_chunked_is_found() {
+        let headers = |pairs: &[(&'static str, &'static str)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in pairs {
+                h.append(*k, HeaderValue::from_static(v));
+            }
+            h
+        };
+        assert_eq!(coding(&headers(&[("transfer-encoding", "chunked")])), None);
+        assert_eq!(coding(&headers(&[("content-encoding", "Identity")])), None);
+        assert_eq!(
+            coding(&headers(&[("transfer-encoding", "gzip, chunked")])).as_deref(),
+            Some("gzip")
+        );
+        assert_eq!(
+            coding(&headers(&[
+                ("content-encoding", "identity"),
+                ("content-encoding", "BR")
+            ]))
+            .as_deref(),
+            Some("br")
+        );
     }
 
     #[test]

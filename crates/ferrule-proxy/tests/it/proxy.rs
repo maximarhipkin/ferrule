@@ -62,11 +62,22 @@ async fn respond(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infall
     if req.uri().path() == "/big" {
         body = format!("{TOKEN}-").repeat(5000);
     }
-    let resp = Response::builder()
-        .header("x-echo", TOKEN)
-        .body(Full::new(Bytes::from(body)))
-        .unwrap();
-    Ok(resp)
+    // Compressed though the proxy asked for identity (the body stays plain
+    // text: what matters is the label, the client may decode by it).
+    let codings: &[&str] = match req.uri().path() {
+        "/gzip" => &["gzip"],
+        "/identity-then-gzip" => &["identity", "gzip"],
+        "/gzip-empty" => {
+            body.clear();
+            &["gzip"]
+        }
+        _ => &[],
+    };
+    let mut resp = Response::builder().header("x-echo", TOKEN);
+    for coding in codings {
+        resp = resp.header("content-encoding", *coding);
+    }
+    Ok(resp.body(Full::new(Bytes::from(body))).unwrap())
 }
 
 struct Setup {
@@ -198,6 +209,28 @@ async fn placeholders_become_real_values_and_real_values_come_back_as_placeholde
         format!("{tok}-").repeat(5000),
         "scrubbed across chunk boundaries"
     );
+}
+
+/// A bound host's body is scrubbed as the bytes the client gets; one with a
+/// content coding could carry the real secret past the scrubber and be
+/// decoded on the other side, so it's withheld.
+#[tokio::test]
+async fn an_encoded_body_from_a_bound_host_is_withheld() {
+    let s = setup().await;
+    let get = |path: &str| {
+        s.client
+            .get(format!("https://127.0.0.1:{}{path}", s.origin_port))
+            .send()
+    };
+    for path in ["/gzip", "/identity-then-gzip"] {
+        let resp = get(path).await.unwrap();
+        assert_eq!(resp.status(), 502, "{path}");
+        let body = resp.text().await.unwrap();
+        assert!(!body.contains(TOKEN), "{path}: {body}");
+        assert!(body.contains("`gzip`"), "{path}: {body}");
+    }
+    // No body, nothing to scrub: it passes.
+    assert_eq!(get("/gzip-empty").await.unwrap().status(), 200);
 }
 
 #[tokio::test]
