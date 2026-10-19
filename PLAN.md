@@ -5877,6 +5877,71 @@ Telegram path (a real bot token) wasn't exercised; only the mocks were.
 - MCP stdio: the request write sits outside the timeout, and a cut-off
   write breaks the connection until restart.
 
+### 2026-10-19 — agent-loop defects from the review pass (Claude, Opus 5.5)
+
+**Scope.** The six core/provider defects the 2026-10-19 review pass
+confirmed (its "Open" list, Core line, plus two more). One commit each,
+a test each. Branch `claude/eager-aryabhata-08a80f`.
+
+**Fixed.**
+- **Streams** (`common::client`): the client-wide 600 s `timeout` (which
+  covered the body and cut long healthy streams) is a 600 s
+  `read_timeout`; streams keep their 300 s stall limit. The retry budget
+  (`RetryPolicy::budget`, 120 s) now counts only the waits between tries,
+  so a stall found after 300 s is retried.
+- **Stop reasons**: `CompletionResponse.stop_reason` keeps the API's word
+  (Anthropic, Chat Completions and Responses fill it; every other
+  constructor says `None`); `cut_off()` reads it. An empty final answer
+  or one cut off by the output cap ends the run incomplete
+  (`RunIncomplete`, `Agent::incomplete`); the text so far still goes out.
+- **Anthropic thinking mid-loop**: text pushed after tool results (inbox,
+  stuck nudge, wrap-up, PostCompact) rides in the tool_result wire
+  message, so to the API the tool-use turn goes on and its thinking must
+  come back (platform.claude.com/docs/en/build-with-claude/thinking,
+  "Thinking with tool use", read this session). The driver had taken that
+  text for a new turn and sent the turn neutral; `loop_start` now skips a
+  user message that follows results.
+- **`[agent] compaction_model`**: no longer a `TemplateCompactor`; the CLI
+  sets `Agent::with_compaction_provider`, and the summary goes through
+  `call_provider` (retries, ledger row, budget, fallback). Every
+  compaction, and the wrap-up's status call, now race the kill switch.
+- **"Context too long"**: the estimate adds tool schemas; on
+  `FailureClass::ContextTooLong` the turn (or status) call compacts once
+  regardless of the estimate and tries once more (`call_turn`).
+- **Re-summarizing**: a head that is mostly an earlier summary (the kept
+  tail alone over the trigger) isn't folded again until there's as much
+  new to fold; the comment at the old spot claimed this, no code did it.
+
+**Checks.** Per commit: the touched crates' tests, clippy, rustfmt; then
+`make check` on the result. Its one failure is `ferrule-cli`'s
+`managed::sigterm_drains_and_exits_zero` (managed.rs:485), now and then:
+the gateway serves `/healthz` from `dash.bind()` before `write_marker()`,
+and the test asserts the marker as soon as `/healthz` answers. It fails
+the same way on the base `dc837a7` (3 of 11 runs of the cli test binary
+there, 1 of 5 on this branch in the same alternating loop). The `routing_off` golden was rewritten (its "too long" turn
+now recovers; estimates +27 for its two tool schemas). M24's
+`typical.json` was re-measured (the mock through the real binary, base
+`dc837a7` vs this branch, same paths): three starter tasks moved, all 20
+still pass. release-notes 10 -> 9 calls and incident-report 12 -> 11 (one
+repeat summary fewer each); config-migration 8 -> 11, since with the tool
+schemas counted it now compacts three times — the base never reached
+the trigger on it, though the suite's context tasks are built to
+overflow the 32k window.
+
+**Merging with main's uncommitted review-pass changes.** `compactor.rs`'s
+doc comment conflicts with main's hunk there: keep main's code
+(`temperature: None`, `max_output_tokens: None`) and this doc. This entry
+and main's 2026-10-19 entry both append to PLAN.md: keep both.
+
+**Open.**
+- The Responses driver still uses `common::last_user` for its replay
+  boundary; whether OpenAI wants reasoning items back after text added
+  mid-loop wasn't checked.
+- Replayed native blocks (signed thinking, encrypted reasoning) still
+  aren't in the estimate; the "too long" retry covers a miss.
+- The managed test's startup race (above): wait for the marker, or
+  write it before the page serves.
+
 ### 2026-10-20 — M50 connect everything from the dashboard (Claude, Opus 5.5)
 
 **Scope.** Max: "check the agent dashboard, suggest improvements, maybe
