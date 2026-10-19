@@ -119,10 +119,10 @@ pub type Hold = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 impl Scheduler {
     /// Builds a scheduler and immediately recovers any run left `running`
     /// by a previous process that died mid-run (crash, kill, restart) —
-    /// this must happen before the scheduler (or a `run-now` caller
-    /// sharing this store) accepts any new work, otherwise a genuinely
-    /// interrupted run stays wedged in `running` forever and permanently
-    /// blocks that task's no-overlap guard.
+    /// this must happen before the gateway's scheduler accepts any new
+    /// work, otherwise a genuinely interrupted run stays wedged in
+    /// `running` forever and permanently blocks that task's no-overlap
+    /// guard. `run-now` uses [`Scheduler::sharing`].
     pub fn new(
         store: TaskStore,
         router: Arc<Router>,
@@ -135,7 +135,30 @@ impl Scheduler {
         if recovered > 0 {
             tracing::warn!(count = recovered, "recovered run(s) left `running` by a previous process; marked failed (interrupted)");
         }
-        Ok(Self {
+        Ok(Self::sharing(
+            store,
+            router,
+            channels,
+            tick_interval,
+            gate_timeout,
+            gate_workspace,
+        ))
+    }
+
+    /// A scheduler beside a gateway that may be running (`ferrule tasks
+    /// run-now`): no recovery, since a `running` row may be that daemon's
+    /// run in flight, and failing it would let a second run start beside
+    /// it. A run a dead process left behind is recovered when the gateway
+    /// next starts.
+    pub fn sharing(
+        store: TaskStore,
+        router: Arc<Router>,
+        channels: HashMap<String, Arc<dyn Channel>>,
+        tick_interval: Duration,
+        gate_timeout: Duration,
+        gate_workspace: PathBuf,
+    ) -> Self {
+        Self {
             store,
             router,
             channels,
@@ -145,7 +168,7 @@ impl Scheduler {
             builtins: HashMap::new(),
             hold: None,
             gate_refusal: None,
-        })
+        }
     }
 
     /// Registers the job a built-in task named `name` runs.

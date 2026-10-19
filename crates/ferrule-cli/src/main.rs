@@ -3262,17 +3262,18 @@ async fn tasks_run_now(
         named_channels.clone(),
     ));
     // Sharing the same db file (via TaskStore::open above) as any running
-    // `ferrule gateway` daemon means the no-overlap guard and interrupted-run
-    // recovery apply here exactly as they do to a scheduled tick — this is
-    // a real, guarded execution, not a bypass.
-    let scheduler = Scheduler::new(
+    // `ferrule gateway` daemon means the no-overlap guard applies here
+    // exactly as it does to a scheduled tick — this is a real, guarded
+    // execution, not a bypass. No recovery: a `running` row may be the
+    // daemon's run in flight.
+    let scheduler = Scheduler::sharing(
         store,
         router,
         named_channels,
         Duration::from_secs(cfg.scheduler.tick_interval_secs),
         Duration::from_secs(cfg.scheduler.gate_timeout_secs),
         cfg.scheduler.gate_workspace.clone(),
-    )?;
+    );
     let scheduler = match managed::user_commands_off(&*shared_sandbox(&cfg)?) {
         Some(why) => scheduler.refuse_gates(why),
         None => scheduler,
