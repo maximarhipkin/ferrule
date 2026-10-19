@@ -301,9 +301,19 @@ impl Worker {
             }
         };
         loop {
+            // While backing off, not before the retry: `flush` keeps a
+            // short batch then, and waking at once for it would spin.
+            let retry = self.retry_at.map_or(Duration::ZERO, |t| {
+                t.saturating_duration_since(Instant::now())
+            });
             let wait = self
                 .oldest
-                .map(|o| self.settings.interval.saturating_sub(o.elapsed()))
+                .map(|o| {
+                    self.settings
+                        .interval
+                        .saturating_sub(o.elapsed())
+                        .max(retry)
+                })
                 .unwrap_or(STATUS_EVERY);
             match rx.recv_timeout(wait) {
                 Ok(msg) => {
