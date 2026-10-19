@@ -5942,6 +5942,68 @@ and main's 2026-10-19 entry both append to PLAN.md: keep both.
 - The managed test's startup race (above): wait for the marker, or
   write it before the page serves.
 
+### 2026-10-19 — Responses: does text pushed mid-loop drop reasoning? (Claude, Opus 5.5)
+
+**Scope.** The previous entry's first Open item. The Responses driver
+replays native items only after `common::last_user`, so text the loop
+pushes after tool results (inbox, stuck nudge, wrap-up, PostCompact)
+makes the loop's assistant turns go out neutral, without their reasoning
+items. Anthropic's fix (`loop_start`, 6fe75de) rests on that API taking
+the text as part of the tool-use turn. Checked whether OpenAI's docs say
+the same; they don't, so no code changed. Branch
+`claude/responses-reasoning-boundary`, on `claude/eager-aryabhata-08a80f`.
+
+**Sources** (all read 2026-10-19):
+- R: developers.openai.com/api/docs/guides/reasoning, "How reasoning
+  works" and "Preserve reasoning across calls" › "Keeping reasoning
+  items in context".
+- C: developers.openai.com/cookbook/examples/responses_api/reasoning_items,
+  "Caching" (marked archived).
+- S: developers.openai.com/api/docs/guides/steering.
+
+**Answer: no error, and nothing lost on models before GPT-5.6.**
+- *Error:* none documented. Neither R nor C says the API rejects input
+  missing a reasoning item, and the driver's neutral `function_call`
+  items carry only `call_id`, no item `id`, so nothing in the input
+  points at a reasoning item that isn't there. The reasoning-400 retry
+  (`plain`) stays as the net.
+- *OpenAI's boundary is the last user message.* R asks for every
+  reasoning, function call and output item "since the last `user`
+  message", the same line `last_user` draws. Anthropic is different
+  because the pushed text rides inside the tool_result wire message;
+  this driver sends it as its own `{"role":"user"}` input item after the
+  `function_call_output`s, so a new turn starts there.
+- *Models before GPT-5.6* default to `reasoning.context = "current_turn"`
+  (R's table): earlier turns' reasoning can stay in the payload but isn't
+  rendered into the next sample. C says the same of the previous turn's
+  reasoning items (ignored and removed; sending them is harmless).
+  Replaying the loop's items in front of the pushed text would change
+  nothing the model sees, so dropping them loses nothing.
+- *Steering* (S), OpenAI's own way to add user input mid-turn, is GPT-6
+  over a WebSocket with `previous_response_id`. It doesn't apply to this
+  stateless HTTP path and says nothing about reasoning.
+
+**A wider gap found on the way (not fixed).** R: the GPT-5.6 family
+defaults to `all_turns`, which renders available, compatible reasoning
+from earlier turns (GPT-6.1 Sol supports it too, default not stated; R
+shows it working with `store: false` when every output item is replayed).
+The driver sends only `reasoning.effort`, never `reasoning.context`, and
+`replayable(…, in_loop)` sends every assistant turn before the last user
+message neutral (M23 design §2). So on GPT-5.6 the model loses its
+earlier reasoning at every user message, not just at mid-loop text;
+`loop_start` would only cover that slice.
+
+**Checks.** No code changed. `make check` on this branch: the first run
+failed only `managed::sigterm_drains_and_exits_zero` (managed.rs:485, the
+startup race in the previous entry); the second exited 0 with 1850
+passed, 0 failed, 28 ignored.
+
+**Open.**
+- GPT-5.6+ under `all_turns`: either replay same-model reasoning across
+  turns (weigh the cached prefix, the estimate, and the size of encrypted
+  items), or send `reasoning.context = "current_turn"` to keep today's
+  design explicit. A design call for the owner.
+
 ### 2026-10-20 — M50 connect everything from the dashboard (Claude, Opus 5.5)
 
 **Scope.** Max: "check the agent dashboard, suggest improvements, maybe
