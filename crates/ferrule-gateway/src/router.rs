@@ -124,6 +124,9 @@ struct LaneState {
     /// `/new` retired the lane (M41): it takes no further message, even
     /// one already queued.
     retired: bool,
+    /// Retired while busy (a model change mid-turn): rebuilt at the first
+    /// message that finds it idle, so two agents never share a transcript.
+    stale: bool,
 }
 
 /// What `/new` did (M41).
@@ -548,7 +551,10 @@ impl Router {
         }
         let mut lanes = self.lanes.lock().unwrap();
         if let Some(lane) = lanes.get(session_id) {
-            if !lane.tx.is_closed() {
+            let st = lane.state.lock().unwrap();
+            let rebuild = st.stale && st.busy_since.is_none() && st.queued == 0;
+            drop(st);
+            if !lane.tx.is_closed() && !rebuild {
                 return Ok((lane.tx.clone(), lane.state.clone()));
             }
         }
@@ -573,7 +579,20 @@ impl Router {
     /// factory gives it then (M19: a plan's exploration is read-only, its
     /// execution isn't). False when there was no lane.
     pub fn retire(&self, session_id: &str) -> bool {
-        self.lanes.lock().unwrap().remove(session_id).is_some()
+        let mut lanes = self.lanes.lock().unwrap();
+        let Some(lane) = lanes.get(session_id) else {
+            return false;
+        };
+        let mut st = lane.state.lock().unwrap();
+        if st.busy_since.is_some() || st.queued > 0 {
+            // The running turn still writes the transcript: a new agent
+            // replaying it now would run beside it.
+            st.stale = true;
+            return true;
+        }
+        drop(st);
+        lanes.remove(session_id);
+        true
     }
 
     /// `/new` (M41): puts `session_id`'s conversation aside and lets the
