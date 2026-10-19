@@ -782,6 +782,7 @@ dependencies = [
  "async-trait",
  "dunce",
  "ferrule-core",
+ "ferrule-sandbox",
  "rusqlite",
  "serde",
  "serde_json",

@@ -6,10 +6,9 @@ use crate::suite::Task;
 use anyhow::{bail, Context as _, Result};
 use ferrule_core::verify::Verifier;
 use ferrule_core::ToolContext;
-use ferrule_sandbox::Sandbox;
+use ferrule_sandbox::{host_git, Sandbox};
 use ferrule_tools::CommandVerifier;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -127,26 +126,20 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// `git init` + one commit, as `ferrule-eval`: the user's own git identity
-/// and hooks are never needed or used.
+/// and hooks are never needed or used. The sandboxed `setup` may have
+/// written `.git/`, so git goes through [`host_git`].
 fn git_init(ws: &Path) -> Result<()> {
     let git = |args: &[&str]| -> Result<()> {
-        let out = Command::new("git")
-            .args([
-                "-c",
-                "user.name=ferrule-eval",
-                "-c",
-                "user.email=eval@ferrule.invalid",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "init.defaultBranch=main",
-                "-c",
-                "core.hooksPath=/dev/null",
-            ])
-            .args(args)
-            .current_dir(ws)
-            .output()
-            .context("running git (is it installed?)")?;
+        let mut all = vec![
+            "-c",
+            "user.name=ferrule-eval",
+            "-c",
+            "user.email=eval@ferrule.invalid",
+            "-c",
+            "init.defaultBranch=main",
+        ];
+        all.extend_from_slice(args);
+        let out = host_git::git(ws, &all).context("running git (is it installed?)")?;
         if !out.status.success() {
             bail!(
                 "git {} failed: {}",
@@ -226,5 +219,30 @@ mod tests {
         assert!(Fixture::prepare(parent.path(), "y", &t, &sb, false)
             .await
             .is_err());
+    }
+
+    /// The sandboxed `setup` can leave a `.git/config` that `git init`
+    /// keeps; its filter must not run when ferrule commits the fixture.
+    #[tokio::test]
+    async fn a_filter_planted_before_git_init_never_runs() {
+        let parent = tempfile::tempdir().unwrap();
+        let ran = parent.path().join("ran");
+        let mut t = task();
+        t.setup = None;
+        t.files.insert(
+            ".git/config".into(),
+            format!(
+                "[filter \"evil\"]\n\tclean = echo clean >> '{}'; cat\n",
+                ran.display().to_string().replace('\\', "/")
+            ),
+        );
+        t.files
+            .insert(".git/info/attributes".into(), "* filter=evil\n".into());
+        let sb = Arc::new(Sandbox::off());
+        let f = Fixture::prepare(parent.path(), "t", &t, &sb, false)
+            .await
+            .unwrap();
+        assert!(f.workspace.join(".git/HEAD").exists());
+        assert!(!ran.exists(), "the planted filter ran");
     }
 }

@@ -29,6 +29,7 @@
 //!
 //! Not covered: anything that needs a kernel bug.
 
+pub mod host_git;
 pub mod launch;
 #[cfg(target_os = "linux")]
 mod linux;
