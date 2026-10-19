@@ -960,12 +960,14 @@ fn split(text: &str) -> Vec<String> {
             piece = rest[..cut].to_string();
         }
         rest = match in_fence {
-            Some(open) => {
+            // Reopening a fence line as long as the cut would give back
+            // what was taken, forever: such a line is left as it is.
+            Some(open) if open.len() + 1 < cut => {
                 piece.push_str("\n```");
                 fence = None;
                 format!("{open}\n{}", &rest[cut.min(rest.len())..])
             }
-            None => {
+            _ => {
                 fence = None;
                 rest[cut..].to_string()
             }
