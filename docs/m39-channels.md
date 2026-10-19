@@ -137,7 +137,7 @@ are refused. It then sends an `OutboundMessage` with one
 `Attachment{kind, url: <local path>, name}` to the session's own chat. It
 can't send anywhere else: there is no `to` argument. A channel without
 attachments answers the tool with "this channel can't send files", which
-covers Discord and Slack for now. Telegram sends files (after 0.13.0):
+covers Discord and Slack for now. Telegram sends files (since 0.13.1):
 `sendPhoto` for a JPEG, PNG or WebP up to 10 MB (a refused photo goes
 again as a document), `sendDocument` for anything else up to the Bot
 API's 50 MB, with the text as the caption when it fits 1,024
@@ -656,7 +656,7 @@ setup, as two instances on one Telegram bot are today:
 - Managing named Cloudflare tunnels. Ferrule prints what to point where.
 - Reading images (vision). The agent gets the file path.
 - Attachments for Discord and Slack. They keep M31's behaviour, and
-  that's a follow-up (Telegram sends files after 0.13.0, §2).
+  that's a follow-up (Telegram sends files since 0.13.1, §2).
 - Teams, Google Chat, Twilio SMS and Zulip, as follow-ups:
   - **Teams:** Azure Bot registration (app id + secret), Bot Framework
     activities POSTed to a public HTTPS endpoint with JWT validation
