@@ -387,6 +387,10 @@ impl AnthropicProvider {
                 cache_write_input_tokens: write,
                 notional_usd: None,
             },
+            stop_reason: body
+                .get("stop_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         })
     }
 }

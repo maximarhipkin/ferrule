@@ -1386,6 +1386,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1404,6 +1405,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("count: {n}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1447,6 +1449,7 @@ mod tests {
             Ok(CompletionResponse {
                 message,
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1813,6 +1816,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {last}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1908,6 +1912,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {last}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }

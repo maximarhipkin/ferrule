@@ -53,6 +53,21 @@ impl std::fmt::Debug for DeltaSink {
 pub struct CompletionResponse {
     pub message: Message,
     pub usage: Usage,
+    /// Why the model stopped, in its API's own word (`end_turn`,
+    /// `max_tokens`, `length`, `max_output_tokens`, …); `None` when the
+    /// driver isn't told.
+    pub stop_reason: Option<String>,
+}
+
+impl CompletionResponse {
+    /// The reply ran out of output tokens (or of context) mid-way: what it
+    /// says is cut off, not finished.
+    pub fn cut_off(&self) -> bool {
+        matches!(
+            self.stop_reason.as_deref(),
+            Some("max_tokens" | "length" | "max_output_tokens" | "model_context_window_exceeded")
+        )
+    }
 }
 
 /// The model a call actually ran on, for a provider that picks one per

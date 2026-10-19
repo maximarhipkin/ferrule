@@ -100,6 +100,7 @@ impl Provider for Scripted {
         Ok(CompletionResponse {
             message,
             usage: self.usage.clone(),
+            stop_reason: None,
         })
     }
 }
@@ -439,6 +440,7 @@ impl Provider for Judging {
         Ok(CompletionResponse {
             message: Message::assistant(Some(reply), vec![], None),
             usage: usage(500, 40),
+            stop_reason: None,
         })
     }
 }

@@ -184,6 +184,7 @@ impl Provider for Streamer {
         Ok(CompletionResponse {
             message: Message::assistant(Some(pieces.concat()), calls, None),
             usage: Usage::default(),
+            stop_reason: None,
         })
     }
 }

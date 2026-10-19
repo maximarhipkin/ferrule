@@ -590,6 +590,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -963,6 +964,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {text}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }

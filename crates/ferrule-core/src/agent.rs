@@ -1143,6 +1143,10 @@ impl Agent {
                 Err(why) => return Ok(self.halt(&tx, iteration, why).await),
             };
             self.add_usage(&tx, &resp.usage).await;
+            // The output cap (or the window) ended the reply mid-way.
+            let cut_off = resp
+                .cut_off()
+                .then(|| resp.stop_reason.clone().unwrap_or_default());
 
             let mut msg = resp.message;
             // A model without reliable native tool calling sometimes writes
@@ -1255,6 +1259,30 @@ impl Agent {
                     continue;
                 }
                 let answer = msg.content.unwrap_or_default();
+                // A finish that isn't one says so: the caller words the
+                // empty case for its own channel.
+                let short = match cut_off {
+                    Some(reason) => Some(format!(
+                        "the answer was cut off: the model reached its output limit (`{reason}`)"
+                    )),
+                    None if answer.trim().is_empty() => {
+                        Some("the model finished without writing an answer".to_string())
+                    }
+                    None => None,
+                };
+                if let Some(why) = short {
+                    warn!(%why, "the run's answer is incomplete");
+                    self.incomplete = Some(why.clone());
+                    self.emit(
+                        &tx,
+                        AgentEvent::RunIncomplete {
+                            reason: why,
+                            iterations: iteration + 1,
+                        },
+                    )
+                    .await;
+                    return Ok(answer);
+                }
                 self.emit(
                     &tx,
                     AgentEvent::RunFinished {
@@ -2486,6 +2514,7 @@ mod tests {
                     cache_write_input_tokens: 0,
                     notional_usd: None,
                 },
+                stop_reason: None,
             })
         }
     }
@@ -2604,6 +2633,7 @@ mod tests {
                 Ok(CompletionResponse {
                     message: self.script.lock().unwrap().remove(0),
                     usage: Usage::default(),
+                    stop_reason: None,
                 })
             }
         }
@@ -2823,7 +2853,11 @@ mod tests {
         }
         async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
             let (message, usage) = self.responses.lock().unwrap().remove(0);
-            Ok(CompletionResponse { message, usage })
+            Ok(CompletionResponse {
+                message,
+                usage,
+                stop_reason: None,
+            })
         }
     }
 
@@ -2928,6 +2962,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some("SUMMARY".into()), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -3078,6 +3113,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: say("ok"),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -3173,6 +3209,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: say("ok"),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -3231,6 +3268,7 @@ mod tests {
                 let ok = CompletionResponse {
                     message: say("from two"),
                     usage: Usage::default(),
+                    stop_reason: None,
                 };
                 return (Some(served("b", "two")), Ok(ok));
             }
@@ -3404,6 +3442,57 @@ mod tests {
             Some(Duration::from_secs(45))
         );
         assert_eq!(policy.delay(&told, 1, Duration::from_secs(80)), None);
+    }
+
+    /// Answers once with this text and stop reason.
+    struct Stops(&'static str, &'static str);
+
+    #[async_trait::async_trait]
+    impl Provider for Stops {
+        fn name(&self) -> &str {
+            "stops"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            Ok(CompletionResponse {
+                message: say(self.0),
+                usage: Usage::default(),
+                stop_reason: Some(self.1.into()),
+            })
+        }
+    }
+
+    /// An answer cut off by the output cap, or no answer at all, isn't a
+    /// finished run.
+    #[tokio::test]
+    async fn an_empty_or_cut_off_answer_ends_the_run_incomplete() {
+        let run = |text: &'static str, stop: &'static str| async move {
+            let mut agent = Agent::new(
+                Arc::new(Stops(text, stop)),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                None,
+            );
+            let (tx, mut rx) = events();
+            let answer = agent.run("write it", tx).await.unwrap();
+            let finished = drain(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AgentEvent::RunFinished { .. }));
+            (answer, agent.incomplete, finished)
+        };
+        let (answer, why, finished) = run("The first half", "max_tokens").await;
+        assert_eq!(answer, "The first half", "the text so far still goes out");
+        assert!(why.unwrap().contains("cut off"));
+        assert!(!finished);
+        let (_, why, finished) = run(" \n", "end_turn").await;
+        assert_eq!(
+            why.as_deref(),
+            Some("the model finished without writing an answer")
+        );
+        assert!(!finished);
+        let (answer, why, finished) = run("All done.", "end_turn").await;
+        assert_eq!((answer.as_str(), why, finished), ("All done.", None, true));
     }
 
     #[tokio::test]
@@ -4101,6 +4190,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: self.responses.lock().unwrap().remove(0),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }

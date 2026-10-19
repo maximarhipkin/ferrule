@@ -80,6 +80,7 @@ impl Provider for Model {
                 cache_write_input_tokens: 0,
                 notional_usd: None,
             },
+            stop_reason: None,
         })
     }
 }

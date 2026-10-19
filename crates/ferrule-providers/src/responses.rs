@@ -276,6 +276,11 @@ impl ResponsesProvider {
             }
         }
 
+        // `completed`, or why it's incomplete.
+        let mut stop_reason = body
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         match body.get("status").and_then(Value::as_str) {
             Some("failed") => {
                 let err = body.get("error").cloned().unwrap_or(json!({}));
@@ -295,6 +300,7 @@ impl ResponsesProvider {
                         "response incomplete: {reason}"
                     )));
                 }
+                stop_reason = Some(reason.to_string());
             }
             _ => {}
         }
@@ -322,6 +328,7 @@ impl ResponsesProvider {
                 cache_write_input_tokens: 0,
                 notional_usd: None,
             },
+            stop_reason,
         })
     }
 }

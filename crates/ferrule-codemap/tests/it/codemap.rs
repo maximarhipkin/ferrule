@@ -478,6 +478,7 @@ mod agent_turns {
             Ok(CompletionResponse {
                 message: Message::assistant(Some("ok".into()), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }

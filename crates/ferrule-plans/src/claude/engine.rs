@@ -478,6 +478,7 @@ impl ClaudeCode {
                     CompletionResponse {
                         message,
                         usage: Usage::default(),
+                        stop_reason: None,
                     },
                 ));
             }
@@ -565,7 +566,11 @@ impl ClaudeCode {
         message.native = turn.native();
         let mut usage = result.usage.clone();
         usage.notional_usd = result.total_cost_usd;
-        Ok(Outcome::Done(CompletionResponse { message, usage }))
+        Ok(Outcome::Done(CompletionResponse {
+            message,
+            usage,
+            stop_reason: None,
+        }))
     }
 
     /// claude's stdout closed without a result.

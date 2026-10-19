@@ -542,6 +542,7 @@ impl Provider for Scripted {
         Ok(CompletionResponse {
             message: self.script.lock().unwrap().remove(0),
             usage: Usage::default(),
+            stop_reason: None,
         })
     }
 }

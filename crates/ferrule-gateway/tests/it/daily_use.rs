@@ -45,6 +45,7 @@ impl Provider for Picky {
         Ok(CompletionResponse {
             message: Message::assistant(Some(format!("echo: {last}")), vec![], None),
             usage: Usage::default(),
+            stop_reason: None,
         })
     }
 }

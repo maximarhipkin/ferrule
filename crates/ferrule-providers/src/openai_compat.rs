@@ -195,6 +195,10 @@ impl OpenAiCompatProvider {
                 cache_write_input_tokens: 0,
                 notional_usd: None,
             },
+            stop_reason: choice
+                .get("finish_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         })
     }
 }

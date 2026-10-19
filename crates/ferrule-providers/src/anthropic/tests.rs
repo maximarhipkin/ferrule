@@ -591,6 +591,9 @@ async fn max_tokens_returns_the_text_so_far() {
         .unwrap();
     assert_eq!(resp.message.content.as_deref(), Some("The first half"));
     assert_eq!(resp.usage.input_tokens, 10);
+    // Kept, so the loop can tell the run it was cut off.
+    assert_eq!(resp.stop_reason.as_deref(), Some("max_tokens"));
+    assert!(resp.cut_off());
 }
 
 /// The client's limit is on one read, not the whole call: a stream that

@@ -284,6 +284,7 @@ async fn incomplete_returns_the_text_so_far_or_says_why() {
         .await
         .unwrap();
     assert_eq!(resp.message.content.as_deref(), Some("The first half"));
+    assert!(resp.cut_off(), "{:?}", resp.stop_reason);
 
     let e = error_for(ok(r#"{
       "status": "incomplete", "incomplete_details": {"reason": "content_filter"},

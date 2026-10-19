@@ -615,6 +615,7 @@ model = "n-top"
                     input_tokens: 100_000,
                     ..Usage::default()
                 },
+                stop_reason: None,
             })
         }
     }

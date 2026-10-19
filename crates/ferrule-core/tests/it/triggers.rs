@@ -46,6 +46,7 @@ impl Provider for Model {
         Ok(CompletionResponse {
             message,
             usage: Usage::default(),
+            stop_reason: None,
         })
     }
 }
