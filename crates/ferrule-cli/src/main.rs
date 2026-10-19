@@ -1431,8 +1431,10 @@ fn build_agent_from(
         registry.remove("edit_file");
     }
     if sandbox.policy().mode == Mode::ReadOnly || read_only {
-        registry.remove("write_file");
-        registry.remove("edit_file");
+        // `write_todos` and `log_diary` write under `.ferrule/` too.
+        for name in ["write_file", "edit_file", "write_todos", "log_diary"] {
+            registry.remove(name);
+        }
     }
     // M15: the root corrects and deletes memories, a writing child only
     // adds, a read-only child only recalls (docs/m15-memory.md §8).

@@ -3,8 +3,24 @@ use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-fn state_dir(ctx: &ToolContext) -> PathBuf {
-    ctx.workspace.join(".ferrule")
+/// `.ferrule/<name>` in the workspace, resolved the way the file tools
+/// resolve paths. These tools run in ferrule's own process, not the
+/// sandbox, and a sandboxed command can make links in the workspace: a
+/// link pointing outside it is refused, not followed.
+fn state_file(ctx: &ToolContext, tool: &str, name: &str) -> Result<PathBuf, CoreError> {
+    let path = crate::fs_tools::resolve(&ctx.workspace, &[], &format!(".ferrule/{name}")).map_err(
+        |e| match e {
+            CoreError::ToolFailed { message, .. } => CoreError::ToolFailed {
+                tool: tool.into(),
+                message,
+            },
+            other => other,
+        },
+    )?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    Ok(path)
 }
 
 /// `write_todos` — the agent maintains its own task list in
@@ -40,15 +56,14 @@ impl Tool for WriteTodosTool {
 
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
         let todos = args["todos"].as_str().unwrap_or("");
-        let dir = state_dir(ctx);
-        tokio::fs::create_dir_all(&dir).await.ok();
-        let path = dir.join("TODO.md");
-        tokio::fs::write(&path, todos)
-            .await
-            .map_err(|e| CoreError::ToolFailed {
+        let path = state_file(ctx, "write_todos", "TODO.md")?;
+        // The rename replaces a link put there since, rather than following it.
+        crate::fs_tools::write_atomic(&path, todos.as_bytes()).map_err(|e| {
+            CoreError::ToolFailed {
                 tool: "write_todos".into(),
                 message: e.to_string(),
-            })?;
+            }
+        })?;
         let open = todos.matches("- [ ]").count();
         let done = todos.matches("- [x]").count() + todos.matches("- [X]").count();
         Ok(ToolOutput::ok(format!(
@@ -91,9 +106,7 @@ impl Tool for DiaryTool {
                 message: "empty entry".into(),
             });
         }
-        let dir = state_dir(ctx);
-        tokio::fs::create_dir_all(&dir).await.ok();
-        let path = dir.join("diary.md");
+        let path = state_file(ctx, "log_diary", "diary.md")?;
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
