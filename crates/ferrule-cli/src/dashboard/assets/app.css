@@ -610,6 +610,25 @@ dialog.dlg .row{justify-content:flex-end;margin-top:var(--sp-1)}
   dialog.dlg .row{flex-direction:column-reverse;align-items:stretch}
 }
 
+/* ---------- M50: the connect panel (one thing to connect, a full screen on a phone) ---------- */
+dialog.dlg.connect{width:min(640px,calc(100vw - 24px))}
+dialog.connect .cp-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:var(--sp-3);padding-block:var(--sp-3);padding-inline:var(--sp-5) var(--sp-3);background:var(--panel);border-bottom:var(--hair)}
+dialog.connect .cp-head h2{flex:1;min-width:0}
+dialog.connect .cp-body{padding:var(--sp-5)}
+dialog.connect .cp-body ol.guide{margin:0}
+dialog.connect .cp-said:empty{display:none}
+dialog.connect .tile > .head{display:none}
+dialog.connect .tile{border:0;padding:0;box-shadow:none;background:transparent}
+.picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:var(--sp-2)}
+.pick{justify-content:flex-start;gap:var(--sp-3);min-height:52px;text-align:start;font-weight:var(--fw-medium)}
+.pick .ico{flex:none;width:20px;height:20px}
+.pick[hidden]{display:none}
+dialog.connect .row{flex-direction:row;align-items:center;justify-content:flex-start;margin-top:0}
+@media (max-width:639px){
+  dialog.dlg.connect{margin:0;width:100%;height:100%;max-height:none;border-radius:0}
+  dialog.connect .cp-body{padding:var(--sp-4)}
+}
+
 /* ---------- the command palette and the shortcuts list ---------- */
 dialog.pal{width:min(560px,calc(100vw - 24px));margin-top:12vh;overflow:hidden}
 dialog.pal .pal-input{

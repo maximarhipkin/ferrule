@@ -334,7 +334,9 @@ pub(super) async fn provider_save(ctx: &Ctx, body: &Value) -> Answer {
                 (m, _) if !m.is_empty() && (listed.is_empty() || listed.iter().any(|l| l == m)) => {
                     m.to_string()
                 }
-                (_, Some(first)) => first.clone(),
+                (_, Some(first)) => {
+                    crate::models::catalog::everyday(&listed).unwrap_or_else(|| first.clone())
+                }
                 (m, None) if !m.is_empty() => m.to_string(),
                 _ => {
                     return bad(

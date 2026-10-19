@@ -41,6 +41,13 @@
   const text = (t) => el("span", { class: "msg", dir: "auto", text: t === null || t === undefined ? "" : String(t) });
   const tag = (t, cls) => el("span", { class: "tag " + (cls || ""), text: t });
   const led = (cls) => el("span", { class: "led " + (cls || "") });
+  // Text with its web addresses as links: a guide step or an error that
+  // names the page to open is one tap on a phone, not a copy by hand.
+  const linkify = (t) => el("span", { class: "msg", dir: "auto" }, String(t === null || t === undefined ? "" : t)
+    .split(/(https?:\/\/[^\s,;)]*[^\s,;).])/)
+    .map((part, i) => (i % 2 ? el("a", { href: part, target: "_blank", rel: "noopener", text: part.replace(/^https?:\/\//, "") }) : part)));
+  // A repo doc on GitHub, at the running version's tag once it's known.
+  const docLink = (path) => el("a", { href: "https://github.com/maximarhipkin/ferrule/blob/" + (lastHealth && lastHealth.version ? "v" + lastHealth.version : "main") + "/" + path, target: "_blank", rel: "noopener", text: path.replace(/^docs\//, "") });
 
   // ---- language (M47): English, or Hebrew read right to left --------------
   // The Hebrew words live in /lang-he.js, loaded before the first draw and
@@ -109,7 +116,7 @@
     const box = document.getElementById("toast");
     for (const old of box.children) if (old.dataset.text === t) old.remove();
     const card = el("div", { class: "t " + kind, role: kind === "bad" ? "alert" : null },
-      el("span", { class: "txt", dir: "auto", text: t }),
+      el("span", { class: "txt" }, linkify(t)),
       el("button", { class: "ghost icon", "aria-label": tr("Close"), onclick: () => card.remove() }, icon("x")));
     card.dataset.text = t;
     box.append(card);
@@ -158,6 +165,49 @@
     d.showModal();
   }
 
+  // Where an answer goes: in a connect panel (M50), at the end of the card
+  // (or the open option) the button is in, so it's read where the owner
+  // is looking; a toast otherwise. A failure puts focus on that card's
+  // first empty field, a key that was wiped once sent included, so the
+  // fix is one paste away.
+  function sayFor(button, t, bad) {
+    const panel = button && button.closest ? button.closest("dialog.connect") : null;
+    if (!panel) return toast(t, bad ? "bad" : "");
+    const card = button.closest(".details-body, .card");
+    const host = card && panel.contains(card) ? card : panel.querySelector(".cp-said");
+    const line = el("div", { class: "said " + (bad ? "bad" : "ok"), role: bad ? "alert" : "status", "data-said": "1" }, linkify(t));
+    const old = host.querySelector(":scope > [data-said]");
+    if (old) old.replaceWith(line); else host.append(line);
+    if (bad) {
+      const empty = [...host.querySelectorAll("input:not([type=checkbox]):not([type=hidden]), textarea")].find((i) => !i.value);
+      if (empty) empty.focus();
+    }
+  }
+
+  // M50: one thing to connect, in a dialog (a full screen on a phone): what
+  // it gives the bot, what you need, the steps with real links, its form,
+  // and the answer under the form. `body` is the form the page already
+  // has for it, drawn here unchanged. Closing it redraws the page behind.
+  function connectPanel({ title, intro, need, steps, body }) {
+    const back = document.activeElement;
+    const d = el("dialog", { class: "dlg connect", "aria-labelledby": "cp-title" });
+    const close = el("button", { type: "button", class: "ghost icon", "aria-label": tr("Close"), title: tr("Close"), onclick: () => d.close() }, icon("x"));
+    d.append(
+      el("div", { class: "cp-head" }, el("h2", { id: "cp-title", dir: "auto", text: title }), close),
+      el("div", { class: "cp-body stack" },
+        intro ? el("p", { class: "lead msg", dir: "auto", text: intro }) : null,
+        need ? el("p", { class: "muted small msg", dir: "auto", text: "You need: " + need }) : null,
+        (steps || []).length ? el("ol", { class: "guide" }, steps.map((x) => el("li", {}, typeof x === "string" ? linkify(x) : x))) : null,
+        body,
+        el("div", { class: "cp-said" })));
+    d.addEventListener("close", () => { d.remove(); if (back && back.focus) back.focus(); refresh(); });
+    document.body.append(d);
+    d.showModal();
+    const first = d.querySelector(".cp-body input:not([type=checkbox]), .cp-body button");
+    if (first) first.focus();
+    return d;
+  }
+
   // A POST; a destructive one comes back 409 with its question, and goes
   // again with `confirm` once the owner says yes. The button shows it is
   // working and can't be pressed twice.
@@ -176,7 +226,7 @@
         if (!yes) return null;
         r = await api("/api/" + path, Object.assign({}, body, { confirm: true }));
       }
-      if (r.said) toast(r.said, r.ok === false ? "bad" : "");
+      if (r.said) sayFor(button, r.said, r.ok === false);
       if (r.links) linksDialog(r.links);
       // What was typed next to the button went in: the redraw may drop it.
       const box = button && button.closest(".card, .opt, .check, .alert");
@@ -185,7 +235,7 @@
       refresh();
       return r;
     } catch (e) {
-      toast(e.message, true);
+      sayFor(button, e.message, true);
       return null;
     } finally {
       if (button) button.removeAttribute("aria-busy");
@@ -427,6 +477,7 @@
     models: "M12 20v2M12 2v2M17 20v2M17 2v2M2 12h2M2 17h2M2 7h2M20 12h2M20 17h2M20 7h2M7 20v2M7 2v2M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2zM9 8h6a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-6a1 1 0 0 1 -1 -1v-6a1 1 0 0 1 1 -1z",
     channels: "M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2zM20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1",
     connections: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+    connect: "M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z",
     more: "M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
     console: "M12 19h8M4 17l6-6-6-6",
     config: "M10 5H3M12 19H3M14 3v4M16 17v4M21 12h-9M21 19h-5M21 5h-7M8 10v4M8 12H3",
@@ -711,58 +762,97 @@
   // The first-run checklist keeps its open panels between polls: a step's
   // form is drawn once into a box that outlives every redraw of the page.
   const home = {
-    open: null,
-    boxes: {},
-    models: null,
-    channels: null,
     hidden: () => { try { return localStorage.getItem("ferrule-setup-hidden") === "1"; } catch (_) { return false; } },
     hide() { try { localStorage.setItem("ferrule-setup-hidden", "1"); } catch (_) { /* private mode */ } },
     show() { try { localStorage.removeItem("ferrule-setup-hidden"); } catch (_) { /* private mode */ } },
-    box(id) { return this.boxes[id] || (this.boxes[id] = el("div", { class: "step-panel stack" })); },
-    // The Models section's provider forms, drawn into this box: same code,
-    // same calls, so a key typed here is tested and saved the same way.
+    // The Models section's provider forms, drawn into a box of their own:
+    // same code, same calls, so a key typed here is tested and saved the
+    // same way. Three first, for someone who has never picked a model; the
+    // rest one tap away. Once one works, the next step is right there.
     modelPanel() {
-      const fresh = !this.boxes.model;
-      const box = this.box("model");
-      if (!this.models) {
-        const M = this.models = Object.create(sections.models);
-        M.fbEdited = false;
-        M.home = true;
-        M.drawChoices = function () {
-          const ps = (this.choices && this.choices.providers) || [];
-          setKids(box, ps.length ? el("div", { class: "tiles" }, ps.map((p) => this.provider(p))) : el("p", { class: "muted", text: "No provider is listed." }));
-        };
-        M.loadChoices = async function () {
-          try { this.choices = await api("/api/models/choices"); } catch (e) { return sectionError(box, e); }
-          this.drawChoices();
-          refresh();
-        };
-      }
-      if (fresh) this.models.loadChoices();
+      const box = el("div", { class: "stack" });
+      const M = Object.create(sections.models);
+      M.fbEdited = false;
+      M.home = true;
+      M.drawChoices = function () {
+        const ps = (this.choices && this.choices.providers) || [];
+        const picks = BRAINS.map(([name, why]) => [ps.find((p) => p.name === name), why]).filter(([p]) => p);
+        const rest = ps.filter((p) => !BRAINS.some(([name]) => name === p.name));
+        const working = ps.some((p) => p.connected && p.ready);
+        setKids(box,
+          working ? el("div", { class: "said ok row" }, el("span", { class: "grow", text: "Your bot has a brain. Say hello to try it." }),
+            button("Say hello", { kind: "primary", icon: "send", onclick: (e) => hello(e.currentTarget) })) : null,
+          picks.map(([p, why]) => el("div", { class: "stack" }, el("p", { class: "muted small m0", text: why }), this.provider(p))),
+          rest.length ? disc("brains-more", "card", "More providers (" + rest.length + ")",
+            el("div", { class: "tiles details-body" }, rest.map((p) => this.provider(p)))) : null);
+      };
+      M.loadChoices = async function () {
+        try { this.choices = await api("/api/models/choices"); } catch (e) { return sectionError(box, e); }
+        this.drawChoices();
+        refresh();
+      };
+      M.loadChoices();
       return box;
     },
     // The Channels section's Telegram walk-through (token, wait, allow).
     telegramPanel() {
-      const fresh = !this.boxes.telegram;
-      const box = this.box("telegram");
-      if (!this.channels) {
-        const C = this.channels = Object.create(sections.channels);
-        C.said = {};
-        C.load = function () { setKids(box, this.telegram({ configured: false })); };
-      }
-      if (fresh) this.channels.load();
+      const box = el("div");
+      const C = Object.create(sections.channels);
+      C.said = {};
+      C.load = function () { setKids(box, this.telegram({ configured: false })); };
+      C.load();
       return box;
+    },
+    openModel() {
+      connectPanel({ title: "Give your bot a brain", intro: "The model your bot thinks with. A key or a sign-in is tested before it's saved, and it never comes back to this page.",
+        need: "an account with one of these · about 3 minutes", body: this.modelPanel() });
+    },
+    openTelegram() {
+      connectPanel({ title: "Connect Telegram", intro: "Talk to your bot from your phone, in a private chat only you are allowed into.",
+        need: "the Telegram app · about 3 minutes", steps: tgSteps(), body: this.telegramPanel() });
     },
   };
 
-  function status(h) {
+  // Never "running" when it can't answer: no working model, or no gateway
+  // in this process (a page served by `ferrule dashboard` alone).
+  function status(h, setup) {
     const list = h.problems || [];
     const busy = (h.turns || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
+    const things = (n) => n + (n === 1 ? " thing" : " things");
+    const model = setup && (setup.steps || []).find((x) => x.id === "model");
     if (h.kill && h.kill.on) return ["bad", "Stopped: the kill switch is on, so nothing will run."];
-    if (list.some((p) => p.top)) return ["bad", "Your bot needs you: " + list.length + (list.length === 1 ? " thing" : " things") + " to fix."];
-    if (list.length) return ["warn", "Your bot is running, with " + list.length + (list.length === 1 ? " thing" : " things") + " to look at."];
+    if (model && !model.done) return ["bad", "Your bot can't answer yet: it has no working model."];
+    if (list.some((p) => p.top)) return ["bad", "Your bot needs you: " + things(list.length) + " to fix."];
+    if (!h.gateway) return [list.length ? "warn" : "ok", "This page works, but the gateway isn't running here, so no chat app reaches the bot." + (list.length ? " " + things(list.length) + " to look at." : "")];
+    if (list.length) return ["warn", "Your bot is running, with " + things(list.length) + " to look at."];
     if (busy.length) return ["ok pulse", "Your bot is working on " + (busy.length === 1 ? "a message" : busy.length + " messages") + " now."];
-    return ["ok", h.gateway ? "Your bot is running. All quiet." : "All quiet. The gateway isn't running in this process."];
+    return ["ok", "Your bot is running. All quiet."];
+  }
+
+  // Making a Telegram bot, for the panel and the Channels card alike.
+  const tgSteps = () => [
+    frag("In Telegram, open ", el("a", { href: "https://t.me/BotFather", target: "_blank", rel: "noopener", text: "@BotFather" }), " and send /newbot."),
+    "Give it a name, then a username that ends in bot.",
+    "Copy the token BotFather sends, paste it below, then press Test and Save.",
+    "Press Wait for a message and write anything to your new bot, then Allow your chat.",
+    "Press Restart to turn Telegram on.",
+  ];
+
+  // The three a beginner is offered first (M50): no key at all, one key for
+  // hundreds of models, and Claude.
+  const BRAINS = [
+    ["chatgpt", "No key: sign in with the ChatGPT plan you already pay for."],
+    ["openrouter", "One key, hundreds of models, pay as you go."],
+    ["anthropic", "Claude, with a key from Anthropic's console."],
+  ];
+
+  // The first hello: sent from here, answered in Chat.
+  async function hello(b) {
+    if (b) b.setAttribute("aria-busy", "true");
+    try { await api("/api/chat/send", { text: "Hi! Introduce yourself in two lines." }); } catch (e) { sayFor(b, e.message, true); if (b) b.removeAttribute("aria-busy"); return; }
+    const panel = b && b.closest("dialog");
+    if (panel) panel.close();
+    show("chat");
   }
 
   function checklist(s) {
@@ -773,20 +863,13 @@
       if (x.id === "hello") {
         const b = button(x.done ? "Open chat" : "Say hello", { kind: x.done ? null : "primary", icon: "send" });
         b.disabled = !modelDone && !x.done;
-        b.onclick = async () => {
-          if (!x.done) {
-            b.setAttribute("aria-busy", "true");
-            try { await api("/api/chat/send", { text: "Hi! Introduce yourself in two lines." }); } catch (e) { toast(e.message, true); b.removeAttribute("aria-busy"); return; }
-          }
-          show("chat");
-        };
+        b.onclick = () => (x.done ? show("chat") : hello(b));
         return b;
       }
       if (x.done) return null;
-      const opened = home.open === x.id;
-      const b = button(opened ? "Close" : x.id === "model" ? "Set up" : "Connect", { kind: opened ? null : "primary" });
-      b.setAttribute("aria-expanded", String(opened));
-      b.onclick = () => { delete home.boxes[x.id]; home.open = opened ? null : x.id; sections.health.draw(); };
+      const b = button(x.id === "model" ? "Set up" : "Connect", { kind: "primary" });
+      b.setAttribute("aria-haspopup", "dialog");
+      b.onclick = () => (x.id === "model" ? home.openModel() : home.openTelegram());
       return b;
     };
     return el("section", { class: "card accent", "aria-labelledby": "setup-h" },
@@ -802,16 +885,14 @@
           el("div", { class: "t" }, x.label, x.done ? el("span", { class: "sr", text: " (done)" }) : null,
             x.skippable && !x.done ? el("span", { class: "muted small", text: " · optional" }) : null),
           el("div", { class: "d msg", dir: "auto", text: x.detail })),
-        more(x),
-        home.open === x.id && !x.done && x.id !== "hello"
-          ? (x.id === "model" ? home.modelPanel() : home.telegramPanel()) : null))));
+        more(x)))));
   }
 
   const QUICK = [
     ["chat", "chat", "Chat", "Talk to your bot here"],
     ["tasks", "tasks", "Tasks", "Things it does on a schedule"],
     ["usage", "usage", "Spending", "What it has cost so far"],
-    ["models", "models", "Models", "Pick or add a brain"],
+    ["connect", "connect", "Connect", "A brain, chat apps, mail and tools"],
   ];
 
   sections.health = {
@@ -865,7 +946,7 @@
       const ch = h.channels || [];
       const turns = h.turns || [];
       const wd = h.watchdog;
-      const [level, said] = status(h);
+      const [level, said] = status(h, setup);
       const running = turns.filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
       const lanes = ch.length ? ch.map((c) => c.name).join(" + ") + (ch.length === 1 ? " lane" : " lanes") : null;
       const rows = [
@@ -981,7 +1062,9 @@
       this.search.addEventListener("change", go);
       this.tools.onchange = go;
       this.sort.onchange = go;
-      root.append(this.chooseBox, this.box,
+      this.extra = el("div");
+      root.append(this.chooseBox, this.box, this.extra);
+      this.extra.append(
         el("h2", { text: "Evaluate a candidate" }),
         el("div", { class: "card" },
           el("div", { class: "row" }, this.suite,
@@ -1044,6 +1127,8 @@
         return el("div", { class: "row" }, s, b);
       };
       const chat = el("input", { placeholder: "chat id", size: 10, dir: "auto" });
+      const live = ((lastHealth && lastHealth.channels) || []).map((c) => c.name).filter((n) => n !== "dashboard");
+      const where = el("select", { "aria-label": "Channel" }, (live.length ? live : ["telegram"]).map((n) => el("option", { value: n, text: n })));
       const last = (v.last_served || [])[0];
       setKids(this.box, 
         el("h2", { text: "Connected models" }),
@@ -1091,7 +1176,7 @@
           : el("div", { class: "empty", text: "no chat is pinned" }),
         el("h2", { text: "Pin a chat, add a model by id" }),
         el("div", { class: "card" },
-          el("div", { class: "row" }, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value }))),
+          el("div", { class: "row" }, where, chat, pick("Pin", "models/pin", "model", () => ({ chat: chat.value, channel: where.value }))),
           (() => {
             const p = el("input", { placeholder: "provider", size: 10 });
             const id = el("input", { placeholder: "model id", dir: "auto" });
@@ -1199,6 +1284,15 @@
       const providers = c.providers || [];
       const on = providers.filter((p) => p.connected);
       const off = providers.filter((p) => !p.connected);
+      // Nothing to choose between yet: say so, and the one thing to do.
+      const none = !c.models.length && !on.length && !this.home;
+      if (this.box) this.box.hidden = none;
+      if (this.extra) this.extra.hidden = none;
+      if (none) {
+        return setKids(this.chooseBox, secHead("Models", "none yet"),
+          empty("No brain yet", "Your bot needs a model to think with: a sign-in with a plan you pay for, or a provider's key.",
+            button("Connect a brain", { kind: "primary", onclick: () => home.openModel() })));
+      }
       setKids(this.chooseBox,
         secHead("Models", c.models.length + " connected" + (c.default ? " · default " + c.default : "")),
         el("div", { class: "grid2" },
@@ -1236,7 +1330,7 @@
           const b = el("button", { class: "primary", text: "Sign in" });
           b.onclick = async () => {
             b.disabled = true;
-            try { this.chatgpt = await api("/api/plans/chatgpt/start", {}); this.pollChatgpt(); this.drawChoices(); } catch (e) { toast(e.message, true); b.disabled = false; }
+            try { this.chatgpt = await api("/api/plans/chatgpt/start", {}); this.pollChatgpt(); this.drawChoices(); } catch (e) { sayFor(b, e.message, true); b.disabled = false; }
           };
           box.append(el("div", { class: "row" }, b));
         }
@@ -1257,7 +1351,7 @@
       if (p.needs_key) {
         const k = el("input", { type: "password", name: "key", autocomplete: "new-password", placeholder: p.connected ? "paste a new key" : "paste the key", "data-secret": "1" });
         const b = el("button", { class: p.connected ? null : "primary", text: p.connected ? "Replace key" : "Test and save" });
-        b.onclick = () => { const v = k.value.trim(); wipeSecrets(box); if (v) act("models/provider", { provider: p.name, key: v }, b).then(() => this.loadChoices()); };
+        b.onclick = () => { const v = k.value.trim(); wipeSecrets(box); if (v) act("models/provider", { provider: p.name, key: v }, b).then((r) => { if (r) this.loadChoices(); }); };
         box.append(frag(
           p.key_url ? el("p", { class: "small" }, el("a", { href: p.key_url, target: "_blank", rel: "noopener", text: "Get a key" }),
             el("span", { class: "muted", text: " · tested before it's saved; it never comes back to this page" })) : null,
@@ -1287,8 +1381,8 @@
       while (this.chatgpt && this.chatgpt.state === "waiting") {
         await new Promise((r) => setTimeout(r, 3000));
         try { this.chatgpt = await api("/api/plans/chatgpt/poll"); } catch (_) { break; }
-        if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); break; }
-        if ((current === "models" || (this.home && current === "health")) && !this.fbEdited) this.drawChoices();
+        if (this.chatgpt.state === "done") { toast(this.chatgpt.said); this.chatgpt = null; refresh(); if (this.home) this.loadChoices(); break; }
+        if ((current === "models" || this.home) && !this.fbEdited) this.drawChoices();
       }
     },
   };
@@ -1392,12 +1486,15 @@
             el("div", { class: "what", text: "The agent asked for: " + c.asked.join(", ") }),
             el("div", { class: "fix", text: "It waits until you connect it here, and it never sees the token." }),
             el("div", { class: "row" }, c.asked.map((s) => el("button", { class: "primary", text: "Set up " + s, onclick: () => this.focus(s) }))))) : null,
-        this.relayCard(c),
-        list ? this.checklist(list) : null,
         this.pending(c),
         this.connected(c),
         el("h2", { text: "Services" }),
-        el("div", { class: "tiles" }, c.tiles.map((t) => this.tile(c, t))));
+        el("div", { class: "tiles" }, c.tiles.map((t) => this.tile(c, t))),
+        disc("conn-fixed", "card", "For sign-ins that need a fixed address",
+          el("div", { class: "details-body stack" },
+            el("p", { class: "muted small", text: "Key-based ways in never need this. Some sign-ins (Google with your own app, Atlassian's) send you back to an address that must never change." }),
+            this.relayCard(c),
+            list ? this.checklist(list) : null)));
       if (this.target) {
         const node = document.getElementById("tile-" + this.target);
         this.target = null;
@@ -1513,11 +1610,12 @@
         switch (a.action) {
           case "relay_setup":
           case "relay_use":
-            return el("button", { class: "primary", text: a.label, onclick: () => {
+            return el("button", { class: "primary", text: a.label, onclick: async () => {
               this.relayForms = true;
+              opened.add("conn-fixed");
+              await this.load();
               const r = document.getElementById("relay");
               if (r) r.scrollIntoView({ behavior: "smooth" });
-              this.load();
             } });
           case "relay_check": return this.stepsBtn(a.label, "connections/relay/check", () => ({}));
           case "connect": return el("button", { class: "primary", text: a.label, onclick: () => this.focus(a.service) });
@@ -1623,8 +1721,8 @@
       const key = "opt:" + o.name;
       const conn = c.connections.find((s) => s.service === o.name);
       const body = el("div", { class: "details-body" });
-      if (o.covers) body.append(el("p", { class: "covers msg", dir: "auto", text: "Covers: " + o.covers }));
-      if ((o.guide || []).length) body.append(el("ol", { class: "guide" }, o.guide.map((g) => el("li", { class: "msg", dir: "auto", text: g }))));
+      if (o.covers) body.append(el("p", { class: "covers msg", dir: "auto" }, "Covers: ", linkify(o.covers)));
+      if ((o.guide || []).length) body.append(el("ol", { class: "guide" }, o.guide.map((g) => el("li", {}, linkify(g)))));
       if (o.fixed_callback && c.callback) body.append(el("p", { class: "small" }, "Callback to give it: ", el("code", { text: c.callback }), " ", copyBtn(c.callback)));
       if (o.attempt) {
         body.append(el("div", { class: "said bad" },
@@ -1670,7 +1768,7 @@
       go.onclick = async () => {
         const vals = values(fields);
         const missing = (o.fields || []).filter((f) => !f.optional && !vals[f.name]).map((f) => f.label);
-        if (missing.length) { toast("Still empty: " + missing.join(", "), true); return; }
+        if (missing.length) { sayFor(go, "Still empty: " + missing.join(", "), true); return; }
         wipeSecrets(box);
         const r = await act("connections/key", { service: o.name, fields: vals, write: write.checked }, go);
         if (!r) return;
@@ -2115,7 +2213,8 @@
         el("p", { class: "muted small m0" }, "Programs that give your bot new tools, called ", tip("MCP"), " servers."),
         x.mcp.length ? el("div", { class: "plain-list" }, x.mcp.map((m) => el("div", { class: "item" + (m.disabled ? " dead" : "") },
           el("div", { class: "grow" }, el("div", { class: "t", text: m.name }), el("div", { class: "d", text: m.origin === "configured" ? "added in the config" : "from " + m.origin })),
-          m.origin === "configured" ? switchFor(m.name, m.disabled, "mcp/enable", "mcp/disable") : tag(m.origin)))) : empty("None connected", "Nothing is adding tools right now."),
+          m.origin === "configured" ? switchFor(m.name, m.disabled, "mcp/enable", "mcp/disable") : tag(m.origin)))) : empty("None connected", "Nothing is adding tools right now.",
+          button("Add one by its address", { kind: "primary", onclick: () => sections.connect.addressPanel() })),
         el("h2", { text: "Skills" }),
         !x.skills_enabled ? empty("Skills are off", "Turn them on in the config to let your bot learn how-to guides.")
           : x.skills.length ? el("div", { class: "plain-list" }, x.skills.map((s) => el("div", { class: "item" + (s.disabled ? " dead" : "") },
@@ -2438,6 +2537,167 @@
     },
   };
 
+  // ---- connect (M50): everything the bot can reach, in one place ---------
+  // Its brain, where people talk to it, and what it can use, each with its
+  // state in a word. A tile opens the thing's panel (connectPanel) with the
+  // form its own page has; the pages stay for managing what's connected.
+  sections.connect = {
+    every: 10,
+    mount(root) {
+      this.q = "";
+      const search = el("input", { type: "search", class: "grow", placeholder: "Find: Gmail, Telegram, GitHub…", dir: "auto", "aria-label": "Find something to connect" });
+      search.addEventListener("input", () => { this.q = fold(search.value.trim()); this.filter(); });
+      this.box = el("div", { class: "stack" });
+      root.append(secHead("Connect", "everything your bot can reach"), el("div", { class: "row search" }, icon("search"), search), this.box);
+    },
+    async load() {
+      const [setup, ch, conn] = await Promise.all([
+        api("/api/setup").catch(() => null),
+        api("/api/channels").catch(() => null),
+        api("/api/connections").catch(() => null),
+      ]);
+      const brain = setup && setup.steps.find((x) => x.id === "model");
+      const services = conn && conn.available ? conn.tiles : [];
+      setKids(this.box,
+        el("h2", { text: "Its brain" }),
+        el("div", { class: "card row" }, led(brain && brain.done ? "ok" : "bad"),
+          el("span", { class: "grow msg", dir: "auto", text: brain ? brain.detail : "The model list isn't available in this process." }),
+          button(brain && brain.done ? "Change" : "Connect a brain", { kind: brain && brain.done ? null : "primary", onclick: () => home.openModel() }),
+          brain && brain.done ? el("a", { class: "btn ghost", href: "#models", text: "Models" }) : null),
+        el("h2", { text: "Where you talk to it" }),
+        ch ? el("div", { class: "picks" }, ch.channels.map((x) => this.pick(x.title, CHANNEL_STATE[x.state] || [x.state, null], x.icon, x.name + " chat channel",
+          () => this.channelPanel(x)))) : el("p", { class: "muted", text: "Channels aren't available in this process." }),
+        el("h2", { text: "What it can use" }),
+        services.length ? el("div", { class: "picks" }, services.map((t) => this.pick(t.title.replace(/\s*\(.*\)$/, ""), t.connected ? ["connected", "ok"] : [t.options.length > 1 ? t.options.length + " ways in" : t.options[0].auth === "api_key" ? "key" : "sign-in", null], null,
+          t.options.map((o) => (o.option || "") + " " + (o.covers || "")).join(" "), () => this.servicePanel(t.tile, t.title)))) :
+          el("p", { class: "muted", text: "Connections aren't set up in this process: run `ferrule connections setup` on the machine." }),
+        el("div", { class: "picks mt" },
+          this.pick("Any app by its address", ["MCP", null], null, "mcp server url address tools sign-in key", () => this.addressPanel()),
+          this.pick("A key for a tool", ["key", null], null, "secret api key token command weather", () => this.toolKeyPanel())),
+        el("p", { class: "muted small" }, "Manage what's connected on ", el("a", { href: "#models", text: "Models" }), ", ",
+          el("a", { href: "#channels", text: "Channels" }), ", ", el("a", { href: "#connections", text: "Connections" }), " and ",
+          el("a", { href: "#extensions", text: "Extensions" }), "."));
+      this.filter();
+    },
+    // A tile: a button with an icon, a name and its state in a word.
+    pick(name, [state, cls], path, words, open) {
+      const s = el("svg", { class: "ico", viewBox: "0 0 24 24", "aria-hidden": "true" });
+      if (path) s.append(el("path", { d: path }));
+      const b = el("button", { type: "button", class: "pick", "aria-haspopup": "dialog", onclick: open },
+        path ? s : icon("connections"), el("span", { class: "grow", dir: "auto", text: name }), state ? tag(state, cls) : null);
+      b.dataset.words = fold(name + " " + (state || "") + " " + (words || ""));
+      return b;
+    },
+    filter() {
+      this.box.querySelectorAll(".pick").forEach((b) => { b.hidden = !!this.q && !b.dataset.words.includes(this.q); });
+    },
+    // An MCP server by its address (M50 A, B): a sign-in, or a key that
+    // goes only to that address. A server that runs a command stays on the
+    // machine (`ferrule mcp add`) and with the bot's own approval flow.
+    addressPanel() {
+      const url = () => el("input", { type: "url", name: "url", placeholder: "https://mcp.example.com/mcp", autocomplete: "off", spellcheck: "false", "aria-label": "The app's MCP address" });
+      const u1 = url();
+      const w1 = el("input", { type: "checkbox" });
+      const go1 = el("button", { class: "primary", text: "Sign in" });
+      go1.onclick = () => { if (u1.value.trim()) act("connections/connect", { service: u1.value.trim(), write: w1.checked }, go1); else sayFor(go1, "Paste the app's address first.", true); };
+      const u2 = url();
+      const k = el("input", { type: "password", name: "key", placeholder: "the key it gave you", autocomplete: "new-password", "data-secret": "1", "aria-label": "The key" });
+      const h = el("input", { name: "header", value: "Authorization", autocomplete: "off", "aria-label": "Header name" });
+      const v = el("input", { name: "value", value: "Bearer {key}", autocomplete: "off", "aria-label": "Header value, with {key} where the key goes" });
+      const w2 = el("input", { type: "checkbox" });
+      const go2 = el("button", { class: "primary", text: "Check and connect" });
+      go2.onclick = async () => {
+        const body = { url: u2.value.trim(), key: k.value.trim(), header: h.value.trim(), value: v.value.trim(), write: w2.checked };
+        wipeSecrets(go2.closest(".card"));
+        if (!body.url || !body.key) return sayFor(go2, "The address and the key, please.", true);
+        if (await act("connections/address", body, go2)) { u2.value = ""; }
+      };
+      connectPanel({ title: "Any app by its address", intro: "Apps that give bots tools (MCP servers) have an address like mcp.example.com/mcp, in their docs. Your bot only gets the tools; a key goes only to that address and never comes back to this page.",
+        body: frag(
+          el("div", { class: "card stack" }, el("h3", { class: "m0", text: "It has a sign-in" }), u1,
+            el("div", { class: "row" }, el("label", { class: "cb" }, w1, "allow changes (send, edit)"), go1),
+            el("p", { class: "muted small m0", text: "Opens the app's sign-in in a new tab; it's connected when you're back." })),
+          el("div", { class: "card stack" }, el("h3", { class: "m0", text: "It gave you a key" }), u2, k,
+            advanced("address-header", "where the key goes", el("div", { class: "row grid" }, h, v)),
+            el("div", { class: "row" }, el("label", { class: "cb" }, w2, "allow changes (send, edit)"), go2),
+            el("p", { class: "muted small m0", text: "Tried once against the app before it's saved. A server that runs a program on this machine is added there, with ferrule mcp add." }))) });
+    },
+    // A key for a command (M50 C): a new [secrets] name, its value and the
+    // sites it may go to. The list shows names and sites, never a value.
+    toolKeyPanel() {
+      const box = el("div", { class: "stack" });
+      const draw = async () => {
+        let r;
+        try { r = await api("/api/secrets"); } catch (e) { return sectionError(box, e); }
+        const name = el("input", { name: "name", placeholder: "WEATHER_API_KEY", autocomplete: "off", spellcheck: "false", "aria-label": "Its name" });
+        const value = el("input", { type: "password", name: "value", placeholder: "the key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The key" });
+        const sites = el("input", { name: "hosts", placeholder: "api.weather.example", autocomplete: "off", spellcheck: "false", "aria-label": "Sites it may be sent to" });
+        const save = el("button", { class: "primary", text: "Save" });
+        save.disabled = !r.here || !!r.locked;
+        save.onclick = async () => {
+          const body = { name: name.value.trim(), value: value.value.trim(), hosts: sites.value.trim() };
+          wipeSecrets(box);
+          const done = await act("secrets/add", body, save);
+          if (done) { await draw(); sayFor(box.querySelector(".card button.primary"), done.said); }
+        };
+        setKids(box,
+          r.keys.length ? el("div", { class: "plain-list" }, r.keys.map((x) => el("div", { class: "item" },
+            el("div", { class: "grow" }, el("div", { class: "t mono", text: x.name }), el("div", { class: "d", text: "sent only to " + x.hosts.join(", ") })),
+            x.removable ? button("Remove", { kind: "danger", onclick: async (e) => { if (await act("secrets/remove", { name: x.name }, e.currentTarget)) draw(); } }) : tag("set on the machine")))) : null,
+          el("div", { class: "card stack" },
+            r.locked ? el("div", { class: "said bad msg", dir: "auto", text: r.locked }) : null,
+            !r.here ? el("div", { class: "said bad", text: "Open this page from your running bot (send it /dashboard) to add one: only the bot can tell whether a name is free." }) : null,
+            el("label", { class: "field" }, el("span", { text: "Its name, as the tool's docs spell it" }), name),
+            el("label", { class: "field" }, el("span", { text: "The key" }), value),
+            el("label", { class: "field" }, el("span", { text: "Sites it may be sent to" }), sites,
+              el("span", { class: "hint", text: "comma-separated: api.example.com, or *.example.com for all of its addresses" })),
+            el("div", { class: "row" }, save)));
+      };
+      draw();
+      connectPanel({ title: "A key for a tool", intro: "For a command your bot runs that needs a key, a weather API say. Commands see a stand-in; the real key is sent only to the sites you name, and never comes back to this page.",
+        body: box });
+    },
+    channelPanel(x) {
+      if (x.name === "telegram") return home.openTelegram();
+      const box = el("div");
+      const C = Object.create(sections.channels);
+      C.said = {};
+      C.load = async function () {
+        let c;
+        try { c = await api("/api/channels"); } catch (e) { return sectionError(box, e); }
+        const now = c.channels.find((y) => y.name === x.name);
+        if (now) setKids(box, this.card(now));
+      };
+      opened.add("chguide:" + x.name);
+      C.load();
+      connectPanel({ title: x.title, intro: "Let people reach your bot here. Keys go to the secrets file and never come back to this page." +
+        (x.name === "email" ? " This is for emailing your bot like a chat; for the bot to read and send your own Gmail as a tool, connect Gmail under What it can use." : ""), body: box });
+    },
+    servicePanel(tile, title) {
+      const box = el("div");
+      const S = Object.create(sections.connections);
+      S.said = {};
+      let first = true;
+      S.load = async function () {
+        let c;
+        try { c = await api("/api/connections"); } catch (e) { return sectionError(box, e); }
+        const t = c.tiles.find((y) => y.tile === tile);
+        if (!t) return;
+        // The simplest way in that can work, open; the rest one tap away.
+        if (first) {
+          first = false;
+          const o = t.options.find((y) => !y.blocked) || t.options[0];
+          if (o) opened.add("opt:" + o.name);
+        }
+        setKids(box, this.tile(c, t));
+      };
+      S.focus = function (name) { opened.add("opt:" + name); this.load(); };
+      S.load();
+      connectPanel({ title, intro: "What your bot may do with it is read-only unless you tick \"allow changes\", and changes still ask you first." +
+        (tile === "gmail" ? " This lets the bot use your mail as a tool; to email your bot like a chat, use the Email channel under Where you talk to it." : ""), body: box });
+    },
+  };
+
   // ---- console: a ferrule line, never a shell (M37 §4.2) -----------------
 
   // ---- channels (M39 §9) -------------------------------------------------
@@ -2445,8 +2705,8 @@
   // (secrets write-only: a card only says whether each is set), Test
   // against the service with what's typed, Save, Remove, and the guide
   // with direct links. Telegram has its own card (M44 §4): a token, a test, a
-// wait for the first message and an Allow for its chat. Discord and Slack
-// stay with `ferrule setup`.
+  // wait for the first message and an Allow for its chat. Discord and Slack
+  // got their cards in M50.
   const CHANNEL_STATE = {
     on: ["running", "ok"], problem: ["problem", "bad"], stale: ["not polling", "bad"],
     restart: ["restart needed", "warn"], set: ["set up", "ok"], off: ["off", null],
@@ -2477,7 +2737,8 @@
       const body = el("div", { class: "stack" });
       if (x.why) body.append(el("div", { class: "said " + (st[1] === "bad" ? "bad" : "") + " msg", dir: "auto", text: x.why }));
       if (!x.form && x.name === "telegram") {
-        body.append(this.telegram(x));
+        body.append(disc("chguide:telegram", null, x.configured ? "How it was set up" : "How to set it up",
+          el("ol", { class: "guide" }, tgSteps().map((g) => el("li", {}, typeof g === "string" ? linkify(g) : g)))), this.telegram(x));
       } else if (!x.form) {
         body.append(el("p", { class: "muted small", text: x.configured
           ? "Set up. Change it with `ferrule setup` on the machine."
@@ -2491,7 +2752,7 @@
         body.append(this.form(x));
         if (x.keys) body.append(this.keys(x));
       }
-      body.append(el("p", { class: "muted small m0" }, "More in ", el("code", { text: x.doc }), "."));
+      body.append(el("p", { class: "muted small m0" }, "More in ", docLink(x.doc), "."));
       return el("div", { class: "card tile", id: "channel-" + x.name },
         el("div", { class: "head" }, s, el("h2", { class: "grow", text: x.title }), tag(st[0], st[1])),
         body);
@@ -2633,7 +2894,7 @@
         test.disabled = false; test.textContent = "Test";
         const old = box.querySelector(".said.test");
         const now = this.said[x.name];
-        const node = el("div", { class: "said test " + (now.ok ? "ok" : "bad") + " msg", dir: "auto", text: now.said });
+        const node = el("div", { class: "said test " + (now.ok ? "ok" : "bad") }, linkify(now.said));
         if (old) old.replaceWith(node); else box.insertBefore(node, box.lastChild);
       };
       const save = el("button", { class: "primary", text: x.configured ? "Save" : "Save and turn on" });
@@ -2648,7 +2909,7 @@
       };
       // Element.append would print a null as the word "null".
       box.append(fields);
-      if (said) box.append(el("div", { class: "said test " + (said.ok ? "ok" : "bad") + " msg", dir: "auto", text: said.said }));
+      if (said) box.append(el("div", { class: "said test " + (said.ok ? "ok" : "bad") }, linkify(said.said)));
       box.append(el("div", { class: "row" }, test, save,
           x.configured ? btn("Remove", "channels/remove", { name: x.name }, "danger") : null),
         el("p", { class: "muted small", text: "Tokens go to the secrets file, never back to this page, and the model never sees them." }));
@@ -2927,16 +3188,18 @@
 
   const GROUPS = [
     [/*tr*/"Everyday", ["health", "chat", "tasks", "memory", "usage"]],
-    [/*tr*/"Setup", ["channels", "connections", "models"]],
+    [/*tr*/"Setup", ["connect", "channels", "connections", "models"]],
     [/*tr*/"Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
   ];
   const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
-  const TABS = ["health", "chat", "tasks", "usage"];
+  const TABS = ["health", "chat", "connect", "tasks"];
   const ICON_OF = { health: "health" };
-  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
-  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", memory: /*tr*/"Memory", usage: /*tr*/"Usage", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
+  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
+  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
+  // What /api/login or /api/session said: the CSRF token and the session's limits.
+  let SESSION = {};
   let timer = null;
   let banner = null;
   let lastHealth = null;
@@ -2961,7 +3224,8 @@
     setKids(rail,
       groups({ keep: () => true, make: (s) => navLink(s) }),
       el("div", { class: "rail-foot" },
-        frag(el("b", { text: tr("session") }), el("br"), tr("12 h max · idle 30 min"), el("br"),
+        frag(el("b", { text: tr("session") }), el("br"),
+          fill("%s h max", SESSION.session_hours) + " · " + fill("idle %s min", SESSION.idle_minutes), el("br"),
           el("b", { text: tr("login") }), el("br"), tr("one-use link"))));
     rail.hidden = false;
     const tabs = document.getElementById("tabs");
@@ -3010,6 +3274,8 @@
   function show(name, opts) {
     if (!sections[name]) name = "health";
     current = name;
+    // A failure belongs to the page it happened on.
+    document.querySelectorAll("#toast .t.bad").forEach((t) => t.remove());
     const root = el("div");
     banner = el("div");
     document.getElementById("main").replaceChildren(banner, root);
@@ -3266,11 +3532,12 @@
     if (hash && !order.includes(hash)) {
       history.replaceState(null, "", BASE + "/");
       try {
-        csrf = (await api("/api/login", { token: hash })).csrf;
+        SESSION = await api("/api/login", { token: hash });
       } catch (e) { loggedOut(e.message); return; }
     } else {
-      try { csrf = (await api("/api/session")).csrf; } catch (_) { return; }
+      try { SESSION = await api("/api/session"); } catch (_) { return; }
     }
+    csrf = SESSION.csrf;
     const logout = document.getElementById("logout");
     logout.hidden = false;
     logout.onclick = async () => {

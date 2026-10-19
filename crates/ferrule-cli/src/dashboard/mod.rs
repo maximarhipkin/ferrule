@@ -26,6 +26,7 @@ pub mod setup;
 mod telegram;
 #[cfg(test)]
 pub mod testing;
+mod tool_keys;
 
 use crate::config::{Config, DashboardConfig};
 use anyhow::{bail, Context, Result};
@@ -340,7 +341,16 @@ impl Dashboard {
                     let resp = match http::read(&mut conn, |head| me.limit_for(head)).await {
                         Ok(req) => me.handle(req).await,
                         Err(0) => return,
-                        Err(status) => Response::text(status, "bad request"),
+                        // As JSON, so the page shows the sentence, not "HTTP 413".
+                        Err(status) => refuse(
+                            status,
+                            match status {
+                                413 => "That's too big to send.",
+                                503 => "Another upload is in progress; try again in a moment.",
+                                408 => "That took too long to arrive; try again.",
+                                _ => "The page sent a request this server can't read.",
+                            },
+                        ),
                     };
                     http::write(&mut conn, resp).await;
                 });
@@ -722,9 +732,15 @@ impl Dashboard {
         self.touch();
         let secure = self.secure_for(&host);
         match (get, req.path.as_str()) {
-            (true, "/api/session") => {
-                Response::json(200, &json!({ "csrf": granted.csrf, "user": granted.user }))
-            }
+            (true, "/api/session") => Response::json(
+                200,
+                &json!({
+                    "csrf": granted.csrf,
+                    "user": granted.user,
+                    "session_hours": self.settings.session_hours,
+                    "idle_minutes": self.settings.idle_minutes,
+                }),
+            ),
             (true, "/api/backups/download") => backup_page::download(&self.ctx, &req),
             (false, "/api/logout") => {
                 if let Some(c) = cookie {
@@ -774,7 +790,15 @@ impl Dashboard {
             };
         tracing::info!(user = %claims.user, "panel sign-in");
         self.touch();
-        Response::json(200, &json!({ "csrf": csrf })).with_header(
+        Response::json(
+            200,
+            &json!({
+                "csrf": csrf,
+                "session_hours": self.settings.session_hours,
+                "idle_minutes": self.settings.idle_minutes,
+            }),
+        )
+        .with_header(
             "Set-Cookie",
             auth::set_cookie(
                 &cookie,
@@ -807,7 +831,15 @@ impl Dashboard {
                     }
                 };
                 self.touch();
-                Response::json(200, &json!({ "csrf": csrf })).with_header(
+                Response::json(
+                    200,
+                    &json!({
+                        "csrf": csrf,
+                        "session_hours": self.settings.session_hours,
+                        "idle_minutes": self.settings.idle_minutes,
+                    }),
+                )
+                .with_header(
                     "Set-Cookie",
                     auth::set_cookie(
                         &cookie,

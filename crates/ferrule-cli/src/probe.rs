@@ -78,6 +78,14 @@ pub async fn models(
         .json()
         .await
         .map_err(|_| Check::Failed("the model list isn't JSON".into()))?;
+    // OpenRouter lists its models to anyone, so a mistyped key passed the
+    // list; `/key` answers 401 to a key that isn't real.
+    if base_url.contains("://openrouter.ai/") {
+        let url = format!("{}/key", base_url.trim_end_matches('/'));
+        if let Err(Check::Rejected(why)) = token_accepted(http, &url, key).await {
+            return Err(Check::Rejected(why));
+        }
+    }
     model_ids(&body).ok_or_else(|| Check::Failed("unexpected model list shape".into()))
 }
 

@@ -125,6 +125,44 @@ fn a_managed_first_start_serves_the_dashboard_with_no_model_or_channel() {
     assert_eq!(s, 403, "{v}");
 }
 
+/// M50: the page's new write paths keep the policy's locks: a key for a
+/// tool is the shell's, an MCP address is an extension.
+#[test]
+fn the_locks_cover_keys_for_tools_and_apps_by_address() {
+    let dir = home("");
+    std::fs::remove_file(dir.path().join("ferrule.toml")).unwrap();
+    let pol = policy(
+        dir.path(),
+        "reason = \"beta\"\nsandbox = \"container\"\nshell = false\nextensions = false\n",
+    );
+    let env = [
+        ("FERRULE_MANAGED", "1"),
+        ("FERRULE_POLICY", pol.as_str()),
+        ("FERRULE_BOT_ID", "b_test"),
+    ];
+    let _gw = gateway(dir.path(), &env);
+    let (port, token) = link_in(&managed_link(dir.path(), &env));
+    let page = login(port, &token).expect("the link signs in");
+    for (path, body) in [
+        (
+            "secrets/add",
+            json!({ "name": "WEATHER_KEY", "value": "k", "hosts": "api.example.com" }),
+        ),
+        (
+            "connections/address",
+            json!({ "url": "https://mcp.example.com/mcp", "key": "k" }),
+        ),
+        (
+            "connections/connect",
+            json!({ "service": "https://mcp.example.com/mcp" }),
+        ),
+    ] {
+        let (s, v) = page.post(path, body);
+        assert_eq!(s, 403, "{path}: {v}");
+        assert!(v["error"].as_str().unwrap().contains("beta"), "{path}: {v}");
+    }
+}
+
 const SECRET: &str = "test-panel-secret-0123456789abcdef0123";
 
 /// A panel token as the panel would sign it.
@@ -481,7 +519,13 @@ fn sigterm_drains_and_exits_zero() {
         .stderr(std::fs::File::create(&log).unwrap());
     let mut child = cmd.spawn().unwrap();
     wait_health(port.parse().unwrap(), |_| true);
+    // The page answers as soon as it's bound; the marker is written just
+    // after, so under a loaded test run it can lag a moment.
     let marker = dir.path().join("data/gateway/dashboard.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(marker.exists());
     let pid = child.id().to_string();
     let killed = std::process::Command::new("kill")

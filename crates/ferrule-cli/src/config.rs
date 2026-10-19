@@ -481,7 +481,7 @@ fn default_verify_timeout_secs() -> u64 {
     600
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GatewayConfig {
     /// M41: "typing…" in the chat while a turn runs. Unset = on.
     #[serde(default)]
@@ -556,6 +556,15 @@ pub struct GatewayConfig {
     /// M39: `[gateway.http]`, `POST /v1/messages` for your own programs.
     #[serde(default)]
     pub http: Option<crate::channels::settings::HttpApi>,
+}
+
+/// No `[gateway]` table reads like an empty one. A derived `Default` left
+/// the API URLs empty, so the dashboard's Telegram Test on such a config
+/// failed with "builder error" (a URL with no host).
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        toml::from_str("").expect("an empty [gateway] table is valid")
+    }
 }
 
 impl GatewayConfig {

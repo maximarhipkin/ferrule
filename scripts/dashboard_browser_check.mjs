@@ -249,7 +249,11 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
     return "3 steps, " + bar[0] + " of 3 at first, gone once the bot answered";
   });
 
-  await run("a step opens in place", async () => {
+  const key = async (k, code, mods = 0) => {
+    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, modifiers: mods, windowsVirtualKeyCode: { Enter: 13, Escape: 27 }[k] || k.toUpperCase().charCodeAt(0) });
+    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, modifiers: mods });
+  };
+  await run("a step opens its connect panel", async () => {
     // Pretend the model step is open, to see the provider form come up in it.
     await js(`
       const h = window.ferrule.sections.health;
@@ -259,13 +263,16 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
       window.__realLoad = real;
       await h.load((await window.ferrule.api("/api/health")));`);
     if (!(await click("#main .steps", "Set up"))) throw new Error("no Set up button");
-    await until("a provider form in the step", () => js(`return document.querySelectorAll("#main .step-panel .card").length > 0`), 15).catch(async (e) => {
-      throw new Error(e.message + "; the panel: " + (await js(`const p = document.querySelector("#main .step-panel"); return p ? p.outerHTML.slice(0, 300) : "none"`)));
+    await until("a provider form in the panel", () => js(`return document.querySelectorAll("dialog.connect[open] .card").length > 0`), 15).catch(async (e) => {
+      throw new Error(e.message + "; the panel: " + (await js(`const p = document.querySelector("dialog.connect"); return p ? p.outerHTML.slice(0, 300) : "none"`)));
     });
-    const n = await js(`return document.querySelectorAll("#main .step-panel .card").length`);
-    if (!(await click("#main .steps", "Close"))) throw new Error("no Close button");
+    const n = await js(`return document.querySelectorAll("dialog.connect .card").length`);
+    const first = await js(`return [...document.querySelectorAll("dialog.connect .card strong")].slice(0, 3).map((s) => s.textContent).join(", ")`);
+    if (!/ChatGPT plan/.test(first)) throw new Error("the first three are " + first);
+    await key("Escape", "Escape");
+    await until("the panel to close", () => js(`return !document.querySelector("dialog.connect")`), 5);
     await js(`window.ferrule.sections.health.load = window.__realLoad; window.ferrule.show("health")`);
-    return n + " provider cards drawn inside the step";
+    return n + " provider cards in the panel, " + first + " first; Esc closes it";
   });
 
   await run("a glossary word explains itself", async () => {
@@ -281,10 +288,6 @@ private_allow = ["127.0.0.1:${port(mcp)}"]
   // M47 part 4: the shell. The palette opens from the keyboard, finds a
   // page by a few letters, and focus lands on the page; the phone bar has
   // five items and its More sheet is a real dialog.
-  const key = async (k, code, mods = 0) => {
-    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: k, code, modifiers: mods, windowsVirtualKeyCode: { Enter: 13, Escape: 27 }[k] || k.toUpperCase().charCodeAt(0) });
-    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, modifiers: mods });
-  };
   await run("the palette finds a page", async () => {
     await js(`window.ferrule.show("health"); document.activeElement && document.activeElement.blur()`);
     await key("k", "KeyK", 2);

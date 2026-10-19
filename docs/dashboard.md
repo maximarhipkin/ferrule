@@ -129,14 +129,14 @@ stopped using one).
 ![Home on a phone](assets/m47/after/health-390-light.jpg)
 ![Home on a desktop, dark](assets/m47/after/health-1280-dark.jpg)
 
-**Getting around.** On a phone the bottom bar has Home, Chat, Tasks, Usage
-and **More**, which opens the rest in three groups. From 900 px wide there
-is a sidebar with the same groups:
+**Getting around.** On a phone the bottom bar has Home, Chat, Connect,
+Tasks and **More** (since M50; Usage moved into More), which opens the rest
+in three groups. From 900 px wide there is a sidebar with the same groups:
 
 | Group | Pages |
 |---|---|
 | Everyday | Home, Chat, Tasks, Memory, Usage |
-| Setup | Channels, Connections, Models |
+| Setup | Connect, Channels, Connections, Models |
 | Advanced | Logs, Agents, Extensions, Routing, Console, Config, Settings |
 
 Every page keeps its `#name` link. A number on Home, or on Connections,
@@ -191,6 +191,52 @@ plus Home and Settings in Hebrew) are in
 [assets/m49/before](assets/m49/before/). The M47 sets are in
 [assets/m47](assets/m47/). Regenerate with
 `scripts/m49_shots.sh <ferrule binary> <out dir>`.
+
+## Connecting everything (M50)
+
+M50 made connecting the bot one place and one pattern, for an owner who
+has never opened a terminal. The review, the step counts and the
+decisions are in [m50-connect.md](m50-connect.md).
+
+![Connect on a phone](assets/m50/after/connect-390-light.webp)
+![The brain panel, a wrong key answered in its card](assets/m50/after/walk-02-panel-brain-bad-key-800.webp)
+
+- **Connect** (`#connect`) lists what the bot can be connected to, each
+  with its state in a word: its brain, where people talk to it (every
+  chat channel) and what it can use (every service, then **Any app by its
+  address** and **A key for a tool**). One search box finds a tile by
+  name or by what it covers ("calendar" finds Google's).
+- **A tile opens a panel** (a full screen on a phone): what it gives the
+  bot, what you need, the steps with real links, the form, and the answer
+  inside the card you pressed, never in a toast. A failure puts focus on
+  the field to fix; a key is still wiped once it's sent. Home's checklist
+  opens the same panels.
+- **The brain panel** offers three first: the ChatGPT plan (no key),
+  OpenRouter (one key, hundreds of models) and Anthropic; the rest are
+  under **More providers**. Once one works, **Say hello** is right there.
+- **Any app by its address**: an MCP server's `https://` address, with a
+  sign-in, or with a key that is tried once, sealed, and sent only to
+  that address. A server that runs a program on the machine stays with
+  `ferrule mcp add` and the bot's own approval flow.
+- **A key for a tool**: a new `[secrets]` entry, its value and the sites
+  it may go to. Only a new name: never one in the secrets file, in
+  `[secrets]`, named in the config, set in the bot's environment, or one
+  programs act on (`PATH`, `LD_*`, …). It needs the page opened from the
+  running bot (`/dashboard`). Values never come back.
+- **Discord and Slack** have cards like the other channels: token(s),
+  allowed users and channels, **Test** (Discord's gives the link that
+  invites the bot to your server), **Save and turn on**. The page doesn't
+  pair you by a DM code or register Discord's slash commands; `ferrule
+  setup` still does both.
+- **Calmer pages**: Models with no model is one card and one button;
+  Connections opens on the services, with the callback address folded at
+  the end; Telegram's card says how to make a bot with @BotFather.
+- **Truthful status**: Home says the bot can't answer when no model
+  works, and that the gateway isn't running when the page is served
+  without it.
+
+Managed mode: adding by address is under the policy's `extensions` lock,
+keys for tools under `shell`. The Config page's guard is unchanged.
 
 ## The control room (M37)
 

@@ -5876,3 +5876,47 @@ Telegram path (a real bot token) wasn't exercised; only the mocks were.
   can't be fetched blocks the channel; `/cmd@OtherBot` acts in groups.
 - MCP stdio: the request write sits outside the timeout, and a cut-off
   write breaks the connection until restart.
+
+### 2026-10-20 — M50 connect everything from the dashboard (Claude, Opus 5.5)
+
+**Scope.** Max: "check the agent dashboard, suggest improvements, maybe
+design the dashboard new … that he will connect to everything with
+ease." A walk of an empty install, a design brought to Max first, then
+the build. Branch `m50-connect` (based on `fix/telegram-files-review-pass`);
+review, design, decisions, corrections and what was verified in
+`docs/m50-connect.md`.
+
+**Max's decisions.** All four new abilities (MCP by address with a
+sign-in or a key, keys for tools, Discord and Slack cards); Connect takes
+Usage's place in the phone bar; setting up in the browser with no
+terminal is its own next milestone; tests only for the new write paths'
+security rules.
+
+**What was built** (one commit per part).
+- **0 Review and design.** Step counts per path, before shots.
+- **1 Fixes from the walk.** Telegram's Test said "builder error" with
+  no `[gateway]` table (a derived `Default` left the API URLs empty);
+  Home said "running" with no model; real doc links and linked
+  addresses; 413/503/408 as sentences; the session footer from the
+  config; a racy managed test.
+- **OpenRouter** accepted any key (its `/models` is public; `/key` now
+  checks it) and connected the list's first model (now the curated
+  everyday pick).
+- **2 The connect panel**, **3 the Connect page** and nav, **4 calmer
+  pages** (empty Models, services-first Connections, Telegram's how-to,
+  Pin a chat on any channel), **5 MCP by address and keys for tools**,
+  **6 Discord and Slack cards**, **7 docs and after shots**.
+
+**Tests.** 1841 → 1844 passed, 0 failed, 28 ignored. Browser check 27/27
+after every part. fmt and clippy clean. **Known flake:**
+`health::status_answers_from_any_chat_while_a_turn_hangs` failed once in
+the last full run (its mock server's read under load); it passed alone
+3/3 and in a rerun of the integration target.
+
+**Not verified live.** A real Discord/Slack app, a real MCP server with a
+key or sign-in, the ChatGPT sign-in from the panel, a phone's browser,
+the panels in Hebrew.
+
+**Follow-ups.** Set up in the browser with no terminal (agreed as the
+next milestone); Discord's slash commands and DM-code pairing from the
+page; a simpler Google Calendar path; Hebrew for the panels' words.

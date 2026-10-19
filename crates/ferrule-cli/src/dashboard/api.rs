@@ -111,6 +111,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "setup" => super::setup::view(ctx),
             "connections" => connections(ctx).await,
             "connections/checklist" => connections_checklist(ctx).await,
+            "secrets" => super::tool_keys::list(ctx),
             "models" => models(ctx),
             "models/choices" => super::models_page::choices(ctx),
             "models/provider/list" => super::models_page::provider_list(ctx, req).await,
@@ -181,8 +182,19 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "routing/set" | "routing/unset" => routing_op(ctx, path, body),
         "catalog/add" => catalog_add(ctx, body).await,
         "catalog/fill-prices" => fill_prices(ctx).await,
+        // An MCP address is a server the owner adds: managed mode's
+        // extensions lock covers it, whatever else is set up (M50).
+        "connections/address" | "connections/connect"
+            if (path == "connections/address"
+                || arg(body, "service").is_ok_and(|s| s.contains("://")))
+                && extensions_locked().is_some() =>
+        {
+            bad(403, extensions_locked().unwrap_or_default())
+        }
         "connections/connect" | "connections/disconnect" => connection_op(ctx, path, body).await,
-        "connections/key" | "connections/test" | "connections/cancel" => {
+        "secrets/add" => super::tool_keys::add(ctx, body),
+        "secrets/remove" => super::tool_keys::remove(ctx, body),
+        "connections/key" | "connections/test" | "connections/cancel" | "connections/address" => {
             connection_key_op(ctx, path, body).await
         }
         "connections/relay/deploy"
@@ -814,6 +826,14 @@ async fn connections_checklist(ctx: &Ctx) -> Answer {
     ok(serde_json::to_value(c.checklist().await).unwrap_or_default())
 }
 
+/// Managed mode's lock on adding MCP servers, plugins and skills, with its
+/// reason; `None` when adding is allowed.
+pub(super) fn extensions_locked() -> Option<String> {
+    crate::managed::policy()
+        .filter(|p| !p.extensions)
+        .map(|p| format!("Adding a server is locked on this bot: {}.", p.why()))
+}
+
 /// Where setup from the page writes: this process's config and secrets.
 pub(super) fn setup_place(ctx: &Ctx) -> Result<crate::connections_setup::Place, Answer> {
     match (&ctx.config_path, &ctx.data) {
@@ -843,6 +863,21 @@ async fn connection_key_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
                 .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
                 .collect();
             match c.connect_key(service, fields, write, "dashboard").await {
+                Ok(said) => ok(json!({ "ok": true, "said": said })),
+                Err(why) => bad(400, ctx.redactor.redact(&why)),
+            }
+        }
+        // M50: an MCP address with a key, typed on the page.
+        "connections/address" => {
+            let url = need!(arg(body, "url"));
+            let key = need!(arg(body, "key"));
+            let header = arg(body, "header").unwrap_or("Authorization");
+            let value = arg(body, "value").unwrap_or("Bearer {key}");
+            let write = body.get("write").and_then(Value::as_bool) == Some(true);
+            match c
+                .connect_address(url, header, value, key, write, "dashboard")
+                .await
+            {
                 Ok(said) => ok(json!({ "ok": true, "said": said })),
                 Err(why) => bad(400, ctx.redactor.redact(&why)),
             }
@@ -3561,5 +3596,161 @@ command = "echo hi"
         }
         let config = std::fs::read_to_string(dir.path().join("ferrule.toml")).unwrap();
         assert!(config.contains("plan = \"claude-code\""), "{config}");
+    }
+
+    fn live() -> Live {
+        Live {
+            router: std::sync::Weak::new(),
+            health: Arc::new(ferrule_gateway::Health::new("t", Default::default())),
+            channels: vec![],
+            fixed: None,
+            retire: Arc::new(|_| {}),
+            restarts: Arc::new(ferrule_gateway::ChannelRestarts::default()),
+            commands_off: None,
+        }
+    }
+
+    /// M50: a key for a tool takes only a new name and a site's name, and
+    /// no value ever comes back; a page without the gateway adds nothing.
+    #[tokio::test]
+    async fn keys_for_tools_take_only_new_names_and_never_give_a_value_back() {
+        const VALUE: &str = "tool-key-value-0123456789";
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        let file = dir.path().join("config.toml");
+        std::fs::write(
+            &file,
+            "[providers.p]\nbase_url = \"https://api.example.com/v1\"\napi_key_env = \"P_KEY\"\nmodel = \"m\"\n\n\
+             [gateway]\ntelegram_token_env = \"TG\"\n\n[secrets]\nOLD = [\"api.old.example\"]\n\n\
+             [[mcp.servers]]\nname = \"web\"\nurl = \"https://mcp.example.com\"\nheaders = { Authorization = \"Bearer ${HDR}\" }\n",
+        )
+        .unwrap();
+        ctx.config_path = Some(file.clone());
+        let secrets = dir.path().join("data/private/secrets.env");
+        crate::secrets::set(&secrets, "OLD", "old-value").unwrap();
+        let add = |name: &str, hosts: &str| json!({ "name": name, "value": VALUE, "hosts": hosts });
+
+        let (s, _) = call(
+            &ctx,
+            "POST secrets/add",
+            add("NEW_KEY", "api.weather.example"),
+        )
+        .await;
+        assert_eq!(
+            s, 409,
+            "without the gateway, it can't see the gateway's environment"
+        );
+        ctx.live = Some(live());
+
+        // A name that means something already: in [secrets], a *_env, a
+        // header's ${NAME}, the environment.
+        let mut taken = vec!["OLD", "P_KEY", "TG", "HDR"];
+        if std::env::var_os("CARGO_MANIFEST_DIR").is_some() {
+            taken.push("CARGO_MANIFEST_DIR");
+        }
+        for name in taken {
+            let (s, v) = call(&ctx, "POST secrets/add", add(name, "api.weather.example")).await;
+            assert_eq!(s, 409, "{name}: {v}");
+        }
+        for name in ["LD_PRELOAD", "PATH", "lower", "FERRULE_X"] {
+            let (s, v) = call(&ctx, "POST secrets/add", add(name, "api.weather.example")).await;
+            assert_eq!(s, 400, "{name}: {v}");
+        }
+        // Sites: a name, never everything, an address or this machine.
+        for hosts in ["*", "127.0.0.1", "localhost", "api", "", "*.*.example.com"] {
+            let (s, v) = call(&ctx, "POST secrets/add", add("NEW_KEY", hosts)).await;
+            assert_eq!(s, 400, "{hosts}: {v}");
+        }
+        let (s, v) = call(
+            &ctx,
+            "POST secrets/add",
+            add("NEW_KEY", "api.weather.example, *.other.example"),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        let (_, list) = call(&ctx, "secrets", json!({})).await;
+        for out in [v.to_string(), list.to_string()] {
+            assert!(!out.contains(VALUE) && !out.contains("old-value"), "{out}");
+        }
+        assert!(crate::secrets::read(&secrets)
+            .unwrap()
+            .contains(&("NEW_KEY".into(), VALUE.into())));
+        let cfg: toml::Table = std::fs::read_to_string(&file).unwrap().parse().unwrap();
+        assert_eq!(
+            cfg["secrets"]["NEW_KEY"],
+            toml::Value::Array(vec!["api.weather.example".into(), "*.other.example".into()])
+        );
+        // Nothing is overwritten or rebound.
+        let (s, _) = call(
+            &ctx,
+            "POST secrets/add",
+            add("NEW_KEY", "elsewhere.example"),
+        )
+        .await;
+        assert_eq!(s, 409);
+        // Remove asks first and takes both halves; a key named elsewhere stays.
+        let (s, v) = call(&ctx, "POST secrets/remove", json!({ "name": "NEW_KEY" })).await;
+        assert_eq!((s, v["confirm"].is_string()), (409, true), "{v}");
+        let (s, _) = call(
+            &ctx,
+            "POST secrets/remove",
+            json!({ "name": "NEW_KEY", "confirm": true }),
+        )
+        .await;
+        assert_eq!(s, 200);
+        assert!(!crate::secrets::read(&secrets)
+            .unwrap()
+            .iter()
+            .any(|(n, _)| n == "NEW_KEY"));
+        let (s, _) = call(
+            &ctx,
+            "POST secrets/remove",
+            json!({ "name": "P_KEY", "confirm": true }),
+        )
+        .await;
+        assert_eq!(s, 409);
+    }
+
+    /// M50: an MCP address with a key, from the page: connected once, the
+    /// key never comes back, and a header or scheme it mustn't use is
+    /// refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_address_with_a_key_connects_once_and_the_key_never_comes_back() {
+        const KEY: &str = "address-key-0123456789abcdef";
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Provider::start().await;
+        let mut ctx = bare(dir.path());
+        ctx.connections = Some(conns_reading(dir.path(), dir.path().join("none.env"), None));
+        let url = provider.mcp_url();
+        let (s, v) = call(
+            &ctx,
+            "POST connections/address",
+            json!({ "url": url, "key": KEY }),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        let (_, all) = call(&ctx, "connections", json!({})).await;
+        for out in [v.to_string(), all.to_string()] {
+            assert!(!out.contains(KEY), "{out}");
+        }
+        let (s, v) = call(
+            &ctx,
+            "POST connections/address",
+            json!({ "url": url, "key": "another-key-0123456789" }),
+        )
+        .await;
+        assert_eq!(s, 400, "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("connected already"),
+            "{v}"
+        );
+        for body in [
+            json!({ "url": "http://mcp.example.com/mcp", "key": KEY }),
+            json!({ "url": "https://mcp.example.org/mcp", "key": KEY, "header": "Host" }),
+            json!({ "url": "https://mcp.example.org/mcp", "key": KEY, "value": "Bearer" }),
+        ] {
+            let (s, v) = call(&ctx, "POST connections/address", body).await;
+            assert_eq!(s, 400, "{v}");
+        }
     }
 }

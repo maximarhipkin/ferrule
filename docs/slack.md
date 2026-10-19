@@ -10,7 +10,9 @@ every channel that has a token. It's text only: a file without text gets
 ## Setup
 
 The short way is **`ferrule setup` → Slack**. It checks both tokens, says
-which one is wrong, and pairs you. By hand:
+which one is wrong, and pairs you. The dashboard's Slack card (Connect →
+Slack, M50) takes both tokens and the allowed users and channels, and its
+**Test** checks both; it doesn't pair you by a DM code. By hand:
 
 1. **Create the app from a manifest.** Open
    <https://api.slack.com/apps> → **Create New App** → **From a manifest**,

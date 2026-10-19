@@ -1788,6 +1788,10 @@ fn every_edit_on_the_page_needs_csrf_asks_where_it_should_and_is_audited() {
         "hooks/untrust",
         "tasks/schedule",
         "tasks/model",
+        // M50: keys for tools and apps by address.
+        "secrets/add",
+        "secrets/remove",
+        "connections/address",
     ] {
         let (s, _, _) = http(
             page.port,

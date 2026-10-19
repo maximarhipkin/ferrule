@@ -102,11 +102,14 @@ pub fn list(ctx: &Ctx) -> Answer {
                 "configured": on,
                 "state": state,
                 "why": why,
-                // Telegram, Discord and Slack keep `ferrule setup`'s flow.
+                // Telegram has its own walk-through (telegram.rs).
                 "form": spec.is_some(),
                 "fields": fields,
                 "guide": spec.map(|s| s.guide).unwrap_or_default().iter().map(|g| json!({"text": g.text, "url": g.url})).collect::<Vec<_>>(),
-                "doc": format!("docs/channels.md#{}", c.name),
+                "doc": match c.name {
+                    "discord" | "slack" => format!("docs/{}.md", c.name),
+                    name => format!("docs/channels.md#{name}"),
+                },
                 // The HTTP API's keys: what they are, never a key.
                 "keys": (c.name == "http").then(|| keys_dir(ctx).map(|d| channels::http::keys_json(&d))).flatten(),
             })
@@ -335,6 +338,6 @@ mod tests {
             assert!(!c["icon"].as_str().unwrap().is_empty());
         }
         let (status, _) = remove(&ctx, &json!({ "name": "telegram" })).unwrap();
-        assert_eq!(status, 400, "the old three stay with `ferrule setup`");
+        assert_eq!(status, 400, "Telegram keeps its own walk-through");
     }
 }
