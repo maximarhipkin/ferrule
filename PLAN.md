@@ -435,9 +435,10 @@ that convention yet — ask before introducing one).
       from `base_url` (only `api.anthropic.com` → anthropic). `thinking`,
       `effort` and `max_tokens` per provider or per model.
     - Provider-native blocks ride on the neutral transcript and are
-      replayed only within the loop, to the same api and model; compaction
-      and cross-driver fallback drop them. Redacted from logs and never
-      shown.
+      replayed to the same api and model (Anthropic within the loop only;
+      Responses every turn since 2026-10-20, for GPT-5.6's `all_turns`);
+      compaction and cross-driver fallback drop them. Redacted from logs
+      and never shown.
     - Cache writes are counted and priced (`price_cache_write_per_mtok`,
       1.25× input by default on the anthropic api). `CoreError::class()`
       gives M25 its failure classes.
@@ -6003,6 +6004,57 @@ passed, 0 failed, 28 ignored.
   turns (weigh the cached prefix, the estimate, and the size of encrypted
   items), or send `reasoning.context = "current_turn"` to keep today's
   design explicit. A design call for the owner.
+
+### 2026-10-20 — Responses replays reasoning across turns (Claude, Opus 5.5)
+
+**Scope.** The previous entry's Open item: GPT-5.6 defaults to
+`reasoning.context = "all_turns"`, but the driver sent every turn before
+the last user message neutral. Max picked option (a): replay the same
+driver's, same model's reasoning on every turn. Branch
+`claude/vigorous-bardeen-9619b8`, on `claude/responses-reasoning-boundary`.
+
+**Sources** (read 2026-10-20): R and C as in the previous entry, and the
+API reference, developers.openai.com/api/reference/resources/responses/methods/create,
+`reasoning.context`: `auto | current_turn | all_turns`, omitted = the
+model's own mode, GPT-5.6 `all_turns`, earlier models `current_turn`.
+Neither page says what an earlier model or another host does when the
+field is sent.
+
+**Why (a), not (b).** (b), sending `current_turn`, changed nothing the
+model saw: no earlier reasoning went out, and R says the setting "does
+not create reasoning items that are not already available". It would only
+add a field that OpenRouter, the ChatGPT-plan backend or an earlier model
+might reject. (a) gives GPT-5.6 its earlier reasoning; earlier models
+drop it unread (C: "including them is harmless"). The previous loop also
+no longer flips from native to neutral at the next user message, so the
+cached prefix stays byte-stable through it.
+
+**Changed.**
+- `responses.rs`: `replayable(m, API, &self.model, true)` for every
+  assistant turn; `reasoning.context` stays unsent (the model's default).
+  The reasoning 400/404 retry without items (`plain`) is unchanged.
+- `common::last_user` is gone (Anthropic uses its own `loop_start`).
+- Test `earlier_turns_reasoning_goes_back_to_the_same_model_only`: after a
+  new user message the turn's output items go back verbatim; another
+  model gets neutral items. The old test's tail, which asserted the
+  opposite, moved into it.
+- `docs/m23-drivers.md` §2 and the risk table say Responses replays every
+  turn, with the sources and the cost.
+
+**Checks.** `cargo test -p ferrule-providers --lib responses` (12
+passed; the new test fails on the base, where the turn went out
+neutral). `make check` exited 0: 1851 passed, 0 failed, 28 ignored. Not
+checked against the live API: no call to GPT-5.6 was made.
+
+**Open.**
+- On GPT-5.6, rendered earlier reasoning takes up context that
+  `est_context_tokens` doesn't count, so compaction fires late and leans
+  on the "too long" compact-and-retry (one failed call each time). Counting
+  it needs a token measure for encrypted items, or the last call's
+  `usage.input_tokens`.
+- Whether OpenAI rejects encrypted reasoning replayed after the prefix
+  changed (recall appended, MCP tools hot-added) is undocumented; the
+  retry without items covers it at one extra call.
 
 ### 2026-10-20 — M50 connect everything from the dashboard (Claude, Opus 5.5)
 
