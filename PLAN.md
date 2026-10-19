@@ -5879,6 +5879,70 @@ Telegram path (a real bot token) wasn't exercised; only the mocks were.
 - MCP stdio: the request write sits outside the timeout, and a cut-off
   write breaks the connection until restart.
 
+### 2026-10-19 — Update and restore defects from the review (Claude, Opus 5.5)
+
+**Scope.** The five update/restore defects the 2026-10-19 review pass
+confirmed (its entry is on main's working tree, not yet committed), one
+commit each, each with a test that failed before the fix. The review's
+other two update fixes (`last_timer`, the stale-promise line) were made
+there and are left alone here: `apply_unit`'s timer arm, `State`'s fields
+and `promise::expire` are untouched, so the two merge.
+
+**Fixes.**
+- **System-scope backup/restore.** `main` pins `FERRULE_CONFIG`/
+  `FERRULE_DATA_DIR` to the system service's for `backup` and `restore`
+  too (`on_system_files`), so `sudo ferrule restore` no longer writes
+  root's own paths. After a restore into the system data dir,
+  `own_system_files` gives the data to the service's user and the config
+  `root:<user>` 0640, as setup does. Every restore makes the secret dirs
+  (`private`, `claude-code`, `ssh`, `proxy/keys`) 0700 again; they came
+  back 0755 from `create_dir_all`. Tests:
+  `sudo_backup_and_restore_use_the_system_services_files`, and the round
+  trip in `tests/it/backup.rs` now asserts `private/` is 0700. The chown
+  itself needs root and a service user, so no test runs it.
+- **`supervised()`** counts only this instance's own job: launchd's
+  `XPC_SERVICE_NAME` equal to its label, or (with `INVOCATION_ID`) a
+  systemd unit, user or system, whose `MainPID` is this process. VS
+  Code's inherited `XPC_SERVICE_NAME` made `/restart` exit a hand-run
+  gateway for good. Test: `only_the_instances_own_job_or_unit_counts_as_supervised`
+  (pure `supervised_by`).
+- **A restart command that fails** (a booted-out launchd job:
+  `kickstart -k` can't find it) rolls back with a `Failed` event and no
+  pin, and `run` returns the error; before, it pinned a good release.
+  `Svc::restart` on macOS bootstraps the plist when `launchctl print`
+  finds no job (`launchd_restart`, unit-tested). Test:
+  `a_restart_that_cant_run_rolls_back_without_pinning`.
+- **A rollback that fails** records a `Failed` event saying so and where
+  `ferrule.previous` is (or that it's gone), restarts the service anyway,
+  then returns the error; before, it returned early with no event, no
+  pin and no restart. Test:
+  `a_rollback_that_fails_is_recorded_and_the_service_restarted`.
+- **A chat's update that installs nothing is answered.** The requested
+  half of `apply_unit` is `requested()`: when its run recorded no ending
+  event (up to date, busy, a failed check, a held lock, a sibling with
+  `auto = false` and nothing newer), it pushes a `Failed` event with an
+  empty `to` and the reason. `promise::claim_for` accepts `Failed`
+  (`EventKind::ends_update`); the watch claims before its once-per-version
+  dedupe; the line is "Ferrule wasn't updated: …"; `report()` skips
+  these answers (no standing warning in /status). Test:
+  `an_update_asked_for_that_installs_nothing_still_answers_the_chat`.
+
+**Decision.** No new `EventKind::NotInstalled`: serde refuses an unknown
+variant, so an older binary (after a downgrade) would read the whole
+state as fresh and lose its pins. A `Failed` event with no `to` reads
+fine in every version.
+
+**Checks.** `make check` exit 0 on the final tree (cli: 432 unit and 168
+integration tests, 2 + 2 ignored). Each earlier commit of the series:
+`cargo fmt --check`, clippy on ferrule-cli and the cli suite, all clean.
+Docs: `docs/updates.md` (restart/rollback failures, the chat's answer),
+`docs/backup.md` (system service, 0700), the supervision wording in
+`docs/m36-self-update.md` and `docs/m37-control-room.md`.
+
+**Not done.** `restart_hint()` on macOS still names `kickstart -k`, which
+fails for a booted-out job; a `ferrule backup` run as root leaves a
+root-owned `backup.json` in the system data dir (readable, harmless).
+
 ### 2026-10-19 — four host-side sandbox escapes closed (Claude, Opus 5.5)
 
 **Scope.** The three gaps the 2026-10-19 whole-repo review left under
