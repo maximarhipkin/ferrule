@@ -550,24 +550,26 @@ pub(super) async fn chatgpt_start(ctx: &Ctx) -> Answer {
                             plan: meta.plan,
                         }
                         .word();
-                        let added = config_path.as_deref().and_then(|p| {
+                        let added = config_path.as_deref().map(|p| {
                             crate::subscription::login::add_provider_at(
                                 p,
                                 Plan::Chatgpt,
                                 crate::subscription::login::CHATGPT_MODEL,
                             )
-                            .ok()
-                            .flatten()
                         });
                         if let Some(r) = retire_all {
                             r(None);
                         }
                         Ok(match added {
-                            Some(_) => format!(
+                            Some(Ok(Some(_))) => format!(
                                 "{who} on the ChatGPT plan; `chatgpt/{}` is connected.",
                                 crate::subscription::login::CHATGPT_MODEL
                             ),
-                            None => format!("{who} on the ChatGPT plan."),
+                            Some(Err(e)) => format!(
+                                "{who} on the ChatGPT plan, but `chatgpt/{}` couldn't be added to the config: {e:#}.",
+                                crate::subscription::login::CHATGPT_MODEL
+                            ),
+                            _ => format!("{who} on the ChatGPT plan."),
                         })
                     }
                     Err(e) => Err(format!(
@@ -629,22 +631,26 @@ pub(super) fn claude_token(ctx: &Ctx, body: &Value) -> Answer {
     if let Err(e) = crate::subscription::claude::save_setup_token(&private, token) {
         return bad(400, format!("{e:#}. Nothing was saved."));
     }
-    let added = ctx.config_path.as_deref().and_then(|p| {
+    let added = ctx.config_path.as_deref().map(|p| {
         crate::subscription::login::add_provider_at(
             p,
             Plan::ClaudeCode,
             crate::subscription::claude::MODEL,
         )
-        .ok()
-        .flatten()
     });
     retire(ctx, None);
     let mut said = "The setup-token is saved, sealed; only the claude process gets it. It lasts a \
                     year and doctor warns 30 days before."
         .to_string();
-    if let Some(line) = added {
-        said.push(' ');
-        said.push_str(&line);
+    match added {
+        Some(Ok(Some(line))) => {
+            said.push(' ');
+            said.push_str(&line);
+        }
+        Some(Err(e)) => said.push_str(&format!(
+            " The provider couldn't be added to the config: {e:#}."
+        )),
+        _ => {}
     }
     ok(json!({ "ok": true, "said": said }))
 }
