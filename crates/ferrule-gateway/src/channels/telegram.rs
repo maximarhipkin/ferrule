@@ -85,12 +85,12 @@ struct Parsed {
     unread: Option<&'static str>,
     /// Photos sent together share this; they get one reply, not one each.
     album: Option<String>,
-    /// A voice note, audio file or photo, taken into the inbox when there
-    /// is one (M41, M47), and the caption that came with it.
+    /// A voice note, audio file, photo, video or other file, taken into
+    /// the inbox when there is one (M41, M47), and its caption.
     file: Option<TgFile>,
 }
 
-/// A voice note, audio file or photo in an update.
+/// A voice note, audio file, photo, video or other file in an update.
 struct TgFile {
     file_id: String,
     name: String,
@@ -177,8 +177,9 @@ impl TelegramChannel {
         }
     }
 
-    /// Saves voice notes and audio files people send here, so the gateway
-    /// can transcribe them (M41). Other files keep the "only text" reply.
+    /// Saves the files people send here (voice notes and audio, which the
+    /// gateway transcribes (M41), photos, videos, documents), so the agent
+    /// can read them. Stickers and GIFs keep the "only text" reply.
     pub fn with_inbox(mut self, inbox: Option<Inbox>) -> Self {
         self.inbox = inbox;
         self
@@ -360,7 +361,7 @@ impl TelegramChannel {
         Ok(true)
     }
 
-    /// A voice note, audio file or photo, saved to the inbox: the message
+    /// A file (voice note, audio, photo, video, document) saved to the inbox: the message
     /// then carries it as an attachment with M39's line about it, and is
     /// read. `None`: the photo is one more of an album already taken, and
     /// was answered here.
@@ -455,6 +456,8 @@ impl TelegramChannel {
         let resp = self
             .client
             .get(&url)
+            // Up to 20 MB: longer than a send on a slow link.
+            .timeout(UPLOAD_DEADLINE)
             .send()
             .await
             .map_err(|e| refuse(format!("the download failed: {}", e.without_url())))?;
@@ -809,7 +812,8 @@ fn photo_size(sizes: &[Value], cap: u64) -> Option<(String, Option<u64>)> {
         .and_then(|p| Some((p["file_id"].as_str()?.to_string(), p["file_size"].as_u64())))
 }
 
-/// The voice note, audio file or photo in a message, if it has one.
+/// The voice note, audio file, photo, video or other file (a PDF, a
+/// photo sent as a file) in a message, if it has one.
 fn tg_file(message: &Value) -> Option<TgFile> {
     let caption = || {
         message
@@ -828,7 +832,11 @@ fn tg_file(message: &Value) -> Option<TgFile> {
             sizes: sizes.clone(),
         });
     }
-    let (key, a) = ["voice", "audio"]
+    // A GIF comes with a `document` too; it stays unread.
+    if message.get("animation").is_some() {
+        return None;
+    }
+    let (key, a) = ["voice", "audio", "video", "document"]
         .into_iter()
         .find_map(|k| message.get(k).map(|a| (k, a)))?;
     let file_id = a.get("file_id")?.as_str()?.to_string();
@@ -840,6 +848,8 @@ fn tg_file(message: &Value) -> Option<TgFile> {
         (_, Some(n)) => n.to_string(),
         // A voice note is Ogg Opus with no name.
         ("voice", None) => "voice.ogg".to_string(),
+        ("video", None) => "video.mp4".to_string(),
+        ("document", None) => "file".to_string(),
         (_, None) => "audio".to_string(),
     };
     Some(TgFile {
