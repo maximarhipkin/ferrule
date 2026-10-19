@@ -51,6 +51,13 @@ const IGNORED_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// The most a `sendMessage` text may hold, in UTF-16 units as Telegram
 /// counts (its documented limit; Discord has 2000, Slack 4000).
 pub const MESSAGE_LIMIT: usize = 4096;
+/// The most a file's caption may hold, counted the same way.
+const CAPTION_LIMIT: usize = 1024;
+/// The Bot API's upload limits: a photo, and any other file.
+const PHOTO_MAX: u64 = 10 * 1024 * 1024;
+const FILE_MAX: u64 = 50 * 1024 * 1024;
+/// An upload of up to `FILE_MAX`, or a download, gets longer than a send.
+const UPLOAD_DEADLINE: Duration = Duration::from_secs(300);
 
 /// Why a poll failed: `Retry` heals by itself (network, Telegram's own 5xx,
 /// a rate limit, a bad body); `Conflict` is a 409, which needs the owner if
@@ -1036,15 +1043,19 @@ impl TelegramChannel {
     /// `GatewayError::RateLimited` with Telegram's `retry_after` (M27: a
     /// streamed reply waits it out); any other failure names the method.
     async fn deliver(&self, method: &str, payload: &Value) -> Result<Value, GatewayError> {
-        let resp = self
-            .client
-            .post(self.api_url(method))
-            .json(payload)
-            .send()
-            .await
-            .map_err(|e| {
-                GatewayError::Channel(format!("{method} request failed: {}", e.without_url()))
-            })?;
+        let req = self.client.post(self.api_url(method)).json(payload);
+        self.answered(method, req).await
+    }
+
+    /// Sends `req` and reads Telegram's answer, as [`Self::deliver`] says.
+    async fn answered(
+        &self,
+        method: &str,
+        req: reqwest::RequestBuilder,
+    ) -> Result<Value, GatewayError> {
+        let resp = req.send().await.map_err(|e| {
+            GatewayError::Channel(format!("{method} request failed: {}", e.without_url()))
+        })?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(json!({}));
         if status.is_success() && body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -1076,9 +1087,24 @@ impl TelegramChannel {
         buttons: Option<&[Button]>,
     ) -> Result<Option<String>, GatewayError> {
         let keyboard = buttons.map(Self::keyboard).transpose()?;
-        let pieces = split(&msg.text);
-        let last = pieces.len() - 1;
+        // Files first, the text as the first one's caption when it fits.
+        let mut text = msg.text.clone();
         let mut id = None;
+        for (i, att) in msg.attachments.iter().enumerate() {
+            let caption = (i == 0
+                && buttons.is_none()
+                && !text.trim().is_empty()
+                && text.encode_utf16().count() <= CAPTION_LIMIT)
+                .then(|| std::mem::take(&mut text));
+            id = self
+                .send_file(&msg.chat_id, att, caption.as_deref())
+                .await?;
+        }
+        if !msg.attachments.is_empty() && text.trim().is_empty() && buttons.is_none() {
+            return Ok(id);
+        }
+        let pieces = split(&text);
+        let last = pieces.len() - 1;
         for (i, piece) in pieces.iter().enumerate() {
             let mut payload = json!({ "chat_id": msg.chat_id, "text": piece });
             if i == 0 {
@@ -1096,6 +1122,67 @@ impl TelegramChannel {
             id = self.post_message(payload).await?;
         }
         Ok(id)
+    }
+
+    /// Uploads a local file (`send_file`): `sendPhoto` for a photo
+    /// Telegram shows inline, else `sendDocument`, which keeps the bytes
+    /// and name as they are. A photo Telegram refuses (its size or
+    /// dimensions) goes again as a document. The message's id.
+    async fn send_file(
+        &self,
+        chat: &str,
+        att: &Attachment,
+        caption: Option<&str>,
+    ) -> Result<Option<String>, GatewayError> {
+        let (name, mime, bytes) = files::read_outgoing(att)?;
+        let mime = if att.kind.contains('/') {
+            att.kind.as_str()
+        } else {
+            mime
+        };
+        let size = bytes.len() as u64;
+        if size > FILE_MAX {
+            return Err(GatewayError::Channel(format!(
+                "{name} is {}, over the {} a Telegram bot can send",
+                files::human(size),
+                files::human(FILE_MAX)
+            )));
+        }
+        let mut fields = vec![("chat_id", chat)];
+        if let Some(c) = caption {
+            fields.push(("caption", c));
+        }
+        let upload = |method: &'static str, field: &str| {
+            let (boundary, body) = files::multipart(&fields, (field, &name, mime, &bytes));
+            let req = self
+                .client
+                .post(self.api_url(method))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .timeout(UPLOAD_DEADLINE)
+                .body(body);
+            self.answered(method, req)
+        };
+        let photo = matches!(mime, "image/jpeg" | "image/png" | "image/webp") && size <= PHOTO_MAX;
+        let result = if photo {
+            match upload("sendPhoto", "photo").await {
+                // Only Telegram's own refusal (a 400: dimensions, size); a
+                // timeout may have delivered it, and a retry would repeat it.
+                Err(GatewayError::Channel(e)) if e.starts_with("sendPhoto failed (status 400") => {
+                    tracing::info!(error = %e, "telegram: {name} as a photo was refused; sending it as a file");
+                    upload("sendDocument", "document").await
+                }
+                other => other,
+            }
+        } else {
+            upload("sendDocument", "document").await
+        }?;
+        Ok(result
+            .get("message_id")
+            .and_then(|v| v.as_i64())
+            .map(|id| id.to_string()))
     }
 }
 
@@ -1128,7 +1215,7 @@ impl Channel for TelegramChannel {
             reactions: true,
             edits: true,
             buttons: true,
-            ..Default::default()
+            attachments: true,
         }
     }
 
@@ -1640,7 +1727,7 @@ mod tests {
         let caps = channel.capabilities();
         assert!(caps.edits);
         assert!(caps.reactions);
-        assert!(!caps.attachments);
+        assert!(caps.attachments);
         assert!(caps.buttons);
         assert!(channel.polls());
         assert_eq!(channel.last_ok_poll(), None);
