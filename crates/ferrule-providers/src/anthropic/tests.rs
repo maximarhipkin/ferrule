@@ -374,6 +374,41 @@ async fn thinking_goes_back_verbatim_inside_the_loop_and_nowhere_else() {
     assert!(!b.to_string().contains("signature"), "{b}");
 }
 
+/// Text pushed mid-loop (an inbox message, a nudge, a hook's note) rides
+/// with the tool results, so to the API the tool-use turn goes on: its
+/// thinking still goes back, and thinking stays on.
+#[test]
+fn text_pushed_mid_loop_keeps_the_loops_thinking() {
+    let p = with(DriverOptions {
+        thinking: Some(Thinking::Adaptive),
+        ..Default::default()
+    });
+    let first = p
+        .parse_response(&serde_json::from_str(THINKING_TOOL).unwrap())
+        .unwrap();
+    let history = vec![
+        Message::system("sys"),
+        Message::user("read a.rs"),
+        first.message,
+        Message::tool_result("toolu_02", "fn main() {}"),
+        Message::user("[the owner, mid-run] and b.rs too"),
+    ];
+    let sent = p.payload(&req(history), false);
+    let expected = serde_json::from_str::<Value>(THINKING_TOOL).unwrap()["content"].clone();
+    assert_eq!(sent.body["messages"][1]["content"], expected);
+    assert_eq!(
+        unmarked(&sent.body["messages"][2]),
+        json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_02", "content": "fn main() {}"},
+            {"type": "text", "text": "[the owner, mid-run] and b.rs too"}]})
+    );
+    assert_eq!(sent.body["thinking"], json!({"type": "adaptive"}));
+    assert!(
+        sent.loop_extras,
+        "a thinking 400 still gets its plain retry"
+    );
+}
+
 #[test]
 fn thinking_and_effort_go_out_only_when_set_and_only_on_our_own_loop() {
     let adaptive = DriverOptions {

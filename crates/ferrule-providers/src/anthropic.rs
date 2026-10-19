@@ -6,7 +6,7 @@
 //! truth; this driver's own content blocks ride along in `Message::native`
 //! and go back only inside the loop that made them (design §2).
 
-use crate::common::{self, last_user, replayable};
+use crate::common::{self, replayable};
 use crate::vision::{self, Part};
 use crate::{DriverOptions, Thinking};
 use ferrule_core::error::CoreError;
@@ -107,7 +107,7 @@ impl AnthropicProvider {
             .map(text_block)
             .collect();
 
-        let latest_user = last_user(msgs);
+        let latest_user = loop_start(msgs);
         let sees = self.sees();
         let pixel_set = ferrule_core::vision::pixel_set(msgs);
         let mut wire: Vec<WireMessage> = Vec::new();
@@ -527,6 +527,29 @@ async fn read_stream(mut events: common::Events, sink: &DeltaSink) -> Result<Val
 fn append(block: &mut Value, key: &str, piece: &str) {
     let now = block.get(key).and_then(Value::as_str).unwrap_or("");
     block[key] = json!(format!("{now}{piece}"));
+}
+
+/// Where the tool loop in progress starts: the last user message that
+/// isn't sent with tool results. Text the loop adds mid-way (an inbox
+/// message, a nudge, a hook's note, the wrap-up) follows results and goes
+/// in their wire message, so to the API the turn goes on ("A tool-use
+/// loop is one assistant turn"), and within it thinking blocks must go
+/// back (platform.claude.com/docs/en/build-with-claude/thinking, "Thinking
+/// with tool use"). Taken for a new turn, that text dropped them: manual
+/// mode enforces that the final assistant turn begins with a thinking
+/// block, and otherwise the API may turn thinking off for the request.
+fn loop_start(msgs: &[Message]) -> Option<usize> {
+    let mut start = None;
+    let mut after_results = false;
+    for (i, m) in msgs.iter().enumerate() {
+        match m.role {
+            Role::Tool => after_results = true,
+            Role::Assistant => after_results = false,
+            Role::User if !after_results => start = Some(i),
+            Role::User | Role::System => {}
+        }
+    }
+    start
 }
 
 fn thinking_rejected(message: &str) -> bool {
