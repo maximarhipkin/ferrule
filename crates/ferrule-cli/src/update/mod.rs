@@ -290,12 +290,15 @@ async fn apply_unit(
         }
         Some(r) => r.ferrule,
         None => {
-            let recent = state::State::load(&state_dir)
-                .last_check
-                .is_some_and(|at| state::now().saturating_sub(at) < TIMER_GAP);
-            if recent {
+            let mut st = state::State::load(&state_dir);
+            if st
+                .last_timer
+                .is_some_and(|at| state::now().saturating_sub(at) < TIMER_GAP)
+            {
                 return Ok(());
             }
+            st.last_timer = Some(state::now());
+            st.save(&state_dir)?;
             // The units exist, so unset means on.
             if settings.auto == Some(false) {
                 apply.check(&Want::default()).await?;
