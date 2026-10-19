@@ -233,16 +233,41 @@ impl Apply<'_> {
                 restart_needed: self.service.is_none(),
             });
         }
-        swap::roll_back(&self.exe)?;
+        let rolled = swap::roll_back(&self.exe);
+        // Even when the old binary couldn't be put back: a service left
+        // stopped helps nobody.
         let back = self.restart_all();
         let why = match (&restarted, &back) {
             (Err(e), _) => format!("the restart failed: {e:#}"),
-            (_, Err(e)) => format!("it didn't come up, and restarting {from} failed: {e:#}"),
+            (_, Err(e)) if rolled.is_ok() => {
+                format!("it didn't come up, and restarting {from} failed: {e:#}")
+            }
             _ => format!(
                 "it didn't report healthy within {} s",
                 self.health_for.as_secs()
             ),
         };
+        if let Err(e) = rolled {
+            let previous = swap::previous_path(&self.exe);
+            let old = if previous.exists() {
+                format!(
+                    "{from} is {}: copy it over {} and restart the service",
+                    previous.display(),
+                    self.exe.display()
+                )
+            } else {
+                format!("{} is gone too: install {from} again", previous.display())
+            };
+            let why = format!("{why}, and putting {from} back failed ({e:#}); {old}");
+            self.each_state(|state| {
+                // It ran and didn't come up: never again by itself.
+                if restarted.is_ok() {
+                    state.pin(&release.tag);
+                }
+                state.push(EventKind::Failed, &from, &to, &why);
+            })?;
+            bail!(why);
+        }
         // A restart command that failed says nothing about the release:
         // it isn't pinned, so the next run tries it again.
         if restarted.is_err() {

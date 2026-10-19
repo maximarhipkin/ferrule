@@ -67,6 +67,10 @@ gateway job that was booted out (`launchctl bootout`) isn't found by
 `launchctl kickstart`, so the restart loads it again from its plist
 (`launchctl bootstrap`), as `systemctl restart` starts a stopped unit.
 
+If **the old binary can't be put back**, the event says so and names
+`ferrule.previous` (copy it over the binary and restart the service), the
+service is restarted anyway, and the run ends in that error.
+
 You hear about it once, in your chat:
 
 - "Updated Ferrule 0.7.0 → 0.7.1: <the release notes' first line>"

@@ -774,6 +774,38 @@ async fn a_restart_that_cant_run_rolls_back_without_pinning() {
 }
 
 #[tokio::test]
+async fn a_rollback_that_fails_is_recorded_and_the_service_restarted() {
+    let s = setup().await;
+    // The new one never reports healthy, and `ferrule.previous` is gone
+    // by the time it would be put back.
+    let previous = swap::previous_path(&s.exe);
+    let service = Scripted(
+        |_| {
+            let _ = std::fs::remove_file(&previous);
+            Ok(())
+        },
+        Mutex::new(0),
+    );
+    let e = apply(&s, Some(&service))
+        .run(&Want::default())
+        .await
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("restoring"), "{e:#}");
+    assert_eq!(
+        *service.1.lock().unwrap(),
+        2,
+        "restarted after the failed rollback"
+    );
+    let last = State::load(&s.state_dir).events.last().cloned().unwrap();
+    assert_eq!((last.kind, last.to.as_str()), (EventKind::Failed, "0.6.0"));
+    assert!(last.notes.contains("putting 0.5.1 back failed"), "{last:?}");
+    assert!(
+        last.notes.contains(&previous.display().to_string()),
+        "{last:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_refused_release_is_recorded_once() {
     let s = setup().await;
     let a = Apply {
