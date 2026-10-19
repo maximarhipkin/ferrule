@@ -373,17 +373,9 @@ pub(crate) fn error_in_body(err: &Value, wait: Option<Duration>) -> CoreError {
     }
 }
 
-/// The index of the last user message: what comes after it is the tool
-/// loop in progress, the only part a driver replays native blocks in.
-pub(crate) fn last_user(messages: &[ferrule_core::Message]) -> Option<usize> {
-    messages
-        .iter()
-        .rposition(|m| m.role == ferrule_core::Role::User)
-}
-
 /// `msg.native`'s items when this driver may send them back verbatim: the
-/// same api and model, inside the current loop, and there is something to
-/// send (M23 design §2).
+/// same api and model, where the driver says it may (`in_loop`), and there
+/// is something to send (M23 design §2).
 pub(crate) fn replayable<'m>(
     msg: &'m ferrule_core::Message,
     api: &str,

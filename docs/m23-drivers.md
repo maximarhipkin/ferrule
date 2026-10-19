@@ -119,7 +119,8 @@ message only if all of these hold:
 1. `native.api` is this driver's api;
 2. `native.model` is this request's model;
 3. the message comes **after the last user message**, i.e. it belongs to
-   the tool loop in progress.
+   the tool loop in progress. Anthropic only since 2026-10-20: the
+   Responses driver replays every turn (below).
 
 Every other assistant message is rebuilt from the neutral fields: text
 plus tool calls, with no reasoning.
@@ -156,6 +157,21 @@ signature or a block is retried **once** at once. The retry drops every
 native block and every `thinking` or `output_config` field the driver
 added, and is logged as a warning. A still-failing call is a normal
 `BadRequest`.
+
+**Responses, from 2026-10-20: every turn.** OpenAI's
+`reasoning.context` (developers.openai.com/api/docs/guides/reasoning,
+"Preserve reasoning across calls") is `all_turns` by default on the
+GPT-5.6 family, which renders earlier turns' compatible reasoning, and
+`current_turn` on earlier models, which drop it (the cookbook's
+`reasoning_items` example, "Caching": including it "is harmless"). So the
+Responses driver drops rule 3 and sends nothing for `reasoning.context`:
+GPT-5.6 keeps its reasoning at every user message, and the previous loop
+no longer changes bytes. The price on GPT-5.6 is context: the rendered
+reasoning isn't in the estimate (`est_context_tokens`), so the
+provider's "too long" compacts it. OpenAI documents no binding of
+encrypted reasoning to its prefix; if one appears, the net is the
+driver's own: a 400 or 404 naming reasoning, `encrypted` or `rs_` is
+retried once without reasoning items (`reasoning_rejected`).
 
 ### Lossy conversions, defined
 
@@ -386,9 +402,10 @@ The cost is re-sending input, which OpenAI's automatic prompt caching
 mostly discounts (`cached_tokens` in usage).
 
 **Encrypted reasoning.** It is requested (above), kept verbatim in
-`native` as part of the `output` array, and replayed only inside the
-current loop for the same model (§2). That's what keeps a reasoning model's
-chain intact across tool calls without `store`.
+`native` as part of the `output` array, and replayed for the same model
+(§2), every turn since 2026-10-20. That's what keeps a reasoning model's
+chain intact across tool calls, and on GPT-5.6 across turns, without
+`store`.
 
 **Request.**
 - `model`, `store`, `include`.
@@ -579,7 +596,7 @@ OPENAI_API_KEY=…    cargo test -p ferrule-providers --test it live::openai_res
 |---|---|
 | Thinking config the model rejects | 400 in plain words, from `model test` too. No retry |
 | A 5-series model thinks and uses up `max_tokens` | the 16 000 floor. Otherwise the text so far comes back, as with `length` today |
-| Prefix changed under a replayed block | compaction clears `native`, and blocks are never replayed across user turns. A thinking 400 retries once without blocks |
+| Prefix changed under a replayed block | compaction clears `native`, and Anthropic blocks are never replayed across user turns (Responses items are, since 2026-10-20). A thinking 400, or a Responses reasoning 400/404, retries once without them |
 | Tool id with characters Anthropic rejects | sanitized, deterministically, both sides |
 | A Responses host that ignores `include` | no `encrypted_content`, so the reasoning item is replayed without it. If the host rejects that, the call fails as a 400, and it shows up in `model test` |
 | Refusal | not retried, not fallen back, surfaced |
