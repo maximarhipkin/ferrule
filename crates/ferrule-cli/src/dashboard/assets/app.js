@@ -2213,7 +2213,8 @@
         el("p", { class: "muted small m0" }, "Programs that give your bot new tools, called ", tip("MCP"), " servers."),
         x.mcp.length ? el("div", { class: "plain-list" }, x.mcp.map((m) => el("div", { class: "item" + (m.disabled ? " dead" : "") },
           el("div", { class: "grow" }, el("div", { class: "t", text: m.name }), el("div", { class: "d", text: m.origin === "configured" ? "added in the config" : "from " + m.origin })),
-          m.origin === "configured" ? switchFor(m.name, m.disabled, "mcp/enable", "mcp/disable") : tag(m.origin)))) : empty("None connected", "Nothing is adding tools right now."),
+          m.origin === "configured" ? switchFor(m.name, m.disabled, "mcp/enable", "mcp/disable") : tag(m.origin)))) : empty("None connected", "Nothing is adding tools right now.",
+          button("Add one by its address", { kind: "primary", onclick: () => sections.connect.addressPanel() })),
         el("h2", { text: "Skills" }),
         !x.skills_enabled ? empty("Skills are off", "Turn them on in the config to let your bot learn how-to guides.")
           : x.skills.length ? el("div", { class: "plain-list" }, x.skills.map((s) => el("div", { class: "item" + (s.disabled ? " dead" : "") },
@@ -2570,6 +2571,9 @@
         services.length ? el("div", { class: "picks" }, services.map((t) => this.pick(t.title.replace(/\s*\(.*\)$/, ""), t.connected ? ["connected", "ok"] : [t.options.length > 1 ? t.options.length + " ways in" : t.options[0].auth === "api_key" ? "key" : "sign-in", null], null,
           t.options.map((o) => (o.option || "") + " " + (o.covers || "")).join(" "), () => this.servicePanel(t.tile, t.title)))) :
           el("p", { class: "muted", text: "Connections aren't set up in this process: run `ferrule connections setup` on the machine." }),
+        el("div", { class: "picks mt" },
+          this.pick("Any app by its address", ["MCP", null], null, "mcp server url address tools sign-in key", () => this.addressPanel()),
+          this.pick("A key for a tool", ["key", null], null, "secret api key token command weather", () => this.toolKeyPanel())),
         el("p", { class: "muted small" }, "Manage what's connected on ", el("a", { href: "#models", text: "Models" }), ", ",
           el("a", { href: "#channels", text: "Channels" }), ", ", el("a", { href: "#connections", text: "Connections" }), " and ",
           el("a", { href: "#extensions", text: "Extensions" }), "."));
@@ -2586,6 +2590,72 @@
     },
     filter() {
       this.box.querySelectorAll(".pick").forEach((b) => { b.hidden = !!this.q && !b.dataset.words.includes(this.q); });
+    },
+    // An MCP server by its address (M50 A, B): a sign-in, or a key that
+    // goes only to that address. A server that runs a command stays on the
+    // machine (`ferrule mcp add`) and with the bot's own approval flow.
+    addressPanel() {
+      const url = () => el("input", { type: "url", name: "url", placeholder: "https://mcp.example.com/mcp", autocomplete: "off", spellcheck: "false", "aria-label": "The app's MCP address" });
+      const u1 = url();
+      const w1 = el("input", { type: "checkbox" });
+      const go1 = el("button", { class: "primary", text: "Sign in" });
+      go1.onclick = () => { if (u1.value.trim()) act("connections/connect", { service: u1.value.trim(), write: w1.checked }, go1); else sayFor(go1, "Paste the app's address first.", true); };
+      const u2 = url();
+      const k = el("input", { type: "password", name: "key", placeholder: "the key it gave you", autocomplete: "new-password", "data-secret": "1", "aria-label": "The key" });
+      const h = el("input", { name: "header", value: "Authorization", autocomplete: "off", "aria-label": "Header name" });
+      const v = el("input", { name: "value", value: "Bearer {key}", autocomplete: "off", "aria-label": "Header value, with {key} where the key goes" });
+      const w2 = el("input", { type: "checkbox" });
+      const go2 = el("button", { class: "primary", text: "Check and connect" });
+      go2.onclick = async () => {
+        const body = { url: u2.value.trim(), key: k.value.trim(), header: h.value.trim(), value: v.value.trim(), write: w2.checked };
+        wipeSecrets(go2.closest(".card"));
+        if (!body.url || !body.key) return sayFor(go2, "The address and the key, please.", true);
+        if (await act("connections/address", body, go2)) { u2.value = ""; }
+      };
+      connectPanel({ title: "Any app by its address", intro: "Apps that give bots tools (MCP servers) have an address like mcp.example.com/mcp, in their docs. Your bot only gets the tools; a key goes only to that address and never comes back to this page.",
+        body: frag(
+          el("div", { class: "card stack" }, el("h3", { class: "m0", text: "It has a sign-in" }), u1,
+            el("div", { class: "row" }, el("label", { class: "cb" }, w1, "allow changes (send, edit)"), go1),
+            el("p", { class: "muted small m0", text: "Opens the app's sign-in in a new tab; it's connected when you're back." })),
+          el("div", { class: "card stack" }, el("h3", { class: "m0", text: "It gave you a key" }), u2, k,
+            advanced("address-header", "where the key goes", el("div", { class: "row grid" }, h, v)),
+            el("div", { class: "row" }, el("label", { class: "cb" }, w2, "allow changes (send, edit)"), go2),
+            el("p", { class: "muted small m0", text: "Tried once against the app before it's saved. A server that runs a program on this machine is added there, with ferrule mcp add." }))) });
+    },
+    // A key for a command (M50 C): a new [secrets] name, its value and the
+    // sites it may go to. The list shows names and sites, never a value.
+    toolKeyPanel() {
+      const box = el("div", { class: "stack" });
+      const draw = async () => {
+        let r;
+        try { r = await api("/api/secrets"); } catch (e) { return sectionError(box, e); }
+        const name = el("input", { name: "name", placeholder: "WEATHER_API_KEY", autocomplete: "off", spellcheck: "false", "aria-label": "Its name" });
+        const value = el("input", { type: "password", name: "value", placeholder: "the key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The key" });
+        const sites = el("input", { name: "hosts", placeholder: "api.weather.example", autocomplete: "off", spellcheck: "false", "aria-label": "Sites it may be sent to" });
+        const save = el("button", { class: "primary", text: "Save" });
+        save.disabled = !r.here || !!r.locked;
+        save.onclick = async () => {
+          const body = { name: name.value.trim(), value: value.value.trim(), hosts: sites.value.trim() };
+          wipeSecrets(box);
+          const done = await act("secrets/add", body, save);
+          if (done) { await draw(); sayFor(box.querySelector(".card button.primary"), done.said); }
+        };
+        setKids(box,
+          r.keys.length ? el("div", { class: "plain-list" }, r.keys.map((x) => el("div", { class: "item" },
+            el("div", { class: "grow" }, el("div", { class: "t mono", text: x.name }), el("div", { class: "d", text: "sent only to " + x.hosts.join(", ") })),
+            x.removable ? button("Remove", { kind: "danger", onclick: async (e) => { if (await act("secrets/remove", { name: x.name }, e.currentTarget)) draw(); } }) : tag("set on the machine")))) : null,
+          el("div", { class: "card stack" },
+            r.locked ? el("div", { class: "said bad msg", dir: "auto", text: r.locked }) : null,
+            !r.here ? el("div", { class: "said bad", text: "Open this page from your running bot (send it /dashboard) to add one: only the bot can tell whether a name is free." }) : null,
+            el("label", { class: "field" }, el("span", { text: "Its name, as the tool's docs spell it" }), name),
+            el("label", { class: "field" }, el("span", { text: "The key" }), value),
+            el("label", { class: "field" }, el("span", { text: "Sites it may be sent to" }), sites,
+              el("span", { class: "hint", text: "comma-separated: api.example.com, or *.example.com for all of its addresses" })),
+            el("div", { class: "row" }, save)));
+      };
+      draw();
+      connectPanel({ title: "A key for a tool", intro: "For a command your bot runs that needs a key, a weather API say. Commands see a stand-in; the real key is sent only to the sites you name, and never comes back to this page.",
+        body: box });
     },
     channelPanel(x) {
       if (x.name === "telegram") return home.openTelegram();

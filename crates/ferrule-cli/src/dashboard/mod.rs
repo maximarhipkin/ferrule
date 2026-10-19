@@ -26,6 +26,7 @@ pub mod setup;
 mod telegram;
 #[cfg(test)]
 pub mod testing;
+mod tool_keys;
 
 use crate::config::{Config, DashboardConfig};
 use anyhow::{bail, Context, Result};

@@ -1693,11 +1693,54 @@ impl Connections {
     pub async fn connect_key(
         &self,
         what: &str,
-        mut fields: BTreeMap<String, String>,
+        fields: BTreeMap<String, String>,
         write: bool,
         via: &str,
     ) -> Result<String, String> {
         let service = self.catalog.resolve(what).map_err(|e| format!("{e:#}"))?;
+        self.connect_key_to(service, fields, write, via).await
+    }
+
+    /// M50: a key-based way in to an MCP address the owner typed, with the
+    /// header its key goes in, instead of a catalog service. The record
+    /// keeps the whole service, as a bare URL's sign-in does, so nothing
+    /// is written to the config. Refused when the name it gets is a
+    /// catalog service's or already connected: it never replaces one.
+    pub async fn connect_address(
+        &self,
+        url: &str,
+        header: &str,
+        value: &str,
+        key: &str,
+        write: bool,
+        via: &str,
+    ) -> Result<String, String> {
+        let service =
+            Service::from_url_with_key(url, header, value).map_err(|e| format!("{e:#}"))?;
+        if self.catalog.get(&service.name).is_some() {
+            return Err(format!(
+                "{} is a service ferrule knows: connect it from its own tile",
+                service.name
+            ));
+        }
+        let taken = self.store.load().map_err(|e| format!("{e:#}"))?;
+        if taken.iter().any(|r| r.name == service.name) {
+            return Err(format!(
+                "something called {} is connected already: disconnect it first",
+                service.name
+            ));
+        }
+        let fields = BTreeMap::from([("key".to_string(), key.to_string())]);
+        self.connect_key_to(service, fields, write, via).await
+    }
+
+    async fn connect_key_to(
+        &self,
+        service: Service,
+        mut fields: BTreeMap<String, String>,
+        write: bool,
+        via: &str,
+    ) -> Result<String, String> {
         let title = service.title().to_string();
         let wanted = service.key_fields();
         if wanted.is_empty() {

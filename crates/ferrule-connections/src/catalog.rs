@@ -325,6 +325,35 @@ impl Service {
         })
     }
 
+    /// M50: an MCP address that takes a key in a header (`value` has
+    /// `{key}` where the key goes), named like [`Service::from_url`]: the
+    /// page's "any app by its address, with a key".
+    pub fn from_url_with_key(url: &str, header: &str, value: &str) -> Result<Self> {
+        let header = header.trim();
+        if header.is_empty()
+            || !header
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            bail!("a header's name is letters, digits and -");
+        }
+        if matches!(
+            header.to_ascii_lowercase().as_str(),
+            "host" | "cookie" | "connection" | "content-length" | "transfer-encoding"
+        ) {
+            bail!("the key can't go in the {header} header");
+        }
+        if value.chars().any(char::is_control) {
+            bail!("the header's value can't have line breaks");
+        }
+        let mut s = Self::from_url(url)?;
+        s.auth = AuthKind::ApiKey;
+        s.header = Some(header.to_string());
+        s.header_value = Some(value.trim().to_string());
+        s.check()?;
+        Ok(s)
+    }
+
     fn check(&self) -> Result<()> {
         if self.name.is_empty()
             || !self
