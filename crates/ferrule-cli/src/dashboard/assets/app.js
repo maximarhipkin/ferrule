@@ -166,13 +166,14 @@
   }
 
   // Where an answer goes: in a connect panel (M50), at the end of the card
-  // the button is in, so it's read where the owner is looking; a toast
-  // otherwise. A failure puts focus on that card's first empty field, a
-  // key that was wiped once sent included, so the fix is one paste away.
+  // (or the open option) the button is in, so it's read where the owner
+  // is looking; a toast otherwise. A failure puts focus on that card's
+  // first empty field, a key that was wiped once sent included, so the
+  // fix is one paste away.
   function sayFor(button, t, bad) {
     const panel = button && button.closest ? button.closest("dialog.connect") : null;
     if (!panel) return toast(t, bad ? "bad" : "");
-    const card = button.closest(".card");
+    const card = button.closest(".details-body, .card");
     const host = card && panel.contains(card) ? card : panel.querySelector(".cp-said");
     const line = el("div", { class: "said " + (bad ? "bad" : "ok"), role: bad ? "alert" : "status", "data-said": "1" }, linkify(t));
     const old = host.querySelector(":scope > [data-said]");
@@ -476,6 +477,7 @@
     models: "M12 20v2M12 2v2M17 20v2M17 2v2M2 12h2M2 17h2M2 7h2M20 12h2M20 17h2M20 7h2M7 20v2M7 2v2M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2zM9 8h6a1 1 0 0 1 1 1v6a1 1 0 0 1 -1 1h-6a1 1 0 0 1 -1 -1v-6a1 1 0 0 1 1 -1z",
     channels: "M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2zM20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1",
     connections: "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71",
+    connect: "M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z",
     more: "M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M18 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0M4 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
     console: "M12 19h8M4 17l6-6-6-6",
     config: "M10 5H3M12 19H3M14 3v4M16 17v4M21 12h-9M21 19h-5M21 5h-7M8 10v4M8 12H3",
@@ -889,7 +891,7 @@
     ["chat", "chat", "Chat", "Talk to your bot here"],
     ["tasks", "tasks", "Tasks", "Things it does on a schedule"],
     ["usage", "usage", "Spending", "What it has cost so far"],
-    ["models", "models", "Models", "Pick or add a brain"],
+    ["connect", "connect", "Connect", "A brain, chat apps, mail and tools"],
   ];
 
   sections.health = {
@@ -2516,6 +2518,96 @@
     },
   };
 
+  // ---- connect (M50): everything the bot can reach, in one place ---------
+  // Its brain, where people talk to it, and what it can use, each with its
+  // state in a word. A tile opens the thing's panel (connectPanel) with the
+  // form its own page has; the pages stay for managing what's connected.
+  sections.connect = {
+    every: 10,
+    mount(root) {
+      this.q = "";
+      const search = el("input", { type: "search", class: "grow", placeholder: "Find: Gmail, Telegram, GitHub…", dir: "auto", "aria-label": "Find something to connect" });
+      search.addEventListener("input", () => { this.q = fold(search.value.trim()); this.filter(); });
+      this.box = el("div", { class: "stack" });
+      root.append(secHead("Connect", "everything your bot can reach"), el("div", { class: "row search" }, icon("search"), search), this.box);
+    },
+    async load() {
+      const [setup, ch, conn] = await Promise.all([
+        api("/api/setup").catch(() => null),
+        api("/api/channels").catch(() => null),
+        api("/api/connections").catch(() => null),
+      ]);
+      const brain = setup && setup.steps.find((x) => x.id === "model");
+      const services = conn && conn.available ? conn.tiles : [];
+      setKids(this.box,
+        el("h2", { text: "Its brain" }),
+        el("div", { class: "card row" }, led(brain && brain.done ? "ok" : "bad"),
+          el("span", { class: "grow msg", dir: "auto", text: brain ? brain.detail : "The model list isn't available in this process." }),
+          button(brain && brain.done ? "Change" : "Connect a brain", { kind: brain && brain.done ? null : "primary", onclick: () => home.openModel() }),
+          brain && brain.done ? el("a", { class: "btn ghost", href: "#models", text: "Models" }) : null),
+        el("h2", { text: "Where you talk to it" }),
+        ch ? el("div", { class: "picks" }, ch.channels.map((x) => this.pick(x.title, CHANNEL_STATE[x.state] || [x.state, null], x.icon, x.name + " chat channel",
+          () => this.channelPanel(x)))) : el("p", { class: "muted", text: "Channels aren't available in this process." }),
+        el("h2", { text: "What it can use" }),
+        services.length ? el("div", { class: "picks" }, services.map((t) => this.pick(t.title.replace(/\s*\(.*\)$/, ""), t.connected ? ["connected", "ok"] : [t.options.length > 1 ? t.options.length + " ways in" : t.options[0].auth === "api_key" ? "key" : "sign-in", null], null,
+          t.options.map((o) => (o.option || "") + " " + (o.covers || "")).join(" "), () => this.servicePanel(t.tile, t.title)))) :
+          el("p", { class: "muted", text: "Connections aren't set up in this process: run `ferrule connections setup` on the machine." }),
+        el("p", { class: "muted small" }, "Manage what's connected on ", el("a", { href: "#models", text: "Models" }), ", ",
+          el("a", { href: "#channels", text: "Channels" }), ", ", el("a", { href: "#connections", text: "Connections" }), " and ",
+          el("a", { href: "#extensions", text: "Extensions" }), "."));
+      this.filter();
+    },
+    // A tile: a button with an icon, a name and its state in a word.
+    pick(name, [state, cls], path, words, open) {
+      const s = el("svg", { class: "ico", viewBox: "0 0 24 24", "aria-hidden": "true" });
+      if (path) s.append(el("path", { d: path }));
+      const b = el("button", { type: "button", class: "pick", "aria-haspopup": "dialog", onclick: open },
+        path ? s : icon("connections"), el("span", { class: "grow", dir: "auto", text: name }), state ? tag(state, cls) : null);
+      b.dataset.words = fold(name + " " + (state || "") + " " + (words || ""));
+      return b;
+    },
+    filter() {
+      this.box.querySelectorAll(".pick").forEach((b) => { b.hidden = !!this.q && !b.dataset.words.includes(this.q); });
+    },
+    channelPanel(x) {
+      if (x.name === "telegram") return home.openTelegram();
+      const box = el("div");
+      const C = Object.create(sections.channels);
+      C.said = {};
+      C.load = async function () {
+        let c;
+        try { c = await api("/api/channels"); } catch (e) { return sectionError(box, e); }
+        const now = c.channels.find((y) => y.name === x.name);
+        if (now) setKids(box, this.card(now));
+      };
+      opened.add("chguide:" + x.name);
+      C.load();
+      connectPanel({ title: x.title, intro: "Let people reach your bot here. Keys go to the secrets file and never come back to this page.", body: box });
+    },
+    servicePanel(tile, title) {
+      const box = el("div");
+      const S = Object.create(sections.connections);
+      S.said = {};
+      let first = true;
+      S.load = async function () {
+        let c;
+        try { c = await api("/api/connections"); } catch (e) { return sectionError(box, e); }
+        const t = c.tiles.find((y) => y.tile === tile);
+        if (!t) return;
+        // The simplest way in that can work, open; the rest one tap away.
+        if (first) {
+          first = false;
+          const o = t.options.find((y) => !y.blocked) || t.options[0];
+          if (o) opened.add("opt:" + o.name);
+        }
+        setKids(box, this.tile(c, t));
+      };
+      S.focus = function (name) { opened.add("opt:" + name); this.load(); };
+      S.load();
+      connectPanel({ title, intro: "What your bot may do with it is read-only unless you tick \"allow changes\", and changes still ask you first.", body: box });
+    },
+  };
+
   // ---- console: a ferrule line, never a shell (M37 §4.2) -----------------
 
   // ---- channels (M39 §9) -------------------------------------------------
@@ -3005,14 +3097,14 @@
 
   const GROUPS = [
     [/*tr*/"Everyday", ["health", "chat", "tasks", "memory", "usage"]],
-    [/*tr*/"Setup", ["channels", "connections", "models"]],
+    [/*tr*/"Setup", ["connect", "channels", "connections", "models"]],
     [/*tr*/"Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
   ];
   const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
-  const TABS = ["health", "chat", "tasks", "usage"];
+  const TABS = ["health", "chat", "connect", "tasks"];
   const ICON_OF = { health: "health" };
-  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
-  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", memory: /*tr*/"Memory", usage: /*tr*/"Usage", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
+  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
+  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
   // What /api/login or /api/session said: the CSRF token and the session's limits.

@@ -390,7 +390,7 @@ impl Catalog {
                 if self.entries.is_empty() {
                     // Nothing is connected at all: `model default` can't
                     // help, setup can, and so can the page (read on a phone too).
-                    Err("no model is connected yet: add one on the dashboard, or with `ferrule setup`".into())
+                    Err("no model is connected yet: add one on the dashboard's Connect page, or with `ferrule setup`".into())
                 } else {
                     Err(
                         "no default model: run `ferrule model default <ref>`, or set default_provider"
