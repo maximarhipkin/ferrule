@@ -559,8 +559,10 @@ open:
   config. Running on the copy also applies to every later
   `Config::load()` in that process, not just the gateway's first read,
   since 38 call sites (self-extension, the dashboard, tools) reload it. A
-  file that reads again makes a **supervised** gateway (systemd's
-  `INVOCATION_ID`, launchd's `XPC_SERVICE_NAME`) exit 0 so its manager
+  file that reads again makes a **supervised** gateway (launchd's
+  `XPC_SERVICE_NAME` names this instance's own job, or its systemd unit's
+  `MainPID` is this process; an inherited variable alone, as in VS Code's
+  terminal, doesn't count) exit 0 so its manager
   restarts it onto the fixed file; an unsupervised one tells the owner to
   restart it.
 - **Self-check (§7)**: its first round tells the problems already present

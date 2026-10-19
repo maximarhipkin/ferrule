@@ -128,7 +128,9 @@ config. The inbound queue and the router are untouched.
 
 **Restarting the gateway** is offered too, but only under a service
 manager that restarts on exit (the check M36's last-good already uses:
-`INVOCATION_ID` for systemd, `XPC_SERVICE_NAME` for launchd), and only
+launchd's `XPC_SERVICE_NAME` is this instance's own label, or this
+instance's systemd unit has this process as its `MainPID`; either
+variable alone is inherited by a terminal, so it doesn't count), and only
 after a confirm that says what happens: the gateway exits, the service
 starts it again on the current config, the page's tunnel ends with it,
 and M24's relink sends a fresh link to the owner's chat. That is what a
