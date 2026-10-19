@@ -674,7 +674,9 @@ and a dated entry for every session.
   (sub-agents) · [`eval.md`](docs/eval.md) (benchmark harness changes
   yourself) · [`m16-learning-loop.md`](docs/m16-learning-loop.md) (failed
   runs become playbook lessons).
-- Running it day to day: [`dashboard.md`](docs/dashboard.md) ·
+- Running it day to day: [`dashboard.md`](docs/dashboard.md)
+  ([`m50-connect.md`](docs/m50-connect.md): connecting everything from
+  the page) ·
   [`updates.md`](docs/updates.md) (self-update, rollback, self-repair) ·
   [`instances.md`](docs/instances.md) (several agents on one machine) ·
   [`backup.md`](docs/backup.md) (backup and restore) ·
