@@ -1,7 +1,9 @@
 # M50 — Connect everything from the dashboard
 
-Status: **agreed** ([Decisions](#decisions-max-2026-10-19)), being built
-on branch `m50-connect`, one commit per part.
+Status: **built** on branch `m50-connect`, one commit per part (parts 0–7,
+plus an OpenRouter fix the walk turned up). "Corrections made while
+building" says where the code corrected this plan, and "Verified, and how"
+what was run. Decisions: [below](#decisions-max-2026-10-19).
 
 ## Why
 
@@ -322,7 +324,8 @@ app that ferrule doesn't have; that's a follow-up of its own.
    comes back, the host rules hold, CSRF and the managed locks apply, the
    Config guard is unchanged.
 6. **Discord and Slack cards.**
-7. **After shots** (the rig gains an empty-install pass), docs
+7. **After shots** (a hand walk of the empty install, like the before one,
+   plus the rig's set), docs
    (`dashboard.md`, `channels.md`, `connections.md`, roadmap, README
    link), PLAN.md.
 
@@ -349,3 +352,72 @@ address the owner types) plus a key that goes only to that address.
 - Icons from the existing Lucide set.
 - Hebrew strings for the new page words (`lang-he.js`), as the M47 test
   requires.
+
+## Verified, and how
+
+- `make check` (fmt, clippy, the whole suite) green before every commit:
+  1841 tests at the first run, 1844 at the end (the three below), 0
+  failed, 28 ignored. New tests
+  cover only the new write paths' rules (Decision 5): taken and
+  environment names and the host rule for keys for tools, a key that
+  never comes back, an address connected once, the managed locks, and
+  CSRF on the three new routes. The last full run had one failure,
+  `health::status_answers_from_any_chat_while_a_turn_hangs` (its mock
+  model server's read panicked under load); it passed alone three times
+  and in a rerun of the whole integration target, and nothing here
+  touches it.
+- The browser check (`scripts/dashboard_browser_check.mjs`) passed after
+  every part, 27 of 27; its checklist step now opens the connect panel.
+- Walked by hand on an empty install (`ferrule dashboard`, no key, no
+  channel) in the built-in browser at 800 and 375 px, light and dark:
+  Home's status; Telegram's Test with a made-up token ("Telegram rejected
+  the token (Unauthorized)", was "builder error"); OpenRouter with a
+  made-up key (refused in its card, focus back on the key; was "key works
+  (470 models)"); WhatsApp's Save with a field missing (answered in the
+  panel, focus on the field); Discord's Test (Discord's own 401 sentence),
+  Save (flat `discord_*` keys in `[gateway]`, the token in the secrets
+  file) and Remove (both gone); Slack's Test (`invalid_auth`); "calendar"
+  in Connect's search finds Google's tile; the address and tool-key
+  panels, the latter refusing to add without the gateway.
+- Before and after shots: [assets/m50/before](assets/m50/before/) and
+  [assets/m50/after](assets/m50/after/), the `walk-*` ones by hand, the
+  rest from `scripts/m49_shots.sh`'s rig.
+
+**Not verified live**: a real Discord or Slack app, a real MCP server with
+a key or a sign-in, the ChatGPT plan's sign-in from the panel, a phone's
+own browser, and the panels in Hebrew (their words are English, like the
+other sections' content; the nav labels are translated).
+
+## Corrections made while building
+
+1. **B was new work** (the builder check, before any code): the Config
+   page guards `url`, keyed connections are sealed in the connections
+   store, and the catalog is built once. B builds the service and connects
+   it directly instead, and the doc says so.
+2. **C's taken names include the environment** (same check): it beats the
+   secrets file, so a name set there would send that value. A page served
+   without the gateway can't see the gateway's environment and adds
+   nothing.
+3. **OpenRouter took any key.** Its `/models` answers anyone, so a made-up
+   key "worked" and the bot failed at its first message; `probe::models`
+   now also asks `/key`. Its preset has no model, so the page connected
+   whatever came first in the list; it now starts on the first everyday
+   pick of `recommended.toml` the list offers. Found walking the brain
+   panel; committed on its own.
+4. **The answer sits in the pressed card**, not at the panel's end, which
+   was a screen away from the recommended cards' buttons; provider cards
+   redraw only on success so an error stays in view.
+5. **Connect has an icon of its own** (Lucide's plug): the page test wants
+   each section drawn with the icon of its name.
+6. **The empty-install rig pass** became a hand walk at the before walk's
+   sizes, so before and after compare like for like; the rig's own set is
+   still taken.
+7. **The managed lock checks come first** on the address routes: a
+   managed bot may have no connections set up, and the lock must still
+   answer 403, not 404.
+8. **Discord and Slack on the page** take tokens and ids; pairing by a DM
+   code and Discord's slash commands stay with `ferrule setup` (a Test
+   doesn't change Discord). Their cards link to `discord.md`/`slack.md`.
+9. **A pre-existing race**: `managed::sigterm_drains_and_exits_zero` read
+   the dashboard marker the moment the page answered; the gateway writes
+   it just after. The test waits for it now.

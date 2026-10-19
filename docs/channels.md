@@ -17,8 +17,9 @@ channel that has credentials. Every channel keeps the same rules:
   channel. The dashboard's Channels section has a card with a form, a Test
   button and a guide. `ferrule doctor` has a line per channel.
 
-Telegram is set up by `ferrule setup` and described in the README; Discord
-and Slack in [discord.md](discord.md) and [slack.md](slack.md). This page covers the
+Telegram is set up by `ferrule setup` or the dashboard's Telegram panel
+and described in the README; Discord and Slack in [discord.md](discord.md)
+and [slack.md](slack.md), and since M50 they have dashboard cards too. This page covers the
 channels added in M39. The design, and the reasons behind it, are in
 [m39-channels.md](m39-channels.md). What works in every chat, whichever
 channel it's on, is at the end: [chat commands](#chat-commands),

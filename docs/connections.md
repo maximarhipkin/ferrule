@@ -185,8 +185,15 @@ These are the errors people hit, and what the page tells you for each:
 
 ## Any MCP server with a key
 
-A server that takes a header key can be added in the config, and it shows
-up as its own tile:
+From the dashboard (M50): **Connect → Any app by its address**, then the
+address and the key (the header it goes in is under Advanced,
+`Authorization: Bearer {key}` unless you change it). The key is tried once
+against the server, sealed in the connections store, and sent only to
+that address; nothing is written to the config. A server with a sign-in
+goes in the same panel's first box.
+
+By hand, a server that takes a header key can be added in the config, and
+it shows up as its own tile:
 
 ```toml
 [[connections.custom]]

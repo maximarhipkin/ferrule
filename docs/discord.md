@@ -11,7 +11,10 @@ only read text". The design, and the reasons behind it, are in
 
 The short way is **`ferrule setup` → Discord**. It walks you through the
 steps below, checks the token, registers the slash commands, prints the
-invite link and pairs you. By hand:
+invite link and pairs you. The dashboard's Discord card (Connect →
+Discord, M50) takes the token and your user id, and its **Test** gives the
+invite link; it doesn't register the slash commands or pair you by a DM
+code. By hand:
 
 1. **Create the app.** Open <https://discord.com/developers/applications>
    and click **New Application**. Then, on the **Bot** tab:

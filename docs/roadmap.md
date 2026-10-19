@@ -1064,6 +1064,27 @@ Safari or over a real tunnel.
 is in one style; contrast is tested, including the field borders; before
 and after shots are in the tree; every test passes.
 
+### M50 — connect everything from the dashboard
+
+**Status.** Built on branch `m50-connect` (`docs/m50-connect.md`; user docs
+`docs/dashboard.md`). Not tried with a real Discord or Slack app, a real
+MCP server with a key, or on a phone.
+- **Connect**, one page for the bot's brain, its chat channels and the
+  services it can use, each with its state in a word and one search box;
+  in the phone's bottom bar in Usage's place.
+- **One connect panel** for everything: what it gives the bot, what you
+  need, steps with real links, the form, and the answer where you looked.
+- **New from the page**: any MCP server by its address (sign-in or key),
+  keys for tools (`[secrets]`, new names only), Discord and Slack cards.
+- **Fixes**: Telegram's Test said "builder error" with no `[gateway]`
+  table; OpenRouter accepted any key; Home said "running" with no model.
+
+**Done means.** From the dashboard, an owner can connect a brain, a chat
+app, Gmail, an MCP server and a key for a tool with no terminal command
+(the first install still runs `ferrule setup`; setting up in the browser
+is the next milestone), the security rules hold and are tested, and
+before and after shots are in the tree.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
