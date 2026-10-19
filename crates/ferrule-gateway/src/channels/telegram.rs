@@ -1083,10 +1083,13 @@ impl TelegramChannel {
     /// [`MESSAGE_LIMIT`], as Discord and Slack do for their caps): a
     /// reply-to rides the first piece, the buttons the last, and the last
     /// piece's id is the answer (the one a streamed reply edits).
+    /// `patient` waits out a 429 (up to three, each at most a minute) as
+    /// Discord's sends do; a streamed reply's own post handles it itself.
     async fn deliver_message(
         &self,
         msg: &OutboundMessage,
         buttons: Option<&[Button]>,
+        patient: bool,
     ) -> Result<Option<String>, GatewayError> {
         let keyboard = buttons.map(Self::keyboard).transpose()?;
         // Files first, the text as the first one's caption when it fits.
@@ -1121,7 +1124,18 @@ impl TelegramChannel {
                     payload["reply_markup"] = keyboard.clone();
                 }
             }
-            id = self.post_message(payload).await?;
+            let mut tries = 0;
+            id = loop {
+                match self.post_message(payload.clone()).await {
+                    Err(GatewayError::RateLimited { retry_after })
+                        if patient && tries < 3 && retry_after <= Duration::from_secs(60) =>
+                    {
+                        tries += 1;
+                        tokio::time::sleep(retry_after).await;
+                    }
+                    other => break other?,
+                }
+            };
         }
         Ok(id)
     }
@@ -1288,11 +1302,11 @@ impl Channel for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError> {
-        self.deliver_message(&msg, None).await.map(|_| ())
+        self.deliver_message(&msg, None, true).await.map(|_| ())
     }
 
     async fn post(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
-        self.deliver_message(&msg, None).await
+        self.deliver_message(&msg, None, false).await
     }
 
     async fn send_buttons(
@@ -1300,7 +1314,9 @@ impl Channel for TelegramChannel {
         msg: OutboundMessage,
         buttons: &[Button],
     ) -> Result<(), GatewayError> {
-        self.deliver_message(&msg, Some(buttons)).await.map(|_| ())
+        self.deliver_message(&msg, Some(buttons), true)
+            .await
+            .map(|_| ())
     }
 
     /// `setMessageReaction`: the 👀 receipt (M19b).
