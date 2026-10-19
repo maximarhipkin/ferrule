@@ -6019,6 +6019,23 @@ through Git Bash with forward-slash paths.
 - This entry's PLAN.md neighbour on `main` (the review entry) is
   uncommitted there; merging this branch may need the two tails joined.
 
+### 2026-10-19 — managed SIGTERM test no longer races the dashboard marker (Claude, Opus 5.5)
+
+**Scope.** `managed::sigterm_drains_and_exits_zero` failed about 3 runs
+in 11 when the whole cli test binary ran (it failed on `dc837a7` as well,
+so `make check` sometimes failed). Cause: `Dashboard::bind` starts its
+accept loop before it returns the port, and `run_gateway` writes
+`data/gateway/dashboard.json` only after that. The test asserted the
+marker as soon as `/healthz` answered. The marker can't be written
+earlier without moving it into `bind`: the port isn't known before the
+listener is bound, and other callers use `bind` too. So the test
+now waits for the marker, up to 10 s. Product code is unchanged.
+
+**Checks.** `cargo test -p ferrule-cli --test it --locked` ran 10 times
+in a row with 0 failures. `make check` exit 0: 1841 passed, 0 failed,
+28 ignored. That's macOS only; Linux and Windows weren't run locally (CI
+covers them).
+
 ### 2026-10-19 — agent-loop defects from the review pass (Claude, Opus 5.5)
 
 **Scope.** The six core/provider defects the 2026-10-19 review pass
