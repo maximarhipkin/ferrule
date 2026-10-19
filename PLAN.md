@@ -6056,6 +6056,68 @@ checked against the live API: no call to GPT-5.6 was made.
   changed (recall appended, MCP tools hot-added) is undocumented; the
   retry without items covers it at one extra call.
 
+### 2026-10-20 — The estimate counts replayed reasoning (Claude, Opus 5.5)
+
+**Scope.** The previous entry's first Open item: on GPT-5.6, rendered
+earlier reasoning wasn't in `est_context_tokens`, so compaction fired
+late and each miss cost a failed call. Branch
+`claude/estimate-native-reasoning`, on `claude/vigorous-bardeen-9619b8`.
+
+**Measure.** The last turn's call count, not a per-item guess. An
+encrypted item's size has no published mapping to tokens, and whether a
+model renders earlier reasoning at all depends on its `reasoning.context`
+(GPT-5.6 `all_turns`, earlier models `current_turn`), which core can't
+see. The provider's count already reflects what the model rendered.
+After a turn's answer is pushed, `Agent::measure` keeps
+`input_tokens + output_tokens` (the prompt, plus the answer the next
+prompt carries back: output tokens include reasoning tokens, OpenAI's
+`output_tokens_details.reasoning_tokens`) less the guess for that
+history. `est_context_tokens` adds that excess while the history it
+counted still stands, checked as the same length and the same guess for
+every message but tool results. A fold or a truncation ends it.
+Shortening and deduping tool results don't, since they leave the
+reasoning in place. The guess is never lowered.
+
+**Only `anthropic` and `responses` answers.** Both drivers report one
+call's usage (`anthropic.rs` sums fresh, cache-read and cache-write
+input; `responses.rs` reads `/input_tokens`). The Claude Code engine's
+usage is the `result` event of a whole `claude -p` run
+(`ferrule-plans/src/claude/engine.rs`), which can take several calls,
+so its answers record nothing. Chat-completions answers carry no native
+blocks and record nothing either. ponytail: picked by api name in core,
+so a new native driver gets added to `measure`.
+
+**Known overcount, bounded.** The count includes the latest answer's
+reasoning. Anthropic, outside the tool loop, and earlier Responses models,
+after a user message, don't render it, so the first check of a new turn
+can run up to one answer's reasoning high. The next call's count
+replaces it.
+
+**Changed.**
+- `agent.rs`: `Measured`, `conversation_est`, `Agent::measure` (called
+  after each turn's answer is pushed), and `est_context_tokens` adds the
+  excess. The ponytail comment saying native blocks aren't counted is gone.
+- Test `a_native_drivers_count_of_replayed_reasoning_moves_compaction_up`:
+  a Responses answer counted at 6,000 against a trigger of 5,000 makes
+  the next turn compact before its call, and the fold's own after-estimate
+  drops back under the trigger. A `claude-code` answer with the same count
+  doesn't compact. With the `measure` call disabled, the test fails at
+  "compacted".
+- `docs/m23-drivers.md` §2: the Responses paragraph says what the
+  estimate counts now.
+
+**Checks.** `make check` exited 0: 1852 passed, 0 failed, 28 ignored
+(one more than the previous entry's 1851: the new test).
+`managed::sigterm_drains_and_exits_zero` passed this run.
+
+**Open.**
+- `Message::native`'s doc in `message.rs` still says blocks go back
+  "inside the tool loop in progress", but Responses has replayed them on
+  every turn since 815cf3d.
+- Not checked against the live API. Whether GPT-5.6's `input_tokens`
+  counts rendered earlier reasoning is assumed from what usage means, not
+  observed.
+
 ### 2026-10-20 — M50 connect everything from the dashboard (Claude, Opus 5.5)
 
 **Scope.** Max: "check the agent dashboard, suggest improvements, maybe
