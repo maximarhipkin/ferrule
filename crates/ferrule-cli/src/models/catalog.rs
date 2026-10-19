@@ -662,6 +662,18 @@ pub struct Recommendation {
     pub connected: Option<String>,
 }
 
+/// The first everyday pick of the curated list that `listed` offers: what a
+/// provider with no model of its own (OpenRouter) starts on, instead of
+/// whatever its list happens to name first.
+pub fn everyday(listed: &[String]) -> Option<String> {
+    let curated: Curated = toml::from_str(RECOMMENDED).ok()?;
+    curated
+        .value
+        .into_iter()
+        .map(|p| p.id)
+        .find(|id| listed.contains(id))
+}
+
 /// The curated list, each entry re-checked against `live` (OpenRouter's).
 pub fn recommend(
     live: Option<&Listing>,
