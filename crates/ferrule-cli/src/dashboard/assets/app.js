@@ -41,6 +41,13 @@
   const text = (t) => el("span", { class: "msg", dir: "auto", text: t === null || t === undefined ? "" : String(t) });
   const tag = (t, cls) => el("span", { class: "tag " + (cls || ""), text: t });
   const led = (cls) => el("span", { class: "led " + (cls || "") });
+  // Text with its web addresses as links: a guide step or an error that
+  // names the page to open is one tap on a phone, not a copy by hand.
+  const linkify = (t) => el("span", { class: "msg", dir: "auto" }, String(t === null || t === undefined ? "" : t)
+    .split(/(https?:\/\/[^\s,;)]*[^\s,;).])/)
+    .map((part, i) => (i % 2 ? el("a", { href: part, target: "_blank", rel: "noopener", text: part.replace(/^https?:\/\//, "") }) : part)));
+  // A repo doc on GitHub, at the running version's tag once it's known.
+  const docLink = (path) => el("a", { href: "https://github.com/maximarhipkin/ferrule/blob/" + (lastHealth && lastHealth.version ? "v" + lastHealth.version : "main") + "/" + path, target: "_blank", rel: "noopener", text: path.replace(/^docs\//, "") });
 
   // ---- language (M47): English, or Hebrew read right to left --------------
   // The Hebrew words live in /lang-he.js, loaded before the first draw and
@@ -109,7 +116,7 @@
     const box = document.getElementById("toast");
     for (const old of box.children) if (old.dataset.text === t) old.remove();
     const card = el("div", { class: "t " + kind, role: kind === "bad" ? "alert" : null },
-      el("span", { class: "txt", dir: "auto", text: t }),
+      el("span", { class: "txt" }, linkify(t)),
       el("button", { class: "ghost icon", "aria-label": tr("Close"), onclick: () => card.remove() }, icon("x")));
     card.dataset.text = t;
     box.append(card);
@@ -755,14 +762,20 @@
     },
   };
 
-  function status(h) {
+  // Never "running" when it can't answer: no working model, or no gateway
+  // in this process (a page served by `ferrule dashboard` alone).
+  function status(h, setup) {
     const list = h.problems || [];
     const busy = (h.turns || []).filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
+    const things = (n) => n + (n === 1 ? " thing" : " things");
+    const model = setup && (setup.steps || []).find((x) => x.id === "model");
     if (h.kill && h.kill.on) return ["bad", "Stopped: the kill switch is on, so nothing will run."];
-    if (list.some((p) => p.top)) return ["bad", "Your bot needs you: " + list.length + (list.length === 1 ? " thing" : " things") + " to fix."];
-    if (list.length) return ["warn", "Your bot is running, with " + list.length + (list.length === 1 ? " thing" : " things") + " to look at."];
+    if (model && !model.done) return ["bad", "Your bot can't answer yet: it has no working model."];
+    if (list.some((p) => p.top)) return ["bad", "Your bot needs you: " + things(list.length) + " to fix."];
+    if (!h.gateway) return [list.length ? "warn" : "ok", "This page works, but the gateway isn't running here, so no chat app reaches the bot." + (list.length ? " " + things(list.length) + " to look at." : "")];
+    if (list.length) return ["warn", "Your bot is running, with " + things(list.length) + " to look at."];
     if (busy.length) return ["ok pulse", "Your bot is working on " + (busy.length === 1 ? "a message" : busy.length + " messages") + " now."];
-    return ["ok", h.gateway ? "Your bot is running. All quiet." : "All quiet. The gateway isn't running in this process."];
+    return ["ok", "Your bot is running. All quiet."];
   }
 
   function checklist(s) {
@@ -865,7 +878,7 @@
       const ch = h.channels || [];
       const turns = h.turns || [];
       const wd = h.watchdog;
-      const [level, said] = status(h);
+      const [level, said] = status(h, setup);
       const running = turns.filter((t) => t.busy_secs !== null && t.busy_secs !== undefined);
       const lanes = ch.length ? ch.map((c) => c.name).join(" + ") + (ch.length === 1 ? " lane" : " lanes") : null;
       const rows = [
@@ -1623,8 +1636,8 @@
       const key = "opt:" + o.name;
       const conn = c.connections.find((s) => s.service === o.name);
       const body = el("div", { class: "details-body" });
-      if (o.covers) body.append(el("p", { class: "covers msg", dir: "auto", text: "Covers: " + o.covers }));
-      if ((o.guide || []).length) body.append(el("ol", { class: "guide" }, o.guide.map((g) => el("li", { class: "msg", dir: "auto", text: g }))));
+      if (o.covers) body.append(el("p", { class: "covers msg", dir: "auto" }, "Covers: ", linkify(o.covers)));
+      if ((o.guide || []).length) body.append(el("ol", { class: "guide" }, o.guide.map((g) => el("li", {}, linkify(g)))));
       if (o.fixed_callback && c.callback) body.append(el("p", { class: "small" }, "Callback to give it: ", el("code", { text: c.callback }), " ", copyBtn(c.callback)));
       if (o.attempt) {
         body.append(el("div", { class: "said bad" },
@@ -2491,7 +2504,7 @@
         body.append(this.form(x));
         if (x.keys) body.append(this.keys(x));
       }
-      body.append(el("p", { class: "muted small m0" }, "More in ", el("code", { text: x.doc }), "."));
+      body.append(el("p", { class: "muted small m0" }, "More in ", docLink(x.doc), "."));
       return el("div", { class: "card tile", id: "channel-" + x.name },
         el("div", { class: "head" }, s, el("h2", { class: "grow", text: x.title }), tag(st[0], st[1])),
         body);
@@ -2937,6 +2950,8 @@
   const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", memory: /*tr*/"Memory", usage: /*tr*/"Usage", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
+  // What /api/login or /api/session said: the CSRF token and the session's limits.
+  let SESSION = {};
   let timer = null;
   let banner = null;
   let lastHealth = null;
@@ -2961,7 +2976,8 @@
     setKids(rail,
       groups({ keep: () => true, make: (s) => navLink(s) }),
       el("div", { class: "rail-foot" },
-        frag(el("b", { text: tr("session") }), el("br"), tr("12 h max · idle 30 min"), el("br"),
+        frag(el("b", { text: tr("session") }), el("br"),
+          fill("%s h max", SESSION.session_hours) + " · " + fill("idle %s min", SESSION.idle_minutes), el("br"),
           el("b", { text: tr("login") }), el("br"), tr("one-use link"))));
     rail.hidden = false;
     const tabs = document.getElementById("tabs");
@@ -3010,6 +3026,8 @@
   function show(name, opts) {
     if (!sections[name]) name = "health";
     current = name;
+    // A failure belongs to the page it happened on.
+    document.querySelectorAll("#toast .t.bad").forEach((t) => t.remove());
     const root = el("div");
     banner = el("div");
     document.getElementById("main").replaceChildren(banner, root);
@@ -3266,11 +3284,12 @@
     if (hash && !order.includes(hash)) {
       history.replaceState(null, "", BASE + "/");
       try {
-        csrf = (await api("/api/login", { token: hash })).csrf;
+        SESSION = await api("/api/login", { token: hash });
       } catch (e) { loggedOut(e.message); return; }
     } else {
-      try { csrf = (await api("/api/session")).csrf; } catch (_) { return; }
+      try { SESSION = await api("/api/session"); } catch (_) { return; }
     }
+    csrf = SESSION.csrf;
     const logout = document.getElementById("logout");
     logout.hidden = false;
     logout.onclick = async () => {

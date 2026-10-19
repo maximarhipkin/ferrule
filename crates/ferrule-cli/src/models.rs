@@ -389,8 +389,8 @@ impl Catalog {
             None => {
                 if self.entries.is_empty() {
                     // Nothing is connected at all: `model default` can't
-                    // help, setup can.
-                    Err("no model is connected yet — run `ferrule setup` to add one".into())
+                    // help, setup can, and so can the page (read on a phone too).
+                    Err("no model is connected yet: add one on the dashboard, or with `ferrule setup`".into())
                 } else {
                     Err(
                         "no default model: run `ferrule model default <ref>`, or set default_provider"
@@ -1320,13 +1320,16 @@ model = "a-one"
         assert_eq!(cat.exact_pin(cat.resolve_unchecked("a").unwrap()), None);
     }
 
-    /// Nothing connected at all: the error points at `ferrule setup`, not
-    /// at `model default` (which needs a model to point at).
+    /// Nothing connected at all: the error points at the dashboard and
+    /// `ferrule setup`, not at `model default` (which needs a model).
     #[test]
     fn with_no_providers_the_error_says_setup() {
         let cat = Catalog::from_config(&cfg(""));
         let e = cat.default_entry().unwrap_err();
-        assert!(e.contains("run `ferrule setup`"), "{e}");
+        assert!(
+            e.contains("`ferrule setup`") && e.contains("dashboard"),
+            "{e}"
+        );
     }
 
     /// M23: a v0.3.0 config (no `api` anywhere) loads as it did, except

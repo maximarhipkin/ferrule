@@ -481,7 +481,13 @@ fn sigterm_drains_and_exits_zero() {
         .stderr(std::fs::File::create(&log).unwrap());
     let mut child = cmd.spawn().unwrap();
     wait_health(port.parse().unwrap(), |_| true);
+    // The page answers as soon as it's bound; the marker is written just
+    // after, so under a loaded test run it can lag a moment.
     let marker = dir.path().join("data/gateway/dashboard.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(marker.exists());
     let pid = child.id().to_string();
     let killed = std::process::Command::new("kill")
