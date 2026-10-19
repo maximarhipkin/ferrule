@@ -2090,6 +2090,24 @@ impl Agent {
         // The tail that survives the fold, for the transcript's fold record.
         let kept_tail = self.messages.len() - split;
         let head = &self.messages[..split];
+        // A head that is mostly an earlier summary: the kept tail alone is
+        // over the trigger, and folding now would only summarize the
+        // summary again, on every turn. It waits until there's at least as
+        // much new to fold; a forced compaction folds anyway.
+        let (summarized, new) = head
+            .iter()
+            .filter(|m| m.role != crate::message::Role::System)
+            .fold((0, 0), |(s, n), m| match is_summary(m) {
+                true => (s + m.est_tokens(), n),
+                false => (s, n + m.est_tokens()),
+            });
+        if summarized >= new && !force {
+            info!(
+                summarized,
+                new, "not compacting: the head is mostly a summary"
+            );
+            return Ok(shortened);
+        }
         let folded_refs = shortened_refs(head);
 
         // Skills activated in the folded part stay in force: their blocks
@@ -2102,7 +2120,6 @@ impl Agent {
             .map(|(_, block)| block)
             .collect();
 
-        // Skip a second compaction if the head is already mostly a summary.
         let transcript_text = head
             .iter()
             .map(|m| {
@@ -2157,7 +2174,7 @@ impl Agent {
         {
             rebuilt.push(sys.clone());
         }
-        let mut summary_msg = format!("[Compaction summary of earlier session]\n{summary}");
+        let mut summary_msg = format!("{SUMMARY_HEADER}\n{summary}");
         if !carried.is_empty() {
             summary_msg.push_str(
                 "\n\n[Skill instructions activated earlier in this session — still in force]\n",
@@ -2442,6 +2459,17 @@ fn paired(messages: Vec<Message>) -> Vec<Message> {
     }
     answer_rest(&mut out, &mut open);
     out
+}
+
+/// How a compaction summary starts.
+const SUMMARY_HEADER: &str = "[Compaction summary of earlier session]";
+
+/// A summary an earlier compaction left.
+fn is_summary(m: &Message) -> bool {
+    m.role == crate::message::Role::User
+        && m.content
+            .as_deref()
+            .is_some_and(|c| c.starts_with(SUMMARY_HEADER))
 }
 
 /// How a shortened tool result starts: `[ferrule: an older tool result (`
@@ -4209,6 +4237,41 @@ mod tests {
         agent.maybe_compact(&tx, 1).await.unwrap();
         let summary = agent.messages[0].content.clone().unwrap();
         assert!(!summary.contains(goal), "{summary}");
+    }
+
+    /// The kept tail alone is over the trigger and the head is only the
+    /// last summary: it isn't summarized again, turn after turn, until
+    /// there's as much new to fold.
+    #[tokio::test]
+    async fn a_summary_is_not_summarized_again_until_there_is_more_to_fold() {
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let (profile, config) = compacting();
+        let mut agent = Agent::new(
+            provider.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_system_prompt("sys");
+        let big = |tag: &str| Message::user(format!("{tag} {}", "x".repeat(600)));
+        agent.messages.extend([
+            Message::user(format!("{SUMMARY_HEADER}\nwhat happened so far")),
+            big("A"),
+            big("B"),
+        ]);
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        agent.maybe_compact(&tx, 1).await.unwrap();
+        assert!(provider.prompts.lock().unwrap().is_empty());
+        assert_eq!(agent.messages.len(), 4);
+
+        agent.messages.extend([big("C"), big("D")]);
+        agent.maybe_compact(&tx, 2).await.unwrap();
+        assert_eq!(provider.prompts.lock().unwrap().len(), 1, "A and B fold");
     }
 
     #[tokio::test]
