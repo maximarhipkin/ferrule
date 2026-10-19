@@ -138,6 +138,11 @@ pub fn merge(
             .map(|v| v.trim())
             .filter(|v| !v.is_empty());
         let Some(v) = typed else {
+            // Sent empty: an optional field the owner cleared. A secret
+            // left empty keeps what is stored.
+            if f.optional && !matches!(f.kind, Kind::Secret { .. }) && values.contains_key(f.key) {
+                table.remove(f.key);
+            }
             continue;
         };
         let value = match f.kind {
@@ -270,14 +275,20 @@ pub fn save(spec: &Spec, place: &Place, values: &Values) -> Result<(), String> {
         crate::secrets::set(&place.secrets, env, v)
             .map_err(|e| format!("the secrets file couldn't be written: {e:#}"))?;
     }
-    write_table(place, spec.name, &s.table).map_err(|e| format!("{e:#}"))
+    write_table(place, spec, &s.table).map_err(|e| format!("{e:#}"))
 }
 
-fn write_table(place: &Place, name: &str, table: &toml::Table) -> Result<()> {
+fn write_table(place: &Place, spec: &Spec, table: &toml::Table) -> Result<()> {
     let mut t = crate::setup::Target::load(place.config.clone())?;
-    let tbl = crate::setup::table(t.root(), &["gateway", name])?;
+    let tbl = crate::setup::table(t.root(), &["gateway", spec.name])?;
     for (k, v) in table {
         crate::setup::put(tbl, k, edit_value(v)?);
+    }
+    // A field of the form that `merge` took out (cleared on the page).
+    for f in spec.fields {
+        if !table.contains_key(f.key) {
+            tbl.remove(f.key);
+        }
     }
     t.save()
 }

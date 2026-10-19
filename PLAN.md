@@ -5799,3 +5799,80 @@ cli suite 383+166, clippy and fmt clean.
 **Not done.** Approvals for terminal-run graphs still ask at the
 terminal (the notifier lives in the gateway process); no `/graph stop`
 from a chat; loops/graphs from the HTTP channel hold no webhook.
+
+### 2026-10-19 — Telegram files both ways + a whole-repo review pass (Claude, Opus 5.5)
+
+**Scope.** The owner reported that the bot "can't send files in
+Telegram". Cause: `TelegramChannel` reported no `attachments`
+capability and its send path ignored `msg.attachments`, so `send_file`
+always answered "this channel (telegram) can't send files". The same
+session then reviewed the whole repo by area (six read-only reviewers)
+and fixed the confirmed defects with small diffs.
+
+**Telegram.**
+- Out: `sendPhoto` for a JPEG/PNG/WebP up to 10 MB (re-sent as a
+  document only on Telegram's own 400, never after a timeout, so no
+  duplicates), `sendDocument` for anything else up to 50 MB, the text
+  as the caption when it fits 1,024 UTF-16 units, a 300 s upload
+  deadline. `capabilities().attachments` is now true.
+- In: documents and videos are saved to the inbox like voice, audio and
+  photos (GIFs stay unread); downloads get the 300 s deadline.
+- `split()` could loop forever (unbounded memory) on a fence line
+  longer than ~3.3k units; reopening a fence must now make progress.
+- A 429 on a non-streamed send is waited out (≤ 3 tries, ≤ 60 s each)
+  instead of dropping the reply and the rest of a split one.
+
+**Other fixes.**
+- `write_todos`/`log_diary` resolve their paths through
+  `fs_tools::resolve` and write atomically; read-only roles lose them
+  too.
+- `read_skill_file` checks that a skill's directory is still a skill.
+- MCP media is written only inside the workspace.
+- SMTP validates envelope addresses.
+- Config page: the change guard is stricter (duplicate table names,
+  `sandbox`, `signal_cli`).
+- Updates: the timer has its own `last_timer`; `last_check`, which Home
+  and `/update` also write, no longer makes the night's install skip.
+  The stale-promise line no longer claims a restart.
+- Core: a torn transcript line is skipped (warned), not a whole lost
+  history; compaction sends the main calls' `temperature` and
+  `max_output_tokens` (OpenAI reasoning models refused `0`/`max_tokens`,
+  and every later turn failed the same way).
+- Gateway: `Router::retire` on a busy lane marks it stale and rebuilds
+  it at the next message that finds it idle (two agents shared one
+  transcript); `tasks run-now` builds its scheduler with
+  `Scheduler::sharing`, no recovery (it failed the daemon's live run);
+  an empty answer becomes a one-line note (a chat refuses an empty
+  message, so it was silence); Slack slash commands no longer cache a
+  human-to-human DM as the bot's.
+- Dashboard: Channels Save can clear optional fields; a failed photo
+  save answers in the chat log; plan sign-ins say when the provider
+  couldn't be added.
+- MCP over HTTP decodes SSE bytes across chunk boundaries; the OTel
+  exporter no longer spins during backoff.
+
+**Checks.** `make check` exit 0: fmt and clippy clean, 1841 tests
+passed, 0 failed, 28 ignored. One existing assertion was flipped
+(`capabilities_report_edits_and_reactions`: Telegram now has
+attachments). No new tests were written for these fixes. The live
+Telegram path (a real bot token) wasn't exercised; only the mocks were.
+
+**Open (found, not fixed — needs a design call or a bigger change).**
+- Security hardening of host-side helpers (hooks, git, the proxy) and
+  of session-id mapping: in progress in separate sessions, to be
+  reported through SECURITY.md's private advisory flow, not here.
+- Updates: backup/restore in system scope use root's own paths; macOS
+  `supervised()` trusts an inherited `XPC_SERVICE_NAME`; an update while
+  the launchd job is booted out rolls back and pins a good release; a
+  failed rollback records nothing; a unit failure before any event
+  leaves a chat update unanswered until the promise expires.
+- Core: no recovery from a provider's "context too long"; a kept tail
+  over the trigger re-summarizes every iteration; `compaction_model`
+  calls skip retries, ledger and kill switch; stalled streams aren't
+  retried and the 600 s client timeout cuts long healthy ones.
+- Channels: WhatsApp relay cursor survives a mailbox wipe; WhatsApp
+  held messages can wait silently; a failed Discord interaction ack
+  loses the reply; `Gateway::run` doesn't drain lanes; one email that
+  can't be fetched blocks the channel; `/cmd@OtherBot` acts in groups.
+- MCP stdio: the request write sits outside the timeout, and a cut-off
+  write breaks the connection until restart.

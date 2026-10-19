@@ -124,6 +124,9 @@ struct LaneState {
     /// `/new` retired the lane (M41): it takes no further message, even
     /// one already queued.
     retired: bool,
+    /// Retired while busy (a model change mid-turn): rebuilt at the first
+    /// message that finds it idle, so two agents never share a transcript.
+    stale: bool,
 }
 
 /// What `/new` did (M41).
@@ -548,7 +551,10 @@ impl Router {
         }
         let mut lanes = self.lanes.lock().unwrap();
         if let Some(lane) = lanes.get(session_id) {
-            if !lane.tx.is_closed() {
+            let st = lane.state.lock().unwrap();
+            let rebuild = st.stale && st.busy_since.is_none() && st.queued == 0;
+            drop(st);
+            if !lane.tx.is_closed() && !rebuild {
                 return Ok((lane.tx.clone(), lane.state.clone()));
             }
         }
@@ -573,7 +579,20 @@ impl Router {
     /// factory gives it then (M19: a plan's exploration is read-only, its
     /// execution isn't). False when there was no lane.
     pub fn retire(&self, session_id: &str) -> bool {
-        self.lanes.lock().unwrap().remove(session_id).is_some()
+        let mut lanes = self.lanes.lock().unwrap();
+        let Some(lane) = lanes.get(session_id) else {
+            return false;
+        };
+        let mut st = lane.state.lock().unwrap();
+        if st.busy_since.is_some() || st.queued > 0 {
+            // The running turn still writes the transcript: a new agent
+            // replaying it now would run beside it.
+            st.stale = true;
+            return true;
+        }
+        drop(st);
+        lanes.remove(session_id);
+        true
     }
 
     /// `/new` (M41): puts `session_id`'s conversation aside and lets the
@@ -895,7 +914,14 @@ async fn run_lane(
         let reply_text = match &run_result {
             Ok(answer) => {
                 last_failure = None;
-                answer.clone()
+                if answer.trim().is_empty() {
+                    // A chat refuses an empty message, so this would be
+                    // silence (thinking spent the output budget, or the
+                    // model just stopped).
+                    EMPTY_REPLY.to_string()
+                } else {
+                    answer.clone()
+                }
             }
             Err(e) => {
                 tracing::error!(session = %session_id, error = %e, "agent run failed");
@@ -950,6 +976,9 @@ struct LaneWatch {
     transcription: Option<Transcription>,
     typing: bool,
 }
+
+/// Sent when a run ends with no text at all.
+const EMPTY_REPLY: &str = "(I finished without writing a reply. Ask again if you expected one.)";
 
 /// Said once per chat when a photo arrives and the model can't see it.
 const NO_VISION: &str = "I saved your photo, but the model I'm using can't see images, so I only get the file. Pick a model marked “sees photos” in the dashboard's Models to change that.";

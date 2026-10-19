@@ -544,11 +544,14 @@
       i,
       f.hint ? el("span", { class: "hint msg", dir: "auto", text: f.hint }) : null);
   }
-  const values = (box) => {
+  // `cleared`: an emptied field (not a secret) goes too, as "", so a Save
+  // can take an optional value out.
+  const values = (box, cleared) => {
     const out = {};
     box.querySelectorAll("input[name], textarea[name], select[name]").forEach((i) => {
       if (i.type === "checkbox") return;
-      if (i.value.trim() !== "") out[i.name] = i.value.trim();
+      const v = i.value.trim();
+      if (v !== "" || (cleared && !i.dataset.secret)) out[i.name] = v;
     });
     return out;
   };
@@ -2635,7 +2638,7 @@
       };
       const save = el("button", { class: "primary", text: x.configured ? "Save" : "Save and turn on" });
       save.onclick = async () => {
-        const vals = values(fields);
+        const vals = values(fields, true);
         const r = await act("channels/save", { name: x.name, values: vals }, save);
         if (!r) return;
         wipeSecrets(box);

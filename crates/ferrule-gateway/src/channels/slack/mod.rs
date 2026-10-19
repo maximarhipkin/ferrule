@@ -569,9 +569,8 @@ impl SlackChannel {
         let chat_id = if !channel.starts_with('D') && self.access.channel_allowed(&channel) {
             channel
         } else if self.access.user_allowed(&user) {
-            if channel.starts_with('D') {
-                self.remember_dm(&user, &channel);
-            }
+            // Not remembered as their DM with the bot: a slash command
+            // typed in a DM between two people names that DM.
             user.clone()
         } else {
             self.access.ignore(&user, &sender, "DM");

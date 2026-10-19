@@ -116,7 +116,8 @@ The owner can update from the conversation, with no terminal:
   version rolled back, the same chat hears that instead ("Ferrule 0.12.1
   didn't start properly, so I went back to 0.12.0 and won't try 0.12.1
   again."). An update note nobody claims is dropped after a while, with the line "I
-  restarted, but couldn't confirm the update; /status shows the version."
+  couldn't confirm the update: the updater never reported back. /status
+  shows the version I run."
 - **Managed bots.** A bot run by the Ferrule panel is updated by changing
   its image, so `/update` says so and asks nothing.
 

@@ -50,6 +50,11 @@ pub struct Event {
 pub struct State {
     /// Unix seconds of the last release check, and whether it worked.
     pub last_check: Option<u64>,
+    /// Unix seconds of the last timer run that went on to check or
+    /// install. Kept apart from `last_check`, which the gateway's own
+    /// checks (Home, `/update`) also write: those must not skip the
+    /// night's install.
+    pub last_timer: Option<u64>,
     pub last_check_ok: Option<bool>,
     /// Why the last check failed.
     pub last_error: Option<String>,

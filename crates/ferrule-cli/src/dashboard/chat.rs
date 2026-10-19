@@ -159,9 +159,14 @@ impl DashboardChannel {
                 inbox.save(CHANNEL, &id, &name, Some(&mime), &bytes)
             })
             .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("the photo couldn't be saved: {e}"))?
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.map_err(|e| format!("the photo couldn't be saved: {e}")))
         };
+        // The owner's entry is already in the log: an answer to it goes
+        // there too, or the page waits on a reply that won't come.
+        let saved = saved.inspect_err(|e| {
+            self.push(false, e, Vec::new());
+        })?;
         let msg = InboundMessage {
             channel: CHANNEL.into(),
             chat_id: CHAT.into(),

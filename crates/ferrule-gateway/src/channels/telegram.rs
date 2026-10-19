@@ -51,6 +51,13 @@ const IGNORED_WARN_EVERY: Duration = Duration::from_secs(3600);
 /// The most a `sendMessage` text may hold, in UTF-16 units as Telegram
 /// counts (its documented limit; Discord has 2000, Slack 4000).
 pub const MESSAGE_LIMIT: usize = 4096;
+/// The most a file's caption may hold, counted the same way.
+const CAPTION_LIMIT: usize = 1024;
+/// The Bot API's upload limits: a photo, and any other file.
+const PHOTO_MAX: u64 = 10 * 1024 * 1024;
+const FILE_MAX: u64 = 50 * 1024 * 1024;
+/// An upload of up to `FILE_MAX`, or a download, gets longer than a send.
+const UPLOAD_DEADLINE: Duration = Duration::from_secs(300);
 
 /// Why a poll failed: `Retry` heals by itself (network, Telegram's own 5xx,
 /// a rate limit, a bad body); `Conflict` is a 409, which needs the owner if
@@ -78,12 +85,12 @@ struct Parsed {
     unread: Option<&'static str>,
     /// Photos sent together share this; they get one reply, not one each.
     album: Option<String>,
-    /// A voice note, audio file or photo, taken into the inbox when there
-    /// is one (M41, M47), and the caption that came with it.
+    /// A voice note, audio file, photo, video or other file, taken into
+    /// the inbox when there is one (M41, M47), and its caption.
     file: Option<TgFile>,
 }
 
-/// A voice note, audio file or photo in an update.
+/// A voice note, audio file, photo, video or other file in an update.
 struct TgFile {
     file_id: String,
     name: String,
@@ -170,8 +177,9 @@ impl TelegramChannel {
         }
     }
 
-    /// Saves voice notes and audio files people send here, so the gateway
-    /// can transcribe them (M41). Other files keep the "only text" reply.
+    /// Saves the files people send here (voice notes and audio, which the
+    /// gateway transcribes (M41), photos, videos, documents), so the agent
+    /// can read them. Stickers and GIFs keep the "only text" reply.
     pub fn with_inbox(mut self, inbox: Option<Inbox>) -> Self {
         self.inbox = inbox;
         self
@@ -353,7 +361,7 @@ impl TelegramChannel {
         Ok(true)
     }
 
-    /// A voice note, audio file or photo, saved to the inbox: the message
+    /// A file (voice note, audio, photo, video, document) saved to the inbox: the message
     /// then carries it as an attachment with M39's line about it, and is
     /// read. `None`: the photo is one more of an album already taken, and
     /// was answered here.
@@ -448,6 +456,8 @@ impl TelegramChannel {
         let resp = self
             .client
             .get(&url)
+            // Up to 20 MB: longer than a send on a slow link.
+            .timeout(UPLOAD_DEADLINE)
             .send()
             .await
             .map_err(|e| refuse(format!("the download failed: {}", e.without_url())))?;
@@ -802,7 +812,8 @@ fn photo_size(sizes: &[Value], cap: u64) -> Option<(String, Option<u64>)> {
         .and_then(|p| Some((p["file_id"].as_str()?.to_string(), p["file_size"].as_u64())))
 }
 
-/// The voice note, audio file or photo in a message, if it has one.
+/// The voice note, audio file, photo, video or other file (a PDF, a
+/// photo sent as a file) in a message, if it has one.
 fn tg_file(message: &Value) -> Option<TgFile> {
     let caption = || {
         message
@@ -821,7 +832,11 @@ fn tg_file(message: &Value) -> Option<TgFile> {
             sizes: sizes.clone(),
         });
     }
-    let (key, a) = ["voice", "audio"]
+    // A GIF comes with a `document` too; it stays unread.
+    if message.get("animation").is_some() {
+        return None;
+    }
+    let (key, a) = ["voice", "audio", "video", "document"]
         .into_iter()
         .find_map(|k| message.get(k).map(|a| (k, a)))?;
     let file_id = a.get("file_id")?.as_str()?.to_string();
@@ -833,6 +848,8 @@ fn tg_file(message: &Value) -> Option<TgFile> {
         (_, Some(n)) => n.to_string(),
         // A voice note is Ogg Opus with no name.
         ("voice", None) => "voice.ogg".to_string(),
+        ("video", None) => "video.mp4".to_string(),
+        ("document", None) => "file".to_string(),
         (_, None) => "audio".to_string(),
     };
     Some(TgFile {
@@ -953,12 +970,14 @@ fn split(text: &str) -> Vec<String> {
             piece = rest[..cut].to_string();
         }
         rest = match in_fence {
-            Some(open) => {
+            // Reopening a fence line as long as the cut would give back
+            // what was taken, forever: such a line is left as it is.
+            Some(open) if open.len() + 1 < cut => {
                 piece.push_str("\n```");
                 fence = None;
                 format!("{open}\n{}", &rest[cut.min(rest.len())..])
             }
-            None => {
+            _ => {
                 fence = None;
                 rest[cut..].to_string()
             }
@@ -1036,15 +1055,19 @@ impl TelegramChannel {
     /// `GatewayError::RateLimited` with Telegram's `retry_after` (M27: a
     /// streamed reply waits it out); any other failure names the method.
     async fn deliver(&self, method: &str, payload: &Value) -> Result<Value, GatewayError> {
-        let resp = self
-            .client
-            .post(self.api_url(method))
-            .json(payload)
-            .send()
-            .await
-            .map_err(|e| {
-                GatewayError::Channel(format!("{method} request failed: {}", e.without_url()))
-            })?;
+        let req = self.client.post(self.api_url(method)).json(payload);
+        self.answered(method, req).await
+    }
+
+    /// Sends `req` and reads Telegram's answer, as [`Self::deliver`] says.
+    async fn answered(
+        &self,
+        method: &str,
+        req: reqwest::RequestBuilder,
+    ) -> Result<Value, GatewayError> {
+        let resp = req.send().await.map_err(|e| {
+            GatewayError::Channel(format!("{method} request failed: {}", e.without_url()))
+        })?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(json!({}));
         if status.is_success() && body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -1070,15 +1093,33 @@ impl TelegramChannel {
     /// [`MESSAGE_LIMIT`], as Discord and Slack do for their caps): a
     /// reply-to rides the first piece, the buttons the last, and the last
     /// piece's id is the answer (the one a streamed reply edits).
+    /// `patient` waits out a 429 (up to three, each at most a minute) as
+    /// Discord's sends do; a streamed reply's own post handles it itself.
     async fn deliver_message(
         &self,
         msg: &OutboundMessage,
         buttons: Option<&[Button]>,
+        patient: bool,
     ) -> Result<Option<String>, GatewayError> {
         let keyboard = buttons.map(Self::keyboard).transpose()?;
-        let pieces = split(&msg.text);
-        let last = pieces.len() - 1;
+        // Files first, the text as the first one's caption when it fits.
+        let mut text = msg.text.clone();
         let mut id = None;
+        for (i, att) in msg.attachments.iter().enumerate() {
+            let caption = (i == 0
+                && buttons.is_none()
+                && !text.trim().is_empty()
+                && text.encode_utf16().count() <= CAPTION_LIMIT)
+                .then(|| std::mem::take(&mut text));
+            id = self
+                .send_file(&msg.chat_id, att, caption.as_deref())
+                .await?;
+        }
+        if !msg.attachments.is_empty() && text.trim().is_empty() && buttons.is_none() {
+            return Ok(id);
+        }
+        let pieces = split(&text);
+        let last = pieces.len() - 1;
         for (i, piece) in pieces.iter().enumerate() {
             let mut payload = json!({ "chat_id": msg.chat_id, "text": piece });
             if i == 0 {
@@ -1093,9 +1134,81 @@ impl TelegramChannel {
                     payload["reply_markup"] = keyboard.clone();
                 }
             }
-            id = self.post_message(payload).await?;
+            let mut tries = 0;
+            id = loop {
+                match self.post_message(payload.clone()).await {
+                    Err(GatewayError::RateLimited { retry_after })
+                        if patient && tries < 3 && retry_after <= Duration::from_secs(60) =>
+                    {
+                        tries += 1;
+                        tokio::time::sleep(retry_after).await;
+                    }
+                    other => break other?,
+                }
+            };
         }
         Ok(id)
+    }
+
+    /// Uploads a local file (`send_file`): `sendPhoto` for a photo
+    /// Telegram shows inline, else `sendDocument`, which keeps the bytes
+    /// and name as they are. A photo Telegram refuses (its size or
+    /// dimensions) goes again as a document. The message's id.
+    async fn send_file(
+        &self,
+        chat: &str,
+        att: &Attachment,
+        caption: Option<&str>,
+    ) -> Result<Option<String>, GatewayError> {
+        let (name, mime, bytes) = files::read_outgoing(att)?;
+        let mime = if att.kind.contains('/') {
+            att.kind.as_str()
+        } else {
+            mime
+        };
+        let size = bytes.len() as u64;
+        if size > FILE_MAX {
+            return Err(GatewayError::Channel(format!(
+                "{name} is {}, over the {} a Telegram bot can send",
+                files::human(size),
+                files::human(FILE_MAX)
+            )));
+        }
+        let mut fields = vec![("chat_id", chat)];
+        if let Some(c) = caption {
+            fields.push(("caption", c));
+        }
+        let upload = |method: &'static str, field: &str| {
+            let (boundary, body) = files::multipart(&fields, (field, &name, mime, &bytes));
+            let req = self
+                .client
+                .post(self.api_url(method))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .timeout(UPLOAD_DEADLINE)
+                .body(body);
+            self.answered(method, req)
+        };
+        let photo = matches!(mime, "image/jpeg" | "image/png" | "image/webp") && size <= PHOTO_MAX;
+        let result = if photo {
+            match upload("sendPhoto", "photo").await {
+                // Only Telegram's own refusal (a 400: dimensions, size); a
+                // timeout may have delivered it, and a retry would repeat it.
+                Err(GatewayError::Channel(e)) if e.starts_with("sendPhoto failed (status 400") => {
+                    tracing::info!(error = %e, "telegram: {name} as a photo was refused; sending it as a file");
+                    upload("sendDocument", "document").await
+                }
+                other => other,
+            }
+        } else {
+            upload("sendDocument", "document").await
+        }?;
+        Ok(result
+            .get("message_id")
+            .and_then(|v| v.as_i64())
+            .map(|id| id.to_string()))
     }
 }
 
@@ -1128,7 +1241,7 @@ impl Channel for TelegramChannel {
             reactions: true,
             edits: true,
             buttons: true,
-            ..Default::default()
+            attachments: true,
         }
     }
 
@@ -1199,11 +1312,11 @@ impl Channel for TelegramChannel {
     }
 
     async fn send(&self, msg: OutboundMessage) -> Result<(), GatewayError> {
-        self.deliver_message(&msg, None).await.map(|_| ())
+        self.deliver_message(&msg, None, true).await.map(|_| ())
     }
 
     async fn post(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
-        self.deliver_message(&msg, None).await
+        self.deliver_message(&msg, None, false).await
     }
 
     async fn send_buttons(
@@ -1211,7 +1324,9 @@ impl Channel for TelegramChannel {
         msg: OutboundMessage,
         buttons: &[Button],
     ) -> Result<(), GatewayError> {
-        self.deliver_message(&msg, Some(buttons)).await.map(|_| ())
+        self.deliver_message(&msg, Some(buttons), true)
+            .await
+            .map(|_| ())
     }
 
     /// `setMessageReaction`: the 👀 receipt (M19b).
@@ -1640,7 +1755,7 @@ mod tests {
         let caps = channel.capabilities();
         assert!(caps.edits);
         assert!(caps.reactions);
-        assert!(!caps.attachments);
+        assert!(caps.attachments);
         assert!(caps.buttons);
         assert!(channel.polls());
         assert_eq!(channel.last_ok_poll(), None);

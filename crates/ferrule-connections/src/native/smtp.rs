@@ -106,6 +106,21 @@ impl Smtp {
         to: &[String],
         message: &str,
     ) -> Result<(), Error> {
+        // An address goes into a command line as it is: a CR/LF, space or
+        // bracket in one would add commands (a hidden recipient).
+        if let Some(bad) = std::iter::once(from)
+            .chain(to.iter().map(String::as_str))
+            .find(|a| {
+                a.is_empty()
+                    || a.chars()
+                        .any(|c| c.is_whitespace() || c.is_control() || c == '<' || c == '>')
+            })
+        {
+            return Err(Error {
+                text: format!("not an email address: {bad:?}"),
+                auth: false,
+            });
+        }
         self.send(&format!("MAIL FROM:<{from}>")).await?;
         self.expect(250).await?;
         for rcpt in to {

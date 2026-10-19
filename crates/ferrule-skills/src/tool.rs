@@ -319,7 +319,7 @@ impl Tool for ReadSkillFileTool {
 /// Resolve `rel` inside `skill_dir`, refusing anything that ends up
 /// outside it — lexically (`..`, absolute paths) and after following
 /// symlinks. The skill directory itself may be a symlink; that's fine, the
-/// check is against its resolved location.
+/// check is against its resolved location, which must still be a skill.
 fn resolve_in_skill(skill_dir: &Path, rel: &str) -> Result<PathBuf, CoreError> {
     let rel_path = Path::new(rel);
     if rel.is_empty()
@@ -335,6 +335,16 @@ fn resolve_in_skill(skill_dir: &Path, rel: &str) -> Result<PathBuf, CoreError> {
     }
     let base = dunce::canonicalize(skill_dir)
         .map_err(|e| failed(READ_TOOL, format!("skill directory: {e}")))?;
+    // A skill directory swapped for a link since it was found (a sandboxed
+    // command can do that to a project skill) would point the check at
+    // whatever it links to, `~/.ssh` say: only a directory that is still a
+    // skill is read from.
+    if !base.join("SKILL.md").is_file() {
+        return Err(failed(
+            READ_TOOL,
+            "the skill's directory no longer holds its SKILL.md".to_string(),
+        ));
+    }
     let target = dunce::canonicalize(base.join(rel_path))
         .map_err(|e| failed(READ_TOOL, format!("{rel}: {e}")))?;
     if !target.starts_with(&base) {
