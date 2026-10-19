@@ -255,6 +255,27 @@ impl Ran {
     }
 }
 
+/// A native driver's count of the history through its answer (see
+/// [`Agent::measure`]).
+struct Measured {
+    /// The messages it covers, and [`conversation_est`] of them then.
+    len: usize,
+    est: usize,
+    /// How far the count was past the guess.
+    over: usize,
+}
+
+/// What a [`Measured`] count is checked against: the guess for every
+/// message but tool results, which shortening rewrites without touching
+/// the blocks the count is for.
+fn conversation_est(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| m.role != crate::message::Role::Tool)
+        .map(Message::est_tokens)
+        .sum()
+}
+
 /// What cut a tool segment short.
 enum Interrupt {
     Halted(String),
@@ -308,6 +329,8 @@ pub struct Agent {
     /// compaction, since it's what says when the work is done.
     goal: Option<String>,
     pub messages: Vec<Message>,
+    /// What the last turn's call counted, when a native driver served it.
+    measured: Option<Measured>,
     pub usage: Usage,
     /// Set when the last run stopped before finishing (the step limit, a
     /// loop, a check that kept failing): why. Its answer is then a status,
@@ -369,6 +392,7 @@ impl Agent {
             run_observers: Vec::new(),
             goal: None,
             messages: Vec::new(),
+            measured: None,
             usage: Usage::default(),
             incomplete: None,
             speed: Default::default(),
@@ -566,18 +590,51 @@ impl Agent {
 
     fn est_context_tokens(&self) -> usize {
         // Every request carries the tool schemas too; an MCP server's can
-        // run to thousands of tokens. ponytail: replayed native blocks
-        // (signed thinking, encrypted reasoning) aren't counted; when that
-        // misses, the provider's "too long" compacts anyway (`call_turn`).
+        // run to thousands of tokens.
         let tools: usize = self
             .tools
             .definitions()
             .iter()
             .map(|t| (t.name.len() + t.description.len() + t.parameters.to_string().len()) / 4)
             .sum();
-        self.messages.iter().map(|m| m.est_tokens()).sum::<usize>()
+        let guess = self.messages.iter().map(|m| m.est_tokens()).sum::<usize>()
             + crate::vision::est_tokens(&self.messages)
-            + tools
+            + tools;
+        // Replayed native blocks (signed thinking, encrypted reasoning)
+        // can't be guessed from their bytes; the last call's count has
+        // them, for as long as the history it counted still stands.
+        let unseen = self
+            .measured
+            .as_ref()
+            .filter(|m| {
+                self.messages
+                    .get(..m.len)
+                    .is_some_and(|counted| conversation_est(counted) == m.est)
+            })
+            .map_or(0, |m| m.over);
+        guess + unseen
+    }
+
+    /// Notes a turn's call count: its prompt and its answer, which the
+    /// next prompt carries back. Anthropic and Responses replay their own
+    /// blocks there, and their usage is that one call's. ponytail: picked
+    /// by api name, so a new native driver is added here; the Claude Code
+    /// engine's (`claude-code`) usage is a whole `claude -p` run's, which
+    /// can take several calls.
+    fn measure(&mut self, answer: &Message, usage: &Usage) {
+        self.measured = None;
+        let native = answer
+            .native
+            .as_ref()
+            .is_some_and(|n| matches!(n.api.as_str(), "anthropic" | "responses"));
+        if native {
+            let counted = (usage.input_tokens + usage.output_tokens) as usize;
+            self.measured = Some(Measured {
+                len: self.messages.len(),
+                est: conversation_est(&self.messages),
+                over: counted.saturating_sub(self.est_context_tokens()),
+            });
+        }
     }
 
     /// The ledger, when its sink wants trace events this run.
@@ -1237,6 +1294,7 @@ impl Agent {
             }
 
             self.push(msg.clone());
+            self.measure(&msg, &resp.usage);
             if nudge {
                 warn!("a tool call arrived as text but wouldn't parse");
                 self.push(Message::user(textcall::NUDGE));
@@ -3427,6 +3485,83 @@ mod tests {
         let (err, _, seen) = run(vec![Err(too_long()), Ok(say("SUMMARY")), Err(too_long())]).await;
         assert_eq!(err.unwrap_err().class(), FailureClass::ContextTooLong);
         assert_eq!(seen.len(), 3, "once more, not again and again");
+    }
+
+    /// Answers a summary request with "SUMMARY", and turns from a script,
+    /// each with the input tokens the call counted.
+    struct Counting(Mutex<Vec<(Message, u64)>>);
+
+    #[async_trait::async_trait]
+    impl Provider for Counting {
+        fn name(&self) -> &str {
+            "counting"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let summary = req.messages[0]
+                .content
+                .as_deref()
+                .is_some_and(|c| c.starts_with(COMPACTION_TEMPLATE));
+            let (message, input_tokens) = match summary {
+                true => (say("SUMMARY"), 0),
+                false => self.0.lock().unwrap().remove(0),
+            };
+            Ok(CompletionResponse {
+                message,
+                usage: Usage {
+                    input_tokens,
+                    ..Usage::default()
+                },
+                stop_reason: None,
+            })
+        }
+    }
+
+    /// The guess sees a few dozen tokens; Responses counted 6,000 (the
+    /// reasoning it replays). The next turn compacts first instead of going
+    /// out over the trigger, and the count doesn't outlive the history it
+    /// covered. The Claude Code engine's count is a whole run's: no floor.
+    #[tokio::test]
+    async fn a_native_drivers_count_of_replayed_reasoning_moves_compaction_up() {
+        let run = |api: &'static str| async move {
+            let native = crate::message::NativeBlocks {
+                api: api.into(),
+                model: "m".into(),
+                items: vec![serde_json::json!({"type": "reasoning", "encrypted_content": "gAAA"})],
+            };
+            let provider = Arc::new(Counting(Mutex::new(vec![
+                (echo("hi").with_native(native), 6_000),
+                (say("done"), 0),
+            ])));
+            let mut profile = HarnessProfile::generic();
+            profile.context_window = 10_000;
+            profile.output_reserve = 0;
+            profile.compaction_threshold = 0.5;
+            let config = AgentConfig {
+                compaction_keep_last: 2,
+                ..Default::default()
+            };
+            let mut reg = ToolRegistry::new();
+            reg.register(Arc::new(EchoTool));
+            let mut agent =
+                Agent::new(provider, reg, profile, config, ToolContext::default(), None);
+            agent
+                .messages
+                .extend([Message::user("old request"), say("old answer")]);
+            let (tx, mut rx) = events();
+            assert_eq!(agent.run("now", tx).await.unwrap(), "done");
+            drain(&mut rx).into_iter().find_map(|e| match e {
+                AgentEvent::Compacted {
+                    est_tokens_before,
+                    est_tokens_after,
+                    ..
+                } => Some((est_tokens_before, est_tokens_after)),
+                _ => None,
+            })
+        };
+        let (before, after) = run("responses").await.expect("compacted");
+        assert!(before >= 6_000, "{before}");
+        assert!(after < 5_000, "{after}");
+        assert_eq!(run("claude-code").await, None);
     }
 
     /// A tool with a long schema.

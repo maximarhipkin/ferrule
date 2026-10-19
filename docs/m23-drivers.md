@@ -166,9 +166,16 @@ GPT-5.6 family, which renders earlier turns' compatible reasoning, and
 `reasoning_items` example, "Caching": including it "is harmless"). So the
 Responses driver drops rule 3 and sends nothing for `reasoning.context`:
 GPT-5.6 keeps its reasoning at every user message, and the previous loop
-no longer changes bytes. The price on GPT-5.6 is context: the rendered
-reasoning isn't in the estimate (`est_context_tokens`), so the
-provider's "too long" compacts it. OpenAI documents no binding of
+no longer changes bytes. The price on GPT-5.6 is context. The ~4
+chars/token guess can't count encrypted items, so the estimate
+(`est_context_tokens`) adds what the last turn's call counted past the
+guess: `input_tokens + output_tokens`, its prompt plus the answer the
+next prompt carries back. That holds only while the history it counted
+is unchanged (compaction or truncation ends it; shortened tool results
+don't), and only for an `anthropic` or `responses` answer: the Claude
+Code engine's usage covers a whole `claude -p` run. When the estimate
+still misses (the first turn, or right after a fold), the provider's
+"too long" compacts. OpenAI documents no binding of
 encrypted reasoning to its prefix; if one appears, the net is the
 driver's own: a 400 or 404 naming reasoning, `encrypted` or `rs_` is
 retried once without reasoning items (`reasoning_rejected`).
