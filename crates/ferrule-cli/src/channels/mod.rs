@@ -4,6 +4,7 @@
 //! the dashboard) asks here, so a new channel can't be half wired.
 
 pub mod card;
+pub mod discord_slack;
 pub mod email;
 pub mod http;
 pub mod matrix;

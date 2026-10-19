@@ -2705,8 +2705,8 @@
   // (secrets write-only: a card only says whether each is set), Test
   // against the service with what's typed, Save, Remove, and the guide
   // with direct links. Telegram has its own card (M44 §4): a token, a test, a
-// wait for the first message and an Allow for its chat. Discord and Slack
-// stay with `ferrule setup`.
+  // wait for the first message and an Allow for its chat. Discord and Slack
+  // got their cards in M50.
   const CHANNEL_STATE = {
     on: ["running", "ok"], problem: ["problem", "bad"], stale: ["not polling", "bad"],
     restart: ["restart needed", "warn"], set: ["set up", "ok"], off: ["off", null],
@@ -2894,7 +2894,7 @@
         test.disabled = false; test.textContent = "Test";
         const old = box.querySelector(".said.test");
         const now = this.said[x.name];
-        const node = el("div", { class: "said test " + (now.ok ? "ok" : "bad") + " msg", dir: "auto", text: now.said });
+        const node = el("div", { class: "said test " + (now.ok ? "ok" : "bad") }, linkify(now.said));
         if (old) old.replaceWith(node); else box.insertBefore(node, box.lastChild);
       };
       const save = el("button", { class: "primary", text: x.configured ? "Save" : "Save and turn on" });
@@ -2909,7 +2909,7 @@
       };
       // Element.append would print a null as the word "null".
       box.append(fields);
-      if (said) box.append(el("div", { class: "said test " + (said.ok ? "ok" : "bad") + " msg", dir: "auto", text: said.said }));
+      if (said) box.append(el("div", { class: "said test " + (said.ok ? "ok" : "bad") }, linkify(said.said)));
       box.append(el("div", { class: "row" }, test, save,
           x.configured ? btn("Remove", "channels/remove", { name: x.name }, "danger") : null),
         el("p", { class: "muted small", text: "Tokens go to the secrets file, never back to this page, and the model never sees them." }));

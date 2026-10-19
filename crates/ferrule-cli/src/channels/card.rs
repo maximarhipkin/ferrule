@@ -85,9 +85,20 @@ pub struct Spec {
     pub check: fn(&toml::Table) -> Result<(), String>,
 }
 
+impl Spec {
+    /// Discord's and Slack's settings sit in `[gateway]` itself
+    /// (`discord_token_env`, …), so their field keys are the full names and
+    /// their table is `[gateway]`'s keys that start with `<name>_`.
+    pub fn flat(&self) -> bool {
+        matches!(self.name, "discord" | "slack")
+    }
+}
+
 /// The channels with a form on the dashboard; each channel's part adds
-/// its own. Telegram, Discord and Slack keep `ferrule setup`'s flow.
+/// its own. Telegram has its own walk-through (`dashboard/telegram.rs`).
 pub const CARDS: &[&Spec] = &[
+    &super::discord_slack::DISCORD,
+    &super::discord_slack::SLACK,
     &super::whatsapp::SPEC,
     &super::matrix::SPEC,
     &super::mattermost::SPEC,
@@ -206,11 +217,23 @@ pub fn merge(
     Ok((table, secrets))
 }
 
-/// The table `[gateway.<name>]` in `cfg_path`, as it is.
+/// The table `[gateway.<name>]` in `cfg_path`, as it is; for a flat card,
+/// `[gateway]`'s own `<name>_…` keys.
 pub fn current(cfg_path: &std::path::Path, name: &str) -> Option<toml::Table> {
     let text = std::fs::read_to_string(cfg_path).ok()?;
     let doc: toml::Table = toml::from_str(&text).ok()?;
-    doc.get("gateway")?.get(name)?.as_table().cloned()
+    let gateway = doc.get("gateway")?;
+    if spec(name).is_some_and(Spec::flat) {
+        let prefix = format!("{name}_");
+        let own: toml::Table = gateway
+            .as_table()?
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        return (!own.is_empty()).then_some(own);
+    }
+    gateway.get(name)?.as_table().cloned()
 }
 
 /// `[connections] relay_url` in `cfg_path`.
@@ -280,7 +303,12 @@ pub fn save(spec: &Spec, place: &Place, values: &Values) -> Result<(), String> {
 
 fn write_table(place: &Place, spec: &Spec, table: &toml::Table) -> Result<()> {
     let mut t = crate::setup::Target::load(place.config.clone())?;
-    let tbl = crate::setup::table(t.root(), &["gateway", spec.name])?;
+    let path: &[&str] = if spec.flat() {
+        &["gateway"]
+    } else {
+        &["gateway", spec.name]
+    };
+    let tbl = crate::setup::table(t.root(), path)?;
     for (k, v) in table {
         crate::setup::put(tbl, k, edit_value(v)?);
     }
@@ -315,7 +343,16 @@ fn edit_value(v: &toml::Value) -> Result<toml_edit::Value> {
 pub fn remove(place: &Place, name: &str, cfg_before: &Config) -> Result<Vec<String>> {
     let envs = super::secret_envs_of(cfg_before, name);
     let mut t = crate::setup::Target::load(place.config.clone())?;
-    crate::setup::table(t.root(), &["gateway"])?.remove(name);
+    let gateway = crate::setup::table(t.root(), &["gateway"])?;
+    match spec(name).filter(|s| s.flat()) {
+        // The card's own keys; the rest of `[gateway]` stays.
+        Some(s) => s.fields.iter().for_each(|f| {
+            gateway.remove(f.key);
+        }),
+        None => {
+            gateway.remove(name);
+        }
+    }
     t.save()?;
     let after = t.config()?;
     let mut forgot = Vec::new();
