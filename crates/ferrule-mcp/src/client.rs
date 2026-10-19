@@ -811,8 +811,22 @@ fn save_media(
     let dir = workspace.join(MEDIA_DIR);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    // This runs in ferrule's own process, not the sandbox, and a sandboxed
+    // command can make links in the workspace: a media dir that resolves
+    // outside it is refused, and the file is new (never a link followed).
+    let inside = std::fs::canonicalize(&dir)
+        .ok()
+        .zip(std::fs::canonicalize(workspace).ok())
+        .is_some_and(|(d, w)| d.starts_with(w));
+    if !inside {
+        return Err(format!("{} leads outside the workspace", dir.display()));
+    }
     let path = dir.join(media_file_name(kind, mime));
-    std::fs::write(&path, &bytes)
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes))
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
     Ok(SavedContent {
         path,
