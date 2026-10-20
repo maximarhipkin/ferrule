@@ -161,9 +161,24 @@ pub fn build(b: Build<'_>) -> Agent {
         b.sandbox.egress().cloned(),
     )));
     let hidden = b.sandbox.read_deny_list(b.workspace);
-    registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
+    // M57.3: as in the CLI; the naive harness has no stale-file guard.
+    let stamps = ferrule_core::FileStamps::default();
+    let (read, write, edit) = (
+        ReadFileTool::hiding(hidden.clone()),
+        WriteFileTool::hiding(hidden.clone()),
+        EditFileTool::hiding(hidden.clone()),
+    );
+    let (read, write, edit) = match b.variant {
+        Variant::Naive => (read, write, edit),
+        _ => (
+            read.tracking(stamps.clone()),
+            write.tracking(stamps.clone()),
+            edit.tracking(stamps.clone()),
+        ),
+    };
+    registry.register(Arc::new(read));
+    registry.register(Arc::new(write));
+    registry.register(Arc::new(edit));
     registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
     if b.edit_tools == EditTools::WriteOnly {
         registry.remove("edit_file");
@@ -252,6 +267,9 @@ pub fn build(b: Build<'_>) -> Agent {
         b.transcript,
     )
     .with_system_prompt(system);
+    if b.variant != Variant::Naive {
+        agent = agent.with_file_stamps(stamps);
+    }
     if let Some(map) = repo_map {
         agent = agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(
             map,

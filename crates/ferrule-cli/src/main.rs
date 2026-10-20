@@ -1418,9 +1418,18 @@ fn build_agent_from(
     // its read denies themselves, or a workspace that contains the data
     // dir (or is `~`) would let `read_file` hand over the saved keys.
     let hidden = sandbox.read_deny_list(&tool_ctx.workspace);
-    registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
+    // M57.3: what this agent last read or wrote, for `edit_file`'s
+    // stale-file guard.
+    let stamps = ferrule_core::FileStamps::default();
+    registry.register(Arc::new(
+        ReadFileTool::hiding(hidden.clone()).tracking(stamps.clone()),
+    ));
+    registry.register(Arc::new(
+        WriteFileTool::hiding(hidden.clone()).tracking(stamps.clone()),
+    ));
+    registry.register(Arc::new(
+        EditFileTool::hiding(hidden.clone()).tracking(stamps.clone()),
+    ));
     registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
     // M34: a remote workspace's shell and file tools replace the local
     // ones. ferrule's sandbox doesn't reach there, so whatever would hold
@@ -1682,7 +1691,8 @@ fn build_agent_from(
     // The memory block is picked on the first run, from the session's goal.
     .with_session_recall(Arc::new(
         memory_tools::GoalRecall::new(memory_db).with_embedding(embedding),
-    ));
+    ))
+    .with_file_stamps(stamps);
     agent.set_effort(child_effort);
     if let (Some(map), tokens @ 1..) = (repo_map, cfg.agent.repo_map_tokens) {
         agent =

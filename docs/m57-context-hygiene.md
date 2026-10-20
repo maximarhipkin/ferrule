@@ -132,3 +132,62 @@ it.
 changing `output_config.effort` between turns costs Anthropic prompt-cache
 hits isn't stated in Anthropic's docs; the ledger's cache rows on a run
 with `effort` set would show it.
+
+## A stale-file guard on `edit_file` (M57.3)
+
+`edit_file` read the file and applied the SEARCH blocks to whatever was
+there. If a command, a hook, a sub-agent in the same workspace or an MCP
+tool had changed the file since the model read it, the edit was planned
+against bytes that were gone. An exact SEARCH usually failed then, but
+one that still matched could land in a file the model no longer knew.
+Claude Code refuses such an edit and asks for a re-read
+([tools reference](https://code.claude.com/docs/en/tools-reference)).
+
+**The map** (`FileStamps`, `crates/ferrule-core/src/stamps.rs`). Each
+agent has one, shared by its `read_file`, `write_file` and `edit_file`
+(`.tracking(stamps)`, in `build_agent_from`). It keeps, per resolved
+path, the length and an FNV-64 hash of the bytes the agent last read or
+wrote there (and the file's modified time, which only saves a re-read
+when nothing touched the file). A sub-agent has its own map, so what a
+child changes is a change to its parent.
+
+**The refusal** (`edit_path`, `crates/ferrule-tools/src/edit.rs`).
+`edit_file` compares the bytes it just read with the stamp. When they
+differ it writes nothing and says so: the file changed on disk since you
+last read it; re-read it with `read_file`, then make the edit against
+what it holds now. The refusal stands until the model reads the file
+again (or replaces it with `write_file`): a refused or failed edit
+doesn't count as a read. A successful edit stamps the bytes it wrote.
+
+**No stamp, no guard.** A file the model never read with `read_file`
+(it saw it through the shell, `code_search` or the repo map, or not at
+all) stays editable as before: SEARCH has to match exactly either way.
+A file `read_file` can't read as UTF-8 has no stamp either.
+
+**What doesn't count as a change.** The agent's own hooks and checks
+aren't someone else: what they change is taken as seen
+(`FileStamps::adopting`, around `Agent::fire` and the checks in
+`run_checks`). Before they run, the agent notes which stamped files
+still match the disk; after, it re-stamps those with what is there now.
+A file that was already stale stays stale. So:
+- the built-in per-edit lint (M29) only checks (`rustfmt --check`,
+  `ruff check`, `gofmt -l`, `eslint`, `tsc --noEmit`) and writes nothing,
+  and an owner's PostToolUse hook that formats the file it follows is
+  adopted;
+- a verify command that formats (`cargo fmt && cargo test`) doesn't make
+  the next edit refuse.
+
+A command the model runs itself with `shell` (`sed -i`, `cargo fmt`,
+`git checkout`) is a change: its view of the file is stale, so the next
+edit asks for a re-read.
+
+**Where it's on.** Every agent `build_agent_from` makes (`ferrule run`,
+`ferrule chat`, the gateway's lanes, sub-agents), and the eval's
+engineered variants (not the naive one). The remote file tools of an SSH
+workspace (M34) don't track: their `edit_file` keeps its own guard,
+which refuses a write if the file changed between its read and its
+write, but not since the model's last `read_file`.
+
+**Open.** A file changed by a sub-agent while the parent's hooks or
+checks run is adopted with them. That window is the length of a hook or
+a check run (a long test suite, say). Not measured on the eval suite.

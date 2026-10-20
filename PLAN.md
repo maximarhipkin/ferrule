@@ -6833,3 +6833,43 @@ scored best.
 Anthropic's `output_config.effort` costs cache hits isn't documented by
 Anthropic; the ledger's cache rows on a run with `effort` set would show
 it. The owner's M19 spend caps aren't reported to the model.
+
+### 2026-10-21 — M57.3: a stale-file guard on `edit_file` (Claude, Opus 5.5)
+
+**Why.** `edit_file` applied SEARCH blocks to whatever the file held.
+A command, a hook, a sub-agent in the same workspace or an MCP tool
+could have changed it since the model read it, and an exact SEARCH that
+still matched landed in a file the model no longer knew.
+
+**What changed.**
+- `ferrule-core/src/stamps.rs` (new): `FileStamps`, a shared map from a
+  resolved path to the length, FNV-64 hash and modified time of the
+  bytes the agent last read or wrote there. `record`, `changed`,
+  `current` (the stamped files still matching the disk), `adopt` and
+  `adopting` (run work, then re-stamp what it changed in the files that
+  were current before it).
+- `ferrule-tools`: `ReadFileTool`, `WriteFileTool` and `EditFileTool`
+  take `.tracking(stamps)`. `read_file` and `write_file` stamp what they
+  read or wrote; `edit_file` (`edit_path`) refuses, writing nothing,
+  when the bytes it just read differ from the stamp ("changed on disk
+  since you last read it … re-read it with read_file"), and stamps what
+  it wrote. A never-read file has no stamp and stays editable.
+- `agent.rs`: `Agent::with_file_stamps`; `fire` (every hook event) and
+  `run_checks` run under `adopting`, so a formatting hook or a verify
+  command that formats (`cargo fmt && cargo test`) doesn't cause a
+  refusal. The built-in lint (M29) only checks and writes nothing.
+- Wired in `build_agent_from` (every agent: run, chat, gateway lanes,
+  sub-agents) and in the eval's engineered variants (`variant.rs`; the
+  naive one has no guard). The SSH remote tools don't track; their
+  `edit_file` keeps its own read-to-write guard.
+- Docs: `m57-context-hygiene.md` (new section), `m29-edit-mechanics.md`
+  (the errors list), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** A file a sub-agent changes while the parent's hooks or checks
+run is adopted with them (the window is one hook or check run). Not
+measured on the eval suite.

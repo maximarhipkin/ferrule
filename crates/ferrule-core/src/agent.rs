@@ -369,6 +369,9 @@ pub struct Agent {
     effort: Option<String>,
     /// M57.2: this run's next turn is one the effort is raised for.
     boost_now: bool,
+    /// M57.3: what the file tools last read or wrote; what the agent's own
+    /// hooks and checks change in them is adopted, so it isn't stale.
+    stamps: Option<crate::stamps::FileStamps>,
 }
 
 impl Agent {
@@ -419,6 +422,7 @@ impl Agent {
             compaction_provider: None,
             effort: None,
             boost_now: false,
+            stamps: None,
         }
     }
 
@@ -588,6 +592,14 @@ impl Agent {
         self.effort = effort;
     }
 
+    /// M57.3: the map this agent's file tools share for `edit_file`'s
+    /// stale-file guard. A file its hooks or checks change (a formatter in
+    /// the verify command) is taken as seen, not as changed underneath it.
+    pub fn with_file_stamps(mut self, stamps: crate::stamps::FileStamps) -> Self {
+        self.stamps = Some(stamps);
+        self
+    }
+
     /// Adds a tool after construction (tools bound to this agent's identity
     /// are made once its id is known).
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
@@ -735,7 +747,11 @@ impl Agent {
         if !self.hooks.has(event) {
             return Fired::default();
         }
-        let fired = self.hooks.fire(event, input, &self.tool_ctx).await;
+        let fire = self.hooks.fire(event, input, &self.tool_ctx);
+        let fired = match &self.stamps {
+            Some(stamps) => stamps.adopting(fire).await,
+            None => fire.await,
+        };
         for r in &fired.reports {
             if let Some(error) = &r.error {
                 warn!(event = %r.event, command = %r.command, "hook failed: {error}");
@@ -758,8 +774,16 @@ impl Agent {
     }
 
     /// Runs the built-in checks in order: the first that fails, with its
-    /// output. They keep the verify events of before hooks.
+    /// output. They keep the verify events of before hooks. What they
+    /// change in files the agent had current is adopted (M57.3).
     async fn run_checks(&self, tx: &mpsc::Sender<AgentEvent>) -> Option<(String, String)> {
+        match &self.stamps {
+            Some(stamps) => stamps.adopting(self.run_checks_now(tx)).await,
+            None => self.run_checks_now(tx).await,
+        }
+    }
+
+    async fn run_checks_now(&self, tx: &mpsc::Sender<AgentEvent>) -> Option<(String, String)> {
         let checks: Vec<Hook> = self
             .hooks
             .hooks()

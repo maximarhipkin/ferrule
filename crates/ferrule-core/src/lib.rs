@@ -20,6 +20,7 @@ pub mod profile;
 pub mod provider;
 pub mod repairs;
 pub mod routing;
+pub mod stamps;
 pub mod stuck;
 pub mod textcall;
 pub mod tool;
@@ -48,6 +49,7 @@ pub use provider::{
     CompletionRequest, CompletionResponse, Delta, DeltaSink, FailOver, Provider, Served,
 };
 pub use routing::{Escalation, Ladder, Policy, RouteTag, Signal, Tier, Tiered};
+pub use stamps::FileStamps;
 pub use tool::{
     DeferTools, Tool, ToolContext, ToolOutput, ToolOutputFile, ToolRegistry, ToolSource,
     TOOL_SEARCH,

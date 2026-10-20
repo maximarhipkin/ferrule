@@ -1200,7 +1200,10 @@ Current State; numbers are claimed there before anything is built.
     defer_tools`); M57.2, a note after the sixth change to one file
     without a passing check, step and token budget notes at a quarter
     and a tenth left, raised effort on a run's first turn and after a
-    failed check (`[agent] effort_boost`), and `spawn_agent {effort}`.
+    failed check (`[agent] effort_boost`), and `spawn_agent {effort}`;
+    M57.3, `edit_file` refuses a file changed on disk since the agent
+    last read or wrote it, and asks for a re-read (the agent's own hooks
+    and checks don't count).
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
     the core, eval as the gate.

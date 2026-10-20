@@ -93,6 +93,9 @@ and gives the next step:
   and the fix: to prepend or append, SEARCH the first or last lines.
 - The file is missing and SEARCH is non-empty: the error says to create the
   file with an empty SEARCH or with `write_file`.
+- The file changed on disk since the agent last read or wrote it (M57.3,
+  [m57-context-hygiene.md](m57-context-hygiene.md#a-stale-file-guard-on-edit_file-m573)):
+  the error says to re-read it with `read_file` and edit what it holds now.
 
 ### Files: line endings, encodings, BOM
 
