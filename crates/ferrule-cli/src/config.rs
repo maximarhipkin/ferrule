@@ -741,7 +741,8 @@ pub struct Config {
     /// M24: where `ferrule model eval` and the dashboard find the suite.
     #[serde(default)]
     pub eval: EvalConfig,
-    /// M28: the `web_search` tool, off unless a provider is set.
+    /// M28: the `web_search` tool; M56.8: keyless DuckDuckGo unless a
+    /// provider is set (or `provider = "off"`).
     #[serde(default)]
     pub web_search: WebSearchConfig,
     /// M51: image and video generation (docs/m51-media.md), off unless a
@@ -1161,7 +1162,8 @@ impl MemoryConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebSearchConfig {
-    /// `brave`, `tavily`, `searxng` or `exa`; unset: no `web_search` tool.
+    /// `brave`, `tavily`, `searxng`, `exa` or `duckduckgo`; unset: keyless
+    /// DuckDuckGo (M56.8); `"off"`: no `web_search` tool.
     pub provider: Option<String>,
     /// The env var holding the API key. Bound to the endpoint's host in
     /// `[secrets]` unless it's there already.
@@ -1227,13 +1229,17 @@ impl Default for MediaConfig {
 }
 
 impl WebSearchConfig {
-    /// The checked provider, or `None` when search is off.
+    /// The checked provider, or `None` when search is off. Unset is
+    /// DuckDuckGo, which needs no key (M56.8).
     pub fn provider(&self) -> Result<Option<SearchProvider>> {
         let Some(name) = self.provider.as_deref() else {
-            return Ok(None);
+            return Ok(Some(SearchProvider::Duckduckgo));
         };
+        if matches!(name, "off" | "none") {
+            return Ok(None);
+        }
         let p = SearchProvider::parse(name).ok_or_else(|| {
-            anyhow!("[web_search] provider = \"{name}\": expected brave, tavily, searxng or exa")
+            anyhow!("[web_search] provider = \"{name}\": expected brave, tavily, searxng, exa, duckduckgo or off")
         })?;
         Ok(Some(p))
     }
@@ -1615,8 +1621,9 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # trigger_budget_tokens = 4000   # their combined size
 # project_triggers = false   # let the workspace's skills trigger too
 
-# [web_search]              # The web_search tool (docs/web-search.md). Off until a
-# provider = "brave"         # provider is set: brave, tavily, exa or searxng.
+# [web_search]              # The web_search tool (docs/web-search.md). With no
+# provider = "brave"         # provider: keyless DuckDuckGo (light use, rate-limited).
+#                            # Or brave, tavily, exa, searxng; "off" for none.
 # api_key_env = "BRAVE_API_KEY"  # Bound to the endpoint's host through the proxy;
 #                            # the model and the sandbox only ever see a placeholder.
 # endpoint = "https://api.search.brave.com"  # required for searxng
@@ -2197,10 +2204,15 @@ model = "gpt-5.5"
     }
 
     #[test]
-    fn web_search_is_off_by_default_and_checked_when_on() {
-        let off: Config = toml::from_str("").unwrap();
+    fn web_search_is_keyless_by_default_and_checked_when_on() {
+        // M56.8: no provider is DuckDuckGo, with no key to bind.
+        let keyless: Config = toml::from_str("").unwrap();
+        let s = keyless.web_search.settings().unwrap().unwrap();
+        assert_eq!(s.provider, SearchProvider::Duckduckgo);
+        assert!(s.key_env.is_none());
+        assert!(keyless.finish().unwrap().secrets.is_empty());
+        let off: Config = toml::from_str("[web_search]\nprovider = \"off\"").unwrap();
         assert!(off.web_search.settings().unwrap().is_none());
-        assert!(off.finish().unwrap().secrets.is_empty());
         let bad = |t: &str| {
             let c: Config = toml::from_str(t).unwrap();
             c.finish().unwrap_err().to_string()

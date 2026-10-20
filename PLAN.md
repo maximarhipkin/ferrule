@@ -6682,3 +6682,58 @@ reply either.
 Telegram accepts a given WebM or MOV through `sendVideo` is left to its
 400 and the document fallback. A video message's sound isn't
 transcribed. Slack file reading needs the owner to add `files:read`.
+
+### 2026-10-21 — M56.8: keyless web search by default (Claude, Opus 5.5)
+
+**Why.** `web_search` was off until a key or a SearXNG instance was set,
+so "look it up" failed on a fresh install.
+
+**What changed.**
+- `ferrule-tools/src/search.rs`: `SearchProvider::Duckduckgo`
+  (`https://html.duckduckgo.com` + `/html/`, no key; `kp` for safe
+  search, `region` as `kl`, `language` ignored). `parse_ddg` reads the
+  HTML page without a parser crate: each `result__a` link (its `uddg`
+  redirect undone; `/y.js` ads and non-http targets skipped) and the
+  `result__snippet` that follows it. A page with no results and no
+  result markup (DuckDuckGo's challenge when it limits automated
+  searches) is an error saying so, not an empty answer; no retry.
+  Results go through the same `render`: fenced, escaped,
+  `untrusted="true"`.
+- Fallback: `WebSearchTool::new` keeps `SearchSettings::keyless()` for
+  any other provider. When that provider's search fails (anything but the
+  gate), the query goes to DuckDuckGo through `counted()`, which asks the
+  gate first (so `max_searches_per_day` and the kill switch count the
+  fallback as a search) and records its own `SearchCall`; the answer
+  starts with "<provider> failed (<why>); these results are DuckDuckGo's,
+  keyless." If both fail, the error names both. `without_fallback()`
+  for tests.
+- `ferrule-cli`: `[web_search]` with no `provider` is DuckDuckGo;
+  `provider = "off"` (or `"none"`) takes the tool away; the error lists
+  the new names. `web_search::tool` records the fallback at $0 whatever
+  `price_per_search_usd` says. `egress::endpoints` adds the search
+  endpoint only for a provider named in the config, so the implicit
+  default obeys `[egress] default = "deny"` like `web_fetch`. Doctor
+  reports DuckDuckGo without a probe (it would spend one of the searches
+  it tolerates). Setup offers "DuckDuckGo, no key (the default)", and
+  "Turn it off" now writes `provider = "off"` (removing the table means
+  the default).
+- Docs: `web-search.md` (the table, "Keyless search, and its limits":
+  not an API, no terms granting automated use, rate limits and the
+  challenge page, markup that can change, egress), README's tools row,
+  the roadmap, the sample config.
+
+**Tests changed, none added.** `config::web_search_is_off_by_default…`
+became `…keyless_by_default…` (default is DuckDuckGo; `"off"` is
+none). `ferrule-proxy`'s search tests build their tool with
+`without_fallback()`, so their error cases don't leave for the real
+DuckDuckGo, and the mock's provider `match` names `Duckduckgo` as
+unreachable.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not run against the real DuckDuckGo: the parser follows its
+current markup from memory of the page, and no live test was added (the
+owner's rule). Region codes differ by provider, so a fallback drops
+`region` and `language`. Whether owner mode (M54) should gate the
+default is that session's call.

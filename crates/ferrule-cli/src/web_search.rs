@@ -1,6 +1,9 @@
 //! M28: the `web_search` tool as the CLI builds it: its key is a proxy
 //! placeholder, each search is a ledger row, and the daily cap and the
-//! kill switch are asked first (docs/web-search.md).
+//! kill switch are asked first (docs/web-search.md). M56.8: with no
+//! provider it's keyless DuckDuckGo, through the same egress as
+//! `web_fetch`; a configured provider that fails falls back to it, through
+//! the same gate.
 
 use crate::config::Config;
 use crate::ledger::LedgerTag;
@@ -8,7 +11,7 @@ use anyhow::Result;
 use ferrule_core::LedgerRecord;
 use ferrule_proxy::Broker;
 use ferrule_sandbox::Egress;
-use ferrule_tools::search::SearchCall;
+use ferrule_tools::search::{SearchCall, SearchProvider};
 use ferrule_tools::WebSearchTool;
 use ferrule_trust::meter::SEARCH_CALL_KIND;
 use ferrule_trust::Hub;
@@ -95,6 +98,9 @@ pub fn tool(
     let sink = ledger.sink.clone();
     let (shape, origin) = (ledger.task_shape.clone(), ledger.origin.clone());
     let record = Arc::new(move |call: SearchCall| {
+        // M56.8: the keyless fallback costs nothing, whatever the
+        // configured provider's price.
+        let price = price.filter(|_| call.provider != SearchProvider::Duckduckgo.name());
         sink.record(search_record(
             &session_id,
             &shape,

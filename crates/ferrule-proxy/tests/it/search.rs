@@ -126,7 +126,10 @@ fn tool(p: SearchProvider, port: u16, s: &Setup, keyed: bool) -> (WebSearchTool,
     }
     let calls: Calls = Arc::default();
     let log = calls.clone();
+    // M56.8: each provider's own answers and errors, not the keyless
+    // fallback's (which would leave for the real DuckDuckGo).
     let t = WebSearchTool::new(settings, Some(s.egress.clone()))
+        .without_fallback()
         .with_recorder(Arc::new(move |c| log.lock().unwrap().push(c)));
     (t, calls)
 }
@@ -158,6 +161,8 @@ fn provider_answer(p: SearchProvider, keyed: bool) -> impl Fn(&Seen) -> Reply {
                  "highlights": ["Learn Rust & more"], "publishedDate": "2026-01-02"},
                 {"title": "Crates", "url": "https://crates.io/", "text": "registry"},
             ]}),
+            // M56.8: an HTML page, not JSON; no test here searches it.
+            SearchProvider::Duckduckgo => unreachable!("DuckDuckGo isn't mocked here"),
         };
         reply(
             StatusCode::OK,
@@ -265,6 +270,7 @@ async fn a_search_that_skips_the_proxy_fails() {
     let settings =
         SearchSettings::new(SearchProvider::Searxng, format!("https://127.0.0.1:{port}"));
     let err = WebSearchTool::new(settings, None)
+        .without_fallback()
         .call(json!({"query": "rust"}), &ToolContext::default())
         .await
         .unwrap_err()

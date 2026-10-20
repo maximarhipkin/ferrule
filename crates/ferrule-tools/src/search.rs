@@ -1,5 +1,7 @@
 //! `web_search` (M28): the top results from a search API — Brave, Tavily,
 //! SearXNG or Exa — as a fenced, escaped block trimmed to a token budget.
+//! M56.8: with no provider set, DuckDuckGo's keyless HTML page, which is
+//! also where a configured provider falls back to when it fails.
 //!
 //! The tool never holds a real key: `key` is the credential proxy's
 //! placeholder, and requests go out through `egress`, which swaps the real
@@ -30,10 +32,19 @@ pub enum SearchProvider {
     Tavily,
     Searxng,
     Exa,
+    /// M56.8: DuckDuckGo's HTML results page, no key. Not an API: it
+    /// limits automated searches, so it's for light use.
+    Duckduckgo,
 }
 
 impl SearchProvider {
-    pub const ALL: [SearchProvider; 4] = [Self::Brave, Self::Tavily, Self::Searxng, Self::Exa];
+    pub const ALL: [SearchProvider; 5] = [
+        Self::Brave,
+        Self::Tavily,
+        Self::Searxng,
+        Self::Exa,
+        Self::Duckduckgo,
+    ];
 
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.name() == s)
@@ -45,6 +56,7 @@ impl SearchProvider {
             Self::Tavily => "tavily",
             Self::Searxng => "searxng",
             Self::Exa => "exa",
+            Self::Duckduckgo => "duckduckgo",
         }
     }
 
@@ -54,18 +66,20 @@ impl SearchProvider {
             Self::Brave => Some("https://api.search.brave.com"),
             Self::Tavily => Some("https://api.tavily.com"),
             Self::Exa => Some("https://api.exa.ai"),
+            Self::Duckduckgo => Some("https://html.duckduckgo.com"),
             Self::Searxng => None,
         }
     }
 
     /// Whether it needs a key. A SearXNG instance may take one.
     pub fn needs_key(self) -> bool {
-        self != Self::Searxng
+        !matches!(self, Self::Searxng | Self::Duckduckgo)
     }
 
     fn path(self) -> &'static str {
         match self {
             Self::Brave => "/res/v1/web/search",
+            Self::Duckduckgo => "/html/",
             _ => "/search",
         }
     }
@@ -101,6 +115,12 @@ impl SearchProvider {
                 if safe {
                     out.push("safe_search");
                 }
+                if s.language.is_some() {
+                    out.push("language");
+                }
+            }
+            // `region` is its `kl` ("us-en", "de-de"), language included.
+            Self::Duckduckgo => {
                 if s.language.is_some() {
                     out.push("language");
                 }
@@ -143,6 +163,15 @@ impl SafeSearch {
             Self::Strict => 2,
         }
     }
+
+    /// DuckDuckGo's `kp`.
+    fn ddg(self) -> &'static str {
+        match self {
+            Self::Off => "-2",
+            Self::Moderate => "-1",
+            Self::Strict => "1",
+        }
+    }
 }
 
 /// Everything a search needs, resolved from `[web_search]`.
@@ -179,6 +208,24 @@ impl SearchSettings {
             timeout: Duration::from_secs(20),
         }
     }
+
+    /// M56.8: DuckDuckGo with these limits and safe search, for when the
+    /// configured provider fails. Region and language are the provider's
+    /// own codes, so they aren't carried over.
+    pub fn keyless(&self) -> Self {
+        Self {
+            max_results: self.max_results,
+            safe_search: self.safe_search,
+            max_output_tokens: self.max_output_tokens,
+            timeout: self.timeout,
+            ..Self::new(
+                SearchProvider::Duckduckgo,
+                SearchProvider::Duckduckgo
+                    .default_endpoint()
+                    .unwrap_or_default(),
+            )
+        }
+    }
 }
 
 /// One search that went out, for the ledger.
@@ -209,16 +256,28 @@ pub struct WebSearchTool {
     egress: Option<Egress>,
     gate: Option<SearchGate>,
     record: Option<SearchRecorder>,
+    /// M56.8: where a failed search goes next (keyless DuckDuckGo); `None`
+    /// when DuckDuckGo is the provider already.
+    fallback: Option<SearchSettings>,
 }
 
 impl WebSearchTool {
     pub fn new(settings: SearchSettings, egress: Option<Egress>) -> Self {
+        let fallback =
+            (settings.provider != SearchProvider::Duckduckgo).then(|| settings.keyless());
         Self {
             settings,
             egress,
             gate: None,
             record: None,
+            fallback,
         }
+    }
+
+    /// No fallback when the configured provider fails (tests).
+    pub fn without_fallback(mut self) -> Self {
+        self.fallback = None;
+        self
     }
 
     pub fn with_gate(mut self, gate: SearchGate) -> Self {
@@ -239,12 +298,11 @@ impl WebSearchTool {
     }
 
     fn request(
-        &self,
+        s: &SearchSettings,
         client: &reqwest::Client,
         query: &str,
         count: usize,
     ) -> reqwest::RequestBuilder {
-        let s = &self.settings;
         let url = s.provider.search_url(&s.endpoint);
         let key = s.key.as_deref();
         let req = match s.provider {
@@ -313,13 +371,27 @@ impl WebSearchTool {
                     None => req,
                 }
             }
+            SearchProvider::Duckduckgo => {
+                let mut q = vec![
+                    ("q", query.to_string()),
+                    ("kp", s.safe_search.ddg().to_string()),
+                ];
+                if let Some(r) = &s.region {
+                    q.push(("kl", r.clone()));
+                }
+                client.get(url).query(&q).header("Accept", "text/html")
+            }
         };
         req.header("User-Agent", concat!("ferrule/", env!("CARGO_PKG_VERSION")))
     }
 
     /// The search itself: `Ok` with the hits, or the error kind and message.
-    async fn search(&self, query: &str, count: usize) -> Result<Vec<Hit>, (String, String)> {
-        let s = &self.settings;
+    async fn search(
+        &self,
+        s: &SearchSettings,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<Hit>, (String, String)> {
         let name = s.provider.name();
         let client = egress::client_builder(self.egress.as_ref())
             .and_then(|b| b.timeout(s.timeout).build())
@@ -329,8 +401,7 @@ impl WebSearchTool {
                     format!("the credential proxy's settings: {e}"),
                 )
             })?;
-        let resp = self
-            .request(&client, query, count)
+        let resp = Self::request(s, &client, query, count)
             .send()
             .await
             .map_err(|e| {
@@ -372,6 +443,22 @@ impl WebSearchTool {
                 &text,
             ));
         }
+        if s.provider == SearchProvider::Duckduckgo {
+            let html = String::from_utf8_lossy(&body);
+            let mut hits = parse_ddg(&html);
+            // A refusal comes as a page with a challenge, not an error.
+            if hits.is_empty() && !html.contains("no-results") && !html.contains("result__") {
+                return Err((
+                    "refused".to_string(),
+                    "DuckDuckGo didn't give results (it limits automated searches, so this one may \
+                     have been refused). Try again later, or set a search provider in [web_search] \
+                     (docs/web-search.md)"
+                        .to_string(),
+                ));
+            }
+            hits.truncate(count);
+            return Ok(hits);
+        }
         let json: Value = serde_json::from_slice(&body).map_err(|_| {
             (
                 "bad_response".to_string(),
@@ -382,6 +469,101 @@ impl WebSearchTool {
         hits.truncate(count);
         Ok(hits)
     }
+
+    /// One search on `s`, through the gate and into the recorder.
+    async fn counted(
+        &self,
+        s: &SearchSettings,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<Hit>, (String, String)> {
+        if let Some(gate) = &self.gate {
+            gate().map_err(|m| ("gate".to_string(), m))?;
+        }
+        let started = Instant::now();
+        let result = self.search(s, query, count).await;
+        if let Some(record) = &self.record {
+            record(SearchCall {
+                provider: s.provider.name(),
+                latency_ms: started.elapsed().as_millis() as u64,
+                error: result.as_ref().err().cloned(),
+            });
+        }
+        result
+    }
+}
+
+/// M56.8: the results on DuckDuckGo's HTML page, in order: each
+/// `result__a` link (its `uddg` target, ads left out) and the
+/// `result__snippet` after it.
+pub fn parse_ddg(html: &str) -> Vec<Hit> {
+    let mut hits: Vec<Hit> = Vec::new();
+    // The last `result__a` was a result (not an ad): its snippet is next.
+    let mut open = false;
+    let mut pos = 0;
+    while let Some(i) = html[pos..].find("<a ") {
+        let start = pos + i;
+        let Some(gt) = html[start..].find('>') else {
+            break;
+        };
+        let tag = &html[start..start + gt];
+        let body = start + gt + 1;
+        let Some(close) = html[body..].find("</a>") else {
+            break;
+        };
+        let inner = &html[body..body + close];
+        pos = body + close + 4;
+        let classes = attr(tag, "class").unwrap_or_default();
+        let has = |c: &str| classes.split_whitespace().any(|k| k == c);
+        if has("result__a") {
+            open = false;
+            let Some(url) = attr(tag, "href").and_then(|h| ddg_target(&h)) else {
+                continue;
+            };
+            hits.push(Hit {
+                title: strip_tags(inner),
+                url,
+                snippet: String::new(),
+                date: None,
+            });
+            open = true;
+        } else if has("result__snippet") && open {
+            open = false;
+            if let Some(last) = hits.last_mut() {
+                last.snippet = strip_tags(inner);
+            }
+        }
+    }
+    hits
+}
+
+/// The value of `name="…"` in a tag, entities undone.
+fn attr(tag: &str, name: &str) -> Option<String> {
+    let key = format!("{name}=\"");
+    let at = tag.find(&key)? + key.len();
+    let end = tag[at..].find('"')?;
+    Some(tag[at..at + end].replace("&amp;", "&"))
+}
+
+/// Where a result link goes: DuckDuckGo's `/l/?uddg=` redirect undone, a
+/// direct http(s) link as it is, an ad (`/y.js`) or anything else `None`.
+fn ddg_target(href: &str) -> Option<String> {
+    let full = if href.starts_with("//") {
+        format!("https:{href}")
+    } else {
+        href.to_string()
+    };
+    let u = reqwest::Url::parse(&full).ok()?;
+    let host = u.host_str().unwrap_or("");
+    if host == "duckduckgo.com" || host.ends_with(".duckduckgo.com") {
+        if u.path() != "/l/" {
+            return None;
+        }
+        let target = u.query_pairs().find(|(k, _)| k == "uddg")?.1.into_owned();
+        let t = reqwest::Url::parse(&target).ok()?;
+        return matches!(t.scheme(), "http" | "https").then_some(target);
+    }
+    matches!(u.scheme(), "http" | "https").then_some(full)
 }
 
 async fn read_capped(mut resp: reqwest::Response) -> Result<Vec<u8>, reqwest::Error> {
@@ -460,6 +642,8 @@ pub fn parse(provider: SearchProvider, json: &Value) -> Vec<Hit> {
                 SearchProvider::Tavily | SearchProvider::Searxng => {
                     str_at(r, &["content"]).map(str::to_string)
                 }
+                // Its page isn't JSON: `parse_ddg`.
+                SearchProvider::Duckduckgo => None,
                 SearchProvider::Exa => r
                     .get("highlights")
                     .and_then(Value::as_array)
@@ -477,6 +661,7 @@ pub fn parse(provider: SearchProvider, json: &Value) -> Vec<Hit> {
                 SearchProvider::Brave => str_at(r, &["page_age", "age"]),
                 SearchProvider::Tavily => str_at(r, &["published_date"]),
                 SearchProvider::Searxng | SearchProvider::Exa => str_at(r, &["publishedDate"]),
+                SearchProvider::Duckduckgo => None,
             }
             .map(|d| cut(&strip_tags(d), 40));
             Some(Hit {
@@ -634,25 +819,37 @@ impl Tool for WebSearchTool {
             .as_u64()
             .map(|n| (n as usize).clamp(1, max))
             .unwrap_or(max);
-        if let Some(gate) = &self.gate {
-            gate().map_err(Self::fail)?;
-        }
-        let started = Instant::now();
-        let result = self.search(query, count).await;
-        if let Some(record) = &self.record {
-            record(SearchCall {
-                provider: self.settings.provider.name(),
-                latency_ms: started.elapsed().as_millis() as u64,
-                error: result.as_ref().err().cloned(),
-            });
-        }
-        let hits = result.map_err(|(_, message)| Self::fail(message))?;
-        let text = render(
-            self.settings.provider.name(),
-            query,
-            &hits,
-            self.settings.max_output_tokens,
-        );
+        let mut provider = self.settings.provider.name();
+        let mut note = None;
+        let hits = match self.counted(&self.settings, query, count).await {
+            Ok(hits) => hits,
+            Err((kind, message)) if kind == "gate" => return Err(Self::fail(message)),
+            // M56.8: the configured provider failed; DuckDuckGo, keyless,
+            // through the same gate (the daily cap counts it too).
+            Err((_, message)) => match &self.fallback {
+                Some(keyless) => match self.counted(keyless, query, count).await {
+                    Ok(hits) => {
+                        provider = keyless.provider.name();
+                        note = Some(format!(
+                            "{} failed ({message}); these results are DuckDuckGo's, keyless.",
+                            self.settings.provider.name()
+                        ));
+                        hits
+                    }
+                    Err((_, again)) => {
+                        return Err(Self::fail(format!(
+                            "{message}. The keyless fallback failed too: {again}"
+                        )))
+                    }
+                },
+                None => return Err(Self::fail(message)),
+            },
+        };
+        let text = render(provider, query, &hits, self.settings.max_output_tokens);
+        let text = match note {
+            Some(n) => format!("{n}\n{text}"),
+            None => text,
+        };
         Ok(ToolOutput::capped(text, ctx.max_output_chars))
     }
 }

@@ -1188,7 +1188,9 @@ Current State; numbers are claimed there before anything is built.
     `ask_user`, `react` and `edit_message` (`docs/channels.md`, "Asking
     with buttons, reacting, editing"); M56.7, Telegram's video, voice and
     audio sends, whole albums and video messages, Discord's file
-    downloads (`docs/channels.md`, "Photos" and "Voice messages").
+    downloads (`docs/channels.md`, "Photos" and "Voice messages");
+    M56.8, keyless DuckDuckGo search by default and as the fallback
+    (`docs/web-search.md`).
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,

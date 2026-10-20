@@ -2330,27 +2330,35 @@ const SEARCH_PROVIDERS: [SearchPreset; 4] = [
 fn web_search_step(t: &mut Target, guided: bool) -> Result<()> {
     let cfg = t.config()?;
     let current = cfg.web_search.settings()?;
-    info("The agent can search the web through a search API. Its key goes through ferrule's proxy: the agent and its commands only ever see a stand-in.");
+    info("The agent can search the web. With no search API it uses DuckDuckGo's results page, no key (light use: it limits automated searches). A search API's key goes through ferrule's proxy: the agent and its commands only ever see a stand-in.");
     if guided
-        && !Confirm::new("Give the agent web search?")
+        && !Confirm::new("Set up a search API for the agent?")
             .with_default(false)
             .prompt()?
     {
         return Ok(());
     }
     let mut labels: Vec<&str> = SEARCH_PROVIDERS.iter().map(|p| p.1).collect();
+    labels.push("DuckDuckGo, no key (the default)");
     if current.is_some() {
         labels.push("Turn it off");
     }
     let pick = Select::new("Search with", labels).raw_prompt()?.index;
     let old_key = current.as_ref().and_then(|s| s.key_env.clone());
     let Some(&(provider, _, key)) = SEARCH_PROVIDERS.get(pick) else {
+        // M56.8: no `[web_search]` is keyless DuckDuckGo; off is said.
         t.root().remove("web_search");
+        let said = if pick == SEARCH_PROVIDERS.len() {
+            "web search with DuckDuckGo, no key"
+        } else {
+            put(table(t.root(), &["web_search"])?, "provider", "off");
+            "web search off"
+        };
         t.save()?;
         if let Some(var) = old_key {
             t.forget_secret(&var)?;
         }
-        ok("web search off");
+        ok(said);
         return Ok(());
     };
     let same = current.as_ref().is_some_and(|s| s.provider == provider);

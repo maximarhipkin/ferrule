@@ -34,8 +34,12 @@ pub fn endpoints(cfg: &Config) -> Vec<(String, u16)> {
         urls.push(e.base_url);
     }
     urls.extend(cfg.mcp.servers.iter().filter_map(|s| s.url.clone()));
+    // M56.8: keyless DuckDuckGo by default is like `web_fetch`: under
+    // `default = "deny"` it gets through only if `[egress]` lets it.
     if let Ok(Some(s)) = cfg.web_search.settings() {
-        urls.push(s.endpoint);
+        if cfg.web_search.provider.is_some() {
+            urls.push(s.endpoint);
+        }
     }
     if let Ok(Some(t)) = cfg.telemetry.traces_url() {
         urls.push(t);

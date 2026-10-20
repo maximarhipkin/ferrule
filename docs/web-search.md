@@ -5,27 +5,68 @@ results (title, URL, snippet, date) of one query, trimmed to a token budget
 and marked as untrusted. To read a page it found, the agent uses `web_fetch`
 as before.
 
-It's off until you pick a provider. Four are supported:
+It works on a fresh install with no key (M56.8): with no provider set,
+it reads DuckDuckGo's results page. Pick a search API for anything more
+than light use. Five are supported:
 
 | provider | key | notes |
 |---|---|---|
+| `duckduckgo` (the default) | none | DuckDuckGo's HTML results page (`html.duckduckgo.com/html/`); see "Keyless search" below |
 | `brave` | [Brave Search API](https://api-dashboard.search.brave.com) | web results with page ages; safe search, country and language |
 | `tavily` | [Tavily](https://app.tavily.com) | results with extracted page content |
 | `exa` | [Exa](https://dashboard.exa.ai) | neural search; snippets are the most relevant sentences |
 | `searxng` | none (or a bearer token, if your instance wants one) | your own [SearXNG](https://docs.searxng.org) instance; queries stay in-house |
 
-## Turning it on
+`provider = "off"` takes the tool away.
+
+## Keyless search, and its limits
+
+With no `[web_search]` provider, `web_search` fetches
+`https://html.duckduckgo.com/html/?q=…` (safe search as `kp`, `region` as
+DuckDuckGo's `kl`, e.g. `"us-en"`) and reads the result links and
+snippets out of the page. It goes through the same egress as `web_fetch`
+(the proxy and `[egress]`), with no key and ferrule's own user agent, and
+its results are fenced and marked untrusted like any provider's.
+
+- **It isn't an API.** DuckDuckGo offers no search API; this is the page
+  a browser gets, and its terms don't grant automated use. It's meant for
+  a person's light use, a few searches a turn.
+- **It limits automated searches.** Too many in a row and it answers with
+  a challenge page instead of results; the tool then says "DuckDuckGo
+  didn't give results … try again later, or set a search provider". There
+  is no retry.
+- **Its markup can change.** The parser reads `result__a` links (the real
+  URL from their `uddg=` redirect; ads are skipped) and `result__snippet`
+  text. If DuckDuckGo changes its page, results come back empty until
+  ferrule follows.
+- No dates, and `language` is ignored (`region` carries it).
+- Under `[egress] default = "deny"` it gets through only if `[egress]`
+  allows `html.duckduckgo.com`, as `web_fetch` would; a provider you name
+  in `[web_search]` (`duckduckgo` included) is let through like every
+  endpoint the config names ([egress.md](egress.md)).
+
+**A configured provider falls back to it.** When Brave, Tavily, Exa or
+SearXNG fails (a rejected key, a 429, a timeout, an unreadable answer),
+the same query goes to DuckDuckGo, and the result starts with a line
+saying which provider failed and why. The fallback is a search of its
+own: it passes the same gate (`max_searches_per_day`, the kill switch)
+and is its own ledger row, at $0. A search the cap refused falls back to
+nothing.
+
+## Picking a provider
 
 Run `ferrule setup` → **Web search**. Pick a provider, paste its key (it
 goes to the private secrets file, like every other key) or give your
-SearXNG URL, and optionally a daily cap. No test search is made: with the
-three paid APIs that would cost a search. `ferrule doctor` checks the rest.
+SearXNG URL, and optionally a daily cap. "DuckDuckGo, no key" goes back to
+the default and "Turn it off" writes `provider = "off"`. No test search is
+made: with the three paid APIs that would cost a search. `ferrule doctor`
+checks the rest.
 
 Or by hand:
 
 ```toml
 [web_search]
-provider = "brave"               # brave | tavily | exa | searxng
+provider = "brave"               # brave | tavily | exa | searxng | duckduckgo | off
 api_key_env = "BRAVE_API_KEY"    # the env var (or saved key) holding it
 # endpoint = "https://search.example.org"   # required for searxng
 max_results = 5                  # 1..20; the model may ask for fewer
@@ -44,6 +85,8 @@ What a provider does with `safe_search`, `region` and `language`:
 - SearXNG: safe search (0/1/2) and language.
 - Tavily: none of them.
 - Exa: region (as `userLocation`); no safe search, no language.
+- DuckDuckGo: safe search (`kp`) and region (`kl`, e.g. `"us-en"`); no
+  language.
 
 `ferrule doctor` lists the settings your provider ignores. A config with an
 unknown provider, SearXNG without `endpoint`, a paid provider without
@@ -140,7 +183,8 @@ One ferrule-side tool works the same on every model.
 
 ## Checking it
 
-`ferrule doctor` shows a `search` line, without making a paid search:
+`ferrule doctor` shows a `search` line, without making a paid search (for
+keyless DuckDuckGo it makes none at all, and says so):
 
 - the key is set and bound to the endpoint's host;
 - online, that the endpoint answers a request without the key (refused
