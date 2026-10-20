@@ -227,7 +227,11 @@ async fn an_image_is_saved_sent_and_counted() {
     let sent = r.rec.sent.lock().unwrap().clone();
     let with_file: Vec<_> = sent.iter().filter(|m| !m.attachments.is_empty()).collect();
     assert_eq!(with_file.len(), 1, "{sent:?}");
-    assert!(with_file[0].attachments[0].url.contains("media/"));
+    assert!(
+        with_file[0].attachments[0].url.replace('\\', "/").contains("media/"),
+        "{}",
+        with_file[0].attachments[0].url
+    );
     let saved = std::fs::read_dir(ws.path().join("media")).unwrap();
     assert_eq!(saved.count(), 1);
     // Counted for the cap and ledgered as media.
