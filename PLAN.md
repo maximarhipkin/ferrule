@@ -6553,3 +6553,47 @@ remote (SSH) lands in the *local* workspace, out of the remote tools'
 reach, as MCP media already does. The `shell` tool's description still
 says "Output is truncated if very long" (left as is: it's in the prompt
 prefix, and still true).
+
+### 2026-10-21 — M55.4: the Claude engine bridges by registry, not a hand list (Claude, Opus 5.5)
+
+**Why.** `BRIDGED_TOOLS` in `ferrule-plans/src/claude/engine.rs` named
+seven tools that don't exist (`schedule_task`, `list_tasks`,
+`cancel_task`, `send_message`, `board`, `post_to_board`, `read_board`),
+and every tool it didn't name never reached a Claude-plan bot:
+`update_memory`, `activate_skill`/`read_skill_file`, the M12 sub-agent
+tools other than `spawn_agent` (`wait_agent`, `board_post`, `task_add`,
+…), the M13 extension tools, WASM `plugin__*` tools and `log_diary`.
+
+**What changed.**
+- `bridged(req.tools)` now offers every tool the agent has, less
+  `CLAUDE_NATIVE` and `NOT_BRIDGED`; `mcp__*` stays bridged.
+  `CLAUDE_NATIVE` is what claude has its own of: `read_file`,
+  `write_file`, `edit_file`, `list_dir`, `shell`, `web_fetch`, and two
+  the old list also left out, `write_todos` (`TodoWrite`) and
+  `code_search` (`Grep`/`Glob`). `NOT_BRIDGED` is `approve`, the
+  bridge's own permission tool, so no ferrule tool can shadow it now that
+  any registered name can reach the bridge (plugin tools are
+  `plugin__…` and MCP ones `mcp__…`, so none does today).
+- Kept: `send_file`, `connection_request`, `connection_list`,
+  `ferrule_admin`, `web_search`, `spawn_agent` and the memory tools are
+  still bridged (none is native or denied).
+- `disallowed()` is untouched and still reads `req.tools`, so claude
+  still loses `WebSearch`/`Task`/`WebFetch`/`Bash`/the edit tools when
+  the agent lacks the matching ferrule tool; its test passes unchanged.
+- Docs: m35 §7.4's bridge table (real names, the rule, what's left out
+  and why), the guide's "What works" row, and two m48 notes that called
+  the dead names a follow-up.
+
+**Checks.** `make check` exited 0 (1869 passed, 0 failed, 28 ignored,
+71 binaries; macOS) with `GIT_CONFIG_GLOBAL` pointed at an empty file.
+With this machine's global git config, `ferrule-eval`'s
+`starter_suite::every_reference_solution_passes_…` failed: its fixture's
+`git commit` inherits `commit.gpgsign = true` with 1Password SSH
+signing, and the 1Password agent returned an error. That test doesn't
+touch this change and passed in the M55.3 run an hour earlier; it is
+the fixture leaking the owner's git config, not a code failure. No tests
+were added.
+
+**Open.** Not run against a live `claude` turn. The unit test the gap
+analysis suggests (every bridged name resolves in the registry) wasn't
+written, per the no-new-tests rule.

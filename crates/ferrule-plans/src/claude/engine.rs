@@ -45,28 +45,26 @@ const RECAP_BYTES: usize = 8 * 1024;
 /// How much of claude's stderr an error quotes.
 const STDERR_TAIL: usize = 2048;
 
-/// The ferrule tools a turn's claude gets through the bridge (§7.4), with
-/// every tool named [`BRIDGED_PREFIX`]`…`. Ferrule's file, shell and fetch
-/// tools stay out: claude has its own.
-pub const BRIDGED_TOOLS: &[&str] = &[
-    "remember",
-    "recall",
-    "forget",
-    "search_history",
-    "schedule_task",
-    "list_tasks",
-    "cancel_task",
-    "send_message",
-    "send_file",
-    "web_search",
-    "spawn_agent",
-    "board",
-    "post_to_board",
-    "read_board",
-    "ferrule_admin",
-    "connection_request",
-    "connection_list",
+/// Ferrule tools claude has its own of (§7.4), left off the bridge: two
+/// of each confuses the model. Claude's are, in order, `Read`, `Write`,
+/// `Edit`, `LS`, `Bash`, `WebFetch`, `TodoWrite` and `Grep`/`Glob`.
+/// `web_search` and `spawn_agent` are bridged although claude has
+/// `WebSearch` and `Task`: [`disallowed`] takes those two away when the
+/// agent lacks the ferrule tool.
+pub const CLAUDE_NATIVE: &[&str] = &[
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "shell",
+    "web_fetch",
+    "write_todos",
+    "code_search",
 ];
+
+/// Never offered on the bridge, whatever the agent has: the bridge's own
+/// permission tool's name, which no ferrule tool may shadow.
+pub const NOT_BRIDGED: &[&str] = &[APPROVE];
 
 /// Ferrule's MCP tools (`mcp__<server>__<tool>`: a connection like Gmail,
 /// an `[mcp]` server, the browser), whose names aren't known until they
@@ -778,12 +776,18 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The ferrule tools offered on the bridge: the agent's, filtered by
-/// [`BRIDGED_TOOLS`] and [`BRIDGED_PREFIX`].
+/// The ferrule tools offered on the bridge: every tool the agent has
+/// (its registry, so a new tool bridges without a list to update), less
+/// [`CLAUDE_NATIVE`] and [`NOT_BRIDGED`]. Every [`BRIDGED_PREFIX`] tool
+/// is among them.
 pub fn bridged(tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
     tools
         .iter()
-        .filter(|t| BRIDGED_TOOLS.contains(&t.name.as_str()) || t.name.starts_with(BRIDGED_PREFIX))
+        .filter(|t| {
+            let name = t.name.as_str();
+            name.starts_with(BRIDGED_PREFIX)
+                || !(CLAUDE_NATIVE.contains(&name) || NOT_BRIDGED.contains(&name))
+        })
         .cloned()
         .collect()
 }
