@@ -410,11 +410,20 @@ The bridge offers:
 | `search_history` | past conversations in other chats and runs |
 | `schedule_task`, `list_tasks`, `cancel_task` (whatever the agent has of M3's) | scheduling is Ferrule's, claude can't do it |
 | `send_message` | reach another channel or chat, the gateway's job |
+| `send_file` | a workspace file to this chat (M39); only the gateway knows the chat |
 | `web_search` | when configured: one backend, one bill, one egress policy |
 | `spawn_agent` and the board | sub-agents on whatever model they pick |
+| `ferrule_admin` | the owner's chat changes Ferrule (M48) |
+| `connection_request`, `connection_list` | ask the owner for a connection, see what's connected (M20) |
+| every `mcp__*` tool | Ferrule's MCP servers: a connection (Gmail, Google, Jira), an `[mcp]` server, the browser. Claude loads none of its own (`--strict-mcp-config`), so without the bridge it has none of them |
 
 Only tools the agent already has are offered (so a read-only child gets no
-`schedule_task`); the list is `req.tools` filtered by that table.
+`schedule_task`); the list is `req.tools` filtered by that table
+(`BRIDGED_TOOLS` and the `mcp__` prefix in `claude/engine.rs`). Claude sees
+a bridged tool under the bridge's server name, so Gmail's `gmail_send`
+(`mcp__gmail__gmail_send` in Ferrule) is `mcp__ferrule__mcp__gmail__gmail_send`
+in claude. The list is fixed when a turn starts: a connection made during a
+turn shows up from the next one.
 Ferrule's own file, shell and web-fetch tools are *not* offered: claude has
 its own, gated by §7.5, and two of each confuses the model.
 

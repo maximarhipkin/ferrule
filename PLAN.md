@@ -5920,3 +5920,39 @@ the panels in Hebrew.
 **Follow-ups.** Set up in the browser with no terminal (agreed as the
 next milestone); Discord's slash commands and DM-code pairing from the
 page; a simpler Google Calendar path; Hebrew for the panels' words.
+
+### 2026-10-20 — Claude-plan bots get send_file, connections and MCP tools (Claude, Opus 5.5)
+
+**Scope.** The owner's Telegram bot on the Claude subscription engine
+said it "can't send files to Telegram" on 0.13.1, and that Gmail was
+connected but it had no tool to send through it. The cause: the engine
+bridges a fixed list of Ferrule tools into `claude -p`, and the list
+lacked `send_file`, the connection tools and every MCP tool.
+
+**What changed.**
+- `claude/engine.rs`: `BRIDGED_TOOLS` gains `send_file`,
+  `connection_request` and `connection_list`. `bridged()` also passes
+  every tool named `mcp__*` (`BRIDGED_PREFIX`): native connections
+  (`mcp__gmail__gmail_send`…), `[mcp]` servers and the browser. Their
+  names are dynamic, and claude loads no MCP server of its own
+  (`--strict-mcp-config`). The bridge needed nothing else: a bridged
+  call comes back to the agent as a `tool_call` and runs the agent's own
+  `SendFileTool`, which is already bound to the session's chat.
+- `prompts::CHAT_FILES`, appended where the gateway factory registers
+  `send_file` (a chat session with a local workspace): one fixed
+  paragraph saying the chat takes files through `send_file`. Both
+  engines get it, since the claude engine passes the system messages on.
+  It is constant per session, so the prefix stays byte-stable. It changes
+  once, on upgrade.
+- Docs: m35 §7.4's bridge table and the guide's "What works" row.
+
+**Left out on purpose.** `child_builder` registers neither `send_file`
+nor the connection tools: a sub-agent's answer goes to its parent, which
+sends the file. Connection requests were already root-only (M20).
+Sub-agents do get MCP tools, so on the claude engine they now get them
+bridged too.
+
+**Not verified.** Per the owner's standing rule, nothing was built or
+run in this session beyond `rustfmt`. `make check` and a live Telegram
+turn on `claude-code/*` ("send me <file>", "what's in my Gmail") are
+still to do. No tests were added (not asked).

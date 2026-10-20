@@ -2673,8 +2673,10 @@ async fn gateway_factory(
         )
         .map_err(|e| fail(e.to_string()))?;
         // M39: a chat's agent sends files to its own chat; a remote
-        // workspace's files aren't here to send.
+        // workspace's files aren't here to send. Sub-agents don't get it:
+        // their answer goes to their parent, which sends the file.
         if channels::of_session(session_id).is_some() && remote::current().is_none() {
+            agent.append_system_prompt(ferrule_agents::prompts::CHAT_FILES);
             agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
                 files.clone(),
                 session_id,

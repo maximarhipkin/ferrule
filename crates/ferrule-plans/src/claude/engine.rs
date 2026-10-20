@@ -45,8 +45,9 @@ const RECAP_BYTES: usize = 8 * 1024;
 /// How much of claude's stderr an error quotes.
 const STDERR_TAIL: usize = 2048;
 
-/// The ferrule tools a turn's claude gets through the bridge (§7.4).
-/// Ferrule's file, shell and fetch tools stay out: claude has its own.
+/// The ferrule tools a turn's claude gets through the bridge (§7.4), with
+/// every tool named [`BRIDGED_PREFIX`]`…`. Ferrule's file, shell and fetch
+/// tools stay out: claude has its own.
 pub const BRIDGED_TOOLS: &[&str] = &[
     "remember",
     "recall",
@@ -56,13 +57,21 @@ pub const BRIDGED_TOOLS: &[&str] = &[
     "list_tasks",
     "cancel_task",
     "send_message",
+    "send_file",
     "web_search",
     "spawn_agent",
     "board",
     "post_to_board",
     "read_board",
     "ferrule_admin",
+    "connection_request",
+    "connection_list",
 ];
+
+/// Ferrule's MCP tools (`mcp__<server>__<tool>`: a connection like Gmail,
+/// an `[mcp]` server, the browser), whose names aren't known until they
+/// connect. Claude loads no MCP server of its own (`--strict-mcp-config`).
+pub const BRIDGED_PREFIX: &str = "mcp__";
 
 /// How the engine runs claude. One per configured model.
 #[derive(Debug, Clone)]
@@ -765,11 +774,11 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The ferrule tools offered on the bridge: the agent's, filtered by
-/// [`BRIDGED_TOOLS`].
+/// [`BRIDGED_TOOLS`] and [`BRIDGED_PREFIX`].
 pub fn bridged(tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
     tools
         .iter()
-        .filter(|t| BRIDGED_TOOLS.contains(&t.name.as_str()))
+        .filter(|t| BRIDGED_TOOLS.contains(&t.name.as_str()) || t.name.starts_with(BRIDGED_PREFIX))
         .cloned()
         .collect()
 }
