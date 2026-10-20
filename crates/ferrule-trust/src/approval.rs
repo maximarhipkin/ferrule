@@ -2,9 +2,10 @@
 //!
 //! Each question gets a short code, used once. Only "yes" runs anything: a
 //! bare `yes` when exactly one question is pending in the chat, or `yes
-//! <code>`. `no <code>` refuses that one, and any other text refuses every
-//! pending question in the chat, so nothing waits on a reply that meant
-//! something else. A message that could mean either of two questions
+//! <code>`. `always` reads as `yes`, and for a gated command it also
+//! allows the same command for the rest of the run. `no <code>` refuses
+//! that one, and any other text refuses every pending question in the
+//! chat, so nothing waits on a reply that meant something else. A message that could mean either of two questions
 //! approves neither. A slash command is never an answer (it passes through
 //! and refuses nothing), and only the owner's `yes`/`no` counts (M48).
 
@@ -26,6 +27,8 @@ const DIGITS: &[u8] = b"23456789";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Yes,
+    /// Yes, and the same command for the rest of the run.
+    Always,
     /// Refused, with what the owner said.
     No(String),
 }
@@ -39,6 +42,8 @@ struct Pending {
     timeout: Option<Duration>,
     /// What an admin question is bound to: `{op}:{digest}` (M48).
     op: Option<String>,
+    /// `always` may allow it for the rest of the run (a gated command).
+    for_run: bool,
     tx: oneshot::Sender<Answer>,
 }
 
@@ -72,7 +77,8 @@ pub struct Approvals {
 }
 
 enum Said {
-    Yes(Option<String>),
+    /// The code, and whether it was `always`.
+    Yes(Option<String>, bool),
     No(Option<String>),
     Other,
 }
@@ -90,7 +96,8 @@ fn parse(text: &str) -> Said {
         return Said::Other;
     }
     match first {
-        "yes" => Said::Yes(code),
+        "yes" => Said::Yes(code, false),
+        "always" => Said::Yes(code, true),
         "no" if code.is_some() => Said::No(code),
         _ => Said::Other,
     }
@@ -106,6 +113,18 @@ pub fn is_code(s: &str) -> bool {
         2 => letter(b[0]) && digit(b[1]),
         3 => letter(b[0]) && digit(b[1]) && letter(b[2]),
         _ => false,
+    }
+}
+
+/// Sends `p` its yes: for the rest of the run when the owner said
+/// `always` and the question offers that.
+fn approve(p: Pending, always: bool) -> String {
+    if always && p.for_run {
+        let _ = p.tx.send(Answer::Always);
+        format!("Approved for this run ({}): {}", p.code, p.what)
+    } else {
+        let _ = p.tx.send(Answer::Yes);
+        format!("Approved ({}): {}", p.code, p.what)
     }
 }
 
@@ -175,8 +194,25 @@ impl Approvals {
             asked: Instant::now(),
             timeout,
             op,
+            for_run: false,
             tx,
         });
+        (code, rx)
+    }
+
+    /// `open_for` a gated command: `always` also allows the same command
+    /// for the rest of the run.
+    pub fn open_for_run(
+        &self,
+        chat: impl Into<ChatRef>,
+        what: &str,
+        timeout: Duration,
+    ) -> (String, oneshot::Receiver<Answer>) {
+        let (code, rx) = self.open_for(chat, what, Some(timeout), None);
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(p) = inner.pending.iter_mut().find(|p| p.code == code) {
+            p.for_run = true;
+        }
         (code, rx)
     }
 
@@ -224,8 +260,7 @@ impl Approvals {
         let i = inner.pending.iter().position(|p| p.code == code)?;
         let p = take(&mut inner, i);
         if allow {
-            let _ = p.tx.send(Answer::Yes);
-            Some(format!("Approved ({}): {}", p.code, p.what))
+            Some(approve(p, false))
         } else {
             let _ = p.tx.send(Answer::No(said.to_string()));
             Some(format!("Refused ({}): {}", p.code, p.what))
@@ -259,7 +294,7 @@ impl Approvals {
         let chat = chat.into();
         let mut inner = self.inner.lock().unwrap();
         let said = parse(text);
-        if let Said::Yes(Some(c)) | Said::No(Some(c)) = &said {
+        if let Said::Yes(Some(c), _) | Said::No(Some(c)) = &said {
             if inner.used.iter().any(|(u, ch, _)| u == c && *ch == chat) {
                 return Some(format!(
                     "Question {c} was already answered; nothing more was run."
@@ -271,7 +306,7 @@ impl Approvals {
             .collect();
         if !by_owner {
             return match said {
-                Said::Yes(_) | Said::No(_) if !here.is_empty() => {
+                Said::Yes(..) | Said::No(_) if !here.is_empty() => {
                     Some("Only the owner can answer that question.".into())
                 }
                 _ => None,
@@ -279,7 +314,7 @@ impl Approvals {
         }
         if here.is_empty() {
             let code = match &said {
-                Said::Yes(c) | Said::No(c) => c.clone(),
+                Said::Yes(c, _) | Said::No(c) => c.clone(),
                 Said::Other => return None,
             };
             let late = match &code {
@@ -301,12 +336,10 @@ impl Approvals {
                 .find(|&i| inner.pending[i].code == code)
         };
         match said {
-            Said::Yes(None) if here.len() == 1 => {
-                let p = take(&mut inner, here[0]);
-                let _ = p.tx.send(Answer::Yes);
-                Some(format!("Approved ({}): {}", p.code, p.what))
+            Said::Yes(None, always) if here.len() == 1 => {
+                Some(approve(take(&mut inner, here[0]), always))
             }
-            Said::Yes(None) => {
+            Said::Yes(None, _) => {
                 let codes: Vec<String> = here
                     .iter()
                     .map(|&i| {
@@ -322,12 +355,8 @@ impl Approvals {
                     codes.join(", or ")
                 ))
             }
-            Said::Yes(Some(code)) => match find(&inner, &code) {
-                Some(i) => {
-                    let p = take(&mut inner, i);
-                    let _ = p.tx.send(Answer::Yes);
-                    Some(format!("Approved ({}): {}", p.code, p.what))
-                }
+            Said::Yes(Some(code), always) => match find(&inner, &code) {
+                Some(i) => Some(approve(take(&mut inner, i), always)),
                 None => Some(format!(
                     "No question with code {code} is waiting; nothing was approved."
                 )),
