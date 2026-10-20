@@ -6645,3 +6645,65 @@ tunnel's address (no outbound HTTPS beyond cloudflared's) waits the full
 20 s and then sends the link with the "still coming up" line. A second
 `/dashboard` while the first one's probe runs finds the tunnel open and
 answers without waiting.
+
+### 2026-10-21 — M55.1: the two flaky CI tests, made deterministic (Claude, Opus 5.5)
+
+Both fixes are in the product code, not the tests: each test was
+catching a real race, and the asserted behaviour is unchanged.
+
+**`sshd::the_credential_proxy_reaches_remote_commands` (ubuntu, run
+39489322936 attempt 1).** The failure was curl's exit 7 ("couldn't
+connect") through the proxy forward, with
+`mux_client_request_session: read from master failed: Broken pipe` on
+stderr. Cause: `start_master` put the proxy's `-R` on the master's own
+command line (with `ExitOnForwardFailure=yes`) and called the master
+ready as soon as its control socket existed. ssh opens the control socket
+*before* the server answers that `-R`. Measured here with the system
+ssh/sshd and a port already listening: the socket appeared at 113 ms and
+the master exited at 117 ms with "remote port forwarding failed". So a
+random `rport` that was already taken on the remote (on CI the remote is
+the same busy runner, and `pick_port`'s 20000–59999 overlaps Linux's
+ephemeral range) was never seen as `Failure::Forward`: the "another
+port, up to 3 tries" path never ran, the restarted master kept the same
+port and died again, commands fell back to plain connections without the
+forward, and the first thing that really used it, the test's `curl`,
+couldn't connect.
+- Fix (`ferrule-ssh/src/link.rs`): the master starts without `-R`, and
+  `request_forward` asks for it through the master with `ssh -O forward
+  -R …`, which waits for the server's answer (40 s cap). Measured: a taken
+  port exits 255 with "forwarding request failed: remote port forwarding
+  failed …" (`classify` already maps that to `Failure::Forward`, so
+  `ensure_master` drops that master and tries a fresh port) and the
+  master stays up; a free port exits 0 and is listening on return.
+- All eight `sshd::` tests pass against macOS's sshd with
+  `FERRULE_REQUIRE_SSHD=1`. Not run on Linux.
+
+**`update::tests::a_running_exe_steps_aside_on_windows` (windows, run
+39488885531).** It failed at "moving …\\ferrule.exe aside: The process
+cannot access the file because it is being used by another process (os
+error 32)". Renaming a running exe is allowed on Windows; a sharing
+violation means some other handle held the file without delete sharing
+for a moment (typically an antivirus scanning an exe that was just
+copied and started, as the test does). The real updater can hit the same
+window when it renames the freshly staged copy.
+- Fix (`ferrule-cli/src/update/swap.rs`): Windows' `rename_over` renames
+  through `rename_retrying`, which retries only on
+  `ERROR_SHARING_VIOLATION` (32), backing off 50 ms doubling to 500 ms,
+  for up to 5 s; any other error returns at once.
+- **Not compiled here**: it is `#[cfg(windows)]` and this Mac has no
+  Windows target, so only rustfmt has seen it. Windows CI is its first
+  build.
+
+**Docs.** `m34-ssh-local.md` ("As built": the forward is asked for
+through the master, and why), `m36-self-update.md` §3.3 (the retry).
+
+**Checks.** `make check` exited 0 (1869 passed, 0 failed, 28 ignored, 71
+binaries; macOS), with `GIT_CONFIG_GLOBAL` pointed at an empty file for
+the reason in the M55.4 entry. No tests were added.
+
+**Open.** The Linux and Windows runs are the real proof: push and watch
+both jobs. A master that dies later for any other reason still lets
+commands fall back silently to plain connections without the forward
+(the mux client's own fallback); `/status` would still say "credential
+proxy forwarded" then. M55.7 (require green CI) can follow once both
+jobs pass.

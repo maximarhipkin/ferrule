@@ -592,6 +592,15 @@ from the design above:
   ferrule's end of a pipe, not `-N`: however ferrule dies, the pipe
   closes and the master goes with it. On Windows each command is its own
   connection and carries its own `-R`.
+- **The forward is asked for through the master** (`ssh -O forward -R …`
+  once its control socket is up), not on the master's own command line
+  (M55.1). ssh opens the control socket before the server answers a
+  command-line `-R`, so a port already taken on the remote showed only
+  as the master exiting moments later: the "another port, up to 3 tries"
+  above never ran, commands fell back to plain connections without the
+  forward, and a remote `curl` through it got "couldn't connect". `-O
+  forward` waits for the answer and exits non-zero on a refusal, which
+  is `Failure::Forward`, so the next master tries another port.
 - **`ssh_config`** is passed as `ssh -F`, which *replaces*
   `~/.ssh/config` rather than adding to it. The config comment and
   [ssh.md](ssh.md) say so.
