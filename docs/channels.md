@@ -1129,18 +1129,47 @@ typing = false
 
 ## Messages sent while it works
 
-A chat's messages are answered one turn at a time. What you send while a
-turn runs waits, and when that turn ends, everything that waited is
-answered as **one** turn: the messages in order, a paragraph apart, with
-all their files, and one reply to the latest. Three quick lines get one
-answer, not three. A message doesn't reach a turn that is already
-running; it waits for the next one. A scheduled task's prompt and a
-sub-agent's news stay turns of their own, and the HTTP API keeps a turn
-per request, since each request waits for its own answer.
+A chat's messages are answered one turn at a time, and what you send
+while a turn runs reaches **that turn** (M56.1, "steering"). The turn
+reads it after the tool calls it is running finish, before it next asks
+the model, so "no, the other file" lands while the work is still going.
+The model reads it as you speaking, starting `[sent while you were
+working]`, with its photos and files. Nothing already done is undone,
+and the turn's one reply answers your first message.
+
+A message that arrives while the turn is already writing its last answer
+comes too late for it: it isn't lost, it starts the next turn. So do
+these, which never steer a running turn:
+
+- a voice message, when transcription is set up (it's heard first, at
+  the start of its turn);
+- a message from someone else in a group chat, while the turn answers
+  another member;
+- any message while another one is already waiting, so their order
+  holds;
+- every message while the turn is a scheduled task's, a plan's or
+  `/goal`'s, or a sub-agent's news, which stay turns of their own;
+- the HTTP API's requests, since each waits for its own answer.
+
+Everything that waited is answered as **one** turn: the messages in
+order, a paragraph apart, with all their files, and one reply to the
+latest. Three quick lines get one answer, not three.
+
+To keep the old way, where every message waits for the next turn, set:
+
+```toml
+[gateway]
+while_busy = "queue"   # default "steer"
+```
+
+The setting covers every chat. `/new` while a turn runs drops a message
+the turn hasn't read yet, and says so, as it does for waiting ones; so
+does the bot stopping.
 
 A message that arrives when the turn in front has run for 30 s or more is
-told once that ferrule is busy, with what it's doing and `/stop`. A
-shorter turn is about to answer, so it says nothing. The wait, in seconds:
+told once that ferrule is busy, with what it's doing and `/stop`: that
+the message went to the running turn, or that it's queued. A shorter
+turn is about to answer, so it says nothing. The wait, in seconds:
 
 ```toml
 [gateway]

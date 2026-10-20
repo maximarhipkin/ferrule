@@ -3,7 +3,7 @@
 //! runs, and a flag that stops it. Multi-agent (`ferrule-agents`) is the
 //! user; the loop itself stays agnostic.
 
-use crate::message::Usage;
+use crate::message::{Message, Usage};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -23,7 +23,32 @@ pub trait Budget: Send + Sync {
 pub trait Inbox: Send + Sync {
     fn begin(&self) {}
     fn take(&self) -> Vec<String>;
+    /// Whole messages, each added as it is after `take`'s (M56.1: what the
+    /// person sent while the agent worked, photos and all). Drained at the
+    /// same point, so a tool call and its results are never split.
+    fn take_messages(&self) -> Vec<Message> {
+        Vec::new()
+    }
     fn end(&self) {}
+}
+
+/// Several inboxes as one, asked in order (M56.1: a chat's root hears its
+/// sub-agents and its person).
+pub struct Inboxes(pub Vec<Arc<dyn Inbox>>);
+
+impl Inbox for Inboxes {
+    fn begin(&self) {
+        self.0.iter().for_each(|i| i.begin());
+    }
+    fn take(&self) -> Vec<String> {
+        self.0.iter().flat_map(|i| i.take()).collect()
+    }
+    fn take_messages(&self) -> Vec<Message> {
+        self.0.iter().flat_map(|i| i.take_messages()).collect()
+    }
+    fn end(&self) {
+        self.0.iter().for_each(|i| i.end());
+    }
 }
 
 /// A cooperative stop: once set, the agent stops before its next model call

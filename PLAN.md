@@ -117,8 +117,8 @@ append-only.
     on 2026-10-20 (`docs/m54-autonomous.md`, in the worktree of branch
     `claude/laughing-chebyshev-5cd4a6`). It is being built there,
     uncommitted on `dadf357`.
-  - **`autopilot` / PR #47:** the M55 items and the M52 items this
-    branch's Session Log entries name.
+  - **`autopilot` / PR #47:** the M55 items and the M52 and M56 items
+    this branch's Session Log entries name.
   - **Kimi's research proposals, M51–M53:** media generation (M51), the
     dashboard Safe (M52) and contrastive probing (M53).
     `docs/research-harness2-media.md`, `docs/m51-media.md`,
@@ -6171,3 +6171,62 @@ in an attached file isn't looked at. Keys with no known prefix and no
 known shape (Brave's, Tavily's, a password) pass unless they are this
 machine's own secret values. When `secret_request` lands (M52.3/M54),
 `reply()` should carry its link.
+
+### 2026-10-21 — M56.1: a message sent mid-turn reaches that turn (Claude, Opus 5.5)
+
+**Why.** A correction sent while a turn ran ("no, the other file") waited
+for the whole turn to end; PR #46 only merged it into the next one. The
+core already drains an `Inbox` before every model call, but only
+sub-agent reports used it, and the supervisor owns the root's inbox.
+
+**What changed.**
+- `ferrule-core` `hooks.rs`: `Inbox::take_messages` (default empty):
+  whole messages, each pushed as it is after `take`'s joined one, so a
+  person's message keeps its photos and isn't framed as agent data.
+  `Inboxes`, several inboxes asked in order. `Agent::add_inbox` chains a
+  second inbox beside the one the factory gave (`with_inbox` still
+  replaces). `deliver_inbox` pushes `take`, then `take_messages`: still
+  after the last tool results and before `maybe_compact` and the model
+  call, so no call/result pair is split and the prefix only grows.
+- `ferrule-gateway/src/steer.rs` (new): `WhileBusy` (`steer`, default;
+  `queue`, PR #46's behaviour) and `Steering`, a lane's inbox. The lane
+  opens it for a turn that answers a person (`person` jobs only: never a
+  scheduled task, a plan or `/goal` turn, or a wake), keyed to that
+  message's `sender_id`, and closes it when `run` returns. A message is
+  framed `[sent while you were working] …` with its photos as
+  `ImageRef`s (file lines are already in its text).
+- `router.rs`: `Router::steer(&msg)` hands a message to the running turn
+  when the mode is `steer`, the channel has busy notices (not the HTTP
+  API), it isn't audio while transcription is set up, nothing is queued
+  in front of it, and the sender matches; otherwise the caller queues it
+  as before. What `close()` returns unread (it arrived during the last
+  model call) is joined into one person job at the front of the lane's
+  `held` (now a `VecDeque`), so it's the next turn and never lost; a
+  person job only merges from the queue while nothing is held, so order
+  holds. Ids the turn read get `answered` with its reply. `/new` and the
+  bot stopping count unread steered messages as dropped and say so.
+  `spawn_lane` adds the steering with `add_inbox`, after the factory's
+  supervisor inbox, so sub-agent reports still arrive.
+- `gateway.rs`: `handle` tries `steer` before `offer`; the busy notice
+  says "I passed your message to the running turn, which reads it at its
+  next step — /stop to end that turn." instead of "queued".
+- `[gateway] while_busy` (`config.rs`, wired in `run_gateway`), the
+  sample config line, `docs/channels.md` "Messages sent while it works",
+  the roadmap's M56 line.
+
+**Tests changed, none added.** `every_message_is_seen_at_once_and_a_queued_one_is_told_once`
+now expects the steered busy notice; the rest of it held unchanged,
+since the held "first" call was already the turn's last, so "second"
+and "third" came back as one next turn (the late path).
+`a_queued_message_hears_about_a_rate_limit_wait` passes `steered:
+false`.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS).
+
+**Open.** Not run against a live chat. A steered voice note waits for
+the next turn (transcription runs in the lane). A steered message
+doesn't load keyword skills (M28) and gets no "can't see photos" notice.
+The mode is gateway-wide, not per chat; no `/queue` override and no
+debounce window. Group chats steer only from the sender of the running
+turn, with no setting to widen it.

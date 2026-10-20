@@ -1,8 +1,9 @@
 use crate::channel::Channel;
 use crate::error::GatewayError;
-use crate::message::{Attachment, InboundMessage, OutboundMessage};
+use crate::message::{InboundMessage, OutboundMessage};
 use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
+use crate::steer::{is_audio, is_image, Steering, WhileBusy};
 use crate::stream::{StreamPacing, StreamingReply};
 use crate::transcribe::{heard_line, Audio, Transcription};
 use crate::typing::Typist;
@@ -10,7 +11,7 @@ use ferrule_core::failure::Kind;
 use ferrule_core::{
     Agent, AgentEvent, CoreError, Guard, GuardedCall, ImageRef, Role, Transcript, Verdict,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -80,6 +81,8 @@ pub struct Router {
     typing: bool,
     /// M44: the bot is stopping. No new message is taken (`close`).
     closing: AtomicBool,
+    /// M56.1: what a person's message does while their chat is busy.
+    while_busy: WhileBusy,
 }
 
 struct Lane {
@@ -91,13 +94,16 @@ struct Lane {
     guard: Arc<TurnGuard>,
     /// The lane's task, so `/new` can wait for it to end (M41).
     task: tokio::task::JoinHandle<()>,
+    /// M56.1: the way into its running turn.
+    steer: Arc<Steering>,
 }
 
-/// A new lane's sender, its turn guard and its task.
+/// A new lane's sender, its turn guard, its task and its steering.
 type Spawned = (
     mpsc::Sender<LaneJob>,
     Arc<TurnGuard>,
     tokio::task::JoinHandle<()>,
+    Arc<Steering>,
 );
 
 /// What a lane is doing, for `/status`, the busy notice and the watchdog
@@ -258,7 +264,15 @@ impl Router {
             transcription: None,
             typing: false,
             closing: AtomicBool::new(false),
+            while_busy: WhileBusy::default(),
         }
+    }
+
+    /// M56.1: what a person's message does while their chat's turn runs
+    /// (`[gateway] while_busy`); see [`Router::steer`].
+    pub fn with_while_busy(mut self, mode: WhileBusy) -> Self {
+        self.while_busy = mode;
+        self
     }
 
     /// M41: shows "typing…" in the chat while a turn runs, on channels that
@@ -310,7 +324,10 @@ impl Router {
             for lane in lanes.values() {
                 let mut st = lane.state.lock().unwrap();
                 st.retired = true;
-                if st.queued > 0 {
+                // M56.1: a message the running turn hasn't read yet waits
+                // too, and is dropped with the rest.
+                let steered = lane.steer.drop_waiting();
+                if st.queued > 0 || steered > 0 {
                     st.queued = 0;
                     told.push((lane.channel.clone(), lane.chat_id.clone()));
                 }
@@ -490,6 +507,43 @@ impl Router {
         sent.map_err(|_| GatewayError::SessionClosed(sid))
     }
 
+    /// M56.1: hands `msg` to its chat's running turn, which reads it after
+    /// its current tool calls, before its next model call. True only when
+    /// the chat steers ([`WhileBusy::Steer`]), the turn answers a person
+    /// and it's the same sender (a group's other members wait), and no
+    /// message waits in front of it (their order holds). A voice note
+    /// waits, to be heard first, and so does everything on a channel that
+    /// pairs each request with its answer (the HTTP API). False: queue it
+    /// with [`Router::offer`]. What reaches the turn too late for it (its
+    /// last model call was already running) starts the next turn.
+    pub fn steer(&self, msg: &InboundMessage) -> bool {
+        if self.while_busy != WhileBusy::Steer || self.closing() {
+            return false;
+        }
+        if self.transcription.is_some() && msg.attachments.iter().any(is_audio) {
+            return false;
+        }
+        if self
+            .channels
+            .get(&msg.channel)
+            .is_some_and(|c| !c.busy_notices())
+        {
+            return false;
+        }
+        let sid = session::session_id(&msg.channel, &msg.chat_id);
+        let lanes = self.lanes.lock().unwrap();
+        let Some(lane) = lanes.get(&sid) else {
+            return false;
+        };
+        {
+            let st = lane.state.lock().unwrap();
+            if st.queued > 0 || st.retired || st.stale {
+                return false;
+            }
+        }
+        lane.steer.offer(msg)
+    }
+
     /// Like [`Router::dispatch`], but never waits: a lane whose queue is
     /// full refuses the message (`QueueFull`), so the gateway's dispatcher
     /// stays free for `/status` and `/stop` while a turn hangs.
@@ -559,7 +613,7 @@ impl Router {
             }
         }
         let state = Arc::new(Mutex::new(LaneState::default()));
-        let (tx, guard, task) = self.spawn_lane(session_id, &msg.channel, state.clone())?;
+        let (tx, guard, task, steer) = self.spawn_lane(session_id, &msg.channel, state.clone())?;
         lanes.insert(
             session_id.to_string(),
             Lane {
@@ -569,6 +623,7 @@ impl Router {
                 state: state.clone(),
                 guard,
                 task,
+                steer,
             },
         );
         Ok((tx, state))
@@ -609,7 +664,7 @@ impl Router {
             {
                 let mut st = lane.state.lock().unwrap();
                 st.retired = true;
-                out.dropped = st.queued;
+                out.dropped = st.queued + lane.steer.drop_waiting();
                 out.stopped = st.busy_since.is_some();
             }
             if out.stopped {
@@ -765,6 +820,9 @@ impl Router {
         // (M19's), so it ends a turn the way `/stop` does.
         let guard = Arc::new(TurnGuard::new(agent.guard(), self.max_turn));
         agent.set_guard(guard.clone());
+        // M56.1: beside the inbox the factory gave it (the supervisor's).
+        let steer = Arc::new(Steering::default());
+        agent.add_inbox(steer.clone());
         let channel = self.channels.get(channel_name).cloned();
         let (tx, rx) = mpsc::channel(self.lane_queue_capacity);
         let stream = channel
@@ -778,9 +836,10 @@ impl Router {
             stream,
             transcription: self.transcription.clone(),
             typing: self.typing,
+            steer: steer.clone(),
         };
         let task = tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
-        Ok((tx, guard, task))
+        Ok((tx, guard, task, steer))
     }
 }
 
@@ -807,14 +866,15 @@ async fn run_lane(
     // M47: this chat was told the model can't see photos.
     let mut told_no_vision = false;
     // Taken off the queue behind a person's messages but not one of them
-    // (a scheduled prompt, a sub-agent's news): the next turn's.
-    let mut held: Option<LaneJob> = None;
+    // (a scheduled prompt, a sub-agent's news), or sent too late for the
+    // turn it steered (M56.1): the next turns', in this order.
+    let mut held: VecDeque<LaneJob> = VecDeque::new();
     // ponytail: a channel without busy notices pairs each request with its
     // answer (the HTTP API), so its messages keep a turn each; a flag of
     // its own if those two ever differ.
     let merges = channel.as_ref().is_none_or(|c| c.busy_notices());
     loop {
-        let job = match held.take() {
+        let job = match held.pop_front() {
             Some(job) => job,
             None => match rx.recv().await {
                 Some(job) => job,
@@ -830,9 +890,9 @@ async fn run_lane(
             person,
         } = job;
         // Messages a person sent while the last turn ran are one turn with
-        // one reply, not a reply each.
+        // one reply, not a reply each. Not past a held job: order holds.
         let mut earlier = Vec::new();
-        if person && merges {
+        if person && merges && held.is_empty() {
             loop {
                 match rx.try_recv() {
                     Ok(more) if more.person => {
@@ -844,7 +904,7 @@ async fn run_lane(
                         inbound = join(inbound, more.msg);
                     }
                     Ok(other) => {
-                        held = Some(other);
+                        held.push_back(other);
                         break;
                     }
                     Err(_) => break,
@@ -938,11 +998,16 @@ async fn run_lane(
             }
             agent.attach_images(photos);
         }
+        // M56.1: a person's turn hears what they send while it runs.
+        if person {
+            watch.steer.open(inbound.sender_id.clone());
+        }
         let run_result = if person {
             agent.run_user(&inbound.text, etx).await
         } else {
             agent.run(&inbound.text, etx).await
         };
+        let steered = watch.steer.close();
         watch.guard.disarm();
         agent.set_reply_stream(None);
         // Whatever still holds a sender (a sub-agent) now finds it closed
@@ -987,7 +1052,11 @@ async fn run_lane(
             }
         }
         if let Some(ch) = &channel {
-            for id in earlier.iter().chain([&inbound.message_id]) {
+            for id in earlier
+                .iter()
+                .chain(&steered.read)
+                .chain([&inbound.message_id])
+            {
                 if !id.is_empty() {
                     ch.answered(&inbound.chat_id, id).await;
                 }
@@ -1001,6 +1070,16 @@ async fn run_lane(
                 })
                 .map_err(|e| e.to_string());
             let _ = reply_tx.send(outcome); // receiver may have given up (e.g. caller timed out)
+        }
+        // M56.1: sent during the turn's last model call, after it last
+        // looked: the next turn's, before anything else waiting.
+        if let Some(msg) = steered.late.into_iter().reduce(join) {
+            watch.state.lock().unwrap().queued += 1;
+            held.push_front(LaneJob {
+                msg,
+                reply: None,
+                person: true,
+            });
         }
         watch.finish();
     }
@@ -1033,6 +1112,8 @@ struct LaneWatch {
     stream: Option<StreamPacing>,
     transcription: Option<Transcription>,
     typing: bool,
+    /// M56.1: open while a person's turn runs.
+    steer: Arc<Steering>,
 }
 
 /// Sent when a run ends with no text at all.
@@ -1040,16 +1121,6 @@ const EMPTY_REPLY: &str = "(I finished without writing a reply. Ask again if you
 
 /// Said once per chat when a photo arrives and the model can't see it.
 const NO_VISION: &str = "I saved your photo, but the model I'm using can't see images, so I only get the file. Pick a model marked “sees photos” in the dashboard's Models to change that.";
-
-/// A photo an adapter saved (M39's inbox), not a link (M47).
-fn is_image(a: &Attachment) -> bool {
-    a.kind.starts_with("image/") && Path::new(&a.url).is_file()
-}
-
-/// An audio file an adapter saved (M39's inbox), not a link.
-fn is_audio(a: &Attachment) -> bool {
-    a.kind.starts_with("audio/") && Path::new(&a.url).is_file()
-}
 
 /// M41: `inbound` with a line per audio attachment in front of its text:
 /// the transcript, or why there isn't one. The file's own line (M39's)

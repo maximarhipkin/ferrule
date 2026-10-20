@@ -320,6 +320,8 @@ impl Gateway {
             }
         }
         self.acknowledge(&msg).await;
+        // M56.1: into the running turn, when the chat steers.
+        let steered = self.router.steer(&msg);
         let busy_notices = self.channel(&msg.channel).is_none_or(|c| c.busy_notices());
         if let Some(lane) = busy_notices
             .then(|| self.router.claim_busy_notice(&msg, self.busy_notice_after))
@@ -328,6 +330,7 @@ impl Gateway {
             let text = busy_text(
                 &self.redactor.redact(&lane.activity),
                 lane.busy_for.unwrap_or_default(),
+                steered,
             );
             if let Some(channel) = self.channel(&msg.channel) {
                 let out = OutboundMessage {
@@ -343,6 +346,9 @@ impl Gateway {
                     }
                 });
             }
+        }
+        if steered {
+            return;
         }
         let reply = msg.clone();
         match self.router.offer(msg) {
@@ -592,14 +598,20 @@ async fn watchdog(
     }
 }
 
-/// The notice a message queued behind a busy turn gets.
-fn busy_text(activity: &str, busy_for: Duration) -> String {
+/// The notice a message that arrives during a busy turn gets: it's queued,
+/// or (M56.1) `steered` into that turn.
+fn busy_text(activity: &str, busy_for: Duration, steered: bool) -> String {
     let busy_for = human(busy_for);
+    let what = if steered {
+        "I passed your message to the running turn, which reads it at its next step — /stop to end that turn."
+    } else {
+        "your message is queued — /stop to cancel it."
+    };
     if activity.starts_with("waiting") {
         // The model is being retried (M19c): say what's waited for.
-        format!("Busy for {busy_for}, {activity}; your message is queued — /stop to cancel it.")
+        format!("Busy for {busy_for}, {activity}; {what}")
     } else {
-        format!("Busy with {activity} for {busy_for}; your message is queued — /stop to cancel it.")
+        format!("Busy with {activity} for {busy_for}; {what}")
     }
 }
 
@@ -1164,7 +1176,8 @@ mod tests {
         assert_eq!(
             busy_text(
                 "waiting out the model's rate limit, retry 2 in 25 s",
-                Duration::from_secs(40)
+                Duration::from_secs(40),
+                false
             ),
             "Busy for 40 s, waiting out the model's rate limit, retry 2 in 25 s; your message is queued — /stop to cancel it."
         );
@@ -1183,7 +1196,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        // All three are acknowledged and queued while "first" is held.
+        // All three are acknowledged while "first" is held; the two
+        // behind it go to its turn (M56.1), which is in its last model call.
         wait_for_log(&log, 5).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
@@ -1192,14 +1206,15 @@ mod tests {
                 "react 👀 to 1",
                 "turn: first",
                 "react 👀 to 2",
-                "send to 2: Busy with a model call for 0 s; your message is queued — /stop to cancel it.",
+                "send to 2: Busy with a model call for 0 s; I passed your message to the running turn, which reads it at its next step — /stop to end that turn.",
                 "react 👀 to 3",
             ]
         );
         release.add_permits(1);
         wait_for_log(&log, 8).await;
         let log = log.lock().unwrap();
-        // The two that waited are one turn, answering the latest.
+        // That call never read them, so they are the next turn, one turn
+        // answering the latest, as queued ones are.
         assert_eq!(
             log[5..8],
             [

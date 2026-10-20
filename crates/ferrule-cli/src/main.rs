@@ -2822,6 +2822,7 @@ async fn run_gateway(
             .with_max_turn(health::max_turn(&cfg))
             .with_streaming(streaming_channels(&cfg), StreamPacing::default())
             .with_typing(cfg.gateway.typing())
+            .with_while_busy(cfg.gateway.while_busy)
             .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
     );
     files.bind(&router);

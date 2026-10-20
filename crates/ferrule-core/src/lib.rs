@@ -35,7 +35,9 @@ pub use error::{CoreError, FailureClass};
 pub use event::AgentEvent;
 pub use guard::{Guard, GuardedCall, Verdict};
 pub use history::{result_ref, SearchHistoryTool, SEARCH_HISTORY};
-pub use hooks::{Budget, Inbox, RunEnd, RunObserver, SessionRecall, StopFlag, TurnContext};
+pub use hooks::{
+    Budget, Inbox, Inboxes, RunEnd, RunObserver, SessionRecall, StopFlag, TurnContext,
+};
 pub use ledger::{
     EvalTag, LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch, TraceEvent, TraceLevel,
 };

@@ -484,6 +484,15 @@ impl Agent {
         self
     }
 
+    /// Another inbox beside the one the agent has, asked after it (M56.1:
+    /// the gateway's person messages next to the supervisor's reports).
+    pub fn add_inbox(&mut self, inbox: Arc<dyn Inbox>) {
+        self.inbox = Some(match self.inbox.take() {
+            Some(first) => Arc::new(crate::hooks::Inboxes(vec![first, inbox])),
+            None => inbox,
+        });
+    }
+
     /// Photos that ride on the next goal message. The channel saved them to
     /// disk; each driver decides between pixels and a note (M47).
     pub fn attach_images(&mut self, images: Vec<crate::message::ImageRef>) {
@@ -1893,12 +1902,17 @@ impl Agent {
     }
 
     /// Whatever reached the inbox since the last model call, as one user
-    /// message.
+    /// message, then its whole messages (M56.1) one by one.
     fn deliver_inbox(&mut self) {
-        let Some(inbox) = &self.inbox else { return };
+        let Some(inbox) = self.inbox.clone() else {
+            return;
+        };
         let items = inbox.take();
         if !items.is_empty() {
             self.push(Message::user(items.join("\n\n")));
+        }
+        for msg in inbox.take_messages() {
+            self.push(msg);
         }
     }
 

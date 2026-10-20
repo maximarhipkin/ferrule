@@ -493,6 +493,10 @@ pub struct GatewayConfig {
     /// your message is queued" (default 30).
     #[serde(default)]
     pub busy_notice_secs: Option<u64>,
+    /// M56.1: a message sent while its chat's turn runs reaches that turn
+    /// (`"steer"`, the default) or waits for the next (`"queue"`).
+    #[serde(default)]
+    pub while_busy: ferrule_gateway::WhileBusy,
     /// Enable the stdin/stdout local channel (mostly for smoke-testing the
     /// gateway itself without any external service).
     #[serde(default)]
@@ -1516,6 +1520,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # typing = true                             # "typing…" in the chat while a turn runs
 # stop_grace_secs = 20                      # SIGTERM: running turns get this long, then they're stopped
 # busy_notice_secs = 30                     # a turn this old tells a queued message it's busy
+# while_busy = "steer"                      # a message sent mid-turn reaches that turn; "queue": the next
 # local = true                              # enable the stdin/stdout channel
 # telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
 # telegram_allowed_chats = []               # chat ids the bot answers; empty =
