@@ -236,7 +236,11 @@ travel on stdin, so they don't show up in the remote `ps`.
 
 - The timeout is the local one (120 s default). It fires the same drop.
 - Output is capped at the same `max_output_chars`, formatted as stdout,
-  `\n[stderr]\n` + stderr, `\n[exit code: N]`.
+  `\n[stderr]\n` + stderr, `\n[exit code: N]`. Over the cap (M55.3), the
+  whole output is written to `.ferrule/spill/<id>.log` in the *remote*
+  workspace, where the remote file tools can open it, and the result is
+  the exit-code line, the first ~2k and last ~8k characters, and that
+  path, as the local shell does.
 - The same deny patterns (`sudo `, `rm -rf /`, …) are checked before
   anything is sent.
 - The local shell does not stream (it waits for the output), so the remote

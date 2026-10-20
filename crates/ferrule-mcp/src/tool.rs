@@ -91,7 +91,9 @@ impl Tool for McpRemoteTool {
                         size_bytes: s.size_bytes,
                     })
                     .collect();
-                Ok(ToolOutput::capped(text, cap).with_files(files))
+                // Over the cap the whole text goes to a spill file, and
+                // the model gets its head, its tail and the file's path.
+                Ok(ToolOutput::spilled(text, None, cap, &ctx.workspace).with_files(files))
             }
             Err(e) => Err(CoreError::ToolFailed {
                 tool: self.full_name.clone(),

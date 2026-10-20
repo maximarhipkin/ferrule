@@ -450,9 +450,47 @@ impl Tool for RemoteShellTool {
         let (code, mut text) = run_remote(&self.link, &cmd, self.timeout)
             .await
             .map_err(|e| failed("shell", e))?;
-        text.push_str(&format!("\n[exit code: {code}]"));
-        Ok(ToolOutput::capped(text, ctx.max_output_chars))
+        let exit = format!("[exit code: {code}]");
+        text.push('\n');
+        text.push_str(&exit);
+        if text.chars().count() <= ctx.max_output_chars {
+            return Ok(ToolOutput::ok(text));
+        }
+        // As the local shell does, but the spill file goes to the remote
+        // workspace, where the remote file tools can open it.
+        let saved = spill_remote(&self.link, &text).await;
+        Ok(ToolOutput::spill_preview(
+            &text,
+            Some(&exit),
+            ctx.max_output_chars,
+            saved.as_deref().map_err(String::as_str),
+        ))
     }
+}
+
+/// Write `text` to a new file under the remote workspace's
+/// `.ferrule/spill/`, and return its workspace-relative path.
+async fn spill_remote(link: &Link, text: &str) -> Result<String, String> {
+    let shown = format!(
+        "{}/{}",
+        ferrule_core::tool::SPILL_DIR,
+        ferrule_core::tool::spill_file_name()
+    );
+    let (remote, path) = prepare(link, "shell", &shown)
+        .await
+        .map_err(|e| e.to_string())?;
+    write_bytes(
+        link,
+        "shell",
+        &remote,
+        &path,
+        &shown,
+        text.as_bytes().to_vec(),
+        "missing",
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(shown)
 }
 
 /// The owner's `verify_command`, run in the remote workspace.

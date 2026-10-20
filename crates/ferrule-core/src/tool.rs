@@ -1,7 +1,7 @@
 use crate::error::CoreError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// JSON-Schema tool description as sent to providers. The harness profile
@@ -49,19 +49,85 @@ impl ToolOutput {
         }
     }
     /// Enforce a hard size cap — verbose tool output is the #1 source of
-    /// context bloat. Long output goes to a spill file later; for now we cut.
+    /// context bloat. Keeps the head; output whose end matters (a shell
+    /// command's) goes through [`spilled`](Self::spilled) instead.
     pub fn capped(content: String, max_chars: usize) -> Self {
-        if content.len() <= max_chars {
-            return Self {
-                content,
-                truncated: false,
-                files: Vec::new(),
-            };
+        let total = content.chars().count();
+        if total <= max_chars {
+            return Self::ok(content);
         }
         let mut cut = content.chars().take(max_chars).collect::<String>();
-        cut.push_str(&format!("\n…[truncated, {} chars total]", content.len()));
+        cut.push_str(&format!("\n…[truncated, {total} chars total]"));
         Self {
             content: cut,
+            truncated: true,
+            files: Vec::new(),
+        }
+    }
+    /// Like [`capped`](Self::capped), but nothing is lost. Output over
+    /// `max_chars` is saved whole to `<workspace>/.ferrule/spill/<id>.log`,
+    /// and the model gets `lead` first (the shell's exit-code line), then
+    /// the first ~2k and the last ~8k characters, then the file's path.
+    /// Output that fits comes back whole, without `lead` (the caller has it
+    /// where it wants it already). Saving is best effort: when it fails the
+    /// head and tail still come back, with the reason.
+    pub fn spilled(
+        content: String,
+        lead: Option<&str>,
+        max_chars: usize,
+        workspace: &Path,
+    ) -> Self {
+        if content.chars().count() <= max_chars {
+            return Self::ok(content);
+        }
+        let saved = save_spill(workspace, &content);
+        Self::spill_preview(
+            &content,
+            lead,
+            max_chars,
+            saved.as_deref().map_err(String::as_str),
+        )
+    }
+    /// What [`spilled`](Self::spilled) returns for `content` over
+    /// `max_chars`, for a tool that saves the whole somewhere else (a
+    /// remote workspace): `saved` is the path shown, or why it wasn't
+    /// saved.
+    pub fn spill_preview(
+        content: &str,
+        lead: Option<&str>,
+        max_chars: usize,
+        saved: Result<&str, &str>,
+    ) -> Self {
+        let total = content.chars().count();
+        let budget = max_chars.min(SPILL_HEAD + SPILL_TAIL).min(total);
+        let head = budget * SPILL_HEAD / (SPILL_HEAD + SPILL_TAIL);
+        let tail = budget - head;
+        let at = |n: usize| {
+            content
+                .char_indices()
+                .nth(n)
+                .map_or(content.len(), |(i, _)| i)
+        };
+        let mut out = String::new();
+        if let Some(lead) = lead {
+            out.push_str(lead);
+            out.push('\n');
+        }
+        out.push_str(&content[..at(head)]);
+        out.push_str(&format!(
+            "\n…[{} characters cut here]…\n",
+            total - head - tail
+        ));
+        out.push_str(&content[at(total - tail)..]);
+        out.push('\n');
+        out.push_str(&match saved {
+            Ok(path) => format!(
+                "[{total} characters in all; the whole output is in {path}: read or grep that file for the part cut]"
+            ),
+            Err(why) => format!("[{total} characters in all; the whole output wasn't saved: {why}]"),
+        });
+        Self {
+            content: out,
             truncated: true,
             files: Vec::new(),
         }
@@ -71,6 +137,57 @@ impl ToolOutput {
         self.files = files;
         self
     }
+}
+
+/// Where [`ToolOutput::spilled`] saves output too long for the context:
+/// under the workspace, so `read_file` and `shell` can open it. Files stay
+/// until the owner cleans the dir; nothing prunes them yet.
+pub const SPILL_DIR: &str = ".ferrule/spill";
+/// How much of a spilled output stays inline: about 2k characters from the
+/// start and 8k from the end, where a build's or a test run's failures
+/// are. A smaller cap shrinks both in proportion.
+const SPILL_HEAD: usize = 2_000;
+const SPILL_TAIL: usize = 8_000;
+
+/// A new spill file's name: the time, so the dir sorts, and a random part.
+pub fn spill_file_name() -> String {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    format!(
+        "{}-{}.log",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S"),
+        &id[..8]
+    )
+}
+
+/// Write `content` to a new file under `<workspace>/.ferrule/spill/`, and
+/// return its workspace-relative path.
+fn save_spill(workspace: &Path, content: &str) -> Result<String, String> {
+    let dir = workspace.join(SPILL_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {SPILL_DIR}: {e}"))?;
+    // This runs in ferrule's own process, not the sandbox, and a sandboxed
+    // command can make links in the workspace: a spill dir that resolves
+    // outside it is refused, and the file is new (never a link followed).
+    let inside = std::fs::canonicalize(&dir)
+        .ok()
+        .zip(std::fs::canonicalize(workspace).ok())
+        .is_some_and(|(d, w)| d.starts_with(w));
+    if !inside {
+        return Err(format!("{SPILL_DIR} leads outside the workspace"));
+    }
+    // Logs, not work: git (and `auto_commit`) leaves them out.
+    let _ = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(".gitignore"))
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b"*\n"));
+    let name = spill_file_name();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(&name))
+        .and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes()))
+        .map_err(|e| format!("could not write {SPILL_DIR}/{name}: {e}"))?;
+    Ok(format!("{SPILL_DIR}/{name}"))
 }
 
 /// Shared, immutable context handed to every tool call.

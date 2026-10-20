@@ -155,8 +155,18 @@ impl Tool for ShellTool {
         }
 
         let (code, mut text) = self.run(&cmd, &ctx.workspace).await?;
-        text.push_str(&format!("\n[exit code: {code}]"));
-        Ok(ToolOutput::capped(text, ctx.max_output_chars))
+        // Over the cap, the whole output goes to a spill file and the
+        // model gets the exit code first, then the head and the tail:
+        // a failing build's errors come last.
+        let exit = format!("[exit code: {code}]");
+        text.push('\n');
+        text.push_str(&exit);
+        Ok(ToolOutput::spilled(
+            text,
+            Some(&exit),
+            ctx.max_output_chars,
+            &ctx.workspace,
+        ))
     }
 }
 

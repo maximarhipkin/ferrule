@@ -6497,3 +6497,59 @@ loop. Nothing was checked against the live GPT-5.6 API. `restart_hint()`
 on macOS still names `kickstart -k`. Two items listed as Open above are
 now closed here: the managed test race (main's 58272da) and the "uncommitted
 neighbour" note in the sandbox entry.
+
+### 2026-10-21 — M55.3: long shell output keeps its tail and exit code (Claude, Opus 5.5)
+
+**Why.** The shell appended `[exit code: N]` and then `ToolOutput::capped`
+kept the *first* 30,000 characters, so a failing `cargo test` with long
+output showed the passing head and hid the failures and the exit code.
+
+**What changed.**
+- `ferrule-core/src/tool.rs`: `ToolOutput::spilled(text, lead, cap,
+  workspace)`. Output that fits comes back whole, exactly as before. Over
+  the cap, the whole text is written to a new
+  `<workspace>/.ferrule/spill/<UTC time>-<8 hex>.log`, and the result is
+  `lead` (the exit-code line), the first ~2k and last ~8k characters (a
+  fifth and four fifths of a smaller cap), a "N characters cut here"
+  marker between them, and a last line naming the file. The write follows
+  the MCP media rules: the dir must resolve inside the workspace (a
+  sandboxed command can plant links there) and the file is
+  `create_new`. A failed write still returns the head and tail, with the
+  reason. The dir gets a `.gitignore` of `*`, so `auto_commit` never
+  commits logs. `ToolOutput::spill_preview` builds the same result for a
+  caller that saves elsewhere.
+- `capped` compared `len()` (bytes) to a character cap, and reported
+  bytes as "chars total"; both are characters now.
+- Local `shell`: uses `spilled`, so the exit code comes first and last.
+- SSH `shell`: the spill goes to `.ferrule/spill/` in the *remote*
+  workspace through the guarded remote write (`missing` guard, so it
+  never overwrites), where the remote file tools can open it.
+- MCP text results: `spilled` with no lead, at the same per-server and
+  per-tool caps.
+- Tests changed because the shape changed: `mcp_client::enabled_tools_…`
+  (now in a temp workspace, so the spill doesn't land in the crate dir)
+  and `sshd::timeouts_and_output_caps_…` (exit code first, the remote
+  spill file holds all 200,015 characters). No new tests.
+- Docs: `m34-ssh-local.md` (the shell's limits), `m17-mcp-add.md` (caps),
+  README's Tools row.
+
+**Secrets.** No known-values scrubber is reachable from `ferrule-core`,
+`ferrule-tools`, `ferrule-ssh` or `ferrule-mcp` (`Proxy::scrub_text` and
+the gateway's `Redactor` live in `ferrule-proxy`/`ferrule-cli`, and
+`ToolContext` carries neither). The spill holds exactly what the command
+printed, which the model would have seen anyway had it fit; commands see
+placeholders, not real keys. Scrubbing spill files with the live value set
+is left to **M54.3**, which plans one scrub call in the tool phase and the
+same call for spill files.
+
+**Checks.** `make check` exited 0: fmt clean, clippy clean, 1869 passed,
+0 failed, 28 ignored across 71 test binaries (macOS; the `sshd::` tests
+ran against the system sshd).
+
+**Open.** Nothing prunes `.ferrule/spill/` (deleting in a dir a sandboxed
+command can relink is a race, so it's the owner's to clean, like
+`.ferrule/mcp-content/`). An MCP result spilled while the workspace is
+remote (SSH) lands in the *local* workspace, out of the remote tools'
+reach, as MCP media already does. The `shell` tool's description still
+says "Output is truncated if very long" (left as is: it's in the prompt
+prefix, and still true).
