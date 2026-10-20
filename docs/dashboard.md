@@ -15,7 +15,9 @@ down, with the kill switch on or a cap hit.
 
 - By default (`[dashboard] remote = "tunnel"`), the reply is "Opening the
   dashboard's tunnel, the link follows in a moment", then an
-  `https://….trycloudflare.com/login#…` link. Tap it.
+  `https://….trycloudflare.com/login#…` link once the tunnel answers. Tap
+  it. If the tunnel hasn't answered within 20 s the link comes anyway,
+  saying the page may take a few more seconds.
 - The tunnel needs `cloudflared`. Ferrule looks for it on `PATH`, then in
   the usual install dirs (`/usr/local/bin`, `/usr/bin`, `/opt/homebrew/bin`,
   `~/.local/bin`, …), then in `<data>/bin`. When it finds none, the first

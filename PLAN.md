@@ -6597,3 +6597,51 @@ were added.
 **Open.** Not run against a live `claude` turn. The unit test the gap
 analysis suggests (every bridged name resolves in the registry) wasn't
 written, per the no-new-tests rule.
+
+### 2026-10-21 — M55.5: two dashboard login fixes (Claude, Opus 5.5)
+
+**Why.** (a) `tunnel::open` returns as soon as cloudflared prints the
+`trycloudflare.com` address, and `/dashboard` minted and sent the link
+right then, before Cloudflare routed the tunnel, so the first tap often
+failed. (b) `login()` called `Links::consume(token)`, which deleted the
+link, and only then compared its host: a link opened on the wrong address
+(loopback, an older tunnel) was burnt and the right tap then said "used".
+
+**What changed.**
+- (a) `Dashboard::remote_link` returns a `RemoteLink { url, ready }`.
+  `open_tunnel` now also says whether it opened the tunnel; a newly
+  opened one is probed with `tunnel_answers(host, TUNNEL_READY = 20 s)`:
+  `GET https://<host>/healthz`, 5 s per try, backoff 0.25 s doubling to
+  2 s, until the answer is the dashboard's own JSON (`status` and
+  `version` strings; Cloudflare's error pages aren't JSON). Only then is
+  the token minted. If it never answers, the link is still sent, with a
+  line saying the tunnel is still coming up (`door::remote_text`, used by
+  both `/dashboard` paths and the after-restart relink). A tunnel that
+  was already open isn't probed, so the in-chat answer for it stays
+  immediate. `ferrule dashboard link --remote` waits the same way.
+- (b) `Links::consume(token, host)` checks the host under the link
+  file's lock and returns `Consumed::{Used, WrongHost, Invalid}`; a live
+  link made for another host is refused and kept. `login()` answers a
+  wrong host with its own 401 ("made for another address") and logs the
+  host it came in on (Debug-quoted) and the host the link was made for,
+  never the token.
+- Tests changed for the new signature: `auth::tests::a_link_works_once`,
+  `tampered_expired_and_cleared_links_fail`,
+  `sessions_survive_a_restart_…`; and
+  `dashboard::tests::a_link_made_for_the_tunnel_works_only_there`, whose
+  message said the wrong-host try "spent" the link: it now reuses the
+  same token on the right host instead of minting a second one. No new
+  tests.
+- Docs: `m22-dashboard.md` (§1: the wait, and "a link is for its host"),
+  `dashboard.md` (Opening it).
+
+**Checks.** `make check` exited 0 (1869 passed, 0 failed, 28 ignored,
+71 binaries; macOS), with `GIT_CONFIG_GLOBAL` pointed at an empty file
+for the reason in the M55.4 entry.
+
+**Open.** Not tried against a real quick tunnel. The probe goes out from
+the gateway to Cloudflare and back, so a machine that can't reach its own
+tunnel's address (no outbound HTTPS beyond cloudflared's) waits the full
+20 s and then sends the link with the "still coming up" line. A second
+`/dashboard` while the first one's probe runs finds the tunnel open and
+answers without waiting.

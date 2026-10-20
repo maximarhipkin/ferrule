@@ -86,6 +86,18 @@ says so and gives the local link with the SSH port-forward that reaches it.
   cap hit.
   Opening a tunnel takes a few seconds: the reply comes at once ("opening
   a tunnel, the link follows"), and the link follows as a second message.
+  Since M55.5 the link is minted only once the new tunnel answers:
+  cloudflared prints the `trycloudflare.com` address before Cloudflare
+  routes it, so ferrule asks `https://<host>/healthz` with backoff (0.25 s
+  doubling to 2 s) until its own JSON comes back, for up to 20 s. A tunnel
+  still silent then gets its link anyway, with a line saying the page may
+  take a few more seconds. `ferrule dashboard link --remote` waits the
+  same way.
+- **A link is for its host.** A link made for the tunnel and opened on
+  another address (loopback, an older tunnel) is refused and *not* used
+  up (M55.5): the host is checked under the link file's lock before the
+  link is removed, so the owner's next tap on the right address works.
+  The refusal is logged with the host it came in on, never the token.
 - **`/dashboard off`** revokes: every unused link, every session, and the
   tunnel.
 - **`ferrule dashboard link [--remote]`** on the machine mints a link for

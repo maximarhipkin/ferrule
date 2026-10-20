@@ -180,8 +180,13 @@ pub async fn cmd(op: Option<DashCmd>) -> Result<()> {
             let bin = cloudflared.path().await?;
             let tunnel = ferrule_connections::tunnel::open(&bin, port).await?;
             let host = super::host_of(&tunnel.url)?;
+            // The address is printed before Cloudflare routes it (M55.5).
+            let ready = super::tunnel_answers(&host, super::TUNNEL_READY).await;
             let token = links.mint(Some(&host), minutes)?;
             println!("https://{host}/login#{token}");
+            if !ready {
+                println!("The tunnel is still coming up: if the page doesn't load, give it a few more seconds.");
+            }
             println!(
                 "One login, valid for {} min. The tunnel stays open until Ctrl-C.",
                 cfg.dashboard.link_minutes.max(1)

@@ -409,17 +409,32 @@ impl Dashboard {
     }
 
     /// A login link through the tunnel, opening it first if needed.
-    pub async fn remote_link(&self) -> Result<String> {
-        let host = self.open_tunnel().await?;
+    /// cloudflared prints a quick tunnel's address before Cloudflare
+    /// routes it, so a link sent at once fails on the first tap: a new
+    /// tunnel gets up to [`TUNNEL_READY`] to answer before the link is
+    /// minted, and the link says whether it did.
+    pub async fn remote_link(&self) -> Result<RemoteLink> {
+        let (host, opened) = self.open_tunnel().await?;
+        let ready = !opened || tunnel_answers(&host, TUNNEL_READY).await;
+        if !ready {
+            tracing::warn!(
+                "dashboard: the new tunnel didn't answer within {} s; sending its link anyway",
+                TUNNEL_READY.as_secs()
+            );
+        }
         let token = self
             .links
             .mint(Some(&host), minutes(self.settings.link_minutes))?;
         self.touch();
-        Ok(format!("https://{host}/login#{token}"))
+        Ok(RemoteLink {
+            url: format!("https://{host}/login#{token}"),
+            ready,
+        })
     }
 
-    /// Opens the quick tunnel (or keeps the open one): its host.
-    pub async fn open_tunnel(&self) -> Result<String> {
+    /// Opens the quick tunnel (or keeps the open one): its host, and
+    /// whether this call opened it.
+    pub async fn open_tunnel(&self) -> Result<(String, bool)> {
         crate::managed::forbid("a tunnel", "the panel's proxy is the way in")?;
         if self.settings.remote != "tunnel" {
             bail!(
@@ -431,7 +446,7 @@ impl Dashboard {
         let mut slot = self.tunnel.lock().await;
         if let Some(t) = slot.as_mut() {
             if t.alive() {
-                return host_of(&t.url);
+                return Ok((host_of(&t.url)?, false));
             }
         }
         let port = self.port();
@@ -443,7 +458,7 @@ impl Dashboard {
         *slot = Some(t);
         *self.tunnel_host.lock().unwrap() = Some(host.clone());
         self.touch();
-        Ok(host)
+        Ok((host, true))
     }
 
     /// `/dashboard off`: every link and session stops working and the
@@ -490,7 +505,7 @@ impl Dashboard {
         match self.remote_link().await {
             Ok(link) => Some(format!(
                 "The gateway restarted, so the dashboard has a new address.\n{}",
-                door::link_text(self, &link, true)
+                door::remote_text(self, &link)
             )),
             Err(e) => {
                 tracing::warn!("dashboard: reopening the tunnel after the restart: {e:#}");
@@ -814,7 +829,7 @@ impl Dashboard {
         if token.starts_with(panel::PREFIX) {
             return self.panel_login(host, token);
         }
-        let used = match self.links.consume(token) {
+        let used = match self.links.consume(token, host) {
             Ok(u) => u,
             Err(e) => {
                 tracing::warn!("dashboard links: {e:#}");
@@ -822,7 +837,17 @@ impl Dashboard {
             }
         };
         match used {
-            Some(u) if u.host.as_deref().is_none_or(|h| h == host) => {
+            auth::Consumed::WrongHost { made_for } => {
+                // Never the token. The host header is the visitor's own text.
+                tracing::warn!(
+                    "dashboard: a login link made for {made_for} was opened on {host:?}; refused, and the link still works on its own host"
+                );
+                refuse(
+                    401,
+                    "this link was made for another address: open it exactly as it was sent",
+                )
+            }
+            auth::Consumed::Used => {
                 let (cookie, csrf) = match self.sessions.open(host, self.links.revoked_ms(), None) {
                     Ok(s) => s,
                     Err(e) => {
@@ -849,7 +874,7 @@ impl Dashboard {
                     ),
                 )
             }
-            _ => refuse(
+            auth::Consumed::Invalid => refuse(
                 401,
                 "this link was used, expired or isn't valid: ask for a new one with /dashboard",
             ),
@@ -861,6 +886,45 @@ impl Dashboard {
     async fn api(&self, get: bool, req: &Request, body: &Value) -> Option<(u16, Value)> {
         api::route(&self.ctx, get, req, body).await
     }
+}
+
+/// How long a new quick tunnel gets to answer before its link is sent
+/// anyway (M55.5).
+pub const TUNNEL_READY: Duration = Duration::from_secs(20);
+
+/// A login link through the tunnel.
+#[derive(Debug, Clone)]
+pub struct RemoteLink {
+    pub url: String,
+    /// Whether the tunnel answered before the link was made. When it
+    /// didn't, the message says the page may take a few more seconds.
+    pub ready: bool,
+}
+
+/// Whether `https://<host>/healthz` answers as a ferrule dashboard within
+/// `within`, asked again with backoff. Until Cloudflare routes a new quick
+/// tunnel, its address gives an error page or no answer, never this JSON.
+pub async fn tunnel_answers(host: &str, within: Duration) -> bool {
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+    let url = format!("https://{host}/healthz");
+    let ours = |v: &Value| v["status"].is_string() && v["version"].is_string();
+    tokio::time::timeout(within, async {
+        let mut pause = Duration::from_millis(250);
+        loop {
+            if let Ok(r) = http.get(&url).send().await {
+                if r.json::<Value>().await.is_ok_and(|v| ours(&v)) {
+                    return;
+                }
+            }
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(Duration::from_secs(2));
+        }
+    })
+    .await
+    .is_ok()
 }
 
 fn refuse(status: u16, why: &str) -> Response {
@@ -1280,12 +1344,8 @@ mod tests {
         let r = d
             .handle(req("POST", "/api/login", &[JSON, ORIGIN], &body))
             .await;
-        assert_eq!(r.status, 401, "used on loopback, it's spent and refused");
-        let token = d
-            .links
-            .mint(Some("a-b.trycloudflare.com"), Duration::from_secs(60))
-            .unwrap();
-        let body = json!({ "token": token }).to_string();
+        assert_eq!(r.status, 401, "used on loopback, it's refused");
+        // ...and not spent: the same link still works on its own host.
         let r = d
             .handle(req(
                 "POST",
