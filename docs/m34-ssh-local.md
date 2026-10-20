@@ -1,7 +1,7 @@
 # M34 — SSH workspaces and local-model first run (design)
 
-Status: design, 2026-09-26, branch `m34-ssh-local`. Written before the
-code; where the build departs from it, see **As built** at the end.
+Status: merged to `main` (PR #28, 2026-09-26). Written as the design on
+2026-09-26, branch `m34-ssh-local`, before the code; where the build departs from it, see **As built** at the end.
 User guides: [ssh.md](ssh.md), [local-models.md](local-models.md).
 
 Two items from the strategy doc (§4):

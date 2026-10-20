@@ -1,6 +1,7 @@
 # M14 — `ferrule eval`: design
 
-Status: design, 2026-09-24. Builds on the roadmap's M14 section (commit
+Status: parts 1–5 merged to `main` (PR #3, 2026-09-24). Written as the
+design on 2026-09-24. Builds on the roadmap's M14 section (commit
 `ba6b0f5`, "the naive/engineered A/B design and the demonstration goal")
 and §4.2 of `docs/research-number-one-harness-strategy.md`. Where this
 document departs from either, it says so and why.

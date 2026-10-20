@@ -1,7 +1,7 @@
 # M22: the dashboard — one page for the whole app (design)
 
-Status: built, 2026-09-25, branch `m22-dashboard` (PR to main, not
-merged). Follows M19b (reliability), M20 (connections) and M21 (models).
+Status: built, 2026-09-25, branch `m22-dashboard` (merged to `main`,
+PR #16). Follows M19b (reliability), M20 (connections) and M21 (models).
 Where the build departs from this design: **As built** at the end. The
 user guide is [dashboard.md](dashboard.md).
 
@@ -53,8 +53,13 @@ says so and gives the local link with the SSH port-forward that reaches it.
   while it's open. Neither gets anything without a login link: every page
   except the static shell and `/api/login` needs a session.
 - **Cloudflare** terminates TLS and sees the traffic (pages, API JSON,
-  cookies). That's the price of no inbound port. What the page shows is
-  already redacted (below), so Cloudflare never sees a key or token.
+  cookies). That's the price of no inbound port. What the page *shows*
+  is redacted (below), so no key or token goes out in a response. What
+  the owner *types* is another matter: the provider, plan, connection,
+  tool-key and channel forms (added from M37 on) POST their keys as
+  plain JSON, so over a tunnel Cloudflare sees those keys. To keep a key
+  off the tunnel, enter it on the loopback page (`ssh -L` to the box) or
+  with `ferrule setup` on the box.
 - **The login link** is the only credential: 32 random bytes, one use,
   10 minutes. It travels in the URL **fragment** (`/login#<token>`), which
   browsers never send, so Telegram's link preview, Cloudflare's logs and

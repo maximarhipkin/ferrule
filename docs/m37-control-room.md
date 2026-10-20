@@ -1,7 +1,7 @@
 # M37 — The control room (design)
 
-Status: design, 2026-09-27, branch `m37-control-room`. Written before the
-code; where the build departs from it, see **As built** at the end. User
+Status: merged to `main` (PR #32, 2026-09-28). Written as the design on
+2026-09-27, branch `m37-control-room`, before the code; where the build departs from it, see **As built** at the end. User
 guides: [dashboard.md](dashboard.md), [connections.md](connections.md).
 
 Max, 27.09, from his phone, through the `/dashboard` tunnel, with Ferrule

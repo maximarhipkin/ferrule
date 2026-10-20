@@ -1,6 +1,7 @@
 # M36 — Self-update and self-repair (design)
 
-Status: built, 2026-09-27, branch `m36-self-update`. Written before
+Status: built, 2026-09-27, branch `m36-self-update`; merged to `main`
+(PR #31). Written before
 the code; where the build departs from it, see **As built** at the end.
 User guide: [updates.md](updates.md).
 

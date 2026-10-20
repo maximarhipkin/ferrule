@@ -1,7 +1,7 @@
 # M19b: reliability — never silently deaf (design)
 
-Status: built 2026-09-25 on branch `m19b-reliability` (parts 1–6, PR open,
-not merged). Follows M19 (trust & cost) and the Telegram hotfix (PR #8).
+Status: built 2026-09-25 on branch `m19b-reliability` (parts 1–6), merged
+to `main` (PR #12). Follows M19 (trust & cost) and the Telegram hotfix (PR #8).
 The design is below as written; **As built** at the end lists where the
 build departs from it or pins down what it left open.
 

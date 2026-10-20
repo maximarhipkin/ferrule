@@ -1,7 +1,7 @@
 # M32 — WASM tool plugins (design)
 
-Status: design, 2026-09-26, branch `m32-wasm-plugins`. Written before the
-code; where the build departs from it, see **As built** at the end.
+Status: merged to `main` (PR #26, 2026-09-26). Written as the design on
+2026-09-26, branch `m32-wasm-plugins`, before the code; where the build departs from it, see **As built** at the end.
 User guide: [plugins.md](plugins.md).
 
 An MCP server is a whole program: its own runtime (node, python, a binary),

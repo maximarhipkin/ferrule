@@ -280,9 +280,13 @@ others are silent, which doesn't mean the risk doesn't apply to them.
 - **Websockets and HTTP/2** aren't supported on bound hosts: `Upgrade` gets
   501, and ALPN is pinned to http/1.1. Unbound hosts are unaffected.
 - **Any port on a bound host is intercepted,** not just 443.
-- **Only the shell tool goes through the proxy.** `web_fetch` and the other
-  in-process tools don't. MCP servers are spawned with ferrule's real
-  environment and aren't sandboxed (an open M6 edge).
+- **Only the shell tool goes through the proxy** was true when this was
+  written (M7) and no longer is. Since M10, `web_fetch` and MCP servers
+  by URL go through it, and stdio MCP servers run in the sandbox
+  without ferrule's environment; since M26, so does plain-HTTP
+  `web_fetch`; since M33, `web_search`, MCP over HTTP and plugins always
+  do, and shell commands do whenever secrets or egress rules exist.
+  `docs/sandbox.md` and `docs/egress.md` say what holds today.
 - **`[sandbox] network = false`** makes the proxy unreachable, so
   `[secrets]` does nothing. `ferrule sandbox` warns about this.
 - **The guarantee needs an active OS sandbox.** Without one, a command can

@@ -596,28 +596,36 @@ are in [`docs/research-credential-gateway.md`](docs/research-credential-gateway.
 
 ```
 crates/
-  ferrule-core       agent loop, provider trait, harness profiles, compaction, transcripts
-  ferrule-providers  OpenAI-compatible driver
-  ferrule-tools      fs / shell / web_fetch / diary / memory tools, proxied egress
-  ferrule-memory     SQLite + FTS5 memory with time decay
-  ferrule-embed      embedders: local model2vec, OpenAI-compatible /v1/embeddings
-  ferrule-gateway    daemon: channels (Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, HTTP API, local), session router, scheduler
-  ferrule-mcp        MCP client: sandboxed stdio servers, Streamable HTTP servers
-  ferrule-skills     Agent Skills discovery and loading
-  ferrule-plugins    WASM tool plugins: wasmi runtime, capabilities, limits
-  ferrule-plugin-sdk the Rust SDK for writing a plugin
-  ferrule-codemap    tree-sitter repo map and code search
-  ferrule-sandbox    OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt)
-  ferrule-ssh        SSH workspaces: remote shell and file tools over OpenSSH
-  ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing, egress policy
-  ferrule-otel       OpenTelemetry export: OTLP/HTTP JSON spans
-  ferrule-cli        the `ferrule` binary
+  ferrule-core        agent loop, provider and tool traits, harness profiles, compaction, transcripts
+  ferrule-providers   drivers: OpenAI-compatible chat, Anthropic Messages, OpenAI Responses (and the ChatGPT plan)
+  ferrule-tools       fs / edit_file / shell / web_fetch / web_search / diary tools, proxied egress
+  ferrule-memory      SQLite + FTS5 memory with time decay, merged with vector recall
+  ferrule-embed       embedders: local model2vec, OpenAI-compatible /v1/embeddings
+  ferrule-gateway     daemon: channels (Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, HTTP API, local), session router, scheduler
+  ferrule-mcp         MCP client: sandboxed stdio servers, Streamable HTTP servers, the browser
+  ferrule-skills      Agent Skills discovery, loading and keyword triggers
+  ferrule-agents      sub-agents: spawn/wait/resume/close, a board, a task list, worktrees, limits
+  ferrule-extensions  self-extension: allow-listed MCP servers and skills, pinned, scanned, hot-loaded
+  ferrule-eval        `ferrule eval`: suites, fixtures, graders, the A/B and its reports
+  ferrule-hooks       lifecycle hooks, workspace trust, the hooks audit log
+  ferrule-learn       the learning loop: gated playbook, memory consolidation
+  ferrule-trust       caps from the ledger, the kill switch, approval gates, plan mode, the audit log
+  ferrule-connections connections: OAuth (PKCE, DCR), the relay, encrypted key form, sealed tokens
+  ferrule-plans       subscription plans: ChatGPT sign-in, the Claude Code engine
+  ferrule-plugins     WASM tool plugins: wasmi runtime, capabilities, limits
+  ferrule-plugin-sdk  the Rust SDK for writing a plugin
+  ferrule-codemap     tree-sitter repo map and code search
+  ferrule-sandbox     OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt / a restricted token on Windows)
+  ferrule-ssh         SSH workspaces: remote shell and file tools over OpenSSH
+  ferrule-proxy       credential gateway: placeholders, TLS-intercepting proxy, scrubbing, egress policy
+  ferrule-otel        OpenTelemetry export: OTLP/HTTP JSON spans
+  ferrule-cli         the `ferrule` binary and all wiring: setup, doctor, dashboard, service, update
 ```
 
 ## Development
 
 ```bash
-cargo test --workspace                     # 1628 tests; a few platform-only ones are cfg'd out per OS
+cargo test --workspace                     # 1869 tests (macOS, 2026-10-21); a few platform-only ones are cfg'd out per OS
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)

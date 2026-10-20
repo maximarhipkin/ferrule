@@ -1,6 +1,6 @@
 # M47 — the dashboard, redesigned
 
-Status: **built** (parts 1–7), PR to `main` open, not merged. The plan below
+Status: **built** (parts 1–7) and merged to `main` (PR #39, 2026-09-30). The plan below
 was written first; "Corrections made while building" lists where the code
 corrected it, and "Verified, and how" says what was actually run.
 

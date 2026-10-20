@@ -1,6 +1,7 @@
 # M23: native Anthropic and OpenAI Responses drivers (design)
 
-Status: design, 2026-09-25, branch `m23-drivers` (cut from `main` at the
+Status: merged to `main` (PR #17, 2026-09-25). Written as the design on
+2026-09-25, branch `m23-drivers` (cut from `main` at the
 v0.3.0 release). The user guide is `docs/models.md`.
 
 ## Why

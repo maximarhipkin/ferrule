@@ -373,6 +373,11 @@ with the safe default and is repeated in the final report.
     page; that's a follow-up.
   - The brief bars it for update, restart, connect and secrets anyway.
   - **Solo:** none ships.
+  - **Since 2026-10-20 (PR #44)** a narrower grant exists outside M48:
+    "Allow for this run" lets one gated *shell* command run again
+    without asking until the run ends (`docs/m19-trust-cost.md` §7).
+    Admin questions never offer it, so D9 still holds for every
+    `ferrule_admin` op.
 - **D10 — Codes never run out.** After 1000 failed 2-character draws,
   `open_for` draws 3-character codes (letter, digit, letter: 4608 codes).
   Fixes bug 6.

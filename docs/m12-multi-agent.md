@@ -1,6 +1,7 @@
 # M12 — multi-agent: design
 
-Status: design, 2026-09-24. Scope is `docs/roadmap.md` → M12 (approved,
+Status: parts 1–5 merged to `main` (PR #1, 2026-09-24); part 6, named
+long-lived agents, is deferred. Written as the design on 2026-09-24. Scope is `docs/roadmap.md` → M12 (approved,
 msg 3090), with the deltas from `docs/research-number-one-harness-strategy.md`
 §5 folded in (the table at the end says which were adopted, changed or
 rejected, and why). Per-session workspaces were dropped (msg 3088): a child

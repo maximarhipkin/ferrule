@@ -1,6 +1,7 @@
 # M35 — Subscription sign-in: a ChatGPT plan and a Claude plan (design)
 
-Status: built, 2026-09-27, branch `m35-subscriptions`. Written before the
+Status: built, 2026-09-27, branch `m35-subscriptions`; merged to `main`
+(PR #30). Written before the
 code; where the build departs from it, see **As built** at the end.
 User guide: [subscriptions.md](subscriptions.md).
 

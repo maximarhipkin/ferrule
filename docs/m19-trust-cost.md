@@ -1,6 +1,7 @@
 # M19: trust & cost (design)
 
-Status: design, 2026-09-25. Builds on the roadmap's M19 section. Where this
+Status: merged to `main` (PR #9, 2026-09-25). Written as the design on
+2026-09-25. Builds on the roadmap's M19 section. Where this
 document departs from it, it says so and why.
 
 ## What changes

@@ -1,6 +1,7 @@
 # M15: the memory update pipeline and reversible compaction (design)
 
-Status: design, 2026-09-24. Builds on the roadmap's M15 section and on
+Status: merged to `main` (PR #4, 2026-09-24). Written as the design on
+2026-09-24. Builds on the roadmap's M15 section and on
 §4.3/§4.4 of `docs/research-number-one-harness-strategy.md`. Where this
 document departs from either, it says so and why.
 
