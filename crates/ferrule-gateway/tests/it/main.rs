@@ -8,6 +8,7 @@ mod email;
 mod http;
 mod matrix;
 mod mattermost;
+mod media;
 mod send_file;
 mod signal;
 mod slack;

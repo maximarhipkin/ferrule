@@ -817,6 +817,7 @@ dependencies = [
  "ferrule-hooks",
  "ferrule-learn",
  "ferrule-mcp",
+ "ferrule-media",
  "ferrule-memory",
  "ferrule-otel",
  "ferrule-plans",
@@ -1002,6 +1003,7 @@ dependencies = [
  "croner",
  "ferrule-connections",
  "ferrule-core",
+ "ferrule-media",
  "ferrule-sandbox",
  "ferrule-tools",
  "futures-util",
@@ -1077,6 +1079,21 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "ferrule-media"
+version = "0.13.1"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
