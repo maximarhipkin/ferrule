@@ -56,7 +56,8 @@ says so and gives the local link with the SSH port-forward that reaches it.
   cookies). That's the price of no inbound port. What the page *shows*
   is redacted (below), so no key or token goes out in a response. What
   the owner *types* into a key field (the provider, plan, connection,
-  relay, Google client, tool-key, Telegram and channel forms) is
+  relay, Google client, tool-key, Telegram and channel forms, and the
+  Safe's Rotate from M52) is
   **sealed in the browser** since M52.1: right before sending, the page
   asks for a one-time public key (`POST /api/seal`, session and CSRF
   checked), seals the value to it with M20's key-form scheme (ECDH

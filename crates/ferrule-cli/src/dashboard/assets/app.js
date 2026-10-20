@@ -2635,7 +2635,7 @@
           el("p", { class: "muted", text: "Connections aren't set up in this process: run `ferrule connections setup` on the machine." }),
         el("div", { class: "picks mt" },
           this.pick("Any app by its address", ["MCP", null], null, "mcp server url address tools sign-in key", () => this.addressPanel()),
-          this.pick("A key for a tool", ["key", null], null, "secret api key token command weather", () => this.toolKeyPanel())),
+          this.pick("Safe — every key it holds", ["key", null], null, "safe secret api key token command weather rotate vault", () => this.toolKeyPanel())),
         el("p", { class: "muted small" }, "Manage what's connected on ", el("a", { href: "#models", text: "Models" }), ", ",
           el("a", { href: "#channels", text: "Channels" }), ", ", el("a", { href: "#connections", text: "Connections" }), " and ",
           el("a", { href: "#extensions", text: "Extensions" }), "."));
@@ -2685,8 +2685,10 @@
             el("div", { class: "row" }, el("label", { class: "cb" }, w2, "allow changes (send, edit)"), go2),
             el("p", { class: "muted small m0", text: "Tried once against the app before it's saved. A server that runs a program on this machine is added there, with ferrule mcp add." }))) });
     },
-    // A key for a command (M50 C): a new [secrets] name, its value and the
-    // sites it may go to. The list shows names and sites, never a value.
+    // The Safe (M52, was M50 C's tool-key panel): every key the bot
+    // holds — names, where each goes and what uses it, never a value.
+    // Add a new tool key, rotate any kept value, move a tool key's
+    // sites, remove a page-made one. One confirm card per change.
     toolKeyPanel() {
       const box = el("div", { class: "stack" });
       const draw = async () => {
@@ -2704,10 +2706,41 @@
           const done = await act("secrets/add", body, save);
           if (done) { await draw(); sayFor(box.querySelector(".card button.primary"), done.said); }
         };
+        const row = (x) => {
+          const slot = el("div");
+          const rotate = x.rotatable ? button("Rotate", { onclick: () => {
+            const v = el("input", { type: "password", name: "new", placeholder: "the new key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The new key" });
+            const go = el("button", { class: "primary", text: "Replace" });
+            go.onclick = async () => {
+              const val = v.value.trim();
+              const done = await act("secrets/rotate", { name: x.name, value: val && asSecret(val) }, go);
+              wipeSecrets(box);
+              if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
+            };
+            setKids(slot, el("div", { class: "row" }, v, go));
+            v.focus();
+          } }) : null;
+          const move = x.hosts_editable ? button("Sites", { onclick: () => {
+            const h = el("input", { name: "hosts", value: x.hosts.join(", "), autocomplete: "off", spellcheck: "false", "aria-label": "Sites it may be sent to" });
+            const go = el("button", { class: "primary", text: "Save sites" });
+            go.onclick = async () => {
+              const done = await act("secrets/hosts", { name: x.name, hosts: h.value.trim() }, go);
+              if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
+            };
+            setKids(slot, el("div", { class: "row" }, h, go));
+            h.focus();
+          } }) : null;
+          return el("div", { class: "item column" },
+            el("div", { class: "row" },
+              el("div", { class: "grow" },
+                el("div", { class: "t mono", text: x.name }),
+                el("div", { class: "d", text: (x.hosts.length ? "sent only to " + x.hosts.join(", ") + " · " : "") + "used by " + x.used_by.join(", ") })),
+              rotate, move,
+              x.removable ? button("Remove", { kind: "danger", onclick: async (e) => { if (await act("secrets/remove", { name: x.name }, e.currentTarget)) draw(); } }) : (!x.rotatable ? tag("set on the machine") : null)),
+            slot);
+        };
         setKids(box,
-          r.keys.length ? el("div", { class: "plain-list" }, r.keys.map((x) => el("div", { class: "item" },
-            el("div", { class: "grow" }, el("div", { class: "t mono", text: x.name }), el("div", { class: "d", text: "sent only to " + x.hosts.join(", ") })),
-            x.removable ? button("Remove", { kind: "danger", onclick: async (e) => { if (await act("secrets/remove", { name: x.name }, e.currentTarget)) draw(); } }) : tag("set on the machine")))) : null,
+          r.keys.length ? el("div", { class: "plain-list" }, r.keys.map(row)) : el("p", { class: "muted", text: "No keys yet — add the first one below. It's never shown again after you save it." }),
           el("div", { class: "card stack" },
             r.locked ? el("div", { class: "said bad msg", dir: "auto", text: r.locked }) : null,
             !r.here ? el("div", { class: "said bad", text: "Open this page from your running bot (send it /dashboard) to add one: only the bot can tell whether a name is free." }) : null,
@@ -2715,10 +2748,11 @@
             el("label", { class: "field" }, el("span", { text: "The key" }), value),
             el("label", { class: "field" }, el("span", { text: "Sites it may be sent to" }), sites,
               el("span", { class: "hint", text: "comma-separated: api.example.com, or *.example.com for all of its addresses" })),
-            el("div", { class: "row" }, save)));
+            el("div", { class: "row" }, save),
+            el("p", { class: "muted small m0", text: "A key is never shown again after it's saved — Rotate replaces one without showing the old, Remove forgets it." })));
       };
       draw();
-      connectPanel({ title: "A key for a tool", intro: "For a command your bot runs that needs a key, a weather API say. Commands see a stand-in; the real key is sent only to the sites you name, and never comes back to this page.",
+      connectPanel({ title: "Safe", intro: "Every key the bot holds: the brain's, the chat apps', tools'. Rotate a leaked one, move where one may be sent, or add a key for a command. Values never come back to this page, and the model never sees them.",
         body: box });
     },
     channelPanel(x) {

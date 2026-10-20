@@ -14,8 +14,9 @@ use super::api::{arg, bad, config, confirmed, missing, need, ok, setup_place, An
 use super::Ctx;
 use serde_json::{json, Value};
 
-/// `GET secrets`: each `[secrets]` name with its hosts, and whether this
-/// page may remove it.
+/// `GET secrets`: each `[secrets]` name with its hosts, whether this
+/// page may remove it or edit its hosts, whether any kept key (from any
+/// table) may be rotated, and what uses it — never a value.
 pub fn list(ctx: &Ctx) -> Answer {
     let Some(cfg) = config(ctx) else {
         return missing("the config file");
@@ -23,17 +24,37 @@ pub fn list(ctx: &Ctx) -> Answer {
     let place = need!(setup_place(ctx));
     let stored = crate::secrets::read(&place.secrets).unwrap_or_default();
     let text = std::fs::read_to_string(&place.config).unwrap_or_default();
-    let keys: Vec<Value> = cfg
+    let mut keys: Vec<Value> = cfg
         .secrets
         .iter()
         .map(|(name, spec)| {
+            let page_shaped = stored.iter().any(|(n, _)| n == name) && !named_in(&text, name);
             json!({
                 "name": name,
                 "hosts": ferrule_proxy::SecretRule::from(spec).hosts,
-                "removable": stored.iter().any(|(n, _)| n == name) && !named_in(&text, name),
+                "removable": page_shaped,
+                "hosts_editable": page_shaped,
+                "rotatable": true,
+                "used_by": used_by(&text, name),
             })
         })
         .collect();
+    // Kept keys the config names outside [secrets] — a provider's
+    // api_key_env, a channel token — can't be added or removed here,
+    // but their value can be rotated (the name and its hosts don't move).
+    for (name, _) in &stored {
+        if !cfg.secrets.contains_key(name) {
+            keys.push(json!({
+                "name": name,
+                "hosts": [],
+                "removable": false,
+                "hosts_editable": false,
+                "rotatable": true,
+                "used_by": used_by(&text, name),
+            }));
+        }
+    }
+    keys.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     ok(json!({ "keys": keys, "here": ctx.live.is_some(), "locked": locked() }))
 }
 
@@ -149,6 +170,177 @@ pub fn remove(ctx: &Ctx, body: &Value) -> Answer {
     }
     audit(ctx, "dashboard.secret.remove", json!({ "name": name }));
     ok(json!({ "ok": true, "said": format!("Removed {name}.") }))
+}
+
+/// `POST secrets/rotate {name, value}`: replace a kept key's value
+/// (M52). The one change that's safe for a key the config names — a
+/// provider's `api_key_env`, a channel token — because the name and its
+/// hosts don't move. Write-then-swap: a failed write leaves the old
+/// value in place.
+pub fn rotate(ctx: &Ctx, body: &Value) -> Answer {
+    if let Some(why) = locked() {
+        return bad(403, why);
+    }
+    if ctx.live.is_none() {
+        return bad(
+            409,
+            "Open this page from your running bot (send it /dashboard): only the bot holds the keys it uses.",
+        );
+    }
+    let place = need!(setup_place(ctx));
+    let name = need!(arg(body, "name")).trim();
+    let value = body
+        .get("value")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let stored = crate::secrets::read(&place.secrets).unwrap_or_default();
+    if !stored.iter().any(|(n, _)| n == name) {
+        return bad(
+            404,
+            format!("no key named {name} is kept here, so there's nothing to replace."),
+        );
+    }
+    if value.is_empty() {
+        return bad(400, "paste the new key first");
+    }
+    if value.len() > 4096 || value.chars().any(char::is_control) {
+        return bad(
+            400,
+            "the key has line breaks or is too long; paste it as one line. Nothing was saved.",
+        );
+    }
+    need!(confirmed(
+        body,
+        format!(
+            "Replace the key for {name}? Whatever uses it stops working if the new key is wrong — you fix it here the same way. The old key is never shown."
+        )
+    ));
+    if let Err(e) = crate::secrets::set(&place.secrets, name, value) {
+        return bad(
+            500,
+            format!("the key couldn't be replaced: {e:#}. The old one is still in place."),
+        );
+    }
+    // Providers and connections read their key_env per call, the process
+    // environment first (`models.rs`'s `key()`): put the new value there
+    // too, so the change works without a restart.
+    std::env::set_var(name, value);
+    audit(ctx, "dashboard.secret.rotate", json!({ "name": name }));
+    ok(json!({
+        "ok": true,
+        "said": format!("Replaced {name} — in use from the next call, no restart needed. The old key is gone from this machine."),
+    }))
+}
+
+/// `POST secrets/hosts {name, hosts}`: where a tool key may be sent
+/// (M52). Only a page-shaped entry (the same test as remove); the
+/// config page's undo covers the change.
+pub fn hosts_edit(ctx: &Ctx, body: &Value) -> Answer {
+    if let Some(why) = locked() {
+        return bad(403, why);
+    }
+    let Some(cfg) = config(ctx) else {
+        return missing("the config file");
+    };
+    let place = need!(setup_place(ctx));
+    let name = need!(arg(body, "name"));
+    let hosts = match hosts(body.get("hosts").and_then(Value::as_str).unwrap_or("")) {
+        Ok(h) => h,
+        Err(why) => return bad(400, why),
+    };
+    let stored = crate::secrets::read(&place.secrets).unwrap_or_default();
+    let text = std::fs::read_to_string(&place.config).unwrap_or_default();
+    if !cfg.secrets.contains_key(name)
+        || !stored.iter().any(|(n, _)| n == name)
+        || named_in(&text, name)
+    {
+        return bad(
+            409,
+            format!("{name} is used or kept elsewhere; where a provider's key goes is set by the provider, on the Models page."),
+        );
+    }
+    need!(confirmed(
+        body,
+        format!("Change where {name} may be sent to {}?", hosts.join(", "))
+    ));
+    let done = (|| -> anyhow::Result<()> {
+        let mut t = crate::setup::Target::load(place.config.clone())?;
+        crate::setup::write_secret_hosts(t.root(), name, &hosts)?;
+        t.save()
+    })();
+    if let Err(e) = done {
+        return bad(500, format!("the sites couldn't be saved: {e:#}"));
+    }
+    audit(
+        ctx,
+        "dashboard.secret.hosts",
+        json!({ "name": name, "hosts": hosts }),
+    );
+    ok(json!({
+        "ok": true,
+        "said": format!("{name} now goes only to {}. The proxy picks this up within a minute.", hosts.join(", ")),
+    }))
+}
+
+/// What uses a name, in words: the provider brains, the channels and the
+/// MCP apps the config names it for. Never the value.
+fn used_by(config_text: &str, name: &str) -> Vec<String> {
+    let Ok(doc) = config_text.parse::<toml::Table>() else {
+        return vec![];
+    };
+    let mut users = Vec::new();
+    if let Some(providers) = doc.get("providers").and_then(toml::Value::as_table) {
+        for (id, p) in providers {
+            if p.get("api_key_env").and_then(toml::Value::as_str) == Some(name) {
+                users.push(format!("the {id} brain"));
+            }
+        }
+    }
+    if let Some(gw) = doc.get("gateway").and_then(toml::Value::as_table) {
+        for (key, channel) in [
+            ("telegram_token_env", "Telegram"),
+            ("discord_token_env", "Discord"),
+            ("slack_token_env", "Slack"),
+        ] {
+            if gw.get(key).and_then(toml::Value::as_str) == Some(name) {
+                users.push(channel.to_string());
+            }
+        }
+    }
+    let wanted = format!("${{{name}}}");
+    if let Some(mcp) = doc.get("mcp").and_then(toml::Value::as_table) {
+        if let Some(servers) = mcp.get("servers").and_then(toml::Value::as_array) {
+            for s in servers {
+                let headers_name = s
+                    .get("headers")
+                    .and_then(toml::Value::as_table)
+                    .is_some_and(|h| {
+                        h.values()
+                            .any(|v| v.as_str().is_some_and(|s| s.contains(&wanted)))
+                    });
+                if headers_name {
+                    if let Some(app) = s.get("name").and_then(toml::Value::as_str) {
+                        users.push(format!("the {app} app"));
+                    }
+                }
+            }
+        }
+    }
+    if users.is_empty() {
+        users.push(
+            if doc
+                .get("secrets")
+                .and_then(toml::Value::as_table)
+                .is_some_and(|s| s.contains_key(name))
+            {
+                "a tool's commands".into()
+            } else {
+                "nothing in the config yet".into()
+            },
+        );
+    }
+    users
 }
 
 /// Managed mode: keys for tools are for commands, which `shell` covers.

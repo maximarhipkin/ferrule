@@ -714,6 +714,10 @@ and a dated entry for every session.
 - [`docs/roadmap.md`](docs/roadmap.md): every milestone's design and
   status. The per-milestone design notes live next to it
   (`docs/m12-multi-agent.md` … `docs/m42-harness-engineering.md`).
+- [`docs/research-harness2-media.md`](docs/research-harness2-media.md):
+  Harness² (recursive harness self-improvement) and the 2026 harness
+  field scored against ferrule — the media-generation, dashboard-Safe
+  and contrastive-probing proposals (M51–M53).
 - [`PLAN.md`](PLAN.md): the shared working log — current state, open gaps
   and a dated entry for every session.
 

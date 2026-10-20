@@ -30,6 +30,7 @@ mod local;
 mod managed;
 mod mcp_add;
 mod mcp_config;
+mod media;
 mod memory_tools;
 mod model_eval;
 mod models;
@@ -1598,9 +1599,23 @@ fn build_agent_from(
     // M28: a root agent's own person's messages also load the skills they
     // name, never a sub-agent's (docs/skills.md).
     let mut prompt_triggers = None;
+    // M53: the harness stamp, one append-only transcript meta line naming
+    // what produced this session — hashes, never contents.
+    let mut stamp = ferrule_core::HarnessStamp::default();
     if cfg.skills.enabled && !planning {
         let (skills, tools) = mcp_tools.skill_tools();
-        if let Some(catalog) = skills.get().catalog() {
+        let set = skills.get();
+        stamp.skills = set
+            .skills
+            .iter()
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    ferrule_core::fnv64(&std::fs::read(&s.location).unwrap_or_default()),
+                )
+            })
+            .collect();
+        if let Some(catalog) = set.catalog() {
             system.push_str(&format!("\n\n[Skills]\n{catalog}"));
         }
         if cfg.skills.triggers && child.is_none() {
@@ -1612,7 +1627,14 @@ fn build_agent_from(
     // M16: the playbook's lessons, read per agent so a pass's changes show
     // up in the next session. The file itself is hidden from the agent.
     if let Some(block) = learn::prompt_section(&cfg.learning) {
+        stamp.playbook = Some(ferrule_core::fnv64(block.as_bytes()));
         system.push_str(&format!("\n\n{block}"));
+    }
+    stamp.config = std::fs::read(&cfg_path)
+        .ok()
+        .map(|b| ferrule_core::fnv64(&b));
+    if let Some(t) = &transcript {
+        let _ = t.log_harness(&stamp);
     }
 
     if planning {
@@ -1911,7 +1933,7 @@ pub(crate) fn tool_egress(broker: &Broker) -> Result<Egress> {
 /// and kept for its lifetime. Since M33 it always runs, for `[egress]`'s
 /// sake as well as `[secrets]`'; a refusal is written to the ledger and the
 /// trust audit.
-fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
+pub(crate) fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
     static BROKER: OnceLock<Option<Broker>> = OnceLock::new();
     if let Some(broker) = BROKER.get() {
         return Ok(broker.as_ref());
@@ -2653,6 +2675,7 @@ async fn gateway_factory(
     workspace: PathBuf,
     max_iterations: usize,
     files: Arc<ferrule_gateway::tools::FileOut>,
+    media: Option<Arc<ferrule_gateway::tools::MediaShared>>,
     admin: Option<Arc<self_service::Admin>>,
 ) -> Result<(
     ferrule_gateway::AgentFactory,
@@ -2704,6 +2727,20 @@ async fn gateway_factory(
                 session_id,
                 hidden_paths(),
             )));
+            // M51: media generation, bound to the same chat.
+            if let Some(media) = &media {
+                agent.append_system_prompt(ferrule_agents::prompts::CHAT_MEDIA);
+                agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
+                    media.clone(),
+                    session_id,
+                    hidden_paths(),
+                )));
+                agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
+                    media.clone(),
+                    session_id,
+                    hidden_paths(),
+                )));
+            }
         }
         // M56.6: ask with buttons, react, edit its last reply; its own chat only.
         if channels::of_session(session_id).is_some() {
@@ -2743,6 +2780,7 @@ async fn run_gateway(
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let files = Arc::new(ferrule_gateway::tools::FileOut::default());
+    let media = media::shared(&cfg);
     let admin = self_service::Admin::new(trust::hub(&cfg)?);
     let (agent_factory, sup) = gateway_factory(
         &cfg,
@@ -2750,6 +2788,7 @@ async fn run_gateway(
         workspace.clone(),
         max_iterations,
         files.clone(),
+        media.clone(),
         Some(admin.clone()),
     )
     .await?;
@@ -2832,6 +2871,9 @@ async fn run_gateway(
             .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
     );
     files.bind(&router);
+    if let Some(m) = &media {
+        m.bind(&router);
+    }
     admin.bind_router(Arc::downgrade(&router));
     // A chat whose agents report while it's idle is run again, and its
     // answer goes to the chat.
@@ -2908,6 +2950,7 @@ async fn run_gateway(
         );
     }
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
+    let scheduler = media::register_poller(&cfg, scheduler, media.clone(), true);
     let scheduler = Arc::new(learn::register(
         &cfg,
         scheduler,
@@ -3282,7 +3325,7 @@ async fn tasks_run_now(
         .get(id)?
         .ok_or_else(|| anyhow!("task `{id}` not found"))?;
 
-    // A task's session isn't a chat: nothing here sends files.
+    // A task's session isn't a chat: nothing here sends files or media.
     let files = Arc::new(ferrule_gateway::tools::FileOut::default());
     let (agent_factory, sup) = gateway_factory(
         &cfg,
@@ -3290,6 +3333,7 @@ async fn tasks_run_now(
         workspace.clone(),
         max_iterations,
         files,
+        None,
         None,
     )
     .await?;

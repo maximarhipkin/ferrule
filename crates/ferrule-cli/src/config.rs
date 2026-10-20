@@ -744,6 +744,10 @@ pub struct Config {
     /// M28: the `web_search` tool, off unless a provider is set.
     #[serde(default)]
     pub web_search: WebSearchConfig,
+    /// M51: image and video generation (docs/m51-media.md), off unless a
+    /// provider is named.
+    #[serde(default)]
+    pub media: MediaConfig,
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -1195,6 +1199,33 @@ impl Default for WebSearchConfig {
     }
 }
 
+/// M51: `[media]` — image and video generation through a connected
+/// provider (OpenRouter's `/images` and `/videos`).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct MediaConfig {
+    /// The `[providers.<id>]` entry media calls go through (it needs an
+    /// OpenRouter-compatible media endpoint). Unset: no media tools.
+    pub provider: Option<String>,
+    /// Defaults when a tool call doesn't name one.
+    pub image_model: String,
+    pub video_model: String,
+    /// Generations per day (images and video submits together); 0 = no
+    /// cap. Fail-closed: a store that can't be counted refuses.
+    pub max_per_day: u64,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            image_model: "google/gemini-2.5-flash-image".into(),
+            video_model: "google/veo-3.1".into(),
+            max_per_day: 20,
+        }
+    }
+}
+
 impl WebSearchConfig {
     /// The checked provider, or `None` when search is off.
     pub fn provider(&self) -> Result<Option<SearchProvider>> {
@@ -1611,6 +1642,13 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # dimensions = 512           # required for models other than OpenAI's own
 # price_input_per_mtok = 0.02  # every request is a ledger row
 # max_requests_per_minute = 60  # `ferrule memory reindex`'s pace
+
+# [media]                   # Image and video generation (docs/m51-media.md),
+# provider = "openrouter"   # through a connected [providers.X]. Off until set.
+# image_model = "google/gemini-2.5-flash-image"
+# video_model = "google/veo-3.1"
+# max_per_day = 20          # images and video submits together; 0 = no cap.
+#                            # Refuses fail-closed; every call is a ledger row.
 
 # [telemetry]               # OpenTelemetry traces of the agent's work over OTLP/HTTP
 # endpoint = "http://127.0.0.1:4318"  # (docs/otel.md). Off until set; /v1/traces

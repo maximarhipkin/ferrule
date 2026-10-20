@@ -10,7 +10,7 @@ use crate::files::{
     Change, EpisodeNote, LearnDir, PassRecord, Rejected, RevertNote, State, DONE, REVERTED,
     RUNNING, STOPPED_BUDGET, STOPPED_ERRORS,
 };
-use crate::gate::{Gate, GateRun};
+use crate::gate::{Gate, GateRun, GateVerdict};
 use crate::playbook::{prompt_block, Delta, Playbook, TEMPLATE};
 use crate::reflect::{self, Proposal};
 use crate::screen;
@@ -226,7 +226,7 @@ pub async fn run_pass(opts: &Options, env: &Env) -> Result<PassRecord> {
     }
     if rec.check.is_none() {
         rec.notes.push(
-            "no check to gate on ([learning] check or [agent] verify_command): adds and edits are rejected"
+            "no check to gate on ([learning] check or [agent] verify_command): adds and edits are probed and judged (M53); retires are not gated"
                 .into(),
         );
     }
@@ -388,21 +388,7 @@ async fn body(
         let new_id = last_id + 1;
         let mut gate_reason = String::from("retire is not gated");
         if !matches!(delta, Delta::Retire { .. }) {
-            if env.gate.check().is_none() {
-                reject(
-                    rec,
-                    dir,
-                    &ep.key,
-                    op,
-                    did,
-                    dtext,
-                    "no check to gate on".into(),
-                );
-                note(rec, ep, format!("rejected {op}"));
-                cursor = cursor.max(ep.at);
-                dir.save_pass(rec)?;
-                continue;
-            }
+            let probed = env.gate.check().is_none();
             if let Some(why) = meter.exceeded() {
                 stop = Some(Stop::Budget(why));
                 skip_episodes(rec, &all[i..]);
@@ -424,24 +410,66 @@ async fn body(
             );
             dir.log(
                 &id,
-                "gate",
+                if probed { "probe" } else { "gate" },
                 json!({ "episode": ep.key, "n": gate_n, "op": op }),
             );
-            let verdict = env
-                .gate
-                .run(GateRun {
-                    n: gate_n,
-                    episode: ep,
-                    playbook_block: block.text.as_deref(),
-                    sink,
-                    meter: meter.clone(),
-                    pass_dir: &pass_dir,
-                })
-                .await;
+            let run = GateRun {
+                n: gate_n,
+                episode: ep,
+                playbook_block: block.text.as_deref(),
+                sink,
+                meter: meter.clone(),
+                pass_dir: &pass_dir,
+            };
+            let verdict = if !probed {
+                env.gate.run(run).await
+            } else {
+                // M53: no verifier — one probe re-run with the lesson,
+                // then the judge contrasts the two transcripts.
+                match env.gate.probe(run).await {
+                    None => GateVerdict::fail("no check to gate on"),
+                    Some(p) if !p.finished => GateVerdict::fail(format!(
+                        "the probe run stopped before finishing: {}",
+                        p.incomplete.as_deref().unwrap_or("unknown")
+                    )),
+                    Some(p) => {
+                        let lesson = dtext.as_deref().unwrap_or("");
+                        let answer = ask(
+                            env,
+                            meter,
+                            &id,
+                            "judge",
+                            crate::judge::SYSTEM,
+                            crate::judge::user_message(&ep.goal, lesson, &tail, &p.tail),
+                        )
+                        .await;
+                        match answer {
+                            Err(e) => GateVerdict::fail(format!("the judge call failed: {e}")),
+                            Ok(t) => match crate::judge::parse(&t) {
+                                Err(e) => GateVerdict::fail(format!(
+                                    "the judge's answer was unusable: {e}"
+                                )),
+                                Ok(v) if v.better => GateVerdict {
+                                    passed: true,
+                                    reason: format!("kept by the judge: {}", v.why),
+                                },
+                                Ok(v) => GateVerdict::fail(format!("the judge said no: {}", v.why)),
+                            },
+                        }
+                    }
+                }
+            };
             if !verdict.passed {
                 let budget = meter.exceeded();
                 reject(rec, dir, &ep.key, op, did, dtext, verdict.reason);
-                note(rec, ep, format!("rejected {op} at the gate"));
+                note(
+                    rec,
+                    ep,
+                    format!(
+                        "rejected {op} at the {}",
+                        if probed { "probe" } else { "gate" }
+                    ),
+                );
                 if let Some(why) = budget {
                     // Not finished: the cursor stays before it.
                     stop = Some(Stop::Budget(why));

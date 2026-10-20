@@ -10,6 +10,8 @@ ferrule-core = { path = "../ferrule-core" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
 # M39: send_file resolves paths the way the file tools do.
 ferrule-tools = { path = "../ferrule-tools" }
+# M51: generate_image / generate_video and the video poller.
+ferrule-media = { path = "../ferrule-media" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

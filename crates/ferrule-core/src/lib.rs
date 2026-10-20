@@ -49,6 +49,6 @@ pub use provider::{
 };
 pub use routing::{Escalation, Ladder, Policy, RouteTag, Signal, Tier, Tiered};
 pub use tool::{Tool, ToolContext, ToolOutput, ToolOutputFile, ToolRegistry, ToolSource};
-pub use transcript::Transcript;
+pub use transcript::{fnv64, HarnessStamp, Transcript};
 pub use triggers::{PromptTriggers, TriggerLoad, Triggered};
 pub use verify::Verifier;

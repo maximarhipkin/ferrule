@@ -220,11 +220,14 @@ decisions are in [m50-connect.md](m50-connect.md).
   sign-in, or with a key that is tried once, sealed, and sent only to
   that address. A server that runs a program on the machine stays with
   `ferrule mcp add` and the bot's own approval flow.
-- **A key for a tool**: a new `[secrets]` entry, its value and the sites
-  it may go to. Only a new name: never one in the secrets file, in
-  `[secrets]`, named in the config, set in the bot's environment, or one
-  programs act on (`PATH`, `LD_*`, …). It needs the page opened from the
-  running bot (`/dashboard`). Values never come back.
+- **Safe** (was "A key for a tool"; M52): every key the bot holds, with
+  where each goes and what uses it — never a value. Add a tool key as
+  before; **Rotate** replaces any kept key's value in place (a provider's
+  key included) and the bot uses the new one from its next call, no
+  restart; **Sites** moves where a tool key may be sent (the config undo
+  covers it); **Remove** forgets a page-made one. Rotate needs the page
+  opened from the running bot (`/dashboard`) and asks once with a card
+  that says what breaks if the new key is wrong. Values never come back.
 - **Discord and Slack** have cards like the other channels: token(s),
   allowed users and channels, **Test** (Discord's gives the link that
   invites the bot to your server), **Save and turn on**. The page doesn't
