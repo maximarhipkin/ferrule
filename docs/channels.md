@@ -1032,9 +1032,19 @@ message's text. If the model can't see images, the chat is told so once, in
 a sentence, and the agent still gets the saved file's path.
 
 - **Telegram** sends the largest size Ferrule will take (at most 2000 px on
-  the long side and within the size cap). An album is read as its first
-  photo only; the bot says so once per album, and you send the others one
-  at a time.
+  the long side and within the size cap). An album (photos, videos or
+  files sent together) reaches the agent as **one** message with every
+  item and the caption (M56.7): Telegram sends each item on its own, and
+  the bot joins those that share an album id, polling once more for a
+  second when a batch ends mid-album.
+- **Discord** saves what's attached to a message the bot reads (a DM, or
+  a mention in an allowed channel) into the inbox, up to the size cap,
+  from Discord's CDN (M56.7); the agent gets each file's line and photos
+  as pictures. A message with only a file is read too.
+- **Slack** still doesn't download files: Slack's `url_private_download`
+  needs the bot token and the `files:read` scope, which the app manifest
+  ([slack.md](slack.md)) doesn't ask for. A file there gets "I can only
+  read text", or a note next to the text.
 - **The dashboard's Chat** has an attach button (also in the command
   palette). The page shrinks the photo to 1568 px and re-encodes it as
   JPEG in your browser, which also drops its EXIF and GPS data, before
@@ -1054,8 +1064,20 @@ sees it. The agent gets the text and the saved file's path:
 ```
 
 This works on every channel that saves files into the inbox: Telegram
-(voice notes and audio files), WhatsApp, Matrix, Mattermost, Signal, email
-and the HTTP API. Discord and Slack don't download files yet.
+(voice notes and audio files), Discord (an attached audio file, M56.7),
+WhatsApp, Matrix, Mattermost, Signal, email and the HTTP API. Slack
+doesn't download files yet (see Photos).
+
+A Telegram **video message** (the round one) is saved like a video since
+M56.7: the agent gets its file, not "I can only read text". Its sound
+isn't transcribed.
+
+Files the agent sends with `send_file` go to Telegram the way Telegram
+plays them (M56.7): a photo with `sendPhoto`, a video (MP4 and other
+`video/*`, up to 50 MB) with `sendVideo` so it plays inline, an Ogg/Opus
+voice note with `sendVoice`, an MP3 or M4A with `sendAudio`, anything
+else as a document. One Telegram refuses as that kind goes again as a
+document.
 
 The gateway makes the call itself, so the key never enters the sandbox. No
 language is assumed; the backend detects it unless you pin one.

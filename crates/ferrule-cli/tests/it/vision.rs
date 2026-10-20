@@ -233,11 +233,11 @@ fn an_album_is_read_once() {
         tg.say_photo(42, sizes("big"), "", Some("album-1"));
     }
     tg.wait_for(42, "A:gpt-4o", 0);
-    tg.wait_for(42, "only looked at the first photo", 0);
     // Let any stray second turn show itself before counting.
     std::thread::sleep(Duration::from_millis(700));
-    assert_eq!(a.calls().len(), 1, "one photo, one turn: {:?}", a.calls());
-    assert_eq!(pixels(&a).len(), 1);
+    // M56.7: the album is one message, one turn, and every photo is in it.
+    assert_eq!(a.calls().len(), 1, "one album, one turn: {:?}", a.calls());
+    assert_eq!(pixels(&a).len(), 3);
     let said = tg
         .sent
         .lock()
@@ -250,7 +250,7 @@ fn an_album_is_read_once() {
                 .contains("only looked at the first photo")
         })
         .count();
-    assert_eq!(said, 1, "one reply per album: {}", tg.all());
+    assert_eq!(said, 0, "no photo is left out: {}", tg.all());
 }
 
 // ---- From the page -------------------------------------------------------

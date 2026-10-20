@@ -141,7 +141,9 @@ covers Discord and Slack for now. Telegram sends files (since 0.13.1):
 `sendPhoto` for a JPEG, PNG or WebP up to 10 MB (a refused photo goes
 again as a document), `sendDocument` for anything else up to the Bot
 API's 50 MB, with the text as the caption when it fits 1,024
-characters. The approval gate treats `send_file` like `write_file`,
+characters. Since M56.7 a video goes with `sendVideo`, an Ogg/Opus voice
+note with `sendVoice` and an MP3 or M4A with `sendAudio`, each falling
+back to a document when Telegram refuses it. The approval gate treats `send_file` like `write_file`,
 since it sends a workspace file out.
 
 ## 3. WhatsApp (Cloud API)

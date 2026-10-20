@@ -6631,3 +6631,54 @@ conflicts. Merged, not rebased; every Session Log entry is kept.
 
 **Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
 73 binaries (macOS).
+
+### 2026-10-21 — M56.7: channel media, finished (Claude, Opus 5.5)
+
+**Why.** On Telegram an MP4 or MP3 the agent sent went out as a
+document with no player (M51's generated videos included), an album was
+read as its first photo, and a round video message was "unread". Discord
+and Slack downloaded no files.
+
+**What changed.**
+- Telegram out (`send_file` in `telegram.rs`): `sendVideo` for any
+  `video/*` (with `supports_streaming`), `sendVoice` for `audio/ogg` and
+  `audio/opus`, `sendAudio` for MP3 and M4A, `sendPhoto` as before, else
+  `sendDocument`; a 400 from the specific method sends it again as a
+  document, as photos already did. All within the Bot API's 50 MB.
+  `files::mime_for` learned `webm`, `m4v` and `oga`.
+- Telegram in: `poll_once` is now `fetch_updates` (one `getUpdates`)
+  plus `take_update` (admit, mark a tap, take the file, the unread
+  reply), and joins consecutive items sharing a `media_group_id` into one
+  message (each item's text on its own line, every attachment, the first
+  item's id). A round that ends inside an album polls again with
+  `timeout=1`, up to `ALBUM_ROUNDS` (3), so an album split across rounds
+  still arrives whole. The first-photo-only logic, its `taken` set and
+  the "I only looked at the first photo" reply are gone. `video_note` is
+  taken like a video (`video_note.mp4`).
+- Discord in: `DiscordChannel::with_inbox` (wired in `build_channels`,
+  like Telegram's). Once a message is admitted, each attachment is
+  downloaded from its signed CDN URL (only `cdn.discordapp.com`,
+  `media.discordapp.net` or the API's own host; no token sent), capped by
+  the inbox, saved under `inbox/discord/`, and the message carries the
+  files and M39's lines; a file-only message is read. Only a sticker is
+  still "unread".
+- Slack: not built. Its files need `url_private_download` with the bot
+  token and the `files:read` scope, which `BOT_SCOPES` and the manifest
+  in `docs/slack.md` don't have; adding it would make `doctor` flag every
+  existing install. Documented in `slack.md` and `channels.md`.
+- Docs: `channels.md` "Photos" and "Voice messages", `discord.md`,
+  `slack.md`, `m39-channels.md` §2, `m41-daily-use.md`, `m47`'s
+  out-of-scope line, the roadmap.
+
+**Tests changed, none added.** `vision::an_album_is_read_once` now
+expects one turn with all three photos and no "first photo" reply;
+`live_fixes::messages_that_arent_text_get_plain_words` expects no such
+reply either.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not tried against the real Bot API or Discord. Whether
+Telegram accepts a given WebM or MOV through `sendVideo` is left to its
+400 and the document fallback. A video message's sound isn't
+transcribed. Slack file reading needs the owner to add `files:read`.

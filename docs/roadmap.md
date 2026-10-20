@@ -1186,7 +1186,9 @@ Current State; numbers are claimed there before anything is built.
     per message (`docs/memory.md`, "What it keeps about you"); M56.5,
     restart-safe turns (`docs/channels.md`, "After a restart"); M56.6,
     `ask_user`, `react` and `edit_message` (`docs/channels.md`, "Asking
-    with buttons, reacting, editing").
+    with buttons, reacting, editing"); M56.7, Telegram's video, voice and
+    audio sends, whole albums and video messages, Discord's file
+    downloads (`docs/channels.md`, "Photos" and "Voice messages").
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,

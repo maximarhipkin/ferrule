@@ -36,6 +36,8 @@ use tokio::sync::mpsc;
 
 /// How long Telegram may hold a `getUpdates` call open when there's nothing new.
 const LONG_POLL_SECS: u64 = 30;
+/// M56.7: short polls after a round that ended inside an album.
+const ALBUM_ROUNDS: usize = 3;
 /// The long poll plus room for a slow answer; past this the connection is dead.
 const POLL_DEADLINE: Duration = Duration::from_secs(LONG_POLL_SECS + 15);
 /// Every other call (send, edit) and the connect itself.
@@ -130,8 +132,6 @@ pub struct TelegramChannel {
     ignored: Mutex<HashMap<i64, Instant>>,
     /// Albums already told their photos weren't read.
     albums: Mutex<HashSet<String>>,
-    /// Albums whose first photo was taken (M47): the rest are dropped.
-    taken: Mutex<HashSet<String>>,
     /// Where voice notes and audio files are saved (M41); `None` leaves
     /// them unread, as before.
     inbox: Option<Inbox>,
@@ -172,7 +172,6 @@ impl TelegramChannel {
             conflict: Mutex::new(None),
             ignored: Mutex::new(HashMap::new()),
             albums: Mutex::new(HashSet::new()),
-            taken: Mutex::new(HashSet::new()),
             inbox: None,
         }
     }
@@ -267,10 +266,91 @@ impl TelegramChannel {
 
     /// One `getUpdates` round: forwards what's admitted, advances the offset.
     /// `Ok(false)` means the receiving side is gone and the adapter is done.
+    /// M56.7: an album's items (one message each, sharing a
+    /// `media_group_id`) are forwarded as one message with every file. A
+    /// round that ends inside an album polls again for a second, a few
+    /// times, so an album split across rounds still arrives whole.
     async fn poll_once(&self, tx: &mpsc::Sender<InboundMessage>) -> Result<bool, PollError> {
+        let mut album: Option<(String, InboundMessage)> = None;
+        let mut wait = LONG_POLL_SECS;
+        for round in 0.. {
+            let updates = match self.fetch_updates(wait).await {
+                Ok(u) => u,
+                Err(e) => {
+                    if let Some((_, msg)) = album.take() {
+                        if tx.send(msg).await.is_err() {
+                            return Ok(false);
+                        }
+                    }
+                    return Err(e);
+                }
+            };
+            for update in &updates {
+                let Some(parsed) = self.take_update(update).await else {
+                    continue;
+                };
+                if let (Some(key), Some((open, msg))) = (&parsed.album, album.as_mut()) {
+                    if key == open {
+                        join_album(msg, parsed.msg);
+                        continue;
+                    }
+                }
+                if let Some((_, msg)) = album.take() {
+                    if tx.send(msg).await.is_err() {
+                        return Ok(false);
+                    }
+                }
+                match parsed.album {
+                    Some(key) => album = Some((key, parsed.msg)),
+                    None => {
+                        if tx.send(parsed.msg).await.is_err() {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            if album.is_none() || updates.is_empty() || round >= ALBUM_ROUNDS {
+                break;
+            }
+            wait = 1;
+        }
+        if let Some((_, msg)) = album.take() {
+            if tx.send(msg).await.is_err() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// One update, admitted and its file taken: what to forward, if
+    /// anything.
+    async fn take_update(&self, update: &Value) -> Option<Parsed> {
+        if let Some(id) = update["callback_query"]["id"].as_str() {
+            // Stops the button's spinner; the tap itself is handled
+            // like typed text below.
+            self.answer_callback(id);
+        }
+        let parsed = Self::parse_update(update)?;
+        if !self.admits(&parsed.msg).await {
+            return None;
+        }
+        if let Some(q) = update.get("callback_query") {
+            self.mark_choice(q).await;
+        }
+        let parsed = self.take_file(parsed).await?;
+        if let Some(kind) = parsed.unread.filter(|_| parsed.msg.text.is_empty()) {
+            self.cannot_read(&parsed, kind).await;
+            return None;
+        }
+        Some(parsed)
+    }
+
+    /// `getUpdates`, waiting up to `wait` seconds for something new; the
+    /// offset advances past every update returned.
+    async fn fetch_updates(&self, wait: u64) -> Result<Vec<Value>, PollError> {
         let offset = self.offset.load(Ordering::SeqCst);
         let url = format!(
-            "{}?timeout={LONG_POLL_SECS}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D",
+            "{}?timeout={wait}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D",
             self.api_url("getUpdates")
         );
         let resp = self
@@ -334,60 +414,19 @@ impl TelegramChannel {
             if let Some(update_id) = update.get("update_id").and_then(|v| v.as_i64()) {
                 self.offset.store(update_id + 1, Ordering::SeqCst);
             }
-            if let Some(id) = update["callback_query"]["id"].as_str() {
-                // Stops the button's spinner; the tap itself is handled
-                // like typed text below.
-                self.answer_callback(id);
-            }
-            if let Some(parsed) = Self::parse_update(update) {
-                if !self.admits(&parsed.msg).await {
-                    continue;
-                }
-                if let Some(q) = update.get("callback_query") {
-                    self.mark_choice(q).await;
-                }
-                let Some(parsed) = self.take_file(parsed).await else {
-                    continue;
-                };
-                if let Some(kind) = parsed.unread.filter(|_| parsed.msg.text.is_empty()) {
-                    self.cannot_read(&parsed, kind).await;
-                    continue;
-                }
-                if tx.send(parsed.msg).await.is_err() {
-                    return Ok(false);
-                }
-            }
         }
-        Ok(true)
+        Ok(updates)
     }
 
-    /// A file (voice note, audio, photo, video, document) saved to the inbox: the message
-    /// then carries it as an attachment with M39's line about it, and is
-    /// read. `None`: the photo is one more of an album already taken, and
-    /// was answered here.
+    /// A file (voice note, audio, photo, video, video note, document)
+    /// saved to the inbox: the message then carries it as an attachment
+    /// with M39's line about it, and is read. Every item of an album is
+    /// taken (M56.7); `poll_once` joins them.
     async fn take_file(&self, mut parsed: Parsed) -> Option<Parsed> {
         let (Some(inbox), Some(mut file)) = (&self.inbox, parsed.file.take()) else {
             return Some(parsed);
         };
         if !file.sizes.is_empty() {
-            if let Some(album) = &parsed.album {
-                let first = {
-                    let mut taken = self.taken.lock().unwrap();
-                    if taken.len() > 1000 {
-                        taken.clear();
-                    }
-                    taken.insert(album.clone())
-                };
-                if !first {
-                    self.once_per_album(
-                        &parsed,
-                        "more",
-                        "I only looked at the first photo of that album. Send the others one at a time if you want them read.",
-                    )
-                    .await;
-                    return None;
-                }
-            }
             match photo_size(&file.sizes, inbox.max_bytes()) {
                 Some((id, size)) => {
                     file.file_id = id;
@@ -814,8 +853,22 @@ fn photo_size(sizes: &[Value], cap: u64) -> Option<(String, Option<u64>)> {
         .and_then(|p| Some((p["file_id"].as_str()?.to_string(), p["file_size"].as_u64())))
 }
 
-/// The voice note, audio file, photo, video or other file (a PDF, a
-/// photo sent as a file) in a message, if it has one.
+/// M56.7: one more item of an album into the message the album became:
+/// its text (a caption, the file's line) on a line of its own, its files
+/// after the others. The reply answers the first item.
+fn join_album(into: &mut InboundMessage, more: InboundMessage) {
+    if !more.text.trim().is_empty() {
+        into.text = if into.text.trim().is_empty() {
+            more.text
+        } else {
+            format!("{}\n{}", into.text, more.text)
+        };
+    }
+    into.attachments.extend(more.attachments);
+}
+
+/// The voice note, audio file, photo, video, video note or other file (a
+/// PDF, a photo sent as a file) in a message, if it has one.
 fn tg_file(message: &Value) -> Option<TgFile> {
     let caption = || {
         message
@@ -838,7 +891,7 @@ fn tg_file(message: &Value) -> Option<TgFile> {
     if message.get("animation").is_some() {
         return None;
     }
-    let (key, a) = ["voice", "audio", "video", "document"]
+    let (key, a) = ["voice", "audio", "video", "video_note", "document"]
         .into_iter()
         .find_map(|k| message.get(k).map(|a| (k, a)))?;
     let file_id = a.get("file_id")?.as_str()?.to_string();
@@ -851,6 +904,8 @@ fn tg_file(message: &Value) -> Option<TgFile> {
         // A voice note is Ogg Opus with no name.
         ("voice", None) => "voice.ogg".to_string(),
         ("video", None) => "video.mp4".to_string(),
+        // M56.7: a round video message is an MP4 with no name.
+        ("video_note", None) => "video_note.mp4".to_string(),
         ("document", None) => "file".to_string(),
         (_, None) => "audio".to_string(),
     };
@@ -1192,10 +1247,12 @@ impl TelegramChannel {
         Ok(id)
     }
 
-    /// Uploads a local file (`send_file`): `sendPhoto` for a photo
-    /// Telegram shows inline, else `sendDocument`, which keeps the bytes
-    /// and name as they are. A photo Telegram refuses (its size or
-    /// dimensions) goes again as a document. The message's id.
+    /// Uploads a local file (`send_file`) the way Telegram shows it best:
+    /// `sendPhoto` for a photo, `sendVideo` for a video (it plays inline),
+    /// `sendVoice` for an Ogg/Opus voice note, `sendAudio` for an MP3 or
+    /// M4A (M56.7), else `sendDocument`, which keeps the bytes and name as
+    /// they are. One Telegram refuses as that kind (a 400: its size,
+    /// dimensions or format) goes again as a document. The message's id.
     async fn send_file(
         &self,
         chat: &str,
@@ -1221,6 +1278,10 @@ impl TelegramChannel {
             fields.push(("caption", c));
         }
         let upload = |method: &'static str, field: &str| {
+            let mut fields = fields.clone();
+            if method == "sendVideo" {
+                fields.push(("supports_streaming", "true"));
+            }
             let (boundary, body) = files::multipart(&fields, (field, &name, mime, &bytes));
             let req = self
                 .client
@@ -1233,19 +1294,32 @@ impl TelegramChannel {
                 .body(body);
             self.answered(method, req)
         };
-        let photo = matches!(mime, "image/jpeg" | "image/png" | "image/webp") && size <= PHOTO_MAX;
-        let result = if photo {
-            match upload("sendPhoto", "photo").await {
-                // Only Telegram's own refusal (a 400: dimensions, size); a
-                // timeout may have delivered it, and a retry would repeat it.
-                Err(GatewayError::Channel(e)) if e.starts_with("sendPhoto failed (status 400") => {
-                    tracing::info!(error = %e, "telegram: {name} as a photo was refused; sending it as a file");
+        let (method, field) = match mime {
+            "image/jpeg" | "image/png" | "image/webp" if size <= PHOTO_MAX => {
+                ("sendPhoto", "photo")
+            }
+            m if m.starts_with("video/") => ("sendVideo", "video"),
+            "audio/ogg" | "audio/opus" => ("sendVoice", "voice"),
+            "audio/mpeg" | "audio/mp3" | "audio/mp4" | "audio/x-m4a" | "audio/m4a" => {
+                ("sendAudio", "audio")
+            }
+            _ => ("sendDocument", "document"),
+        };
+        let result = if method == "sendDocument" {
+            upload(method, field).await
+        } else {
+            match upload(method, field).await {
+                // Only Telegram's own refusal (a 400: dimensions, size,
+                // format); a timeout may have delivered it, and a retry
+                // would repeat it.
+                Err(GatewayError::Channel(e))
+                    if e.starts_with(&format!("{method} failed (status 400")) =>
+                {
+                    tracing::info!(error = %e, "telegram: {name} as a {field} was refused; sending it as a file");
                     upload("sendDocument", "document").await
                 }
                 other => other,
             }
-        } else {
-            upload("sendDocument", "document").await
         }?;
         Ok(result
             .get("message_id")

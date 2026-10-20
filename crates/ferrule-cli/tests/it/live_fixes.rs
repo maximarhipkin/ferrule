@@ -555,18 +555,17 @@ fn messages_that_arent_text_get_plain_words() {
         "{voice}"
     );
     let (n, _) = tg.wait_for(42, "PLAIN", n);
-    // M47: a photo is saved like a voice note. An album is read once, and
-    // the sender hears that once.
+    // M47: a photo is saved like a voice note. M56.7: an album is one
+    // message with all its photos, and nobody is told only one was read.
     for _ in 0..3 {
         tg.push(
             42,
             json!({"photo": [{"file_id": "p"}], "media_group_id": "g1"}),
         );
     }
-    let (n, _) = tg.wait_for(42, "I only looked at the first photo", n);
     let (n, _) = tg.wait_for(42, "PLAIN", n);
-    // The album's first photo and the text after it each get an answer
-    // (sent after the photo's, so it can't join that turn).
+    // The album and the text after it each get an answer (sent after the
+    // album's, so it can't join that turn).
     tg.say(42, "after the album");
     let (n, _) = tg.wait_for(42, "PLAIN", n);
     let more = tg
@@ -574,7 +573,7 @@ fn messages_that_arent_text_get_plain_words() {
         .iter()
         .filter(|t| t.starts_with("I only looked at the first photo"))
         .count();
-    assert_eq!(more, 1);
+    assert_eq!(more, 0);
 
     // A caption is the text; a photo is saved and a text-only model is told so.
     tg.push(

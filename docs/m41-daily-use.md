@@ -383,7 +383,8 @@ apply there.
 
 ## 6. Follow-ups
 
-- Voice on Discord and Slack (they don't download files yet).
+- Voice on Discord and Slack (they don't download files yet; M56.7 added
+  Discord's downloads, Slack's still need the `files:read` scope).
 - Scheduled backups inside ferrule (`[backup] every/keep/dir`, a task kind
   that runs a command), with pruning.
 - Other Telegram file kinds (photos, documents) through the inbox.

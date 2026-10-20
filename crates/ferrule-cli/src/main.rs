@@ -2584,10 +2584,18 @@ fn build_channels(
     if let Some(env_var) = &g.discord_token_env {
         let token = channel_token(env_var, "discord_token_env")?;
         let discord: Arc<dyn Channel> = Arc::new(
-            DiscordChannel::with_api(token, g.discord_api_url.clone()).with_allowed(
-                with_owner(cfg, "discord", &g.discord_allowed_users),
-                g.discord_allowed_channels.clone(),
-            ),
+            DiscordChannel::with_api(token, g.discord_api_url.clone())
+                .with_allowed(
+                    with_owner(cfg, "discord", &g.discord_allowed_users),
+                    g.discord_allowed_channels.clone(),
+                )
+                // M56.7: attachments are saved and read, as on Telegram.
+                .with_inbox(workspace.map(|ws| {
+                    ferrule_gateway::channels::files::Inbox::new(
+                        ws,
+                        ferrule_gateway::channels::files::DEFAULT_MAX_MB,
+                    )
+                })),
         );
         named_channels.insert(discord.name().to_string(), discord);
     }

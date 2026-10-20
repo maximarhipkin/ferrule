@@ -324,7 +324,8 @@ abilities get lost quietly.
 - Charts beyond one 7-day bar chart on Usage.
 - Vision for the Claude Code plan engine.
 - More than the first photo of a Telegram album (the rest get one line:
-  "I only looked at the first photo of that album").
+  "I only looked at the first photo of that album"). M56.7 reads the
+  whole album as one message.
 
 ## Audit
 
