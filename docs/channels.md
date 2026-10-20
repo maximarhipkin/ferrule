@@ -23,8 +23,9 @@ and [slack.md](slack.md), and since M50 they have dashboard cards too. This page
 channels added in M39. The design, and the reasons behind it, are in
 [m39-channels.md](m39-channels.md). What works in every chat, whichever
 channel it's on, is at the end: [chat commands](#chat-commands),
-[voice messages](#voice-messages) and [the typing
-indicator](#typing-indicator).
+[voice messages](#voice-messages), [the typing
+indicator](#typing-indicator) and [messages sent while it
+works](#messages-sent-while-it-works).
 
 ## Which channel to pick
 
@@ -1124,3 +1125,29 @@ that turn, so it never competes with the reply. To turn it off:
 [gateway]
 typing = false
 ```
+
+## Messages sent while it works
+
+A chat's messages are answered one turn at a time. What you send while a
+turn runs waits, and when that turn ends, everything that waited is
+answered as **one** turn: the messages in order, a paragraph apart, with
+all their files, and one reply to the latest. Three quick lines get one
+answer, not three. A message doesn't reach a turn that is already
+running; it waits for the next one. A scheduled task's prompt and a
+sub-agent's news stay turns of their own, and the HTTP API keeps a turn
+per request, since each request waits for its own answer.
+
+A message that arrives when the turn in front has run for 30 s or more is
+told once that ferrule is busy, with what it's doing and `/stop`. A
+shorter turn is about to answer, so it says nothing. The wait, in seconds:
+
+```toml
+[gateway]
+busy_notice_secs = 30
+```
+
+On Telegram, a shared place or contact reaches the agent as a line of
+text: `[location: 52.52, 13.405]`, `[venue: <name>, <address> (52.52,
+13.405)]`, `[contact: <name>, <phone>]`. A live location is read once, at
+its first position. The bot's own messages never show link previews, so
+the dashboard's sign-in link is a link, not a card.

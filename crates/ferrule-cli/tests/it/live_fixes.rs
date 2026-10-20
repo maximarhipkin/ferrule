@@ -563,10 +563,11 @@ fn messages_that_arent_text_get_plain_words() {
             json!({"photo": [{"file_id": "p"}], "media_group_id": "g1"}),
         );
     }
-    tg.say(42, "after the album");
     let (n, _) = tg.wait_for(42, "I only looked at the first photo", n);
     let (n, _) = tg.wait_for(42, "PLAIN", n);
-    // The album's first photo and the text after it each get an answer.
+    // The album's first photo and the text after it each get an answer
+    // (sent after the photo's, so it can't join that turn).
+    tg.say(42, "after the album");
     let (n, _) = tg.wait_for(42, "PLAIN", n);
     let more = tg
         .texts_to(42)

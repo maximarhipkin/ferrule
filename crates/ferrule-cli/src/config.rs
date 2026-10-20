@@ -489,6 +489,10 @@ pub struct GatewayConfig {
     /// SIGTERM: how long running turns get to finish before they're stopped (default 20).
     #[serde(default)]
     pub stop_grace_secs: Option<u64>,
+    /// How long a turn runs before a message queued behind it hears "busy,
+    /// your message is queued" (default 30).
+    #[serde(default)]
+    pub busy_notice_secs: Option<u64>,
     /// Enable the stdin/stdout local channel (mostly for smoke-testing the
     /// gateway itself without any external service).
     #[serde(default)]
@@ -576,6 +580,13 @@ impl GatewayConfig {
     /// How long a SIGTERM lets running turns finish.
     pub fn stop_grace(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.stop_grace_secs.unwrap_or(20))
+    }
+
+    /// When a queued message gets the busy notice.
+    pub fn busy_notice_after(&self) -> std::time::Duration {
+        self.busy_notice_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(ferrule_gateway::BUSY_NOTICE_AFTER)
     }
 }
 
@@ -1504,6 +1515,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # [gateway]
 # typing = true                             # "typing…" in the chat while a turn runs
 # stop_grace_secs = 20                      # SIGTERM: running turns get this long, then they're stopped
+# busy_notice_secs = 30                     # a turn this old tells a queued message it's busy
 # local = true                              # enable the stdin/stdout channel
 # telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
 # telegram_allowed_chats = []               # chat ids the bot answers; empty =

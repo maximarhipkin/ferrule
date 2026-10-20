@@ -13,8 +13,9 @@ pub const ACK_EMOJI: &str = "👀";
 /// reaction keeps trying in the background.
 const ACK_WAIT: Duration = Duration::from_secs(2);
 /// A turn that has run less than this doesn't earn a busy notice: it's
-/// probably about to answer.
-pub const BUSY_NOTICE_AFTER: Duration = Duration::from_secs(3);
+/// probably about to answer, and the message waiting behind it joins the
+/// next turn anyway. At 3 s nearly every follow-up got one.
+pub const BUSY_NOTICE_AFTER: Duration = Duration::from_secs(30);
 
 /// Ties one or more channel adapters to a `Router`. Every adapter pushes
 /// onto the same inbound funnel and runs concurrently as its own tokio task;
@@ -1154,12 +1155,13 @@ mod tests {
         release.add_permits(1);
         wait_for_log(&log, 8).await;
         let log = log.lock().unwrap();
+        // The two that waited are one turn, answering the latest.
         assert_eq!(
             log[5..8],
             [
                 "send to 1: echo: first",
-                "turn: second",
-                "send to 2: echo: second"
+                "turn: second\n\nthird",
+                "send to 3: echo: second\n\nthird"
             ]
         );
     }
