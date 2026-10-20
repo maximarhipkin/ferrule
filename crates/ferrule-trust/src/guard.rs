@@ -133,6 +133,12 @@ impl Guard for TrustGuard {
             return Verdict::Allow;
         };
         let subject = format!("`{}` ({})", g.command, g.kind);
+        if self.hub.use_grant(&self.tree, &subject) {
+            return Verdict::Allow;
+        }
+        // Only a shell gate's subject is the command itself; a service's or
+        // a plugin's names just the tool, whatever its arguments.
+        let for_run = call.tool == "shell";
         let outcome = match &self.route {
             Route::Unattended(why) => {
                 self.hub.refuse_unattended(&self.tree, &subject, why);
@@ -146,7 +152,7 @@ impl Guard for TrustGuard {
                 );
                 let timeout = Duration::from_secs(self.hub.config().approval_timeout_secs);
                 self.hub
-                    .ask_owner(&self.tree, &subject, &question, timeout)
+                    .ask_gate(&self.tree, &subject, &question, timeout, for_run)
                     .await
             }
             Route::Terminal(p) => {

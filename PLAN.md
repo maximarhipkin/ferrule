@@ -5961,3 +5961,36 @@ standing rule: no runs unless asked). Run it before committing.
 **Follow-ups.** A short gathering window before the *first* message's
 turn starts (today only messages that arrive during a turn merge); a
 person's message reaching a running turn through a composite inbox.
+
+### 2026-10-20 — "Allow for this run": one approval per command per run (Claude, Opus 5.5)
+
+**Why.** In one Telegram run the owner was asked four times in a row to
+approve `rm -rf $T` (recursive delete), each time with a new code.
+`TrustGuard` asked on every match, `Approvals` issued single-use codes,
+and nothing remembered a yes.
+
+**What changed** (`ferrule-trust`, plus one word in the email channel's
+`approval_line` so an emailed `always k7` with a signature still counts as
+an answer; docs in `docs/m19-trust-cost.md` §7 and §11).
+- A third answer, `always` / `always <code>`, and an **Allow for this
+  run** button between Allow and Refuse (`Answer::Always`,
+  `Approvals::open_for_run`). Only a gated question offers it. On any
+  other question `always` is a plain yes.
+- `Hub` keeps the grants in `RunState::granted`, keyed by the subject the
+  owner was shown: "`<command>` (<kind>)". `begin_run` starts empty, and a
+  grant only lands in the run that asked. `TrustGuard` checks
+  `Hub::use_grant` before routing. Each use goes to the audit log as
+  `approval_answered` with route `grant`, answer `granted`.
+- Shell gates only: a connected service's or a plugin tool's subject
+  names just the tool, so a grant would cover any arguments. Those still
+  ask every time.
+
+**Not done, on purpose.** Exempting recursive deletes inside the
+workspace or temp dirs (the optional item). The observed `rm -rf $T` is
+not a literal path, so the exemption would not have helped. The sandbox
+confines writes to the workspace, but deleting the workspace is what the
+gate exists to catch. The terminal route and the dashboard's Allow keep
+yes/no only.
+
+**Not verified.** Per the owner's global rules, nothing was built or run
+and no tests were added; `make check` has not been run on this change.

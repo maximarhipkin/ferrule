@@ -85,10 +85,13 @@ struct Over {
     spent: f64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct RunState {
     id: String,
     spend: Spend,
+    /// Gated commands the owner allowed for the rest of this run, by the
+    /// subject they were asked about: "`<command>` (<kind>)".
+    granted: HashSet<String>,
 }
 
 /// A question for `Hub::ask_in`.
@@ -307,7 +310,7 @@ impl Hub {
             tree.to_string(),
             RunState {
                 id: id.clone(),
-                spend: Spend::default(),
+                ..RunState::default()
             },
         );
         id
@@ -317,13 +320,31 @@ impl Hub {
         self.runs.lock().unwrap().get(tree).map(|r| r.id.clone())
     }
 
+    /// Whether the owner allowed `subject` for the rest of `tree`'s run;
+    /// when so, the audit log records that it ran on that grant.
+    pub fn use_grant(&self, tree: &str, subject: &str) -> bool {
+        let run = {
+            let runs = self.runs.lock().unwrap();
+            match runs.get(tree) {
+                Some(r) if r.granted.contains(subject) => Some(r.id.clone()),
+                _ => return false,
+            }
+        };
+        self.answered(
+            tree,
+            &run,
+            json!({"subject": subject, "route": "grant", "answer": "granted"}),
+        );
+        true
+    }
+
     /// One provider call's row, as it goes to the ledger.
     pub fn charge(&self, tree: &str, r: &LedgerRecord) {
         {
             let mut runs = self.runs.lock().unwrap();
             let run = runs.entry(tree.to_string()).or_insert_with(|| RunState {
                 id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
-                spend: Spend::default(),
+                ..RunState::default()
             });
             run.spend.add(Spend::of(r));
         }
@@ -674,19 +695,28 @@ impl Hub {
         question: &str,
         timeout: Duration,
     ) -> Result<(), String> {
-        self.ask_in(
-            tree,
-            None,
-            Question {
-                subject,
-                what: subject,
-                text: question,
-                timeout,
-                op: None,
-            },
-        )
-        .await
-        .map(|_| ())
+        self.ask_gate(tree, subject, question, timeout, false).await
+    }
+
+    /// `ask_owner` for a gated command. With `for_run` the owner can also
+    /// allow it for the rest of the run ("Allow for this run", `always
+    /// <code>`); `use_grant` then lets the same `subject` through.
+    pub async fn ask_gate(
+        &self,
+        tree: &str,
+        subject: &str,
+        question: &str,
+        timeout: Duration,
+        for_run: bool,
+    ) -> Result<(), String> {
+        let q = Question {
+            subject,
+            what: subject,
+            text: question,
+            timeout,
+            op: None,
+        };
+        self.ask(tree, None, q, for_run).await.map(|_| ())
     }
 
     /// Asks in `chat` (the primary owner chat when `None`), as `ask_owner`
@@ -697,6 +727,16 @@ impl Hub {
         tree: &str,
         chat: Option<ChatRef>,
         q: Question<'_>,
+    ) -> Result<String, String> {
+        self.ask(tree, chat, q, false).await
+    }
+
+    async fn ask(
+        &self,
+        tree: &str,
+        chat: Option<ChatRef>,
+        q: Question<'_>,
+        for_run: bool,
     ) -> Result<String, String> {
         let Question {
             subject,
@@ -726,9 +766,12 @@ impl Hub {
                 chat.channel_title()
             ));
         };
-        let (code, rx) =
+        let (code, rx) = if for_run {
+            self.approvals.open_for_run(&chat, what, timeout)
+        } else {
             self.approvals
-                .open_for(&chat, what, Some(timeout), op.map(str::to_string));
+                .open_for(&chat, what, Some(timeout), op.map(str::to_string))
+        };
         let mut waiting = Waiting {
             hub: self,
             code: code.clone(),
@@ -738,7 +781,12 @@ impl Hub {
             subject,
             done: false,
         };
-        let text = format!("{question}\nReply `yes` to allow it. Anything else, or no answer in {}, refuses it. (code {code})", minutes(timeout));
+        let always = if for_run {
+            ", or `always` to allow it for the rest of this run"
+        } else {
+            ""
+        };
+        let text = format!("{question}\nReply `yes` to allow it{always}. Anything else, or no answer in {}, refuses it. (code {code})", minutes(timeout));
         self.audit.record(
             self.clock.now(),
             "approval_asked",
@@ -746,10 +794,11 @@ impl Hub {
             run.as_deref(),
             json!({"subject": subject, "route": route, "chat": chat.audit_value(), "code": code, "op": op}),
         );
-        let choices = [
-            ("Allow".to_string(), format!("yes {code}")),
-            ("Refuse".to_string(), format!("no {code}")),
-        ];
+        let mut choices = vec![("Allow".to_string(), format!("yes {code}"))];
+        if for_run {
+            choices.push(("Allow for this run".to_string(), format!("always {code}")));
+        }
+        choices.push(("Refuse".to_string(), format!("no {code}")));
         if let Err(e) = notifier.send_choices(&chat, &text, &choices).await {
             waiting.finish("unreachable");
             return Err(format!("couldn't reach the owner ({e})"));
@@ -757,6 +806,16 @@ impl Hub {
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Answer::Yes)) => {
                 waiting.finish("yes");
+                Ok(code)
+            }
+            Ok(Ok(Answer::Always)) => {
+                // Only into the run that asked, not one begun since.
+                if let Some(r) = self.runs.lock().unwrap().get_mut(tree) {
+                    if run.as_ref() == Some(&r.id) {
+                        r.granted.insert(subject.to_string());
+                    }
+                }
+                waiting.finish("always");
                 Ok(code)
             }
             Ok(Ok(Answer::No(said))) => {

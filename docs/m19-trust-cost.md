@@ -257,8 +257,8 @@ The message:
 
 > ferrule wants to run, in telegram chat 4242 (run 3f2a…):
 > `git push --force origin main` — force push.
-> Reply `yes` to allow it. Anything else, or no answer in 10 minutes,
-> refuses it. (code k7)
+> Reply `yes` to allow it, or `always` to allow it for the rest of this
+> run. Anything else, or no answer in 10 minutes, refuses it. (code k7)
 
 The owner chat's messages are read **before** they reach a session's lane
 (the lane is busy running the turn that's waiting). While approvals are
@@ -271,6 +271,15 @@ pending in that chat:
   passed on to the agent.
 - Two pending: a bare `yes` approves neither and the bot lists the codes
   (§12, two pending).
+- `always` / `always k7` (the **Allow for this run** button) approves like
+  `yes`, and the same gated command then runs without asking again until
+  the run ends. "The same" is exactly what the question showed: the
+  command text and its kind (`` `rm -rf $T` (recursive delete) ``); any
+  other command, or that one in a new run, asks again. The grant lives in
+  memory, per tree (a sub-agent shares its root's), and only a shell gate
+  offers it: a connected service's or a plugin tool's question names just
+  the tool, whatever its arguments, so each of those calls still asks.
+  Admin questions and plans never offer it; there `always` is a plain yes.
 
 Only "yes" runs the command. A refusal of any kind (no, other text,
 timeout, unattended, Telegram unreachable, the run halted while waiting)
@@ -364,7 +373,8 @@ suite was also run with the switch on and tiny caps.
 
 `<data>/trust/audit.jsonl`, one line per event: `cap_stop`, `cap_warning`,
 `stop_engaged`, `stop_cleared`, `approval_asked`, `approval_answered`
-(`yes`, `no`, `timeout`, `unattended`, `unreachable`, `halted`),
+(`yes`, `always`, `no`, `timeout`, `unattended`, `unreachable`, `halted`,
+and `granted` with route `grant` each time a command runs on an `always`),
 `plan_proposed`, `plan_approved`, `plan_rejected`, `plan_executed`. Each has the time, the
 tree, the run and the detail (the command, the cap and spend, the plan
 hash). `ferrule trust audit [--since 7d]` prints it; `ferrule trust status`
