@@ -1126,7 +1126,9 @@ Current State; numbers are claimed there before anything is built.
     (`docs/channels.md`, "Messages sent while it works"); M56.4,
     proactive memory, an owner profile and no decay for it, re-recall
     per message (`docs/memory.md`, "What it keeps about you"); M56.5,
-    restart-safe turns (`docs/channels.md`, "After a restart").
+    restart-safe turns (`docs/channels.md`, "After a restart"); M56.6,
+    `ask_user`, `react` and `edit_message` (`docs/channels.md`, "Asking
+    with buttons, reacting, editing").
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,

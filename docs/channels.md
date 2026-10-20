@@ -1183,6 +1183,35 @@ text: `[location: 52.52, 13.405]`, `[venue: <name>, <address> (52.52,
 its first position. The bot's own messages never show link previews, so
 the dashboard's sign-in link is a link, not a card.
 
+## Asking with buttons, reacting, editing
+
+In a chat, the agent has three tools beside `send_file` (M56.6,
+`ferrule-gateway/src/tools/chat.rs`). Each acts on its own chat only.
+
+- **`ask_user`**: a question with 2 to 4 answers as buttons. The agent
+  waits for the tap, and the answer is the tool's result, so it goes on in
+  the same turn. You can also type a choice's number or its label, or
+  write any other answer: while the question waits, the next message from
+  that chat (that isn't a `/command`) is the answer, in your own words. It
+  waits 5 minutes by default (the agent can ask for up to 9, under the
+  watchdog's 10); then it tells the agent nobody answered and the
+  question is withdrawn, and a late tap is told so. `/stop` withdraws it
+  too. On a channel without buttons the choices come as lines to send
+  (`/answer qk7 2`). In a group, anyone in the chat may answer.
+- **`react`**: one emoji on the message the turn answers (it replaces the
+  👀 receipt). Telegram takes only its standard reaction emoji, and a
+  channel without reactions (email, the HTTP API) says "not
+  supported here".
+- **`edit_message`**: replaces the text of the bot's previous reply in
+  this chat (the last answer before this turn). The gateway remembers that
+  reply's id when the channel gives one: Telegram, Discord and Slack, for
+  streamed and plain replies alike. Elsewhere, or for a reply from before
+  the gateway started, the tool says it doesn't know the message. A long
+  reply that went out in several parts is edited at its last part.
+
+On the Claude plan engine the three are bridged like every other Ferrule
+tool ([m35-subscriptions.md](m35-subscriptions.md) §7.4).
+
 ## After a restart
 
 A restart, an update or a crash in the middle of a turn doesn't lose the

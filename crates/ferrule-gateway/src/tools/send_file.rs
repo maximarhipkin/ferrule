@@ -15,16 +15,28 @@ use std::sync::{Arc, OnceLock, Weak};
 /// The largest file `send_file` reads, whatever the channel allows.
 const MAX_BYTES: u64 = 100 * 1024 * 1024;
 
-/// Where `send_file` finds the session's chat: the router, bound once it
-/// exists (the agent factory is built before it).
+/// Where `send_file` (and M56.6's chat tools) find the session's chat: the
+/// router, bound once it exists (the agent factory is built before it).
 #[derive(Default)]
 pub struct FileOut {
     router: OnceLock<Weak<Router>>,
+    /// M56.6: what `ask_user` waits on.
+    questions: Arc<super::Questions>,
 }
 
 impl FileOut {
     pub fn bind(&self, router: &Arc<Router>) {
         let _ = self.router.set(Arc::downgrade(router));
+    }
+
+    pub(crate) fn router(&self) -> Option<Arc<Router>> {
+        self.router.get().and_then(Weak::upgrade)
+    }
+
+    /// M56.6: `ask_user`'s questions; the gateway reads each chat message
+    /// through them first (`Gateway::with_interceptor`).
+    pub fn questions(&self) -> Arc<super::Questions> {
+        self.questions.clone()
     }
 }
 

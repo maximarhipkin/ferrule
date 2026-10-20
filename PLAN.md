@@ -6339,3 +6339,52 @@ channel isn't on at the next start waits as `.interrupted.json` until
 that channel's `/continue` or `/new`. Pending offers are not repeated
 at a later start. Steered messages a restart cut off are in the
 transcript but not in the marker.
+
+### 2026-10-21 — M56.6: ask_user, react and edit_message as agent tools (Claude, Opus 5.5)
+
+**Why.** The agent could only write text and send files. A question
+whose answer the owner could tap, a quick reaction and a fix to its own
+last reply all meant more messages.
+
+**What changed.**
+- `ferrule-gateway/src/tools/chat.rs` (new), registered next to
+  `send_file` for every chat session (`chat_tools` in `gateway_factory`;
+  any `channels::of_session` chat, remote workspaces included):
+  - `ask_user {question, choices[2..4], timeout_secs?}`: sends the
+    question with one button per choice (`/answer <code> <n>`, under
+    Telegram's 64-byte `callback_data`) through `send_with_buttons`, so a
+    channel without buttons gets them as lines. It waits (default 300 s,
+    clamped 10–540 s, under the watchdog's 600) and returns "They picked:
+    X", "They answered in their own words …" or a truthful "No answer
+    within N s; the question was withdrawn …". A drop guard withdraws the
+    question however the call ends (`/stop` drops the future).
+  - `Questions` (held by `FileOut`, registered as the gateway's first
+    interceptor in `run_gateway`): a tap, a typed number or label, or any
+    other non-command text from that chat while a question waits is the
+    answer, taken before steering (M56.1) could hand it to the blocked
+    turn. A late or unknown `/answer` is told so.
+  - `react {emoji}`: `Channel::react` on the message the turn answers
+    (`Router::turn_message`, from `LaneState::message_id`). Without the
+    `reactions` capability: "reactions aren't supported here".
+  - `edit_message {text}`: `Channel::edit` on the bot's previous reply
+    (`Router::last_reply`). Without `edits`: "not supported here"; with
+    no known id it says so instead of guessing.
+- How the reply's id is known: `Channel::send_with_id` (default: `send`,
+  no id; Telegram's is `deliver_message(…, patient)`, Discord's and
+  Slack's their `deliver`, each exactly what their `send` does). The lane
+  delivers a plain reply with it, and `StreamingReply::finish` now
+  returns the id of the reply's last message (shown and edited, posted,
+  or sent with `send_with_id`); the lane keeps it in `last_reply`.
+- The Claude-plan bridge needed no change: M55.4's `bridged()` passes
+  any tool not in `CLAUDE_NATIVE`/`NOT_BRIDGED`.
+- Docs: `channels.md` "Asking with buttons, reacting, editing",
+  `m35-subscriptions.md` §7.4's table, the roadmap.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS). No tests added or changed.
+
+**Open.** Not tried in a live chat. In a group, any member's message
+answers a waiting question. A typed answer gets no receipt (the turn's
+reply follows). `edit_message` edits only the last part of a reply that
+went out in several, and knows ids only on Telegram, Discord and Slack.
+`/bg <task>` from the gap analysis was not built.

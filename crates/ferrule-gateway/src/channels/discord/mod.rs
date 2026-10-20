@@ -749,6 +749,10 @@ impl Channel for DiscordChannel {
         self.deliver(&msg, None).await
     }
 
+    async fn send_with_id(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
+        self.deliver(&msg, None).await
+    }
+
     async fn send_buttons(
         &self,
         msg: OutboundMessage,

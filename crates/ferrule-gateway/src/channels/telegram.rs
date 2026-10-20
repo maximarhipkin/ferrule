@@ -1361,6 +1361,10 @@ impl Channel for TelegramChannel {
         self.deliver_message(&msg, None, false).await
     }
 
+    async fn send_with_id(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
+        self.deliver_message(&msg, None, true).await
+    }
+
     async fn send_buttons(
         &self,
         msg: OutboundMessage,

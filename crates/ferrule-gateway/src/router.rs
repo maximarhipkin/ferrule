@@ -138,6 +138,12 @@ struct LaneState {
     stale: bool,
     /// M56.5: the running turn answers a person, so its marker is kept.
     person: bool,
+    /// M56.6: the message the current (or last) turn answers, which
+    /// `react` reacts to.
+    message_id: String,
+    /// M56.6: the bot's last reply in this chat, which `edit_message`
+    /// edits, when the channel gave its id.
+    last_reply: Option<String>,
 }
 
 /// What `/new` did (M41).
@@ -876,6 +882,23 @@ impl Router {
             .map(|l| (l.channel.clone(), l.chat_id.clone()))
     }
 
+    /// M56.6: the message `session_id`'s turn answers (the latest, when
+    /// several were joined), as (channel, chat, message id).
+    pub fn turn_message(&self, session_id: &str) -> Option<(String, String, String)> {
+        let lanes = self.lanes.lock().unwrap();
+        let lane = lanes.get(session_id)?;
+        let id = lane.state.lock().unwrap().message_id.clone();
+        (!id.is_empty()).then(|| (lane.channel.clone(), lane.chat_id.clone(), id))
+    }
+
+    /// M56.6: the id of the bot's last reply in `session_id`'s chat.
+    pub fn last_reply(&self, session_id: &str) -> Option<String> {
+        let lanes = self.lanes.lock().unwrap();
+        let lane = lanes.get(session_id)?;
+        let id = lane.state.lock().unwrap().last_reply.clone();
+        id
+    }
+
     /// The adapter called `name`.
     pub fn channel(&self, name: &str) -> Option<Arc<dyn Channel>> {
         self.channels.get(name).cloned()
@@ -1067,6 +1090,7 @@ async fn run_lane(
         // channel that pairs each request with its answer (the HTTP API).
         let resumable = person && merges;
         watch.start(&inbound.text, resumable);
+        watch.state.lock().unwrap().message_id = inbound.message_id.clone();
         // The request as it arrived, before its voice notes are heard, so
         // a resumed one is heard again rather than twice.
         if resumable {
@@ -1210,17 +1234,25 @@ async fn run_lane(
         if let Some(typist) = typist {
             typist.stop().await;
         }
-        if let Some(streamer) = streamer {
-            streamer.finish(reply_text).await;
+        // M56.6: the reply's id, for `edit_message`.
+        let sent = if let Some(streamer) = streamer {
+            streamer.finish(reply_text).await
         } else if let Some(ch) = &channel {
             let out = OutboundMessage {
                 text: reply_text,
                 ..out
             };
-            if let Err(e) = ch.send(out).await {
-                tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
+            match ch.send_with_id(out).await {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
+                    None
+                }
             }
-        }
+        } else {
+            None
+        };
+        watch.state.lock().unwrap().last_reply = sent;
         if let Some(ch) = &channel {
             for id in earlier
                 .iter()

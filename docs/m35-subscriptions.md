@@ -413,6 +413,7 @@ exist and missed most that did):
 | `search_history` | past conversations in other chats and runs |
 | `activate_skill`, `read_skill_file` | Ferrule's skills (M5), which the system prompt lists |
 | `send_file` | a workspace file to this chat (M39); only the gateway knows the chat |
+| `ask_user`, `react`, `edit_message` | a question with buttons, a reaction, an edit of the last reply in this chat (M56.6); only the gateway knows the chat. Bridged by the registry rule below with no list change |
 | `web_search` | when configured: one backend, one bill, one egress policy |
 | `spawn_agent`, `wait_agent`, `resume_agent`, `close_agent`, `list_agents`, `board_post`, `board_read`, `task_add`, `task_list`, `task_claim`, `task_done` | sub-agents on whatever model they pick, with their board and task list (M12) |
 | `ferrule_admin` | the owner's chat changes Ferrule, scheduled tasks included (M48) |

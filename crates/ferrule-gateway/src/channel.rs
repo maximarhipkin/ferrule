@@ -94,6 +94,14 @@ pub trait Channel: Send + Sync {
         self.send(msg).await.map(|()| None)
     }
 
+    /// Exactly `send`, plus the id of the (last) message it made when the
+    /// channel says (M56.6: the reply `edit_message` edits). `post` may
+    /// give up sooner on a rate limit (a streamed preview waits it out
+    /// itself), so a reply goes through this instead.
+    async fn send_with_id(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
+        self.send(msg).await.map(|()| None)
+    }
+
     /// Optional: send with buttons, one per row. Use [`send_with_buttons`],
     /// which falls back to text.
     async fn send_buttons(

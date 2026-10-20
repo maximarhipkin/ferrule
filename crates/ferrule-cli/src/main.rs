@@ -2705,6 +2705,12 @@ async fn gateway_factory(
                 hidden_paths(),
             )));
         }
+        // M56.6: ask with buttons, react, edit its last reply; its own chat only.
+        if channels::of_session(session_id).is_some() {
+            for tool in ferrule_gateway::tools::chat_tools(&files, session_id) {
+                agent.register_tool(tool);
+            }
+        }
         // M48: the owner's own chat can change Ferrule, with the owner's tap.
         if let Some(admin) = &admin {
             if let Some(here) = self_service::offered(&admin.hub, session_id) {
@@ -2994,7 +3000,9 @@ async fn run_gateway(
         .with_busy_notice_after(cfg.gateway.busy_notice_after())
         .with_restarts(restarts)
         .with_health(health.clone())
-        .with_redactor(Arc::new(health::redactor(&cfg)));
+        .with_redactor(Arc::new(health::redactor(&cfg)))
+        // M56.6: an answer to `ask_user` goes to it, before any door.
+        .with_interceptor(files.questions());
     if let Some(dash) = &dash {
         gateway = gateway.with_interceptor(Arc::new(dashboard::door::DashboardDoor {
             dash: dash.clone(),
