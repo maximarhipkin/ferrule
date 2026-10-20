@@ -106,6 +106,12 @@ been half-done, and re-running a tool call is worse than asking. A clean
 `systemctl restart` says nothing, or "back up" if `notify_on_start` is on
 (default off).
 
+M56.5 changed the last part for a person's turn: its lane's own marker
+keeps the request, and the next start runs it again when it had only read,
+or asks its chat (`/continue`) when it had done more. The notice then says
+"It isn't lost: its chat picks it up again, or asks there first"
+(`docs/channels.md`, "After a restart").
+
 ### 5a. systemd watchdog
 
 The unit `ferrule setup` writes gets `WatchdogSec=120` and

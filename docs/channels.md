@@ -986,6 +986,7 @@ sees them):
 | `/new` (or `/reset`) | Starts a fresh conversation in this chat. A running turn is stopped, and messages waiting behind it are dropped (the reply says how many). The old transcript stays on disk as `sessions/<chat>.<UTC time>.jsonl`. It's kept, not replayed. Memory, tasks and settings stay. |
 | `/status` | What ferrule is doing right now. |
 | `/help` | The commands this chat answers. |
+| `/continue`, `/continue drop` | Run again the request a restart interrupted in this chat, or let it go (see "After a restart"). |
 | `/stop`, `/resume` | Stop every run now; let runs start again. |
 | `/plan <task>`, `/undo` | Explore first, then ask; revert the agent's last commit. |
 | `/goal <what done looks like>`, `/graph <file>` | A loop that runs until the judge says so; run an agent graph, whose gates ask here. |
@@ -1181,6 +1182,36 @@ text: `[location: 52.52, 13.405]`, `[venue: <name>, <address> (52.52,
 13.405)]`, `[contact: <name>, <phone>]`. A live location is read once, at
 its first position. The bot's own messages never show link previews, so
 the dashboard's sign-in link is a link, not a card.
+
+## After a restart
+
+A restart, an update or a crash in the middle of a turn doesn't lose the
+request (M56.5). While a turn answers a person, its chat's lane keeps
+`<data>/sessions/<chat>.turn.json`: the message word for word, with its
+files, and the tools the turn called that do more than read. A turn that
+ends removes it. One that a restart stops (the drain after
+`stop_grace_secs`) or a crash kills leaves it, and the next start tells
+that chat:
+
+- **It had only read so far** (no tool but the ones marked read-only:
+  `read_file`, `list_dir`, `web_search`, `web_fetch`, `recall`,
+  `code_search`…): "A restart interrupted your request
+  '…'. It had only read so far, so I'm picking it up again." It runs
+  again at once, on the original message, as a new turn that sees the
+  conversation so far and is told to check what was done before going on.
+- **It had called anything else** (a shell command, a file write, a todo
+  list, an MCP tool, a send): the message names those tools, says resuming could repeat
+  a step, and asks, with **Resume** and **Let it go** buttons (on a channel
+  without buttons, the commands as text). `/continue` resumes it,
+  `/continue drop` lets it go. The question waits until answered or
+  `/new`.
+- **It was already a second try**: it asks the same way, so a request that
+  crashes the process can't loop.
+
+The owner's restart notice after a crash says the turn isn't lost. A
+scheduled task, a plan's or `/goal`'s turn, a sub-agent's news and the
+HTTP API's requests aren't taken up this way: their callers retry them.
+A turn that `/stop`, `/new` or `max_turn_minutes` ended is not resumed.
 
 ## Keys pasted into a chat
 

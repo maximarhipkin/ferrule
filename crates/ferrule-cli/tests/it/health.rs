@@ -507,6 +507,12 @@ fn a_killed_gateway_says_what_it_interrupted_and_never_reruns_it() {
         let mut gw = gateway(dir.path());
         tg.say(-100, "HANG please");
         wait_for_file(&marker, "HANG please");
+        // M56.5: the turn's own marker has its `shell` call, so the next
+        // start asks before running it again.
+        wait_for_file(
+            &dir.path().join("data/sessions/telegram__-100.turn.json"),
+            "\"shell\"",
+        );
         // SIGKILL: no chance to clean up, like a crash or the OOM killer.
         gw.0.kill().unwrap();
         gw.0.wait().unwrap();
@@ -517,9 +523,11 @@ fn a_killed_gateway_says_what_it_interrupted_and_never_reruns_it() {
     let _gw = gateway(dir.path());
     let (_, notice) = tg.wait_for(42, "I restarted at ", 0);
     assert!(
-        notice.ends_with("; the turn for telegram chat -100 was interrupted while handling: 'HANG please'. It won't be re-run — send it again if it's still needed."),
+        notice.ends_with("; the turn for telegram chat -100 was interrupted while handling: 'HANG please'. It isn't lost: its chat picks it up again, or asks there first."),
         "{notice}"
     );
+    let (_, offer) = tg.wait_for(-100, "A restart interrupted your request 'HANG please'.", 0);
+    assert!(offer.contains("It had already used `shell`"), "{offer}");
     std::thread::sleep(std::time::Duration::from_secs(1));
     assert_eq!(seen.lock().unwrap().len(), calls, "the turn was re-run");
     assert_eq!(

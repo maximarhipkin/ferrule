@@ -574,6 +574,11 @@ impl Agent {
         self.tools.register(tool);
     }
 
+    /// The agent's tools (M56.5: which of them only read).
+    pub fn tools(&self) -> &ToolRegistry {
+        &self.tools
+    }
+
     pub fn has_tool(&self, name: &str) -> bool {
         self.tools.contains(name)
     }

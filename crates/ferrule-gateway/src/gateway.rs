@@ -301,6 +301,11 @@ impl Gateway {
             self.reply_directly(&msg, text).await;
             return;
         }
+        // M56.5: the answer to "a restart interrupted your request".
+        if is_command(&msg.text, crate::resume::CONTINUE) {
+            self.take_up(&msg).await;
+            return;
+        }
         if let Some(health) = &self.health {
             if is_command(&msg.text, "/status") {
                 let report = health.report(&self.router.snapshot(), &self.channels);
@@ -377,6 +382,41 @@ impl Gateway {
                 self.reply_directly(&reply, text).await;
             }
         }
+    }
+
+    /// `/continue` runs this chat's interrupted turn again (M56.5);
+    /// `/continue drop` lets it go.
+    async fn take_up(&self, msg: &InboundMessage) {
+        let sid = crate::session::session_id(&msg.channel, &msg.chat_id);
+        let drop =
+            msg.text.split_whitespace().nth(1).is_some_and(|w| {
+                matches!(w.to_ascii_lowercase().as_str(), "drop" | "no" | "cancel")
+            });
+        let text = if drop {
+            if self.router.drop_interrupted(&sid) {
+                "Let go: that request won't be resumed."
+            } else {
+                "There's no interrupted request in this chat."
+            }
+            .to_string()
+        } else {
+            match self.router.resume(&sid) {
+                Ok(true) => {
+                    // Its reply answers the original message.
+                    self.acknowledge(msg).await;
+                    if let Some(channel) = self.channel(&msg.channel) {
+                        channel.answered(&msg.chat_id, &msg.message_id).await;
+                    }
+                    return;
+                }
+                Ok(false) => "There's no interrupted request to resume in this chat.".to_string(),
+                Err(e) => format!(
+                    "I couldn't resume it: {}",
+                    self.redactor.redact(&e.to_string())
+                ),
+            }
+        };
+        self.reply_directly(msg, text).await;
     }
 
     /// Reacts 👀 to a message bound for a lane, before it's queued, so the

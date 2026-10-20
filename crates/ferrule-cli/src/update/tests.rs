@@ -535,6 +535,7 @@ pub(crate) fn mark(data: &Path, version: &str, busy: bool, up_for: u64) {
                 channel: "telegram".into(),
                 chat_id: "1".into(),
                 text: "working".into(),
+                resumable: false,
             }]
         } else {
             Vec::new()

@@ -3052,6 +3052,11 @@ async fn run_gateway(
     }
 
     tracing::info!("gateway starting");
+    // M56.5: the turns the last stop or crash cut short, claimed before
+    // any message can start a turn of its own.
+    let interrupted = router.interrupted();
+    let resumer = router.clone();
+    tokio::spawn(async move { resumer.take_up(interrupted).await });
     // SIGTERM (systemctl stop) and ctrl-c are a clean shutdown: the
     // running marker goes, so the next start sends no restart notice.
     let result = tokio::select! {

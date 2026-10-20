@@ -6277,3 +6277,65 @@ Whether the model tags facts `profile`/`preference` is its call; an
 untagged fact about the owner still decays. The per-message recall is
 keyword-only. Re-recall runs per person message, not on a measured topic
 change; with nothing new it adds nothing.
+
+### 2026-10-21 — M56.5: a turn a restart cut short is taken up again (Claude, Opus 5.5)
+
+**Why.** "An interrupted turn is never re-run; the owner re-sends it."
+A self-update or restart stopped running turns after the grace, and a
+crash left only the owner's restart notice; the request itself was gone.
+
+**What changed.**
+- `ferrule-gateway/src/resume.rs` (new): `InFlight` (the message as it
+  arrived, its start, `acted`: the non-read-only tools it called, each
+  once, and `resumed`) and `Marker`, which writes
+  `<sessions>/<sid>.turn.json` atomically when a person's turn starts
+  (before voice notes are heard), adds a tool to `acted` on its first
+  `ToolCallStarted` unless the agent's own registry says `read_only`, and
+  removes the file when the turn ends. `runs_again()` is `acted` empty
+  and not already a second try, so a turn that crashes the process can't
+  loop. `CONTINUE` is `/continue` (`/resume` is the kill switch's).
+- `router.rs`: lanes get a `Marker` (with `agent.tools().clone()`, new
+  accessor in `ferrule-core`). Markers only for `person` jobs on channels
+  with busy notices (not the HTTP API, not scheduled, plan, goal or wake
+  turns). `Router::drain` now calls `stop_for_restart`: a person's turn
+  is stopped with "…; when I'm back I'll pick it up again, or ask you
+  first if it had already changed something" and `TurnGuard` remembers
+  it was a restart; the lane keeps the marker only then (and only if the
+  run came back incomplete). `/new` deletes both files.
+  `Router::interrupted()` renames every `.turn.json` to
+  `.interrupted.json` and returns them; `take_up()` tells each chat and
+  runs the safe ones again at once (`Router::resume`, a `resumed` job
+  whose goal is a "[Resuming after a restart] … It was:\n\n<original>"
+  wrapper; it doesn't merge queued messages), and offers the rest with
+  Resume / Let it go buttons. `drop_interrupted` lets one go.
+  `LaneSnapshot::resumable` and `MarkedTurn::resumable` (serde default)
+  carry it to `running.json`.
+- `gateway.rs`: `/continue` (resume) and `/continue drop|no|cancel`,
+  answered before the interceptors, like `/new`.
+- `health.rs` `restart_notice`: a resumable turn "isn't lost: its chat
+  picks it up again, or asks there first"; the old wording stays for the
+  rest.
+- `main.rs` `run_gateway`: `router.interrupted()` before
+  `gateway.run()` (a new turn would overwrite the same file), then
+  `take_up` in a task.
+- Docs: `channels.md` "After a restart" and the `/continue` row,
+  `m19b-reliability.md` §4, `m44-managed-mode.md`'s drain step,
+  `docker.md`, the roadmap.
+
+**Tests changed, none added.** Struct literals of `MarkedTurn` and
+`LaneSnapshot` in `health.rs` and `ferrule-cli`'s `update/tests.rs` got
+`resumable: false`. `a_killed_gateway_says_what_it_interrupted_and_never_reruns_it`
+now waits for the turn's marker to list `shell` before the kill, expects
+the new notice wording and the chat's offer naming `shell`; it still
+checks the model isn't called again.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS).
+
+**Open.** Not run against a live restart or update. The resumed turn
+re-reads the conversation, which ends with the stop message; whether a
+model reliably skips work already done is untested. A marker whose
+channel isn't on at the next start waits as `.interrupted.json` until
+that channel's `/continue` or `/new`. Pending offers are not repeated
+at a later start. Steered messages a restart cut off are in the
+transcript but not in the marker.

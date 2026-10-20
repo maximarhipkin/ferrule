@@ -15,6 +15,7 @@ pub mod health;
 pub mod menu;
 pub mod message;
 pub mod paste_guard;
+pub mod resume;
 pub mod router;
 pub mod scheduler;
 pub mod sdnotify;
