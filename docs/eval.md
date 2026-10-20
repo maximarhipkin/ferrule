@@ -381,7 +381,11 @@ full format, including `files` for inline fixtures and per-task overrides,
 is in [`m14-eval.md`](m14-eval.md#suite-file-format).
 
 Eval is hermetic: no run sees your memories or your learned playbook
-(`<data>/learn/playbook.md`, see [`m16-learning-loop.md`](m16-learning-loop.md)).
+(`<data>/learn/playbook.md`, see [`m16-learning-loop.md`](m16-learning-loop.md)),
+or your git config: git in a task's commands (setup, the agent's shell,
+checks, graders) runs without your system and global config and commits
+as `ferrule-eval`, so a commit-signing setup (1Password, gpg) can't
+prompt you or fail a task.
 `owner_playbook = true` is the one opt-in: the engineered variant's system
 prompt then gets the same `[Playbook]` block your agents get, and the
 naive variant still doesn't. Use it to measure what the playbook is worth.

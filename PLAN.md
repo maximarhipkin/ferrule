@@ -6023,3 +6023,42 @@ PLAN.md only; no code or tests changed.
 **Open.** The roadmap's per-milestone sections keep their open-edge
 lists as they stood at the time (the section's intro says so); they
 weren't re-verified one by one.
+
+### 2026-10-21 — Eval fixtures don't read the owner's git config (Claude, Opus 5.5)
+
+**Why.** `ferrule-eval`'s `starter_suite::every_reference_solution_passes_…`
+failed on a machine whose global git config signs commits
+(`commit.gpgsign = true`, 1Password's SSH signer): the `git-fix-commit`
+task's `solve.sh` commits, and its `git commit` inherited the signer
+(M55.4's entry). The fixture's own commit was already safe, because
+`host_git` pins `commit.gpgsign=false`. The same leak hits real runs:
+an agent's `git commit` in `ferrule eval` inherits the owner's signer,
+hooks, aliases and identity, so a git task's verdict depended on the
+machine, and m14-eval's "the user's git identity is never needed or
+used" was only true of the fixture's first commit.
+
+**What changed.**
+- `ferrule-eval/src/fixture.rs`: `hermetic(sandbox)` returns the sandbox
+  with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` set to the null
+  device (`NUL` on Windows, as `ferrule-extensions`' git and its tests
+  already do) and a `ferrule-eval <eval@ferrule.invalid>` author and
+  committer. `run_command` (setup, graders, checks) always uses it, and
+  `runner.rs` builds the agent (its shell and its check verifier) on it.
+  Decided for real runs too, not just the test: a verdict mustn't
+  depend on the owner's git setup, and a signer can pop a prompt in the
+  middle of an eval.
+- It uses `Sandbox::with_env`, which replaces the extra env. The eval's
+  sandbox has none (`ferrule eval` builds it without the credential
+  broker), and the doc comment says so. `ferrule-sandbox` is untouched.
+- Docs: `m14-eval.md` (Fixture lifecycle, step 3), `eval.md` (Eval is
+  hermetic).
+
+**Checks.** `make check` exited 0 with this machine's normal global git
+config (1Password signing on), no `GIT_CONFIG_GLOBAL` override: 1869
+passed, 0 failed, 28 ignored, 71 binaries (macOS). From here on the
+override isn't needed. No tests were added or changed.
+
+**Open.** Git older than 2.32 ignores `GIT_CONFIG_GLOBAL` and still
+reads the owner's global file. The M16 learning gate builds its agent
+with `variant::build` on its own sandbox, not through a fixture, so its
+re-runs still see the owner's git config.

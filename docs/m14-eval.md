@@ -105,7 +105,12 @@ Per (task, variant, repeat):
    workspace (a failing setup is an `error` result, not a model failure).
 3. With `git = true`: `git init`, `git add -A`, one commit by
    `ferrule-eval <eval@ferrule.invalid>` (config passed with `-c`, so the
-   user's git identity is never needed or used).
+   user's git identity is never needed or used). Every command run in the
+   fixture (`setup`, the agent's shell, the check, the graders) gets
+   `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` set to the null device
+   and a `ferrule-eval` author and committer (`fixture::hermetic`), so
+   the user's git config (a commit signer, hooks, aliases, identity)
+   never shapes a result either.
 4. The agent runs. Its transcript goes to
    `<data_dir>/eval/<run_id>/<task>--<variant>.jsonl` (kept, small, what
    you read when a task fails).

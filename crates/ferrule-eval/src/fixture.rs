@@ -94,20 +94,50 @@ impl Drop for Fixture {
     }
 }
 
-/// Runs `command` in `dir` under `sandbox`: `Ok(())` on exit 0, otherwise
-/// the tail of its output.
+/// Runs `command` in `dir` under `sandbox`, made [`hermetic`]: `Ok(())` on
+/// exit 0, otherwise the tail of its output.
 pub async fn run_command(
     command: &str,
     dir: &Path,
     sandbox: &Arc<Sandbox>,
     timeout_secs: u64,
 ) -> Result<(), String> {
-    let v = CommandVerifier::new(command, sandbox.clone(), Duration::from_secs(timeout_secs));
+    let v = CommandVerifier::new(
+        command,
+        hermetic(sandbox),
+        Duration::from_secs(timeout_secs),
+    );
     let ctx = ToolContext {
         workspace: dir.to_path_buf(),
         max_output_chars: 4_000,
     };
     v.verify(&ctx).await
+}
+
+/// `sandbox` for a fixture's commands (`setup`, the agent's shell, the
+/// check, the graders): git in them never reads the owner's system or
+/// global config, so a signing program (a 1Password or gpg prompt), a
+/// `hooksPath`, an alias or the owner's identity can't change a result or
+/// leak into a commit. Their commits are by `ferrule-eval`, like the
+/// fixture's own (the env names the identity, so it wins over a
+/// `user.name` anywhere); the rest of a repo's own `.git/config` still
+/// applies. Git before 2.32 ignores `GIT_CONFIG_GLOBAL`.
+///
+/// It sets the sandbox's extra env, so it replaces any already there; the
+/// eval's sandbox has none (`ferrule eval` builds it without the
+/// credential broker, so a result can't depend on this machine's keys).
+pub fn hermetic(sandbox: &Sandbox) -> Arc<Sandbox> {
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let env = [
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_GLOBAL", null),
+        ("GIT_AUTHOR_NAME", "ferrule-eval"),
+        ("GIT_AUTHOR_EMAIL", "eval@ferrule.invalid"),
+        ("GIT_COMMITTER_NAME", "ferrule-eval"),
+        ("GIT_COMMITTER_EMAIL", "eval@ferrule.invalid"),
+    ];
+    let env = env.map(|(k, v)| (k.to_string(), v.to_string()));
+    Arc::new(sandbox.clone().with_env(env.into()))
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {

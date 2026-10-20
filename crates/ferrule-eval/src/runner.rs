@@ -505,11 +505,14 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
         .transcripts
         .and_then(|dir| Transcript::create(dir, p.label).ok());
     let stop = StopFlag::new();
+    // The agent's shell and the check, like setup and the graders: git
+    // without the owner's config.
+    let sandbox = crate::fixture::hermetic(&p.env.sandbox);
     let agent = variant::build(variant::Build {
         variant: p.variant,
         provider: serving.provider,
         profile: p.profile,
-        sandbox: &p.env.sandbox,
+        sandbox: &sandbox,
         memory_tools: p.env.memory_tools.as_ref(),
         workspace: &fixture.workspace,
         state: &fixture.state,
