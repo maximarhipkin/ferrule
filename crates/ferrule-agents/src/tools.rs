@@ -153,6 +153,15 @@ impl AgentTool {
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
                 let model = str_arg(args, "model").map(str::to_string);
+                let effort = match str_arg(args, "effort") {
+                    None => None,
+                    Some(e @ ("low" | "medium" | "high")) => Some(e.to_string()),
+                    Some(e) => {
+                        return Err(self.fail(format!(
+                            "unknown effort {e:?}; use low, medium or high, or leave it out"
+                        )))
+                    }
+                };
                 let s = self
                     .sup
                     .spawn(
@@ -163,6 +172,7 @@ impl AgentTool {
                             role,
                             worktree,
                             model,
+                            effort,
                         },
                     )
                     .map_err(|e| self.map_err(e))?;
@@ -274,7 +284,8 @@ impl Tool for AgentTool {
                         "name": {"type": "string", "description": "A short label, for you and the owner."},
                         "role": {"type": "string", "enum": ["worker", "planner", "verifier"]},
                         "worktree": {"type": "boolean", "description": "In a git repo: its own worktree and branch (default true). false shares your files."},
-                        "model": {"type": "string", "description": "Only if the owner asked for it: a connected model (provider/model or an alias) to run it on. Leave it out to use its role's model or yours."}
+                        "model": {"type": "string", "description": "Only if the owner asked for it: a connected model (provider/model or an alias) to run it on. Leave it out to use its role's model or yours."},
+                        "effort": {"type": "string", "enum": ["low", "medium", "high"], "description": "Reasoning effort for all its turns, where its model takes one: low for lookups and mechanical edits, high for hard design or debugging. Leave it out for the usual."}
                     },
                     "required": ["task"]
                 }),

@@ -164,6 +164,45 @@ pub struct CallContext {
     /// offers them only by name, through `tool_search`; a provider that
     /// offers tools on its own, with its own search, can offer them all.
     pub deferred_tools: Vec<crate::tool::ToolDefinition>,
+    /// M57.2: the reasoning effort the run wants for every call (a
+    /// sub-agent's `spawn_agent` effort), instead of its model's own.
+    pub effort: Option<String>,
+    /// M57.2: at least this effort for this call (a run's first turn, the
+    /// turn after a failed check).
+    pub effort_floor: Option<String>,
+}
+
+impl CallContext {
+    /// M57.2: the effort a driver sends, given its model's configured one.
+    /// No configured effort sends none: the model may not take the field,
+    /// and only an owner who set one has said it does. `"none"` (reasoning
+    /// off) stays. Otherwise the run's own level replaces it, and a floor
+    /// raises it; a word [`effort_rank`] doesn't know is left as it is.
+    pub fn effort_for(&self, configured: Option<&str>) -> Option<String> {
+        let configured = configured?;
+        if configured == "none" {
+            return Some(configured.to_string());
+        }
+        let mut effort = self
+            .effort
+            .clone()
+            .unwrap_or_else(|| configured.to_string());
+        if let Some(floor) = &self.effort_floor {
+            if matches!((effort_rank(floor), effort_rank(&effort)), (Some(f), Some(e)) if f > e) {
+                effort = floor.clone();
+            }
+        }
+        Some(effort)
+    }
+}
+
+/// M57.2: where an effort word sits, lowest first, across the Anthropic
+/// (`low`…`max`) and OpenAI (`minimal`…`xhigh`) scales; `None` for a word
+/// neither uses (or `none`, which turns reasoning off).
+pub fn effort_rank(word: &str) -> Option<usize> {
+    ["minimal", "low", "medium", "high", "xhigh", "max"]
+        .iter()
+        .position(|w| *w == word)
 }
 
 impl std::fmt::Debug for CallContext {
@@ -172,6 +211,8 @@ impl std::fmt::Debug for CallContext {
             .field("guard", &self.guard.is_some())
             .field("workspace", &self.workspace)
             .field("deferred_tools", &self.deferred_tools.len())
+            .field("effort", &self.effort)
+            .field("effort_floor", &self.effort_floor)
             .finish()
     }
 }

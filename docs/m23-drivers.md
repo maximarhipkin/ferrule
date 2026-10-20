@@ -208,7 +208,9 @@ ids and their results.
 - `model`, `max_tokens`, `messages`, `system`, `tools` and `tool_choice`
   (`auto`, only when tools exist; forced choice is a 400 on Opus 5.5 and
   Fable 5.1).
-- `thinking` and `output_config.effort`, only when configured (§4).
+- `thinking` and `output_config.effort`, only when configured (§4). M57.2
+  may raise a configured effort for one turn, or set a sub-agent's level
+  in its place (`CallContext::effort_for`).
 - `temperature` is **never sent**. It is a 400 on Opus 4.7+, Sonnet 5 and
   Fable. Ferrule's only non-default uses are 0.0 for compaction, the eval
   judge and the learning pass, and 0.0 never guaranteed determinism anyway.
@@ -422,7 +424,9 @@ chain intact across tool calls, and on GPT-5.6 across turns, without
   `parallel_tool_calls: true`.
 - `reasoning: {effort}` only when `effort` is configured. Accepted values
   (model-dependent): none, minimal, low, medium, high, xhigh, max. The
-  model's default otherwise.
+  model's default otherwise. As with Anthropic, M57.2 may raise a
+  configured effort for one turn or put a sub-agent's level in its place;
+  `none` is never changed.
 - `temperature` is never sent. Reasoning models reject it, and the Chat
   driver remains for models that want it.
 

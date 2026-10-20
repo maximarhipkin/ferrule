@@ -429,6 +429,11 @@ pub struct AgentSettings {
     /// ten could; `always`; `off`: every schema with every request.
     #[serde(default)]
     pub defer_tools: ferrule_core::DeferTools,
+    /// M57.2: a run's first turn and the turn after a failed check ask for
+    /// the profile's higher reasoning effort, where the model has an
+    /// `effort` set. False keeps every turn at the configured one.
+    #[serde(default = "default_true")]
+    pub effort_boost: bool,
 }
 
 fn default_auto_commit_author() -> String {
@@ -463,6 +468,7 @@ impl Default for AgentSettings {
             auto_commit_author: default_auto_commit_author(),
             compaction_model: None,
             defer_tools: Default::default(),
+            effort_boost: true,
         }
     }
 }
@@ -1555,6 +1561,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # compaction_model = "fast"       # summarize compactions on this model instead of the agent's
 # defer_tools = "auto"            # MCP and rare tools sent by name until tool_search loads one:
 #                                 # "auto" past 10 of them, "always", or "off"
+# effort_boost = true             # first turn and the one after a failed check at "high"
+#                                 # effort, where the model has an `effort` set
 # lint = "auto"                   # after an edit, run the project's linter (rustfmt/ruff/gofmt/eslint/tsc) if installed and configured; "off"
 # lint_timeout_secs = 10
 # auto_commit = false            # commit each run's own files (never yours) to git; `ferrule undo` reverts

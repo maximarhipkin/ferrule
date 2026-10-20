@@ -298,6 +298,7 @@ impl Exec<'_> {
                 .unwrap_or(Role::Worker),
             worktree: true,
             model: node.model.clone(),
+            effort: None,
         };
         self.sup
             .spawn(self.root, req)
@@ -589,6 +590,7 @@ pub async fn run(file: &Path, opts: RunOpts) -> Result<GraphReport> {
         created_at: now,
         updated_at: now,
         model: None,
+        effort: None,
     })?;
 
     let exec = Exec {

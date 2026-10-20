@@ -74,3 +74,61 @@ numbers, not ferrule's. The ledger's input and cache rows
 (`ferrule ledger`) show the effect on a real session. The threshold of
 10 is a guess to tune. Search is word matching on names and
 descriptions, not embeddings.
+
+## Loops per file, a visible budget, and raised effort (M57.2)
+
+LangChain's harness work gained 13.7 points from a bundle of loop
+changes: loop detection per file, forced verification and budget
+warnings. Its "reasoning sandwich" (more effort for planning and
+verifying, less in between) scored 66.5% against 63.6% for high effort on
+every turn and 53.9% for the highest
+([LangChain](https://www.langchain.com/blog/improving-deep-agents-with-harness-engineering)).
+Ferrule already forces verification (the M9 check); these are the other
+two, and its version of the sandwich.
+
+**Edits per file** (`EditCounts` in `crates/ferrule-core/src/stuck.rs`).
+The stuck detector catches the same call repeated with the same result.
+A model fixing one file over and over, with a different edit each time,
+slipped past it. Now every successful `edit_file` or `write_file` counts
+against its path, and the sixth change to one file with no passing check
+in between gets one note after that turn's results: re-read the file and
+the error, and check the approach before editing again. A passing check
+starts every count again. It's on with the stuck detector
+(`detect_stuck`) and never stops a run by itself.
+
+**The budget, said.** When a run is down to a quarter of its steps
+(`max_iterations`, 60 by default), and again at a tenth, a short note
+after that turn's tool results says how many are left. A sub-agent also
+hears its tree's token budget (`[agents] max_tokens`, through
+`Budget::left`) at the same two points. The note goes at the end of the
+history like any message, never into the system prompt, so the cached
+prefix doesn't change. The owner's spend caps (M19) aren't reported this
+way; they stop the run with a status as before.
+
+**Raised effort.** A run's first turn, where the plan is made, and the
+turn after a failed check ask for the profile's `max_effort` ("high" in
+every built-in profile) as a floor. This only happens where the owner set
+an `effort` for the model (`effort = "medium"` on its provider or model,
+[models.md](models.md)): a model with none set may not accept the field,
+so nothing is sent. A configured effort above "high" stays, and
+`effort = "none"` (reasoning off) is left alone. The drivers that send an
+effort are Anthropic's (`output_config.effort`) and the Responses and
+Codex ones (`reasoning.effort`); the chat driver sends none.
+
+```toml
+[agent]
+effort_boost = true    # false: every turn at the configured effort
+```
+
+**`spawn_agent {effort}`.** A parent can run a child at `low`, `medium`
+or `high` for all of its turns: low for lookups and mechanical edits,
+high for hard debugging. It's held to the child's profile's `max_effort`,
+applies only where the child's model has an effort set (as above), and
+replaces the raised turns: an explicit level wins. The level is kept with
+the child (the `effort` column in `agents.db`), so a resumed child keeps
+it.
+
+**Open.** Not measured on ferrule's own suite (`ferrule eval`). Whether
+changing `output_config.effort` between turns costs Anthropic prompt-cache
+hits isn't stated in Anthropic's docs; the ledger's cache rows on a run
+with `effort` set would show it.

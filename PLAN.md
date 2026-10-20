@@ -6785,3 +6785,51 @@ calls.
 session with several MCP servers should show the saving. The threshold
 of 10 is a guess. Search is word matching, not embeddings. The
 dashboard's config form (M52's) doesn't offer `defer_tools`.
+
+### 2026-10-21 — M57.2: per-file loop notes, budget notes, raised effort (Claude, Opus 5.5)
+
+**Why.** `stuck.rs` caught only the same call repeated; a file fixed over
+and over with a different edit each time ran on. The model never heard
+how many steps or tokens it had left. Effort was one level for every
+turn, where LangChain's sandwich (more for planning and verifying)
+scored best.
+
+**What changed.**
+- `stuck.rs`: `EditCounts` and `EDITS_PER_FILE` (6). Each successful
+  `edit_file`/`write_file` counts against its path; the sixth change to
+  one file with no passing check in between returns one note, pushed
+  after that turn's results (and shown as `AgentEvent::Stuck`). A
+  passing check clears the counts. Gated by `detect_stuck`.
+- `agent.rs`: `budget_note` pushes a user message after the turn's
+  results when the steps left reach a quarter and again a tenth, and the
+  same for `Budget::left()` (new, default `None`; `TreeBudget` answers
+  with the tree's `max_tokens` window through
+  `Supervisor::budget_left`). Never in the system prompt.
+- Effort: `HarnessProfile::max_effort` ("high" in all four profiles);
+  `CallContext` carries `effort` (the agent's own level) and
+  `effort_floor` (set on the run's first turn and the turn after a failed
+  check, when `AgentConfig::effort_boost`). `CallContext::effort_for`
+  applies them only to a configured effort, never touches `"none"`, and
+  raises only between known words (`effort_rank`). The Anthropic and
+  Responses (so Codex) drivers use it.
+- `spawn_agent {effort: low|medium|high}`: `SpawnRequest`, `AgentRow`
+  (an `effort` column, added to an older `agents.db` like `model`) and
+  `ChildSpec` carry it; `build_agent_from` holds it to the profile's
+  `max_effort` and calls `Agent::set_effort`. An explicit level wins over
+  the raised turns.
+- `[agent] effort_boost` (default true), the sample config.
+- Docs: `m57-context-hygiene.md` (new section), `models.md`,
+  `m23-drivers.md`, `agents.md` (the effort line; the tool-size table
+  notes the ~230 characters the argument adds), README, the roadmap.
+
+**Tests changed, none added.** The `SpawnRequest` literals in
+`ferrule-agents`' tests (`board.rs`, `supervisor.rs`, `common/mod.rs`,
+`worktree.rs`) and `store.rs`'s test row gained `effort: None`.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not measured on the eval suite. Whether a per-turn change of
+Anthropic's `output_config.effort` costs cache hits isn't documented by
+Anthropic; the ledger's cache rows on a run with `effort` set would show
+it. The owner's M19 spend caps aren't reported to the model.

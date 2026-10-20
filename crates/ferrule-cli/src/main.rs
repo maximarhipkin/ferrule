@@ -1656,6 +1656,13 @@ fn build_agent_from(
     }
     // M57.1: MCP and rare tools by name until `tool_search` loads them.
     registry.defer_tools(cfg.agent.defer_tools);
+    // M57.2: a sub-agent's `spawn_agent` effort, held to its profile's
+    // highest; a profile without one takes none.
+    let child_effort = child.and_then(|c| c.effort.as_deref()).and_then(|asked| {
+        let max = profile.max_effort.as_deref()?;
+        let rank = ferrule_core::provider::effort_rank;
+        Some(if rank(asked) > rank(max) { max } else { asked }.to_string())
+    });
     let hooks_workspace = tool_ctx.workspace.clone();
     let mut agent = Agent::new(
         provider,
@@ -1665,6 +1672,7 @@ fn build_agent_from(
             max_iterations,
             parallel_tools: cfg.agent.parallel_tools.max(1),
             verify_without_changes: goal.is_some(),
+            effort_boost: cfg.agent.effort_boost,
             ..Default::default()
         },
         tool_ctx,
@@ -1675,6 +1683,7 @@ fn build_agent_from(
     .with_session_recall(Arc::new(
         memory_tools::GoalRecall::new(memory_db).with_embedding(embedding),
     ));
+    agent.set_effort(child_effort);
     if let (Some(map), tokens @ 1..) = (repo_map, cfg.agent.repo_map_tokens) {
         agent =
             agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(map, tokens)));

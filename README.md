@@ -683,7 +683,8 @@ and a dated entry for every session.
   yourself) · [`m16-learning-loop.md`](docs/m16-learning-loop.md) (failed
   runs become playbook lessons) ·
   [`m57-context-hygiene.md`](docs/m57-context-hygiene.md) (deferred tool
-  schemas and `tool_search`).
+  schemas and `tool_search`, per-file loop notes, budget notes, raised
+  effort).
 - Running it day to day: [`dashboard.md`](docs/dashboard.md)
   ([`m50-connect.md`](docs/m50-connect.md): connecting everything from
   the page) ·

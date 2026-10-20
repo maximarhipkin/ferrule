@@ -11,7 +11,7 @@ use crate::message::{Message, ToolCall, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use crate::routing::Signal;
-use crate::stuck::{Step, Stuck};
+use crate::stuck::{EditCounts, Step, Stuck};
 use crate::textcall;
 use crate::tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
 use crate::transcript::Transcript;
@@ -61,6 +61,10 @@ pub struct AgentConfig {
     /// (a goal loop's judge decides done-ness whether or not the run
     /// edited anything). Off, checks gate on file changes (M9).
     pub verify_without_changes: bool,
+    /// M57.2: raise reasoning effort to the profile's `max_effort` on a
+    /// run's first turn and on the turn after a failed check, where the
+    /// model has an effort set.
+    pub effort_boost: bool,
 }
 
 /// What the loop does when the context outgrows the profile's trigger.
@@ -90,6 +94,7 @@ impl Default for AgentConfig {
             shorten_tool_results_over: 4_000,
             parallel_tools: 4,
             verify_without_changes: false,
+            effort_boost: true,
         }
     }
 }
@@ -359,6 +364,11 @@ pub struct Agent {
     compactor: Option<Arc<dyn crate::compactor::Compactor>>,
     /// The built-in pipeline's model when it isn't the agent's own.
     compaction_provider: Option<Arc<dyn Provider>>,
+    /// M57.2: the effort every call asks for (a sub-agent's), instead of
+    /// its model's configured one; see [`Agent::set_effort`].
+    effort: Option<String>,
+    /// M57.2: this run's next turn is one the effort is raised for.
+    boost_now: bool,
 }
 
 impl Agent {
@@ -407,6 +417,8 @@ impl Agent {
             from_person: false,
             compactor: None,
             compaction_provider: None,
+            effort: None,
+            boost_now: false,
         }
     }
 
@@ -566,6 +578,14 @@ impl Agent {
     pub fn with_run_observer(mut self, observer: Arc<dyn RunObserver>) -> Self {
         self.run_observers.push(observer);
         self
+    }
+
+    /// M57.2: ask every call for `effort` (a `spawn_agent` effort, already
+    /// held to the profile's `max_effort`) instead of the model's own. It
+    /// replaces the run's raised turns too: an explicit level wins. Only
+    /// where the model has an effort set.
+    pub fn set_effort(&mut self, effort: Option<String>) {
+        self.effort = effort;
     }
 
     /// Adds a tool after construction (tools bound to this agent's identity
@@ -821,6 +841,8 @@ impl Agent {
                 } else {
                     self.tools.deferred_definitions()
                 },
+                effort: self.effort.clone().filter(|_| call_kind != "compaction"),
+                effort_floor: self.effort_floor(call_kind),
             };
             let (served, result) =
                 crate::provider::with_call_context(ctx, provider.complete_routed(req)).await;
@@ -902,6 +924,16 @@ impl Agent {
             waited += delay;
             attempt += 1;
         }
+    }
+
+    /// M57.2: the effort a call of this kind is raised to: the profile's
+    /// highest on a raised turn, unless the agent has its own level.
+    fn effort_floor(&self, call_kind: &str) -> Option<String> {
+        let raised = self.boost_now && call_kind == "turn" && self.config.effort_boost;
+        self.profile
+            .max_effort
+            .clone()
+            .filter(|_| raised && self.effort.is_none())
     }
 
     /// The provider a call of this kind runs on: the compaction model's
@@ -1240,6 +1272,13 @@ impl Agent {
         let routes = self.provider.routes();
         let mut misfits = 0;
         let mut repeats: (Option<(String, String)>, u32) = (None, 0);
+        // M57.2: edits per file since the check last passed; the turns
+        // whose effort is raised (the first, and the one after a failed
+        // check); how low the steps and the token budget were last said
+        // to be.
+        let mut edits = EditCounts::default();
+        let mut boost = true;
+        let mut low_said = (0u8, 0u8);
 
         for iteration in 0..self.config.max_iterations {
             if self.stopped() {
@@ -1252,6 +1291,7 @@ impl Agent {
                 return self.wrap_up(&tx, iteration, StopReason::Budget(why)).await;
             }
             self.deliver_inbox();
+            self.boost_now = std::mem::take(&mut boost);
             let guard = self.guard.clone();
             // A compaction calls a model too: the kill switch reaches it.
             let call = async {
@@ -1350,9 +1390,11 @@ impl Agent {
                              it runs again when you do.\n\n{output}"
                         )));
                         self.signal(&tx, Signal::CheckFailed).await;
+                        boost = true;
                         continue;
                     }
                     needs_check = false;
+                    edits.checked();
                 }
                 let mut input = self.hook_input();
                 input.stop_hook_active = Some(sent_back);
@@ -1429,6 +1471,7 @@ impl Agent {
                 calls: calls.len(),
                 ..Default::default()
             };
+            let mut edit_notes: Vec<String> = Vec::new();
             let g = guard.as_ref();
             let mut at = 0;
             while at < calls.len() {
@@ -1586,6 +1629,9 @@ impl Agent {
                     .await;
 
                     steps.push(Step::new(&call.name, &call.arguments, &raw, ok));
+                    if ok && self.config.detect_stuck {
+                        edit_notes.extend(edits.record(&call.name, &call.arguments));
+                    }
                     self.push(Message::tool_result(&call.id, content));
                     if routes {
                         misfits = if self.tools.misfit(&call.name, &call.arguments) {
@@ -1618,6 +1664,15 @@ impl Agent {
                 self.speed.lock().unwrap().tool_batch = Some(batch);
             }
 
+            // M57.2: a file changed over and over is told once, after
+            // every result of this turn.
+            for note in edit_notes {
+                warn!(%note, "one file keeps being changed");
+                self.emit(&tx, AgentEvent::Stuck { note: note.clone() })
+                    .await;
+                self.push(Message::user(note));
+            }
+
             if let Some(stuck) = Stuck::detect(&steps).filter(|_| self.config.detect_stuck) {
                 if nudged {
                     return self
@@ -1635,10 +1690,52 @@ impl Agent {
                 self.push(Message::user(note));
                 self.signal(&tx, Signal::Stuck).await;
             }
+            if let Some(note) = self.budget_note(iteration + 1, &mut low_said) {
+                self.push(Message::user(note));
+            }
         }
         let limit = self.config.max_iterations;
         self.wrap_up(&tx, limit, StopReason::MaxIterations(limit))
             .await
+    }
+
+    /// M57.2: a tail note when the run's steps, or its token budget, are
+    /// down to a quarter and again to a tenth: after the turn's results,
+    /// never in the prefix. `said` is how low each was last said to be.
+    fn budget_note(&self, done: usize, said: &mut (u8, u8)) -> Option<String> {
+        fn low(left: u64, total: u64) -> u8 {
+            match left {
+                _ if left * 10 <= total => 2,
+                _ if left * 4 <= total => 1,
+                _ => 0,
+            }
+        }
+        let max = self.config.max_iterations as u64;
+        let steps_left = max.saturating_sub(done as u64);
+        // With none left the step limit's own status says so.
+        let steps = if steps_left == 0 {
+            0
+        } else {
+            low(steps_left, max)
+        };
+        let tokens = self
+            .budget
+            .as_ref()
+            .and_then(|b| b.left())
+            .filter(|(_, total)| *total > 0);
+        let spent = tokens.map_or(0, |(left, total)| low(left, total));
+        if steps <= said.0 && spent <= said.1 {
+            return None;
+        }
+        *said = (said.0.max(steps), said.1.max(spent));
+        let mut left = format!("{steps_left} of {max} steps left in this run");
+        if let Some((n, total)) = tokens {
+            left.push_str(&format!(", {n} of {total} tokens left in the token budget"));
+        }
+        Some(format!(
+            "[ferrule] Budget: {left}. Plan to finish within it; if you can't, stop and say where \
+             things stand."
+        ))
     }
 
     /// Ends a run that can't finish with one more call, for a status the

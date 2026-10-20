@@ -106,6 +106,9 @@ pub struct ChildSpec {
     /// The model `spawn_agent` named (already checked as connected):
     /// ahead of its role's model.
     pub model: Option<String>,
+    /// M57.2: the reasoning effort `spawn_agent` asked for; the embedding
+    /// program holds it to the model's profile.
+    pub effort: Option<String>,
 }
 
 /// Checks a model `spawn_agent` names: its canonical ref, or why it
@@ -144,6 +147,8 @@ pub struct SpawnRequest {
     pub worktree: bool,
     /// A connected model to run on (checked with the [`ModelCheck`]).
     pub model: Option<String>,
+    /// M57.2: `low`, `medium` or `high`, for every call it makes.
+    pub effort: Option<String>,
 }
 
 /// What `close_tree` did.
@@ -392,6 +397,7 @@ impl Supervisor {
                     created_at: t,
                     updated_at: t,
                     model: None,
+                    effort: None,
                 };
                 self.store.insert(&row)?;
                 row
@@ -431,6 +437,14 @@ impl Supervisor {
                 self.limits.budget_window_secs / 3600
             )
         })
+    }
+
+    /// M57.2: the tree's tokens left in the budget window, and the budget.
+    pub fn budget_left(&self, tree: &str) -> Option<(u64, u64)> {
+        let since = now() - self.limits.budget_window_secs;
+        let spent = self.store.spent_since(tree, since).ok()?;
+        let max = self.limits.max_tokens;
+        Some((max.saturating_sub(spent), max))
     }
 
     pub(crate) fn get(&self, id: &str) -> Result<AgentRow, AgentsError> {
@@ -530,6 +544,7 @@ impl Supervisor {
                 created_at: t,
                 updated_at: t,
                 model,
+                effort: req.effort,
             };
             self.store.insert(&row)?;
             row
@@ -625,6 +640,7 @@ impl Supervisor {
             read_only: role == Role::Verifier && row.worktree.is_none(),
             transcript,
             model: row.model.clone(),
+            effort: row.effort.clone(),
         };
         let agent = (self.factory)(&spec).map_err(AgentsError::Build)?;
         let mut agent = self.equip(agent, row);
@@ -1086,5 +1102,9 @@ impl Budget for TreeBudget {
 
     fn exhausted(&self) -> Option<String> {
         self.sup.upgrade()?.budget_exhausted(&self.tree)
+    }
+
+    fn left(&self) -> Option<(u64, u64)> {
+        self.sup.upgrade()?.budget_left(&self.tree)
     }
 }

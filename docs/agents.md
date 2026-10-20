@@ -23,7 +23,7 @@ them. Measured on the tool definitions ferrule sends:
 
 | Agent | Tools | Size of their definitions plus the prompt addition |
 |---|---|---|
-| The root, or any agent that can still spawn | 11 | ~5,100 characters, about 1.3k tokens |
+| The root, or any agent that can still spawn | 11 | ~5,100 characters, about 1.3k tokens (M57.2's `effort` argument adds ~230 characters) |
 | An agent at `max_depth` (no spawn/wait/resume/close) | 6 | ~2,600 characters, about 0.7k tokens |
 | A child, in addition | | ~450 characters for "you are agent …, report to …" |
 
@@ -73,6 +73,12 @@ provider = "cheap"
   ferrule at start, and `ferrule doctor` says which one.
 - A child can't change any of this. The tools take no arguments for it,
   and a child's children count against the same tree.
+- **Effort** (M57.2): `spawn_agent`'s `effort` (`low`, `medium`, `high`)
+  runs every turn of the child at that reasoning effort, held to its
+  profile's highest and only where its model has an `effort` set
+  ([m57-context-hygiene.md](m57-context-hygiene.md#loops-per-file-a-visible-budget-and-raised-effort-m572)).
+  A child also hears when its tree's `max_tokens` is down to a quarter,
+  and to a tenth.
 
 `enabled = false` removes the agent tools everywhere.
 

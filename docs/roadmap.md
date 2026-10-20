@@ -1197,7 +1197,10 @@ Current State; numbers are claimed there before anything is built.
     fork sub-agents. Built on `autopilot` (`docs/m57-context-hygiene.md`):
     M57.1, MCP and rare tools sent by name until `tool_search` loads
     them, loads appended after a stable tool list (`[agent]
-    defer_tools`).
+    defer_tools`); M57.2, a note after the sixth change to one file
+    without a passing check, step and token budget notes at a quarter
+    and a tenth left, raised effort on a run's first turn and after a
+    failed check (`[agent] effort_boost`), and `spawn_agent {effort}`.
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
     the core, eval as the gate.

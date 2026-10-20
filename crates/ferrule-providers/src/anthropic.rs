@@ -258,7 +258,11 @@ impl AnthropicProvider {
         if loop_tool_use && !loop_native {
             thinking = None;
         }
-        let effort = self.options.effort.as_deref().filter(|_| !plain);
+        // M57.2: the run may ask for another level (a sub-agent's) or a
+        // floor (a raised turn), only where an effort is configured.
+        let effort = ferrule_core::provider::call_context()
+            .effort_for(self.options.effort.as_deref())
+            .filter(|_| !plain);
         match thinking {
             Some(Thinking::Adaptive) => body["thinking"] = json!({"type": "adaptive"}),
             Some(Thinking::Disabled) => body["thinking"] = json!({"type": "disabled"}),
@@ -267,7 +271,7 @@ impl AnthropicProvider {
             }
             None => {}
         }
-        if let Some(e) = effort {
+        if let Some(e) = &effort {
             body["output_config"] = json!({ "effort": e });
         }
 

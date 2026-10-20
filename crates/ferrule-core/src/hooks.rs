@@ -14,6 +14,11 @@ pub trait Budget: Send + Sync {
     fn charge(&self, usage: &Usage);
     /// `Some(why)` once nothing more may be spent.
     fn exhausted(&self) -> Option<String>;
+    /// M57.2: tokens left and the whole budget, when it counts tokens; the
+    /// loop tells the model once it runs low. `None`: not said.
+    fn left(&self) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 /// Messages that reach an agent while it works. Drained before every model

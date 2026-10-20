@@ -183,7 +183,10 @@ impl ResponsesProvider {
                 body["tool_choice"] = json!("auto");
             }
         }
-        if let Some(e) = &self.options.effort {
+        // M57.2: the run's level or floor, where an effort is configured.
+        let effort =
+            ferrule_core::provider::call_context().effort_for(self.options.effort.as_deref());
+        if let Some(e) = &effort {
             body["reasoning"] = json!({ "effort": e });
         }
         if self.codex {
@@ -191,7 +194,7 @@ impl ResponsesProvider {
             return Payload { body, replayed };
         }
         if let Some(mut cap) = req.max_output_tokens.or(self.options.max_tokens) {
-            if self.options.effort.as_deref() != Some("none") {
+            if effort.as_deref() != Some("none") {
                 cap = cap.max(MAX_TOKENS_FLOOR);
             }
             body["max_output_tokens"] = json!(cap);
