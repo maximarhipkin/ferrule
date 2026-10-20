@@ -6941,3 +6941,30 @@ only; no test added (owner's rule).
 
 **Open.** Worth cherry-picking to `main` on its own: `main` has the
 same code since M44 (`2437941f`).
+
+### 2026-10-21 — M57.5: tool-use examples in tool definitions (Claude, Opus 5.5)
+
+**Why.** Anthropic measured accuracy on complex parameters rising from
+72% to 90% with examples in the tool definitions. Ferrule's schemas said
+what each field is, never how a good call looks.
+
+**What changed.**
+- `ferrule-tools/src/edit.rs`: the `edits` property's description gives
+  two examples (a change with a line of context; an insert repeating the
+  line next to it). The SSH `edit_file` reuses the definition.
+- `ferrule-agents/src/prompts.rs`: an `Example: {…}` line on
+  `spawn_agent`, `wait_agent`, `board_post` and `task_add` (+504
+  characters for an agent that can spawn, +204 at `max_depth`).
+- Fixed text in descriptions, not Anthropic's `input_examples`, so every
+  driver sends them; nothing varies per request.
+- Not done: `ferrule_admin` (its schema is in `self_service/`, M54's).
+- Docs: `m57-context-hygiene.md` (new section), `agents.md` (the size
+  table), `m29-edit-mechanics.md`, the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not run through `ferrule eval` (the gap analysis's M58.5
+gate). `ferrule_admin`'s examples wait for M54.

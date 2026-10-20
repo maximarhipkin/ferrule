@@ -268,3 +268,36 @@ earlier").
 show whether the hour's writes pay for themselves at the owner's pace.
 `ferrule chat` keeps 5 minutes. The Claude Code plan engine's 1-hour
 writes, if any, aren't split out (its rows are plan-billed).
+
+## Tool-use examples (M57.5)
+
+A schema says what a parameter is, not how a good call looks. Anthropic
+measured accuracy on complex parameters rising from 72% to 90% when tool
+definitions carried examples
+([advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use)).
+Its `input_examples` field is Anthropic-only, so ferrule writes the
+examples into the text every provider sends: a description.
+
+**Where.**
+- `edit_file`'s `edits` property (`crates/ferrule-tools/src/edit.rs`;
+  the SSH workspace's `edit_file` reuses the definition): one change with
+  a line of context, and an insert that repeats the line next to it.
+  About 250 characters.
+- Four agent tools (`crates/ferrule-agents/src/prompts.rs`):
+  `spawn_agent` (a complete task: goal, constraints, what to report),
+  `wait_agent` (two ids and a timeout), `board_post` (a finding with a
+  topic) and `task_add` (a dependency on another task). About 500
+  characters for an agent that can spawn, 200 for one at `max_depth`
+  ([agents.md](agents.md#what-it-costs)).
+
+**The cache.** The examples are fixed text, the same on every request,
+so they change the cached prefix once, on upgrade, like any change to a
+tool's definition, and never between requests.
+
+**Not done.** `ferrule_admin`: its schema lives in
+`crates/ferrule-cli/src/self_service/`, which the parallel M54 work owns,
+so its examples wait for that to land.
+
+**Open.** The gap analysis gates this on an eval (M58.5) because it adds
+to the prefix; ferrule's own suite (`ferrule eval`) hasn't been run on
+it, so the gain is Anthropic's measurement, not ferrule's.

@@ -88,6 +88,9 @@ impl Tool for EditFileTool {
                     "path": { "type": "string", "description": "Path relative to workspace (or absolute within it)" },
                     "edits": {
                         "type": "array",
+                        "description": "Example, one change with a line of context: \
+                            [{\"search\": \"def total(xs):\\n    return 0\", \"replace\": \"def total(xs):\\n    return sum(xs)\"}]. \
+                            To insert, repeat the line next to it: [{\"search\": \"import os\\n\", \"replace\": \"import os\\nimport sys\\n\"}]",
                         "items": {
                             "type": "object",
                             "properties": {

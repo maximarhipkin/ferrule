@@ -23,8 +23,8 @@ them. Measured on the tool definitions ferrule sends:
 
 | Agent | Tools | Size of their definitions plus the prompt addition |
 |---|---|---|
-| The root, or any agent that can still spawn | 11 | ~5,100 characters, about 1.3k tokens (M57.2's `effort` argument adds ~230 characters) |
-| An agent at `max_depth` (no spawn/wait/resume/close) | 6 | ~2,600 characters, about 0.7k tokens |
+| The root, or any agent that can still spawn | 11 | ~5,100 characters, about 1.3k tokens (M57.2's `effort` argument adds ~230 characters, M57.5's examples ~500) |
+| An agent at `max_depth` (no spawn/wait/resume/close) | 6 | ~2,600 characters, about 0.7k tokens (M57.5's examples add ~200) |
 | A child, in addition | | ~450 characters for "you are agent …, report to …" |
 
 The limits below stop a tree that runs away.

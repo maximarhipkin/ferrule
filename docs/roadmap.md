@@ -1206,7 +1206,9 @@ Current State; numbers are claimed there before anything is built.
     and checks don't count); M57.4, a 1-hour prompt-cache TTL on gateway
     chat lanes (`[gateway] cache_ttl`, its 2× writes priced in the
     ledger), counted tools and files in every compaction summary, and no
-    idle pre-compaction (the summary call isn't cached).
+    idle pre-compaction (the summary call isn't cached); M57.5, short
+    input examples in `edit_file`'s `edits` and four agent tools'
+    descriptions (`ferrule_admin` waits for M54).
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
     the core, eval as the gate.
