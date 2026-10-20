@@ -72,6 +72,12 @@ What legitimately starts a new cache:
   appended after the tool list, which stays the same bytes before it
   ([m57-context-hygiene.md](m57-context-hygiene.md)).
 
+How long a cache lives is the provider's call. Anthropic keeps it 5
+minutes after its last use by default; a chat's lane in the gateway asks
+for an hour (`[gateway] cache_ttl`, M57.4), so an answer after a coffee
+still reads the cache
+([m57-context-hygiene.md](m57-context-hygiene.md#cache-economics-for-chats-m574)).
+
 ## Seeing it
 
 ```bash

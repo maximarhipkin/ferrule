@@ -1203,7 +1203,10 @@ Current State; numbers are claimed there before anything is built.
     failed check (`[agent] effort_boost`), and `spawn_agent {effort}`;
     M57.3, `edit_file` refuses a file changed on disk since the agent
     last read or wrote it, and asks for a re-read (the agent's own hooks
-    and checks don't count).
+    and checks don't count); M57.4, a 1-hour prompt-cache TTL on gateway
+    chat lanes (`[gateway] cache_ttl`, its 2× writes priced in the
+    ledger), counted tools and files in every compaction summary, and no
+    idle pre-compaction (the summary call isn't cached).
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
     the core, eval as the gate.
@@ -1221,8 +1224,8 @@ Current State; numbers are claimed there before anything is built.
 - **M12 part 6**, named long-lived agents, waits on how a chat
   addresses one.
 - **Streaming leftovers from M27:** streaming to channels that can't
-  edit a message, formatting mid-stream, Telegram's `sendMessageDraft`,
-  and a 1-hour cache TTL.
+  edit a message, formatting mid-stream, and Telegram's
+  `sendMessageDraft`. (The 1-hour cache TTL came with M57.4.)
 - **Open edges from M10:** the system-service path (root, systemd) has
   no end-to-end run, and the Streamable HTTP transport has no
   server-initiated stream or resumption.

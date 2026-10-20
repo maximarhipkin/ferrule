@@ -381,7 +381,9 @@ When `write = 0` this is the pre-M23 formula, so every existing number
 Price config gets `price_cache_write_per_mtok` on the provider and on each
 model. When it's unset:
 - on an anthropic-api provider it is **1.25 × input**, Anthropic's 5-minute
-  write price, which is the only TTL Ferrule uses;
+  write price (a write made with the 1-hour TTL, which a gateway chat
+  lane asks for since M57.4, is priced at 2 × input on top of this; see
+  [m57-context-hygiene.md](m57-context-hygiene.md#cache-economics-for-chats-m574));
 - otherwise it equals input.
 
 The catalog reads OpenRouter's `input_cache_write` when it's present.
@@ -619,7 +621,7 @@ OPENAI_API_KEY=…    cargo test -p ferrule-providers --test it live::openai_res
 - Streaming, as today.
 - PDFs and citations: there's no document input above the driver yet.
 - Strict tools: MCP schemas would need validating first.
-- The 1-hour cache TTL.
+- The 1-hour cache TTL (built in M57.4, for gateway chat lanes).
 - Replaying reasoning across user turns (Opus 5.5's "preserved thinking"),
   opt-in once Ferrule's prompt prefix is stable (the roadmap's "stable
   prompt prefix for caching").

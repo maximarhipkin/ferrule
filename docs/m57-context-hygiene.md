@@ -191,3 +191,80 @@ write, but not since the model's last `read_file`.
 **Open.** A file changed by a sub-agent while the parent's hooks or
 checks run is adopted with them. That window is the length of a hook or
 a check run (a long test suite, say). Not measured on the eval suite.
+
+## Cache economics for chats (M57.4)
+
+Chat traffic is bursty: the owner answers, goes for a coffee, and comes
+back. Ferrule marked its three cache breakpoints with Anthropic's default
+TTL, 5 minutes after the cache's last use, so a reply after a longer
+pause paid for the whole conversation as fresh input again. Claude Code
+compacts idle 200K+ conversations before the 1-hour cache expires and
+names earlier tools in its compaction summary
+([changelog](https://code.claude.com/docs/en/changelog)).
+
+**A 1-hour TTL on chat lanes.** A gateway lane for a chat
+(Telegram, Discord, Slack, the other channels; not a scheduled task, not
+a sub-agent, not `ferrule run` or `ferrule chat`) asks for
+`{"type": "ephemeral", "ttl": "1h"}` on every breakpoint
+(`Agent::set_cache_ttl` → `CallContext::cache_ttl` → the Anthropic
+driver's `cache_control`). All three get the same TTL: a longer one may
+not follow a shorter one. A compaction summary never asks for it. The
+other drivers ignore it; their providers cache on their own terms.
+
+```toml
+[gateway]
+cache_ttl = "1h"   # the default; "5m": Anthropic's default, no field sent
+```
+
+**What it costs.** Anthropic prices a cache write at 1.25 × input for 5
+minutes and 2 × input for an hour; a read costs 0.1 × input (0.05 × on
+Opus 5.5) either way, and a read refreshes the entry's timer
+([prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)).
+An hour's write pays off once a reply comes more than 5 minutes after the
+last, which is most chat replies; for a conversation that keeps going
+inside 5 minutes it only costs more on its writes. The driver reads
+`usage.cache_creation.ephemeral_1h_input_tokens` into
+`Usage::cache_write_1h_input_tokens`, the ledger keeps it
+(`cache_write_1h_input_tokens` on the row), and the cost prices those
+tokens at 2 × input instead of the 5-minute write price
+(`ProviderPricing::hour_writes`), so a lane's cost isn't under-reported.
+Routing's spend cap above tier 0 counts it the same way.
+
+**No idle pre-compaction.** Compacting a large chat while it sits idle,
+before its cache expires, was considered and left out. Ferrule's
+compactor doesn't read the cache: it sends a fresh request of one user
+message (the checklist template and the folded history flattened to
+text, no tools, no system prompt), so the whole head is billed as
+uncached input, and the next real turn writes the new prefix (summary and
+tail) again. With the 1-hour TTL a reply within the hour reads the
+conversation at 0.1 × input instead; compacting early would pay full
+price for the head, the summary's output, and a new write, for a reply
+that may never come. Compaction stays where it was: at the profile's
+trigger, when the next turn needs the room.
+
+**Tools and files in the summary.** The summary model sees each
+message's text, not the calls, so which tools ran and on which files was
+lost at a fold unless the model happened to say. Every fold now adds a
+block ferrule counts itself (`Touched`, `crates/ferrule-core/src/agent.rs`)
+after the summary's own text:
+
+```
+[Tools and files so far, counted by ferrule]
+Tools called: `edit_file` ×4, `read_file` ×9, `shell` ×3
+Files changed: `src/lib.rs`, `src/main.rs`
+Files read: `Cargo.toml`, `src/lib.rs`, `src/main.rs`
+```
+
+The counts are every tool call in the folded part, failed ones and
+calls to a tool that doesn't exist included. A file is listed
+under read or changed only when `read_file`, or `write_file` and
+`edit_file`, worked on it (not an error, a refusal, or a call that never
+ran); the shell's changes aren't counted. A later fold reads the earlier
+block and adds to it, so the lists cover the whole session. Each list
+keeps the 50 most recent files and counts the rest ("and 12 more
+earlier").
+
+**Open.** Not measured: the ledger's cache rows on a real chat should
+show whether the hour's writes pay for themselves at the owner's pace.
+`ferrule chat` keeps 5 minutes. The Claude Code plan engine's 1-hour
+writes, if any, aren't split out (its rows are plan-billed).

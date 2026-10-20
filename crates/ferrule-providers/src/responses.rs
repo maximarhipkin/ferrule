@@ -332,6 +332,7 @@ impl ResponsesProvider {
                 output_tokens: n("/output_tokens"),
                 cached_input_tokens: n("/input_tokens_details/cached_tokens"),
                 cache_write_input_tokens: 0,
+                cache_write_1h_input_tokens: 0,
                 notional_usd: None,
             },
             stop_reason,

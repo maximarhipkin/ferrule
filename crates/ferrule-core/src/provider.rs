@@ -170,6 +170,10 @@ pub struct CallContext {
     /// M57.2: at least this effort for this call (a run's first turn, the
     /// turn after a failed check).
     pub effort_floor: Option<String>,
+    /// M57.4: how long the provider should keep this call's prompt cache
+    /// (`"1h"` on a gateway chat lane). `None`: the provider's default (5
+    /// minutes on Anthropic). Only the Anthropic driver reads it.
+    pub cache_ttl: Option<String>,
 }
 
 impl CallContext {
@@ -213,6 +217,7 @@ impl std::fmt::Debug for CallContext {
             .field("deferred_tools", &self.deferred_tools.len())
             .field("effort", &self.effort)
             .field("effort_floor", &self.effort_floor)
+            .field("cache_ttl", &self.cache_ttl)
             .finish()
     }
 }

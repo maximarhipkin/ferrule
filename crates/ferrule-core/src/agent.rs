@@ -372,6 +372,9 @@ pub struct Agent {
     /// M57.3: what the file tools last read or wrote; what the agent's own
     /// hooks and checks change in them is adopted, so it isn't stale.
     stamps: Option<crate::stamps::FileStamps>,
+    /// M57.4: the prompt-cache TTL every call asks for; see
+    /// [`Agent::set_cache_ttl`].
+    cache_ttl: Option<String>,
 }
 
 impl Agent {
@@ -423,6 +426,7 @@ impl Agent {
             effort: None,
             boost_now: false,
             stamps: None,
+            cache_ttl: None,
         }
     }
 
@@ -598,6 +602,14 @@ impl Agent {
     pub fn with_file_stamps(mut self, stamps: crate::stamps::FileStamps) -> Self {
         self.stamps = Some(stamps);
         self
+    }
+
+    /// M57.4: ask the provider to keep each call's prompt cache this long
+    /// (`"1h"`, a gateway chat lane: the owner may answer after the 5
+    /// minutes Anthropic keeps it by default). `None`: the provider's
+    /// default. Compaction summaries never ask.
+    pub fn set_cache_ttl(&mut self, ttl: Option<String>) {
+        self.cache_ttl = ttl;
     }
 
     /// Adds a tool after construction (tools bound to this agent's identity
@@ -867,6 +879,8 @@ impl Agent {
                 },
                 effort: self.effort.clone().filter(|_| call_kind != "compaction"),
                 effort_floor: self.effort_floor(call_kind),
+                // A summary's request is flattened and never sent again.
+                cache_ttl: self.cache_ttl.clone().filter(|_| call_kind != "compaction"),
             };
             let (served, result) =
                 crate::provider::with_call_context(ctx, provider.complete_routed(req)).await;
@@ -1062,6 +1076,9 @@ impl Agent {
             input_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
+            cache_write_1h_input_tokens: result
+                .as_ref()
+                .map_or(0, |r| r.usage.cache_write_1h_input_tokens),
             output_tokens,
             tool_calls,
             latency_ms,
@@ -2343,6 +2360,8 @@ impl Agent {
             return Ok(shortened);
         }
         let folded_refs = shortened_refs(head);
+        // M57.4: the tools and files, counted rather than summarized.
+        let touched = Touched::of(head).render();
 
         // Skills activated in the folded part stay in force: their blocks
         // ride along verbatim (unless the verbatim tail already holds them)
@@ -2409,6 +2428,10 @@ impl Agent {
             rebuilt.push(sys.clone());
         }
         let mut summary_msg = format!("{SUMMARY_HEADER}\n{summary}");
+        if let Some(touched) = touched {
+            summary_msg.push_str("\n\n");
+            summary_msg.push_str(&touched);
+        }
         if !carried.is_empty() {
             summary_msg.push_str(
                 "\n\n[Skill instructions activated earlier in this session — still in force]\n",
@@ -2747,6 +2770,149 @@ fn shortened_refs(messages: &[Message]) -> Vec<String> {
     refs.split_off(skip)
 }
 
+/// M57.4: how a fold's own count of tools and files starts. The summary
+/// model never sees the calls, only their text, so this part isn't left
+/// to it.
+const TOUCHED_HEADER: &str = "[Tools and files so far, counted by ferrule]";
+/// Files listed per line; older ones become a count.
+const TOUCHED_FILES: usize = 50;
+
+/// The tools a session called and the files its file tools read or
+/// changed, across every fold so far.
+#[derive(Debug, Default)]
+struct Touched {
+    tools: std::collections::BTreeMap<String, u64>,
+    /// Oldest first; a file touched again moves to the end.
+    changed: Vec<String>,
+    changed_more: u64,
+    read: Vec<String>,
+    read_more: u64,
+}
+
+impl Touched {
+    /// What a fold's head did: an earlier summary's count, then each call
+    /// in it. A file counts as read or changed only when its call worked.
+    fn of(head: &[Message]) -> Touched {
+        use crate::message::Role;
+        let results: HashMap<&str, &str> = head
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .filter_map(|m| Some((m.tool_call_id.as_deref()?, m.content.as_deref()?)))
+            .collect();
+        let mut t = Touched::default();
+        for m in head {
+            if is_summary(m) {
+                t.add_listed(m.content.as_deref().unwrap_or(""));
+            }
+            for call in &m.tool_calls {
+                *t.tools.entry(call.name.clone()).or_default() += 1;
+                let Some(path) = call.arguments["path"].as_str().filter(|p| !p.is_empty()) else {
+                    continue;
+                };
+                if !results.get(call.id.as_str()).is_some_and(|r| worked(r)) {
+                    continue;
+                }
+                match call.name.as_str() {
+                    "read_file" => touch(&mut t.read, path),
+                    "write_file" | "edit_file" => touch(&mut t.changed, path),
+                    _ => {}
+                }
+            }
+        }
+        t
+    }
+
+    /// The block an earlier fold wrote ([`Touched::render`]).
+    fn add_listed(&mut self, summary: &str) {
+        let Some(at) = summary.find(TOUCHED_HEADER) else {
+            return;
+        };
+        let block = &summary[at + TOUCHED_HEADER.len()..];
+        for line in block.lines().skip(1).take_while(|l| !l.trim().is_empty()) {
+            if let Some(rest) = line.strip_prefix("Tools called: ") {
+                for item in rest.split(", ") {
+                    let Some((name, n)) = item.trim_start_matches('`').split_once("` ×") else {
+                        continue;
+                    };
+                    *self.tools.entry(name.to_string()).or_default() += n.parse().unwrap_or(0);
+                }
+            } else if let Some(rest) = line.strip_prefix("Files changed: ") {
+                self.changed_more += listed(rest, &mut self.changed);
+            } else if let Some(rest) = line.strip_prefix("Files read: ") {
+                self.read_more += listed(rest, &mut self.read);
+            }
+        }
+    }
+
+    /// The block, or `None` when nothing was called.
+    fn render(&self) -> Option<String> {
+        if self.tools.is_empty() {
+            return None;
+        }
+        let tools: Vec<String> = self
+            .tools
+            .iter()
+            .map(|(name, n)| format!("`{name}` ×{n}"))
+            .collect();
+        let mut out = format!("{TOUCHED_HEADER}\nTools called: {}", tools.join(", "));
+        for (label, files, more) in [
+            ("Files changed", &self.changed, self.changed_more),
+            ("Files read", &self.read, self.read_more),
+        ] {
+            let dropped = files.len().saturating_sub(TOUCHED_FILES);
+            let more = more + dropped as u64;
+            if files.is_empty() && more == 0 {
+                continue;
+            }
+            let shown: Vec<String> = files[dropped..].iter().map(|f| format!("`{f}`")).collect();
+            out.push_str(&format!("\n{label}: {}", shown.join(", ")));
+            if more > 0 {
+                out.push_str(&format!(" (and {more} more earlier)"));
+            }
+        }
+        Some(out)
+    }
+}
+
+/// `path` as the latest file in `files`.
+fn touch(files: &mut Vec<String>, path: &str) {
+    files.retain(|f| f != path);
+    files.push(path.to_string());
+}
+
+/// The files a rendered line lists (each in backticks) into `files`; the
+/// count of older ones it only counted.
+fn listed(line: &str, files: &mut Vec<String>) -> u64 {
+    let parts: Vec<&str> = line.split('`').collect();
+    for path in parts.iter().skip(1).step_by(2) {
+        touch(files, path);
+    }
+    parts
+        .last()
+        .and_then(|tail| tail.split_once("(and "))
+        .and_then(|(_, n)| n.split_once(' '))
+        .and_then(|(n, _)| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Whether a tool result says its call worked: not an error, a refusal,
+/// a call that never ran, or a result replaced by a later identical one.
+fn worked(result: &str) -> bool {
+    let text = match result.strip_prefix(SHORTENED_PREFIX) {
+        Some(rest) => rest.split_once("It began:\n").map_or(rest, |(_, r)| r),
+        None => result,
+    };
+    ![
+        "error: ",
+        "refused by ferrule",
+        "not run",
+        "[ferrule: no result",
+        "[superseded by identical",
+    ]
+    .iter()
+    .any(|p| text.starts_with(p))
+}
+
 /// Skill blocks arrive as tool results and, after a compaction, inside the
 /// summary (a user message). Anything else quoting the tag is left alone.
 fn may_hold_skill(m: &Message) -> bool {
@@ -2865,6 +3031,7 @@ mod tests {
                     output_tokens: 5,
                     cached_input_tokens: 0,
                     cache_write_input_tokens: 0,
+                    cache_write_1h_input_tokens: 0,
                     notional_usd: None,
                 },
                 stop_reason: None,
@@ -3232,6 +3399,7 @@ mod tests {
                     output_tokens: 10,
                     cached_input_tokens: 20,
                     cache_write_input_tokens: 0,
+                    cache_write_1h_input_tokens: 0,
                     notional_usd: None,
                 },
             ),
@@ -3242,6 +3410,7 @@ mod tests {
                     output_tokens: 8,
                     cached_input_tokens: 30,
                     cache_write_input_tokens: 40,
+                    cache_write_1h_input_tokens: 0,
                     notional_usd: None,
                 },
             ),

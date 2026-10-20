@@ -6873,3 +6873,54 @@ still matched landed in a file the model no longer knew.
 **Open.** A file a sub-agent changes while the parent's hooks or checks
 run is adopted with them (the window is one hook or check run). Not
 measured on the eval suite.
+
+### 2026-10-21 — M57.4: cache economics for chats (Claude, Opus 5.5)
+
+**Why.** Every breakpoint used Anthropic's default 5-minute TTL, so a
+chat reply after a longer pause paid for the whole conversation again.
+A compaction summary only saw message text, so which tools ran and on
+which files was lost at a fold unless the summary model said so.
+
+**What changed.**
+- 1-hour TTL: `CallContext::cache_ttl` (`provider.rs`), set from
+  `Agent::set_cache_ttl` on every call but a compaction summary. The
+  Anthropic driver marks all three breakpoints
+  `{"type": "ephemeral", "ttl": "1h"}` when asked (`cache_control`), and
+  reads `usage.cache_creation.ephemeral_1h_input_tokens` into the new
+  `Usage::cache_write_1h_input_tokens`. The gateway factory sets it on
+  chat lanes only (`channels::of_session`), from `[gateway] cache_ttl`
+  (`"1h"` default, `"5m"` sends no field, as before); sample config.
+- Pricing: `LedgerRecord::cache_write_1h_input_tokens` (serde default,
+  skipped at 0); `ProviderPricing::hour_writes` adds the step from the
+  5-minute write price to 2 × input, in `cost_usd` and in routing's
+  tier-spend count. The learning pass's rows carry it too.
+- Idle pre-compaction: not built. The compactor sends one flattened user
+  message (template and history as text, no tools or system prompt),
+  which reads nothing from the cache; compacting an idle chat would pay
+  full input for the head and a new write, where a reply within the
+  hour reads the cache at 0.1 ×. Written up in the doc.
+- Fold summary: `Touched` (`agent.rs`) adds a block ferrule counts
+  itself after the summary text: `Tools called: \`name\` ×n`, `Files
+  changed:` (`write_file`/`edit_file` that worked) and `Files read:`
+  (`read_file` that worked), 50 most recent each, the rest counted. A
+  later fold parses the earlier block and adds to it.
+- Docs: `m57-context-hygiene.md` (new section), `speed.md`,
+  `m23-drivers.md` (the write price, the follow-up done), the roadmap
+  (M57 line; the M27 leftover struck).
+
+**Tests changed, none added.** Struct literals of `Usage` and
+`LedgerRecord` across the workspace gained the new field (0). The
+golden `crates/ferrule-core/tests/golden/routing_off.json` was
+regenerated (`FERRULE_UPDATE_GOLDEN=1`): its compaction summary now
+carries the counted block, and the estimates after it moved by 23
+tokens.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not measured: whether an hour's writes pay for themselves at
+the owner's pace shows in the ledger's cache rows on a real chat.
+`ferrule chat` keeps 5 minutes. The Claude Code plan engine's 1-hour
+writes aren't split out (its rows are plan-billed). The compactor's
+input still leaves out the calls themselves; only the counted block
+names them.

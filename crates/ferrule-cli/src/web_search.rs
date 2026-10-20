@@ -161,6 +161,7 @@ pub fn search_record(
         input_tokens: 0,
         cached_input_tokens: 0,
         cache_write_input_tokens: 0,
+        cache_write_1h_input_tokens: 0,
         output_tokens: 0,
         tool_calls: 0,
         latency_ms: call.latency_ms,

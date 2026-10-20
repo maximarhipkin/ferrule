@@ -509,6 +509,11 @@ pub struct GatewayConfig {
     /// (`"steer"`, the default) or waits for the next (`"queue"`).
     #[serde(default)]
     pub while_busy: ferrule_gateway::WhileBusy,
+    /// M57.4: how long Anthropic keeps a chat's prompt cache between
+    /// messages: `"1h"` (the default; its writes cost 2 × input instead of
+    /// 1.25 ×) or `"5m"`, the provider's default.
+    #[serde(default)]
+    pub cache_ttl: CacheTtl,
     /// Enable the stdin/stdout local channel (mostly for smoke-testing the
     /// gateway itself without any external service).
     #[serde(default)]
@@ -576,6 +581,26 @@ pub struct GatewayConfig {
     /// M39: `[gateway.http]`, `POST /v1/messages` for your own programs.
     #[serde(default)]
     pub http: Option<crate::channels::settings::HttpApi>,
+}
+
+/// `[gateway] cache_ttl` (M57.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum CacheTtl {
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[default]
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+impl CacheTtl {
+    /// What a lane's calls ask for: `None` is the provider's default.
+    pub fn asked(self) -> Option<String> {
+        match self {
+            CacheTtl::FiveMinutes => None,
+            CacheTtl::OneHour => Some("1h".into()),
+        }
+    }
 }
 
 /// No `[gateway]` table reads like an empty one. A derived `Default` left
@@ -1574,6 +1599,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # stop_grace_secs = 20                      # SIGTERM: running turns get this long, then they're stopped
 # busy_notice_secs = 30                     # a turn this old tells a queued message it's busy
 # while_busy = "steer"                      # a message sent mid-turn reaches that turn; "queue": the next
+# cache_ttl = "1h"                          # Anthropic keeps a chat's prompt cache an hour; "5m": its default
 # local = true                              # enable the stdin/stdout channel
 # telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
 # telegram_allowed_chats = []               # chat ids the bot answers; empty =

@@ -22,6 +22,7 @@ impl Provider for Queue {
                     output_tokens: 10,
                     cached_input_tokens: 0,
                     cache_write_input_tokens: 0,
+                    cache_write_1h_input_tokens: 0,
                     notional_usd: None,
                 },
                 stop_reason: None,

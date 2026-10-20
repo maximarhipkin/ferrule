@@ -155,6 +155,7 @@ pub fn parse(line: &str) -> Option<Event> {
                     output_tokens: n("output_tokens"),
                     cached_input_tokens: cache_read,
                     cache_write_input_tokens: cache_write,
+                    cache_write_1h_input_tokens: 0,
                     notional_usd: v["total_cost_usd"].as_f64(),
                 },
                 total_cost_usd: v["total_cost_usd"].as_f64(),

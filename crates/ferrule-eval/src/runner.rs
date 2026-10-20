@@ -712,6 +712,7 @@ fn finish(p: RunOne<'_>, mut tag: EvalTag, mut result: TaskResult, started: Inst
         input_tokens: 0,
         cached_input_tokens: 0,
         cache_write_input_tokens: 0,
+        cache_write_1h_input_tokens: 0,
         output_tokens: 0,
         tool_calls: 0,
         latency_ms: result.wall_ms,

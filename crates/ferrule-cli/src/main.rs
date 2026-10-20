@@ -2729,6 +2729,7 @@ async fn gateway_factory(
         child_builder(max_iterations, mcp_tools.clone()),
     )?;
     let factory_sup = sup.clone();
+    let chat_cache_ttl = cfg.gateway.cache_ttl.asked();
     let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
         let (shape, origin) = ledger::classify_session(session_id);
         let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
@@ -2776,6 +2777,9 @@ async fn gateway_factory(
             for tool in ferrule_gateway::tools::chat_tools(&files, session_id) {
                 agent.register_tool(tool);
             }
+            // M57.4: a chat's next message may come after Anthropic's
+            // default 5 minutes; a scheduled task's run doesn't wait.
+            agent.set_cache_ttl(chat_cache_ttl.clone());
         }
         // M48: the owner's own chat can change Ferrule, with the owner's tap.
         if let Some(admin) = &admin {

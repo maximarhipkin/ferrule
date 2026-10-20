@@ -212,6 +212,10 @@ impl AnthropicProvider {
         }
 
         let mut tools = tools_to_wire(&req.tools);
+        // M57.4: a chat lane asks for the 1-hour TTL; every breakpoint gets
+        // the same one (a longer TTL may not follow a shorter one).
+        let ttl = ferrule_core::provider::call_context().cache_ttl;
+        let ephemeral = || cache_control(ttl.as_deref());
         // Breakpoint 1: tools and system render first, so one breakpoint on
         // the last of them covers both.
         if let Some(last) = system.last_mut() {
@@ -370,6 +374,11 @@ impl AnthropicProvider {
             n("cache_creation_input_tokens"),
             n("cache_read_input_tokens"),
         );
+        // M57.4: the writes made with the 1-hour TTL, priced higher.
+        let write_1h = usage["cache_creation"]["ephemeral_1h_input_tokens"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(write);
 
         let content = (!text.is_empty()).then_some(text);
         let reasoning = (!thinking.is_empty()).then(|| thinking.join("\n\n"));
@@ -389,6 +398,7 @@ impl AnthropicProvider {
                 output_tokens: n("output_tokens"),
                 cached_input_tokens: read,
                 cache_write_input_tokens: write,
+                cache_write_1h_input_tokens: write_1h,
                 notional_usd: None,
             },
             stop_reason: body
@@ -565,8 +575,13 @@ fn text_block(t: &str) -> Value {
     json!({"type": "text", "text": t})
 }
 
-fn ephemeral() -> Value {
-    json!({"type": "ephemeral"})
+/// A breakpoint: the default 5-minute TTL as before (the same bytes), or
+/// `ttl` (`"1h"`) when the run asks for one.
+fn cache_control(ttl: Option<&str>) -> Value {
+    match ttl {
+        Some(ttl) if ttl != "5m" => json!({"type": "ephemeral", "ttl": ttl}),
+        _ => json!({"type": "ephemeral"}),
+    }
 }
 
 fn nonempty(content: &Option<String>) -> Option<&str> {

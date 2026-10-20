@@ -53,6 +53,11 @@ pub struct LedgerRecord {
     /// that don't report it, and on older rows.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cache_write_input_tokens: u64,
+    /// M57.4: the part of `cache_write_input_tokens` written with the
+    /// 1-hour TTL (a gateway chat lane on Anthropic), priced at 2 × input
+    /// instead of the 5-minute write price. 0 elsewhere and on older rows.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_1h_input_tokens: u64,
     pub output_tokens: u64,
     /// Number of tool calls in the response (0 for a final answer or a
     /// compaction summary).

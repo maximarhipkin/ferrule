@@ -339,7 +339,7 @@
       "type": "context_ready"
     },
     {
-      "est_tokens_after": 122,
+      "est_tokens_after": 146,
       "est_tokens_before": 262,
       "folded_messages": 16,
       "type": "compacted"
@@ -374,7 +374,7 @@
       "type": "run_started"
     },
     {
-      "est_tokens": 134,
+      "est_tokens": 158,
       "threshold_tokens": 78400,
       "type": "context_ready"
     },
@@ -1964,7 +1964,7 @@
           "role": "system"
         },
         {
-          "content": "[Compaction summary of earlier session]\nsecond turn\n\nContinue from here.",
+          "content": "[Compaction summary of earlier session]\nsecond turn\n\n[Tools and files so far, counted by ferrule]\nTools called: `edit` ×1, `look` ×5, `nosuch` ×1\n\nContinue from here.",
           "role": "user"
         },
         {
@@ -2018,7 +2018,7 @@
           "role": "system"
         },
         {
-          "content": "[Compaction summary of earlier session]\nsecond turn\n\nContinue from here.",
+          "content": "[Compaction summary of earlier session]\nsecond turn\n\n[Tools and files so far, counted by ferrule]\nTools called: `edit` ×1, `look` ×5, `nosuch` ×1\n\nContinue from here.",
           "role": "user"
         },
         {
