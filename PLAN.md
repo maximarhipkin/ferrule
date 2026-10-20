@@ -6119,3 +6119,55 @@ takes a raw `value` from the page: when it lands, its JS sender should
 wrap the value in `asSecret` (the server side needs nothing). The login
 link's token is still POSTed once as typed (it is one-use). An active
 tamperer still wins (documented).
+
+### 2026-10-21 — M52.5: a key pasted into a chat stops at the gateway (Claude, Opus 5.5)
+
+**Why.** A key pasted into Telegram (or any channel) went into the
+lane: the transcript kept it and the model provider saw it, and a
+refusal from the agent came only after that. The gateway is the one
+place every channel's message passes before anything reads it.
+
+**What changed.**
+- `ferrule-gateway/src/paste_guard.rs` (new): `holds_a_key(text,
+  redactor)` is true for one of this machine's secret values or a token
+  shape the `Redactor` already hides (Telegram and Discord bot tokens,
+  Slack, Meta), or a known prefix at a word's start followed by 20+ key
+  characters with at least 3 letter/digit switches. The prefixes are the
+  credential proxy's `KNOWN_PREFIXES` (now `pub` and re-exported by
+  `ferrule-proxy`, which `ferrule-gateway` now depends on) plus Google's
+  `AIza`. The switch count is what keeps words, versions and
+  `snake_case` names out (`hf_transformers_version_4_40_0` has none).
+  `reply(deleted)` says why, where to put the key (the dashboard's
+  Connect page or `ferrule setup`, until a `secret_request` link
+  exists), and that a real key should be replaced.
+- `gateway.rs`: `handle()` checks first, before `/new`, `/status` and
+  every interceptor, so no door, approval or `/goal` reads it.
+  `stop_pasted_key` logs only the channel ("stopped before the agent;
+  it wasn't kept"), deletes the message where it can, replies (without
+  `reply_to` once deleted) and calls `answered` so the HTTP API closes
+  the request.
+- `Channel::delete` (default unsupported); Telegram's is
+  `deleteMessage`; the dashboard's chat replaces its log entry with
+  "(taken out: it looked like a key)".
+- Docs: `channels.md`, "Keys pasted into a chat" (every channel, the
+  HTTP API included, what counts as a key, what's deleted where);
+  roadmap note.
+
+**Tests changed, none added.** The first `make check` failed two
+`ferrule-cli` integration tests whose stuck turn's message carried the
+provider's configured key (`health::the_heartbeat_names_a_stuck_turn_but_not_its_message`,
+`dashboard::no_page_or_json_response_carries_a_seeded_secret`): the
+guard now stops that message, so no turn hung. Each now sends the
+key-carrying message first (stopped, and still checked never to show)
+and an ordinary `HANG …` message for the stuck turn; every leak
+assertion is unchanged.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS).
+
+**Open.** Discord, Slack and the other channels can't delete (no
+implementation; Discord could with Manage Messages in a server). A key
+in an attached file isn't looked at. Keys with no known prefix and no
+known shape (Brave's, Tavily's, a password) pass unless they are this
+machine's own secret values. When `secret_request` lands (M52.3/M54),
+`reply()` should carry its link.

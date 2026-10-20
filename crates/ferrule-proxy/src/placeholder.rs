@@ -8,8 +8,9 @@
 use ring::digest;
 use std::fmt::Write as _;
 
-/// Longest match wins, so `sk-ant-` beats `sk-`.
-const KNOWN_PREFIXES: &[&str] = &[
+/// Longest match wins, so `sk-ant-` beats `sk-`. The gateway's paste guard
+/// (M52.5) reads the same list to spot a key pasted into a chat.
+pub const KNOWN_PREFIXES: &[&str] = &[
     "github_pat_",
     "ghp_",
     "gho_",

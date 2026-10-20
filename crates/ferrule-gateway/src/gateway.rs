@@ -277,6 +277,11 @@ impl Gateway {
     /// One inbound message: `/status`, an interceptor's, or the receipt,
     /// the busy notice if its chat is mid-turn, and its lane.
     async fn handle(&self, msg: InboundMessage) {
+        // M52.5: a pasted key goes no further, not even to a door.
+        if crate::paste_guard::holds_a_key(&msg.text, &self.redactor) {
+            self.stop_pasted_key(&msg).await;
+            return;
+        }
         // M41: the chat's own escape hatch. Anyone the channel lets talk
         // here may use it, and it touches this chat's lane only.
         if is_command(&msg.text, "/new") || is_command(&msg.text, "/reset") {
@@ -389,6 +394,43 @@ impl Gateway {
 
     fn channel(&self, name: &str) -> Option<Arc<dyn Channel>> {
         self.channels.iter().find(|c| c.name() == name).cloned()
+    }
+
+    /// M52.5: a message that looked like a key. It's deleted where the
+    /// channel allows, the chat is told why, and the log says only that it
+    /// happened: never the text, nor who sent it.
+    async fn stop_pasted_key(&self, msg: &InboundMessage) {
+        tracing::warn!(
+            channel = %msg.channel,
+            "a message that looked like an API key or token was stopped before the agent; it wasn't kept"
+        );
+        let Some(channel) = self.channel(&msg.channel) else {
+            return;
+        };
+        let deleted = if msg.message_id.is_empty() {
+            false
+        } else {
+            match channel.delete(&msg.chat_id, &msg.message_id).await {
+                Ok(()) => true,
+                Err(GatewayError::Unsupported(_)) => false,
+                Err(e) => {
+                    tracing::warn!(error = %e, "couldn't delete the message that looked like a key");
+                    false
+                }
+            }
+        };
+        let out = OutboundMessage {
+            channel: msg.channel.clone(),
+            chat_id: msg.chat_id.clone(),
+            text: crate::paste_guard::reply(deleted),
+            // A deleted message can't be replied to.
+            reply_to: (!deleted).then(|| msg.message_id.clone()),
+            attachments: vec![],
+        };
+        if let Err(e) = channel.send(out).await {
+            tracing::warn!(error = %e, "couldn't say why a message was stopped");
+        }
+        channel.answered(&msg.chat_id, &msg.message_id).await;
     }
 
     async fn reply_directly(&self, msg: &InboundMessage, text: String) {

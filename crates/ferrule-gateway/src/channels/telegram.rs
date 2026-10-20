@@ -1414,6 +1414,18 @@ impl Channel for TelegramChannel {
         let payload = json!({ "chat_id": chat_id, "message_id": message_id.parse::<i64>().unwrap_or(0), "text": text, "link_preview_options": no_preview() });
         self.deliver("editMessageText", &payload).await.map(|_| ())
     }
+
+    /// `deleteMessage` (M52.5). A bot may delete what it receives in a
+    /// private chat, and anything in a group where it's an admin, for 48 h.
+    async fn delete(&self, chat_id: &str, message_id: &str) -> Result<(), GatewayError> {
+        let Ok(id) = message_id.parse::<i64>() else {
+            return Err(GatewayError::Channel(format!(
+                "deleteMessage: not a message id: {message_id}"
+            )));
+        };
+        let payload = json!({ "chat_id": chat_id, "message_id": id });
+        self.deliver("deleteMessage", &payload).await.map(|_| ())
+    }
 }
 
 #[cfg(test)]

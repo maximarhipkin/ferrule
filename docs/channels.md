@@ -24,8 +24,9 @@ channels added in M39. The design, and the reasons behind it, are in
 [m39-channels.md](m39-channels.md). What works in every chat, whichever
 channel it's on, is at the end: [chat commands](#chat-commands),
 [voice messages](#voice-messages), [the typing
-indicator](#typing-indicator) and [messages sent while it
-works](#messages-sent-while-it-works).
+indicator](#typing-indicator), [messages sent while it
+works](#messages-sent-while-it-works) and [keys pasted into a
+chat](#keys-pasted-into-a-chat).
 
 ## Which channel to pick
 
@@ -1151,3 +1152,35 @@ text: `[location: 52.52, 13.405]`, `[venue: <name>, <address> (52.52,
 13.405)]`, `[contact: <name>, <phone>]`. A live location is read once, at
 its first position. The bot's own messages never show link previews, so
 the dashboard's sign-in link is a link, not a card.
+
+## Keys pasted into a chat
+
+A message that looks like it holds an API key or a token stops at the
+gateway (M52.5, `ferrule-gateway/src/paste_guard.rs`), on every channel,
+the HTTP API and the dashboard's own chat included. It never reaches a
+lane: no transcript keeps it, no model sees it, and no command or
+approval reads it. The chat is told why, and pointed to the dashboard's
+Connect page (`/dashboard`) or `ferrule setup` for the key. The log says
+only that a message was stopped and on which channel, never its text or
+its sender.
+
+Where the channel lets the bot, the message is deleted too: Telegram
+(`deleteMessage`, which a bot may use on what it receives in a private
+chat, and in a group where it's an admin, within 48 hours) and the
+dashboard's chat, where it shows as taken out. Everywhere else the reply
+asks you to delete it yourself. Either way it has already been through
+the chat app's servers, so a real key that was pasted should be replaced.
+
+What counts as a key, so ordinary text isn't stopped:
+
+- one of this machine's own secret values (a provider key, a channel
+  token, a `[secrets]` value);
+- a Telegram or Discord bot token, a Slack token or a Meta access token,
+  by shape (the same shapes `/status` hides; a JWT has the Discord
+  shape);
+- a known prefix at the start of a word, the credential proxy's own list
+  (`ghp_`, `github_pat_`, `glpat-`, `sk-`, `sk-ant-`, `sk-proj-`,
+  `xoxb-`, `xapp-`, `hf_`, `sk_live_`, …) and Google's `AIza`, followed
+  by 20 or more letters, digits, `-` or `_` that switch between letters
+  and digits at least 3 times, as a random key does and a word, a
+  version or a `snake_case` name doesn't.

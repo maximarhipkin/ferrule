@@ -674,7 +674,10 @@ fn the_heartbeat_names_a_stuck_turn_but_not_its_message() {
     assert_eq!(ok["version"], env!("CARGO_PKG_VERSION"));
     assert!(ok["uptime_secs"].is_u64(), "{ok}");
 
-    tg.say(42, "HANG with my password hunter2-private and sk-test");
+    // The provider's key in a message never makes a turn (M52.5's paste
+    // guard stops it); the stuck turn is the second message's.
+    tg.say(42, "HANG with my key sk-test");
+    tg.say(42, "HANG with my password hunter2-private");
     let bad = wait(&|v| v["status"] == "degraded");
     let reason = bad["reason"].as_str().unwrap();
     assert!(

@@ -172,6 +172,13 @@ pub trait Channel: Send + Sync {
     /// requests with answers (the HTTP API) closes the request here.
     async fn answered(&self, _chat_id: &str, _message_id: &str) {}
 
+    /// Optional: delete an inbound message from the chat (M52.5: one that
+    /// looked like a pasted key). Default is "not supported", so the chat
+    /// can be asked to delete it instead.
+    async fn delete(&self, _chat_id: &str, _message_id: &str) -> Result<(), GatewayError> {
+        Err(GatewayError::Unsupported("deleting messages"))
+    }
+
     /// Optional: edit a previously sent message in place.
     async fn edit(
         &self,
