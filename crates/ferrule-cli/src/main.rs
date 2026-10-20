@@ -1404,6 +1404,9 @@ fn build_agent_from(
     match managed::user_commands_off(&sandbox) {
         None => registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone()))),
         Some(why) => {
+            // The standard registry's shell has no sandbox at all: it goes
+            // too, or "off" would leave an unconfined shell behind.
+            registry.remove("shell");
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| tracing::warn!("the shell tool is off: {why}"));
         }

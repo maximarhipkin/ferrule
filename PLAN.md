@@ -6924,3 +6924,20 @@ the owner's pace shows in the ledger's cache rows on a real chat.
 writes aren't split out (its rows are plan-billed). The compactor's
 input still leaves out the calls themselves; only the counted block
 names them.
+
+### 2026-10-21 — Commands off means no shell, not an unsandboxed one (Claude, Opus 5.5)
+
+Found while wiring M57.6. `build_agent_from` starts from
+`standard_registry()`, whose `shell` is `ShellTool::default()` with
+`Sandbox::off()`. When `managed::user_commands_off` says commands are
+off (M44: the sandbox refuses them, or the managed policy has no shell),
+it skipped registering the sandboxed shell but never removed that
+default one, so the agent kept a shell with no sandbox at all. The
+`Some(why)` arm now removes `shell`. `crates/ferrule-cli/src/main.rs`
+only; no test added (owner's rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Worth cherry-picking to `main` on its own: `main` has the
+same code since M44 (`2437941f`).
