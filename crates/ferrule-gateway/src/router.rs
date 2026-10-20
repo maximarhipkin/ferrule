@@ -832,21 +832,23 @@ async fn run_lane(
         // Messages a person sent while the last turn ran are one turn with
         // one reply, not a reply each.
         let mut earlier = Vec::new();
-        while person && merges {
-            match rx.try_recv() {
-                Ok(more) if more.person => {
-                    {
-                        let mut st = watch.state.lock().unwrap();
-                        st.queued = st.queued.saturating_sub(1);
+        if person && merges {
+            loop {
+                match rx.try_recv() {
+                    Ok(more) if more.person => {
+                        {
+                            let mut st = watch.state.lock().unwrap();
+                            st.queued = st.queued.saturating_sub(1);
+                        }
+                        earlier.push(inbound.message_id.clone());
+                        inbound = join(inbound, more.msg);
                     }
-                    earlier.push(inbound.message_id.clone());
-                    inbound = join(inbound, more.msg);
+                    Ok(other) => {
+                        held = Some(other);
+                        break;
+                    }
+                    Err(_) => break,
                 }
-                Ok(other) => {
-                    held = Some(other);
-                    break;
-                }
-                Err(_) => break,
             }
         }
         watch.start(&inbound.text);
