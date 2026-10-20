@@ -6235,3 +6235,8 @@ video answered-now-delivered-by-poller, failure said in chat).
 render delivered to Telegram, the Safe from a real browser, a real
 nightly pass with a probe. Sub-agent media tools and the per-run
 approval card are the named follow-ups.
+
+**Merged.** PR #48 (5 commits + 1 Windows test fix) is in main as of
+4e60ea3; CI green on ubuntu-24.04, macos-14 and windows-latest. (The one
+CI failure along the way was mine: a test asserted a Unix path
+separator.)
