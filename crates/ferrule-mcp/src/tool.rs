@@ -41,6 +41,11 @@ impl Tool for McpRemoteTool {
             .then(|| format!("mcp:{}", self.client.name()))
     }
 
+    /// M57.1: a server's tools are what inflates every request.
+    fn deferrable(&self) -> bool {
+        true
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.full_name.clone(),

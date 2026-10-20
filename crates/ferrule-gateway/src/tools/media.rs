@@ -185,6 +185,11 @@ impl Tool for GenerateImageTool {
         true
     }
 
+    /// M57.1: rare, and loaded when wanted.
+    fn deferrable(&self) -> bool {
+        true
+    }
+
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
         let prompt = args["prompt"]
             .as_str()
@@ -320,6 +325,11 @@ impl Tool for GenerateVideoTool {
 
     fn changes_files(&self) -> bool {
         false
+    }
+
+    /// M57.1: rare, and loaded when wanted.
+    fn deferrable(&self) -> bool {
+        true
     }
 
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {

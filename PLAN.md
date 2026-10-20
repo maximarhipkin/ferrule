@@ -6737,3 +6737,51 @@ current markup from memory of the page, and no live test was added (the
 owner's rule). Region codes differ by provider, so a fallback drops
 `region` and `language`. Whether owner mode (M54) should gate the
 default is that session's call.
+
+### 2026-10-21 — M57.1: deferred tool schemas and `tool_search` (Claude, Opus 5.5)
+
+**Claim.** M57 (M57.1–M57.7, the gap analysis's context and loop
+hygiene) is built in this worktree (`.claude/worktrees/autopilot`,
+branch `autopilot`), one commit per item. M54's files are not touched.
+
+**Why.** Every request carried every tool's whole schema; a few MCP
+servers mean thousands of tokens per message for tools that turn never
+calls.
+
+**What changed.**
+- `ferrule-core/src/tool.rs`: `Tool::deferrable()` (default false),
+  `DeferTools` (`auto` | `always` | `off`), `DEFER_AUTO_OVER` (10) and
+  `ToolRegistry::defer_tools`. While it defers, `definitions()` is the
+  tools that aren't deferrable plus `tool_search`, sorted by name, then
+  each loaded tool in load order. `tool_search`'s description lists every
+  deferred tool (loaded or not) as `name: first line`, so a load only
+  appends. `tool_search {query, max_results}` takes words (name hits 3
+  points, description hits 1) or `select:a,b`, returns the schemas as JSON
+  lines and loads them. `note_called` loads a deferred tool called by
+  name; `deferred_definitions()` lists the deferred tools not loaded yet.
+  `auto` turns on past 10 deferrable tools and stays on for the session.
+- `agent.rs`: the run loads every deferred tool its history called (a
+  resumed session) and each one the model calls; the call context
+  carries `deferred_tools` (`CallContext`, `provider.rs`).
+- Deferrable: MCP tools (`ferrule-mcp`), the self-extension tools,
+  `connection_request`, and `generate_image`/`generate_video` (M51's
+  `media.rs`: two one-method additions, nothing else there).
+- The Claude engine (`ferrule-plans`) bridges every tool whole, deferred
+  ones from the call context, and leaves `tool_search` out
+  (`with_deferred`): Claude Code has its own tool search.
+- `[agent] defer_tools` (default `auto`) in `config.rs`, set on the
+  registry in `build_agent_from`; the sample config.
+- Docs: new `docs/m57-context-hygiene.md`, `speed.md` (what starts a new
+  cache), README (the MCP row, the docs list), the roadmap.
+
+**Tests changed, none added.** `ferrule-plans`'s
+`claudes_permission_prompt_asks_the_runs_guard` fills the new
+`CallContext` field with `..Default::default()`.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Nothing measured live: the ledger's input and cache rows on a
+session with several MCP servers should show the saving. The threshold
+of 10 is a guess. Search is word matching, not embeddings. The
+dashboard's config form (M52's) doesn't offer `defer_tools`.

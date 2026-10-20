@@ -1194,7 +1194,10 @@ Current State; numbers are claimed there before anything is built.
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,
-    fork sub-agents.
+    fork sub-agents. Built on `autopilot` (`docs/m57-context-hygiene.md`):
+    M57.1, MCP and rare tools sent by name until `tool_search` loads
+    them, loads appended after a stable tool list (`[agent]
+    defer_tools`).
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
     the core, eval as the gate.

@@ -298,10 +298,13 @@ impl ClaudeCode {
             Some(f)
         };
 
+        // M57.1: claude has its own tool search, so it gets every tool
+        // whole, the ones ferrule offers only by name included.
+        let tools = with_deferred(&req.tools, &ctx.deferred_tools);
         let (calls_tx, calls) = mpsc::channel(16);
         let (bridge, mcp_config) = match &cfg.bridge_command {
             Some((program, args)) => {
-                let bridge = Bridge::start(bridged(&req.tools), calls_tx)
+                let bridge = Bridge::start(bridged(&tools), calls_tx)
                     .await
                     .map_err(|e| fail("the tool bridge", &e))?;
                 let f = dir.0.join("mcp.json");
@@ -320,7 +323,7 @@ impl ClaudeCode {
             mcp_config,
             config_dir: cfg.config_dir.clone(),
             token: credential.token().cloned(),
-            disallowed: disallowed(&req.tools),
+            disallowed: disallowed(&tools),
             scrub_subprocess_env: cfg.scrub_subprocess_env,
         };
         let parent = std::env::vars_os().filter_map(|(k, _)| k.into_string().ok());
@@ -774,6 +777,17 @@ impl Drop for TurnDir {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// M57.1: the request's tools with the run's deferred ones added whole,
+/// and without ferrule's `tool_search`, which loads nothing claude lacks.
+pub fn with_deferred(tools: &[ToolDefinition], deferred: &[ToolDefinition]) -> Vec<ToolDefinition> {
+    tools
+        .iter()
+        .filter(|t| t.name != ferrule_core::TOOL_SEARCH)
+        .chain(deferred)
+        .cloned()
+        .collect()
 }
 
 /// The ferrule tools offered on the bridge: every tool the agent has

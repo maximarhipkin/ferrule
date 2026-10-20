@@ -241,6 +241,204 @@ pub trait Tool: Send + Sync {
     fn needs_approval(&self) -> bool {
         false
     }
+    /// M57.1: the tool may be offered by name and one line only, its schema
+    /// loaded by [`TOOL_SEARCH`] when the model wants it: an MCP tool, or a
+    /// built-in most sessions never call. See [`DeferTools`].
+    fn deferrable(&self) -> bool {
+        false
+    }
+}
+
+/// M57.1: the tool that loads deferred tools' schemas. The registry
+/// offers it, and only while it defers something.
+pub const TOOL_SEARCH: &str = "tool_search";
+
+/// M57.1: `auto` defers once more than this many tools are deferrable.
+pub const DEFER_AUTO_OVER: usize = 10;
+
+/// M57.1 (`[agent] defer_tools`): when the registry sends deferrable tools
+/// ([`Tool::deferrable`]) as a name and one line in [`TOOL_SEARCH`]'s
+/// description instead of their whole schemas.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeferTools {
+    /// Once more than [`DEFER_AUTO_OVER`] tools are deferrable; from then
+    /// on for the rest of the session.
+    #[default]
+    Auto,
+    /// Whenever any tool is deferrable.
+    Always,
+    /// Never: every schema goes with every request, as before M57.
+    Off,
+}
+
+/// What a registry that defers keeps for its session: whether `auto` has
+/// turned on, and the tools loaded so far, in the order they were.
+#[derive(Debug)]
+struct Deferral {
+    mode: DeferTools,
+    on: std::sync::atomic::AtomicBool,
+    loaded: std::sync::Mutex<Vec<String>>,
+}
+
+impl Deferral {
+    fn loaded(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
+        self.loaded.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn load(&self, name: &str) {
+        let mut loaded = self.loaded();
+        if !loaded.iter().any(|n| n == name) {
+            loaded.push(name.to_string());
+        }
+    }
+}
+
+/// A deferred tool's line in [`TOOL_SEARCH`]'s description: the first line
+/// of its own, cut to about 120 characters.
+fn one_line(description: &str) -> String {
+    let first = description.lines().next().unwrap_or("").trim();
+    if first.chars().count() <= 120 {
+        return first.to_string();
+    }
+    let mut cut: String = first.chars().take(119).collect();
+    cut.push('…');
+    cut
+}
+
+/// [`TOOL_SEARCH`]'s definition over `deferred` (sorted by name): the same
+/// bytes for as long as the set is the same, loaded tools included, so the
+/// list of tools before the loaded ones never changes.
+fn search_definition(deferred: &[ToolDefinition]) -> ToolDefinition {
+    let mut catalog = String::new();
+    for d in deferred {
+        catalog.push_str(&format!("\n- {}: {}", d.name, one_line(&d.description)));
+    }
+    ToolDefinition {
+        name: TOOL_SEARCH.into(),
+        description: format!(
+            "Load tools that are offered here by name only, to keep every request small. Give words for \
+             what you need (\"create github issue\") or `select:<name>,<name>` for exact names: the \
+             matching tools' full schemas come back, and you can call them from then on.\n\
+             Tools to load:{catalog}"
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Words describing the tool you need, or select:<name>,<name>"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "At most this many tools (default 5)"
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
+/// The deferred tools `query` names: `select:a,b` exactly, a whole name, or
+/// those whose name (3 points a word) or description (1) holds its words,
+/// best first.
+fn search_deferred<'a>(
+    tools: &'a [ToolDefinition],
+    query: &str,
+    max: usize,
+) -> Vec<&'a ToolDefinition> {
+    if let Some(names) = query.strip_prefix("select:") {
+        return names
+            .split(',')
+            .map(str::trim)
+            .filter_map(|n| tools.iter().find(|t| t.name == n))
+            .collect();
+    }
+    let q = query.to_lowercase();
+    if let Some(t) = tools.iter().find(|t| t.name.to_lowercase() == q) {
+        return vec![t];
+    }
+    let words: Vec<&str> = q
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut scored: Vec<(usize, &ToolDefinition)> = tools
+        .iter()
+        .filter_map(|t| {
+            let (name, desc) = (t.name.to_lowercase(), t.description.to_lowercase());
+            let score: usize = words
+                .iter()
+                .map(|w| match (name.contains(w), desc.contains(w)) {
+                    (true, _) => 3,
+                    (false, true) => 1,
+                    _ => 0,
+                })
+                .sum();
+            (score > 0).then_some((score, t))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    scored.into_iter().take(max).map(|(_, t)| t).collect()
+}
+
+/// [`TOOL_SEARCH`] itself, made by the registry over the tools it defers
+/// right now.
+struct ToolSearch {
+    deferred: Vec<ToolDefinition>,
+    state: Arc<Deferral>,
+}
+
+#[async_trait::async_trait]
+impl Tool for ToolSearch {
+    fn definition(&self) -> ToolDefinition {
+        search_definition(&self.deferred)
+    }
+
+    async fn call(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolOutput, CoreError> {
+        let query = args["query"].as_str().unwrap_or("").trim();
+        if query.is_empty() {
+            return Err(CoreError::ToolFailed {
+                tool: TOOL_SEARCH.into(),
+                message: "`query` is empty: give words for the tool you need, or select:<name>"
+                    .into(),
+            });
+        }
+        let max = args["max_results"]
+            .as_u64()
+            .map_or(5, |n| n.clamp(1, 20) as usize);
+        let found = search_deferred(&self.deferred, query, max);
+        if found.is_empty() {
+            return Ok(ToolOutput::ok(format!(
+                "No tool to load matches {query:?}. The ones there are, are listed in {TOOL_SEARCH}'s \
+                 description; tools you already have need no loading."
+            )));
+        }
+        let mut out = format!(
+            "Loaded {} tool{}: call {} by name from now on.",
+            found.len(),
+            if found.len() == 1 { "" } else { "s" },
+            if found.len() == 1 { "it" } else { "them" }
+        );
+        for def in found {
+            self.state.load(&def.name);
+            let schema = serde_json::json!({
+                "name": def.name,
+                "description": def.description,
+                "parameters": def.parameters,
+            });
+            out.push('\n');
+            out.push_str(&schema.to_string());
+        }
+        Ok(ToolOutput::ok(out))
+    }
+
+    fn changes_files(&self) -> bool {
+        false
+    }
 }
 
 /// Tools that can change while an agent runs: MCP servers installed or
@@ -255,6 +453,8 @@ pub trait ToolSource: Send + Sync {
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     sources: Vec<Arc<dyn ToolSource>>,
+    /// M57.1: set by [`ToolRegistry::defer_tools`]; `None` never defers.
+    defer: Option<Arc<Deferral>>,
 }
 
 impl ToolRegistry {
@@ -272,11 +472,28 @@ impl ToolRegistry {
     pub fn attach(&mut self, source: Arc<dyn ToolSource>) {
         self.sources.push(source);
     }
+    /// M57.1: offer deferrable tools by name until [`TOOL_SEARCH`] loads
+    /// them, per `mode`. Loads are kept for as long as this registry (and
+    /// its clones) live: the session.
+    pub fn defer_tools(&mut self, mode: DeferTools) {
+        self.defer = (mode != DeferTools::Off).then(|| {
+            Arc::new(Deferral {
+                mode,
+                on: Default::default(),
+                loaded: Default::default(),
+            })
+        });
+    }
     /// The tool called `name`, registered or from a source.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.lookup(name)
     }
     fn lookup(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        if name == TOOL_SEARCH {
+            if let Some(search) = self.search_tool() {
+                return Some(search);
+            }
+        }
         if let Some(t) = self.tools.get(name) {
             return Some(t.clone());
         }
@@ -285,18 +502,106 @@ impl ToolRegistry {
             .flat_map(|s| s.tools())
             .find(|t| t.definition().name == name)
     }
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
-        let mut defs: Vec<_> = self.tools.values().map(|t| t.definition()).collect();
+    /// Every tool with its definition, sorted by name; a registered tool
+    /// shadows a source's of the same name.
+    fn all(&self) -> Vec<(ToolDefinition, Arc<dyn Tool>)> {
+        let mut all: Vec<_> = self
+            .tools
+            .values()
+            .map(|t| (t.definition(), t.clone()))
+            .collect();
         for source in &self.sources {
             for tool in source.tools() {
                 let def = tool.definition();
-                if !defs.iter().any(|d| d.name == def.name) {
-                    defs.push(def);
+                if !all.iter().any(|(d, _)| d.name == def.name) {
+                    all.push((def, tool));
                 }
             }
         }
+        all.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+        all
+    }
+    /// The deferral, when it defers something now: `auto` turns on past
+    /// [`DEFER_AUTO_OVER`] deferrable tools and stays on.
+    fn deferring(&self, all: &[(ToolDefinition, Arc<dyn Tool>)]) -> Option<&Arc<Deferral>> {
+        let d = self.defer.as_ref()?;
+        let count = all.iter().filter(|(_, t)| t.deferrable()).count();
+        if count == 0 {
+            return None;
+        }
+        if d.mode == DeferTools::Auto && count > DEFER_AUTO_OVER {
+            d.on.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        match d.mode {
+            DeferTools::Always => Some(d),
+            DeferTools::Auto => d.on.load(std::sync::atomic::Ordering::Relaxed).then_some(d),
+            DeferTools::Off => None,
+        }
+    }
+    fn search_tool(&self) -> Option<Arc<dyn Tool>> {
+        let all = self.all();
+        let state = self.deferring(&all)?.clone();
+        let deferred = all
+            .into_iter()
+            .filter(|(_, t)| t.deferrable())
+            .map(|(def, _)| def)
+            .collect();
+        Some(Arc::new(ToolSearch { deferred, state }))
+    }
+    /// What each request offers. Without deferral, every tool sorted by
+    /// name, as always. Deferring (M57.1), the tools that aren't deferred
+    /// and [`TOOL_SEARCH`] sorted by name, then each loaded tool in the
+    /// order it was loaded: a load only appends, so the bytes before it
+    /// stay the same.
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        let all = self.all();
+        let Some(state) = self.deferring(&all) else {
+            return all.into_iter().map(|(def, _)| def).collect();
+        };
+        let loaded = state.loaded().clone();
+        let (deferred, stable): (Vec<_>, Vec<_>) =
+            all.into_iter().partition(|(_, t)| t.deferrable());
+        let deferred: Vec<ToolDefinition> = deferred.into_iter().map(|(def, _)| def).collect();
+        let mut defs: Vec<ToolDefinition> = stable.into_iter().map(|(def, _)| def).collect();
+        defs.push(search_definition(&deferred));
         defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs.extend(
+            loaded
+                .iter()
+                .filter_map(|name| deferred.iter().find(|d| &d.name == name).cloned()),
+        );
         defs
+    }
+    /// M57.1: the deferred tools not loaded yet, whole, for a provider that
+    /// offers tools on its own and has its own search (the Claude Code
+    /// engine). Empty when nothing is deferred.
+    pub fn deferred_definitions(&self) -> Vec<ToolDefinition> {
+        let all = self.all();
+        let Some(state) = self.deferring(&all) else {
+            return Vec::new();
+        };
+        let loaded = state.loaded().clone();
+        all.into_iter()
+            .filter(|(def, t)| t.deferrable() && !loaded.contains(&def.name))
+            .map(|(def, _)| def)
+            .collect()
+    }
+    /// M57.1: the model called these tools (or a resumed history did): a
+    /// deferred one among them is loaded, as [`TOOL_SEARCH`] would have,
+    /// so its schema goes with every later request.
+    pub fn note_called<'a>(&self, names: impl IntoIterator<Item = &'a str>) {
+        if self.defer.is_none() {
+            return;
+        }
+        let all = self.all();
+        let Some(state) = self.deferring(&all) else {
+            return;
+        };
+        for name in names {
+            if all.iter().any(|(d, t)| d.name == name && t.deferrable()) {
+                state.load(name);
+            }
+        }
     }
     pub async fn call(
         &self,

@@ -249,6 +249,7 @@ async fn claudes_permission_prompt_asks_the_runs_guard() {
     let ctx = CallContext {
         guard: Some(guard.clone()),
         workspace: None,
+        ..Default::default()
     };
     let r = with_call_context(
         ctx,

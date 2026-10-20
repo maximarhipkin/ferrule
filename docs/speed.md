@@ -67,7 +67,10 @@ What legitimately starts a new cache:
 - installing or removing a skill;
 - a learning pass that changes the playbook;
 - switching model (`/model`, routing's escalation, a fallback);
-- compaction, which rewrites the history.
+- compaction, which rewrites the history;
+- loading a deferred tool with `tool_search` (M57.1): its schema is
+  appended after the tool list, which stays the same bytes before it
+  ([m57-context-hygiene.md](m57-context-hygiene.md)).
 
 ## Seeing it
 

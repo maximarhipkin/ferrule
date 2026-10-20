@@ -48,7 +48,10 @@ pub use provider::{
     CompletionRequest, CompletionResponse, Delta, DeltaSink, FailOver, Provider, Served,
 };
 pub use routing::{Escalation, Ladder, Policy, RouteTag, Signal, Tier, Tiered};
-pub use tool::{Tool, ToolContext, ToolOutput, ToolOutputFile, ToolRegistry, ToolSource};
+pub use tool::{
+    DeferTools, Tool, ToolContext, ToolOutput, ToolOutputFile, ToolRegistry, ToolSource,
+    TOOL_SEARCH,
+};
 pub use transcript::{fnv64, HarnessStamp, Transcript};
 pub use triggers::{PromptTriggers, TriggerLoad, Triggered};
 pub use verify::Verifier;

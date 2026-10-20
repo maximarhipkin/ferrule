@@ -424,6 +424,11 @@ pub struct AgentSettings {
     /// cheaper eyes. Unset: the agent's model summarizes.
     #[serde(default)]
     pub compaction_model: Option<String>,
+    /// M57.1: MCP tools and rarely used built-ins go to the model as a name
+    /// and a line until `tool_search` loads one. `auto`: once more than
+    /// ten could; `always`; `off`: every schema with every request.
+    #[serde(default)]
+    pub defer_tools: ferrule_core::DeferTools,
 }
 
 fn default_auto_commit_author() -> String {
@@ -457,6 +462,7 @@ impl Default for AgentSettings {
             auto_commit_branch: Default::default(),
             auto_commit_author: default_auto_commit_author(),
             compaction_model: None,
+            defer_tools: Default::default(),
         }
     }
 }
@@ -1547,6 +1553,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # edit_file = true                # offer edit_file (SEARCH/REPLACE); write_file stays either way
 # repo_map_tokens = 1024          # repo map budget in a code repo (tokens); 0 = no map
 # compaction_model = "fast"       # summarize compactions on this model instead of the agent's
+# defer_tools = "auto"            # MCP and rare tools sent by name until tool_search loads one:
+#                                 # "auto" past 10 of them, "always", or "off"
 # lint = "auto"                   # after an edit, run the project's linter (rustfmt/ruff/gofmt/eslint/tsc) if installed and configured; "off"
 # lint_timeout_secs = 10
 # auto_commit = false            # commit each run's own files (never yours) to git; `ferrule undo` reverts

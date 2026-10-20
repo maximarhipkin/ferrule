@@ -242,6 +242,11 @@ impl Tool for ExtTool {
         false
     }
 
+    /// M57.1: installing is rare; the schemas are loaded when it happens.
+    fn deferrable(&self) -> bool {
+        true
+    }
+
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
         let m = &self.manager;
         let text = match self.op {

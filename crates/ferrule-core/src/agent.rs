@@ -816,6 +816,11 @@ impl Agent {
             let ctx = crate::provider::CallContext {
                 guard: self.guard.clone(),
                 workspace: Some(self.tool_ctx.workspace.clone()),
+                deferred_tools: if call_kind == "compaction" {
+                    Vec::new()
+                } else {
+                    self.tools.deferred_definitions()
+                },
             };
             let (served, result) =
                 crate::provider::with_call_context(ctx, provider.complete_routed(req)).await;
@@ -1205,6 +1210,12 @@ impl Agent {
         if from_person {
             self.load_triggered(goal, &tx).await;
         }
+        // M57.1: a resumed session's deferred tools come back loaded.
+        self.tools.note_called(
+            self.messages
+                .iter()
+                .flat_map(|m| m.tool_calls.iter().map(|c| c.name.as_str())),
+        );
 
         let mut steps: Vec<Step> = Vec::new();
         let mut nudged = false;
@@ -1409,6 +1420,10 @@ impl Agent {
             // order asked; every other call is a segment of its own, run as
             // before (docs/m27-speed.md §1).
             let calls = &msg.tool_calls;
+            // M57.1: a deferred tool called by name, without tool_search,
+            // is loaded too: its schema goes with the next request.
+            self.tools
+                .note_called(calls.iter().map(|c| c.name.as_str()));
             let batch_started = Instant::now();
             let mut batch = ToolBatch {
                 calls: calls.len(),

@@ -1654,6 +1654,8 @@ fn build_agent_from(
     )? {
         registry.register(Arc::new(tool));
     }
+    // M57.1: MCP and rare tools by name until `tool_search` loads them.
+    registry.defer_tools(cfg.agent.defer_tools);
     let hooks_workspace = tool_ctx.workspace.clone();
     let mut agent = Agent::new(
         provider,

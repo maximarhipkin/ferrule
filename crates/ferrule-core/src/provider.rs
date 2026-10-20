@@ -160,6 +160,10 @@ pub struct CallContext {
     pub guard: Option<std::sync::Arc<dyn crate::guard::Guard>>,
     /// The run's workspace (a sub-agent's worktree, say).
     pub workspace: Option<std::path::PathBuf>,
+    /// M57.1: the run's deferred tools not loaded yet, whole. The request
+    /// offers them only by name, through `tool_search`; a provider that
+    /// offers tools on its own, with its own search, can offer them all.
+    pub deferred_tools: Vec<crate::tool::ToolDefinition>,
 }
 
 impl std::fmt::Debug for CallContext {
@@ -167,6 +171,7 @@ impl std::fmt::Debug for CallContext {
         f.debug_struct("CallContext")
             .field("guard", &self.guard.is_some())
             .field("workspace", &self.workspace)
+            .field("deferred_tools", &self.deferred_tools.len())
             .finish()
     }
 }
