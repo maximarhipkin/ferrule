@@ -34,6 +34,12 @@ pub fn child_prompt(id: &str, parent: &str, role: Role) -> String {
     )
 }
 
+/// Added to a chat session's system prompt, with the `send_file` tool
+/// (M39), so a model on any engine knows the chat takes files.
+pub const CHAT_FILES: &str = "## Files in this chat\n\
+To send the person you're chatting with a file (an image, a PDF, a report you wrote), save it in the workspace \
+and call `send_file`. If this channel can't take files, the tool says so; then say where the file is.";
+
 /// Added to the system prompt of the owner's own chat session, with the
 /// `ferrule_admin` tool (M48).
 pub const OWNER_ADMIN: &str = "## Running Ferrule for the owner\n\
