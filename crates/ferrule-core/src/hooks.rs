@@ -80,6 +80,16 @@ impl StopFlag {
 #[async_trait::async_trait]
 pub trait SessionRecall: Send + Sync {
     async fn recall(&self, goal: &str) -> Option<String>;
+
+    /// M56.4: memory for a later message a person sent in the same
+    /// session, leaving out what `shown` (every block this session added)
+    /// already holds; it goes in as a user message after that message,
+    /// like the first block. Asked on each such message, so it should be
+    /// cheap. `None` (the default) adds nothing.
+    async fn recall_more(&self, message: &str, shown: &str) -> Option<String> {
+        let _ = (message, shown);
+        None
+    }
 }
 
 /// Context that is asked for at the start of every run (M29: the repo map).

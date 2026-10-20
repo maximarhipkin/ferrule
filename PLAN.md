@@ -6230,3 +6230,50 @@ doesn't load keyword skills (M28) and gets no "can't see photos" notice.
 The mode is gateway-wide, not per chat; no `/queue` override and no
 debounce window. Group chats steer only from the sender of the running
 turn, with no setting to widen it.
+
+### 2026-10-21 — M56.4: proactive memory, an owner profile, decay by kind (Claude, Opus 5.5)
+
+**Why.** The prompt said to remember facts "when asked", so a chat bot
+almost never did. Every fact's score halved every 7 days, so an
+8-week-old name scored 1/256 of a fresh match. Recall ran once per
+agent, from the first message, and a Telegram lane keeps one agent for
+many messages.
+
+**What changed.**
+- The base prompt (`build_agent_from` in `main.rs`, and its copy in
+  `ferrule-eval`'s `engineered_prompt`): "save lasting facts about the
+  person you work for (names, preferences, standing corrections) with
+  the remember tool on your own, tagged profile or preference, without
+  waiting to be asked." A one-time edit; the prefix is stable from here.
+  `remember`'s `tags` description says what the two tags do.
+- `ferrule-memory`: `DURABLE_TAGS` (`profile`, `preference`). Their
+  facts get decay 1 in `rank_heads`; candidates carry the row's tags
+  (`Candidate::durable`, both the BM25 and the vector query). Every other
+  fact still halves every 7 days. `MemoryStore::profile(limit)`, live
+  durable facts newest first; `assemble_for_goal_hybrid` puts up to 10 of
+  them first, then the goal's matches, then the newest, in the same
+  2,000-character budget. A kind column was not added: tags already
+  exist, are indexed by FTS, and need no migration.
+- `ferrule-core`: `SessionRecall::recall_more(message, shown)` (default
+  `None`). On a later run from a person (`run_user`), the agent asks it
+  with every block it already added; a new block is a user message right
+  after that run's goal, where the first block goes (after the stable
+  prefix, append-only). `memory_due` is now the block itself;
+  `memory_more` keeps later blocks, and compaction carries them like the
+  first.
+- `ferrule-cli` `GoalRecall::recall_more`: one keyword query
+  (`goal_query` of the message, no embedding call), up to 3 facts and
+  600 characters not already listed as `- #id` in what was shown, under
+  `[Long-term memory, for this message]`.
+- Docs: `memory.md` "What it keeps about you" and two limits,
+  `m15-memory.md` §4, `m30-vector-recall.md`'s decay line, the roadmap.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS). No tests added or changed.
+
+**Open.** The prompt line is not measured with `ferrule eval` (the gap
+analysis asked for M58.5's gate first; that gate doesn't exist yet).
+Whether the model tags facts `profile`/`preference` is its call; an
+untagged fact about the owner still decays. The per-message recall is
+keyword-only. Re-recall runs per person message, not on a measured topic
+change; with nothing new it adds nothing.

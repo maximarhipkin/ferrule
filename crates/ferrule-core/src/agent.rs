@@ -318,8 +318,11 @@ pub struct Agent {
     /// system prompt stays byte-stable for the cache). Compaction carries
     /// it forward verbatim, as it does the goal.
     memory: Option<String>,
-    /// The recalled block still has to go in after this run's goal.
-    memory_due: bool,
+    /// M56.4: what later person messages recalled on top, block by block;
+    /// carried through compaction too.
+    memory_more: Vec<String>,
+    /// A recalled block that still has to go in after this run's goal.
+    memory_due: Option<String>,
     /// Asked at the start of every run (M29: the repo map), and the last
     /// block it added.
     turn_context: Option<Arc<dyn TurnContext>>,
@@ -386,7 +389,8 @@ impl Agent {
             session_recall: None,
             recalled: false,
             memory: None,
-            memory_due: false,
+            memory_more: Vec::new(),
+            memory_due: None,
             turn_context: None,
             turn_context_last: None,
             run_observers: Vec::new(),
@@ -1135,7 +1139,7 @@ impl Agent {
             },
         )
         .await;
-        self.recall_for(goal).await;
+        self.recall_for(goal, from_person).await;
         let session_note = if self.started {
             None
         } else {
@@ -1181,10 +1185,8 @@ impl Agent {
         self.incomplete = None;
         let images = std::mem::take(&mut self.pending_images);
         self.push(Message::user_with_images(goal, images));
-        if std::mem::take(&mut self.memory_due) {
-            if let Some(memory) = self.memory.clone() {
-                self.push(Message::user(memory));
-            }
+        if let Some(memory) = self.memory_due.take() {
+            self.push(Message::user(memory));
         }
         self.add_turn_context(goal).await;
         for (event, note) in [
@@ -1947,15 +1949,34 @@ impl Agent {
     /// first user message (a resumed session's history already has one)
     /// plus this run's request. The block goes in a user message right
     /// after the goal, never into the system prompt, which stays the same
-    /// bytes for every session (M27: the cached prefix).
-    async fn recall_for(&mut self, goal: &str) {
+    /// bytes for every session (M27: the cached prefix). M56.4: each later
+    /// message a person sends asks [`SessionRecall::recall_more`] for what
+    /// it brings up that isn't in yet, appended the same way.
+    async fn recall_for(&mut self, goal: &str, from_person: bool) {
+        let Some(recall) = self.session_recall.clone() else {
+            self.recalled = true;
+            return;
+        };
         if self.recalled {
+            if !from_person || self.memory_due.is_some() {
+                return;
+            }
+            let mut shown = self.memory.clone().unwrap_or_default();
+            for more in &self.memory_more {
+                shown.push('\n');
+                shown.push_str(more);
+            }
+            if let Some(block) = recall
+                .recall_more(goal, &shown)
+                .await
+                .filter(|b| !b.trim().is_empty())
+            {
+                self.memory_more.push(block.clone());
+                self.memory_due = Some(block);
+            }
             return;
         }
         self.recalled = true;
-        let Some(recall) = self.session_recall.clone() else {
-            return;
-        };
         let first = self
             .messages
             .iter()
@@ -1966,7 +1987,7 @@ impl Agent {
             _ => goal.to_string(),
         };
         self.memory = recall.recall(&query).await.filter(|b| !b.trim().is_empty());
-        self.memory_due = self.memory.is_some();
+        self.memory_due = self.memory.clone();
     }
 
     /// The [`TurnContext`] block for this run, if it says something new:
@@ -2273,7 +2294,12 @@ impl Agent {
         }
         // Recalled memory lived in the system prompt before M27, where no
         // compaction reached it; it stays as whole now.
-        if let Some(memory) = self.memory.as_deref().filter(|m| !goal_in_tail(m)) {
+        for memory in self
+            .memory
+            .iter()
+            .chain(&self.memory_more)
+            .filter(|m| !goal_in_tail(m))
+        {
             summary_msg.push_str("\n\n");
             summary_msg.push_str(memory);
         }

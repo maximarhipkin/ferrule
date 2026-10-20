@@ -1123,7 +1123,9 @@ Current State; numbers are claimed there before anything is built.
     mid-turn steering, scoped grants, self-administration, proactive
     memory, restart-safe turns, chat primitives as tools, channel media,
     keyless search. Built on `autopilot`: M56.1, steering
-    (`docs/channels.md`, "Messages sent while it works").
+    (`docs/channels.md`, "Messages sent while it works"); M56.4,
+    proactive memory, an owner profile and no decay for it, re-recall
+    per message (`docs/memory.md`, "What it keeps about you").
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,

@@ -154,6 +154,13 @@ block is added once, before the first provider call, so the prompt-cache
 prefix isn't disturbed. Per-turn re-recall on long sessions is left out on
 purpose (open edge): it would change the prompt mid-session.
 
+M56.4 changed three things (`docs/memory.md`, "What it keeps about you").
+Facts tagged `profile` or `preference` skip the decay and open the block
+(up to 10, whatever the goal). And since a user message after the goal
+doesn't change the prompt's prefix (M27), each later message a person
+sends now gets a re-recall: `SessionRecall::recall_more`, one keyword
+query, up to 3 facts not shown yet, appended after that message.
+
 ## 5. The transcript store behind `search_history`
 
 **Where it lives.** It's the existing append-only JSONL transcript,

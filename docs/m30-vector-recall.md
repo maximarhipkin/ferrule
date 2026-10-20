@@ -193,7 +193,8 @@ Two merges, both implemented, one chosen by the benchmark (§3):
 
 Then, unchanged from M15:
 
-- **time decay**: the merged score × `0.5^(age / 7 days)`;
+- **time decay**: the merged score × `0.5^(age / 7 days)`, except a fact
+  tagged `profile` or `preference`, which keeps its score (M56.4);
 - **supersede**: each hit maps to the live head of its chain, and a chain
   keeps its best score. A query close to a replaced fact's wording returns
   the correction, as with BM25;

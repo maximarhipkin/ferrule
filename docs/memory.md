@@ -10,6 +10,30 @@ characters, with recent facts ranked higher. Design: [m15-memory.md](m15-memory.
 Memories from OpenClaw or Hermes Agent come over with `ferrule import`
 ([migrate.md](migrate.md)).
 
+## What it keeps about you
+
+The agent is told to save lasting facts about you **on its own**, without
+being asked: names (yours, the people and things in your life),
+preferences, and standing corrections ("don't use tabs here"). It tags
+them `profile` or `preference` (M56.4).
+
+- **They don't fade.** Every other fact's recall score halves every 7
+  days, so a fact from two months ago ranks far below one from today.
+  A fact tagged `profile` or `preference` keeps its full score.
+- **They're in every session.** Up to 10 of them (newest first) open the
+  session's memory block, whatever the session is about, then the facts
+  that match the goal, then the newest ones.
+- **A long chat keeps recalling.** A chat lane is one session for many
+  messages, and the block is picked from its first message. Each later
+  message you send runs one more keyword search (no embedding call), and
+  up to 3 facts it brings up that the session hasn't seen yet are added
+  after that message, as `[Long-term memory, for this message]`.
+
+Everything recalled goes in after your message, never into the system
+prompt, so the cached prefix stays the same. To see or change what it
+keeps: `ferrule memory recent`, `ferrule memory search <words>`, or ask it
+to forget something.
+
 ## Keyword recall and recall by meaning
 
 Out of the box, recall is keyword search (SQLite FTS5, BM25). It finds a
@@ -124,6 +148,12 @@ agent can use `update_memory` instead. Nothing is merged automatically.
   local model, or about 10,000 with a 1,536-dimension endpoint model. A
   personal agent has hundreds to a few thousand.
 - `search_history` (compacted tool results) stays keyword-only.
+- A later message's recall is keyword-only, and up to 3 facts: one that
+  shares no word with the message isn't found there (the `recall` tool
+  searches by meaning).
+- Whether the agent saves a fact on its own, and how it tags it, is the
+  model's call; the prompt line asking for it hasn't been measured with
+  `ferrule eval`.
 - Cross-lingual recall works some of the time, not always (2 in 10
   Hebrew↔English questions answered first on the benchmark).
 - A build without the `local-embed` feature
