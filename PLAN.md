@@ -6429,3 +6429,71 @@ bridged too.
 run in this session beyond `rustfmt`. `make check` and a live Telegram
 turn on `claude-code/*` ("send me <file>", "what's in my Gmail") are
 still to do. No tests were added (not asked).
+
+### 2026-10-21 — M55.2: stranded branch stacks landed (Claude, Opus 5.5)
+
+**Scope.** Four local branch stacks held finished fixes that never
+reached main. Their commits were cherry-picked with `-x` (oldest first,
+stack by stack) onto `autopilot`, from `origin/main` `dadf357`. Nothing
+was pushed. Each landed commit names its original SHA, so the SHAs the
+stacks' own entries cite (`874a57f`, `815cf3d`, …) still resolve.
+
+**Landed (original SHAs).**
+1. Core loop. `claude/eager-aryabhata-08a80f` → `claude/responses-reasoning-boundary`
+   → `claude/vigorous-bardeen-9619b8` → `claude/estimate-native-reasoning`:
+   `git merge-base --is-ancestor` confirmed each is an ancestor of the
+   next, so the whole stack is `origin/main..claude/estimate-native-reasoning`:
+   d6afcd7, e8b9fc3, 6fe75de, d542468, e2d3072, 805f9f5, 9beaa9c,
+   c906d53, 815cf3d, e57fce7, 9e794bf, 115295d.
+2. Sandbox escapes, `claude/optimistic-gagarin-4ad269`: 874a57f, eb15f40,
+   5fd2a05, 3b6f9d8, 7a1f431, 8744f75.
+3. Update/restore, `claude/dreamy-sutherland-7fca0d`: 11aa0c8, b38f16f,
+   7dacddb, 43c639f, 92f7908, 8c218b3.
+4. Test race, `claude/musing-merkle-c282d5`: 68d00a0. Only its PLAN.md
+   entry lands (see Conflicts).
+
+**Skipped.** 6b1649f, which merged `origin/main` (dbfbc40) into the
+sandbox branch. Main is already here, and that merge's only conflict was
+PLAN.md order. `git cherry` found no stack commit already on main as a
+patch.
+
+**Conflicts and how they were resolved.**
+- `crates/ferrule-core/src/compactor.rs` (d542468): only
+  `TemplateCompactor`'s doc comment conflicted. Kept the stack's doc,
+  because `compaction_model` now goes through
+  `Agent::with_compaction_provider`, so main's "a cheaper one when
+  compaction_model names it" no longer holds. Kept main's code (84b5f39:
+  `temperature` and `max_output_tokens` unset). `agent.rs` merged without
+  a conflict. Its summary request keeps 84b5f39's
+  `self.config.max_output_tokens`/`temperature`, so `compaction_model`
+  calls now send the main calls' settings too.
+- `crates/ferrule-cli/tests/it/managed.rs` (68d00a0): main's 58272da
+  (M50 part 1) already waits up to 10 s for the dashboard marker. Kept
+  main's loop, so this commit lands only its PLAN.md entry.
+- PLAN.md: every stack entry conflicted with main's tail only because
+  both sides appended. All entries are kept whole, in date order, between
+  main's 2026-10-19 review entry and its 2026-10-20 M50 entry:
+  update/restore, then the four sandbox escapes (with the title as
+  8744f75 left it), then the managed SIGTERM entry, then the core stack's
+  four entries (two dated 10-19, two dated 10-20). The core entries stay
+  together because each one opens with "the previous entry's Open item".
+  The Current State hunks from 3b6f9d8 and e57fce7 applied cleanly.
+
+**A fix the check needed (9bd5ffb, its own commit).** The first
+`make check` stopped at clippy. `router.rs`'s `while person && merges`
+trips `clippy::while_immutable_condition`, which is deny-by-default. The
+loop came from main's 0b4e77d, so `origin/main` fails the same way; the
+stacks didn't cause it (0b4e77d's entry says `make check` wasn't run).
+It is now `if person && merges { loop { … } }`, with the same behaviour.
+
+**Checks.** `make check` on 9bd5ffb exited 0: fmt clean, clippy clean with
+no warnings, and 1869 passed, 0 failed, 28 ignored across 71 test
+binaries. `managed::sigterm_drains_and_exits_zero` passed. This ran on
+macOS only. No tests were added.
+
+**Open.** The stacks' own Open items still stand (see their entries).
+`Message::native`'s doc still says blocks are replayed only inside the
+loop. Nothing was checked against the live GPT-5.6 API. `restart_hint()`
+on macOS still names `kickstart -k`. Two items listed as Open above are
+now closed here: the managed test race (main's 58272da) and the "uncommitted
+neighbour" note in the sandbox entry.
