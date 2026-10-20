@@ -1135,7 +1135,8 @@ Current State; numbers are claimed there before anything is built.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
     key fields in the dashboard, the Safe page, `secret_request`, safe
     config editing, a chat paste guard, step-up auth) and to M54
-    (M54.1–M54.7).
+    (M54.1–M54.7). M52.1 is built on `autopilot`
+    (`docs/m22-dashboard.md`, "Threat model").
 
 **Still open from earlier tracks.**
 

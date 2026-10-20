@@ -22,6 +22,7 @@ mod page_tests;
 pub mod panel;
 mod public;
 pub mod runs;
+mod sealed;
 pub mod setup;
 mod telegram;
 #[cfg(test)]
@@ -193,6 +194,8 @@ pub struct Dashboard {
     nonces: panel::Nonces,
     /// For /healthz's `uptime_secs`.
     started: Instant,
+    /// One-time keys the page seals typed keys to (M52.1).
+    seals: sealed::Seals,
     pub ctx: Ctx,
 }
 
@@ -284,6 +287,7 @@ impl Dashboard {
             panel,
             nonces,
             started: Instant::now(),
+            seals: sealed::Seals::default(),
             ctx,
         })
     }
@@ -757,6 +761,13 @@ impl Dashboard {
                 }),
             ),
             (true, "/api/backups/download") => backup_page::download(&self.ctx, &req),
+            (false, "/api/seal") => match self.seals.issue(&granted.csrf) {
+                Ok(key) => Response::json(200, &key),
+                Err(e) => {
+                    tracing::warn!("dashboard: no one-time key: {e:#}");
+                    refuse(503, "the page's one-time key couldn't be made; try again")
+                }
+            },
             (false, "/api/logout") => {
                 if let Some(c) = cookie {
                     self.sessions.close(c);
@@ -766,13 +777,23 @@ impl Dashboard {
                     auth::clear_cookie(secure, &self.cookie_path(&host)),
                 )
             }
-            _ => match self.api(get, &req, &body).await {
-                Some((status, mut value)) => {
-                    redact_value(&mut value, &self.ctx.redactor);
-                    Response::json(status, &value)
-                }
-                None => refuse(404, "no such endpoint"),
+            // A sealed key opens here, in memory, or nothing runs (M52.1).
+            _ if !get => match self.seals.open_all(&granted.csrf, body) {
+                Ok(body) => self.answer(false, &req, &body).await,
+                Err(why) => refuse(400, &why),
             },
+            _ => self.answer(true, &req, &body).await,
+        }
+    }
+
+    /// An endpoint's answer, redacted.
+    async fn answer(&self, get: bool, req: &Request, body: &Value) -> Response {
+        match self.api(get, req, body).await {
+            Some((status, mut value)) => {
+                redact_value(&mut value, &self.ctx.redactor);
+                Response::json(status, &value)
+            }
+            None => refuse(404, "no such endpoint"),
         }
     }
 

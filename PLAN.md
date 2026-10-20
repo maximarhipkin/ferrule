@@ -6062,3 +6062,60 @@ override isn't needed. No tests were added or changed.
 reads the owner's global file. The M16 learning gate builds its agent
 with `variant::build` on its own sandbox, not through a fixture, so its
 re-runs still see the owner's git config.
+
+### 2026-10-21 — M52.1: dashboard key fields are sealed in the browser (Claude, Opus 5.5)
+
+**Why.** Cloudflare terminates a quick tunnel's TLS, and the page POSTed
+every key typed into it (provider, Claude plan, connection, relay,
+Google client, tool key, Telegram, channel forms) as plain JSON, so the
+tunnel operator could read them. M22's threat model said it "never sees
+a key or token" (corrected in M55.6, now true again for a passive
+reader).
+
+**What changed.**
+- `ferrule-connections/src/keyform.rs`: `KeyForm::open` is now
+  `open_text` (decrypt, UTF-8) plus its old API-key checks, so the
+  dashboard can open a field without those checks; the relay form's
+  behaviour is unchanged.
+- `ferrule-cli/src/dashboard/sealed.rs` (new): `Seals`. `issue(session)`
+  makes a one-time `KeyForm` and a 16-byte key id, held in memory for
+  10 minutes, at most 64 at once (oldest dropped). `open_all(session,
+  body)` replaces every `{"sealed": {kid, v, epk, iv, ct}}` anywhere in
+  a body with its text; a key opens one envelope, only for the session
+  (its CSRF token) that asked; anything that doesn't open refuses the
+  request (400), so no handler runs. The warnings it logs name what
+  failed, never a value.
+- `dashboard/mod.rs`: `POST /api/seal` (session, origin, JSON and CSRF
+  checked like every POST) answers `{kid, public}`; every other API POST
+  goes through `open_all` before `api::route`, so no handler changed.
+  `ferrule_admin`'s `api::act` doesn't pass through HTTP and is
+  unchanged.
+- `assets/app.js`: `asSecret(v)` marks a key; `api()` seals each marked
+  value at send time (a fresh key each, so the confirm re-send of `act`
+  works), using a copy of `relay/worker.js`'s `encryptKey` with the key
+  id as salt and associated data. `values()` marks every `data-secret`
+  field; the plan, provider, relay deploy/use, Google client, MCP
+  address, tool key and Telegram senders mark theirs. A marked value that
+  reaches `JSON.stringify` unsealed throws. Without WebCrypto (plain
+  http on a non-local address) the page sends the value as typed, as
+  before; with it, a failed seal fails the action.
+- Ring's ECDH keys are single-use, so the "per-session key" is a
+  one-time key per field, bound to the session; that's the keyform
+  scheme as it stands, with no new dependency.
+- Docs: `m22-dashboard.md` threat model (what's sealed, the active
+  tamperer limit, `ssh -L` or a tailnet for key entry, the no-WebCrypto
+  case), `dashboard.md` "Security in three lines", the roadmap's
+  open-tracks note.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS). No tests were added or changed. The page's JS isn't
+run by `make check`:
+`scripts/dashboard_browser_check.mjs` (CI, all three OSes, real Chrome)
+connects a service with a key through the page, so it exercises the
+seal end to end; it wasn't run here.
+
+**Open.** Kimi's uncommitted `secrets/rotate` in the main checkout
+takes a raw `value` from the page: when it lands, its JS sender should
+wrap the value in `asSecret` (the server side needs nothing). The login
+link's token is still POSTed once as typed (it is one-use). An active
+tamperer still wins (documented).

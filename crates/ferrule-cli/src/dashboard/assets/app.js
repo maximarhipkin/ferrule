@@ -76,7 +76,7 @@
       opts.method = "POST";
       opts.headers["Content-Type"] = "application/json";
       if (csrf) opts.headers["X-Ferrule-Csrf"] = csrf;
-      opts.body = JSON.stringify(body);
+      opts.body = JSON.stringify(await sealed(body));
     }
     const r = await fetch(BASE + path, opts);
     let data = {};
@@ -89,6 +89,66 @@
       throw err;
     }
     return data;
+  }
+
+  // ---- keys cross the tunnel sealed (M52.1) -------------------------------
+  // A key typed here is never sent as typed: asSecret(v) marks it, and api()
+  // seals each one to a one-time key the server made for this session
+  // (POST /api/seal): ECDH P-256, HKDF-SHA256 and AES-256-GCM, the relay's
+  // key form (relay/worker.js encryptKey). Cloudflare, which ends the
+  // tunnel's TLS, sees only the envelope. A page without WebCrypto (plain
+  // http on another machine's address) sends the key as typed, as before;
+  // a page with it never falls back, it fails instead.
+  class Secret {
+    constructor(v) { this.v = v; }
+    toJSON() { throw new Error("a key must be sealed before it's sent"); }
+  }
+  const asSecret = (v) => new Secret(v);
+  const canSeal = () => !!(window.crypto && window.crypto.subtle);
+  async function sealed(x) {
+    if (x instanceof Secret) {
+      if (!canSeal()) return x.v;
+      const k = await api("/api/seal", {});
+      return { sealed: Object.assign({ kid: k.kid }, await encryptKey(k.public, k.kid, x.v)) };
+    }
+    if (Array.isArray(x)) {
+      const out = [];
+      for (const y of x) out.push(await sealed(y));
+      return out;
+    }
+    if (x && typeof x === "object") {
+      const out = {};
+      for (const [k, y] of Object.entries(x)) out[k] = await sealed(y);
+      return out;
+    }
+    return x;
+  }
+  // relay/worker.js's encryptKey, byte for byte the same scheme: the key id
+  // is the salt and the associated data, so an envelope opens only for it.
+  async function encryptKey(pub, slot, secret) {
+    const enc = new TextEncoder();
+    const b64 = (bytes) => {
+      let s = "";
+      for (const b of new Uint8Array(bytes)) s += String.fromCharCode(b);
+      return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    };
+    const unb64 = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+    const curve = { name: "ECDH", namedCurve: "P-256" };
+    const theirs = await crypto.subtle.importKey("raw", unb64(pub), curve, false, []);
+    const mine = await crypto.subtle.generateKey(curve, true, ["deriveBits"]);
+    const shared = await crypto.subtle.deriveBits({ name: "ECDH", public: theirs }, mine.privateKey, 256);
+    const hkdf = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+    const aes = await crypto.subtle.deriveKey(
+      { name: "HKDF", hash: "SHA-256", salt: enc.encode(slot), info: enc.encode("ferrule key form v1") },
+      hkdf,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt"],
+    );
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: enc.encode(slot) }, aes, enc.encode(secret));
+    const epk = await crypto.subtle.exportKey("raw", mine.publicKey);
+    return { v: 1, epk: b64(epk), iv: b64(iv), ct: b64(ct) };
   }
 
   function loggedOut(why) {
@@ -602,7 +662,7 @@
     box.querySelectorAll("input[name], textarea[name], select[name]").forEach((i) => {
       if (i.type === "checkbox") return;
       const v = i.value.trim();
-      if (v !== "" || (cleared && !i.dataset.secret)) out[i.name] = v;
+      if (v !== "" || (cleared && !i.dataset.secret)) out[i.name] = i.dataset.secret ? asSecret(v) : v;
     });
     return out;
   };
@@ -1343,7 +1403,7 @@
       if (p.plan === "claude-code" && !p.connected) {
         const t = el("input", { type: "password", name: "token", autocomplete: "new-password", placeholder: "sk-ant-oat…", "data-secret": "1" });
         const b = el("button", { class: "primary", text: "Check and save" });
-        b.onclick = () => { const v = t.value.trim(); wipeSecrets(box); if (v) act("plans/claude", { token: v }, b); };
+        b.onclick = () => { const v = t.value.trim(); wipeSecrets(box); if (v) act("plans/claude", { token: asSecret(v) }, b); };
         box.append(el("p", { class: "muted small", text: "Run `claude setup-token` on any machine signed in to your Claude plan and paste the token it prints." }),
           el("div", { class: "row key-row" }, t, b));
         return box;
@@ -1351,7 +1411,7 @@
       if (p.needs_key) {
         const k = el("input", { type: "password", name: "key", autocomplete: "new-password", placeholder: p.connected ? "paste a new key" : "paste the key", "data-secret": "1" });
         const b = el("button", { class: p.connected ? null : "primary", text: p.connected ? "Replace key" : "Test and save" });
-        b.onclick = () => { const v = k.value.trim(); wipeSecrets(box); if (v) act("models/provider", { provider: p.name, key: v }, b).then((r) => { if (r) this.loadChoices(); }); };
+        b.onclick = () => { const v = k.value.trim(); wipeSecrets(box); if (v) act("models/provider", { provider: p.name, key: asSecret(v) }, b).then((r) => { if (r) this.loadChoices(); }); };
         box.append(frag(
           p.key_url ? el("p", { class: "small" }, el("a", { href: p.key_url, target: "_blank", rel: "noopener", text: "Get a key" }),
             el("span", { class: "muted", text: " · tested before it's saved; it never comes back to this page" })) : null,
@@ -1551,7 +1611,7 @@
       go.onclick = async () => {
         const token = tok.value.trim() || this.pendingToken;
         if (!token) { toast("Paste the token first.", true); return; }
-        const body = { token };
+        const body = { token: asSecret(token) };
         if (acct) body.account = acct.value;
         this.pendingToken = null;
         wipeSecrets(deploy);
@@ -1578,7 +1638,8 @@
       const key = el("input", { type: "password", name: "key", placeholder: "the relay's key", autocomplete: "new-password", "data-secret": "1" });
       const check = el("button", { text: "Check and use" });
       check.onclick = async () => {
-        const body = { url: url.value.trim(), key: key.value.trim() };
+        const k = key.value.trim();
+        const body = { url: url.value.trim(), key: k && asSecret(k) };
         wipeSecrets(use);
         const r = await act("connections/relay/use", body, check);
         if (r) { this.relaySteps = r.steps; this.relayForms = false; }
@@ -1645,7 +1706,8 @@
       const secret = el("input", { type: "password", name: "secret", placeholder: "Client secret", autocomplete: "new-password", "data-secret": "1" });
       const save = el("button", { class: "primary", text: "Save the client" });
       save.onclick = async () => {
-        const body = { id: id.value.trim(), secret: secret.value.trim() };
+        const s = secret.value.trim();
+        const body = { id: id.value.trim(), secret: s && asSecret(s) };
         wipeSecrets(box);
         if (await act("connections/google-client", body, save)) this.googleForm = false;
       };
@@ -2607,7 +2669,8 @@
       const w2 = el("input", { type: "checkbox" });
       const go2 = el("button", { class: "primary", text: "Check and connect" });
       go2.onclick = async () => {
-        const body = { url: u2.value.trim(), key: k.value.trim(), header: h.value.trim(), value: v.value.trim(), write: w2.checked };
+        const key = k.value.trim();
+        const body = { url: u2.value.trim(), key: key && asSecret(key), header: h.value.trim(), value: v.value.trim(), write: w2.checked };
         wipeSecrets(go2.closest(".card"));
         if (!body.url || !body.key) return sayFor(go2, "The address and the key, please.", true);
         if (await act("connections/address", body, go2)) { u2.value = ""; }
@@ -2635,7 +2698,8 @@
         const save = el("button", { class: "primary", text: "Save" });
         save.disabled = !r.here || !!r.locked;
         save.onclick = async () => {
-          const body = { name: name.value.trim(), value: value.value.trim(), hosts: sites.value.trim() };
+          const v = value.value.trim();
+          const body = { name: name.value.trim(), value: v && asSecret(v), hosts: sites.value.trim() };
           wipeSecrets(box);
           const done = await act("secrets/add", body, save);
           if (done) { await draw(); sayFor(box.querySelector(".card button.primary"), done.said); }
@@ -2770,7 +2834,7 @@
       token.addEventListener("input", () => { t.token = token.value.trim(); });
       const say = (ok, said) => { t.said = said ? { ok, said } : null; this.load(); };
       const call = async (path, extra) => {
-        try { return await api("/api/telegram/" + path, Object.assign({ token: t.token }, extra)); }
+        try { return await api("/api/telegram/" + path, Object.assign({ token: t.token && asSecret(t.token) }, extra)); }
         catch (e) { say(false, e.message); return null; }
       };
       const test = el("button", { text: "Test" });
@@ -2798,7 +2862,7 @@
         let offset = null;
         while (Date.now() < until && !t.chats.length && t.waiting) {
           let r;
-          try { r = await api("/api/telegram/wait", { token: t.token, offset }); }
+          try { r = await api("/api/telegram/wait", { token: t.token && asSecret(t.token), offset }); }
           catch (e) { t.waiting = false; return say(false, e.message); }
           if (!r.ok) { t.waiting = false; return say(false, r.said); }
           if (r.next !== null && r.next !== undefined) { offset = r.next; t.next = r.next; }

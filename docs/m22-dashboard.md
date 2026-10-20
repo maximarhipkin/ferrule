@@ -55,11 +55,31 @@ says so and gives the local link with the SSH port-forward that reaches it.
 - **Cloudflare** terminates TLS and sees the traffic (pages, API JSON,
   cookies). That's the price of no inbound port. What the page *shows*
   is redacted (below), so no key or token goes out in a response. What
-  the owner *types* is another matter: the provider, plan, connection,
-  tool-key and channel forms (added from M37 on) POST their keys as
-  plain JSON, so over a tunnel Cloudflare sees those keys. To keep a key
-  off the tunnel, enter it on the loopback page (`ssh -L` to the box) or
-  with `ferrule setup` on the box.
+  the owner *types* into a key field (the provider, plan, connection,
+  relay, Google client, tool-key, Telegram and channel forms) is
+  **sealed in the browser** since M52.1: right before sending, the page
+  asks for a one-time public key (`POST /api/seal`, session and CSRF
+  checked), seals the value to it with M20's key-form scheme (ECDH
+  P-256, HKDF-SHA256, AES-256-GCM, the key id as salt and associated
+  data) and sends `{"sealed": {kid, v, epk, iv, ct}}` in its place. The
+  gateway opens every envelope in memory before any handler runs
+  (`dashboard/sealed.rs`); each key opens one envelope, for the session
+  it was made for, within 10 minutes, and an envelope that doesn't open
+  refuses the whole request, so nothing runs or is saved. Cloudflare,
+  reading passively, sees envelopes, not keys.
+  - **The limit:** the tunnel also serves the page's script and the
+    public key. Whoever can *change* the traffic (Cloudflare itself, or
+    anyone who controls it) can serve a script that sends the key
+    elsewhere, or a public key of their own, and wins. To keep a key
+    away from an active tamperer, enter it on the loopback page through
+    `ssh -L` or over a tailnet, or with `ferrule setup` on the box.
+  - A page without WebCrypto (served over plain `http://` at an address
+    other than this machine's, as a managed panel's `public_url` can be)
+    sends keys as typed, as before. On loopback and through the tunnel
+    the browser has WebCrypto, so keys are always sealed there. The
+    handlers still take a plain value, as before, from anything that
+    isn't the page (a script posting JSON, or the chat's
+    `ferrule_admin`, which calls them without HTTP).
 - **The login link** is the only credential: 32 random bytes, one use,
   10 minutes. It travels in the URL **fragment** (`/login#<token>`), which
   browsers never send, so Telegram's link preview, Cloudflare's logs and
