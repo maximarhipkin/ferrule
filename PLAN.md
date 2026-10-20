@@ -5920,3 +5920,44 @@ the panels in Hebrew.
 **Follow-ups.** Set up in the browser with no terminal (agreed as the
 next milestone); Discord's slash commands and DM-code pairing from the
 page; a simpler Google Calendar path; Hebrew for the panels' words.
+
+### 2026-10-20 — Telegram feels smoother: merged follow-ups, quieter busy notice, places and contacts, no link previews (Claude, Opus 5.5)
+
+**Scope.** The owner compared the Telegram bot with NanoClaw. Quick
+follow-up messages each got "your message is queued" and a turn of their
+own. A shared location was dropped without a word. The `/dashboard`
+link came with a web preview. Gateway side only; other sessions own
+approvals (`ferrule-trust`) and the Claude-engine tool bridge.
+
+**What changed.**
+- **Merged follow-ups** (`router.rs` `run_lane`). When a lane takes a
+  person's message, it also takes every person message already waiting
+  behind it and runs them as one turn: the texts in order a paragraph
+  apart, all attachments, the reply to the latest id, and `answered` for
+  each id. A scheduler job or a `wake` met while gathering is held for
+  the next turn, never merged. Channels without busy notices (the HTTP
+  API, which pairs each request with its answer) keep a turn per message.
+  Mid-turn injection through the core's `Inbox` was left out: the
+  supervisor already owns the root's inbox, its items arrive in tags the
+  root's prompt says to treat as untrusted agent data, and a message
+  during the last model call would need its own hand-back. Merging covers the reported case without touching
+  `ferrule-core`.
+- **Busy notice** after 30 s, not 3 s (`BUSY_NOTICE_AFTER`), and
+  `[gateway] busy_notice_secs` sets it (wired in `ferrule gateway`).
+- **Telegram location, venue, contact** become text (`shared()` in
+  `telegram.rs`): `[location: lat, lon]`, `[venue: title, address (lat,
+  lon)]`, `[contact: name, phone]`. Live-location edits are still not
+  followed.
+- **No link previews** on every `sendMessage` and `editMessageText` the
+  bot makes (`link_preview_options.is_disabled`).
+- Tests that sent two messages to one chat back to back now wait for the
+  first turn (or expect one merged turn), and the streaming test's exact
+  payload includes the new field. Docs: `docs/channels.md` "Messages sent
+  while it works".
+
+**Not run.** `make check` was not run in this session (the owner's
+standing rule: no runs unless asked). Run it before committing.
+
+**Follow-ups.** A short gathering window before the *first* message's
+turn starts (today only messages that arrive during a turn merge); a
+person's message reaching a running turn through a composite inbox.
