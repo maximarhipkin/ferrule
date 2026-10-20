@@ -5921,6 +5921,80 @@ the panels in Hebrew.
 next milestone); Discord's slash commands and DM-code pairing from the
 page; a simpler Google Calendar path; Hebrew for the panels' words.
 
+### 2026-10-20 — Telegram feels smoother: merged follow-ups, quieter busy notice, places and contacts, no link previews (Claude, Opus 5.5)
+
+**Scope.** The owner compared the Telegram bot with NanoClaw. Quick
+follow-up messages each got "your message is queued" and a turn of their
+own. A shared location was dropped without a word. The `/dashboard`
+link came with a web preview. Gateway side only; other sessions own
+approvals (`ferrule-trust`) and the Claude-engine tool bridge.
+
+**What changed.**
+- **Merged follow-ups** (`router.rs` `run_lane`). When a lane takes a
+  person's message, it also takes every person message already waiting
+  behind it and runs them as one turn: the texts in order a paragraph
+  apart, all attachments, the reply to the latest id, and `answered` for
+  each id. A scheduler job or a `wake` met while gathering is held for
+  the next turn, never merged. Channels without busy notices (the HTTP
+  API, which pairs each request with its answer) keep a turn per message.
+  Mid-turn injection through the core's `Inbox` was left out: the
+  supervisor already owns the root's inbox, its items arrive in tags the
+  root's prompt says to treat as untrusted agent data, and a message
+  during the last model call would need its own hand-back. Merging covers the reported case without touching
+  `ferrule-core`.
+- **Busy notice** after 30 s, not 3 s (`BUSY_NOTICE_AFTER`), and
+  `[gateway] busy_notice_secs` sets it (wired in `ferrule gateway`).
+- **Telegram location, venue, contact** become text (`shared()` in
+  `telegram.rs`): `[location: lat, lon]`, `[venue: title, address (lat,
+  lon)]`, `[contact: name, phone]`. Live-location edits are still not
+  followed.
+- **No link previews** on every `sendMessage` and `editMessageText` the
+  bot makes (`link_preview_options.is_disabled`).
+- Tests that sent two messages to one chat back to back now wait for the
+  first turn (or expect one merged turn), and the streaming test's exact
+  payload includes the new field. Docs: `docs/channels.md` "Messages sent
+  while it works".
+
+**Not run.** `make check` was not run in this session (the owner's
+standing rule: no runs unless asked). Run it before committing.
+
+**Follow-ups.** A short gathering window before the *first* message's
+turn starts (today only messages that arrive during a turn merge); a
+person's message reaching a running turn through a composite inbox.
+
+### 2026-10-20 — "Allow for this run": one approval per command per run (Claude, Opus 5.5)
+
+**Why.** In one Telegram run the owner was asked four times in a row to
+approve `rm -rf $T` (recursive delete), each time with a new code.
+`TrustGuard` asked on every match, `Approvals` issued single-use codes,
+and nothing remembered a yes.
+
+**What changed** (`ferrule-trust`, plus one word in the email channel's
+`approval_line` so an emailed `always k7` with a signature still counts as
+an answer; docs in `docs/m19-trust-cost.md` §7 and §11).
+- A third answer, `always` / `always <code>`, and an **Allow for this
+  run** button between Allow and Refuse (`Answer::Always`,
+  `Approvals::open_for_run`). Only a gated question offers it. On any
+  other question `always` is a plain yes.
+- `Hub` keeps the grants in `RunState::granted`, keyed by the subject the
+  owner was shown: "`<command>` (<kind>)". `begin_run` starts empty, and a
+  grant only lands in the run that asked. `TrustGuard` checks
+  `Hub::use_grant` before routing. Each use goes to the audit log as
+  `approval_answered` with route `grant`, answer `granted`.
+- Shell gates only: a connected service's or a plugin tool's subject
+  names just the tool, so a grant would cover any arguments. Those still
+  ask every time.
+
+**Not done, on purpose.** Exempting recursive deletes inside the
+workspace or temp dirs (the optional item). The observed `rm -rf $T` is
+not a literal path, so the exemption would not have helped. The sandbox
+confines writes to the workspace, but deleting the workspace is what the
+gate exists to catch. The terminal route and the dashboard's Allow keep
+yes/no only.
+
+**Not verified.** Per the owner's global rules, nothing was built or run
+and no tests were added; `make check` has not been run on this change.
+
 ### 2026-10-20 — Claude-plan bots get send_file, connections and MCP tools (Claude, Opus 5.5)
 
 **Scope.** The owner's Telegram bot on the Claude subscription engine

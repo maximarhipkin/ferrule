@@ -784,11 +784,12 @@ impl Router {
     }
 }
 
-/// One session's serialized worker loop: pull the next message, run one
-/// agent turn, deliver the reply. Errors never crash the lane — they are
-/// logged and, when possible, reported back to the chat so the user isn't
-/// left staring at silence (see NanoClaw's task-silent-death lesson: an
-/// error that's only logged and never surfaced is worse than a visible one).
+/// One session's serialized worker loop: pull the next message (with any
+/// more a person sent behind it), run one agent turn, deliver the reply.
+/// Errors never crash the lane — they are logged and, when possible,
+/// reported back to the chat so the user isn't left staring at silence
+/// (see NanoClaw's task-silent-death lesson: an error that's only logged
+/// and never surfaced is worse than a visible one).
 /// The job's own oneshot (if any) always gets the *true* `Result`, separate
 /// from the best-effort chat text.
 async fn run_lane(
@@ -805,15 +806,49 @@ async fn run_lane(
     let mut told_off = false;
     // M47: this chat was told the model can't see photos.
     let mut told_no_vision = false;
-    while let Some(job) = rx.recv().await {
+    // Taken off the queue behind a person's messages but not one of them
+    // (a scheduled prompt, a sub-agent's news): the next turn's.
+    let mut held: Option<LaneJob> = None;
+    // ponytail: a channel without busy notices pairs each request with its
+    // answer (the HTTP API), so its messages keep a turn each; a flag of
+    // its own if those two ever differ.
+    let merges = channel.as_ref().is_none_or(|c| c.busy_notices());
+    loop {
+        let job = match held.take() {
+            Some(job) => job,
+            None => match rx.recv().await {
+                Some(job) => job,
+                None => break,
+            },
+        };
         if watch.state.lock().unwrap().retired {
             break;
         }
         let LaneJob {
-            msg: inbound,
+            msg: mut inbound,
             reply,
             person,
         } = job;
+        // Messages a person sent while the last turn ran are one turn with
+        // one reply, not a reply each.
+        let mut earlier = Vec::new();
+        while person && merges {
+            match rx.try_recv() {
+                Ok(more) if more.person => {
+                    {
+                        let mut st = watch.state.lock().unwrap();
+                        st.queued = st.queued.saturating_sub(1);
+                    }
+                    earlier.push(inbound.message_id.clone());
+                    inbound = join(inbound, more.msg);
+                }
+                Ok(other) => {
+                    held = Some(other);
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
         watch.start(&inbound.text);
         // M41: armed before the voice notes are heard, so a `/stop` while
         // they are ends the typing too.
@@ -949,8 +984,12 @@ async fn run_lane(
                 tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
             }
         }
-        if let (Some(ch), false) = (&channel, inbound.message_id.is_empty()) {
-            ch.answered(&inbound.chat_id, &inbound.message_id).await;
+        if let Some(ch) = &channel {
+            for id in earlier.iter().chain([&inbound.message_id]) {
+                if !id.is_empty() {
+                    ch.answered(&inbound.chat_id, id).await;
+                }
+            }
         }
         if let Some(reply_tx) = reply {
             let outcome = run_result
@@ -964,6 +1003,23 @@ async fn run_lane(
         watch.finish();
     }
     tracing::debug!(session = %session_id, "session lane closed");
+}
+
+/// `next` after `first`, as one message: the texts a paragraph apart,
+/// every attachment, and `next`'s id, so the reply answers the latest.
+fn join(first: InboundMessage, next: InboundMessage) -> InboundMessage {
+    let text = [first.text.as_str(), next.text.as_str()]
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let mut attachments = first.attachments;
+    attachments.extend(next.attachments);
+    InboundMessage {
+        text,
+        attachments,
+        ..next
+    }
 }
 
 /// A lane's handles on its own state.
@@ -1557,6 +1613,7 @@ mod tests {
             .dispatch(inbound("chat-1", "deploy it"))
             .await
             .unwrap();
+        wait_until(|| recorder.texts().len() == 1).await;
         router.offer(inbound("chat-1", "and again")).unwrap();
         wait_until(|| recorder.texts().len() == 2).await;
         // A sub-agent's news and a scheduled prompt aren't a person talking.
@@ -1590,14 +1647,13 @@ mod tests {
         let router = Router::new(dir.path(), echo_factory(), channels);
 
         router.dispatch(inbound("chat-1", "one")).await.unwrap();
+        wait_until(|| recorder.texts().len() == 1).await;
+        // Sent before the lane takes them, they're one turn, in order.
         router.dispatch(inbound("chat-1", "two")).await.unwrap();
         router.dispatch(inbound("chat-1", "three")).await.unwrap();
 
-        wait_until(|| recorder.texts().len() == 3).await;
-        assert_eq!(
-            recorder.texts(),
-            vec!["echo: one", "echo: two", "echo: three"]
-        );
+        wait_until(|| recorder.texts().len() == 2).await;
+        assert_eq!(recorder.texts(), vec!["echo: one", "echo: two\n\nthree"]);
     }
 
     #[tokio::test]
@@ -1781,6 +1837,7 @@ mod tests {
         let router = Router::new(dir.path(), factory, channels)
             .with_max_turn(Some(Duration::from_millis(150)));
         router.dispatch(inbound("chat-1", "hang")).await.unwrap();
+        wait_until(|| router.snapshot().iter().any(|l| l.busy_for.is_some())).await;
         router.dispatch(inbound("chat-1", "after")).await.unwrap();
         wait_until(|| recorder.texts().len() == 2).await;
         let texts = recorder.texts();
@@ -1812,8 +1869,8 @@ mod tests {
         });
         let router = Router::new(dir.path(), factory, channels);
         router.dispatch(inbound("chat-1", "hang")).await.unwrap();
-        router.dispatch(inbound("chat-1", "after")).await.unwrap();
         wait_until(|| router.snapshot().iter().any(|l| l.busy_for.is_some())).await;
+        router.dispatch(inbound("chat-1", "after")).await.unwrap();
         let sid = router.snapshot()[0].session_id.clone();
         assert!(!router.stop("no-such-session", "the dashboard"));
         assert!(router.stop(&sid, "the dashboard"));
@@ -1891,8 +1948,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (router, recorder) = slow_router(dir.path(), Duration::from_millis(400));
         router.dispatch(inbound("chat-1", "slow")).await.unwrap();
-        router.dispatch(inbound("chat-1", "after")).await.unwrap();
         wait_until(|| router.running() == 1).await;
+        router.dispatch(inbound("chat-1", "after")).await.unwrap();
         assert_eq!((router.running(), router.queued()), (1, 1));
         assert!(!router.closing());
         assert_eq!(router.close("N").await, 1);

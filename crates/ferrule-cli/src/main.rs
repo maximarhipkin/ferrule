@@ -2968,6 +2968,7 @@ async fn run_gateway(
     let drain_router = router.clone();
     let stopper = restarts.clone();
     let mut gateway = Gateway::new(router.clone())
+        .with_busy_notice_after(cfg.gateway.busy_notice_after())
         .with_restarts(restarts)
         .with_health(health.clone())
         .with_redactor(Arc::new(health::redactor(&cfg)));

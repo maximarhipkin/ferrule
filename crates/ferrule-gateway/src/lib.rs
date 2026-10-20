@@ -31,7 +31,7 @@ pub use channels::{
     SignalChannel, SlackChannel, TelegramChannel, WhatsAppChannel,
 };
 pub use error::GatewayError;
-pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI};
+pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI, BUSY_NOTICE_AFTER};
 pub use health::{
     Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, RunningMarker,
     StallHook,

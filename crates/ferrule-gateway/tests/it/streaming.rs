@@ -392,7 +392,8 @@ async fn a_quick_answer_and_streaming_off_both_send_exactly_todays_one_message()
     .await;
     let off = Bot::start(Edits::Ok);
     turn(&off, script, Duration::ZERO, None).await;
-    let today = json!({"chat_id": "9999", "text": "Hi there.", "reply_to_message_id": 55});
+    let today = json!({"chat_id": "9999", "text": "Hi there.", "reply_to_message_id": 55,
+                       "link_preview_options": {"is_disabled": true}});
     for bot in [quick, off] {
         let calls = bot.calls();
         assert_eq!(calls.len(), 1, "{calls:?}");

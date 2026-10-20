@@ -721,7 +721,8 @@ impl TelegramChannel {
                 self.deliver(
                     "editMessageText",
                     &json!({ "chat_id": chat_id, "message_id": message_id,
-                             "text": format!("{base}{marker}"), "reply_markup": no_buttons }),
+                             "text": format!("{base}{marker}"), "reply_markup": no_buttons,
+                             "link_preview_options": no_preview() }),
                 )
                 .await
             }
@@ -761,8 +762,9 @@ impl TelegramChannel {
             ),
             // Nothing to read: the sender is told, the agent isn't asked.
             (None, _, Some(_)) => String::new(),
-            // Someone joined, a message was pinned: nothing to answer.
-            _ => return None,
+            // A place or a contact, in words; someone joined, a message
+            // was pinned: nothing to answer.
+            _ => shared(message)?,
         };
         let sender = message
             .get("from")
@@ -878,6 +880,44 @@ fn unread_kind(message: &Value) -> Option<&'static str> {
     .into_iter()
     .find(|(key, _)| message.get(key).is_some())
     .map(|(_, kind)| kind)
+}
+
+/// What every message the bot sends or edits says about link previews.
+fn no_preview() -> Value {
+    json!({ "is_disabled": true })
+}
+
+/// A shared venue, location or contact as text; Telegram sends no text
+/// with one.
+fn shared(message: &Value) -> Option<String> {
+    let at = |l: &Value| -> Option<String> {
+        Some(format!(
+            "{}, {}",
+            l["latitude"].as_f64()?,
+            l["longitude"].as_f64()?
+        ))
+    };
+    if let Some(v) = message.get("venue") {
+        return Some(format!(
+            "[venue: {}, {} ({})]",
+            v["title"].as_str()?,
+            v["address"].as_str()?,
+            at(&v["location"])?
+        ));
+    }
+    if let Some(l) = message.get("location") {
+        return Some(format!("[location: {}]", at(l)?));
+    }
+    let c = message.get("contact")?;
+    let name = [c["first_name"].as_str(), c["last_name"].as_str()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!(
+        "[contact: {name}, {}]",
+        c["phone_number"].as_str()?
+    ))
 }
 
 /// The owner's message about a lasting 409, the likely cause first.
@@ -1121,7 +1161,9 @@ impl TelegramChannel {
         let pieces = split(&text);
         let last = pieces.len() - 1;
         for (i, piece) in pieces.iter().enumerate() {
-            let mut payload = json!({ "chat_id": msg.chat_id, "text": piece });
+            // No link previews: a bot's links (the dashboard's sign-in
+            // link) are for tapping, not a card under the reply.
+            let mut payload = json!({ "chat_id": msg.chat_id, "text": piece, "link_preview_options": no_preview() });
             if i == 0 {
                 if let Some(reply_to) = &msg.reply_to {
                     if let Ok(reply_id) = reply_to.parse::<i64>() {
@@ -1369,7 +1411,7 @@ impl Channel for TelegramChannel {
     }
 
     async fn edit(&self, chat_id: &str, message_id: &str, text: &str) -> Result<(), GatewayError> {
-        let payload = json!({ "chat_id": chat_id, "message_id": message_id.parse::<i64>().unwrap_or(0), "text": text });
+        let payload = json!({ "chat_id": chat_id, "message_id": message_id.parse::<i64>().unwrap_or(0), "text": text, "link_preview_options": no_preview() });
         self.deliver("editMessageText", &payload).await.map(|_| ())
     }
 }
