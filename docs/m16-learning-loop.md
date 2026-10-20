@@ -249,10 +249,16 @@ An add or an edit is kept only if it demonstrably helps (ACE's
 "success-gated" update). For each such delta:
 
 1. **Check.** The check is `[learning] check` if set, else
-   `[agent] verify_command`. With neither, the delta is **rejected**
-   ("no check to gate on"). The proposed text still goes into the pass
-   changelog, so the owner can add it by hand if they agree. An ungated
-   lesson is exactly what ACE shows goes wrong.
+   `[agent] verify_command`. With neither, the delta goes to the **probe
+   gate** instead (M53, `docs/m53-contrastive-probing.md`): one re-run of
+   the episode in the same scratch-copy machinery, then a fixed-rubric
+   judge call contrasts the failing run's transcript tail with the
+   probe's (finished? fewer retries? truthful status? no new damage?).
+   Kept only if the judge prefers the probe; a tie, an unreadable answer
+   or a failed call rejects. If the gate can't probe either, the delta is
+   **rejected** ("no check to gate on"). The proposed text still goes
+   into the pass changelog either way, so the owner can add it by hand.
+   An ungated lesson is exactly what ACE shows goes wrong.
 2. **Scratch copy.** The pass workspace (`--workspace`, or the gateway's
    workspace for scheduled passes) is copied into
    `<temp dir>/scratch-<pass>-<n>/workspace`, with the gate agent's own

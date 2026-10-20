@@ -34,6 +34,58 @@ enum Record<'a> {
     },
 }
 
+/// M53: which harness produced a session (`docs/m53-contrastive-probing.md`
+/// §4). Hashes are FNV-1a 64 — stable across builds, no dependency.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HarnessStamp {
+    /// Skill name + hash of its SKILL.md.
+    pub skills: Vec<(String, u64)>,
+    pub playbook: Option<u64>,
+    pub config: Option<u64>,
+}
+
+/// FNV-1a 64, hex-rendered by [`HarnessStamp::encode`].
+pub fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+impl HarnessStamp {
+    /// `skills=name@hex,name@hex;playbook=hex;config=hex` — absent parts
+    /// are left out, so the line never claims a part it didn't see.
+    pub fn encode(&self) -> String {
+        let mut s = String::new();
+        let sep = |s: &mut String| {
+            if !s.is_empty() {
+                s.push(';');
+            }
+        };
+        if !self.skills.is_empty() {
+            sep(&mut s);
+            s.push_str("skills=");
+            for (i, (name, h)) in self.skills.iter().enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                s.push_str(&format!("{name}@{h:016x}"));
+            }
+        }
+        if let Some(p) = self.playbook {
+            sep(&mut s);
+            s.push_str(&format!("playbook={p:016x}"));
+        }
+        if let Some(c) = self.config {
+            sep(&mut s);
+            s.push_str(&format!("config={c:016x}"));
+        }
+        s
+    }
+}
+
 impl Transcript {
     pub fn create(dir: &Path, session_id: &str) -> Result<Self, CoreError> {
         fs::create_dir_all(dir)?;
@@ -74,6 +126,13 @@ impl Transcript {
     /// A metadata pair (`parent`, `fork_at`, …).
     pub fn log_meta(&self, key: &str, value: &str) -> Result<(), CoreError> {
         self.write(&Record::Meta { key, value })
+    }
+
+    /// M53: one append-only `harness` meta line naming what produced this
+    /// session's prompts — the active skills with content hashes, the
+    /// playbook hash, the config hash. Hashes, never contents.
+    pub fn log_harness(&self, stamp: &HarnessStamp) -> Result<(), CoreError> {
+        self.log_meta("harness", &stamp.encode())
     }
 
     /// The metadata pairs, in the order they were written.
@@ -261,5 +320,36 @@ mod tests {
         let before = std::fs::read_to_string(t.path()).unwrap();
         Transcript::open(dir.path(), "s1").unwrap();
         assert_eq!(before, std::fs::read_to_string(t.path()).unwrap());
+    }
+
+    #[test]
+    fn the_harness_stamp_is_one_meta_line_of_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Transcript::create(dir.path(), "s1").unwrap();
+        let stamp = HarnessStamp {
+            skills: vec![("review".into(), fnv64(b"skill body"))],
+            playbook: Some(fnv64(b"- lesson one\n")),
+            config: Some(fnv64(b"[agent]\n")),
+        };
+        t.log_harness(&stamp).unwrap();
+        let meta = t.read_meta().unwrap();
+        let (key, value) = meta.iter().find(|(k, _)| k == "harness").unwrap();
+        assert_eq!(key, "harness");
+        assert_eq!(value, &stamp.encode());
+        assert!(value.starts_with("skills=review@"));
+        assert!(value.contains(";playbook=") && value.contains(";config="));
+        // Hashes, never contents.
+        assert!(!value.contains("skill body") && !value.contains("lesson one"));
+        // Absent parts are left out.
+        assert_eq!(HarnessStamp::default().encode(), "");
+        assert!(!HarnessStamp {
+            config: Some(1),
+            ..Default::default()
+        }
+        .encode()
+        .starts_with(';'));
+        // Stable: the same bytes hash the same way across calls.
+        assert_eq!(fnv64(b"skill body"), fnv64(b"skill body"));
+        assert_ne!(fnv64(b"a"), fnv64(b"b"));
     }
 }

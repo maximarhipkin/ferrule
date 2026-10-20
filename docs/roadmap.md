@@ -1085,6 +1085,65 @@ app, Gmail, an MCP server and a key for a tool with no terminal command
 is the next milestone), the security rules hold and are tested, and
 before and after shots are in the tree.
 
+### M51 — media generation
+
+**Status.** Built (`docs/m51-media.md`; user docs `docs/models.md`).
+Not tried against a real OpenRouter key or a real render yet.
+- **Two chat-bound tools**: `generate_image` (OpenRouter `/images`,
+  sync, reference images = editing) and `generate_video` (OpenRouter
+  `/videos` async job API — immediate job-id answer, a built-in
+  scheduler job polls and delivers the MP4 via the channel's send
+  path). A new `ferrule-media` crate in the `ferrule-embed` shape: one
+  trait, OpenRouter through the credential proxy, a fake for tests.
+- **Honesty and caps**: `[media]` table with defaults and a daily cap,
+  ledger rows with `call_kind = "media"`, the first call of a run
+  trust-gated as spend.
+- **Sub-agents** get the tools without chat delivery (the parent sends),
+  which combined with M21's per-spawn `model` is the "another agent on
+  another OpenRouter model" path.
+
+**Done means.** "Draw…" in Telegram answers with the image, "make a
+5-second clip of it" answers now and delivers the MP4 minutes later —
+priced in the ledger, capped per day, and surviving a gateway restart.
+
+### M52 — the dashboard Safe
+
+**Status.** Built (`docs/m52-dashboard-safe.md`; user docs
+`docs/dashboard.md`). Not tried from a real browser session yet.
+- **The M50 keys panel becomes the Safe**: every secret ferrule holds,
+  with rotate (the missing half of M50 — replace a value in place,
+  provider keys included, picked up without a restart), edit-hosts for
+  tool keys, and the existing add/remove.
+- **Every M50 rule kept**: write-only (values never displayed, never
+  logged), live-gateway only, managed-mode lock, one confirm card per
+  change, everything audited by name.
+
+**Done means.** A leaked OpenRouter key is rotated from a phone in one
+paste, the bot answers on the new key without a restart, and the audit
+log shows the act by name only.
+
+### M53 — contrastive probing
+
+**Status.** Built (`docs/m53-contrastive-probing.md`; the probe gate is
+in `docs/m16-learning-loop.md` §5 step 1). Not yet run on a real nightly
+pass.
+- **A second gate for M16**: when a failed task has no verify command,
+  the pass probes — re-runs once in the gate's scratch copy with the
+  candidate lesson in the prompt — and a fixed-rubric judge call
+  contrasts the two transcripts. Kept only if the probe is visibly
+  better; tie or judge error rejects. Fail-closed, one probe per
+  episode, inside the learn caps.
+- **Harness versioning**: the transcript meta records the active skill
+  list, playbook hash and config hash at session start, so "which
+  harness produced this run" becomes answerable from the ledger.
+- **Deliberately out**: online mid-run harness editing (breaks the
+  byte-stable prompt prefix), K > 1, parallel probes, playbook
+  rewrites.
+
+**Done means.** A check-less failure can teach the playbook one line —
+"kept by judge" next to "kept by check" in `ferrule learn show` — and
+every lesson stays readable and revertible the M16 way.
+
 ## Other open tracks
 
 - **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
