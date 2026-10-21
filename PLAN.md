@@ -129,13 +129,15 @@ append-only.
     Its open edges (a live Linux run, macOS owner mode, per-session
     helpers for guests) are in its Session Log entry.
   - **`autopilot` / PR #49:** M58.1–M58.5 (simplify, remove or make
-    opt-in) and the M53 follow-ups (M53.2, M53.3, M53.4, M53.5, M53.7),
-    one commit each.
+    opt-in), the M53 follow-ups (M53.2, M53.3, M53.4, M53.5, M53.7),
+    and the M51/M52 follow-ups (M51.4, M51.3, M52.2, M52.4, M52.6; M52.3
+    is M54's `secret_request`), one commit each.
   - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
     `docs/research-harness2-media.md`, `docs/m51-media.md`,
     `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
-    Their named follow-ups (sub-agent media tools, a per-run approval
-    card, the remaining M52.x items) are open.
+    Their named follow-ups are built on `autopilot` (above) except a
+    per-run approval card for media spend and a Cloudflare Access JWT
+    check at the dashboard's origin (M52.6, documented).
   - **M55–M59, from `reports/Ferrule agent gap analysis.md`** (2026-10-20,
     in the main checkout and git-excluded, so `docs/roadmap.md`'s "Other
     open tracks" lists its items): M55 make main green and land the
