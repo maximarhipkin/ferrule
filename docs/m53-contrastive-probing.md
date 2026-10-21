@@ -83,6 +83,13 @@ contents). The ledger row for the first call of a session can then
 answer the question, and the M14 eval A/B can split on harness version
 for free.
 
+M58.5 does that split. `ferrule eval` writes the line into each task
+run's transcript and keeps it in `run.json` (`harness`). There it also
+hashes the system prompt, with the workspace path replaced (`prompt`),
+and the tool definitions (`tools`). `config` is the agent's settings and
+profile there, not a config file. The "since the last run" diff names
+the parts that changed (`docs/eval.md`).
+
 ## Security and invariants
 
 - The judge sees transcripts, which by invariant never contain secrets;

@@ -7271,3 +7271,95 @@ the roadmap.
   `write_todos` stays off the bridge because claude has `TodoWrite`.
 - A resumed claude session that remembers an old name sees it gone from
   the bridge's list and has to use the new one.
+
+### 2026-10-21 — M58.5: eval as the gate, a harness fingerprint, a grader-leak tripwire, an external-benchmark converter (Claude, Opus 5.5)
+
+**Why.**
+- Nothing measured whether a prompt or default change helped. Anthropic
+  now runs a per-model eval on every system-prompt change.
+- A component could only be cut on faith.
+- Nothing stopped an agent from reading the eval's own graders. One of
+  Harness²'s rollouts downloaded its rubric. The starter suite's verify
+  tasks hand the agent the check's path, and the shell could `cat` it.
+
+**What changed.**
+- **(a) A/B of harness variants.** `ferrule eval run --ablate <part>`
+  (repeatable) runs every task as `engineered` and as `ablated` (the new
+  `Variant::Ablated`), the same harness without the named parts:
+  - `repo-map`, `verify`, `stuck`, `compaction`, `retries`, `skills`;
+  - `memory`, `edit-file`, `effort-boost`, `stale-guard`, `baseline`,
+    `playbook`.
+
+  Each part is applied in `variant::build`. `--ablate` can't be combined
+  with `--variant`. The report's difference column now covers any
+  two-variant run (`engineered − ablated`; `engineered − naive` is
+  unchanged). `SuiteRun.ablated` records the parts, and
+  `history::previous` compares `ablated` only with a run that left out
+  the same ones. Comparing two builds stays the existing "since the last
+  run" diff, now with the fingerprint below.
+- **(b) The harness fingerprint.**
+  - `HarnessStamp` (ferrule-core) gains `prompt` and `tools`.
+  - `variant::build_stamped` stamps the fixture's skills, the playbook,
+    `config` (the AgentConfig and profile), the system prompt with its
+    workspace path replaced, and the tool definitions. It writes the
+    stamp as the transcript's `harness` meta line (the learn gate's
+    transcripts get it too), and the runner keeps it per task run
+    (`TaskResult.harness`).
+  - `history` compares stamps task by task: "harness changed on N of M
+    tasks: prompt, tools", or "same harness".
+  - The CLI's own sessions are unchanged (`main.rs`, M54's).
+- **(c) The grader-leak tripwire** (`ferrule-eval/src/leak.rs`):
+  - Hidden: the agent's shell runs in a copy of the eval's sandbox whose
+    `deny_read` adds the suite file, every script a task's grade command
+    or check names under the suite dir, and the files beside them in
+    their own directory. `graders/` and `checks/` are hidden; `solutions/`
+    is not, because the mock plays it. The checks (a new
+    `Build::check_sandbox`) and the graders run in the eval's sandbox as
+    before. A check whose files are hidden is announced as ferrule's to
+    run, not the agent's.
+  - Searched and probed: before the run, and before grading, the
+    workspace is searched for copies of or links to those files. Before
+    the run each file must be on the deny list, and on Unix one is
+    `cat`ed from inside the sandbox.
+  - A hit is `Outcome::Error` with "GRADER LEAK: …", which is exit 1.
+  - With no sandbox that hides reads, `run_suite` refuses unless
+    `--allow-grader-reads`. The run is then `unguarded`, and its report
+    says so first. The dashboard's model eval (`model_eval/`) passes it,
+    with a comment saying why.
+- **(d) External benchmark.** `evals/terminal-bench/convert.py`
+  (standard library, downloads nothing) turns a local checkout of
+  Terminal-Bench 2 (Harbor) or 1 tasks into a suite:
+  - the instruction is the prompt;
+  - the environment's files, without the Dockerfile, are the fixture;
+  - pytest on `tests/test_outputs.py` is the grader, copied to
+    `graders/<id>/` (hidden by the tripwire);
+  - `/app` is rewritten to the workspace.
+
+  Tasks whose image has RUN steps are skipped unless `--with-builds`.
+  Multi-service ones are always skipped.
+- **Docs.**
+  - `eval.md`: "The gate" (the policy that every prompt line, scaffold or
+    default change runs an A/B before it lands), `--ablate`, the
+    tripwire, "An external benchmark", the harness line in "Since the
+    last run", exit status 1 and a note on the mock flow.
+  - `m53-contrastive-probing.md` §4, the README's Eval row, the roadmap.
+
+**Tests changed, none added.**
+- The struct literals that gained fields: `edit_tools.rs`, `gate.rs`,
+  and the helpers in `history.rs` and `transcript.rs`.
+- `suite_run.rs`'s `opts()`, and the CLI tests that run `eval run` on a
+  sandbox-off config (`eval.rs`, `dashboard.rs`, `hooks.rs`, `learn.rs`,
+  `trust.rs`), pass `--allow-grader-reads`.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.**
+- No eval was run: no A/B of M58.1–M58.3 yet, no `--ablate` run, no real
+  tripwire probe under Seatbelt or Landlock (the tests run with the
+  sandbox off), and the Terminal-Bench converter has never seen a real
+  checkout. All of these are the next real-model session's first job.
+- No nightly job.
+- The fingerprint's `prompt` hash includes the check command's absolute
+  suite path, so it compares runs on one machine, not across machines.
+- On Windows the denies are ACLs the launcher writes on the grader files.

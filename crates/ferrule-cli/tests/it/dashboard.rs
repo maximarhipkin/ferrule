@@ -1518,7 +1518,14 @@ suite = {suite:?}
     let home = dir.path();
     let out = ferrule(
         home,
-        &["eval", "run", suite.to_str().unwrap(), "--tag", "smoke"],
+        &[
+            "eval",
+            "run",
+            "--allow-grader-reads",
+            suite.to_str().unwrap(),
+            "--tag",
+            "smoke",
+        ],
     );
     assert!(
         plain(&out.stdout).contains("smoke") || out.status.success(),

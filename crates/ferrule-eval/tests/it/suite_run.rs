@@ -157,6 +157,8 @@ fn opts(work: &Path, variants: Vec<Variant>) -> Options {
     Options {
         variants,
         work_root: Some(work.to_path_buf()),
+        // These runs have no OS sandbox to hide the suite with (M58.5).
+        allow_grader_reads: true,
         ..Default::default()
     }
 }

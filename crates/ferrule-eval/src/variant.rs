@@ -4,7 +4,8 @@
 
 use ferrule_core::tool::Tool;
 use ferrule_core::{
-    Agent, AgentConfig, ContextOverflow, HarnessProfile, Provider, ToolContext, Transcript,
+    Agent, AgentConfig, ContextOverflow, HarnessProfile, HarnessStamp, Provider, ToolContext,
+    Transcript,
 };
 use ferrule_sandbox::{Mode, Sandbox};
 use ferrule_tools::{
@@ -37,11 +38,84 @@ impl EditTools {
     }
 }
 
+/// M58.5 `--ablate`: a part of the engineered harness the `ablated` arm
+/// runs without, so one component's worth is a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Part {
+    /// The tree-sitter repo map and `code_search` (M29).
+    RepoMap,
+    /// The verify command: ferrule doesn't run the task's check, and the
+    /// prompt doesn't mention it.
+    Verify,
+    /// The stuck detector and the per-file edit notes.
+    Stuck,
+    /// Compaction: the history is truncated instead, as the naive one's.
+    Compaction,
+    /// Retries of a failed provider call.
+    Retries,
+    /// The fixture's project skills.
+    Skills,
+    /// `remember` and `recall`.
+    Memory,
+    /// `edit_file`: `write_file` only.
+    EditFile,
+    /// The raised reasoning effort on the first turn and after a failed
+    /// check (M57.2).
+    EffortBoost,
+    /// The stale-file guard on `edit_file` (M57.3).
+    StaleGuard,
+    /// The workspace context baseline (`AGENTS.md` and the like).
+    Baseline,
+    /// The owner's playbook, for a suite that opts in to it.
+    Playbook,
+}
+
+impl Part {
+    pub const ALL: [Part; 12] = [
+        Part::RepoMap,
+        Part::Verify,
+        Part::Stuck,
+        Part::Compaction,
+        Part::Retries,
+        Part::Skills,
+        Part::Memory,
+        Part::EditFile,
+        Part::EffortBoost,
+        Part::StaleGuard,
+        Part::Baseline,
+        Part::Playbook,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Part::RepoMap => "repo-map",
+            Part::Verify => "verify",
+            Part::Stuck => "stuck",
+            Part::Compaction => "compaction",
+            Part::Retries => "retries",
+            Part::Skills => "skills",
+            Part::Memory => "memory",
+            Part::EditFile => "edit-file",
+            Part::EffortBoost => "effort-boost",
+            Part::StaleGuard => "stale-guard",
+            Part::Baseline => "baseline",
+            Part::Playbook => "playbook",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Part> {
+        Part::ALL.into_iter().find(|p| p.as_str() == s)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Variant {
     /// ferrule as it ships.
     Engineered,
+    /// M58.5 `--ablate`: the engineered harness without the parts named.
+    Ablated,
     /// What ferrule replaced: truncation, no verification, no memory, no
     /// retries, no stuck detector, a one-line prompt.
     Naive,
@@ -59,6 +133,7 @@ impl Variant {
     pub fn as_str(self) -> &'static str {
         match self {
             Variant::Engineered => "engineered",
+            Variant::Ablated => "ablated",
             Variant::Naive => "naive",
             Variant::Cheap => "cheap",
             Variant::Routed => "routed",
@@ -128,6 +203,12 @@ pub struct Build<'a> {
     pub playbook: Option<&'a str>,
     /// M29: `write_file` alone, or with `edit_file`.
     pub edit_tools: EditTools,
+    /// M58.5: what the `ablated` variant runs without; ignored by the
+    /// others.
+    pub ablate: &'a [Part],
+    /// M58.5: where ferrule runs the check, when that isn't the agent's
+    /// own sandbox (the eval hides its graders and checks from the agent).
+    pub check_sandbox: Option<&'a Arc<Sandbox>>,
 }
 
 /// The base of ferrule's own system prompt, kept in step with the CLI's
@@ -151,6 +232,15 @@ fn naive_prompt(workspace: &Path) -> String {
 }
 
 pub fn build(b: Build<'_>) -> Agent {
+    build_stamped(b).0
+}
+
+/// [`build`], and the harness that came out of it (M58.5): the skills, the
+/// playbook, the settings, the system prompt with its workspace path
+/// replaced, and the tools offered, hashed.
+pub fn build_stamped(b: Build<'_>) -> (Agent, HarnessStamp) {
+    let without = |part: Part| b.variant == Variant::Ablated && b.ablate.contains(&part);
+    let mut stamp = HarnessStamp::default();
     let tool_ctx = ToolContext {
         workspace: b.workspace.to_path_buf(),
         max_output_chars: 30_000,
@@ -172,6 +262,7 @@ pub fn build(b: Build<'_>) -> Agent {
     );
     let (read, write, edit) = match b.variant {
         Variant::Naive => (read, write, edit),
+        _ if without(Part::StaleGuard) => (read, write, edit),
         _ => (
             read.tracking(stamps.clone()),
             write.tracking(stamps.clone()),
@@ -182,7 +273,7 @@ pub fn build(b: Build<'_>) -> Agent {
     registry.register(Arc::new(write));
     registry.register(Arc::new(edit));
     registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
-    if b.edit_tools == EditTools::WriteOnly {
+    if b.edit_tools == EditTools::WriteOnly || without(Part::EditFile) {
         registry.remove("edit_file");
     }
     if b.sandbox.policy().mode == Mode::ReadOnly {
@@ -206,18 +297,46 @@ pub fn build(b: Build<'_>) -> Agent {
             config.retry.max_attempts = 1;
             naive_prompt(b.workspace)
         }
-        Variant::Engineered | Variant::Cheap | Variant::Routed | Variant::Strong => {
+        Variant::Engineered
+        | Variant::Ablated
+        | Variant::Cheap
+        | Variant::Routed
+        | Variant::Strong => {
+            if without(Part::Stuck) {
+                config.detect_stuck = false;
+            }
+            if without(Part::Compaction) {
+                config.overflow = ContextOverflow::Truncate;
+            }
+            if without(Part::Retries) {
+                config.retry.max_attempts = 1;
+            }
+            if without(Part::EffortBoost) {
+                config.effort_boost = false;
+            }
             let mut system = engineered_prompt(b.workspace, &profile.system_directive);
-            if let Some((name, content)) = ferrule_core::load_context_baseline(b.workspace) {
+            if let Some((name, content)) = ferrule_core::load_context_baseline(b.workspace)
+                .filter(|_| !without(Part::Baseline))
+            {
                 system.push_str(&format!(
                     "\n\n[Workspace context baseline: {name}]\n{content}"
                 ));
             }
-            if let Some(cmd) = b.check {
+            if let Some(cmd) = b.check.filter(|_| !without(Part::Verify)) {
+                // M58.5: a check whose files are hidden from the agent is
+                // ferrule's to run, not the agent's.
+                let hidden_check = hidden
+                    .iter()
+                    .any(|h| cmd.contains(h.to_string_lossy().as_ref()));
+                let yourself = if hidden_check {
+                    "Its files are hidden from you, so only ferrule runs it."
+                } else {
+                    "You can run it yourself with the shell tool before finishing."
+                };
                 system.push_str(&format!(
                     "\n\n[Validation policy] When you finish after changing files, ferrule runs `{cmd}`. \
                      If it fails you get its output back and keep working: fix forward, don't revert. \
-                     You can run it yourself with the shell tool before finishing."
+                     {yourself}"
                 ));
             }
             // Only the fixture's own skills: the user's would make the run
@@ -227,23 +346,34 @@ pub fn build(b: Build<'_>) -> Agent {
                 .filter(|r| r.scope == ferrule_skills::Scope::Project)
                 .collect();
             let skills = Arc::new(ferrule_skills::discover(&roots, &[]));
-            if let Some(catalog) = skills.catalog() {
+            if let Some(catalog) = skills.catalog().filter(|_| !without(Part::Skills)) {
+                stamp.skills = skills
+                    .skills
+                    .iter()
+                    .map(|s| {
+                        let body = std::fs::read(&s.location).unwrap_or_default();
+                        (s.name.clone(), ferrule_core::fnv64(&body))
+                    })
+                    .collect();
                 system.push_str(&format!("\n\n[Skills]\n{catalog}"));
                 for tool in ferrule_skills::tools(skills) {
                     registry.register(tool);
                 }
             }
-            if let Some(block) = b.playbook {
+            if let Some(block) = b.playbook.filter(|_| !without(Part::Playbook)) {
+                stamp.playbook = Some(ferrule_core::fnv64(block.as_bytes()));
                 system.push_str(&format!("\n\n{block}"));
             }
-            if let Some(make) = b.memory_tools {
+            if let Some(make) = b.memory_tools.filter(|_| !without(Part::Memory)) {
                 for tool in make(b.state.join("memory.db")) {
                     registry.register(tool);
                 }
             }
             // M29: as in the CLI, only in a code repo; the tag cache in
             // the run's state dir.
-            if ferrule_codemap::looks_like_code_repo(b.workspace, &hidden) {
+            if !without(Part::RepoMap)
+                && ferrule_codemap::looks_like_code_repo(b.workspace, &hidden)
+            {
                 let map = Arc::new(ferrule_codemap::CodeMap::new(
                     b.workspace,
                     hidden.clone(),
@@ -260,6 +390,18 @@ pub fn build(b: Build<'_>) -> Agent {
         }
     };
 
+    let workspace = b.workspace.to_string_lossy();
+    stamp.prompt = Some(ferrule_core::fnv64(
+        system.replace(workspace.as_ref(), "<workspace>").as_bytes(),
+    ));
+    let tools = serde_json::to_string(&registry.definitions()).unwrap_or_default();
+    stamp.tools = Some(ferrule_core::fnv64(tools.as_bytes()));
+    stamp.config = Some(ferrule_core::fnv64(
+        format!("{config:?}{profile:?}").as_bytes(),
+    ));
+    if let Some(t) = &b.transcript {
+        let _ = t.log_harness(&stamp);
+    }
     let mut agent = Agent::new(
         b.provider,
         registry,
@@ -269,7 +411,7 @@ pub fn build(b: Build<'_>) -> Agent {
         b.transcript,
     )
     .with_system_prompt(system);
-    if b.variant != Variant::Naive {
+    if b.variant != Variant::Naive && !without(Part::StaleGuard) {
         agent = agent.with_file_stamps(stamps);
     }
     if let Some(map) = repo_map {
@@ -278,12 +420,12 @@ pub fn build(b: Build<'_>) -> Agent {
             ferrule_codemap::DEFAULT_MAP_TOKENS,
         )));
     }
-    if let (true, Some(cmd)) = (b.variant.engineered(), b.check) {
+    if let (true, Some(cmd)) = (b.variant.engineered() && !without(Part::Verify), b.check) {
         agent = agent.with_verifier(Arc::new(CommandVerifier::new(
             cmd,
-            b.sandbox.clone(),
+            b.check_sandbox.unwrap_or(b.sandbox).clone(),
             Duration::from_secs(300),
         )));
     }
-    agent
+    (agent, stamp)
 }

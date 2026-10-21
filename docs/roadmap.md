@@ -1239,7 +1239,15 @@ Current State; numbers are claimed there before anything is built.
     `stop_agent`, `board`, `tasks`; the old names callable, never offered,
     for one release) and `log_diary` merged into `write_todos` as `note`,
     taking an agent that can spawn from ~5,900 to ~5,100 characters of
-    tool definitions (`docs/agents.md`, "The tools").
+    tool definitions (`docs/agents.md`, "The tools"); M58.5, eval as the
+    gate: `ferrule eval run --ablate <part>` (an `ablated` arm without
+    one component), M53's harness stamp per task run (now with `prompt`
+    and `tools` hashes) and a "harness changed" line in the diff, a
+    grader-leak tripwire (graders and checks hidden from the agent's
+    sandbox, the workspace searched for copies, a leak an error;
+    `--allow-grader-reads` without a sandbox), a Terminal-Bench-style
+    converter (`evals/terminal-bench/convert.py`, not yet run on real
+    tasks), and the A/B-before-landing policy (`docs/eval.md`).
   - **M59** channels not worth chasing yet: personal WhatsApp and
     iMessage.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted

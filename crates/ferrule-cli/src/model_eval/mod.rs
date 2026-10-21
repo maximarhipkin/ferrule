@@ -667,6 +667,10 @@ pub async fn run(
         work_root: None,
         progress: Some(progress),
         edit_tools: Default::default(),
+        ablate: vec![],
+        // M58.5: with no sandbox to hide the graders the run goes on,
+        // marked unguarded in its report; the dashboard has no flag to ask.
+        allow_grader_reads: true,
     };
     s.hub.audit().record(
         Utc::now(),

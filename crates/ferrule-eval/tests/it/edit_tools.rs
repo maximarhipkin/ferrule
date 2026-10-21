@@ -50,6 +50,8 @@ async fn offered(variant: Variant, edit_tools: EditTools) -> Vec<String> {
         transcript: None,
         playbook: None,
         edit_tools,
+        ablate: &[],
+        check_sandbox: None,
     });
     let (tx, _rx) = tokio::sync::mpsc::channel(256);
     agent.run("go", tx).await.unwrap();

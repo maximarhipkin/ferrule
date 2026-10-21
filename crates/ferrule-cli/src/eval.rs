@@ -83,6 +83,17 @@ pub enum EvalCmd {
         /// (docs/editing.md)
         #[arg(long, default_value = "both")]
         edit_tools: String,
+        /// M58.5: A/B the engineered harness against itself without this
+        /// part (repeatable): repo-map, verify, stuck, compaction, retries,
+        /// skills, memory, edit-file, effort-boost, stale-guard, baseline,
+        /// playbook. Runs the `engineered` and `ablated` variants
+        #[arg(long = "ablate")]
+        ablate: Vec<String>,
+        /// M58.5: run although the sandbox can't hide the suite's graders
+        /// and checks from the agent (sandbox off or unavailable); the
+        /// report marks the run unguarded
+        #[arg(long)]
+        allow_grader_reads: bool,
     },
     /// Print a saved run's report and its diff against the run before it
     Report {
@@ -113,12 +124,32 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
             keep,
             judge_provider,
             edit_tools,
+            ablate,
+            allow_grader_reads,
         } => {
             let edit_tools = ferrule_eval::EditTools::parse(&edit_tools)
                 .ok_or_else(|| anyhow!("--edit-tools: `{edit_tools}` isn't both or write-only"))?;
-            let variants = Variant::parse(&variant).ok_or_else(|| {
+            let mut variants = Variant::parse(&variant).ok_or_else(|| {
                 anyhow!("--variant: `{variant}` isn't engineered, naive, ab or routing")
             })?;
+            let ablate = ablate
+                .iter()
+                .map(|w| {
+                    ferrule_eval::Part::parse(w.trim()).ok_or_else(|| {
+                        let all: Vec<&str> =
+                            ferrule_eval::Part::ALL.iter().map(|p| p.as_str()).collect();
+                        anyhow!("--ablate: `{w}` isn't one of {}", all.join(", "))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if !ablate.is_empty() {
+                if variants != [Variant::Engineered] {
+                    return Err(anyhow!(
+                        "--ablate runs the engineered and ablated variants; leave --variant out"
+                    ));
+                }
+                variants = vec![Variant::Engineered, Variant::Ablated];
+            }
             let routes = variants.iter().any(|v| v.routing());
             if !routes && (cheap.is_some() || strong.is_some()) {
                 return Err(anyhow!("--cheap and --strong go with --variant routing"));
@@ -292,6 +323,8 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 work_root: None,
                 progress: Some(Arc::new(|line: &str| eprintln!("{line}"))),
                 edit_tools,
+                ablate,
+                allow_grader_reads,
             };
             if edit_tools == ferrule_eval::EditTools::WriteOnly {
                 eprintln!("ferrule eval: --edit-tools write-only: no variant is offered edit_file");

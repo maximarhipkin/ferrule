@@ -937,6 +937,7 @@ fn an_eval_run_does_not_pick_up_the_owners_hooks() {
         &[
             "eval",
             "run",
+            "--allow-grader-reads",
             suite.to_str().unwrap(),
             "--tag",
             "smoke",

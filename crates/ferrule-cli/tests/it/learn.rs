@@ -553,7 +553,14 @@ fn eval_sees_the_owner_playbook_only_when_the_suite_opts_in() {
         )
         .unwrap();
         seen.lock().unwrap().clear();
-        home.ok(&["eval", "run", suite.to_str().unwrap(), "--variant", "ab"]);
+        home.ok(&[
+            "eval",
+            "run",
+            "--allow-grader-reads",
+            suite.to_str().unwrap(),
+            "--variant",
+            "ab",
+        ]);
         let seen = seen.lock().unwrap();
         let evals: Vec<String> = seen
             .iter()
