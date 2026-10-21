@@ -986,7 +986,9 @@ Code / Codex / DeepSeek / Pi breakdowns).
   graph — agent, check and approval nodes; pass/fail/always edges; a fail
   edge back is a rollback with the check's output as the repair
   instruction; fan-out in parallel, fan-in on every input. Deterministic
-  Rust routes; the agents work.
+  Rust routes; the agents work. The runner is in `ferrule-cli`
+  (`graph.rs`, `graph_door.rs`), not `ferrule-core`, and runs only when
+  called (M58.4).
 - **Pluggable compaction and a session tree:** `[agent] compaction_model`
   summarizes on a cheaper model through the new `Compactor` seam, and
   `ferrule chat --fork SESSION [--at N]` branches a session (the parent
@@ -1224,7 +1226,10 @@ Current State; numbers are claimed there before anything is built.
     seams, per-turn routing, fewer agent tools, the graph runner out of
     the core, eval as the gate. Done on `autopilot`: M58.2, M25 routing
     verified strictly opt-in and documented as staying so until a real
-    pair is measured (`docs/routing.md`).
+    pair is measured (`docs/routing.md`); M58.4, the graph runner
+    confirmed outside `ferrule-core` (it's `ferrule-cli`'s `graph.rs`)
+    and off the `run`/`chat` path (`docs/m42-harness-engineering.md`,
+    part 6).
   - **M59** channels not worth chasing yet: personal WhatsApp and
     iMessage.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted

@@ -7098,3 +7098,40 @@ No code change.
 **Open.** The real-pair measurement (M58.5's A/B) and Amp-style "ask the
 strong model" as the simpler alternative, which the gap analysis suggests
 and nobody has built.
+
+### 2026-10-21 — M58.4: the graph runner is already out of the core (Claude, Opus 5.5)
+
+**Why.** The cut list wants `ferrule graph` (M42 part 6) opt-in and out
+of `ferrule-core`. Anthropic found planners worth their cost only beyond
+what the model does reliably alone.
+
+**What was checked.** No move was needed:
+- The runner is `crates/ferrule-cli/src/graph.rs` (908 lines), plus
+  `graph_door.rs` (120) for `/graph`.
+- `ferrule-core` and `ferrule-agents` have no graph-only code. The runner
+  uses the supervisor's public `spawn`, `get`, `changed` and `close`
+  (`changed` also backs `main.rs`'s wait loop) and `ferrule-tools`'
+  `CommandVerifier`.
+- `graph::run` has two callers: `Cmd::Graph` in `main.rs` and
+  `GraphDoor::start`, which only an owner's `/graph` reaches. The
+  dashboard console's `graph run` runs the same subcommand.
+- `ferrule run` and `ferrule chat` never reach it.
+- The gateway's `GraphDoor` interceptor returns `None` for any message
+  whose first word isn't `/graph`.
+
+Gating it behind a cargo feature would change what `ferrule graph` users
+get, so it isn't gated.
+
+**What changed (docs only).**
+- `docs/m42-harness-engineering.md` part 6: "Where it lives", and its
+  stale "Still open" list fixed (M43 already starts graphs from a chat
+  with approvals there).
+- The roadmap: the M42 section and the M58 line.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** The gap analysis's script-shaped replacement (a script calling
+`ferrule run --goal --verify` per step) isn't built. The chat command
+menu still lists `/graph`. That list is in `self_service/menu.rs`, M54's
+surface, so it wasn't touched.

@@ -174,9 +174,28 @@ The orchestration tax rule from L14 holds: one node and one check stay
 exactly `verify_command`'s job — a graph is opt-in per task, never the
 default path.
 
-Still open: a run's own resumable state (a cut graph restarts), gateway
-channels starting graphs, `graph list`/`graph stop` for long ones, and
-approval routed to the owner's chat instead of the terminal.
+**Where it lives (M58.4, 2026-10-21).** The runner is outside the core:
+`crates/ferrule-cli/src/graph.rs`, plus `graph_door.rs` for `/graph`.
+Neither `ferrule-core` nor `ferrule-agents` has graph-only code. The
+runner calls the supervisor's public `spawn`, `get`, `changed` and
+`close`, and `ferrule-tools`' `CommandVerifier`, which the other loops
+use too.
+
+It runs only when asked:
+- `ferrule graph run`;
+- the owner's `/graph` in a chat (M43);
+- the dashboard console's `graph run`.
+
+`ferrule run` and `ferrule chat` never reach it. The gateway's `/graph`
+door reads a message's first word and passes every other message on
+untouched.
+
+Still open: a run's own resumable state (a cut graph restarts),
+`graph list`/`graph stop` for long ones, and a script-shaped replacement
+(a script that calls `ferrule run --goal --verify` per step, like Claude
+Code's `Workflow`), which the gap analysis suggests over the TOML runner.
+M43 added starting a graph from a chat, with approvals in the owner's
+chat.
 
 ## Part 7 — pluggable compaction and a session tree (done)
 
