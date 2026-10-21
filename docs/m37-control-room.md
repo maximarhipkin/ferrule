@@ -496,6 +496,7 @@ The table is `PARITY` in `dashboard/console.rs`, copied here.
 | `trust audit` | console | read |  |
 | `trust caps` | console | read | `--set` needs `--yes` and confirms |
 | `egress log` | console | read |  |
+| `housekeeping run` | console | destructive | `--dry-run` only reads |
 | `login` | Models (§2.4) | refused | sign in from the Models page (Sign in) |
 | `logout` | Models + console | destructive |  |
 | `plan list` | console | read |  |

@@ -386,7 +386,8 @@ Telegram's reactions are read. A reaction on a reply
 from before the gateway's last start, or on a piece of a reply split
 over several messages other than the last, isn't matched. The probe
 re-runs the reacted request alone, without the chat's earlier turns.
-`learn/reactions/` is never pruned.
+`learn/reactions/` is pruned by age since wave A
+([housekeeping.md](housekeeping.md)).
 
 ## M53.7 — an opt-in blind selection node
 

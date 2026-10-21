@@ -1,7 +1,7 @@
 //! `TrustGuard`: the hub, seen from one agent in a run tree.
 
 use crate::classify::{
-    classify, classify_connected, classify_declared, grantable_command, recipients,
+    classify, classify_connected, classify_declared, grantable_command, only_to, recipients,
     untrusted_source, Gated, Kind,
 };
 use crate::grants::Spec;
@@ -307,6 +307,21 @@ impl Guard for TrustGuard {
                 return Verdict::Allow;
             };
             return match gated().filter(|g| g.kind.leaves_the_box()) {
+                // Wave A: the owner's own scheduled task (the gates are
+                // off only for the owner's trees, and nobody is there to
+                // tap) may send to the owner alone: a morning briefing that
+                // read the web or mail and emails or posts it to the owner.
+                // An injection can't move where it goes: the addresses are
+                // the config's and the connection store's, matched exactly.
+                Some(g)
+                    if g.kind == Kind::ConnectedWrite
+                        && self.task.is_some()
+                        && matches!(self.route, Route::Unattended(_))
+                        && only_to(call.args, &self.hub.own_recipients()) =>
+                {
+                    self.hub.sent_to_owner(&self.tree, call.tool, &source);
+                    Verdict::Allow
+                }
                 Some(g) => self.ask(call, g, Some(&source)).await,
                 None => Verdict::Allow,
             };

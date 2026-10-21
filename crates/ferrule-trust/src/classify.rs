@@ -156,6 +156,69 @@ pub fn recipients(args: &Value) -> Vec<String> {
     out
 }
 
+/// Wave A (M54.5): whether a connected service's send goes to the owner
+/// alone. It names its addressees (`to`, `recipient`, `recipients`, `cc`,
+/// `bcc`, or a `chat_id`), each one exactly one of `own` (the owner's
+/// chats and accounts, from the config and the connection store, never
+/// from the call); every address in its other arguments but the message's
+/// own text (a `from`, a `reply_to`) is one of `own` too; and nothing asks
+/// to reply to all. A reply that names no `to` goes to whoever wrote, so
+/// it isn't covered.
+pub fn only_to(args: &Value, own: &[String]) -> bool {
+    const ADDRESSING: &[&str] = &["to", "recipient", "recipients", "cc", "bcc", "chat_id"];
+    const TEXT: &[&str] = &[
+        "body",
+        "text",
+        "subject",
+        "content",
+        "html",
+        "message",
+        "title",
+        "caption",
+        "description",
+    ];
+    fn addresses(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) => out.extend(
+                s.split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+                    .filter(|w| w.contains('@'))
+                    .map(|w| {
+                        w.trim_matches(|c: char| matches!(c, '<' | '>' | '"' | '\'' | '(' | ')'))
+                            .to_lowercase()
+                    }),
+            ),
+            Value::Array(a) => a.iter().for_each(|v| addresses(v, out)),
+            Value::Object(o) => o.values().for_each(|v| addresses(v, out)),
+            _ => {}
+        }
+    }
+    let Some(fields) = args.as_object() else {
+        return false;
+    };
+    let mut named = recipients(args);
+    match args.get("chat_id") {
+        None => {}
+        Some(Value::String(s)) => named.push(s.trim().to_lowercase()),
+        Some(Value::Number(n)) => named.push(n.to_string()),
+        Some(_) => return false,
+    }
+    let mine = |a: &String| own.iter().any(|o| o == a);
+    if named.is_empty() || !named.iter().all(mine) {
+        return false;
+    }
+    let mut elsewhere = Vec::new();
+    for (key, value) in fields {
+        let k = key.to_ascii_lowercase();
+        if k.contains("reply_all") {
+            return false;
+        }
+        if !ADDRESSING.contains(&k.as_str()) && !TEXT.contains(&k.as_str()) {
+            addresses(value, &mut elsewhere);
+        }
+    }
+    elsewhere.iter().all(mine)
+}
+
 /// M20: a tool of a connected service (`mcp__<name>__*`, `name` in
 /// `connected`) that can change things: every tool whose server doesn't
 /// mark it read-only. The hint only ever skips the gate for a tool that

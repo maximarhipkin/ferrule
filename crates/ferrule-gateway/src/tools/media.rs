@@ -9,7 +9,13 @@
 //! Spend honesty: the daily cap (`[media] max_per_day`) is checked before
 //! every call from the store — fail-closed — and every call and delivery
 //! writes a ledger row with `call_kind = "media"`. The tools say plainly
-//! that video costs dollars, not cents.
+//! that video costs dollars, not cents. Since wave A (2026-10-21) a row
+//! carries the dollars: an image's and a finished video's `usage.cost`,
+//! a video's estimate at submit (settled at delivery), a speech reply's
+//! list-price estimate when there is one. A tool call's row is charged to
+//! its run through [`MediaSpend`] (the trust hub), and the ledger is what
+//! the day and task caps read. Models come from `[media]`'s allow-lists,
+//! never from free text (M21).
 
 use crate::channels::files;
 use crate::message::{Attachment, OutboundMessage};
@@ -19,10 +25,36 @@ use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use ferrule_core::{LedgerRecord, LedgerSink};
 use ferrule_media::jobs::now_unix;
-use ferrule_media::{ImageReq, JobStore, MediaBackend, SpeechReq, VideoReq, VideoState};
+use ferrule_media::{ImageReq, JobKind, JobStore, MediaBackend, SpeechReq, VideoReq, VideoState};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, Weak};
+
+/// The owner's dollar caps behind media spend: M19's trust hub in the
+/// CLI. Without one (tests) only the counts hold.
+pub trait MediaSpend: Send + Sync {
+    /// Dollars `tree` may still spend under the run, day and task caps
+    /// that are set; `None` when no dollar cap is set. `Err`: the caps
+    /// can't be read, and the call is refused.
+    fn usd_left(&self, tree: &str) -> Result<Option<f64>, String>;
+    /// Charge one media row to `tree`'s run, as a model call's row is.
+    fn charge(&self, tree: &str, row: &LedgerRecord);
+}
+
+/// `[media]`'s limits beyond the daily count.
+#[derive(Debug, Clone, Default)]
+pub struct MediaLimits {
+    /// Image models a call may name besides the default; empty: only the
+    /// default.
+    pub image_models: Vec<String>,
+    /// Video models a call may name besides the default.
+    pub video_models: Vec<String>,
+    /// Video submits per day; 0 = only `max_per_day` counts them.
+    pub max_videos_per_day: u64,
+    /// The most one video may cost by its estimate, in dollars; 0 = no
+    /// per-video cap.
+    pub max_usd_per_video: f64,
+}
 
 /// The media backend, the jobs table, and the way back to the chat — one
 /// handle shared by the tools and the poller; the router is bound once it
@@ -38,6 +70,11 @@ pub struct MediaShared {
     router: OnceLock<Weak<Router>>,
     /// M51.4: `speak`'s default model and voice; unset, no `speak`.
     speech: OnceLock<(String, Option<String>)>,
+    /// The allow-lists and dollar limits; unset, only the defaults and no
+    /// dollar limit.
+    limits: OnceLock<MediaLimits>,
+    /// The trust hub's dollar caps; unset, none.
+    spend: OnceLock<Arc<dyn MediaSpend>>,
 }
 
 impl MediaShared {
@@ -58,7 +95,97 @@ impl MediaShared {
             ledger,
             router: OnceLock::new(),
             speech: OnceLock::new(),
+            limits: OnceLock::new(),
+            spend: OnceLock::new(),
         })
+    }
+
+    /// The allow-lists and dollar limits (set once, before the tools are
+    /// made: their definitions list the allowed models).
+    pub fn set_limits(&self, limits: MediaLimits) {
+        let _ = self.limits.set(limits);
+    }
+
+    /// The dollar caps media spend answers to, and is charged to.
+    pub fn set_spend(&self, spend: Arc<dyn MediaSpend>) {
+        let _ = self.spend.set(spend);
+    }
+
+    fn limits(&self) -> MediaLimits {
+        self.limits.get().cloned().unwrap_or_default()
+    }
+
+    /// The models a `kind` call may name: the default first, then the
+    /// allow-list's others.
+    fn allowed(&self, kind: JobKind) -> Vec<String> {
+        let limits = self.limits();
+        let (default, listed) = match kind {
+            JobKind::Video => (&self.video_model, limits.video_models),
+            _ => (&self.image_model, limits.image_models),
+        };
+        let mut all = vec![default.clone()];
+        for m in listed {
+            if !all.contains(&m) {
+                all.push(m);
+            }
+        }
+        all
+    }
+
+    /// The model for a call: the default when it names none, else one
+    /// of [`Self::allowed`]. A model never enters through a tool call's
+    /// free text (M21): the owner lists it in the config first.
+    fn pick(&self, kind: JobKind, asked: Option<&str>) -> Result<String, String> {
+        let allowed = self.allowed(kind);
+        let Some(asked) = asked.map(str::trim).filter(|m| !m.is_empty()) else {
+            return Ok(allowed[0].clone());
+        };
+        if allowed.iter().any(|m| m == asked) {
+            return Ok(asked.to_string());
+        }
+        let key = match kind {
+            JobKind::Video => "video_models",
+            _ => "image_models",
+        };
+        Err(format!(
+            "`{asked}` isn't one of the models allowed here ({}); the owner adds others to [media] {key}",
+            allowed.join(", ")
+        ))
+    }
+
+    /// The `model` parameter of a tool's definition: only when there's a
+    /// choice, and then only the allowed ones.
+    fn model_param(&self, kind: JobKind) -> Option<Value> {
+        let allowed = self.allowed(kind);
+        (allowed.len() > 1).then(|| {
+            json!({
+                "type": "string",
+                "enum": allowed,
+                "description": format!("One of the allowed models; {} when omitted", allowed[0]),
+            })
+        })
+    }
+
+    /// Dollars `tree` may still spend; `None` when no dollar cap is set.
+    fn usd_left(&self, tree: &str) -> Result<Option<f64>, String> {
+        match self.spend.get() {
+            Some(spend) => spend.usd_left(tree).map_err(|e| {
+                format!("the [trust] dollar caps can't be checked ({e}), so no paid media call")
+            }),
+            None => Ok(None),
+        }
+    }
+
+    /// Refuses a paid call once `tree`'s run, day or task has no dollars
+    /// left (what it costs isn't known before an image or a voice reply).
+    fn check_budget(&self, tree: &str) -> Result<Option<f64>, String> {
+        let left = self.usd_left(tree)?;
+        if left.is_some_and(|l| l <= 0.0) {
+            return Err(
+                "this run, today or this task has no dollars left under the [trust] caps, so no paid media call".into(),
+            );
+        }
+        Ok(left)
     }
 
     pub fn bind(&self, router: &Arc<Router>) {
@@ -85,14 +212,9 @@ impl MediaShared {
         if self.max_per_day == 0 {
             return Ok(());
         }
-        let midnight = chrono::Utc::now()
-            .date_naive()
-            .and_hms_opt(0, 0, 0)
-            .map(|t| t.and_utc().timestamp())
-            .unwrap_or(0);
         let used = self
             .store
-            .count_since(midnight)
+            .count_since(midnight())
             .map_err(|e| format!("the daily media cap can't be checked: {e}"))?;
         if used >= self.max_per_day {
             return Err(format!(
@@ -103,36 +225,88 @@ impl MediaShared {
         Ok(())
     }
 
-    /// One ledger row per call or delivery, `call_kind = "media"`.
-    fn ledger(&self, session_id: &str, model: &str, latency_ms: u64, err: Option<&str>) {
+    /// The daily video cap, fail-closed like [`Self::check_cap`].
+    fn check_video_cap(&self) -> Result<(), String> {
+        let cap = self.limits().max_videos_per_day;
+        if cap == 0 {
+            return Ok(());
+        }
+        let used = self
+            .store
+            .count_kind_since(JobKind::Video, midnight())
+            .map_err(|e| format!("the daily video cap can't be checked: {e}"))?;
+        if used >= cap {
+            return Err(format!(
+                "the daily video cap of {cap} is reached ([media] max_videos_per_day); it resets at midnight UTC"
+            ));
+        }
+        Ok(())
+    }
+
+    /// One ledger row per call or delivery, `call_kind = "media"`, with
+    /// its dollars when they're known. `run`: the tree a tool call's row
+    /// is charged to (the poller's settling rows charge no run; the day
+    /// and task caps read them from the ledger).
+    fn ledger(&self, row: Row<'_>, run: Option<&str>) {
+        let record = row.record();
+        if let (Some(tree), Some(spend)) = (run, self.spend.get()) {
+            spend.charge(tree, &record);
+        }
         if let Some(sink) = &self.ledger {
-            sink.record(LedgerRecord {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                session_id: session_id.into(),
-                task_shape: "media".into(),
-                origin: None,
-                provider: "media".into(),
-                model: model.into(),
-                iteration: 0,
-                call_kind: "media".into(),
-                input_tokens: 0,
-                cached_input_tokens: 0,
-                cache_write_input_tokens: 0,
-                cache_write_1h_input_tokens: 0,
-                output_tokens: 0,
-                tool_calls: 0,
-                latency_ms,
-                outcome: if err.is_some() { "error" } else { "ok" }.into(),
-                error_kind: err.map(|_| "media".into()),
-                error_message: err.map(str::to_string),
-                cost_usd: None,
-                eval: None,
-                tree: None,
-                route: None,
-                speed: None,
-                plan: None,
-                notional_usd: None,
-            });
+            sink.record(record);
+        }
+    }
+}
+
+/// Midnight UTC today, as a unix time: where the daily counts start.
+fn midnight() -> i64 {
+    chrono::Utc::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .map(|t| t.and_utc().timestamp())
+        .unwrap_or(0)
+}
+
+/// What one media ledger row says.
+struct Row<'a> {
+    session_id: &'a str,
+    /// The run tree, so a scheduled task's media spend counts toward its
+    /// own cap.
+    tree: Option<&'a str>,
+    model: &'a str,
+    latency_ms: u64,
+    err: Option<&'a str>,
+    cost_usd: Option<f64>,
+}
+
+impl Row<'_> {
+    fn record(&self) -> LedgerRecord {
+        LedgerRecord {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            session_id: self.session_id.into(),
+            task_shape: "media".into(),
+            origin: None,
+            provider: "media".into(),
+            model: self.model.into(),
+            iteration: 0,
+            call_kind: "media".into(),
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            cache_write_1h_input_tokens: 0,
+            output_tokens: 0,
+            tool_calls: 0,
+            latency_ms: self.latency_ms,
+            outcome: if self.err.is_some() { "error" } else { "ok" }.into(),
+            error_kind: self.err.map(|_| "media".into()),
+            error_message: self.err.map(str::to_string),
+            cost_usd: self.cost_usd,
+            eval: None,
+            tree: self.tree.map(str::to_string),
+            route: None,
+            speed: None,
+            plan: None,
+            notional_usd: None,
         }
     }
 }
@@ -161,6 +335,8 @@ fn fresh_path(workspace: &std::path::Path, ext: &str) -> PathBuf {
 pub struct GenerateImageTool {
     shared: Arc<MediaShared>,
     session_id: String,
+    /// The run tree its spend is charged to; the session's own by default.
+    tree: String,
     hidden: Vec<PathBuf>,
 }
 
@@ -170,11 +346,19 @@ impl GenerateImageTool {
         session_id: impl Into<String>,
         hidden: Vec<PathBuf>,
     ) -> Self {
+        let session_id = session_id.into();
         Self {
             shared,
-            session_id: session_id.into(),
+            tree: session_id.clone(),
+            session_id,
             hidden,
         }
+    }
+
+    /// A sub-agent's tool: its spend goes to its root's run.
+    pub fn in_tree(mut self, tree: impl Into<String>) -> Self {
+        self.tree = tree.into();
+        self
     }
 }
 
@@ -184,16 +368,21 @@ impl Tool for GenerateImageTool {
         ToolDefinition {
             name: "generate_image".into(),
             description: "Create an image with an image model and save it in the workspace under media/ (and send it to this chat when there is one). With `reference` paths it edits those images instead. Each call spends money — say so before a big batch.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": { "type": "string", "description": "What to draw" },
-                    "model": { "type": "string", "description": "An image model id; the configured default when omitted" },
-                    "size": { "type": "string", "description": "e.g. 1024x1024; the model's default when omitted" },
-                    "reference": { "type": "array", "items": { "type": "string" }, "description": "Workspace image paths to edit or take as reference" }
-                },
-                "required": ["prompt"]
-            }),
+            parameters: {
+                let mut p = json!({
+                    "type": "object",
+                    "properties": {
+                        "prompt": { "type": "string", "description": "What to draw" },
+                        "size": { "type": "string", "description": "e.g. 1024x1024; the model's default when omitted" },
+                        "reference": { "type": "array", "items": { "type": "string" }, "description": "Workspace image paths to edit or take as reference" }
+                    },
+                    "required": ["prompt"]
+                });
+                if let Some(model) = self.shared.model_param(JobKind::Image) {
+                    p["properties"]["model"] = model;
+                }
+                p
+            },
         }
     }
 
@@ -225,13 +414,16 @@ impl Tool for GenerateImageTool {
                 )?);
             }
         }
+        let model = self
+            .shared
+            .pick(JobKind::Image, args["model"].as_str())
+            .map_err(|e| failed("generate_image", e))?;
         self.shared
             .check_cap()
             .map_err(|e| failed("generate_image", e.to_string()))?;
-        let model = args["model"]
-            .as_str()
-            .unwrap_or(&self.shared.image_model)
-            .to_string();
+        self.shared
+            .check_budget(&self.tree)
+            .map_err(|e| failed("generate_image", e))?;
         let started = std::time::Instant::now();
         let out = self
             .shared
@@ -247,14 +439,31 @@ impl Tool for GenerateImageTool {
             Ok(o) => o,
             Err(e) => {
                 self.shared.ledger(
-                    &self.session_id,
-                    &model,
-                    started.elapsed().as_millis() as u64,
-                    Some(&e.to_string()),
+                    Row {
+                        session_id: &self.session_id,
+                        tree: Some(&self.tree),
+                        model: &model,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        err: Some(&e.to_string()),
+                        cost_usd: None,
+                    },
+                    Some(&self.tree),
                 );
                 return Err(failed("generate_image", e.to_string()));
             }
         };
+        // Recorded before anything else can fail: the image is paid for.
+        self.shared.ledger(
+            Row {
+                session_id: &self.session_id,
+                tree: Some(&self.tree),
+                model: &model,
+                latency_ms: started.elapsed().as_millis() as u64,
+                err: None,
+                cost_usd: out.cost_usd,
+            },
+            Some(&self.tree),
+        );
         let path = fresh_path(&ctx.workspace, &out.format);
         std::fs::write(&path, &out.bytes)
             .map_err(|e| failed("generate_image", format!("{}: {e}", path.display())))?;
@@ -273,16 +482,11 @@ impl Tool for GenerateImageTool {
             job.channel = Some(channel.clone());
             job.chat_id = Some(chat_id.clone());
         }
+        job.tree = Some(self.tree.clone());
         self.shared
             .store
             .record(&job)
             .map_err(|e| failed("generate_image", e.to_string()))?;
-        self.shared.ledger(
-            &self.session_id,
-            &model,
-            started.elapsed().as_millis() as u64,
-            None,
-        );
         // M60: the model sees what it made (a note if it can't see images).
         let (shown, unshown) = match ferrule_core::vision::image_file(&path) {
             Some(Ok(image)) => (vec![image], String::new()),
@@ -311,6 +515,8 @@ impl Tool for GenerateImageTool {
 pub struct GenerateVideoTool {
     shared: Arc<MediaShared>,
     session_id: String,
+    /// The run tree its spend is charged to; the session's own by default.
+    tree: String,
     hidden: Vec<PathBuf>,
 }
 
@@ -320,12 +526,47 @@ impl GenerateVideoTool {
         session_id: impl Into<String>,
         hidden: Vec<PathBuf>,
     ) -> Self {
+        let session_id = session_id.into();
         Self {
             shared,
-            session_id: session_id.into(),
+            tree: session_id.clone(),
+            session_id,
             hidden,
         }
     }
+
+    /// A sub-agent's tool: its spend goes to its root's run.
+    pub fn in_tree(mut self, tree: impl Into<String>) -> Self {
+        self.tree = tree.into();
+        self
+    }
+
+    /// What a video will cost, from the list price, before it's submitted;
+    /// `Err` with why it can't be estimated. A request that names no
+    /// length is priced at the model's longest (an upper bound).
+    async fn estimate(&self, model: &str, seconds: Option<u32>) -> Result<Estimate, String> {
+        match self.shared.backend.video_price(model).await {
+            Ok(Some(price)) => {
+                let seconds = seconds.or(price.longest_seconds).unwrap_or(8);
+                Ok(Estimate {
+                    usd: price.usd_per_second * f64::from(seconds),
+                    per_second: price.usd_per_second,
+                    seconds,
+                })
+            }
+            Ok(None) => Err(format!(
+                "the provider's price list has no per-second price for {model}"
+            )),
+            Err(e) => Err(format!("the provider's price list can't be read: {e}")),
+        }
+    }
+}
+
+/// A video's cost before it's made: list price × length.
+struct Estimate {
+    usd: f64,
+    per_second: f64,
+    seconds: u32,
 }
 
 #[async_trait::async_trait]
@@ -334,17 +575,22 @@ impl Tool for GenerateVideoTool {
         ToolDefinition {
             name: "generate_video".into(),
             description: "Start a video generation job (text-to-video, or image-to-video with `first_frame`). Answers right away with a job id — the render takes minutes and the file is sent to this chat when it's done. A video costs dollars, not cents: say the price class before you start one.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": { "type": "string", "description": "What happens in the clip" },
-                    "model": { "type": "string", "description": "A video model id; the configured default when omitted" },
-                    "seconds": { "type": "integer", "description": "Length in seconds (the model's range)" },
-                    "aspect": { "type": "string", "description": "e.g. 16:9, 9:16, 1:1" },
-                    "first_frame": { "type": "string", "description": "A workspace image path to start from" }
-                },
-                "required": ["prompt"]
-            }),
+            parameters: {
+                let mut p = json!({
+                    "type": "object",
+                    "properties": {
+                        "prompt": { "type": "string", "description": "What happens in the clip" },
+                        "seconds": { "type": "integer", "description": "Length in seconds (the model's range)" },
+                        "aspect": { "type": "string", "description": "e.g. 16:9, 9:16, 1:1" },
+                        "first_frame": { "type": "string", "description": "A workspace image path to start from" }
+                    },
+                    "required": ["prompt"]
+                });
+                if let Some(model) = self.shared.model_param(JobKind::Video) {
+                    p["properties"]["model"] = model;
+                }
+                p
+            },
         }
     }
 
@@ -374,13 +620,63 @@ impl Tool for GenerateVideoTool {
             )?),
             None => None,
         };
+        let model = self
+            .shared
+            .pick(JobKind::Video, args["model"].as_str())
+            .map_err(|e| failed("generate_video", e))?;
         self.shared
             .check_cap()
             .map_err(|e| failed("generate_video", e.to_string()))?;
-        let model = args["model"]
-            .as_str()
-            .unwrap_or(&self.shared.video_model)
-            .to_string();
+        self.shared
+            .check_video_cap()
+            .map_err(|e| failed("generate_video", e))?;
+        // The dollars before the submit: a video can cost more than a
+        // whole day of chat, so it's checked against the per-video cap
+        // and what the run, day and task have left. Without an estimate
+        // it starts only when no dollar limit is set.
+        let seconds = args["seconds"].as_u64().map(|n| n as u32);
+        let per_video = self.shared.limits().max_usd_per_video;
+        let left = self
+            .shared
+            .usd_left(&self.tree)
+            .map_err(|e| failed("generate_video", e))?;
+        let estimate = self.estimate(&model, seconds).await;
+        if per_video > 0.0 || left.is_some() {
+            let est = estimate.as_ref().map_err(|why| {
+                failed(
+                    "generate_video",
+                    format!(
+                        "nothing was submitted: what a video on {model} costs can't be estimated ({why}), and {} needs an estimate first",
+                        if per_video > 0.0 {
+                            "[media] max_usd_per_video"
+                        } else {
+                            "the [trust] dollar caps"
+                        }
+                    ),
+                )
+            })?;
+            let priced = format!(
+                "a {} s video on {model} comes to about ${:.2} at ${:.3}/s list price",
+                est.seconds, est.usd, est.per_second
+            );
+            if per_video > 0.0 && est.usd > per_video {
+                return Err(failed(
+                    "generate_video",
+                    format!(
+                        "nothing was submitted: {priced}, over [media] max_usd_per_video (${per_video:.2}). A shorter clip or a cheaper model fits; the owner can raise the cap"
+                    ),
+                ));
+            }
+            if let Some(left) = left.filter(|l| est.usd > *l) {
+                return Err(failed(
+                    "generate_video",
+                    format!(
+                        "nothing was submitted: {priced}, and this run, today or this task has ${left:.2} left under the [trust] dollar caps"
+                    ),
+                ));
+            }
+        }
+        let estimate = estimate.ok();
         let started = std::time::Instant::now();
         let submitted = self
             .shared
@@ -388,7 +684,7 @@ impl Tool for GenerateVideoTool {
             .submit_video(VideoReq {
                 prompt: prompt.clone(),
                 model: Some(model.clone()),
-                seconds: args["seconds"].as_u64().map(|n| n as u32),
+                seconds,
                 aspect: args["aspect"].as_str().map(str::to_string),
                 first_frame,
             })
@@ -397,14 +693,33 @@ impl Tool for GenerateVideoTool {
             Ok(j) => j,
             Err(e) => {
                 self.shared.ledger(
-                    &self.session_id,
-                    &model,
-                    started.elapsed().as_millis() as u64,
-                    Some(&e.to_string()),
+                    Row {
+                        session_id: &self.session_id,
+                        tree: Some(&self.tree),
+                        model: &model,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        err: Some(&e.to_string()),
+                        cost_usd: None,
+                    },
+                    Some(&self.tree),
                 );
                 return Err(failed("generate_video", e.to_string()));
             }
         };
+        // The estimate is charged now, to the run and (through the
+        // ledger) the day; the delivery row settles it to the bill.
+        let estimate_usd = estimate.as_ref().map(|e| e.usd);
+        self.shared.ledger(
+            Row {
+                session_id: &self.session_id,
+                tree: Some(&self.tree),
+                model: &model,
+                latency_ms: started.elapsed().as_millis() as u64,
+                err: None,
+                cost_usd: estimate_usd,
+            },
+            Some(&self.tree),
+        );
         let out = fresh_path(&ctx.workspace, "mp4");
         let rel = out
             .strip_prefix(&ctx.workspace)
@@ -422,26 +737,26 @@ impl Tool for GenerateVideoTool {
             row.channel = Some(channel);
             row.chat_id = Some(chat_id);
         }
+        row.tree = Some(self.tree.clone());
+        row.estimate_usd = estimate_usd;
         self.shared
             .store
             .record(&row)
             .map_err(|e| failed("generate_video", e.to_string()))?;
-        self.shared.ledger(
-            &self.session_id,
-            &model,
-            started.elapsed().as_millis() as u64,
-            None,
-        );
+        let cost = match &estimate {
+            Some(e) => format!(" (about ${:.2} for {} s at list price)", e.usd, e.seconds),
+            None => " (its price isn't known in advance)".into(),
+        };
         if !has_chat {
             // M51.3: a sub-agent (or a run with no chat) gets the file,
             // not a delivery.
             return Ok(ToolOutput::ok(format!(
-                "Making it — job {} on {model}. A render takes minutes; the gateway saves it as {rel} when it's done. This session has no chat to send it to: report that path, and send_file can deliver it once it's there.",
+                "Making it — job {} on {model}{cost}. A render takes minutes; the gateway saves it as {rel} when it's done. This session has no chat to send it to: report that path, and send_file can deliver it once it's there.",
                 job.id
             )));
         }
         Ok(ToolOutput::ok(format!(
-            "Making it — job {} on {model}. A render takes minutes; I'll send {rel} here when it's done.",
+            "Making it — job {} on {model}{cost}. A render takes minutes; I'll send {rel} here when it's done.",
             job.id
         )))
     }
@@ -456,14 +771,24 @@ const SPEAK_MAX_CHARS: usize = 4000;
 pub struct SpeakTool {
     shared: Arc<MediaShared>,
     session_id: String,
+    /// The run tree its spend is charged to; the session's own by default.
+    tree: String,
 }
 
 impl SpeakTool {
     pub fn new(shared: Arc<MediaShared>, session_id: impl Into<String>) -> Self {
+        let session_id = session_id.into();
         Self {
             shared,
-            session_id: session_id.into(),
+            tree: session_id.clone(),
+            session_id,
         }
+    }
+
+    /// A sub-agent's tool: its spend goes to its root's run.
+    pub fn in_tree(mut self, tree: impl Into<String>) -> Self {
+        self.tree = tree.into();
+        self
     }
 }
 
@@ -514,6 +839,9 @@ impl Tool for SpeakTool {
         self.shared
             .check_cap()
             .map_err(|e| failed("speak", e.to_string()))?;
+        self.shared
+            .check_budget(&self.tree)
+            .map_err(|e| failed("speak", e))?;
         let voice = args["voice"]
             .as_str()
             .map(str::trim)
@@ -534,14 +862,39 @@ impl Tool for SpeakTool {
             Ok(o) => o,
             Err(e) => {
                 self.shared.ledger(
-                    &self.session_id,
-                    &model,
-                    started.elapsed().as_millis() as u64,
-                    Some(&e.to_string()),
+                    Row {
+                        session_id: &self.session_id,
+                        tree: Some(&self.tree),
+                        model: &model,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                        err: Some(&e.to_string()),
+                        cost_usd: None,
+                    },
+                    Some(&self.tree),
                 );
                 return Err(failed("speak", e.to_string()));
             }
         };
+        // The speech answer is raw audio with no cost in it. A model
+        // priced on its input alone gets an estimate: the list price per
+        // unit (a character or a token, no more units than characters)
+        // times the characters, an upper bound. Any other is counted only.
+        let latency_ms = started.elapsed().as_millis() as u64;
+        let cost_usd = match self.shared.backend.speech_price(&model).await {
+            Ok(Some(per_unit)) => Some(per_unit * chars as f64),
+            _ => None,
+        };
+        self.shared.ledger(
+            Row {
+                session_id: &self.session_id,
+                tree: Some(&self.tree),
+                model: &model,
+                latency_ms,
+                err: None,
+                cost_usd,
+            },
+            Some(&self.tree),
+        );
         let path = fresh_path(&ctx.workspace, &out.format);
         std::fs::write(&path, &out.bytes)
             .map_err(|e| failed("speak", format!("{}: {e}", path.display())))?;
@@ -559,16 +912,11 @@ impl Tool for SpeakTool {
             job.channel = Some(channel.clone());
             job.chat_id = Some(chat_id.clone());
         }
+        job.tree = Some(self.tree.clone());
         self.shared
             .store
             .record(&job)
             .map_err(|e| failed("speak", e.to_string()))?;
-        self.shared.ledger(
-            &self.session_id,
-            &model,
-            started.elapsed().as_millis() as u64,
-            None,
-        );
         if let Some((channel_name, chat_id)) = chat {
             if let Err(e) = send_out(&self.shared, &channel_name, &chat_id, &path, "", true).await {
                 return Ok(ToolOutput::ok(format!(
@@ -651,7 +999,10 @@ impl BuiltinJob for MediaPoller {
         for job in pending {
             match self.shared.backend.poll_video(&job.id).await {
                 Ok(VideoState::Pending) => {}
-                Ok(VideoState::Done { url }) => {
+                Ok(VideoState::Done { url, cost_usd }) => {
+                    // The submit row charged the estimate; this one makes
+                    // the ledger's sum what the provider billed.
+                    let settle = cost_usd.map(|billed| billed - job.estimate_usd.unwrap_or(0.0));
                     let out = std::path::Path::new(&job.out_path);
                     match self.shared.backend.download(&url, out).await {
                         Ok(()) => {
@@ -675,7 +1026,17 @@ impl BuiltinJob for MediaPoller {
                                 .store
                                 .mark(&job.id, "done", None)
                                 .map_err(|e| e.to_string())?;
-                            self.shared.ledger(&job.id, &job.model, 0, None);
+                            self.shared.ledger(
+                                Row {
+                                    session_id: &job.id,
+                                    tree: job.tree.as_deref(),
+                                    model: &job.model,
+                                    latency_ms: 0,
+                                    err: None,
+                                    cost_usd: settle,
+                                },
+                                None,
+                            );
                             done += 1;
                             tracing::info!(job = %job.id, "{note}");
                         }
@@ -684,6 +1045,18 @@ impl BuiltinJob for MediaPoller {
                                 .store
                                 .mark(&job.id, "failed", Some(&e.to_string()))
                                 .map_err(|e| e.to_string())?;
+                            // Rendered, so billed, though it never arrived.
+                            self.shared.ledger(
+                                Row {
+                                    session_id: &job.id,
+                                    tree: job.tree.as_deref(),
+                                    model: &job.model,
+                                    latency_ms: 0,
+                                    err: Some(&e.to_string()),
+                                    cost_usd: settle,
+                                },
+                                None,
+                            );
                             failed_n += 1;
                         }
                     }
@@ -700,7 +1073,19 @@ impl BuiltinJob for MediaPoller {
                         ))
                         .await;
                     }
-                    self.shared.ledger(&job.id, &job.model, 0, Some(&reason));
+                    // OpenRouter doesn't bill a failed render ("Zero
+                    // Completion Insurance"), so the estimate comes back.
+                    self.shared.ledger(
+                        Row {
+                            session_id: &job.id,
+                            tree: job.tree.as_deref(),
+                            model: &job.model,
+                            latency_ms: 0,
+                            err: Some(&reason),
+                            cost_usd: job.estimate_usd.map(|e| -e),
+                        },
+                        None,
+                    );
                     failed_n += 1;
                 }
                 Err(e) => {

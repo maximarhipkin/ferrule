@@ -6,7 +6,8 @@
 
 use crate::{config, ledger, web_search};
 use anyhow::Result;
-use ferrule_gateway::tools::{MediaPoller, MediaShared};
+use ferrule_core::LedgerRecord;
+use ferrule_gateway::tools::{MediaLimits, MediaPoller, MediaShared, MediaSpend};
 use ferrule_media::openrouter::{MediaSettings, OpenRouterMedia};
 use ferrule_media::JobStore;
 use ferrule_tools::egress;
@@ -90,6 +91,22 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<MediaShared>> {
         cfg.media.max_per_day,
         ledger::build_sink(cfg),
     );
+    shared.set_limits(MediaLimits {
+        image_models: cfg.media.image_models.clone(),
+        video_models: cfg.media.video_models.clone(),
+        max_videos_per_day: cfg.media.max_videos_per_day,
+        max_usd_per_video: cfg.media.max_usd_per_video,
+    });
+    // Media dollars answer to [trust]'s caps and count toward them.
+    match crate::trust::hub(cfg) {
+        Ok(hub) => shared.set_spend(Arc::new(HubSpend(hub))),
+        Err(e) => {
+            warn_once(&format!(
+                "[media]: the trust hub can't start: {e:#}, so no media tools"
+            ));
+            return None;
+        }
+    }
     // M51.4: `speak` unless the speech model is set to "".
     let speech = cfg.media.speech_model.trim();
     if !speech.is_empty() {
@@ -104,6 +121,21 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<MediaShared>> {
         );
     }
     Some(shared)
+}
+
+/// The trust hub as media spend's caps: a tool call's row is charged to
+/// its run like a model call's (`TrustSink` does the same for those).
+struct HubSpend(Arc<ferrule_trust::Hub>);
+
+impl MediaSpend for HubSpend {
+    fn usd_left(&self, tree: &str) -> Result<Option<f64>, String> {
+        let task = tree.strip_prefix(ferrule_trust::meter::TASK_PREFIX);
+        self.0.usd_left(tree, task)
+    }
+
+    fn charge(&self, tree: &str, row: &LedgerRecord) {
+        self.0.charge(tree, row);
+    }
 }
 
 /// The egress client media calls go through (the credential proxy when it

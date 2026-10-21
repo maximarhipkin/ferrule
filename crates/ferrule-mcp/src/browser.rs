@@ -443,6 +443,19 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// A launch test's Chrome: dropped, it's killed (on Linux its whole
+/// process group) and reaped.
+struct Reaped(std::process::Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        ferrule_sandbox::kill_process_group(self.0.id());
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// The flags for a one-shot headless run that prints `about:blank`'s DOM
 /// and exits, in a throwaway profile. `no_sandbox` only as root, where
 /// Chrome refuses to start otherwise.
@@ -521,12 +534,26 @@ fn run_headless(
             cmd
         }
     };
-    let mut child = cmd
+    // Linux: its own process group, so one kill reaches the helpers Chrome
+    // starts too (zygote, renderer, GPU), and a kernel-sent SIGKILL when
+    // ferrule goes away mid-check. macOS and Windows have no such signal,
+    // so there Chrome stays in ferrule's group, where a Ctrl-C at the
+    // terminal still reaches it.
+    #[cfg(target_os = "linux")]
+    {
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        ferrule_sandbox::die_with_parent(&mut cmd);
+    }
+    let child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("couldn't start it: {e}"))?;
+    // From here on every way out (the timeout, an error, a panic, the
+    // caller giving up) kills the whole group: a check never leaves a
+    // headless Chrome behind.
+    let mut child = Reaped(child);
     // Drain both pipes on threads so a chatty browser can't block on them.
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
@@ -537,23 +564,21 @@ fn run_headless(
             text
         })
     };
-    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as _));
-    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as _));
+    let stdout = drain(child.0.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = drain(child.0.stderr.take().map(|p| Box::new(p) as _));
     let started = Instant::now();
     let status = loop {
-        match child.try_wait() {
+        match child.0.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() < timeout => {
                 std::thread::sleep(Duration::from_millis(100))
             }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("no page after {}s", timeout.as_secs()));
-            }
+            Ok(None) => return Err(format!("no page after {}s", timeout.as_secs())),
             Err(e) => return Err(e.to_string()),
         }
     };
+    // Helpers still holding the pipes would keep the reads below waiting.
+    drop(child);
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
     if status.success() && stdout.contains("<html") {

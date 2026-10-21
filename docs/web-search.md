@@ -32,9 +32,21 @@ its results are fenced and marked untrusted like any provider's.
   a browser gets, and its terms don't grant automated use. It's meant for
   a person's light use, a few searches a turn.
 - **It limits automated searches.** Too many in a row and it answers with
-  a challenge page instead of results; the tool then says "DuckDuckGo
-  didn't give results … try again later, or set a search provider". There
-  is no retry.
+  a page without results, or HTTP 403 or 429. The tool says DuckDuckGo
+  refused the search (never that a key is wrong: there is none), and
+  doesn't ask it again for 2 minutes (`DDG_PAUSE`, ferrule's own figure;
+  DuckDuckGo publishes none): a search in that time fails at once with
+  "not sent", passes no gate and makes no ledger row. There is no retry.
+  With DuckDuckGo as the provider (not as a fallback), the first refusal
+  a session meets also says how to end it: a search API key, Brave's for
+  example, whose Search API includes $5 of free credits a month, about
+  1,000 searches at $5 per 1,000, and asks for a card
+  ([brave.com/search/api](https://brave.com/search/api/), read
+  2026-10-21). With `ferrule_admin`, the bot asks the owner for
+  `BRAVE_API_KEY` for `api.search.brave.com` with `secret_request`,
+  then switches with `config_set web_search.provider = "brave"`, which
+  picks that key up (M56.3). The pause and the once are per session's
+  agent, held in memory.
 - **Its markup can change.** The parser reads `result__a` links (the real
   URL from their `uddg=` redirect; ads are skipped) and `result__snippet`
   text. If DuckDuckGo changes its page, results come back empty until
@@ -51,7 +63,7 @@ the same query goes to DuckDuckGo, and the result starts with a line
 saying which provider failed and why. The fallback is a search of its
 own: it passes the same gate (`max_searches_per_day`, the kill switch)
 and is its own ledger row, at $0. A search the cap refused falls back to
-nothing.
+nothing, and so does one within 2 minutes of DuckDuckGo refusing.
 
 ## Picking a provider
 

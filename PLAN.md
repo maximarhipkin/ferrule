@@ -12,8 +12,11 @@ that convention yet — ask before introducing one).
 
 Rewritten in place on 2026-10-21 (M55.6) from `git log`, the code and
 `docs/roadmap.md`; the version it replaced stopped at M49 and is in git
-history. Keep this section true **in place**. Everything below it is
-append-only.
+history. Refreshed in place the same evening (wave A, task 7) from `gh
+pr list`, `git log` and the re-audit
+(`research_notes/Ferrule agent gap analysis/reaudit_2026-10-21.md`, in
+the main checkout). Keep this section true **in place**. Everything
+below it is append-only.
 
 - **What it is.** Ferrule is a self-hosted agent runtime for one owner,
   in Rust. The repo is `maximarhipkin/ferrule` (public), the binary is
@@ -26,44 +29,49 @@ append-only.
   `install.ps1`) followed by `ferrule setup`; `ferrule doctor` checks the
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
-- **Releases and branches** (checked 2026-10-21):
-  - The latest release is **v0.13.1** (tagged 2026-10-20). It has
-    everything through M49 plus the 2026-10-19 review-pass fixes. Every
-    crate is at 0.13.1 except `ferrule-plugin-sdk`, which keeps 0.1.0.
-  - **`main` is `2ffa669`.** It is v0.13.1 plus M50 (PR #43), three
-    merges from 2026-10-20: #44 ("Allow for this run", a per-run grant
-    for one gated shell command), #45 (`send_file`, the connection tools
-    and MCP tools bridged into the Claude-plan engine) and #46 (Telegram
-    follow-ups merged into one turn, a quieter busy notice, locations,
-    venues and contacts, no link previews), and **PR #48 (Kimi's M51–M53,
-    merged 2026-10-21)**: media generation (`generate_image`,
-    `generate_video` and its poller, the new `ferrule-media` crate), the
-    dashboard Safe (rotate a kept key, move a tool key's sites) and
-    contrastive probing in the learning loop. None of this is released.
-    CI on `dadf357` was red on two flaky tests (fixed by M55.1 on
-    `autopilot`).
-  - **`autopilot` (PR #47, open)** stacks the gap analysis's work on
-    `dadf357`, one commit per item, each with a 2026-10-21 Session Log
-    entry: M55.2 (the four stranded branch stacks: the core-loop and
-    Responses-reasoning stack, four host-side sandbox escapes, the
-    update/restore defects, a test race), M55.3, M55.4, M55.5, M55.1,
-    this rewrite, and the items after it. `main` (`2ffa669`, PR #48) was
-    merged into it on 2026-10-21, after M56.6.
-  - Since then (2026-10-21): PR #47 merged to `main` as `2c74bdb`, then
-    **M54** (protected autonomous mode, `docs/m54-autonomous.md`) landed
-    on `main` as `6efe413`, then PR #50 (the owner's Telegram groups get
-    owner mode) as `f70984e`. `autopilot` continues as **PR #49**: M58.1–
-    M58.5, M53.2 onward and the M51/M52 follow-ups, with `main` merged in
-    after M53.2 (`6efe413`) and after M51.4 (`f70984e`). PR #49 merged
-    to `main` on 2026-10-21, then PR #51 (the security and approvals
-    group); `autopilot` continues as **PR #52** (open), M60 and M61
-    among its commits.
+- **Releases and branches** (checked 2026-10-21, evening):
+  - The latest release is **v0.13.1** (tagged 2026-10-20): everything
+    through M49 plus the 2026-10-19 review-pass fixes. Every crate is at
+    0.13.1 except `ferrule-plugin-sdk`, which keeps 0.1.0. Nothing since
+    is released.
+  - **`main` is `ebc9e26`** (PR #54). PRs **#44–#54 are all merged**:
+    #44 "Allow for this run", #45 the Claude plan engine's bridged tools,
+    #46 Telegram follow-ups (all 2026-10-20); #48 Kimi's M51–M53; #47,
+    #49, #51, #52 and #53 the `autopilot` stacks (the gap analysis's
+    M55–M58, the M51–M53 follow-ups, security and approvals, M60, M61,
+    M54.2, M56.2, M56.3, then M59 and M54.4); #50 owner mode for the
+    owner's Telegram groups; #54 M62, compaction's summary input (a
+    Cursor session on `cursor/compaction-summary-m62-a6a4`). CI was
+    green on all three OSes for #53's and #54's merges.
+  - **`autopilot`** carries **improvement wave A** (below), one commit
+    per task on top of `main` (`ebc9e26` merged in as `544c608`). It has
+    no open PR yet; the coordinator pushes and opens it.
+- **What landed on 2026-10-21:** M51–M53's follow-ups (media's poller,
+  the media role and voice; the Safe's inventory, rotate, edit-hosts and
+  config editing; learning's evidence clipping, learned skills, scopes,
+  thumbs and the blind select node), M54 (protected autonomous mode,
+  with M54.2 secrets out of the environment, M54.3 scrubbed tool
+  results, M54.4 egress bound through the proxy, M54.5 one gate after
+  outside content), M55 (green main, spilled long output, the stranded
+  stacks), M56 (steering, standing grants, chat self-admin, proactive
+  memory, restart-safe turns, chat primitives, channel media, keyless
+  search), M57 (deferred tool schemas, per-file loops, the stale-file
+  guard, cache economics, background jobs, forks), M58 (simplify; eval
+  as the gate, built but never run), M59 (personal WhatsApp and
+  iMessage through bridges), M60 (images in tool results reach the
+  model), M61 (screen viewing, view only), M62 (compaction sees the
+  tools), and wave A's seven tasks (below). Almost none of it has run
+  live; each Session Log entry's **Open** says what wasn't.
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
-  green predicate (`AGENTS.md`). The last full run on `autopilot` before
-  this rewrite: 1869 passed, 0 failed, 28 ignored across 71 test
-  binaries (macOS, 2026-10-21). CI runs on Linux, macOS and Windows;
-  `release.yml` builds and signs five targets on a `v*` tag. Rust stable
-  through rustup, edition 2021.
+  green predicate (`AGENTS.md`). The last full run on `autopilot`
+  (wave A, task 7): 1891 passed, 0 failed, 28 ignored across 73 test
+  binaries (macOS, 2026-10-21). CI runs on Linux, macOS and
+  Windows; `release.yml` builds and signs five targets on a `v*` tag.
+  Rust stable through rustup, edition 2021. **Branch protection is
+  off:** `gh api repos/maximarhipkin/ferrule/branches/main/protection`
+  answers 404 "Branch not protected", and the one ruleset (`nomaster`)
+  is disabled. Requiring the three CI jobs before a merge (M55.7) is a
+  repository setting only the owner can turn on.
 - **The 25 crates** (each one's `description` in its `Cargo.toml` says
   the same):
 
@@ -126,57 +134,66 @@ append-only.
     dashboard redesign; self-service from chat and dashboard; visual
     polish; connect everything from the dashboard (M50, merged after
     v0.13.1). The numbers M45 and M46 were never used.
-  - After M50, on `main` only: PRs #44, #45 and #46 (above).
-- **In flight** (2026-10-21):
-  - **M54, protected autonomous mode** is merged to `main` (`6efe413`).
-    Its open edges (a live Linux run, macOS owner mode, per-session
-    helpers for guests) are in its Session Log entry.
-  - **`autopilot` / PR #49 (merged 2026-10-21):** M58.1–M58.5
-    (simplify, remove or make opt-in), the M53 follow-ups (M53.2,
-    M53.3, M53.4, M53.5, M53.7), and the M51/M52 follow-ups (M51.4,
-    M51.3, M52.2, M52.4, M52.6; M52.3 is M54's `secret_request`), one
-    commit each.
-  - **`autopilot` / PR #52 (open):** among its commits M60 and **M61
-    screen viewing (screenshots and recordings of the owner's own
-    screen, view only)**, `docs/m61-screen.md`; then **M59** (personal
-    WhatsApp through WAHA, iMessage through BlueBubbles,
-    `docs/m59-channels.md`) and **M54.4** (`[egress] enforce`: commands
-    bound to the proxy, opt-in; every destination in the audit log,
-    `ferrule egress log`).
-  - **M62, compaction's summary input** (this session,
-    `cursor/compaction-summary-m62-a6a4`): the summarizer sees tool
-    names, arguments and a gist of each result, not the system prompt;
-    the summary request is cut to the context window; a failed summary
-    call folds an extract instead of ending the run
-    (`docs/m62-compaction.md`).
-  - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
-    `docs/research-harness2-media.md`, `docs/m51-media.md`,
-    `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
-    Their named follow-ups are built on `autopilot` (above) except a
-    per-run approval card for media spend and a Cloudflare Access JWT
-    check at the dashboard's origin (M52.6, documented).
-  - **M55–M59, from `reports/Ferrule agent gap analysis.md`** (2026-10-20,
-    in the main checkout and git-excluded, so `docs/roadmap.md`'s "Other
-    open tracks" lists its items): M55 make main green and land the
-    written fixes; M56 the running turn hears the owner and remembers
-    what matters; M57 the coding leaders' context and loop hygiene; M58
-    simplify, remove or make opt-in; M59 channels not worth chasing yet
-    (personal WhatsApp, iMessage). The report also amends M52 and M54
-    with numbered items (M52.1–M52.6, M54.1–M54.7); they keep their
-    parent's number.
+  - **M51–M62**, all merged by PR #54 (one line each in
+    `docs/roadmap.md`; designs in `docs/m51-media.md`,
+    `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`,
+    `docs/m54-autonomous.md`, `docs/m57-context-hygiene.md`,
+    `docs/m59-channels.md`, `docs/vision.md` (M60),
+    `docs/m61-screen.md`, `docs/m62-compaction.md`). The gap analysis's
+    M55–M58 items are in the roadmap's "Other open tracks" list.
+- **In flight** (2026-10-21, evening): **wave A** on `autopilot`, the
+  re-audit's follow-ups, one commit and one Session Log entry per task:
+  1. test-phase fixes (content back after compaction, doctor's Ollama
+     tag, LM Studio, the Chrome check's kill);
+  2. media spend in dollars against the `[trust]` caps;
+  3. the owner's scheduled briefings in owner mode;
+  4. a housekeeping job that prunes what an always-on bot makes;
+  5. the scrubbing gaps (connections' tokens);
+  6. the paste guard's link to the Safe, and keyless search that says
+     when DuckDuckGo refuses;
+  7. CI hygiene: this refresh, the Windows self-test flake (below).
+- **Open follow-ups that matter most** (the re-audit's ranking, minus
+  what wave A closed: media dollars, scheduled read-then-send,
+  housekeeping, connection tokens in the scrub, M52.5's link, a refusal
+  answered with a key offer):
+  1. **Nothing has run live**: above all M54 owner mode on Linux and
+     M54.4's binding (CI-compiled only), M56.1 steering, M56.5 resume,
+     M56.6 buttons, M56.7 Telegram media, M51.4 voice, M53.5 reactions,
+     and all of wave A. The owner's go-ahead is needed (the global "don't
+     run" rule).
+  2. **The eval gate has never gated** (M58.5): M56.4's prompt line,
+     M58.3's tool cut, M57.5's examples and M57.1's threshold sit in the
+     prompt prefix unmeasured; no nightly job.
+  3. **Connections**: a curated catalog v2 with one-step add, a bundled
+     skills pack (weather, RSS, HN, maps, Home Assistant REST),
+     any-provider IMAP/SMTP mail, CalDAV/ICS calendars (re-audit Part 3
+     #3–#6).
+  4. **M53.1's evidence**: no control run without the lesson, unblinded
+     labels; fix before offering learning in owner mode.
+  5. **CIMD and pre-registered OAuth clients; MCP 2026-07-28**
+     (`server/discover`, stateless): Home Assistant's official MCP,
+     Slack, Asana and Dropbox wait on them.
+  6. **Small polish**: M56.1's queue and interrupt, steered voice notes;
+     M56.3's Undo and M56.5's pending offers lost on restart; Slack
+     inbound files; `/bg`; keys without a prefix (Brave's, Tavily's)
+     pass the paste guard, and only Telegram and the dashboard delete.
+  7. **DuckDuckGo's parser** has never seen the live page, and keyless
+     search has no second fallback.
+  8. **CI hygiene**: branch protection (above); the Windows "workspace
+     write works" flake (run 39632001271) is unexplained, and the
+     self-test now prints the probe's exit code and stderr when it fails
+     (wave A, task 7's entry).
 - **Milestone numbers are claimed:** M51–M53 Kimi, M54 the autonomy
-  session, M55–M59 the gap analysis, M60 images in tool results
-  (2026-10-21, `autopilot`), M61 screen viewing (screenshots and
-  recordings of the owner's own screen, view only; 2026-10-21,
-  `autopilot`). **M59 is claimed and built** (2026-10-21, `autopilot`
-  worktree, PR #52): personal WhatsApp and iMessage through bridges the
-  owner runs. So is M54's numbered item **M54.4** (binding egress through
-  the proxy, logged). **M62** (2026-10-21, compaction's summary input:
-  tool calls visible, the system prompt left out, the request bounded
-  so a too-long summary cannot kill the run) is claimed by this session.
-  The next free number is **M63**.
-  The first claim wins, and a later collision shifts the unclaimed
-  numbers, never a claimed one.
+  session, M55–M58 the gap analysis, **M59 channels** (personal
+  WhatsApp and iMessage through bridges the owner runs; built and
+  merged, PR #53), **M60 images in tool results** and **M61 screen
+  viewing** (screenshots and recordings of the owner's own screen, view
+  only; both PR #52), **M62 compaction's summary input** (PR #54). M54's
+  numbered items (M54.1–M54.7) and M52's (M52.1–M52.6) keep their
+  parent's number; so do wave A's tasks, which are follow-ups, not
+  milestones. **The next free number is M63.** The first claim wins,
+  and a later collision shifts the unclaimed numbers, never a claimed
+  one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
   "Staying synchronized" section and `AGENTS.md`):
   - **Claim before building.** When a session starts, it appends a dated
@@ -191,15 +208,20 @@ append-only.
     media module and the Telegram send branches. Anyone who must touch
     another's surface makes the smallest change and says so in their
     entry.
+  - **Start from `main`.** `git fetch origin main` first; if `main` has
+    commits the branch lacks, merge it (signed) and run `make check`
+    before building. On 2026-10-21 PR #54 claimed M62 on `main` while
+    wave A's brief still named M62 as the next free number; fetching
+    first is how a session notices.
   - **Push early.** Push the branch at its first commit; a worktree
     branch with no upstream is invisible to the other sessions and to
-    CI.
+    CI. (Wave A's sessions leave the push to their coordinator.)
   - **PLAN.md is append-only** except this section, which is edited in
     place.
   - **Merge on green.** A change lands on `main` only when `make check`
     and the three CI jobs pass. Requiring that in GitHub's branch
     protection (M55.7) is a repository setting only the owner can turn
-    on.
+    on; as of 2026-10-21 it is off (see Checks).
 - **Branding.** `docs/branding/logo.png` and `docs/branding/hero.png`,
   drawn with Pillow (a metal band around a rod bundle; steel and copper
   on near-black). Keep that motif if they're ever redrawn.
@@ -8772,6 +8794,301 @@ with the tunnel). The audit log grows by one line per destination a
 minute; nothing prunes it. `ferrule trust audit` now lists `egress`
 events among the rest.
 
+### 2026-10-21 — Wave A, task 1: fixes from the test phase (Claude, Opus 5.5)
+
+Starts improvement wave A in the `autopilot` worktree, after `main`
+(`d8d2547`, PR #53) was merged in (a fast-forward). The wave's tasks
+come from the evening re-audit (`research_notes/Ferrule agent gap
+analysis/reaudit_2026-10-21.md`, Part 1 follow-ups and Part 3) and
+today's test phase. No milestone number: each task is a follow-up of
+the milestone it names. Touches `ferrule-sandbox` (M54's surface) with
+one helper, `die_with_parent`, for (d).
+
+**Why.** The test phase passed everything, with five findings:
+- (a) On a real model (qwen3-coder 30B through Ollama), after a
+  compaction and "shortened: N old tool results", the model called
+  `recall` (long-term memory) for this session's data instead of
+  `search_history` or reading the files again, and failed evals/starter
+  release-notes.
+- (b) `ferrule doctor` warned that the provider doesn't list
+  `qwen3-coder` while Ollama listed `qwen3-coder:latest` (an exact
+  `contains`).
+- (c) Doctor labelled the eval's mock model "LM Studio": any
+  `/api/v0/models` answer counted, and the mock answers every
+  `…/models` path.
+- (d) The Chrome launch check could leave a headless Chrome behind
+  when ferrule went away mid-check.
+- (e) `docs/eval.md`'s sample report no longer matched a run
+  (release-notes showed `2×compact` and about 98k tokens).
+
+**What changed.**
+- (a) `ferrule-core` `agent.rs`: a shortened tool result now ends "…
+  search_history {"ref": …} returns it, or call <tool> again. Not
+  recall: that searches long-term memory, not this conversation." A
+  compaction summary, when the agent has a transcript and
+  `search_history`, ends (before "Continue from here.") with
+  `RECOVER_NOTE`: the full text is in this session's history, an exact
+  detail comes back from `search_history {"query": …}` or by running
+  the tool again, and `recall` is long-term memory, not this
+  conversation. `search_history`'s description says it is this
+  conversation and to use it, not `recall`; `recall`'s (both variants)
+  says it holds facts saved with `remember` across sessions, not this
+  conversation. Only placeholder, summary and tool-description text
+  changed: nothing earlier in a running session's prefix is rewritten
+  (the placeholder is written where shortening already rewrote the
+  message). The `search_history {"ref": "` marker the fold's ref list
+  and the history test parse is unchanged.
+- (b) `local::same_model` is public; doctor's provider check accepts a
+  listed model equal to the configured one once Ollama's `:latest` is
+  taken off, as `local::Server::model` already did.
+- (c) `local::identify` takes an `/api/v0/models` answer as LM Studio
+  only when every entry has LM Studio's `state` field; the mock (and
+  any other OpenAI-shaped list there) falls through to "isn't Ollama,
+  llama.cpp, LM Studio or vLLM".
+- (d) `ferrule-mcp` `browser::run_headless`: the child is wrapped in
+  `Reaped`, whose drop kills and reaps it, so the timeout, an error, a
+  panic or an abandoned check all end it; after a normal exit it's
+  dropped before the pipe reads are joined. On Linux it runs in its own
+  process group (the kill reaches its helpers) and gets
+  `PR_SET_PDEATHSIG` (`ferrule_sandbox::die_with_parent`, new, a no-op
+  elsewhere) so the kernel kills it if ferrule goes away. On macOS and
+  Windows it stays in ferrule's group, where a terminal Ctrl-C reaches
+  both. The 20 s bound (`LAUNCH_TIMEOUT`) was already there.
+- (e) `docs/eval.md`: the sample report is marked illustrative (a
+  2026-09-24 mock run) with today's release-notes numbers as the
+  example of drift.
+- Docs: `m15-memory.md` §6 (the placeholder and the summary's note),
+  `local-models.md` (LM Studio recognised by `state`), `browser.md`
+  (what the launch check cleans up, per OS), `eval.md`, the roadmap.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.**
+- (a) needs an eval A/B on a real model before it counts as a fix:
+  `ferrule --config eval-ollama.toml eval run evals/starter --tag
+  context --repeat 3` on qwen3-coder 30B through Ollama (`docs/eval.md`),
+  before and after this commit. The `recall` and `search_history`
+  descriptions are in every request's tool list, so the eval's token
+  counts shift a little.
+- (d) On macOS and Windows a Chrome that hangs can still outlive a
+  ferrule killed by a signal it can't handle; Linux's
+  `die_with_parent` is CI-compiled only (this Mac doesn't build it).
+
+### 2026-10-21 — Wave A, task 2: media spend in dollars (Claude, Opus 5.5)
+
+M51's follow-up (M51.1, M51.2, M51.4), in the `autopilot` worktree.
+Touches `ferrule-trust`'s `hub.rs` with one read-only method
+(`usd_left`); M51's media module is M51's own surface.
+
+**Why.** The re-audit (Part 1 M51.1/M51.2, Part 3 #2): media ledger rows
+had `cost_usd: None` and nothing charged the hub, so `[trust]`'s dollar
+caps never saw media spend; only `max_per_day = 20` (a count) held. The
+`model` argument was free text, against M21. The default video model
+was `google/veo-3.1` ($0.40/s with audio, $3.20 for 8 s) with 20 a day.
+
+**What changed.**
+- `ferrule-media`: `ImageOut::cost_usd` and `VideoState::Done { cost_usd
+  }` from OpenRouter's `usage.cost` (a number or numeric string);
+  `VideoPrice::of` reads a `/videos/models` entry's `pricing_skus` (the
+  dearest per-second price naming no resolution, else the dearest
+  per-second one; `cents_…` keys divided by 100) and
+  `supported_durations`; `MediaBackend::video_price` and `speech_price`
+  (default `None`; OpenRouter reads `/videos/models` and
+  `/models?output_modalities=speech` through the proxy and keeps each
+  list 6 h; a speech price only for a model whose `completion` price is
+  0). `media_jobs` gains `tree` and `estimate_usd` (added to an older
+  table at open); `count_kind_since`. `Eq` dropped where an `f64` came in.
+- `ferrule-gateway` `tools/media.rs`: `MediaSpend` (the caps: `usd_left`,
+  `charge`) and `MediaLimits` (`image_models`, `video_models`,
+  `max_videos_per_day`, `max_usd_per_video`), set once on `MediaShared`.
+  `pick`: a call's model is the default or one on the allow-list, else
+  refused with the allowed list; the `model` parameter is offered only
+  when there's a choice, as an `enum`. Rows (`Row`) carry `cost_usd` and
+  the tree, and a tool call's row is charged to its run. Images and
+  `speak` are refused once no dollars are left; `generate_video` checks
+  the video count, then estimates (list price × asked seconds, or the
+  model's longest) and refuses, nothing submitted, over
+  `max_usd_per_video`, over what's left, or without an estimate while
+  either limit is set; its answer says the estimate. The submit row
+  charges the estimate; the poller's delivery row settles it to the
+  bill, a failed render's row takes it back, a finished render that
+  couldn't be downloaded is settled as billed. `in_tree` on the three
+  tools: a `media` child's spend goes to its root's run.
+- `ferrule-trust`: `Hub::usd_left(tree, task)`, the smallest of the run,
+  day and task dollar caps set, minus spend; an unreadable ledger with a
+  day or task dollar cap is an error.
+- `ferrule-cli`: `[media] image_models`, `video_models` (default empty),
+  `max_videos_per_day = 3`, `max_usd_per_video = 1.0`, `video_model =
+  "google/veo-3.1-lite"` (OpenRouter's list on 2026-10-21: $0.08/s with
+  audio, $0.05 without); the config template. `media::shared` sets the
+  limits and `HubSpend` (the hub; a tree's task from its
+  `scheduler__` prefix). `child_builder` passes `spec.tree`.
+- Docs: `m51-media.md` "Wave A — media spend in dollars", `models.md`
+  "Making media", `m19-trust-cost.md` "Media spend", the roadmap.
+
+**Tests changed, none added** (the owner's standing rule): none needed
+changing (the fake backend has no prices and the gateway tests set no
+limits, so they run as before).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** No paid call was made: whether `/images/generations` (the
+OpenAI-compatible path ferrule uses) and a finished video's poll answer
+carry `usage.cost` is from OpenRouter's docs, not seen; the price lists'
+shapes were read from the public endpoints on 2026-10-21. A request
+without a length is priced at the model's longest clip (an upper bound
+that may refuse a clip that would have fit). Speech on the default
+Gemini TTS is still counted only. The settling rows can be negative,
+which `ferrule ledger` shows as they are. No per-image dollar cap; no
+per-run approval card (M51's "As built").
+
+### 2026-10-21 — Wave A, task 3: the owner's own scheduled briefings in owner mode (Claude, Opus 5.5)
+
+M54.5's follow-up, in the `autopilot` worktree. Touches M54's
+`ferrule-trust` `guard.rs` and `classify.rs` (the smallest change: one
+match arm and one function) and `ferrule-connections`' service with one
+read (`own_addresses`).
+
+**Why.** In owner mode a scheduled task that read outside content and
+then sent was refused by the M54.5 gate, since nobody is there to tap
+(PLAN's M54.5 entry, re-audit Part 3 #10). That broke the obvious
+owner-mode task: a morning briefing that reads the web or mail and
+emails or posts it to the owner.
+
+**What changed.**
+- `ferrule-trust` `classify::only_to(args, own)`: a call that names its
+  addressees (`to`, `recipient(s)`, `cc`, `bcc`, or `chat_id`), each
+  exactly one of `own`; every address in its other arguments but the
+  message's text (`body`, `subject`, …) one of `own` too; no
+  `reply_all`. A reply naming no `to` doesn't qualify.
+- `Hub`: `set_own_accounts` (lower-cased), `own_recipients` (the owner
+  chats' ids, the same list approvals go to, plus those accounts),
+  `sent_to_owner` (audit event `own_send`, with the tool and the
+  outside source).
+- `TrustGuard::before_tool_call`, the untrusted-gate branch: a
+  `ConnectedWrite` in an unattended run with a task (the gates are off
+  only on the owner's trees in owner mode, so this is an owner's
+  scheduled task or its sub-agent) passes when `only_to` holds against
+  `own_recipients`; anything else asks as before (and is refused
+  unattended). Force pushes and `DELETE`s aren't covered.
+- `ferrule-connections` `Connections::own_addresses`: a connected native
+  Gmail connection's `email` field, from the sealed store.
+  `ferrule-cli` `connections::set_gate` sets them on the hub whenever
+  the connections load or change.
+- Docs: `m19-trust-cost.md` §6b ("The owner's own scheduled briefings",
+  the conditions and why it's safe) and §11 (`own_send`),
+  `m54-autonomous.md` amendment 4, `sandbox.md`'s owner-mode paragraph,
+  the roadmap.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Only native Gmail connections give an account address; a
+Google OAuth (preview Gmail MCP) connection's account isn't known, so a
+send through it to the owner's address matches only when that address
+is also an owner chat (the email channel's owner). A chat send through
+a connected chat service matches only by `chat_id` equal to an owner
+chat's id. Not run live.
+
+### 2026-10-21 — Wave A, task 4: a housekeeping job (Claude, Opus 5.5)
+
+In the `autopilot` worktree. No milestone number (the re-audit's Part 3
+#8). Touches `ferrule-trust`'s `audit.rs` (a lock file and `prune`).
+
+**Why.** On an always-on box these grew forever (re-audit Part 1, M55.3,
+M57.6, M60, M61, M53.5, M54.4): `.ferrule/spill/` with background-job
+logs, `.ferrule/mcp-content/`, `media/screen/`, `learn/reactions/`, and
+the trust audit log's `egress` lines (one per destination a minute).
+
+**What changed.**
+- `ferrule-cli` `housekeeping.rs` (new): `[housekeeping] enabled = true,
+  keep_days = 14, audit_keep_days = 90, max_mb = 500`. `targets` lists
+  the four directories (and nothing else); a place is pruned only when
+  every part of its path is a real directory (no link); inside, files
+  older than `keep_days` go, then the oldest past `max_mb`; links are
+  neither followed nor removed; empty subdirectories go. The audit log
+  keeps `egress`/`egress_denied` lines `keep_days` and other events
+  `audit_keep_days`. The built-in task `ferrule-housekeeping` (daily,
+  04:20 UTC) registered in `run_gateway` like the media poller, reading
+  the settings each run; `ferrule housekeeping run [--workspace]
+  [--dry-run]`; doctor's `housekeeping` note with each place's size and
+  the rules. Config template block.
+- `ferrule-trust` `Audit`: every append holds `trust/audit.lock` shared;
+  `prune(keep)` holds it alone and rewrites through a temp file and a
+  rename, so no line is lost (several `Audit`s write the same file).
+  Uses std's `File::lock` (Rust 1.89+).
+- `dashboard/console.rs`: `housekeeping run` in `PARITY` (destructive,
+  `--dry-run` only reads); `m37-control-room.md` §4.1's row.
+- Docs: `housekeeping.md` (new: exactly what is and isn't pruned, the
+  settings, how it deletes), the README's Documentation list, and the
+  lines that said nothing prunes these (`m53-contrastive-probing.md`,
+  `vision.md`, `m61-screen.md`, `egress.md`, `m57-context-hygiene.md`),
+  the roadmap.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Only the gateway's own workspace is pruned (and the one named
+to `housekeeping run`); a guest workspace elsewhere isn't. A running
+job's removed log frees its space only when the job ends. Not run on a
+real box.
+
+### 2026-10-21 — Wave A, task 5: closing the scrubbing gaps (Claude, Opus 5.5)
+
+M54.3's follow-up, in the `autopilot` worktree. Touches
+`ferrule-connections`' store with one read (`secret_values`).
+
+**Why.** M54.3's entry left three gaps (re-audit Part 1 M54.3, Part 3
+#9): connection OAuth tokens weren't among the known values the
+tool-result scrub hides; values under 6 characters are skipped without
+saying so; the Claude plan engine's own Bash and Read bypass ferrule's
+loop.
+
+**What changed.**
+- `ferrule-connections` `Store::secret_values`: every connection's
+  access and refresh token, client secret, API key and secret field
+  (`*password*`, `*token*`, `*secret*`, `key`, `*_key`; not the email,
+  site or account address), plus a service account JSON key's
+  `private_key`, named `<connection>.<field>`. Opened in memory, never
+  written.
+- `ferrule-cli` `health`: `known_secrets` adds them (`connection
+  <name>.<field>`), so the scrub, the health redactor and doctor's
+  `history` scan all have them at load. `scrub_tool_results` also keeps
+  a `Following` redactor that reads the store again whenever its file's
+  size or time changes, so a refreshed access token is hidden as soon as
+  it's saved (a stat per tool result).
+- Doctor's `history` line warns, by name, about a known value under 6
+  characters (too short to scrub); the reason (it would cut ordinary
+  words and numbers out of every result; none of ferrule's own keys is
+  that short) is in `health::scrub_tool_results`' doc and `sandbox.md`.
+- The Claude plan: claude's own tools' results go from the `claude`
+  process to Anthropic and its own session files without passing
+  ferrule's loop, and Claude Code offers no way for a caller to rewrite a
+  built-in tool's output, so they can't be scrubbed. Documented as a
+  known limit with what does protect them (the sandbox, the hidden
+  private dir, placeholders; the plan's own token unless
+  `scrub_subprocess_env`).
+- Docs: `sandbox.md` "Env" (connection values, the short-value rule,
+  "What the scrub can't reach"), `subscriptions.md` "What the scrub
+  can't reach", `m54-autonomous.md` amendment 2, the roadmap.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** The subscription plans' own tokens (ChatGPT's, Claude's in
+`private/`) aren't in the list. Doctor's `history` scan doesn't look in
+claude's config dir (`<data>/claude-code/`). Not run live.
+
 ### 2026-10-21 — M62: compaction sees the tools, and the summary call cannot overflow the run
 
 Claims **M62** (the next free number was M62; the next is now M63), on
@@ -8835,3 +9152,132 @@ window, so a much smaller `[agent] compaction_model` pays for one
 rejected call before the pieces shrink. The extract is the rendered
 head, cut down, not the checklist. The last few files' contents are
 not re-attached after a fold; `Touched` already lists the paths.
+
+### 2026-10-21 — Wave A, task 6: the paste guard offers the Safe's link, keyless search says when it's refused (Claude, Opus 5.5)
+
+The M52.5 and M56.8 follow-ups, in the `autopilot` worktree, after
+`main` (`ebc9e26`, PR #54, M62) was merged in (`544c608`; the PLAN.md
+log and the roadmap's milestone list conflicted, both sides kept).
+Touches M54's `self_service/keys.rs` (a new hook beside
+`secret_request`) and M52's Safe panel (two link parameters), each the
+smallest change.
+
+**Why.** The re-audit (Part 1 M52.5 and M56.8; Part 3 #13 and #15): the
+paste guard's reply still said "/dashboard … Connect page" when the
+`secret_request` link flow exists, and a DuckDuckGo refusal was a bare
+error with "try again later", which a model meets by searching again.
+A 403 from DuckDuckGo was also reported as "the key is missing, wrong
+or not allowed; check the key", though there is no key.
+
+**What changed.**
+- `ferrule-gateway` `paste_guard`: `guess` names a key by the longest
+  known prefix that starts it (`GUESSES`: `sk-ant-`, `sk-or-` (added to
+  the prefixes, for OpenRouter), `sk-proj-`, `AIza`, `ghp_`,
+  `github_pat_`, `glpat-`, `hf_`, `xoxb-`, Stripe's three), with the
+  name and hosts `ferrule setup` gives them; a bare `sk-` names none.
+  A `PastedKeyHook` trait (`Gateway::with_paste_hook`) is told where the
+  key was pasted and the guess, never the text, and may return a
+  `LinkOffer`: the reply's words and a send future. The reply goes
+  first, then the link, so they arrive in that order. `reply` takes the
+  hook's words in place of the /dashboard advice.
+- `ferrule-cli` `self_service::keys::PasteLink`: only the owner's
+  private chat on a chat app (`offered`), only with the page on and
+  keys not locked. A name the secrets file keeps opens the Safe at its
+  Rotate (`?rotate=NAME`), since `check_new` refuses a name in use; a
+  name `check_new` accepts opens the add form filled in (`?key=…&hosts=…`,
+  as `secret_request` sends); anything else opens the Safe unfilled
+  (`?safe=1`) with the page's reason. A failed link says so in the
+  owner's chat ("No link to the Safe: …"). The session isn't woken.
+  `tool_keys::kept` is new; `locked` is `pub(crate)`.
+- `app.js`: `keyAsked` reads `rotate` and `safe`; the Safe opens the
+  named key's Rotate field, or focuses the name field when nothing is
+  filled in.
+- `ferrule-tools` `search`: DuckDuckGo's 403 and 429 are said as
+  refusals, and its results-less page as "most likely refused". After a
+  refusal, DuckDuckGo isn't asked again for 2 minutes (`DDG_PAUSE`, my
+  figure; DuckDuckGo publishes none): a search in that time fails at
+  once with "not sent", without the gate or a ledger row, as a provider
+  and as the fallback. With DuckDuckGo as the provider, the first
+  refusal in a session says how to end it (`KEY_HINT`): Brave's Search
+  API, `secret_request` for `BRAVE_API_KEY` on `api.search.brave.com`,
+  then `config_set web_search.provider = "brave"` (M56.3 picks the key
+  up). Brave's offer, read on brave.com/search/api today: $5 of free
+  credits a month at $5 per 1,000 searches, a card asked for. That's
+  monthly credits rather than a free plan, and the hint says so.
+- Docs: `channels.md` ("Keys pasted into a chat"), `web-search.md`
+  ("Keyless search"), the roadmap's Wave A list.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** Not run live: no real paste in Telegram, no real DuckDuckGo
+refusal. The pause and the once are per tool instance, i.e. per
+session's agent, in memory, so a lane rebuilt after it's retired hears
+the hint again, and several chats each make one request to a
+DuckDuckGo that is refusing. Keys with no prefix (Brave's, Tavily's,
+passwords) still pass the guard (M52.5's known gap). Only Telegram and
+the dashboard delete the pasted message.
+
+### 2026-10-21 — Wave A, task 7: CI hygiene (Claude, Opus 5.5)
+
+The re-audit's item 11 and Part 3 #15, in the `autopilot` worktree.
+Touches `ferrule-cli`'s `sandbox` command (its self-test), PLAN.md's
+Current State and the roadmap.
+
+**The Windows flake.** Run 39632001271 (`main` after PR #52, `521e0e8`)
+failed on `windows-latest` in "Sandbox self-test": `FAIL workspace write
+works`, every other check `ok`; the #53 and #54 merges passed, and it
+is the only failure of that step in the last 40 runs (the other red
+runs failed in "Test", "Dashboard browser check" or the Linux end-to-end
+step). What the log shows: the workspace is `$RUNNER_TEMP/ws`, made by
+`mkdir -p` just before; the probe is `cmd /d /c echo probe> <ws>\.ferrule-sandbox-probe-<pid>`
+through the launcher; it took about 40 ms, like the checks around it.
+What it doesn't: why. `write_to(..).status.success()` threw the
+probe's output away, so a launcher that failed (exit 125 and a reason
+on stderr) can't be told from a write the token refused. The other
+checks can't help: "secret env vars are not visible" and the two
+refusal checks also pass when the launcher fails, since they test for
+an absence; only "workspace write works" and the two later probes
+(process memory, sockets) need the launcher to run, and those passed.
+So the first launch or two may have failed and only the write probe
+could show it. One reading that fits, not shown: the launcher saves its
+capability SIDs to `%LOCALAPPDATA%\ferrule-sandbox\windows-caps.json`
+by write-then-rename (`windows.rs` `capability_sids`), and a rename on
+Windows fails while another process (an antivirus scan, a process left
+from the "Test" step) has the target open; `launch` then fails before
+the program starts, and the next launch, with nothing left to save,
+works. That's a guess, so nothing in the launcher was changed for it.
+
+**What changed.**
+- `ferrule sandbox`: when "workspace write works" fails, the next line
+  is the probe's exit code and its stderr (`exit 125: ferrule sandbox
+  launcher: …` for a launcher failure, `exit 1: Access is denied.` for
+  a refused write). The next occurrence says which.
+- PLAN.md's Current State, in place: `main` at `ebc9e26` with PRs
+  #44–#54 merged; what landed on 2026-10-21 (M51–M62 and wave A); the
+  milestone claims (M59 channels, M60 images in tool results, M61
+  screen viewing, M62 compaction's summary input) and **the next free
+  number, M63**: PR #54 took M62 on `main` while this wave's brief still
+  had it free; the sync protocol (now: fetch and merge `main` first);
+  branch protection; the open follow-ups that matter most, from the
+  re-audit minus what wave A closed.
+- **Branch protection** is off (`gh api …/branches/main/protection`:
+  404 "Branch not protected"; the ruleset `nomaster` is disabled).
+  Turning on required checks for `main` (M55.7) is a repository setting
+  only the owner can make; noted in Current State and the sync
+  protocol.
+- The roadmap's Wave A list.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean. The self-test change wasn't run on
+Windows (it prints only on a failure).
+
+**Open.** The flake's cause. If it recurs, the new line says whether
+the launcher failed; if it's the state file, the fix is to retry the
+rename (as `update/swap.rs`'s `rename_retrying` does) or to go on with
+the new SIDs when the save fails (the cost is one more ACE per root next
+time). Branch protection waits on the owner.

@@ -17,11 +17,14 @@ use std::path::Path;
 pub use jobs::{JobKind, JobStore, MediaJob};
 
 /// A generated image.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImageOut {
     pub bytes: Vec<u8>,
     /// `png`, `jpeg`, … — from the answer's own mime type, not the name.
     pub format: String,
+    /// What the provider says it charged (OpenRouter's `usage.cost`), in
+    /// dollars; `None` when the answer doesn't say.
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -70,12 +73,14 @@ pub struct VideoJob {
 }
 
 /// Where a video job stands.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VideoState {
     Pending,
-    /// The result's download URL.
+    /// The result's download URL, and what the provider says it charged
+    /// (`usage.cost`, dollars) when the answer says.
     Done {
         url: String,
+        cost_usd: Option<f64>,
     },
     Failed {
         reason: String,
@@ -116,6 +121,64 @@ fn retry_note(retry_after: &Option<u64>) -> String {
     }
 }
 
+/// A video model's list price, for an estimate before a submit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoPrice {
+    /// Dollars per second of video, the dearest of the model's per-second
+    /// prices that name no resolution (so with audio, at its default
+    /// size); a model that only has per-resolution prices, the dearest of
+    /// those.
+    pub usd_per_second: f64,
+    /// The longest clip the model makes, for a request that names no
+    /// length.
+    pub longest_seconds: Option<u32>,
+}
+
+impl VideoPrice {
+    /// From one entry of OpenRouter's `/videos/models` list: its
+    /// `pricing_skus` (string values; a `cents_per_…` key is in cents) and
+    /// `supported_durations`. `None` when no price is per second (a model
+    /// billed per token, say).
+    pub fn of(entry: &serde_json::Value) -> Option<Self> {
+        let skus = entry["pricing_skus"].as_object()?;
+        let mut plain: Option<f64> = None;
+        let mut any: Option<f64> = None;
+        for (key, value) in skus {
+            let k = key.to_ascii_lowercase();
+            if !k.contains("second") {
+                continue;
+            }
+            let Some(mut usd) = value
+                .as_str()
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .or_else(|| value.as_f64())
+            else {
+                continue;
+            };
+            if k.starts_with("cents") {
+                usd /= 100.0;
+            }
+            if !usd.is_finite() || usd < 0.0 {
+                continue;
+            }
+            let sized = ["480p", "720p", "1080p", "4k", "1440p", "2160p"]
+                .iter()
+                .any(|r| k.contains(r));
+            any = Some(any.map_or(usd, |a: f64| a.max(usd)));
+            if !sized {
+                plain = Some(plain.map_or(usd, |a: f64| a.max(usd)));
+            }
+        }
+        Some(Self {
+            usd_per_second: plain.or(any)?,
+            longest_seconds: entry["supported_durations"]
+                .as_array()
+                .and_then(|d| d.iter().filter_map(|s| s.as_u64()).max())
+                .map(|s| s as u32),
+        })
+    }
+}
+
 #[async_trait::async_trait]
 pub trait MediaBackend: Send + Sync {
     /// One image, sync (they take seconds; the tool's timeout bounds it).
@@ -127,4 +190,15 @@ pub trait MediaBackend: Send + Sync {
     async fn download(&self, url: &str, dest: &Path) -> Result<(), MediaError>;
     /// M51.4: text to speech, sync (seconds, like an image).
     async fn speak(&self, req: SpeechReq) -> Result<AudioOut, MediaError>;
+    /// A video model's list price, from a cached price list. `None` when
+    /// the backend has no list or the model isn't priced per second.
+    async fn video_price(&self, _model: &str) -> Result<Option<VideoPrice>, MediaError> {
+        Ok(None)
+    }
+    /// A speech model's list price per input unit (a character or a
+    /// token), only for a model priced on its input alone; `None`
+    /// otherwise.
+    async fn speech_price(&self, _model: &str) -> Result<Option<f64>, MediaError> {
+        Ok(None)
+    }
 }

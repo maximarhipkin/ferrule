@@ -116,7 +116,9 @@ impl Server {
     }
 }
 
-fn same_model(a: &str, b: &str) -> bool {
+/// Two model names that are the same model: equal, or equal once
+/// Ollama's implied `:latest` is taken off.
+pub fn same_model(a: &str, b: &str) -> bool {
     let bare = |s: &str| s.strip_suffix(":latest").unwrap_or(s).to_string();
     bare(a) == bare(b)
 }
@@ -236,9 +238,14 @@ pub async fn identify(http: &reqwest::Client, origin: &str) -> Option<Server> {
             return Some(lm_studio_v1(origin, models));
         }
     }
+    // Any OpenAI-shaped list answers here on a server that serves every
+    // `…/models` path (the eval's mock does); LM Studio's entries say
+    // whether they're loaded, so that's what tells it apart.
     if let Some(v) = get(http, format!("{origin}/api/v0/models")).await {
         if let Some(data) = v["data"].as_array() {
-            return Some(lm_studio_v0(origin, data));
+            if data.iter().all(|m| m["state"].is_string()) {
+                return Some(lm_studio_v0(origin, data));
+            }
         }
     }
     let list = get(http, format!("{origin}/v1/models")).await?;

@@ -138,8 +138,9 @@ A check (`before_model_call`) reads the new ledger lines, then compares
 this run, today and this task's today against their caps. The first cap at
 or over its limit stops the run. Caps are checked before a call, so one
 call can overshoot: by at most one call per agent running at that moment.
-Nothing spends between model calls, so there's nothing to check there,
-except that sub-agents spend while their parent waits in `wait_agent`:
+Apart from the media tools, which check for themselves (below), nothing
+spends between model calls, so there's nothing to check there, except
+that sub-agents spend while their parent waits in `wait_agent`:
 every charge wakes `halted()`, which checks again, and a cap crossed by a
 child stops the parent mid-tool-call too.
 
@@ -153,6 +154,20 @@ That is checked when the pass starts: a pass already running finishes
 under its own caps, and the switch doesn't halt it mid-pass (its calls
 don't go through the guard). M16's rolling window stays as it is. Changing it would change a shipped
 behavior for no gain: the pass runs once a night.
+
+### Media spend (wave A, 2026-10-21)
+
+Images, videos and voice replies (M51) spend between model calls, so
+they check for themselves before a paid call: `Hub::usd_left(tree,
+task)` is the smallest of the run, day and task dollar caps that are
+set, minus what's spent (a ledger that can't be read refuses). An image
+or a voice reply is refused at nothing left; a video is estimated from
+the price list first and refused when the estimate is over what's left
+or over `[media] max_usd_per_video`. Their ledger rows carry `cost_usd`
+(the provider's `usage.cost`, or a video's estimate settled at
+delivery) and are charged to the run with `Hub::charge`, like a model
+call's; the day and task caps read them from the ledger like any row
+(`docs/m51-media.md`, "Wave A").
 
 ## 3. The stop message
 
@@ -291,8 +306,42 @@ content, and the question then doesn't offer one.
 
 **Who's asked** is §7's table: the owner chat for a chat turn, the
 terminal for a terminal run, and nobody for a scheduled task, so a task
-that reads mail and then sends is refused in owner mode; such a task
-needs `untrusted_send_gate = false`.
+that reads outside content and then sends is refused in owner mode,
+with one exception (below).
+
+**The owner's own scheduled briefings (wave A, 2026-10-21).** An
+owner's scheduled task in owner mode may send to the owner alone after
+reading outside content, without a tap: the morning briefing that reads
+the web or the mail and then emails or posts it to the owner. It is let
+through only when all of these hold (`classify::only_to`, checked in
+`TrustGuard` before it would ask):
+
+- the run is a scheduled task (`scheduler__<id>`, unattended) that is
+  the owner's own (the gates are off only for the owner's trees in owner
+  mode; a guest's task keeps them);
+- the call is a connected service's change (`ConnectedWrite`); a force
+  push and a `DELETE` still ask, so they're refused;
+- it names its addressees (`to`, `recipient`, `recipients`, `cc`, `bcc`,
+  or a `chat_id`), and each one is **exactly** one of the owner's own:
+  the owner's chats (`[trust] owner_chat` and each channel's owner, the
+  same list approvals go to: a Telegram chat id, the email channel's
+  owner address, …) and the mail accounts the connected services send
+  from (a native Gmail connection's address, read from its sealed fields
+  when the connections load or change). These come from the config and
+  the connection store, never from the call;
+- every address in its other arguments, except the message's own text
+  (`body`, `subject`, `text`, …), is one of those too (a `from`, a
+  `reply_to`), and nothing asks to reply to all. A reply that names no
+  `to` goes to whoever wrote, so it's refused as before.
+
+Each one is audited as `own_send` with the tool and the outside source.
+**Why it's safe:** the gate exists so an injection can't use the owner's
+keys for someone else. A send whose every recipient is fixed by the
+owner's config can only reach the owner; the injected text can change
+what the briefing says, but not where it goes, and the owner reads it
+as the bot's output, not as a message from the sender. Everything else
+(another address, a chat that isn't the owner's, a document edit, a
+force push, a `DELETE`) stays refused in an unattended run.
 
 `[trust] untrusted_send_gate = false` turns it off. It is guarded config:
 neither the chat (`config_set`, `config_restore`) nor the Config page can
@@ -492,6 +541,8 @@ suite was also run with the switch on and tiny caps.
 
 `<data>/trust/audit.jsonl`, one line per event: `cap_stop`, `cap_warning`,
 `stop_engaged`, `stop_cleared`, `untrusted_seen` (M54.5: the source),
+`own_send` (an owner's scheduled task sending to the owner alone after
+outside content, §6b),
 `approval_asked`, `approval_answered`
 (`yes`, `always`, `remember`, `no`, `timeout`, `unattended`,
 `unreachable`, `halted`, and `granted` with route `grant` each time a

@@ -284,6 +284,12 @@ pub const PARITY: &[Leaf] = &[
     ),
     leaf("egress log", Read, "console", ""),
     leaf(
+        "housekeeping run",
+        Destructive,
+        "console",
+        "`--dry-run` only reads",
+    ),
+    leaf(
         "login",
         Refused("sign in from the Models page (Sign in)"),
         "Models (§2.4)",

@@ -151,6 +151,16 @@ pub(crate) fn check_new(ctx: &Ctx, name: &str, hosts: &str) -> Result<Vec<String
     Ok(hosts)
 }
 
+/// Whether the secrets file keeps `name`: what `rotate` can replace.
+pub(crate) fn kept(ctx: &Ctx, name: &str) -> bool {
+    setup_place(ctx).is_ok_and(|place| {
+        crate::secrets::read(&place.secrets)
+            .unwrap_or_default()
+            .iter()
+            .any(|(n, _)| n == name)
+    })
+}
+
 /// `POST secrets/remove {name}`: only a page-shaped entry (its value in the
 /// secrets file, named nowhere else in the config).
 pub fn remove(ctx: &Ctx, body: &Value) -> Answer {
@@ -374,7 +384,7 @@ pub(super) fn used_by(config_text: &str, name: &str) -> Vec<String> {
 }
 
 /// Managed mode: keys for tools are for commands, which `shell` covers.
-pub(super) fn locked() -> Option<String> {
+pub(crate) fn locked() -> Option<String> {
     crate::managed::policy()
         .filter(|p| !p.shell)
         .map(|p| format!("Keys for tools are locked on this bot: {}.", p.why()))

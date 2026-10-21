@@ -700,6 +700,7 @@ and a dated entry for every session.
   [`updates.md`](docs/updates.md) (self-update, rollback, self-repair) ·
   [`instances.md`](docs/instances.md) (several agents on one machine) ·
   [`backup.md`](docs/backup.md) (backup and restore) ·
+  [`housekeeping.md`](docs/housekeeping.md) (what the daily pass prunes) ·
   [`discord.md`](docs/discord.md) · [`slack.md`](docs/slack.md) ·
   [`m59-channels.md`](docs/m59-channels.md) (personal WhatsApp through
   WAHA, iMessage through BlueBubbles; the risks) ·

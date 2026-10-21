@@ -489,11 +489,18 @@ impl Tool for RecallTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "recall".into(),
-            // Unchanged without an embedder: the eval's tokens depend on it.
+            // Both say what it isn't: after a compaction a model looked
+            // here for this session's tool results (2026-10-21).
             description: if self.embedding.is_some() {
-                "Search long-term memory by meaning and keywords (recent facts rank higher)."
+                "Search long-term memory, the facts saved with remember and kept across \
+                 sessions, by meaning and keywords (recent facts rank higher). It doesn't hold \
+                 this conversation: for something read or said earlier in this session, use \
+                 search_history or run the tool again."
             } else {
-                "Search long-term memory (keyword search, recent facts rank higher)."
+                "Search long-term memory, the facts saved with remember and kept across \
+                 sessions (keyword search, recent facts rank higher). It doesn't hold this \
+                 conversation: for something read or said earlier in this session, use \
+                 search_history or run the tool again."
             }
             .into(),
             parameters: json!({

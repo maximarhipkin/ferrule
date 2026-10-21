@@ -19,6 +19,7 @@ mod graph;
 mod graph_door;
 mod health;
 mod hooks_cli;
+mod housekeeping;
 mod import;
 mod instance;
 mod instances;
@@ -400,6 +401,12 @@ enum Cmd {
     Egress {
         #[command(subcommand)]
         op: egress::EgressCmd,
+    },
+    /// Prune the files and audit lines an always-on bot keeps making
+    /// (docs/housekeeping.md)
+    Housekeeping {
+        #[command(subcommand)]
+        op: housekeeping::HousekeepingCmd,
     },
     /// Sign in to a subscription: the ChatGPT plan here, the Claude plan
     /// through the `claude` binary (docs/subscriptions.md)
@@ -1173,6 +1180,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         } => trust::stop_cmd(reason, clear, status)?,
         Cmd::Trust { op } => trust::cmd(op)?,
         Cmd::Egress { op } => egress::cmd(op)?,
+        Cmd::Housekeeping { op } => housekeeping::cmd(op)?,
         Cmd::Plan { op } => plan::cmd(op).await?,
         Cmd::Login {
             which,
@@ -1324,20 +1332,27 @@ pub(crate) fn child_builder(
             // No chat: the tools save into the parent's workspace and say
             // so; the parent sends the files. References resolve with every
             // hidden path a guest's would (the strictest list).
-            agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
-                media.clone(),
-                &spec.id,
-                session_hidden(false, false, &spec.workspace),
-            )));
-            agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
-                media.clone(),
-                &spec.id,
-                session_hidden(false, false, &spec.workspace),
-            )));
+            // Their spend is charged to the root's run.
+            agent.register_tool(Arc::new(
+                ferrule_gateway::tools::GenerateImageTool::new(
+                    media.clone(),
+                    &spec.id,
+                    session_hidden(false, false, &spec.workspace),
+                )
+                .in_tree(&spec.tree),
+            ));
+            agent.register_tool(Arc::new(
+                ferrule_gateway::tools::GenerateVideoTool::new(
+                    media.clone(),
+                    &spec.id,
+                    session_hidden(false, false, &spec.workspace),
+                )
+                .in_tree(&spec.tree),
+            ));
             if media.speaks() {
-                agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
-                    media, &spec.id,
-                )));
+                agent.register_tool(Arc::new(
+                    ferrule_gateway::tools::SpeakTool::new(media, &spec.id).in_tree(&spec.tree),
+                ));
             }
         }
         Ok(agent)
@@ -3294,6 +3309,7 @@ async fn run_gateway(
     }
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = media::register_poller(&cfg, scheduler, media.clone(), true);
+    let scheduler = housekeeping::register(&cfg, scheduler, &workspace, true);
     let scheduler = Arc::new(learn::register(
         &cfg,
         scheduler,
@@ -3388,6 +3404,8 @@ async fn run_gateway(
         .with_restarts(restarts)
         .with_health(health.clone())
         .with_redactor(Arc::new(health::redactor(&cfg)))
+        // M52.5: a key pasted in the owner's chat gets a link to the Safe.
+        .with_paste_hook(Arc::new(self_service::keys::PasteLink::new(admin.clone())))
         // M56.6: an answer to `ask_user` goes to it, before any door.
         .with_interceptor(files.questions());
     if let Some(dash) = &dash {
@@ -4078,11 +4096,33 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
 
     let probe_name = format!(".ferrule-sandbox-probe-{}", std::process::id());
     let inside = workspace.join(&probe_name);
-    let wrote = write_to(&inside)?.status.success();
+    let probe = write_to(&inside)?;
+    let wrote = probe.status.success();
     let _ = std::fs::remove_file(&inside);
     match policy.mode {
         Mode::ReadOnly => report("workspace write is refused (read-only)", !wrote),
-        _ => report("workspace write works", wrote),
+        _ => {
+            report("workspace write works", wrote);
+            // Why, so a failure that comes and goes (once on CI's Windows
+            // runner, run 39632001271) says whether the launcher or the
+            // write failed.
+            if !wrote {
+                let why = String::from_utf8_lossy(&probe.stderr);
+                let why: Vec<&str> = why.lines().filter(|l| !l.trim().is_empty()).collect();
+                println!(
+                    "        exit {}: {}",
+                    probe
+                        .status
+                        .code()
+                        .map_or_else(|| "none".to_string(), |c| c.to_string()),
+                    if why.is_empty() {
+                        "nothing on stderr".to_string()
+                    } else {
+                        why.join(" | ")
+                    }
+                );
+            }
+        }
     }
     if let Some(data) =
         data_in_workspace(&sandbox, &workspace).filter(|_| !wrote && policy.mode != Mode::ReadOnly)

@@ -196,6 +196,55 @@ impl Store {
         Ok(self.sealer()?.seal(name, &serde_json::to_vec(secret)?))
     }
 
+    /// Every secret value the store holds, named `<connection>.<field>`:
+    /// OAuth access and refresh tokens, client secrets, API keys and a
+    /// key-based connection's secret fields (an app password, a token, a
+    /// service account's private key). M54.3's scrub hides them from tool
+    /// results. Opened in memory, never written anywhere; a store or key
+    /// that can't be read gives none.
+    pub fn secret_values(&self) -> Vec<(String, String)> {
+        let Ok(records) = self.load() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for record in &records {
+            let Ok(secret) = self.open(record) else {
+                continue;
+            };
+            let mut push = |what: &str, value: Option<&String>| {
+                if let Some(v) = value.filter(|v| !v.trim().is_empty()) {
+                    out.push((format!("{}.{what}", record.name), v.clone()));
+                }
+            };
+            push("access_token", secret.access_token.as_ref());
+            push("refresh_token", secret.refresh_token.as_ref());
+            push("client_secret", secret.client_secret.as_ref());
+            push("api_key", secret.api_key.as_ref());
+            for (name, value) in &secret.fields {
+                let n = name.to_ascii_lowercase();
+                // Not the address, the site or the account's email: those
+                // aren't secret and show up in ordinary results.
+                if !(n.contains("password")
+                    || n.contains("token")
+                    || n.contains("secret")
+                    || n == "key"
+                    || n.ends_with("_key"))
+                {
+                    continue;
+                }
+                push(name, Some(value));
+                // A service account's JSON key: its private key alone too.
+                if let Some(pem) = serde_json::from_str::<serde_json::Value>(value)
+                    .ok()
+                    .and_then(|v| v["private_key"].as_str().map(str::to_string))
+                {
+                    push("private_key", Some(&pem));
+                }
+            }
+        }
+        out
+    }
+
     pub fn open(&self, record: &Record) -> Result<Secret> {
         let Some(sealer) = self.existing_sealer()? else {
             bail!("the connections key is missing");

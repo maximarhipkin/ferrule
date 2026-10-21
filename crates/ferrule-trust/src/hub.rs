@@ -141,6 +141,9 @@ pub struct Hub {
     bound: Vec<HostPattern>,
     /// M20: the connected services, whose changing tools are gated.
     connected: RwLock<Vec<String>>,
+    /// The mail accounts the connected services send from, lower-cased:
+    /// the owner's own addresses besides the owner's chats (wave A).
+    accounts: RwLock<Vec<String>>,
     /// M56.2: the owner's standing grants.
     grants: Grants,
 }
@@ -176,6 +179,7 @@ impl Hub {
             poll: Duration::from_secs(1),
             bound,
             connected: RwLock::new(Vec::new()),
+            accounts: RwLock::new(Vec::new()),
             grants: Grants::in_data_dir(data),
         };
         // A restart doesn't warn twice for today's windows.
@@ -237,6 +241,48 @@ impl Hub {
 
     pub fn connected(&self) -> Vec<String> {
         self.connected.read().unwrap().clone()
+    }
+
+    /// The accounts the connected services send mail from (a native Gmail
+    /// connection's address), read from the connection store, never from
+    /// a tool call.
+    pub fn set_own_accounts(&self, addresses: Vec<String>) {
+        *self.accounts.write().unwrap() = addresses
+            .into_iter()
+            .map(|a| a.trim().to_lowercase())
+            .filter(|a| !a.is_empty())
+            .collect();
+    }
+
+    /// Wave A (M54.5): where a send reaches the owner alone, lower-cased:
+    /// the owner's chats (`[trust]` and each channel's owner: a Telegram
+    /// chat id, the email channel's address, …) and the connected
+    /// services' own mail accounts. All of it from the config and the
+    /// connection store.
+    pub fn own_recipients(&self) -> Vec<String> {
+        let mut own: Vec<String> = self
+            .owners()
+            .into_iter()
+            .map(|c| c.chat.trim().to_lowercase())
+            .filter(|c| !c.is_empty())
+            .collect();
+        own.extend(self.accounts.read().unwrap().iter().cloned());
+        own.sort();
+        own.dedup();
+        own
+    }
+
+    /// Wave A (M54.5): an owner's scheduled task sent to the owner alone
+    /// after reading outside content, let through without a tap; audited.
+    pub fn sent_to_owner(&self, tree: &str, tool: &str, source: &str) {
+        let run = self.run_id(tree);
+        self.audit.record(
+            self.clock.now(),
+            "own_send",
+            Some(tree),
+            run.as_deref(),
+            json!({"tool": tool, "after": source}),
+        );
     }
 
     pub fn audit(&self) -> &Audit {
@@ -497,6 +543,34 @@ impl Hub {
             .get(tree)
             .map(|r| r.spend)
             .unwrap_or_default()
+    }
+
+    /// The dollars `tree` may still spend before its run, day or task
+    /// cap, the smallest of those set (never below zero); `None` when no
+    /// dollar cap is set. A ledger that can't be read while a day or task
+    /// dollar cap is set is an error: the caller refuses (M51's media
+    /// spend checks this before a paid call).
+    pub fn usd_left(&self, tree: &str, task: Option<&str>) -> Result<Option<f64>, String> {
+        let c = self.config();
+        let mut left: Option<f64> = None;
+        let mut take = |cap: f64, spent: f64| {
+            if cap > 0.0 {
+                let l = (cap - spent).max(0.0);
+                left = Some(left.map_or(l, |x: f64| x.min(l)));
+            }
+        };
+        take(c.max_usd_per_run, self.run_spend(tree).usd);
+        let task_cap = if task.is_some() {
+            c.max_usd_per_task
+        } else {
+            0.0
+        };
+        if c.max_usd_per_day > 0.0 || task_cap > 0.0 {
+            let (day, t) = self.today(task)?;
+            take(c.max_usd_per_day, day.usd);
+            take(task_cap, t.usd);
+        }
+        Ok(left)
     }
 
     /// Today's spend and `task`'s, from the ledger.

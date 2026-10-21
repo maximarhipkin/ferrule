@@ -2138,6 +2138,24 @@ impl Connections {
 
     /// An MCP server per working connection. One that needs reconnecting
     /// is left out: its tools are suspended.
+    /// The mail accounts connected services send from, lower-cased: a
+    /// native Gmail connection's address, read from its sealed fields.
+    /// The trust gate takes them as the owner's own addresses (wave A).
+    pub fn own_addresses(&self) -> Vec<String> {
+        let Ok(records) = self.store.load() else {
+            return Vec::new();
+        };
+        records
+            .iter()
+            .filter(|r| r.state == State::Connected)
+            .filter(|r| r.service.native.as_deref() == Some("gmail") && r.oauth.is_none())
+            .filter_map(|r| self.store.open(r).ok())
+            .filter_map(|secret| secret.fields.get("email").cloned())
+            .map(|email| email.trim().to_lowercase())
+            .filter(|email| email.contains('@'))
+            .collect()
+    }
+
     pub fn servers(&self) -> Vec<McpServerConfig> {
         let Ok(records) = self.store.load() else {
             return Vec::new();

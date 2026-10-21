@@ -1453,6 +1453,58 @@ Current State; numbers are claimed there before anything is built.
   prompt. The request is cut to the context window (in pieces when the
   head is longer), and a summary call that fails folds a shortened
   extract instead of ending the run (`docs/m62-compaction.md`).
+- **Wave A, after the 2026-10-21 test phase** (one commit per task on
+  `autopilot`; the re-audit's follow-ups):
+  - **Test-phase fixes**: shortened results and compaction summaries say
+    how to get content back (`search_history`, or run the tool again)
+    and that `recall` is long-term memory, not this conversation, and the
+    two tools' descriptions say the same (`docs/m15-memory.md` §6; needs
+    an eval A/B on a real model); doctor treats Ollama's `:latest` as
+    implied; LM Studio is recognised by its `state` field, so the eval's
+    mock isn't; the Chrome launch check is killed on timeout or drop, on
+    Linux as a process group that dies with ferrule (`docs/browser.md`);
+    `docs/eval.md`'s sample report is marked illustrative.
+  - **Media spend in dollars** (M51 follow-up): media ledger rows carry
+    OpenRouter's `usage.cost` (images, finished videos), a video's
+    list-price estimate at submit settled at delivery, and an input-priced
+    speech model's estimate; they're charged to the `[trust]` run, day and
+    task caps. A video is refused before submit over `[media]
+    max_usd_per_video` ($1) or the dollars left; models come only from
+    `image_models` / `video_models`; the default video model is
+    `google/veo-3.1-lite`, 3 videos a day (`docs/m51-media.md`, "Wave A").
+  - **The owner's scheduled briefings in owner mode** (M54.5 follow-up):
+    an owner's scheduled task may send a connected service's message
+    after reading outside content when every addressee is exactly one of
+    the owner's chats or the connections' own mail accounts (from the
+    config and the connection store, never the call); audited `own_send`
+    (`docs/m19-trust-cost.md` §6b).
+  - **Housekeeping**: a daily built-in task and `ferrule housekeeping
+    run` prune `.ferrule/spill/` (with background-job logs),
+    `.ferrule/mcp-content/`, `media/screen/` and `learn/reactions/` by age
+    (`keep_days`, 14) and size (`max_mb`), and the audit log's egress
+    lines (14 days) and other events (90); never transcripts, memory, the
+    ledger, config or keys; doctor shows the sizes (`docs/housekeeping.md`).
+  - **Scrubbing gaps** (M54.3 follow-up): connections' OAuth access and
+    refresh tokens, client secrets and keys join the values hidden from
+    tool results, opened from the sealed store in memory and read again
+    when it changes; doctor names a key too short (under 6 characters)
+    to scrub; the Claude plan's own tools, which ferrule can't scrub, are
+    a documented limit (`docs/sandbox.md`, "Env"; `docs/subscriptions.md`).
+  - **Pasted keys and keyless search, to the paste link** (M52.5 and
+    M56.8 follow-ups): a key pasted in the owner's private chat is
+    answered with a one-time link to the Safe, the name and hosts its
+    prefix names filled in, or the Safe's Rotate for a name kept already;
+    guests get the plain reply (`docs/channels.md`, "Keys pasted into a
+    chat"). A DuckDuckGo refusal is said as one, DuckDuckGo isn't asked
+    again for 2 minutes, and the first refusal in a keyless session says
+    how to ask the owner for a Brave key with `secret_request`
+    (`docs/web-search.md`, "Keyless search").
+  - **CI hygiene**: `ferrule sandbox` prints the probe's exit code and
+    stderr when "workspace write works" fails, since the one Windows
+    failure (run 39632001271) left no reason; PLAN.md's Current State
+    refreshed (PRs #44–#54 merged, the claims, the next free number
+    M63, the open follow-ups). Requiring green CI on `main` (M55.7) is
+    the owner's repository setting, still off.
 
 **Still open from earlier tracks.**
 

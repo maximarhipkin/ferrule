@@ -160,6 +160,25 @@ max_output_mb = 16
 - A turn that runs past `turn_timeout_minutes`, or writes more than
   `max_output_mb`, is stopped, and so is everything it started.
 
+### What the scrub can't reach
+
+Ferrule takes known key values out of every tool result its own loop
+sees (M54.3; [sandbox.md](sandbox.md#env)). claude's own tools (Bash,
+Read, Grep, Edit and the rest) don't go through that loop: claude runs
+them itself, sends their results to Anthropic and keeps them in its own
+session files under its config dir (`<data>/claude-code/` unless
+`config_dir` says otherwise). Claude Code has no setting that lets a
+caller rewrite a built-in tool's output, so ferrule can't scrub them; on
+the Claude plan a key that claude's command prints reaches the model.
+Ferrule's tools bridged into claude (`mcp__ferrule__*`: memory, files to
+the chat, connections, …) run in ferrule's loop and are scrubbed. What
+keeps keys out of claude's tools is the sandbox: claude runs inside it,
+can't read the secrets file or `private/`, has none of ferrule's keys in
+its environment, and gets only placeholders for `[secrets]` keys. The
+plan's own sign-in token is in claude's environment, and its Bash can
+read it unless `[plans.claude_code] scrub_subprocess_env = true`.
+`ferrule doctor`'s `history` check doesn't look in claude's config dir.
+
 ### Limits
 
 When the plan's usage limit is reached, the next model in `[models]

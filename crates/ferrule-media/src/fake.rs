@@ -36,6 +36,7 @@ impl Default for FakeMedia {
             image: ImageOut {
                 bytes: PIXEL.to_vec(),
                 format: "png".into(),
+                cost_usd: None,
             },
             polls_left: Mutex::new(0),
             fail: None,
@@ -91,6 +92,7 @@ impl MediaBackend for FakeMedia {
         }
         Ok(VideoState::Done {
             url: "https://cdn.example/fake.mp4".into(),
+            cost_usd: None,
         })
     }
 

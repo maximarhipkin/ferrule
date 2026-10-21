@@ -249,11 +249,39 @@ prints, the agent loop takes the values of the keys ferrule holds out of
 the result before the transcript, the model, a hook or the trace sees it
 (M54.3; `ferrule-core` `scrub`, installed by `health::scrub_tool_results`).
 A `[secrets]` key becomes its placeholder, the text commands see anyway;
-a provider key, a channel token or anything else from the secrets file
-becomes `[redacted]`. Output that is cut or spilled to
-`.ferrule/spill/` (the shell, MCP, a background job's `tail`, an SSH
-workspace's spill) is scrubbed before the cut, so no part of a key is
-left. Values under 6 characters are skipped. `ferrule doctor`'s
+a provider key, a channel token, anything else from the secrets file, and
+(since wave A, 2026-10-21) a connection's OAuth access and refresh tokens,
+client secret, API key or secret field (an app password, a service
+account's private key) becomes `[redacted]`. The connections' values come
+from the sealed connection store, opened in memory and never written
+anywhere, and are read again whenever the store changes, so a refreshed
+access token is covered as soon as it's saved. Output that is cut or
+spilled to `.ferrule/spill/` (the shell, MCP, a background job's `tail`,
+an SSH workspace's spill) is scrubbed before the cut, so no part of a key
+is left.
+
+Values under 6 characters are skipped: replacing one would cut ordinary
+words and numbers out of every result (a 4-digit PIN out of every year),
+and the keys ferrule makes or asks for are all longer (provider keys, bot
+tokens and OAuth tokens run to dozens of characters). Only a `[secrets]`
+or secrets-file value you chose yourself can be that short: `ferrule
+doctor`'s `history` line warns and names it.
+
+**What the scrub can't reach.** On the Claude plan
+([subscriptions.md](subscriptions.md)), claude's own tools (its Bash,
+Read, Grep and the rest) run inside the `claude` process: their results
+go from there to Anthropic and into claude's own session files under its
+config dir (`<data>/claude-code/` by default), without passing through
+ferrule's loop, so they aren't scrubbed. Ferrule's bridged tools
+(`mcp__ferrule__*`) are. What keeps keys out of claude's tools is the rest
+of this page: claude runs in the sandbox, ferrule's private dir (the
+secrets file among it) is hidden from it, its environment carries none of
+ferrule's keys, and a `[secrets]` key reaches its commands only as a
+placeholder. The plan's own sign-in token is in claude's environment, and
+its Bash can read it unless `[plans.claude_code] scrub_subprocess_env =
+true` ([m35-subscriptions.md](m35-subscriptions.md)).
+
+`ferrule doctor`'s
 `history` line counts known key values still in `sessions/` and
 `learn/` (saved before this, or by an older version): names and counts,
 never values, with the files to delete after rotating those keys.
@@ -387,7 +415,9 @@ branch deletion, and a `DELETE` to a host with a bound key ask you
 first. The proxy hands your key to its own host whoever asked, so an
 injected email could otherwise send mail as you without ever seeing the
 key. A new message starts clean, a shell command offers "Allow for this
-run", and a scheduled task, which has nobody to ask, is refused.
+run", and a scheduled task, which has nobody to ask, is refused, unless
+it sends to you alone (every addressee one of your own chats or the
+connections' own mail accounts, so a morning briefing can email you).
 `[trust] untrusted_send_gate = false`, set on the machine, turns it off
 ([m19-trust-cost.md](m19-trust-cost.md) §6b). The new ops:
 
