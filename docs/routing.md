@@ -9,6 +9,20 @@ each decision, is `docs/m25-routing.md`.
 Routing is **off by default**. While it's off, nothing changes: the same
 requests, ledger rows and events as before routing existed.
 
+It stays off until you turn it on (M58.2). Only `ferrule model route
+set`, the setup wizard's Routing entry, the dashboard's Routing section or
+`enabled = true` written by hand turn it on; no default, model count or
+profile does (`Routing::on` in `crates/ferrule-cli/src/models/routing.rs`
+needs `enabled`). It isn't a default for two reasons:
+- Its only numbers come from the scripted mocks under "Measuring it". It
+  has never been run on a real cheap/strong pair.
+- An escalation changes the model mid-session, and a provider's prompt
+  cache belongs to one model. The strong tier's first call reads none of
+  the conversation from cache, and the next turn goes back to the cheap
+  tier's cache, which may have expired meanwhile ("Money" below).
+
+Run `--variant routing` on your own pair before turning it on.
+
 ## Turn it on
 
 The tiers are models you've already connected (`docs/models.md`), listed

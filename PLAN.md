@@ -7059,3 +7059,42 @@ count, not a share of the child's context window. Tool-call arguments
 aren't cut, so one huge `write_file` call ends the copy early. A worker's
 worktree is at the parent's HEAD, so the copy may show uncommitted files
 the worktree lacks; the header asks the child to re-read before editing.
+
+### 2026-10-21 — M58.2: per-turn routing stays strictly opt-in (Claude, Opus 5.5)
+
+**Why.** The gap analysis's cut list keeps M25's cheap→strong routing
+opt-in until it's measured. Its central claim has only mock numbers
+(`docs/research-round2-improvements.md`, "Run `--variant routing` on a
+real model pair"), and an escalation is a mid-session model switch that
+costs the prompt cache.
+
+**What was checked.** Nothing turns it on implicitly:
+- `RoutingConfig::default()` has `enabled: false`.
+- `Routing::on()` is `enabled && usable()`, and `floor()` returns `None`
+  unless `on()`, so a tier ref is a plain model while it's off.
+- The only writers of `enabled = true` are `Models::set_routing` (`ferrule
+  model route set`, the dashboard's `/api/routing/set`) and setup's
+  `write_routing`. Setup reaches that only from its "Routing: start cheap,
+  escalate when needed" entry, never in the guided first run.
+- `/model strong` refuses while it's off.
+- Doctor stays silent while it's off.
+- Self-service and managed mode don't touch it.
+- The existing test `off_nothing_routes_and_a_tier_ref_is_just_its_model`
+  covers the off path.
+
+No code change.
+
+**What changed (docs only).**
+- `docs/routing.md`: a paragraph on how it gets turned on and why it
+  isn't a default.
+- `docs/m25-routing.md`: a status note.
+- The roadmap: the M25 section and the M58 line.
+- README: the Providers row says "Opt-in routing, off unless you turn it
+  on".
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** The real-pair measurement (M58.5's A/B) and Amp-style "ask the
+strong model" as the simpler alternative, which the gap analysis suggests
+and nobody has built.

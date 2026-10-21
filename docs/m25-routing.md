@@ -5,6 +5,13 @@ M23), merged to `main` (PR #19). The user guide is `docs/routing.md`. Background
 `docs/research-routing-and-local-models.md`; the model layer it sits on is
 M21 (`docs/m21-models.md`) and M23 (`docs/m23-drivers.md`).
 
+M58.2 (2026-10-21) keeps it **strictly opt-in until it's measured**. Its
+central claim has only the mock numbers in §8, and an escalation is a
+mid-session model switch, which costs the prompt cache. Nothing turns it
+on implicitly. Only `enabled = true`, written by `ferrule model route
+set`, the setup wizard's Routing entry or the dashboard, does that. The
+reasons are spelled out in `docs/routing.md`.
+
 ## Why
 
 Most of what an agent does is routine: read a file, run a command, write a

@@ -604,6 +604,11 @@ Merged to `main` (PR #19).
   section and API, doctor.
 - `ferrule eval --variant routing` compares cheap only, routed and strong
   only on pass rate and cost.
+- **Strictly opt-in (M58.2):** only `enabled = true` turns it on, written
+  by `ferrule model route set`, setup's Routing entry, the dashboard or
+  by hand. It stays opt-in until a real pair is measured, for two
+  reasons: it has only mock numbers, and an escalation is a mid-session
+  model switch that costs the prompt cache (`docs/routing.md`).
 
 **Done means.** On a real pair, `routed` passes close to `strong` at close
 to `cheap`'s price, and the ledger says why each escalation happened.
@@ -1217,7 +1222,9 @@ Current State; numbers are claimed there before anything is built.
     in its own transcript, then its task.
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
-    the core, eval as the gate.
+    the core, eval as the gate. Done on `autopilot`: M58.2, M25 routing
+    verified strictly opt-in and documented as staying so until a real
+    pair is measured (`docs/routing.md`).
   - **M59** channels not worth chasing yet: personal WhatsApp and
     iMessage.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
