@@ -343,3 +343,52 @@ the door, from the owner, never by the model.
   every channel with buttons, and as text elsewhere.
 - Nothing has run live: not against a model, a bot, a calendar or a
   mailbox.
+
+## Built: M64.2, commitments and open loops
+
+- `ferrule-cli/src/proactive/`: `store.rs` (the SQLite store of §2),
+  `door.rs` (`ProactiveDoor`), `tool.rs` (`commitments`), `reminder.rs`,
+  `loops.rs`, and `mod.rs` (`[proactive]`, the due-time and reminder-time
+  rules, `offer_reminder`).
+- **The door** is the gateway's last interceptor. While proactive is on
+  it keeps each plain message the owner sends in their private chat or
+  the dashboard's (`self_service::offered`, `trust::by_owner`), clipped
+  to 500 characters; messages older than 30 days are dropped as new ones
+  come. It answers `/commitments` (`all`, `done|drop <id>`, `snooze <id>
+  [days]`) and the buttons' `/proactive do|later|never|useful|undo <id>`,
+  the owner's only. The rest of `/proactive` comes with M64.5.
+- **The tool** is registered in the owner's private chat and the
+  dashboard's chat while proactive is on; it is deferrable (M57.1), so
+  with deferral on only its name and one line are in the prompt.
+- **A commitment with a due time** gets its reminder offered at once
+  (`offer_reminder`): at `suggest`, a separate question in the chat it
+  was said in, with Do it / Not now / Never; at `act`, the reminder is
+  made and a receipt with Undo goes out ("Done without asking: …"); at
+  `off`, nothing. The reminder's time follows §6 (09:00 on a named day,
+  an hour before a named time, a quarter of an hour when that has
+  passed). An offer made in the chat the owner is typing in doesn't wait
+  for quiet hours or count against the pass's caps: the owner just said
+  it. "Never" on one puts `reminder` on the Never list.
+- **Reminders** are built-in one-offs named `ferrule-reminder`
+  (`reminder::create`): the job (`reminder::register`, registered whether
+  proactive is on or not) posts "Reminder: <text>" to the owner's primary
+  chat and waits for the channel, so a failed delivery is a failed run.
+  `TasksAdmin::delete` deletes a reminder (other built-in tasks are still
+  only paused), so the Tasks page's Delete works on one.
+- **Loops** (`loops::sync`): one of the owner's own tasks (answering in
+  an owner chat or the dashboard's, not built in) whose last run failed
+  or was cut short gets one open loop, closed when a later run succeeds.
+  Brought up to date when `/commitments` or the tool lists them (and by
+  each pass, M64.4).
+- **Delivery that waits.** `Hub::post_in` sends to an owner chat and
+  waits for the channel's answer, with the message's id when the channel
+  gives one: `Notifier::post_choices` (default: `send_choices`, no id),
+  `ferrule_gateway::post_with_buttons` and `Channel::send_buttons_with_id`
+  (default: `send_buttons`, no id; Telegram returns the id). Small
+  additions to M51's Telegram send branches and the gateway's channel
+  trait.
+- `<data>/proactive` is in `owner_mode::guest_hidden`.
+- `[proactive]` is read and checked at load (`every_hours` 1–24,
+  `quiet_hours` a `HH:MM-HH:MM` range, the zone, the dollar cap, a model
+  that isn't empty); the example config has the block.
+

@@ -180,7 +180,8 @@ const GUEST_MEMORY: &str = "guest-memory";
 /// commands and file tools in every mode: [`history`], the owner's
 /// long-term memory (`memory.db` and SQLite's files beside it), the other
 /// chats' memories, the learned skills (the pass keeps some for the
-/// owner's chats), and M61's captures of the owner's screen in
+/// owner's chats), M64's proactive store (the owner's messages and
+/// commitments), and M61's captures of the owner's screen in
 /// `workspace`.
 pub fn guest_hidden(workspace: &Path) -> Vec<PathBuf> {
     let mut hidden = vec![workspace.join(crate::screen::DIR)];
@@ -195,6 +196,7 @@ pub fn guest_hidden(workspace: &Path) -> Vec<PathBuf> {
             "memory.db-shm",
             GUEST_MEMORY,
             "learned-skills",
+            crate::proactive::store::DIR,
         ]
         .map(|rel| data.join(rel)),
     );

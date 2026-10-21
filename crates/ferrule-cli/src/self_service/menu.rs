@@ -109,6 +109,12 @@ pub const COMMANDS: &[Command] = &[
     owner("hooks", "", "Workspace hooks", "the workspace's hooks"),
     owner("caps", "", "Spending caps", "spending caps"),
     owner(
+        "commitments",
+        "",
+        "What you said you'd do",
+        "the commitments and unfinished things tracked for you (owner)",
+    ),
+    owner(
         "dashboard",
         "",
         "A link to the dashboard",
@@ -153,7 +159,7 @@ mod tests {
             .map(|c| c["command"].as_str().unwrap())
             .collect();
         assert_eq!(in_help, in_menu);
-        assert_eq!(in_menu.len(), 22);
+        assert_eq!(in_menu.len(), 23);
         assert!(in_menu.contains(&"dashboard"), "/dashboard is in the menu");
         assert!(!all(false).iter().any(|c| c.name == "dashboard"));
     }
@@ -178,8 +184,8 @@ mod tests {
     fn every_command_in_the_list_has_a_door() {
         use crate::{
             connections::ConnectionsDoor, dashboard::door::DashboardDoor, goal_door::GoalDoor,
-            graph_door::GraphDoor, models::ModelDoor, settings_door::SettingsDoor,
-            subscription::login::PlanDoor, trust::OwnerDoor,
+            graph_door::GraphDoor, models::ModelDoor, proactive::door::ProactiveDoor,
+            settings_door::SettingsDoor, subscription::login::PlanDoor, trust::OwnerDoor,
         };
         let doors: Vec<&str> = [
             OwnerDoor::HANDLES,
@@ -190,6 +196,7 @@ mod tests {
             SettingsDoor::HANDLES,
             GoalDoor::HANDLES,
             GraphDoor::HANDLES,
+            ProactiveDoor::HANDLES,
             super::super::SelfServiceDoor::HANDLES,
         ]
         .concat();

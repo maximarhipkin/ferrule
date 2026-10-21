@@ -38,6 +38,7 @@ mod models;
 mod owner_mode;
 mod plan;
 mod plugins_cli;
+mod proactive;
 mod probe;
 mod remote;
 mod screen;
@@ -3062,6 +3063,13 @@ async fn gateway_factory(
             // default 5 minutes; a scheduled task's run doesn't wait.
             agent.set_cache_ttl(chat_cache_ttl.clone());
         }
+        // M64: the owner's commitments, while proactive is on.
+        if proactive::on() && self_service::offered(&hub, session_id).is_some() {
+            agent.register_tool(Arc::new(proactive::tool::CommitmentsTool::new(
+                hub.clone(),
+                session_id,
+            )));
+        }
         // M48: the owner's own chat can change Ferrule, with the owner's tap;
         // in owner mode, a Telegram group of the owner's too (no cards there).
         if let Some(admin) = &admin {
@@ -3318,6 +3326,10 @@ async fn run_gateway(
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = media::register_poller(&cfg, scheduler, media.clone(), true);
     let scheduler = housekeeping::register(&cfg, scheduler, &workspace, true);
+    // M64: reminders run whether proactive is on or not; the owner's
+    // messages are kept and the tool offered only while it is.
+    let scheduler = proactive::reminder::register(scheduler, hub.clone());
+    proactive::set_on(cfg.proactive.enabled);
     let scheduler = Arc::new(learn::register(
         &cfg,
         scheduler,
@@ -3467,6 +3479,10 @@ async fn run_gateway(
             owner: trust::owner_chat(&cfg),
         }));
     }
+    // M64: last, so what it keeps is a message on its way to the agent.
+    gateway = gateway.with_interceptor(Arc::new(proactive::door::ProactiveDoor {
+        hub: hub.clone(),
+    }));
     gateway = gateway.with_menu(self_service::menu::all(cfg.dashboard.enabled));
     for channel in adapters {
         gateway.add_channel(channel);

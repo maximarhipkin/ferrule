@@ -804,6 +804,10 @@ pub struct Config {
     /// making are kept (docs/housekeeping.md).
     #[serde(default)]
     pub housekeeping: crate::housekeeping::HousekeepingConfig,
+    /// M64: the proactive agent, off until the owner turns it on
+    /// (docs/m64-proactive.md).
+    #[serde(default)]
+    pub proactive: crate::proactive::ProactiveConfig,
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -1806,6 +1810,22 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # max_mb = 500               # per directory, after the age rule, oldest first; 0 = none
 #                            # Never transcripts, memory, the ledger, config or keys.
 
+# [proactive]               # M64: a pass that follows up on what you said you'd do
+# enabled = false            # (docs/m64-proactive.md). Off until you turn it on:
+#                            # the dashboard's Proactive page or /proactive on.
+# level = "suggest"          # off: notice only; suggest: ask with buttons; act:
+#                            # set reminders and your own tasks, each with Undo.
+# every_hours = 3            # how often it looks; no model call when nothing changed
+# quiet_hours = "22:00-07:00"  # your timezone; "" for none
+# timezone = "Asia/Jerusalem"  # unset: [trust] timezone
+# max_messages_per_day = 3
+# min_gap_minutes = 120
+# max_usd_per_day = 0.25     # the passes' own cap, inside [trust]'s
+# model = "cheap"            # unset: [routing]'s first tier, else the default
+# calendar = true            # the next 24 h of connected calendars (outside content)
+# mail = true                # unread mail headers (outside content)
+# patterns = true            # offer to schedule what you ask for again and again
+
 # [telemetry]               # OpenTelemetry traces of the agent's work over OTLP/HTTP
 # endpoint = "http://127.0.0.1:4318"  # (docs/otel.md). Off until set; /v1/traces
 #                            # is appended. Sessions, turns, model and tool calls.
@@ -2055,6 +2075,7 @@ impl Config {
         }
         crate::managed::apply(&mut self);
         self.check_providers()?;
+        self.proactive.check(&self.trust.timezone)?;
         self.memory.hybrid()?;
         self.egress.policy()?;
         self.transcription.choice(&self.providers, |_| None)?;

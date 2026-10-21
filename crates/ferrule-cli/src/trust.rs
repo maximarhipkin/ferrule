@@ -293,6 +293,23 @@ impl ChannelNotifier {
         text: &str,
         buttons: &[ferrule_gateway::Button],
     ) -> Result<(), String> {
+        let (channel, msg) = self.outbound(chat, text)?;
+        ferrule_gateway::send_with_buttons(channel.as_ref(), msg, buttons)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    fn outbound(
+        &self,
+        chat: &ChatRef,
+        text: &str,
+    ) -> Result<
+        (
+            Arc<dyn ferrule_gateway::Channel>,
+            ferrule_gateway::OutboundMessage,
+        ),
+        String,
+    > {
         let Some(channel) = self.0.get(&chat.channel) else {
             return Err(format!("{} isn't running", chat.channel_title()));
         };
@@ -303,10 +320,18 @@ impl ChannelNotifier {
             reply_to: None,
             attachments: vec![],
         };
-        ferrule_gateway::send_with_buttons(channel.as_ref(), msg, buttons)
-            .await
-            .map_err(|e| e.to_string())
+        Ok((channel.clone(), msg))
     }
+}
+
+fn buttons(choices: &[(String, String)]) -> Vec<ferrule_gateway::Button> {
+    choices
+        .iter()
+        .map(|(label, reply)| ferrule_gateway::Button {
+            text: label.clone(),
+            action: ferrule_gateway::ButtonAction::Command(reply.clone()),
+        })
+        .collect()
 }
 
 #[async_trait::async_trait]
@@ -325,14 +350,19 @@ impl ferrule_trust::Notifier for ChannelNotifier {
         text: &str,
         choices: &[(String, String)],
     ) -> Result<(), String> {
-        let buttons: Vec<_> = choices
-            .iter()
-            .map(|(label, reply)| ferrule_gateway::Button {
-                text: label.clone(),
-                action: ferrule_gateway::ButtonAction::Command(reply.clone()),
-            })
-            .collect();
-        self.deliver(chat, text, &buttons).await
+        self.deliver(chat, text, &buttons(choices)).await
+    }
+
+    async fn post_choices(
+        &self,
+        chat: &ChatRef,
+        text: &str,
+        choices: &[(String, String)],
+    ) -> Result<Option<String>, String> {
+        let (channel, msg) = self.outbound(chat, text)?;
+        ferrule_gateway::post_with_buttons(channel.as_ref(), msg, &buttons(choices))
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 

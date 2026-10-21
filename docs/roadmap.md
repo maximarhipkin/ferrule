@@ -1576,6 +1576,16 @@ Current State; numbers are claimed there before anything is built.
     message cap, a gap, a dollar cap, a cheaper model; Never and Not-now
     feedback; the Proactive page, `/proactive`, `/commitments`; owner-only
     and inside every gate.
+  - **M64.2, commitments and open loops**: `<data>/proactive/
+    proactive.db` (hidden from guests); a last interceptor that keeps the
+    owner's own messages (their private chat and the dashboard's) while
+    proactive is on; a `commitments` tool (list, add, done, snooze, drop;
+    owner sessions only, deferrable) and `/commitments`; a commitment
+    with a due time gets a reminder offered (suggest: Do it / Not now /
+    Never) or made (act: a receipt with Undo); reminders are built-in
+    one-offs (`ferrule-reminder`) delivered as plain text, no model call;
+    loops from the owner's tasks' failed or cut-short runs; delivery that
+    waits and keeps the message id (`Hub::post_in`). Not run live.
 
 **Still open from earlier tracks.**
 

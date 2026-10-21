@@ -161,11 +161,12 @@ impl TasksAdmin {
     }
 
     /// The task and its run history. A built-in task would come back at
-    /// the next start, so it's paused instead.
+    /// the next start, so it's paused instead; M64's reminders don't come
+    /// back, so they're deleted.
     pub fn delete(&self, id: &str, by: &str) -> Result<String> {
         let store = self.store()?;
         let t = self.task(&store, id)?;
-        if t.channel == BUILTIN_CHANNEL {
+        if t.channel == BUILTIN_CHANNEL && !crate::proactive::reminder::is_reminder(&t) {
             bail!(
                 "{} is built in and comes back at the next start; pause it instead",
                 t.name

@@ -27,7 +27,8 @@ pub mod transcribe;
 pub mod typing;
 
 pub use channel::{
-    buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
+    buttons_as_text, post_with_buttons, send_with_buttons, Button, ButtonAction, Channel,
+    ChannelCapabilities,
 };
 pub use channels::{
     BlueBubblesChannel, DiscordChannel, EmailChannel, HttpChannel, LocalChannel, MatrixChannel,

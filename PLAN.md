@@ -9669,3 +9669,46 @@ passed, 0 failed, 28 ignored, 73 binaries (macOS).
 **Open.** It's a design: tasks 2–5 build it, and their entries say where
 the build departs from it.
 
+### 2026-10-21 — M64.2: commitments and open loops (Claude, Opus 5.5)
+
+M64's task 2, in the `autopilot` worktree. Touches M51's Telegram send
+branch and the gateway's channel trait with one added method each, said
+here.
+
+**What changed.**
+- `ferrule-cli/src/proactive/` (new): the store
+  (`<data>/proactive/proactive.db`: commitments, items, the Never list,
+  the owner's messages), `ProactiveDoor` (last interceptor: keeps the
+  owner's plain messages in their private chat and the dashboard's while
+  proactive is on; answers `/commitments` and the buttons'
+  `/proactive do|later|never|useful|undo <id>`), the `commitments` tool
+  (owner sessions only, while on; deferrable), `offer_reminder` (a due
+  commitment's reminder asked at `suggest`, made with a receipt and Undo
+  at `act`), `reminder` (built-in one-offs `ferrule-reminder`, posted as
+  plain text, the job registered always) and `loops::sync` (the owner's
+  tasks' failed or cut-short last runs; closed by a later success).
+- `[proactive]` in the config (the whole block of §9, checked at load;
+  in the example config). `proactive::set_on` at the gateway's start.
+- `ferrule-trust`: `Notifier::post_choices`, `Hub::post_in` (waits,
+  returns the chat and the message id). `ferrule-gateway`:
+  `Channel::send_buttons_with_id` (Telegram returns the id),
+  `post_with_buttons`. `ferrule-cli` `ChannelNotifier` implements it.
+- `TasksAdmin::delete` deletes a reminder (other built-ins stay
+  pause-only). `owner_mode::guest_hidden` hides `<data>/proactive`.
+  `/commitments` is in the menu.
+- Docs: `m64-proactive.md` ("Built: M64.2"), the roadmap.
+
+**Why the extraction isn't here.** Per the design (§1), the pass notes
+commitments from the kept messages in its one call (M64.4); this task
+builds what it writes into and the explicit path (the tool's `add`).
+
+**Tests changed, none added** (the owner's standing rule): the menu
+test's count (23) and its list of doors.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Not run live: the door's keeping, the tool, a reminder's
+delivery, Telegram's message id with buttons. A reminder offered from a
+chat turn doesn't wait for quiet hours (the owner is there).
+
