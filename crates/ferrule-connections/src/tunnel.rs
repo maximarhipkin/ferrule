@@ -135,9 +135,19 @@ impl Tunnel {
 /// `cloudflared tunnel --url http://127.0.0.1:<port>`, and the
 /// `https://….trycloudflare.com` it prints, within 30 s.
 pub async fn open(cloudflared: &Path, port: u16) -> Result<Tunnel> {
-    let mut child = tokio::process::Command::new(cloudflared)
-        .args(["tunnel", "--no-autoupdate", "--url"])
-        .arg(format!("http://127.0.0.1:{port}"))
+    // No working directory of its own: it keeps the process's.
+    let std_cmd = ferrule_sandbox::host::command(
+        cloudflared,
+        [
+            "tunnel".to_string(),
+            "--no-autoupdate".into(),
+            "--url".into(),
+            format!("http://127.0.0.1:{port}"),
+        ],
+        Path::new("."),
+    )
+    .with_context(|| format!("starting {}", cloudflared.display()))?;
+    let mut child = tokio::process::Command::from(std_cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

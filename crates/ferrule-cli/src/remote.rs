@@ -34,6 +34,16 @@ fn spec(arg: Option<String>, cfg: Option<&Config>) -> String {
         .unwrap_or_else(|| ".".into())
 }
 
+/// The local directory [`workspace`] would build on, without connecting:
+/// the path itself, or a remote workspace's anchor.
+pub fn local_dir(arg: Option<&str>, cfg: &Config) -> Result<PathBuf> {
+    let spec = spec(arg.map(String::from), Some(cfg));
+    if !ferrule_ssh::is_remote(&spec) {
+        return Ok(PathBuf::from(spec));
+    }
+    anchor(&Target::parse(&spec, &cfg.ssh).map_err(|e| anyhow!(e))?)
+}
+
 /// The local directory the agent is built on. For a remote workspace it
 /// is the local anchor; the link is connected first. `lenient` (the
 /// gateway) starts anyway when the host is only unreachable: the link

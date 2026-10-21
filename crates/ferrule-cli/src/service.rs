@@ -333,7 +333,7 @@ impl Svc {
                 return Some(true);
             }
         }
-        let out = Command::new("ps")
+        let out = Command::new(ferrule_sandbox::host::system_program("ps"))
             .args(["-o", "etime=", "-p", &pid.to_string()])
             .output()
             .ok()?;
@@ -371,6 +371,20 @@ impl Svc {
     /// Write the unit, then enable and start it (restarting it if it was
     /// already running, so a changed unit takes effect).
     pub fn install(&self, spec: &Spec) -> Result<Vec<String>> {
+        self.write_units(spec, true)
+    }
+
+    /// M54 §3: a systemd user service's units written again and reloaded,
+    /// without a restart. The running gateway calls this when it moves its
+    /// binary; its own exit then restarts it onto `spec.exe`.
+    pub fn rewrite(&self, spec: &Spec) -> Result<Vec<String>> {
+        if !cfg!(target_os = "linux") || self.scope == Scope::System {
+            bail!("only a systemd user service's units are rewritten without a restart");
+        }
+        self.write_units(spec, false)
+    }
+
+    fn write_units(&self, spec: &Spec, restart: bool) -> Result<Vec<String>> {
         let unit = self.unit_path()?;
         let dir = unit.parent().context("unit path has no parent")?;
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -407,10 +421,13 @@ impl Svc {
         }
         std::fs::write(&unit, systemd_unit(spec))
             .with_context(|| format!("writing {}", unit.display()))?;
+        // Its `daemon-reload` covers the gateway's unit too.
         self.install_update_units(spec, &data)?;
         let name = self.systemd_unit();
         self.systemctl(&["enable", &name])?;
-        self.systemctl(&["restart", &name])?;
+        if restart {
+            self.systemctl(&["restart", &name])?;
+        }
         // Without lingering, user services stop at logout and don't start at
         // boot — which is the whole point on a server.
         if !lingering() {
@@ -464,6 +481,17 @@ impl Svc {
             .parent()
             .context("unit path has no parent")?
             .to_path_buf())
+    }
+
+    /// Where this scope's update service unit is (launchd: its agent),
+    /// installed or not.
+    pub fn update_unit_file(&self) -> Option<PathBuf> {
+        let name = if cfg!(target_os = "macos") {
+            format!("{}.plist", self.update_label())
+        } else {
+            self.update_unit("service")
+        };
+        Some(self.update_unit_dir().ok()?.join(name))
     }
 
     /// Are this instance's update units installed, the system's or this
@@ -822,6 +850,11 @@ pub fn installed_exe() -> Option<PathBuf> {
     Svc::current().installed_exe()
 }
 
+/// Where the update service unit is, installed or not (M54 §3).
+pub fn update_unit_file() -> Option<PathBuf> {
+    Svc::current().update_unit_file()
+}
+
 /// The binary the unit at `unit` runs.
 pub fn installed_exe_at(unit: &Path) -> Option<PathBuf> {
     parse_exe(&std::fs::read_to_string(unit).ok()?)
@@ -932,6 +965,11 @@ pub fn restart_hint() -> String {
 /// Write the unit, then enable and start it.
 pub fn install(spec: &Spec) -> Result<Vec<String>> {
     Svc::current().install(spec)
+}
+
+/// Write the units again and reload them, without a restart (M54 §3).
+pub fn rewrite(spec: &Spec) -> Result<Vec<String>> {
+    Svc::current().rewrite(spec)
 }
 
 pub fn restart() -> Result<()> {
@@ -1414,8 +1452,22 @@ fn uid() -> u32 {
 /// `systemctl`, `loginctl` or `launchctl`, without the gateway's own
 /// `NOTIFY_SOCKET`: a systemd tool that inherits it reports its exit status
 /// there (`ERRNO=…`) as if it were the service.
+///
+/// M54 §3: by absolute path, not looked up on `PATH`, where a user-writable
+/// dir may come first: owner mode's root-owned pick
+/// (`host::system_program`), else `/usr/bin`'s or `/bin`'s. The gateway
+/// rewrites its own units before owner mode's launcher is set.
 fn manager(program: &str) -> Command {
-    let mut cmd = Command::new(program);
+    let mut path = ferrule_sandbox::host::system_program(program);
+    if path.is_relative() {
+        // ponytail: in neither (NixOS) it's still found on `PATH`.
+        path = ["/usr/bin", "/bin"]
+            .iter()
+            .map(|dir| Path::new(dir).join(program))
+            .find(|p| p.is_file())
+            .unwrap_or(path);
+    }
+    let mut cmd = Command::new(path);
     cmd.env_remove("NOTIFY_SOCKET")
         .env_remove("WATCHDOG_USEC")
         .env_remove("WATCHDOG_PID");

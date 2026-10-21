@@ -2,12 +2,41 @@
 //! verifier's throwaway snapshot. Plain `git` calls; when one fails the
 //! child shares its parent's workspace and a note says why.
 //!
-//! These calls run in ferrule's own process, outside any sandbox, on a
-//! repo a child could write to, so every one turns off the two things git
-//! would otherwise run from it: hooks and an fsmonitor.
+//! These calls run on a repo a child could write to, so every one turns off
+//! the two things git would otherwise run from it: hooks and an fsmonitor.
+//! They run in ferrule's own process, outside any sandbox, unless the host
+//! sets a launcher ([`set_git`]): then git runs through that, so the
+//! commands the repo's config defines (filters, the pager, ssh) are
+//! confined too.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, OnceLock};
+
+/// Builds a `git` command that runs in the given directory, sandboxed.
+pub type GitCommand = Arc<dyn Fn(&Path) -> io::Result<Command> + Send + Sync>;
+
+static LAUNCHER: OnceLock<GitCommand> = OnceLock::new();
+
+/// Sets how every worktree `git` is started. Once per process; a second
+/// call keeps the first. Unset, it's a plain `git`.
+pub fn set_git(f: GitCommand) {
+    let _ = LAUNCHER.set(f);
+}
+
+/// `git` for `dir`, before its options: the launcher's command (which runs
+/// in `dir`), else `git -C dir`.
+fn base(dir: &Path) -> Result<Command, String> {
+    match LAUNCHER.get() {
+        Some(launch) => launch(dir).map_err(|e| format!("git couldn't run: {e}")),
+        None => {
+            let mut cmd = Command::new("git");
+            cmd.arg("-C").arg(dir);
+            Ok(cmd)
+        }
+    }
+}
 
 /// A child's own copy of the repo.
 #[derive(Debug, Clone)]
@@ -28,9 +57,7 @@ pub(crate) struct Made {
 pub(crate) type Shared = Option<String>;
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = base(dir)?
         .args(["-c", "core.fsmonitor=false", "-c"])
         .arg(format!("core.hooksPath={}", no_hooks().display()))
         // ferrule's own commits (worktree snapshots, close-out) are never
@@ -55,9 +82,15 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// A directory that holds no hooks.
+/// A directory that holds no hooks. On Unix `/dev/null` isn't a directory,
+/// so git finds none and nothing a command can write is trusted; Windows
+/// has no such path and keeps an (empty) temp dir.
 fn no_hooks() -> PathBuf {
-    std::env::temp_dir().join("ferrule-no-git-hooks")
+    if cfg!(unix) {
+        PathBuf::from("/dev/null")
+    } else {
+        std::env::temp_dir().join("ferrule-no-git-hooks")
+    }
 }
 
 struct Repo {
@@ -201,9 +234,7 @@ pub(crate) fn snapshot(parent_workspace: &Path, root: &Path, id: &str) -> Result
 
 fn copy_changes(repo: &Repo, to: &Path, root: &Path, id: &str) -> Result<(), String> {
     let patch = root.join(format!("{id}.patch"));
-    let diff = Command::new("git")
-        .arg("-C")
-        .arg(&repo.top)
+    let diff = base(&repo.top)?
         .args(["-c", "core.fsmonitor=false"])
         .args(["diff", "HEAD", "--binary", "--no-ext-diff", "--no-color"])
         .stdin(Stdio::null())

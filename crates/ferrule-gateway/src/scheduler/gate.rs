@@ -17,7 +17,7 @@
 //!   or `curl` it spawned.
 
 use super::error::SchedulerError;
-use ferrule_sandbox::Shell;
+use ferrule_sandbox::{host, Shell};
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -35,12 +35,12 @@ pub async fn run_gate(
     timeout: Duration,
 ) -> Result<GateOutcome, SchedulerError> {
     let shell = Shell::get();
-    let mut cmd = Command::new(&shell.program);
+    let std_cmd = host::command(&shell.program, shell.args(command), workspace)
+        .map_err(|e| SchedulerError::Gate(format!("failed to spawn gate script: {e}")))?;
+    let mut cmd = Command::from(std_cmd);
     #[cfg(unix)]
     cmd.process_group(0);
-    cmd.args(shell.args(command))
-        .current_dir(workspace)
-        .kill_on_drop(true)
+    cmd.kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

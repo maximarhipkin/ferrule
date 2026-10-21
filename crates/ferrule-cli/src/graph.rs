@@ -480,6 +480,9 @@ pub struct RunOpts {
     /// Collect the report instead of printing it live (a chat door reads
     /// it when the run ends).
     pub quiet: bool,
+    /// The chat a door started it from (channel, chat id): the run gets
+    /// owner mode only if that chat would (M54).
+    pub origin: Option<(String, String)>,
 }
 
 /// How a graph run ended: the exit code (0 = the success condition held)
@@ -566,6 +569,9 @@ pub async fn run(file: &Path, opts: RunOpts) -> Result<GraphReport> {
     // The runner is the tree's root: a deterministic orchestrator, not an
     // agent — it routes, it never decides the work.
     let root = format!("graph-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    if let Some((channel, chat)) = &opts.origin {
+        crate::owner_mode::started_from(&root, channel, chat);
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

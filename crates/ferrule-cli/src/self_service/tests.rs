@@ -154,12 +154,13 @@ fn the_ops_read_their_arguments_and_nothing_else() {
             "op": name, "model": "m", "models": ["m"], "key": "agent.stream",
             "value": true, "caps": {"daily_usd": 1.0}, "name": "n", "sha": "s",
             "id": "i", "prompt": "p", "schedule": "every 1h",
+            "packages": ["p"], "hosts": ["h"], "why": "w",
         });
         let op = Op::from_args(&args).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(op.name(), *name);
         assert_eq!(op.is_change(), CHANGE_OPS.contains(name));
     }
-    assert_eq!(READ_OPS.len() + CHANGE_OPS.len(), 35);
+    assert_eq!(READ_OPS.len() + CHANGE_OPS.len(), 41);
 }
 
 #[test]
@@ -323,7 +324,7 @@ async fn an_unbound_tool_says_it_is_starting() {
         .unwrap(),
     );
     let tool = AdminTool::new(
-        Admin::new(hub),
+        Admin::new(hub, false),
         "telegram__42",
         ChatRef::new("telegram", "42"),
     );
@@ -375,7 +376,7 @@ fn the_definition_lists_every_op_and_takes_no_extra_field() {
     let ops = def.parameters["properties"]["op"]["enum"]
         .as_array()
         .unwrap();
-    assert_eq!(ops.len(), 35);
+    assert_eq!(ops.len(), 41);
     assert_eq!(def.parameters["additionalProperties"], false);
     assert_eq!(rig.tool().serial_group().as_deref(), Some("ferrule_admin"));
     assert!(!rig.tool().needs_approval());

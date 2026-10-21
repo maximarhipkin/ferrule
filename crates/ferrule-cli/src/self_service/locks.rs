@@ -7,6 +7,7 @@ use crate::dashboard::Ctx;
 use crate::managed::{self, Policy};
 
 const UPDATE_WHY: &str = "the panel updates a bot by changing its image";
+const PACKAGES_WHY: &str = "the bot's container and its system packages are its image's";
 
 /// A model's provider name and kind, when it can be told.
 pub(super) type KindOf<'a> = &'a dyn Fn(&str) -> Option<(String, String)>;
@@ -26,7 +27,10 @@ impl Op {
             Op::Caps { caps } => caps
                 .iter()
                 .find_map(|(key, new)| managed::cap_refusal_under(p, key, *new)),
-            Op::McpOn { .. } | Op::SkillOn { .. } if !p.extensions => {
+            Op::PackageInstall { .. } | Op::PackageRemove { .. } => {
+                Some(managed::refused("Changing system packages", PACKAGES_WHY).to_string())
+            }
+            Op::McpOn { .. } | Op::McpAdd { .. } | Op::SkillOn { .. } if !p.extensions => {
                 Some(format!("extensions are off on a managed bot: {}", p.why()))
             }
             Op::ModelDefault { model } => model_refusal(p, model, kind_of),

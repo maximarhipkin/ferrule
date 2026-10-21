@@ -181,9 +181,10 @@ impl Check {
 
     async fn claude(&self, claude: &Claude, found: &mut Problems) {
         let (binary, config_dir) = (claude.binary.clone(), claude.config_dir.clone());
+        let sandbox = claude.sandbox.clone();
         let ran = tokio::task::spawn_blocking(move || {
             let install = ferrule_plans::claude::update::detect(&binary)?;
-            ferrule_plans::claude::cli::version(&install.found, &config_dir)
+            ferrule_plans::claude::cli::version(&install.found, &config_dir, sandbox.as_ref())
         })
         .await;
         let e = match ran {

@@ -26,6 +26,7 @@ pub struct TrustGuard {
     root: bool,
     route: Route,
     planning: bool,
+    gates: bool,
 }
 
 impl TrustGuard {
@@ -43,12 +44,21 @@ impl TrustGuard {
             root: true,
             route,
             planning: false,
+            gates: true,
         }
     }
 
     /// Plan mode: nothing that changes files, no gated command.
     pub fn planning(mut self, on: bool) -> Self {
         self.planning = on;
+        self
+    }
+
+    /// Whether this run's gates ask at all. Off for the owner's own trees
+    /// in owner mode, whatever `[trust] gates` says; plan mode's refusals
+    /// don't depend on it.
+    pub fn gates(mut self, on: bool) -> Self {
+        self.gates = on;
         self
     }
 
@@ -126,7 +136,7 @@ impl Guard for TrustGuard {
             }
             return Verdict::Allow;
         }
-        if !self.hub.config().gates {
+        if !self.gates || !self.hub.config().gates {
             return Verdict::Allow;
         }
         let Some(g) = gated() else {

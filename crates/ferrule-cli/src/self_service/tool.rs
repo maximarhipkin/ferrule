@@ -1,9 +1,10 @@
 //! The `ferrule_admin` agent tool: typed ops, run in the host process
-//! (outside the shell sandbox), each change only after the owner's tap.
+//! (outside the shell sandbox), each change only after the owner's tap,
+//! or at once in owner mode (M54 §5).
 
 use super::describe::{describe, resolve};
 use super::run::run;
-use super::{locks, promise, restart, update, Admin, Op, CHANGE_OPS, READ_OPS};
+use super::{keys, locks, promise, restart, update, Admin, Op, CHANGE_OPS, READ_OPS};
 use crate::dashboard::Ctx;
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
@@ -40,7 +41,12 @@ impl Tool for AdminTool {
         let ops: Vec<&str> = READ_OPS.iter().chain(CHANGE_OPS).copied().collect();
         ToolDefinition {
             name: "ferrule_admin".into(),
-            description: ferrule_agents::prompts::ADMIN_DESCRIPTION.into(),
+            description: if self.admin.autonomous() {
+                ferrule_agents::prompts::ADMIN_DESCRIPTION_AUTONOMOUS
+            } else {
+                ferrule_agents::prompts::ADMIN_DESCRIPTION
+            }
+            .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -57,7 +63,16 @@ impl Tool for AdminTool {
                     "schedule": { "type": "string" },
                     "kind": { "type": "string" },
                     "timezone": { "type": "string" },
-                    "limit": { "type": "integer" }
+                    "limit": { "type": "integer" },
+                    "packages": { "type": "array", "items": { "type": "string" } },
+                    "command": { "type": "array", "items": { "type": "string" } },
+                    "url": { "type": "string" },
+                    "env": { "type": "array", "items": { "type": "string" } },
+                    "headers": { "type": "array", "items": { "type": "string" } },
+                    "enabled_tools": { "type": "array", "items": { "type": "string" } },
+                    "replace": { "type": "boolean" },
+                    "hosts": { "type": "array", "items": { "type": "string" } },
+                    "why": { "type": "string" }
                 },
                 "required": ["op"],
                 "additionalProperties": false
@@ -74,7 +89,8 @@ impl Tool for AdminTool {
         Some("ferrule_admin".into())
     }
 
-    /// It asks for itself, with the exact change on the card.
+    /// It asks for itself, with the exact change on the card; in owner
+    /// mode a change runs without one (M54 §5).
     fn needs_approval(&self) -> bool {
         false
     }
@@ -85,7 +101,7 @@ impl Tool for AdminTool {
             let Some(ctx) = self.admin.ctx() else {
                 return Err(failed(STARTING));
             };
-            return read_op(&self.admin, ctx, &op, &self.here)
+            return read_op(&self.admin, ctx, &op, &self.here, &self.session)
                 .await
                 .map(ToolOutput::ok)
                 .map_err(failed);
@@ -100,7 +116,23 @@ impl Tool for AdminTool {
 const STARTING: &str = "Ferrule is still starting; ask again in a few seconds.";
 
 /// A read-only op, at once.
-async fn read_op(admin: &Admin, ctx: &Ctx, op: &Op, here: &ChatRef) -> Result<String, String> {
+async fn read_op(
+    admin: &Admin,
+    ctx: &Ctx,
+    op: &Op,
+    here: &ChatRef,
+    session: &str,
+) -> Result<String, String> {
+    if let Op::DashboardLink = op {
+        return dashboard_link(admin, here)
+            .await
+            .map_err(|e| ctx.redactor.redact(&e));
+    }
+    if let Op::SecretRequest { name, hosts, why } = op {
+        return keys::request(admin, ctx, here, session, name, hosts, why)
+            .await
+            .map_err(|e| ctx.redactor.redact(&e));
+    }
     if let Op::UpdateCheck = op {
         if let Some(why) = locks::refusal(op, ctx) {
             return Err(why);
@@ -112,10 +144,40 @@ async fn read_op(admin: &Admin, ctx: &Ctx, op: &Op, here: &ChatRef) -> Result<St
     run(op, ctx, "chat", here).await
 }
 
+/// `dashboard_link`: a one-time login link, sent by the gateway straight to
+/// the owner's private chat (`door::send_link`). It is never in the answer,
+/// so it never reaches the model or the session's transcript. Each link
+/// minted this way is audited, so the owner sees that the bot asked.
+async fn dashboard_link(admin: &Admin, here: &ChatRef) -> Result<String, String> {
+    let Some(dash) = admin.page() else {
+        return Err("The dashboard isn't on in this process.".into());
+    };
+    crate::dashboard::door::send_link(dash, &admin.hub, here, "")
+        .await
+        .map_err(|e| format!("No link was sent: {e}"))?;
+    admin.hub.audit().record(
+        chrono::Utc::now(),
+        "self_service.link",
+        None,
+        None,
+        json!({
+            "op": "dashboard_link",
+            "by": format!("{} chat {}", here.channel, here.chat),
+        }),
+    );
+    // The send itself is the channel's, after this answer.
+    Ok(format!(
+        "Sending the owner a one-time dashboard link (valid {} min) in their private chat.",
+        dash.settings().link_minutes.max(1)
+    ))
+}
+
 /// Shows the owner what `op` changes, waits for their tap, then runs it.
 /// `Err` is "not asked" (nothing was shown or run); `Ok` is the outcome,
 /// including a refusal or a timeout. Shared by the tool and the chat's
-/// `/update`, `/restart` and `/doctor`.
+/// `/update`, `/restart` and `/doctor`. In owner mode there is no card:
+/// the same checks run, then the op, and the answer starts "Done:" or
+/// "Not done:" (M54 §5).
 pub(super) async fn ask_and_run(
     admin: &Admin,
     here: &ChatRef,
@@ -126,66 +188,75 @@ pub(super) async fn ask_and_run(
         return Err(STARTING.into());
     };
     let hub = &admin.hub;
+    let auto = admin.autonomous();
+    // What a check that stops the op says first: nothing was asked in the
+    // default mode, nothing was done in owner mode.
+    let lead = if auto { "Not done" } else { "Not asked" };
     if crate::trust::is_planning(session) {
-        return Err("Not asked: plan mode is on; changes wait until the plan is approved.".into());
+        return Err(format!(
+            "{lead}: plan mode is on; changes wait until the plan is approved."
+        ));
     }
-    if hub.approvals().pending_in(here.clone()) > 0 {
+    if !auto && hub.approvals().pending_in(here.clone()) > 0 {
         return Err(
             "Not asked: A question is already waiting in this chat; answer it first.".into(),
         );
     }
-    let op = resolve(op, ctx)
-        .await
-        .map_err(|e| format!("Not asked: {e}"))?;
+    let op = resolve(op, ctx).await.map_err(|e| format!("{lead}: {e}"))?;
     if let Some(why) = locks::refusal(&op, ctx) {
-        return Err(format!("Not asked: {why}"));
+        return Err(format!("{lead}: {why}"));
     }
     let card = match &op {
         Op::Update => {
-            let (apply, units) = admin.apply(ctx).map_err(|e| format!("Not asked: {e}"))?;
+            let (apply, units) = admin.apply(ctx).map_err(|e| format!("{lead}: {e}"))?;
             update::card(&apply, units)
                 .await
-                .map_err(|e| format!("Not asked: {e}"))?
+                .map_err(|e| format!("{lead}: {e}"))?
         }
-        Op::Restart => restart::card().map_err(|e| format!("Not asked: {e}"))?,
+        Op::Restart => restart::card().map_err(|e| format!("{lead}: {e}"))?,
+        // Owner mode keeps the card's checks and drops only its text.
         _ => describe(&op, ctx, here)
             .await
-            .map_err(|e| format!("Not asked: {e}"))?,
+            .map_err(|e| format!("{lead}: {e}"))?,
     };
-    let bound = format!("{}:{}", op.name(), op.digest());
-    let asked = hub
-        .ask_in(
-            "ferrule_admin",
-            Some(here.clone()),
-            Question {
-                subject: "ferrule_admin",
-                what: &card,
-                text: &card,
-                timeout: admin.ask_for,
-                op: Some(&bound),
-            },
-        )
-        .await;
-    let code = match asked {
-        Ok(code) => code,
-        Err(e) if e.starts_with("the owner refused it") => {
-            let said = e
-                .split_once('"')
-                .map(|(_, r)| r.trim_end_matches([')', '"']).to_string())
-                .unwrap_or_default();
-            return Ok(format!(
-                "The owner refused it (they said “{said}”); nothing changed."
-            ));
-        }
-        Err(e) if e.starts_with("no answer in") => {
-            return Ok(format!(
-                "{}, so it was refused; nothing changed.",
-                capital(&e)
-            ));
-        }
-        Err(e) => return Ok(format!("Couldn't ask the owner ({e}); nothing changed.")),
+    let by = if auto {
+        format!("{} chat {} (owner mode)", here.channel, here.chat)
+    } else {
+        let bound = format!("{}:{}", op.name(), op.digest());
+        let asked = hub
+            .ask_in(
+                "ferrule_admin",
+                Some(here.clone()),
+                Question {
+                    subject: "ferrule_admin",
+                    what: &card,
+                    text: &card,
+                    timeout: admin.ask_for,
+                    op: Some(&bound),
+                },
+            )
+            .await;
+        let code = match asked {
+            Ok(code) => code,
+            Err(e) if e.starts_with("the owner refused it") => {
+                let said = e
+                    .split_once('"')
+                    .map(|(_, r)| r.trim_end_matches([')', '"']).to_string())
+                    .unwrap_or_default();
+                return Ok(format!(
+                    "The owner refused it (they said “{said}”); nothing changed."
+                ));
+            }
+            Err(e) if e.starts_with("no answer in") => {
+                return Ok(format!(
+                    "{}, so it was refused; nothing changed.",
+                    capital(&e)
+                ));
+            }
+            Err(e) => return Ok(format!("Couldn't ask the owner ({e}); nothing changed.")),
+        };
+        format!("{} chat {} (approved {code})", here.channel, here.chat)
     };
-    let by = format!("{} chat {} (approved {code})", here.channel, here.chat);
     let done = match &op {
         Op::Update => start_update(admin, ctx, here, session),
         Op::Restart => start_restart(admin, ctx, here, session),
@@ -201,10 +272,27 @@ pub(super) async fn ask_and_run(
             "ok": done.is_ok(), "by": by,
         }),
     );
-    Ok(match done {
-        Ok(said) => format!("Approved and done: {said}"),
-        Err(why) => format!("Approved, but not done: {why}. Nothing changed."),
+    // apt may have done part of the work before it failed: its own last
+    // lines say what, so the answer doesn't claim nothing changed.
+    let nothing = match op {
+        Op::PackageInstall { .. } | Op::PackageRemove { .. } => "",
+        _ => " Nothing changed.",
+    };
+    Ok(match (done, auto) {
+        (Ok(said), true) => format!("Done: {said}"),
+        (Err(why), true) => format!("Not done: {why}{}{nothing}", stop(&why)),
+        (Ok(said), false) => format!("Approved and done: {said}"),
+        (Err(why), false) => format!("Approved, but not done: {why}{}{nothing}", stop(&why)),
     })
+}
+
+/// The full stop `text` still needs.
+fn stop(text: &str) -> &'static str {
+    if text.ends_with(['.', '!', '?']) {
+        ""
+    } else {
+        "."
+    }
 }
 
 /// The install runs on its own once this turn is over, so the answer the

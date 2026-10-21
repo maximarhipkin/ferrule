@@ -686,7 +686,9 @@ and a dated entry for every session.
   switch, plan mode) · [`m19b-reliability.md`](docs/m19b-reliability.md)
   and [`m19c-live-fixes.md`](docs/m19c-live-fixes.md) (never silently
   deaf).
-- Security and ops: [`sandbox.md`](docs/sandbox.md) ·
+- Security and ops: [`sandbox.md`](docs/sandbox.md)
+  ([`m54-autonomous.md`](docs/m54-autonomous.md): owner mode, a bot that
+  runs itself without seeing its keys) ·
   [`windows-sandbox.md`](docs/windows-sandbox.md) ·
   [`egress.md`](docs/egress.md) · [`otel.md`](docs/otel.md).
 

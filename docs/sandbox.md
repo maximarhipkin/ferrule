@@ -40,8 +40,13 @@ so the model gets refused either way. The list has three parts:
 1. **Ferrule's secrets.** These are always denied and can't be opened
    from the config: `<data>/private` (the saved keys, the connections
    store, the hooks trust list, dashboard sessions), `<data>/proxy/keys`,
+   `<data>/claude-code` and the Matrix session file (every credential
+   path the backup leaves out, except `ssh`: known_hosts and the SSH
+   workspaces' local folders hold no key), `<data>/gateway` (channel
+   state, which can hold credentials and messages waiting to be sent),
    `<data>/learn`, and `<data>/sessions` (the transcripts, which hold
-   whatever a tool ever printed).
+   whatever a tool ever printed). In [owner mode](#owner-mode) the last
+   two are readable to the owner's own chats.
 2. **The usual credential dirs** (`deny_default_reads = true`, the
    default): `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`,
    `~/.kube`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`,
@@ -76,6 +81,8 @@ but their contents can't be read. The file tools refuse the listing too.
   dir of its own.
 - `mode = "read-only"`: nothing is writable, the workspace included.
 - `mode = "off"`: no sandbox. Doctor warns.
+- `mode = "owner"`: writes go everywhere your account can, except the
+  keys and ferrule's own files. Linux only; see [Owner mode](#owner-mode).
 
 ## Network
 
@@ -188,6 +195,229 @@ on another machine over SSH, and none of this sandbox applies there: the
 remote account is the boundary. Use a dedicated low-privilege user.
 Plan mode and `read-only` remove the remote shell rather than trusting
 it to only read.
+
+## Owner mode
+
+`[sandbox] mode = "owner"` is for a bot you run and talk to from a chat
+and never log in to the machine for. It does everything you could do in a
+terminal, with no approval prompts, and the keys stay out of its reach.
+The design, with the rulings made while building it, is
+[m54-autonomous.md](m54-autonomous.md). It was built without being
+compiled or run; `make check` and a live run on a Linux server are still
+to do.
+
+It is opt-in. The default stays `workspace-write`.
+
+### Turn it on and off
+
+- **From the dashboard:** Settings, the **Autonomy** row.
+  "Protected autonomous" is owner mode; "Ask me first" writes
+  `workspace-write` and removes `[trust] gates = false`. Either choice
+  restarts the gateway. A managed bot doesn't show the row.
+- **In the config:** `mode = "owner"` under `[sandbox]`, then restart.
+- **Only you can.** The whole `[sandbox]` table is guarded config that
+  the bot can't change (`ferrule_admin config_set` refuses it), and the
+  dashboard's switch has no chat route. `config_restore` from the chat refuses a restore that
+  would bring back a guarded field.
+
+### What commands can read and write
+
+| | Read | Write |
+|---|---|---|
+| Hidden: the keys and the other credential files (see [Reads](#reads)), the default credential dirs, `<data>/gateway` | no | no |
+| Protected: the set below | yes | no |
+| Everything else your account can reach | yes | yes |
+
+**The protected set** is whatever runs outside the sandbox or tells
+something outside it what to run:
+
+- the data dir (`~/.local/share/ferrule`), all of it: backups, the
+  update state, plugins, the audit trail, the kill switch, and the
+  binary. An MCP server's own state dir and `<data>/worktrees` (where
+  sub-agents work) are granted writes inside it;
+- the config file's folder (`~/.config/ferrule`, or where
+  `$FERRULE_CONFIG` points);
+- `~/.config/systemd` and `~/.local/share/systemd`, where a user unit or
+  drop-in would run outside the sandbox at the next start;
+- `~/.config/environment.d`, which sets the environment of every user
+  service, `LD_PRELOAD` included.
+
+Missing ones are created empty at startup so they are protected from the
+first command. The file tools (`write_file`, `edit_file`) refuse the same
+paths, which matters when the workspace contains the data dir.
+`ferrule sandbox` lists them as `no writes`.
+
+**The `mkdir` rule.** Landlock can only add rights, so a folder on the way
+down to a hidden or protected path (`~`, `~/.config`, `~/.local`,
+`~/.local/share`) can't get new entries. Owner mode lets commands create
+a folder there. The new folder is fully writable from the next command on
+(each command builds its rules fresh), so an installer that creates its
+folder and fills it in one go fails once and works on a rerun. The
+model's sandbox note says to `mkdir` first.
+
+**Unchanged:** env scrubbing, credential placeholders, `no_new_privs`,
+the network setting, and the Unix-socket allowlist. The allowlist stays
+on for MCP servers and the browser too, so a command can't reach the user
+bus (`systemd-run --user`) or a tmux server.
+
+Owner mode has no exemptions for helpers. An MCP server with
+`sandbox = false` runs under the owner sandbox, with its own state dir.
+
+### What the bot can do from the chat
+
+In your private chat or the dashboard chat, with no approval prompt,
+`ferrule_admin` runs every change op at once and logs it
+(`self_service.ran`, by `<channel> chat <id> (owner mode)`). Its answer
+starts "Done:" or "Not done:". The trust gates are off for your chats
+and for the sub-agents and tasks you start there. The new ops:
+
+| Op | What it does |
+|---|---|
+| `package_install`, `package_remove` | `sudo -n apt-get`, see below |
+| `mcp_add` | starts an MCP server, lists and scans its tools, then adds it; no restart. A header may name a key only as `${NAME}` of a key that already exists, an `env` name may not look like a key, there is no `no_sandbox`, and tools the scan blocks stop the add |
+| `secret_request` | asks you for a new key by name and sites |
+| `secrets` | the tool keys' names and sites, never a value |
+| `dashboard_link` | sends you a one-time dashboard login |
+
+The ops exist in every mode; outside owner mode the change ops ask first.
+
+**Asking for a key.** `secret_request {name, hosts, why}` sends you one
+message with the bot's reason and a one-time login link that opens the
+Keys panel with the name and sites filled in. You can change the sites.
+Paste the key there, never in a chat. The link is never in the bot's tool
+result or transcript. When you save, the asking session is woken ("the
+owner saved NAME; it is sent only to ...", never the value) and carries
+on, and can call `mcp_add` now. The bot's reason is cut down to letters, digits and a
+few marks, so it can't carry a link of its own. The wake is lost if the
+gateway restarts first, the session's queue is full, or you save a
+different name.
+
+**Transcripts and notes.** `sessions/` and `learn/` are readable to your
+chats' commands, read-only. They stay hidden from everyone else's.
+
+**Hooks, gate scripts and helpers run in the sandbox.** Command hooks,
+scheduler gate scripts, sub-agent worktree git, signal-cli, the
+dashboard's tunnel, the transcription command, `agent-browser --version`
+and claude's version check and updater go through the owner sandbox. A
+hook or gate that needs the keys or a protected path stops working in
+owner mode. What still runs outside it is root-owned programs found in
+the system dirs (`git`, `ssh`, `systemctl`, `loginctl`, `ps`, never
+looked up on `PATH`, where the bot may have put its own), `sudo` and
+`apt-get` by absolute path, and ferrule's own binary.
+
+**Installing system packages.** `package_install` runs
+`sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y
+--no-install-recommends` as the gateway's user (with a 10-minute limit; if
+apt doesn't know a name it runs `apt-get update` once and retries, and it
+runs `apt-get clean` afterwards); `package_remove` runs `apt-get remove`. Names must be lower-case
+letters, digits and `+ . -` (no paths, `.deb` files or options). A dry
+run comes first: apt must read each name as that one package, and a
+change that would remove `sudo`, `apt`, `openssh-server`, `systemd` or
+`ca-certificates` is refused. It needs **passwordless sudo for the
+gateway's user**. Without it the answer says so and that user-level
+installs still work. Under a root-installed system unit
+(`NoNewPrivileges=yes`) sudo can't work either, and the op fails
+truthfully. Linux with apt only.
+
+### Where the binary lives
+
+The sandbox protects the binary, and `~/.local/bin` can't be protected
+without breaking pipx and uv. So on its first owner-mode start the gateway
+moves into `<data>/bin/ferrule`:
+
+1. a hard link to the running file there (a copy if links aren't
+   possible);
+2. its service units rewritten to name it and reloaded;
+3. the old path swapped for a symlink to it in one step;
+4. a clean exit, and the service starts it from there.
+
+The original is never renamed away, so every step is safe to stop at. The
+`<data>/bin` dir is on the service's `PATH`. The old path (say
+`~/.local/bin/ferrule`) is now a link to a file nothing in the sandbox can
+write. **Update with `ferrule update` from then on.** `install.sh` sees a
+unit that names another path, says so and restarts the service as it is;
+it doesn't point it back.
+
+Owner mode needs ferrule to run as a systemd **user** service that started
+this process, and to be the only ferrule instance on the account (each
+instance protects only its own data dir, so beside another one each could
+write what the other runs). A bot started by hand, a system unit, another
+instance, or a container in managed mode can't move, and falls back.
+
+### When it can't hold
+
+The gateway never runs commands unsandboxed and never exits for this. It
+starts in `workspace-write` with `require` on, and tells you in your
+private chat, a few seconds after start, why and what runs instead: that
+commands run in the `workspace-write` sandbox, and whether it asks you
+first (`[trust] gates`). `ferrule doctor` shows the same reason and
+`ferrule sandbox` prints `owner     off here: <reason>`. The reasons are: not on
+Linux; no systemd user service, or one it didn't start itself; another
+ferrule instance on the account (or the instances couldn't be looked for);
+the binary couldn't be moved; the workspace is inside a protected path;
+an **SSH workspace** (its local folder is inside the data dir, so these
+always fall back); or the sandbox can't be applied. If workspace-write
+can't be applied either, commands are refused and chat still works.
+
+After a fallback, hooks, gate scripts, signal-cli, the tunnel and
+transcription keep running under a sandbox built from the owner policy
+(keys hidden, ferrule's files read-only, writes elsewhere), so they keep
+working and the keys stay hidden. Only the bot's own commands are
+narrowed. Where that sandbox can't be built (macOS, Windows, no
+Landlock) and the config still says `owner`, those spawns are refused.
+
+Outside the gateway, a terminal `ferrule run` or `chat` gets owner mode
+only once the service has moved its binary. Before that it falls back with
+a one-line reason. After it, it runs in owner mode and without gates.
+
+### Other people's chats
+
+Only your private chat, the dashboard chat and what they start (a
+sub-agent, a task, a `/plan`, `/goal` or `/graph` run) get owner mode.
+Every other session (a group, another allowed person, the HTTP API, a
+task made elsewhere) gets `workspace-write`, and can't read your
+`sessions/` or `learn/`; the claude engine is narrowed per session too. A
+run in the gateway that no chat traces to counts as someone else's.
+
+**Known limit: guests share the helpers.** MCP servers, hooks, the
+browser, graph check commands and the host launcher are process-wide, and
+the workspace is shared. A guest's chat that uses them reaches what the
+owner sandbox reaches: never the keys or ferrule's protected files, but a
+filesystem-type MCP server or the browser, steered by a guest, can read
+your transcripts and learning notes. A guest can also leave a git filter
+driver or a script in the shared workspace for your next session to run.
+Owner-mode auto-commits turn off repo hooks, fsmonitor and signing for
+that reason. The only chat today is usually yours; separate helpers per
+session, or a workspace per guest, is the follow-up.
+
+### What's left open
+
+- **Granted folders inside the protected set stay writable.** MCP
+  servers' state dirs and `<data>/worktrees` are meant to be. A folder you
+  list in `writable_roots` is too, so listing a protected one reopens it;
+  and a workspace inside a protected path makes owner mode fall back.
+- **The apt op runs package scripts as root.** They come only from the
+  configured apt sources, which the bot can't edit. A package that runs
+  per-user files outside the sandbox (mail filters) could be combined
+  with a writable file in `~`. The audit log lists every install.
+- **Claude's login** (`~/.claude`) stays readable to claude and its Bash,
+  as for any claude-engine setup.
+- **Re-opening `~/.ssh`** with `allow_read` makes `authorized_keys`
+  writable. A key planted there skips everything above. Don't.
+- **Logging in as this account** runs whatever the bot left in
+  `~/.bashrc`, what it sources, and `~/.local/bin` first on `PATH`, and a
+  `ferrule` typed there is the replaceable link. The service never uses
+  these. Treat a login after the bot has run as running its code, keys
+  included.
+- **Shared helpers for guests**, above.
+- **Not on macOS or Windows.** Seatbelt matches paths: with `/` writable,
+  `mv ~/.config ~/.c2` would undo a deny. Both refuse the mode with
+  `owner mode needs Linux; this is macOS` (or Windows).
+- **Existing limits:** file names inside a hidden directory stay
+  listable, and a bind mount of a hidden path isn't covered.
+- **An owner hook that needs the keys** stops working here.
+- **The bot's `ferrule status` from its shell** may show less (the
+  gateway's state dir is hidden); it uses `ferrule_admin status`.
 
 ## Not covered
 

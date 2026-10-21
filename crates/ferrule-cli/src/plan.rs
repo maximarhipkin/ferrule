@@ -317,6 +317,8 @@ where
 {
     let pid = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
     let sid = ferrule_gateway::session::session_id(PLAN_CHANNEL, &pid);
+    // M54: the plan runs in owner mode only if the chat that asked would.
+    crate::owner_mode::started_from(&sid, &chat.channel, &chat.chat);
     trust::seat(
         &sid,
         Route::Owner {

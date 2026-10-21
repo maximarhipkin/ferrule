@@ -5,7 +5,8 @@
 //! - A path is the agent's when it's dirty at the end of the run and
 //!   wasn't at the start. A path the owner had dirty is never committed.
 //! - Git runs through the sandbox (it reads `.git/hooks` and `.git/config`,
-//!   which the agent can write), and the repo's own hooks apply.
+//!   which the agent can write), and the repo's own hooks apply, except in
+//!   owner mode (M54), which also turns off its fsmonitor and signing.
 //! - Nothing here pushes, fetches or touches a remote.
 
 use anyhow::{anyhow, bail, Result};
@@ -50,6 +51,19 @@ struct Out {
 impl Git {
     fn run(&self, args: &[&str]) -> Result<Out> {
         let mut all = vec!["-c", "core.quotepath=off"];
+        // M54: in owner mode no repo hook, fsmonitor or signing program
+        // runs, since a guest can write `.git` in the shared workspace and
+        // this git has the owner's reach.
+        if self.sandbox.is_owner() {
+            all.extend([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "commit.gpgsign=false",
+            ]);
+        }
         all.extend_from_slice(args);
         let mut cmd = self
             .sandbox

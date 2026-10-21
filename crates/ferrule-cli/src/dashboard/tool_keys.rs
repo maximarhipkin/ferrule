@@ -39,34 +39,21 @@ pub fn list(ctx: &Ctx) -> Answer {
 
 /// `POST secrets/add {name, value, hosts}`.
 pub fn add(ctx: &Ctx, body: &Value) -> Answer {
-    if let Some(why) = locked() {
-        return bad(403, why);
-    }
-    // A page served without the gateway can't see the gateway's
-    // environment, so it can't tell whether a name is free there.
-    if ctx.live.is_none() {
-        return bad(
-            409,
-            "Open this page from your running bot (send it /dashboard): only the bot can tell whether a name is free.",
-        );
-    }
-    let Some(cfg) = config(ctx) else {
-        return missing("the config file");
+    let name = need!(arg(body, "name"));
+    let hosts = match check_new(
+        ctx,
+        name,
+        body.get("hosts").and_then(Value::as_str).unwrap_or(""),
+    ) {
+        Ok(h) => h,
+        Err((status, why)) => return bad(status, why),
     };
     let place = need!(setup_place(ctx));
-    let name = need!(arg(body, "name")).trim();
     let value = body
         .get("value")
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or_default();
-    let hosts = match hosts(body.get("hosts").and_then(Value::as_str).unwrap_or("")) {
-        Ok(h) => h,
-        Err(why) => return bad(400, why),
-    };
-    if let Err(why) = shape(name) {
-        return bad(400, why);
-    }
     if value.is_empty() {
         return bad(400, "paste the key first");
     }
@@ -74,18 +61,6 @@ pub fn add(ctx: &Ctx, body: &Value) -> Answer {
         return bad(
             400,
             "the key has line breaks or is too long; paste it as one line. Nothing was saved.",
-        );
-    }
-    let stored = crate::secrets::read(&place.secrets).unwrap_or_default();
-    let text = std::fs::read_to_string(&place.config).unwrap_or_default();
-    if cfg.secrets.contains_key(name)
-        || stored.iter().any(|(n, _)| n == name)
-        || named_in(&text, name)
-        || std::env::var_os(name).is_some()
-    {
-        return bad(
-            409,
-            format!("{name} is in use already, so this page won't change it. Pick a new name."),
         );
     }
     let written = (|| -> anyhow::Result<()> {
@@ -102,6 +77,8 @@ pub fn add(ctx: &Ctx, body: &Value) -> Answer {
         "dashboard.secret.add",
         json!({ "name": name, "hosts": hosts }),
     );
+    // A chat that asked for this key carries on (M54 §6.3).
+    crate::self_service::keys::saved(name, &hosts);
     ok(json!({
         "ok": true,
         "name": name,
@@ -110,6 +87,47 @@ pub fn add(ctx: &Ctx, body: &Value) -> Answer {
             hosts.join(", ")
         ),
     }))
+}
+
+/// What `secrets/add` checks before the value: keys may be added here,
+/// `name` is a new name of the right shape, and `hosts` (comma- or
+/// space-separated) are sites. `Ok`: the hosts, tidied. The chat's
+/// `secret_request` makes the same checks, so its refusals are the page's
+/// words (M54 §6.3).
+pub(crate) fn check_new(ctx: &Ctx, name: &str, hosts: &str) -> Result<Vec<String>, (u16, String)> {
+    if let Some(why) = locked() {
+        return Err((403, why));
+    }
+    // A page served without the gateway can't see the gateway's
+    // environment, so it can't tell whether a name is free there.
+    if ctx.live.is_none() {
+        return Err((
+            409,
+            "Open this page from your running bot (send it /dashboard): only the bot can tell whether a name is free.".into(),
+        ));
+    }
+    let (Some(cfg), Ok(place)) = (config(ctx), setup_place(ctx)) else {
+        return Err((
+            503,
+            "the config file isn't available in this process".into(),
+        ));
+    };
+    let malformed = |why: String| -> (u16, String) { (400, why) };
+    let hosts = self::hosts(hosts).map_err(malformed)?;
+    shape(name).map_err(malformed)?;
+    let stored = crate::secrets::read(&place.secrets).unwrap_or_default();
+    let text = std::fs::read_to_string(&place.config).unwrap_or_default();
+    if cfg.secrets.contains_key(name)
+        || stored.iter().any(|(n, _)| n == name)
+        || named_in(&text, name)
+        || std::env::var_os(name).is_some()
+    {
+        return Err((
+            409,
+            format!("{name} is in use already, so this page won't change it. Pick a new name."),
+        ));
+    }
+    Ok(hosts)
 }
 
 /// `POST secrets/remove {name}`: only a page-shaped entry (its value in the

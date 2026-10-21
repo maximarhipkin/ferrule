@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use ferrule_plans::claude::cli;
 use ferrule_plans::claude::update::{self, Install, Updated};
+use ferrule_sandbox::Sandbox;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -25,16 +26,30 @@ pub struct Claude {
     pub config_dir: PathBuf,
     /// npm's dist-tags for the package.
     pub npm: String,
+    /// Owner mode, held or fallen back: claude's version checks and
+    /// updater run in the engine sandbox. A sandbox that couldn't be built
+    /// is one that refuses every spawn, so they fail instead of running
+    /// outside it.
+    pub sandbox: Option<Sandbox>,
 }
 
 impl Claude {
     /// The configured one, when a provider runs on the Claude plan and
     /// `[update] claude` is on.
     pub fn from_config(cfg: &crate::config::Config, data: &Path) -> Option<Claude> {
-        (cfg.update.claude && cfg.uses_claude_code()).then(|| Claude {
-            binary: cfg.plans.claude_code.binary(),
-            config_dir: cfg.plans.claude_code.config_dir(data),
-            npm: update::NPM_URL.to_string(),
+        (cfg.update.claude && cfg.uses_claude_code()).then(|| {
+            let config_dir = cfg.plans.claude_code.config_dir(data);
+            let sandbox = crate::owner_mode::wanted(cfg).then(|| {
+                crate::engine_sandbox(cfg, &config_dir)
+                    .map(|s| s.for_helper(&config_dir, &[]))
+                    .unwrap_or_else(|e| Sandbox::off().refuse(format!("{e:#}")))
+            });
+            Claude {
+                binary: cfg.plans.claude_code.binary(),
+                config_dir,
+                npm: update::NPM_URL.to_string(),
+                sandbox,
+            }
         })
     }
 }
@@ -55,7 +70,10 @@ pub async fn run(state_dir: &Path, claude: &Claude, why: Option<&str>) -> Result
     let binary = claude.binary.clone();
     let install = tokio::task::spawn_blocking(move || update::detect(&binary)).await??;
     let (found, config_dir) = (install.found.clone(), claude.config_dir.clone());
-    let installed = tokio::task::spawn_blocking(move || cli::version(&found, &config_dir)).await?;
+    let sandbox = claude.sandbox.clone();
+    let installed =
+        tokio::task::spawn_blocking(move || cli::version(&found, &config_dir, sandbox.as_ref()))
+            .await?;
     let latest = update::latest(&client(), &claude.npm).await;
     let mut st = State::load(state_dir);
     st.claude_checked = Some(state::now());
@@ -76,9 +94,15 @@ pub async fn run(state_dir: &Path, claude: &Claude, why: Option<&str>) -> Result
         }
         return installed.map(|_| None);
     }
-    let (i, config_dir) = (install.clone(), claude.config_dir.clone());
-    let done =
-        tokio::task::spawn_blocking(move || update::update(&i, &config_dir, update::LIMIT)).await?;
+    let (i, config_dir, sandbox) = (
+        install.clone(),
+        claude.config_dir.clone(),
+        claude.sandbox.clone(),
+    );
+    let done = tokio::task::spawn_blocking(move || {
+        update::update(&i, &config_dir, update::LIMIT, sandbox.as_ref())
+    })
+    .await?;
     let from = installed.as_deref().unwrap_or("?").to_string();
     let result = match done {
         Ok(u) if u.to == u.from && latest.as_ref().is_ok_and(|l| update::is_newer(l, &u.to)) => {
@@ -256,9 +280,10 @@ pub async fn ask_unit(data: &Path, state_dir: &Path, wait: Duration, poll: Durat
 pub async fn doctor_line(claude: &Claude, offline: bool) -> (bool, String) {
     let binary = claude.binary.clone();
     let config_dir = claude.config_dir.clone();
+    let sandbox = claude.sandbox.clone();
     let found = tokio::task::spawn_blocking(move || {
         let install = update::detect(&binary)?;
-        let version = cli::version(&install.found, &config_dir)?;
+        let version = cli::version(&install.found, &config_dir, sandbox.as_ref())?;
         Ok::<_, anyhow::Error>((install, version))
     })
     .await;

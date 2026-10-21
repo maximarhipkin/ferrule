@@ -33,6 +33,7 @@ mod mcp_config;
 mod memory_tools;
 mod model_eval;
 mod models;
+mod owner_mode;
 mod plan;
 mod plugins_cli;
 mod probe;
@@ -829,6 +830,30 @@ fn managed_gate(cmd: &Cmd) -> Result<()> {
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
     managed_gate(&cmd)?;
+    // M54 §4: in owner mode this process's own spawns run in the sandbox,
+    // whatever the command. The gateway and `tasks run-now` arm themselves,
+    // with their workspace, once they've read the config; the probes run
+    // inside a sandbox already.
+    let arms = !matches!(
+        cmd,
+        Cmd::Gateway { .. }
+            | Cmd::Tasks {
+                op: TasksCmd::RunNow { .. }
+            }
+            | Cmd::Sandbox {
+                probe_net: true,
+                ..
+            }
+            | Cmd::Sandbox {
+                probe_process: Some(_),
+                ..
+            }
+    );
+    if arms {
+        if let Ok((cfg, _)) = config::Config::load() {
+            owner_mode::arm(&cfg, None);
+        }
+    }
     match cmd {
         // Handled in `main`, before anything else starts.
         Cmd::ClaudeMcp => unreachable!("claude-mcp runs before dispatch"),
@@ -836,7 +861,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             refresh_service, ..
         } => {
             let done = if refresh_service {
-                setup::refresh_service()
+                setup::refresh_service_with(None)
             } else {
                 setup::run().await
             };
@@ -1015,6 +1040,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                         supervisor: None,
                         hub: None,
                         quiet: false,
+                        origin: None,
                     },
                 )
                 .await?;
@@ -1045,11 +1071,15 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                     ));
                 }
             }
+            let Some((loaded, cfg)) = gateway_config(workspace.as_deref()).await? else {
+                // M54 §3: a clean exit; the service starts the moved binary.
+                return Ok(());
+            };
             let workspace = remote::workspace(workspace, true).await?;
             if managed::on() {
                 std::fs::create_dir_all(&workspace)?;
             }
-            run_gateway(provider, workspace, max_iterations).await?;
+            run_gateway(loaded, cfg, provider, workspace, max_iterations).await?;
         }
         Cmd::Update {
             check,
@@ -1353,11 +1383,7 @@ fn build_agent_from(
     if entry.key().is_none() {
         bail!("{}", entry.no_key());
     }
-    let provider = Arc::new(models::RoutedProvider::new(
-        models.clone(),
-        scope,
-        entry.provider.clone(),
-    ));
+    let provider = models::RoutedProvider::new(models.clone(), scope, entry.provider.clone());
 
     let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
     let tool_ctx = ToolContext {
@@ -1367,12 +1393,19 @@ fn build_agent_from(
 
     let mut registry = standard_registry();
     let mut sandbox = shared_sandbox(&cfg)?;
+    let tree = trust::tree_of(child, transcript.as_ref());
+    // M54 §1: owner mode is for the owner's own trees; any other chat, and
+    // a task made in one, keeps `workspace-write`, the claude engine too.
+    let guest = sandbox.is_owner() && !owner_mode::owner_tree(&*trust::hub(&cfg)?, &tree);
+    if guest {
+        sandbox = Arc::new(sandbox.narrowed(&owner_mode::guest_hidden()));
+    }
+    let provider = Arc::new(if guest { provider.guest() } else { provider });
     if let Some(spec) = child {
         sandbox = Arc::new(sandbox.for_child(&spec.extra_writable, spec.read_only));
     }
     // M19 plan mode: read-only, no network, and the shell only when the OS
     // sandbox really holds it to that.
-    let tree = trust::tree_of(child, transcript.as_ref());
     let planning = trust::is_planning(&tree);
     if planning {
         sandbox = Arc::new(sandbox.for_planning());
@@ -1396,9 +1429,21 @@ fn build_agent_from(
     // its read denies themselves, or a workspace that contains the data
     // dir (or is `~`) would let `read_file` hand over the saved keys.
     let hidden = sandbox.read_deny_list(&tool_ctx.workspace);
+    // M54 §2: and they don't write owner mode's protected paths, which a
+    // workspace may contain. One that holds the workspace (a sub-agent's
+    // worktree in the data dir) doesn't wall it, as in the sandbox.
+    let protected: Vec<PathBuf> = sandbox
+        .protected_paths()
+        .into_iter()
+        .filter(|p| !tool_ctx.workspace.starts_with(p))
+        .collect();
     registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
+    registry.register(Arc::new(
+        WriteFileTool::hiding(hidden.clone()).protecting(protected.clone()),
+    ));
+    registry.register(Arc::new(
+        EditFileTool::hiding(hidden.clone()).protecting(protected),
+    ));
     registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
     // M34: a remote workspace's shell and file tools replace the local
     // ones. ferrule's sandbox doesn't reach there, so whatever would hold
@@ -1642,11 +1687,8 @@ fn build_agent_from(
             .map_err(|e| anyhow!("[agent] compaction_model = {word:?}: {e}"))?;
         let scope = models::Scope::for_session("compaction")
             .fixed(Some(word.clone()), "[agent] compaction_model");
-        let provider = Arc::new(models::RoutedProvider::new(
-            models.clone(),
-            scope,
-            entry.provider.clone(),
-        ));
+        let provider = models::RoutedProvider::new(models.clone(), scope, entry.provider.clone());
+        let provider = Arc::new(if guest { provider.guest() } else { provider });
         agent = agent.with_compactor(Arc::new(ferrule_core::TemplateCompactor::new(provider)));
     }
     agent = agent
@@ -1723,10 +1765,35 @@ fn build_agent_from(
 }
 
 /// The config's sandbox policy, completed with what only the host knows:
-/// the env vars the config names as holding secrets, and the directories
-/// holding them on disk.
+/// the env vars the config names as holding secrets, the directories
+/// holding them on disk, and in owner mode what commands may not write.
 fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     let mut policy = cfg.sandbox.clone();
+    owner_mode::settle(&mut policy);
+    completed_policy(cfg, policy, owner_mode::on(cfg))
+}
+
+/// The owner-mode policy as owner mode builds it, whether or not it holds
+/// in this process: what the process's own spawns run in after a fallback
+/// (M54 §4). Building it changes nothing else.
+pub(crate) fn owner_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
+    let policy = ferrule_sandbox::Policy {
+        mode: Mode::Owner,
+        ..cfg.sandbox.clone()
+    };
+    completed_policy(cfg, policy, true)
+}
+
+/// [`sandbox_policy`]'s completion of `policy`, as owner mode (`owner`) or
+/// not.
+fn completed_policy(
+    cfg: &config::Config,
+    mut policy: ferrule_sandbox::Policy,
+    owner: bool,
+) -> ferrule_sandbox::Policy {
+    if owner {
+        policy.protected = owner_mode::protected_paths();
+    }
     policy.secret_vars.extend(
         cfg.providers
             .values()
@@ -1736,7 +1803,7 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     policy.secret_vars.extend(channels::secret_envs(cfg));
     // Commands get these back as placeholders, from the credential proxy.
     policy.secret_vars.extend(cfg.secrets.keys().cloned());
-    policy.hidden.extend(hidden_paths());
+    policy.hidden.extend(hidden_paths(owner));
     // M35: claude's login (its config dir, and ~/.claude when that's the
     // one in use) is out of reach of ferrule's commands; only the engine's
     // own sandbox (`engine_sandbox`) leaves it readable, to claude.
@@ -1754,13 +1821,17 @@ fn sandbox_policy(cfg: &config::Config) -> ferrule_sandbox::Policy {
     policy
 }
 
-/// The secrets file's directory, the credential proxy's CA key, the
-/// learning loop's notes and the session transcripts (whatever a tool ever
-/// printed) — never readable by a sandboxed command. The sandbox resolves them per command,
-/// so the proxy's keys (written when the broker first starts) are covered
-/// too; the secrets directory is created now so a file `ferrule setup`
-/// writes into it later lands inside something already hidden.
-fn hidden_paths() -> Vec<PathBuf> {
+/// Every credential file the backup leaves out (`backup::SECRETS`: the
+/// secrets file's directory, the credential proxy's CA key, sign-ins), the
+/// gateway's state dir (channel state and held outbound messages) and,
+/// outside owner mode, the learning loop's notes and the session
+/// transcripts (whatever a tool ever printed) — never readable by a
+/// sandboxed command. In owner mode those two stay readable to the owner's
+/// commands (M54 §7). The sandbox resolves them per command, so the
+/// proxy's keys (written when the broker first starts) are covered too;
+/// the secrets directory is created now so a file `ferrule setup` writes
+/// into it later lands inside something already hidden.
+fn hidden_paths(owner: bool) -> Vec<PathBuf> {
     let Ok(data) = config::data_dir() else {
         return Vec::new();
     };
@@ -1771,12 +1842,22 @@ fn hidden_paths() -> Vec<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700));
     }
-    vec![
-        private,
-        data.join("proxy").join("keys"),
-        data.join("learn"),
-        data.join("sessions"),
-    ]
+    let mut hidden: Vec<PathBuf> = backup::SECRETS
+        .iter()
+        // Not `ssh`: known_hosts and the SSH workspaces' anchors, no key in it.
+        .filter(|rel| **rel != "ssh")
+        .map(|rel| {
+            rel.split('/')
+                .fold(data.clone(), |dir, part| dir.join(part))
+        })
+        .collect();
+    // Channel state can hold credentials and unasked outbound messages
+    // (WhatsApp's held.json can hold a /dashboard login link).
+    hidden.push(data.join("gateway"));
+    if !owner {
+        hidden.extend(owner_mode::guest_hidden());
+    }
+    hidden
 }
 
 /// Landlock can't grant a folder without what's in it, so when the
@@ -1833,7 +1914,11 @@ pub(crate) fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
     if let Some(sandbox) = SANDBOX.get() {
         return Ok(sandbox.clone());
     }
-    let mut sandbox = Sandbox::new(sandbox_policy(cfg)).map_err(|e| anyhow!(e))?;
+    // M54 §1: owner mode that can't be applied doesn't stop the process,
+    // and never runs commands unsandboxed.
+    let mut sandbox = Sandbox::new(sandbox_policy(cfg))
+        .or_else(|why| owner_mode::after_failure(cfg, why))
+        .map_err(|e| anyhow!(e))?;
     let broker = shared_broker(cfg)?;
     for w in secrets_warnings(cfg, &sandbox, broker) {
         eprintln!("ferrule: {w}");
@@ -1935,6 +2020,10 @@ fn secrets_warnings(
         )];
     };
     let mut warnings = broker.warnings().to_vec();
+    // Commands that are refused (M54: owner mode that can't hold) read nothing.
+    if sandbox.refusal().is_some() {
+        return warnings;
+    }
     if !sandbox.is_active() {
         warnings.push(
             "[secrets] without an active sandbox: commands can read ferrule's own environment, \
@@ -2638,6 +2727,17 @@ async fn gateway_factory(
 )> {
     let sandbox = shared_sandbox(cfg)?;
     let workspace = dunce::canonicalize(&workspace).unwrap_or(workspace);
+    // M54 §4: sub-agent worktree git runs in the sandbox in every mode that
+    // has one. The workspace is granted too, so closing a worker can commit
+    // to the repo's git dir there. When the config asks for owner mode,
+    // held or fallen back, `owner_mode::arm` set it first, and the first one
+    // stays.
+    if sandbox.is_active() {
+        owner_mode::sandbox_git(sandbox.for_helper(
+            &config::data_dir()?.join("worktrees"),
+            std::slice::from_ref(&workspace),
+        ));
+    }
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     mcp_tools.ask_the_owner(trust::hub(cfg)?);
     let ledger_sink = ledger::build_sink(cfg);
@@ -2655,6 +2755,8 @@ async fn gateway_factory(
         child_builder(max_iterations, mcp_tools.clone()),
     )?;
     let factory_sup = sup.clone();
+    let owner = owner_mode::on(cfg);
+    let hub = trust::hub(cfg)?;
     let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
         let (shape, origin) = ledger::classify_session(session_id);
         let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
@@ -2680,13 +2782,18 @@ async fn gateway_factory(
             agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
                 files.clone(),
                 session_id,
-                hidden_paths(),
+                // M54 §7: another person's chat sends no transcript.
+                hidden_paths(owner && owner_mode::owner_tree(&hub, session_id)),
             )));
         }
         // M48: the owner's own chat can change Ferrule, with the owner's tap.
         if let Some(admin) = &admin {
             if let Some(here) = self_service::offered(&admin.hub, session_id) {
-                agent.append_system_prompt(ferrule_agents::prompts::OWNER_ADMIN);
+                agent.append_system_prompt(if admin.autonomous() {
+                    ferrule_agents::prompts::OWNER_ADMIN_AUTONOMOUS
+                } else {
+                    ferrule_agents::prompts::OWNER_ADMIN
+                });
                 agent.register_tool(Arc::new(self_service::AdminTool::new(
                     admin.clone(),
                     session_id,
@@ -2704,18 +2811,51 @@ async fn gateway_factory(
     Ok((agent_factory, sup))
 }
 
+/// The gateway's config, read before anything else of the gateway runs.
+/// M54 §1, §4: owner mode that can't hold here runs as `workspace-write`
+/// (with `require`) from now on, and the owner is told why once the
+/// channels are up; either way this process's spawns are armed before the
+/// first one (an `ssh:` workspace's link). For a remote workspace the check
+/// is on its local anchor, without connecting.
+///
+/// M54 §3: before that decision, owner mode moves the binary into the data
+/// dir; a move that fails is the reason it's off. `None` when it moved just
+/// now: the gateway exits before starting anything, and the service starts
+/// it from the new path.
+async fn gateway_config(
+    workspace: Option<&str>,
+) -> Result<Option<(last_good::Loaded, config::Config)>> {
+    // M36 §6.3: a config that stopped reading runs on its last good copy.
+    let loaded = last_good::load(&config::data_dir()?).await?;
+    let mut cfg = loaded.config().clone();
+    owner_mode::in_gateway();
+    let local = remote::local_dir(workspace, &cfg)?;
+    if owner_mode::on(&cfg) {
+        match owner_mode::relocate() {
+            Ok(owner_mode::Moved::Already) => {}
+            Ok(owner_mode::Moved::Restarting) => return Ok(None),
+            Err(why) => owner_mode::fall_back(why),
+        }
+    }
+    if let Some(why) = owner_mode::refusal(&cfg, &local) {
+        owner_mode::fall_back(why);
+    }
+    owner_mode::settle(&mut cfg.sandbox);
+    owner_mode::arm(&cfg, Some(&local));
+    Ok(Some((loaded, cfg)))
+}
+
 async fn run_gateway(
+    loaded: last_good::Loaded,
+    cfg: config::Config,
     provider: Option<String>,
     workspace: PathBuf,
     max_iterations: usize,
 ) -> Result<()> {
-    // M36 §6.3: a config that stopped reading runs on its last good copy.
-    let loaded = last_good::load(&config::data_dir()?).await?;
-    let cfg = loaded.config().clone();
     let sessions_dir = config::data_dir()?.join("sessions");
 
     let files = Arc::new(ferrule_gateway::tools::FileOut::default());
-    let admin = self_service::Admin::new(trust::hub(&cfg)?);
+    let admin = self_service::Admin::new(trust::hub(&cfg)?, owner_mode::on(&cfg));
     let (agent_factory, sup) = gateway_factory(
         &cfg,
         provider.clone(),
@@ -2859,12 +2999,20 @@ async fn run_gateway(
         Arc::new(update::notice::HubOwner(hub.clone())),
     );
     // M48: a restart the owner asked for from a chat is kept here, a few
-    // seconds in, once the channels are up.
+    // seconds in, once the channels are up. M54: so is the word that owner
+    // mode is off this run, and why.
     {
         let (data, owner) = (config::data_dir()?, update::notice::HubOwner(hub.clone()));
+        let fallback = owner_mode::fell_back().map(|why| {
+            let refused = shared_sandbox(&cfg).is_ok_and(|s| s.refusal().is_some());
+            owner_mode::owner_line(why, refused, cfg.trust.gates)
+        });
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             self_service::promise::on_start(&data, &owner);
+            if let Some(text) = fallback {
+                owner.0.tell_owner(text);
+            }
         });
     }
     // M36: a line per update or rollback, and what's out (docs/updates.md).
@@ -3240,6 +3388,8 @@ async fn tasks_run_now(
     // M36 §6.3: a config that stopped reading runs on its last good copy.
     let loaded = last_good::load(&config::data_dir()?).await?;
     let cfg = loaded.config().clone();
+    // M54 §4: `dispatch` leaves arming to this, with the workspace.
+    owner_mode::arm(&cfg, Some(&workspace));
     let sessions_dir = config::data_dir()?.join("sessions");
     let store = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
     let task = store
@@ -3429,9 +3579,13 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         .as_ref()
         .map(sandbox_policy)
         .unwrap_or_else(|| ferrule_sandbox::Policy {
-            hidden: hidden_paths(),
+            hidden: hidden_paths(false),
             ..Default::default()
         });
+    // M54: owner mode that fell back here shows as what runs instead.
+    if let Some(why) = owner_mode::fell_back() {
+        println!("owner     off here: {why}");
+    }
     let workspace = dunce::canonicalize(workspace)?;
     let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
     let broker = match &cfg {
@@ -3457,6 +3611,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         Mode::Off => "off",
         Mode::ReadOnly => "read-only",
         Mode::WorkspaceWrite => "workspace-write",
+        Mode::Owner => "owner",
     };
     println!(
         "mode      {mode}{}",
@@ -3490,6 +3645,14 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
                 if i == 0 { "no reads  " } else { "          " },
                 path.display(),
                 if tools_only { " (file tools only)" } else { "" }
+            );
+        }
+        // M54 §2: owner mode's protected paths, readable but not writable.
+        for (i, path) in sandbox.protected_paths().iter().enumerate() {
+            println!(
+                "{}{}",
+                if i == 0 { "no writes " } else { "          " },
+                path.display()
             );
         }
     }

@@ -183,7 +183,7 @@ fn twice_named(table: &toml_edit::Table, path: &str) -> Option<String> {
 }
 
 /// The first field the page may not change that `new` changes.
-fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<String> {
+pub(crate) fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<String> {
     if let Some(twice) = twice_named(new.as_table(), "") {
         return Some(twice);
     }
@@ -692,6 +692,96 @@ fn put_back(ctx: &Ctx, from: &Path, how: &str, what: &str) -> Answer {
 pub fn undo(ctx: &Ctx) -> Answer {
     let path = need!(place(ctx));
     put_back(ctx, &prev_of(&path), "undo", "earlier copy")
+}
+
+/// What the Settings page's Autonomy row shows (M54 §8), from the config.
+/// `owner` and `off` are themselves; `workspace-write` is "Ask me first",
+/// and so is `read-only`, which asks first too (it just can't write at
+/// all). A config that doesn't read shows the default, "ask".
+pub fn autonomy(ctx: &Ctx) -> &'static str {
+    use ferrule_sandbox::Mode;
+    match super::api::config(ctx).map_or(Mode::default(), |c| c.sandbox.mode) {
+        Mode::Owner => "owner",
+        Mode::Off => "off",
+        Mode::WorkspaceWrite | Mode::ReadOnly => "ask",
+    }
+}
+
+/// `POST /api/sandbox/mode {mode: "owner" | "ask", confirm}`: the owner's
+/// switch (M54 §8). Page-only: no chat op maps to it (`route_of`), so
+/// nothing in the chat or the bot's shell can change `[sandbox]`. "ask"
+/// writes `workspace-write` and drops `[trust] gates = false`; either
+/// choice restarts the gateway.
+pub fn sandbox_mode(ctx: &Ctx, body: &Value) -> Answer {
+    if crate::managed::on() {
+        return bad(
+            403,
+            crate::managed::refused("The autonomy switch", "the sandbox is the panel's"),
+        );
+    }
+    let (value, label) = match need!(arg(body, "mode")) {
+        "owner" => ("owner", "Protected autonomous"),
+        "ask" => ("workspace-write", "Ask me first"),
+        other => return bad(400, format!("`mode` is `owner` or `ask`, not `{other}`")),
+    };
+    let path = need!(place(ctx));
+    let mut t = match crate::setup::Target::load(path.clone()) {
+        Ok(t) => t,
+        Err(e) => return bad(422, format!("{e:#}")),
+    };
+    let old = t
+        .root()
+        .get("sandbox")
+        .and_then(Item::as_table_like)
+        .and_then(|s| s.get("mode"))
+        .and_then(Item::as_str)
+        .unwrap_or("workspace-write")
+        .to_string();
+    // `gates = true` or none is left alone; only the off switch goes.
+    let gates_off = value == "workspace-write"
+        && t.root()
+            .get("trust")
+            .and_then(Item::as_table_like)
+            .and_then(|s| s.get("gates"))
+            .and_then(Item::as_bool)
+            == Some(false);
+    if old == value && !gates_off {
+        return ok(json!({ "ok": true, "said": format!("Already in {label} mode.") }));
+    }
+    need!(super::api::restart_refusal(ctx));
+    need!(super::api::confirmed(
+        body,
+        if value == "owner" && !cfg!(target_os = "linux") {
+            format!("Restart in {label} mode? Owner mode needs Linux; this host would fall back to Ask me first.")
+        } else {
+            format!("Restart in {label} mode?")
+        }
+    ));
+    let sandbox = match crate::setup::table(t.root(), &["sandbox"]) {
+        Ok(s) => s,
+        Err(e) => return bad(422, format!("{e:#}")),
+    };
+    crate::setup::put(sandbox, "mode", value);
+    if gates_off {
+        if let Some(trust) = t.root().get_mut("trust").and_then(Item::as_table_like_mut) {
+            trust.remove("gates");
+        }
+    }
+    // Same as the page's other writes: what was there stays as `.prev`.
+    if let Ok(now) = std::fs::read_to_string(&path) {
+        if let Err(e) = crate::secrets::write_private(&prev_of(&path), &now) {
+            return bad(500, format!("{e:#}"));
+        }
+    }
+    if let Err(e) = t.save() {
+        return bad(500, format!("{e:#}"));
+    }
+    audit(
+        ctx,
+        "dashboard.sandbox.mode",
+        json!({ "by": super::api::by(), "from": old, "to": value, "gates_removed": gates_off }),
+    );
+    super::api::gateway_restart(ctx, &json!({ "confirm": true }))
 }
 
 #[cfg(test)]

@@ -5,10 +5,11 @@
 //! whoever asks. Nothing here edits a file by hand.
 
 use super::describe::get;
-use super::Op;
+use super::{packages, Op};
 use crate::dashboard::{api, backup_page, Ctx};
 use ferrule_trust::ChatRef;
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// A result is never longer than this many characters.
@@ -79,7 +80,8 @@ fn route_of(op: &Op, here: &ChatRef) -> Option<(&'static str, Value)> {
         Op::TaskDelete { id } => ("tasks/delete", json!({ "id": id })),
         Op::TaskRunNow { id } => ("tasks/run", json!({ "id": id })),
         Op::ChannelRestart { name } => ("channels/restart", json!({ "name": name })),
-        Op::ConfigRestore => ("config/restore", json!({})),
+        // The chat's restore may not bring back a guarded field (M54 §5).
+        Op::ConfigRestore => ("config/restore", json!({ "from_chat": true })),
         Op::Disconnect { name } => ("connections/disconnect", json!({ "name": name })),
         _ => return None,
     })
@@ -122,8 +124,16 @@ async fn run_inner(op: &Op, ctx: &Ctx, by: &str, here: &ChatRef) -> Result<Strin
         Op::Tasks => tasks(ctx).await,
         Op::Connections => connections(ctx).await,
         Op::ConfigGet { key } => config_get(ctx, key.as_deref()).await,
+        Op::Secrets => secrets(ctx).await,
         Op::Backup => backup(ctx, by).await,
-        Op::UpdateCheck | Op::Update | Op::Restart => {
+        Op::PackageInstall { packages: names } => packages::install(names).await,
+        Op::PackageRemove { packages: names } => packages::remove(names).await,
+        Op::McpAdd { .. } => mcp_add(op, ctx).await,
+        Op::UpdateCheck
+        | Op::Update
+        | Op::Restart
+        | Op::DashboardLink
+        | Op::SecretRequest { .. } => {
             Err(format!("`{}` runs through the tool, not here", op.name()))
         }
         _ => Err(format!("`{}` has no runner", op.name())),
@@ -391,4 +401,160 @@ async fn backup(ctx: &Ctx, by: &str) -> Result<String, String> {
     said(api::act(ctx, "backup", &json!({}), by).await)?;
     backup_page::finished(ctx, Duration::from_secs(120)).await?;
     Ok("Backup saved. It has no keys or tokens; the dashboard's Backup page downloads it.".into())
+}
+
+/// `secrets`: each tool key's name and the hosts it goes to, from the
+/// page's own list. Never a value.
+async fn secrets(ctx: &Ctx) -> Result<String, String> {
+    let v = get(ctx, "secrets").await?;
+    let lines: Vec<String> = v["keys"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|k| {
+            let hosts: Vec<&str> = k["hosts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            format!(
+                "{} → {}",
+                k["name"].as_str().unwrap_or(""),
+                if hosts.is_empty() {
+                    "no hosts".to_string()
+                } else {
+                    hosts.join(", ")
+                }
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        return Ok("There are no tool keys.".into());
+    }
+    Ok(lines.join("\n"))
+}
+
+/// What `mcp_add` refuses (M54 §6.2): the bot never brings a key of its
+/// own. A header may name a key only as `${NAME}` of a `[secrets]` entry,
+/// which the proxy swaps in only for that key's own hosts; an `env` entry
+/// may not look like a key at all.
+pub(super) fn mcp_keys(ctx: &Ctx, env: &[String], headers: &[String]) -> Result<(), String> {
+    const OWNERS: &str = "keys are added by the owner: use secret_request";
+    let path = ctx
+        .config_path
+        .clone()
+        .ok_or("the config file isn't available in this process")?;
+    let cfg = crate::setup::Target::load(path)
+        .and_then(|t| t.config())
+        .map_err(|e| format!("{e:#}"))?;
+    if header_keys(headers)
+        .iter()
+        .any(|n| !cfg.secrets.contains_key(n))
+    {
+        return Err(OWNERS.into());
+    }
+    for e in env {
+        let name = e
+            .split_once('=')
+            .or_else(|| e.split_once(':'))
+            .map_or(e.as_str(), |(k, _)| k)
+            .trim();
+        if ferrule_sandbox::looks_secret(name) {
+            return Err(OWNERS.into());
+        }
+    }
+    Ok(())
+}
+
+/// Every `${NAME}` the headers name, once each.
+fn header_keys(headers: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for h in headers {
+        let mut rest = h.as_str();
+        while let Some(start) = rest.find("${") {
+            rest = &rest[start + 2..];
+            let Some(end) = rest.find('}') else { break };
+            if !out.iter().any(|n| n == &rest[..end]) {
+                out.push(rest[..end].to_string());
+            }
+            rest = &rest[end + 1..];
+        }
+    }
+    out
+}
+
+/// `mcp_add`: `ferrule mcp add` in the gateway. It starts the server in
+/// its sandbox, lists and scans its tools, then writes the config, where
+/// `config_follow` loads it. What could move a key or loosen the server's
+/// limits is fixed here, not taken from the model: `--secret` only names
+/// keys already in `[secrets]` (no key bound to a new host), the sandbox
+/// on, the scan's blocks stop the add.
+async fn mcp_add(op: &Op, ctx: &Ctx) -> Result<String, String> {
+    let Op::McpAdd {
+        name,
+        command,
+        url,
+        env,
+        headers,
+        enabled_tools,
+        replace,
+    } = op
+    else {
+        return Err(format!("`{}` isn't mcp_add", op.name()));
+    };
+    mcp_keys(ctx, env, headers)?;
+    let path = ctx
+        .config_path
+        .clone()
+        .ok_or("the config file isn't available in this process")?;
+    // The keys the headers name, for the probe's own proxy: one the owner
+    // saved after the gateway started isn't in this process's environment.
+    // Names only, each in `[secrets]` (checked above), so `add_to` keeps
+    // their hosts; and only those whose value is in the secrets file, so it
+    // reads the value from there and never saves one again.
+    let saved = crate::secrets::path()
+        .and_then(|p| crate::secrets::read(&p))
+        .unwrap_or_default();
+    let secrets = header_keys(headers)
+        .into_iter()
+        .filter(|n| saved.iter().any(|(k, v)| k == n && !v.is_empty()))
+        .collect();
+    let args = crate::mcp_add::AddArgs {
+        name: name.clone(),
+        command: command.clone(),
+        url: url.clone(),
+        env: env.clone(),
+        headers: headers.clone(),
+        secrets,
+        enabled_tools: enabled_tools.clone(),
+        no_sandbox: false,
+        waive: false,
+        skip_flagged: false,
+        replace: *replace,
+        yes: true,
+        no_doctor: true,
+        workspace: ctx.workspace.clone().unwrap_or_else(|| PathBuf::from(".")),
+        ..Default::default()
+    };
+    // `add_to` was written for the CLI and its future isn't known to be
+    // Send, so it runs on a blocking thread of its own.
+    let rt = tokio::runtime::Handle::current();
+    let file = path.clone();
+    let tools =
+        tokio::task::spawn_blocking(move || rt.block_on(crate::mcp_add::add_to(file, args)))
+            .await
+            .map_err(|e| format!("the add stopped: {e}"))?
+            .map_err(|e| format!("{e:#}"))?;
+    let tools = if tools.is_empty() {
+        "it offers no tools yet; ones it adds later are scanned then".to_string()
+    } else {
+        format!("its tools: {}", tools.join(", "))
+    };
+    let when = if crate::self_extend::allow_trusted(&path) {
+        "They load within a few seconds, no restart."
+    } else {
+        "Running agents load them at their next start."
+    };
+    Ok(format!("Added the MCP server {name}; {tools}. {when}"))
 }

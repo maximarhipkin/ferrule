@@ -42,7 +42,7 @@ pub fn sibling(target: &Target, name: &str) -> PathBuf {
     };
     match ssh.parent() {
         Some(dir) if !dir.as_os_str().is_empty() && dir.join(&exe).exists() => dir.join(exe),
-        _ => PathBuf::from(name),
+        _ => ferrule_sandbox::host::system_program(name),
     }
 }
 

@@ -12,7 +12,7 @@ mod shared;
 pub mod store;
 pub mod supervisor;
 pub mod tools;
-mod worktree;
+pub mod worktree;
 
 pub use board::{Entry, Task, TaskStatus};
 pub use error::AgentsError;

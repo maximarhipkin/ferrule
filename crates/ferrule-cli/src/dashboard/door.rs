@@ -4,7 +4,7 @@
 
 use super::Dashboard;
 use ferrule_gateway::InboundMessage;
-use ferrule_trust::Hub;
+use ferrule_trust::{ChatRef, Hub};
 use std::sync::Arc;
 
 pub struct DashboardDoor {
@@ -34,6 +34,92 @@ pub fn link_text(dash: &Dashboard, link: &str, remote: bool) -> String {
             ));
     }
     text
+}
+
+/// Whether a link goes through the quick tunnel (else it's the loopback or
+/// the public address).
+fn remote(dash: &Dashboard) -> bool {
+    !crate::managed::on() && dash.settings().remote == "tunnel" && dash.ctx.cloudflared.possible()
+}
+
+/// `link` with `suffix` just before the `#` that carries the token.
+fn with_suffix(link: &str, suffix: &str) -> String {
+    match link.split_once('#') {
+        Some((page, token)) => format!("{page}{suffix}#{token}"),
+        None => format!("{link}{suffix}"),
+    }
+}
+
+/// The message with a one-time login link, `suffix` (what the page opens)
+/// before its `#`. When links go through the tunnel it is opened first; if
+/// it doesn't open, the message says why and carries the loopback link
+/// instead. `Err`: why there's no link at all.
+async fn link_message(dash: &Dashboard, suffix: &str) -> Result<String, String> {
+    let local = || {
+        dash.local_link()
+            .map(|link| link_text(dash, &with_suffix(&link, suffix), false))
+            .map_err(|e| format!("{e:#}"))
+    };
+    if !remote(dash) {
+        return local();
+    }
+    match dash.remote_link().await {
+        Ok(link) => Ok(link_text(dash, &with_suffix(&link, suffix), true)),
+        Err(e) => {
+            tracing::warn!("dashboard tunnel: {e:#}");
+            let why = format!("The tunnel didn't open: {e:#}.");
+            match local() {
+                Ok(l) => Ok(format!("{why}\n{l}")),
+                Err(_) => Err(why),
+            }
+        }
+    }
+}
+
+/// Sends the owner a one-time login link (see [`link_message`]): to `to`
+/// when that's the owner's private chat, else to their primary chat
+/// (`Hub::tell_in`), never into a group. The link is only ever this
+/// message from the gateway: never an answer a model or a session
+/// transcript gets. `Err`: no link was sent.
+pub async fn send_link(
+    dash: &Dashboard,
+    hub: &Hub,
+    to: &ChatRef,
+    suffix: &str,
+) -> Result<(), String> {
+    send_link_with(dash, hub, to, suffix, "").await
+}
+
+/// [`send_link`], with `lead` (when not empty) as the message's first
+/// paragraph: it arrives with the link, never after it.
+pub async fn send_link_with(
+    dash: &Dashboard,
+    hub: &Hub,
+    to: &ChatRef,
+    suffix: &str,
+    lead: &str,
+) -> Result<(), String> {
+    let dest = if hub.is_owner(to) {
+        Some(to.clone())
+    } else {
+        hub.primary()
+    };
+    let Some(dest) = dest else {
+        return Err("there's no private chat with the owner to send it to".into());
+    };
+    // The HTTP API is for programs: what it sends unasked waits in an
+    // outbox for whoever holds a key.
+    if dest.channel == "http" {
+        return Err(
+            "the owner's chat is the HTTP API; a login link goes only to a person's chat".into(),
+        );
+    }
+    let mut text = link_message(dash, suffix).await?;
+    if !lead.is_empty() {
+        text = format!("{lead}\n\n{text}");
+    }
+    hub.tell_in(&dest, text);
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -69,50 +155,44 @@ impl ferrule_gateway::Interceptor for DashboardDoor {
         if !rest.is_empty() {
             return Some("Usage: /dashboard (a one-time login link), /dashboard off".into());
         }
-        // The link goes to the owner's own chat only, never into a group.
-        let where_ = if in_owner_chat {
-            String::new()
-        } else {
-            " I'll send it to your private chat.".into()
-        };
-        let remote = !crate::managed::on()
-            && self.dash.settings().remote == "tunnel"
-            && self.dash.ctx.cloudflared.possible();
-        if !remote {
-            let text = match self.dash.local_link() {
-                Ok(link) => link_text(&self.dash, &link, false),
-                Err(e) => return Some(format!("No link: {e:#}")),
-            };
-            if in_owner_chat {
-                return Some(text);
-            }
-            self.hub.tell_owner(text);
-            return Some("I sent the dashboard link to your private chat.".into());
-        }
-        if in_owner_chat && self.dash.tunnel_open().await {
-            return Some(match self.dash.remote_link().await {
-                Ok(link) => link_text(&self.dash, &link, true),
-                Err(e) => format!("No link: {e:#}"),
+        let ready = !remote(&self.dash) || self.dash.tunnel_open().await;
+        // In the owner's chat the link is the reply itself, as an answer
+        // to their message (the HTTP API's stays in the response).
+        if in_owner_chat && ready {
+            return Some(match link_message(&self.dash, "").await {
+                Ok(text) => text,
+                Err(e) => format!("No link: {e}"),
             });
         }
+        // Else it goes to the owner's own chat only, never into a group:
+        // from a group, to their primary chat.
+        let to = if in_owner_chat {
+            self.hub.owner_on(&msg.channel)
+        } else {
+            self.hub.primary()
+        };
+        let Some(to) = to else {
+            return Some(String::new());
+        };
+        if ready {
+            return Some(match send_link(&self.dash, &self.hub, &to, "").await {
+                Ok(()) => "I sent the dashboard link to your private chat.".into(),
+                Err(e) => format!("No link: {e}"),
+            });
+        }
+        let where_ = if in_owner_chat {
+            ""
+        } else {
+            " I'll send it to your private chat."
+        };
         // Opening a tunnel takes a few seconds: answer now, send the link
         // when it's up.
         let dash = self.dash.clone();
         let hub = self.hub.clone();
         tokio::spawn(async move {
-            let text = match dash.remote_link().await {
-                Ok(link) => link_text(&dash, &link, true),
-                Err(e) => {
-                    tracing::warn!("dashboard tunnel: {e:#}");
-                    let mut t = format!("The tunnel didn't open: {e:#}.");
-                    if let Ok(l) = dash.local_link() {
-                        t.push('\n');
-                        t.push_str(&link_text(&dash, &l, false));
-                    }
-                    t
-                }
-            };
-            hub.tell_owner(text);
+            if let Err(e) = send_link(&dash, &hub, &to, "").await {
+                hub.tell_in(&to, format!("No link: {e}"));
+            }
         });
         Some(if self.dash.ctx.cloudflared.needs_fetch() {
             format!(

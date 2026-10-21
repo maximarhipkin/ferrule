@@ -10,6 +10,7 @@
 use super::cli;
 use anyhow::{anyhow, bail, Context, Result};
 use ferrule_providers::codex::version::newer;
+use ferrule_sandbox::Sandbox;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -244,8 +245,15 @@ pub struct Updated {
 
 /// Runs the install's update command as the files' owner, with no input,
 /// for at most `limit`, then asks claude its version again. `config_dir` is
-/// only for `--version`.
-pub fn update(install: &Install, config_dir: &Path, limit: Duration) -> Result<Updated> {
+/// for `--version`, and the sandboxed updater's working directory. With a `sandbox` (owner mode) both the update and
+/// the version checks run inside it, and an update that needs another
+/// user's identity fails: a sandboxed process can't switch users.
+pub fn update(
+    install: &Install,
+    config_dir: &Path,
+    limit: Duration,
+    sandbox: Option<&Sandbox>,
+) -> Result<Updated> {
     if std::env::var("DISABLE_UPDATES").is_ok_and(|v| !v.is_empty() && v != "0") {
         bail!(
             "DISABLE_UPDATES is set for ferrule, which blocks every claude update; \
@@ -263,14 +271,24 @@ pub fn update(install: &Install, config_dir: &Path, limit: Duration) -> Result<U
     if let Some(why) = blocked(install) {
         bail!("{why}; {}", install.method.manual(&install.found));
     }
-    let from = cli::version(&install.found, config_dir)?;
-    let mut cmd = Command::new(program(&argv[0], &install.found));
-    cmd.args(&argv[1..])
-        .env_remove("DISABLE_AUTOUPDATER")
+    let from = cli::version(&install.found, config_dir, sandbox)?;
+    let exe = program(&argv[0], &install.found);
+    let mut cmd = match sandbox {
+        // In claude's config dir, which a helper sandbox grants.
+        Some(sandbox) => sandbox
+            .command(&exe, &argv[1..], config_dir)
+            .map_err(|e| anyhow!("couldn't sandbox {}: {e}", shown(&argv)))?,
+        None => {
+            let mut cmd = Command::new(&exe);
+            cmd.args(&argv[1..]);
+            cmd
+        }
+    };
+    cmd.env_remove("DISABLE_AUTOUPDATER")
         .env_remove("NOTIFY_SOCKET")
         .env_remove("WATCHDOG_USEC")
         .env_remove("WATCHDOG_PID");
-    as_owner(&mut cmd, install)?;
+    as_owner(&mut cmd, install, sandbox.is_some())?;
     let out = run(cmd, limit).with_context(|| format!("running {}", shown(&argv)))?;
     if !out.status.success() {
         let text = format!(
@@ -280,7 +298,7 @@ pub fn update(install: &Install, config_dir: &Path, limit: Duration) -> Result<U
         );
         bail!("{} failed: {}", shown(&argv), tail(text.trim(), 300));
     }
-    let to = cli::version(&install.found, config_dir)?;
+    let to = cli::version(&install.found, config_dir, sandbox)?;
     Ok(Updated { from, to })
 }
 
@@ -296,13 +314,17 @@ fn program(name: &std::ffi::OsStr, claude: &Path) -> PathBuf {
         .unwrap_or_else(|| name.to_path_buf())
 }
 
-/// As root, the update runs as the files' owner with their home.
+/// As root, the update runs as the files' owner with their home. Sandboxed
+/// (owner mode) it can't: `no_new_privs` forbids the switch.
 #[cfg(unix)]
-fn as_owner(cmd: &mut Command, install: &Install) -> Result<()> {
+fn as_owner(cmd: &mut Command, install: &Install, sandboxed: bool) -> Result<()> {
     use std::os::unix::process::CommandExt;
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 || install.owner.0 == 0 {
         return Ok(());
+    }
+    if sandboxed {
+        bail!("claude's updater runs as another user; owner mode can't switch users");
     }
     let (uid, gid) = install.owner;
     cmd.uid(uid).gid(gid);
@@ -315,7 +337,7 @@ fn as_owner(cmd: &mut Command, install: &Install) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn as_owner(_: &mut Command, _: &Install) -> Result<()> {
+fn as_owner(_: &mut Command, _: &Install, _: bool) -> Result<()> {
     Ok(())
 }
 

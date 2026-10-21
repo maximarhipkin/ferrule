@@ -239,6 +239,8 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "telegram/allow" => super::telegram::allow(ctx, body).await,
         "config/restore" => config_restore(ctx, body),
         "gateway/restart" => gateway_restart(ctx, body),
+        // The owner's switch (M54 §8): page-only, no chat op maps to it.
+        "sandbox/mode" => super::config_page::sandbox_mode(ctx, body),
         "update/check" => update_check(ctx, body).await,
         "update/start" => update_start(ctx, body).await,
         _ => None,
@@ -1170,6 +1172,25 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
     if now == good {
         return ok(json!({ "ok": true, "said": "The config is already the last good one." }));
     }
+    // M54 §5: the chat may not bring back a guarded field (`mode = "off"`,
+    // say) that the file has since lost; that stays the owner's, on the page.
+    // A file that doesn't read counts as empty, so a guarded field in the
+    // last good copy refuses too.
+    if body["from_chat"] == true {
+        let doc = |t: &str| {
+            t.parse::<toml_edit::DocumentMut>()
+                .unwrap_or_else(|_| toml_edit::DocumentMut::new())
+        };
+        let (old, new) = (doc(&now), doc(&good));
+        if let Some(field) = crate::dashboard::config_page::guarded_change(&old, &new) {
+            return bad(
+                403,
+                format!(
+                    "`{field}` differs in the last good config, so only the owner can restore it, on the dashboard."
+                ),
+            );
+        }
+    }
     need!(confirmed(
         body,
         format!(
@@ -1194,19 +1215,9 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
 /// Restarts the gateway: under a service, the process ends cleanly and
 /// the service starts it again; unsupervised on Unix (the container's
 /// init, a terminal), it runs itself again.
-fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
-    use crate::self_service::restart::{how, How};
-    if ctx.live.is_none() {
-        return missing("the gateway");
-    }
+pub(super) fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
+    need!(restart_refusal(ctx));
     let managed = crate::managed::on();
-    let how = how(managed, crate::last_good::supervised(), cfg!(unix));
-    if how == How::Unavailable {
-        return bad(
-            409,
-            "Restarting from the page isn't available on Windows without the service; nothing changed.",
-        );
-    }
     need!(confirmed(
         body,
         if managed {
@@ -1232,6 +1243,27 @@ fn gateway_restart(ctx: &Ctx, body: &Value) -> Answer {
         }
     });
     ok(json!({ "ok": true, "said": "Restarting…" }))
+}
+
+/// Why the gateway can't be restarted from here, so a change that needs
+/// a restart can be refused before anything is written.
+pub(super) fn restart_refusal(ctx: &Ctx) -> Result<(), Answer> {
+    use crate::self_service::restart::{how, How};
+    if ctx.live.is_none() {
+        return Err(missing("the gateway"));
+    }
+    let how = how(
+        crate::managed::on(),
+        crate::last_good::supervised(),
+        cfg!(unix),
+    );
+    if how == How::Unavailable {
+        return Err(bad(
+            409,
+            "Restarting from the page isn't available on Windows without the service; nothing changed.",
+        ));
+    }
+    Ok(())
 }
 
 /// A restart the tests asked for (the process isn't signalled in a test).
@@ -2149,7 +2181,11 @@ fn settings_view(ctx: &Ctx) -> Answer {
         return missing("the config");
     };
     match s.view() {
-        Ok(v) => ok(json!(v)),
+        Ok(v) => {
+            let mut v = json!(v);
+            v["autonomy"] = json!(super::config_page::autonomy(ctx));
+            ok(v)
+        }
         Err(e) => bad(500, format!("{e:#}")),
     }
 }

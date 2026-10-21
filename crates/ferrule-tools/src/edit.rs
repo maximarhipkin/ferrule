@@ -9,7 +9,7 @@
 //! shows the closest region with line numbers; nothing is written unless
 //! every hunk applied.
 
-use crate::fs_tools::{resolve, write_atomic};
+use crate::fs_tools::{refuse_protected, resolve, write_atomic};
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use serde_json::{json, Value};
@@ -22,15 +22,26 @@ const DIFF_LINES: usize = 60;
 const REGION_LINES: usize = 40;
 
 /// `edit_file`. [`EditFileTool::hiding`] adds paths it refuses even inside
-/// the workspace (the sandbox's read denies, as for the other file tools).
+/// the workspace (the sandbox's read denies, as for the other file tools),
+/// [`EditFileTool::protecting`] paths it reads but doesn't write.
 #[derive(Default)]
 pub struct EditFileTool {
     hidden: Vec<PathBuf>,
+    protected: Vec<PathBuf>,
 }
 
 impl EditFileTool {
     pub fn hiding(hidden: Vec<PathBuf>) -> Self {
-        Self { hidden }
+        Self {
+            hidden,
+            ..Self::default()
+        }
+    }
+
+    /// See [`refuse_protected`].
+    pub fn protecting(mut self, protected: Vec<PathBuf>) -> Self {
+        self.protected = protected;
+        self
     }
 }
 
@@ -102,6 +113,7 @@ impl Tool for EditFileTool {
         }
         let hunks = parse_hunks(&args).map_err(fail)?;
         let path = resolve(&ctx.workspace, &self.hidden, &shown)?;
+        refuse_protected(&path, &self.protected, &shown)?;
         let out = tokio::task::spawn_blocking(move || edit_path(&path, &shown, &hunks))
             .await
             .map_err(|e| fail(e.to_string()))?

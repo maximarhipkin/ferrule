@@ -391,8 +391,9 @@ pub const MIN_AGENT_BROWSER: (u32, u32, u32) = (0, 38, 0);
 pub fn find_agent_browser(command: &str) -> Result<PathBuf, String> {
     let path = find_command(command)
         .ok_or_else(|| format!("`{command}` isn't installed (npm install -g agent-browser)"))?;
-    let out = Command::new(&path)
-        .arg("--version")
+    // No working directory of its own: it keeps the process's.
+    let out = ferrule_sandbox::host::command(&path, ["--version"], Path::new("."))
+        .map_err(|e| format!("{} didn't run: {e}", path.display()))?
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()

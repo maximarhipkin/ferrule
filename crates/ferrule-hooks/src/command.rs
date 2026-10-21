@@ -1,10 +1,11 @@
 //! A command hook: the platform's shell runs it as the owner, outside the
-//! sandbox, with the payload as JSON on stdin. On timeout the whole
-//! process tree is killed, not just the shell at the top.
+//! sandbox (in owner mode, inside it: see [`ferrule_sandbox::host`]), with
+//! the payload as JSON on stdin. On timeout the whole process tree is
+//! killed, not just the shell at the top.
 
 use ferrule_core::lifecycle::{HookHandler, HookInput, HookRun};
 use ferrule_core::tool::ToolContext;
-use ferrule_sandbox::Shell;
+use ferrule_sandbox::{host, Shell};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -42,12 +43,20 @@ impl HookHandler for CommandHook {
     async fn run(&self, input: &HookInput, ctx: &ToolContext) -> HookRun {
         let payload = serde_json::to_vec(input).unwrap_or_default();
         let shell = Shell::get();
-        let mut cmd = Command::new(&shell.program);
+        let std_cmd = match host::command(&shell.program, shell.args(&self.command), &ctx.workspace)
+        {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                return HookRun {
+                    spawn_error: Some(e.to_string()),
+                    ..Default::default()
+                }
+            }
+        };
+        let mut cmd = Command::from(std_cmd);
         #[cfg(unix)]
         cmd.process_group(0);
-        cmd.args(shell.args(&self.command))
-            .current_dir(&ctx.workspace)
-            .env("FERRULE_PROJECT_DIR", &ctx.workspace)
+        cmd.env("FERRULE_PROJECT_DIR", &ctx.workspace)
             // Claude Code's name for it, so its hook scripts port over.
             .env("CLAUDE_PROJECT_DIR", &ctx.workspace)
             .env("FERRULE_HOOK_EVENT", &input.hook_event_name)

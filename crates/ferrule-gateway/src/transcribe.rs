@@ -247,8 +247,10 @@ impl CommandTranscriber {
         let Some((program, rest)) = args.split_first() else {
             return Err("[transcription] command is empty".into());
         };
-        let child = tokio::process::Command::new(program)
-            .args(rest)
+        // No working directory of its own: it keeps the process's.
+        let std_cmd = ferrule_sandbox::host::command(program, rest, Path::new("."))
+            .map_err(|e| format!("couldn't start the transcription command `{program}`: {e}"))?;
+        let child = tokio::process::Command::from(std_cmd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

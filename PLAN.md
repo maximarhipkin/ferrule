@@ -6030,3 +6030,125 @@ bridged too.
 run in this session beyond `rustfmt`. `make check` and a live Telegram
 turn on `claude-code/*` ("send me <file>", "what's in my Gmail") are
 still to do. No tests were added (not asked).
+
+### 2026-10-20 — M54 protected autonomous mode: design and build (Claude, Opus 5.5)
+
+**Scope.** The owner runs a personal Telegram bot on an Ubuntu server and
+wants it to run and improve itself (NanoClaw-style) without a terminal,
+with the keys still hidden. The stopgap they run now (`[sandbox] mode =
+"off"`, `[trust] gates = false`) exposes `private/secrets.env`. This
+session designs the replacement: `[sandbox] mode = "owner"`. Design in
+`docs/m54-autonomous.md`.
+
+**The design in short.** Commands may write everything the account can,
+except the keys (hidden) and a protected set that decides what runs
+outside the sandbox (read-only): the data dir, the config dir, the user
+systemd dirs and `environment.d`. The binary moves into the data dir.
+Outside the sandbox, the gateway runs only root-owned programs and its
+own binary. Hooks, gates, worktree git and helper version checks go
+through the sandbox. Credential files outside `private/` (the Matrix
+session, …) get hidden in every mode. `ferrule_admin` change ops and
+the trust gates stop asking.
+New ops: `package_install`/`package_remove` (apt via `sudo -n` in the
+gateway), `mcp_add`, `secret_request` (a Keys link to the owner, who
+pastes the key; the asking session is woken), `secrets` and
+`dashboard_link`. Transcripts and learn notes become readable. A
+dashboard switch is the owner's way in and out.
+
+**Review.** A builder-check pass read the design against the code.
+Its findings are folded in:
+- hooks and gate scripts run unsandboxed today;
+- `hooks_trust` without a card would trust them;
+- worktree git's `hooksPath` sits in a writable temp dir;
+- other credentials sit in the data dir;
+- helpers lift the socket allowlist;
+- `offered()` can't decide who gets owner mode.
+
+The macOS (Seatbelt) side wasn't checked in that pass.
+
+**Status.** Design approved by the owner (2026-10-20). Built 2026-10-21 in
+ten tasks, none committed (the owner's rules: no commit unless asked).
+The code (tasks 1 to 9) is staged; task 10's docs are working-tree
+changes, not yet staged. Design, with the rulings made while building:
+`docs/m54-autonomous.md`; user docs: `docs/sandbox.md`, "Owner mode".
+
+**Built, by task.**
+1. The sandbox's owner mode (`ferrule-sandbox`): `Mode::Owner`, a
+   read-only `protected` list, `/` writable carved around hidden and
+   protected, `MAKE_DIR` on the way down, the socket allowlist kept,
+   `narrowed()` for other people's chats. Linux only: macOS and Windows
+   refuse it.
+2. Spawns through the sandbox: `host.rs` (`set`, `command`,
+   `system_program`), hooks, scheduler gates, transcription, the tunnel,
+   `agent-browser --version`, claude's version check and updater, worktree
+   git (`set_git`, hooks path `/dev/null` on Unix, in every mode),
+   signal-cli; `git`, `ssh`, `systemctl`, `loginctl` and `ps` through
+   `system_program`.
+3. Host wiring (`ferrule-cli/src/owner_mode.rs`, `main.rs`): the protected
+   set, `owner_tree`, `refusal`, the fallback and its owner-policy
+   launcher, `arm` for every process, every `backup::SECRETS` entry but
+   `ssh` hidden plus the gateway's state dir, the file tools refusing
+   protected writes, `ferrule sandbox` and doctor. 3b: the claude engine's
+   `guest()` sandbox (`Provider::guest`, `RoutedProvider`).
+4. No gates for the owner's trees (`TrustGuard::gates`, `trust::equip`).
+5. The binary moves into `<data>/bin` (hard link, units rewritten and
+   reloaded, atomic symlink swap; `setup::refresh_service_with`,
+   `service::rewrite`).
+6. Change ops without the card (`ask_and_run`, the autonomous prompt
+   strings, `config_restore` refusing guarded fields from the chat).
+7. The new ops: `package_install`/`package_remove` (`packages.rs`),
+   `mcp_add`, `secrets`, `dashboard_link`.
+8. `secret_request` (`keys.rs`): the Keys link with a prefill, the wake
+   when the key is saved, the reason allowlist.
+9. The owner's switch: Settings, Autonomy; `sandbox/mode`, page-only.
+10. Docs: `docs/sandbox.md`, `docs/m54-autonomous.md` (status and
+    "Corrections made while building"), `docs/roadmap.md`, README.
+
+**Main corrections to the design** (all in the doc's "Corrections made
+while building"): Linux only; `system_program` instead of `PATH` for
+unsandboxed spawns; `arm` in every process; `wanted` (config asks) versus
+`on` (running); guests can't read `sessions/` or `learn/`; `<data>/ssh`
+stays visible, `<data>/gateway` is hidden; a hard link and an atomic
+symlink swap, not a rename; `relocated()` for non-gateway processes;
+refusal beside another instance; apt's plan is checked; the
+`secret_request` reason is an allowlist; `describe` still runs in owner
+mode; after a fallback the helpers get an owner-policy sandbox, not the
+fallback one; `mcp_add` passes the header key names to the probe. The
+design's rows for the key-form `node` and cloudflared's version check
+were test-only code.
+
+**Checked.** `make check` passed on macOS: 1844 passed, 0 failed, 28
+ignored, with one environment override (the eval starter-suite test needs
+commit signing off, because the owner's global git config signs through
+1Password; M54 doesn't touch it). **Not compiled:** the Linux-only
+owner-mode code (`ferrule-sandbox` `linux.rs`, `supervisor.rs`, the
+`cfg(linux)` apply call). A Linux `cargo check` or a CI run is needed
+before merge. No live run yet: the "Done means" list in the design doc is
+still to do on a Linux server. No test was added (not asked). Existing
+assertions were updated where a signature or a count changed
+(`self_service/tests.rs`: 35 to 41 ops; `update/tests.rs`;
+`ferrule-plans/tests/it/claude_update.rs`).
+
+**Follow-ups.**
+- Fixed here because it blocked `make check`: a pre-existing clippy error
+  from PR #46 in `crates/ferrule-gateway/src/router.rs` (~835), `while
+  person && merges` rewritten as `if ... { loop {...} }`.
+- The eval starter-suite test depends on the machine's global git signing
+  config; it fails where commits are signed through an agent such as
+  1Password.
+- Pre-existing: `backup::SECRETS` doesn't list `gateway/http/clients.json`
+  (the HTTP API clients' key hashes), so a backup contains it, and the bot
+  can ask for a backup and read it.
+- macOS owner mode: ancestor unlink-deny anchors and a hard-link probe on
+  a Mac.
+- Per-session helpers for guests (MCP servers, hooks, the browser, graph
+  check commands, the host launcher, the shared workspace and its git
+  filter drivers); until then guests reach the owner sandbox's reach
+  there, never the keys.
+- Deferred minors worth doing: wake from `config_follow` once the key is
+  bound, not after a fixed delay; remember who asked in a file, not in
+  memory; prune `ORIGINS`; `supervised()`/`INVOCATION_ID` exactness and
+  `manager()`'s fallback check; the apt dry run's sudoers shape and its
+  English-only message matching; `mcp_add` card pre-checks and the
+  duplicated `${...}` scanner; `keys::bind`'s router order against Admin;
+  `Command::new` outside tests re-grepped for a spawn the table misses.

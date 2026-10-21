@@ -128,8 +128,10 @@ impl Found {
 /// Runs `program args` with a deadline (the JVM starts slowly): its
 /// stdout and stderr together.
 async fn output(program: &Path, args: &[&str], secs: u64) -> Result<String, String> {
-    let run = tokio::process::Command::new(program)
-        .args(args)
+    // No working directory of its own: it keeps the process's.
+    let std_cmd = ferrule_sandbox::host::command(program, args, Path::new("."))
+        .map_err(|e| format!("couldn't run {}: {e}", program.display()))?;
+    let run = tokio::process::Command::from(std_cmd)
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
         .output();
