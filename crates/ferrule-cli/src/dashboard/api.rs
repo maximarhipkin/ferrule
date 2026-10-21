@@ -194,6 +194,8 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "connections/connect" | "connections/disconnect" => connection_op(ctx, path, body).await,
         "secrets/add" => super::tool_keys::add(ctx, body),
         "secrets/remove" => super::tool_keys::remove(ctx, body),
+        "secrets/rotate" => super::tool_keys::rotate(ctx, body),
+        "secrets/hosts" => super::tool_keys::hosts_edit(ctx, body),
         "connections/key" | "connections/test" | "connections/cancel" | "connections/address" => {
             connection_key_op(ctx, path, body).await
         }
@@ -3745,6 +3747,130 @@ command = "echo hi"
         )
         .await;
         assert_eq!(s, 409);
+    }
+
+    /// M52: rotate replaces a kept key's value — including one the config
+    /// names (a provider's key) — never gives a value back, asks first,
+    /// and leaves the old value on a failed write; hosts move only for a
+    /// page-shaped tool key.
+    #[tokio::test]
+    async fn the_safe_rotates_any_kept_key_and_moves_only_a_tool_keys_hosts() {
+        const OLD: &str = "old-key-value-aaaaaaaa";
+        const NEW: &str = "new-key-value-bbbbbbbb";
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = bare(dir.path());
+        let file = dir.path().join("config.toml");
+        std::fs::write(
+            &file,
+            "[providers.p]\nbase_url = \"https://api.example.com/v1\"\napi_key_env = \"M52PROVIDERKEY\"\nmodel = \"m\"\n\n\
+             [gateway]\ntelegram_token_env = \"M52TGTOKEN\"\n\n[secrets]\nM52TOOLKEY = [\"api.old.example\"]\n",
+        )
+        .unwrap();
+        ctx.config_path = Some(file.clone());
+        let secrets = dir.path().join("data/private/secrets.env");
+        for (n, v) in [
+            ("M52PROVIDERKEY", OLD),
+            ("M52TGTOKEN", OLD),
+            ("M52TOOLKEY", OLD),
+        ] {
+            crate::secrets::set(&secrets, n, v).unwrap();
+        }
+
+        // The list shows every kept key, what uses it, and never a value.
+        let (_, list) = call(&ctx, "secrets", json!({})).await;
+        let s = list.to_string();
+        assert!(!s.contains(OLD), "{s}");
+        let keys = list["keys"].as_array().unwrap();
+        assert_eq!(keys.len(), 3, "{s}");
+        let provider = keys.iter().find(|k| k["name"] == "M52PROVIDERKEY").unwrap();
+        assert_eq!(provider["used_by"], json!(["the p brain"]));
+        assert_eq!(provider["rotatable"], json!(true));
+        assert_eq!(provider["removable"], json!(false));
+        let tool = keys.iter().find(|k| k["name"] == "M52TOOLKEY").unwrap();
+        assert_eq!(tool["used_by"], json!(["a tool's commands"]));
+        assert_eq!(tool["hosts_editable"], json!(true));
+
+        // Rotate needs the live bot, a kept name, a clean value, a yes.
+        let rotate = |name: &str, value: &str| json!({ "name": name, "value": value });
+        let (s, _) = call(&ctx, "POST secrets/rotate", rotate("M52PROVIDERKEY", NEW)).await;
+        assert_eq!(s, 409, "no gateway, no rotation");
+        ctx.live = Some(live());
+        let (s, v) = call(&ctx, "POST secrets/rotate", rotate("M52NOPE", NEW)).await;
+        assert_eq!(
+            (s, v.to_string().contains("nothing to replace")),
+            (404, true),
+            "{v}"
+        );
+        let (s, _) = call(
+            &ctx,
+            "POST secrets/rotate",
+            rotate("M52PROVIDERKEY", "two\nlines"),
+        )
+        .await;
+        assert_eq!(s, 400);
+        let (s, _) = call(&ctx, "POST secrets/rotate", rotate("M52PROVIDERKEY", "")).await;
+        assert_eq!(s, 400);
+        let (s, v) = call(&ctx, "POST secrets/rotate", rotate("M52PROVIDERKEY", NEW)).await;
+        assert_eq!((s, v["confirm"].is_string()), (409, true), "{v}");
+        assert!(!v.to_string().contains(NEW), "{v}");
+        let (s, v) = call(
+            &ctx,
+            "POST secrets/rotate",
+            json!({ "name": "M52PROVIDERKEY", "value": NEW, "confirm": true }),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert!(
+            !v.to_string().contains(NEW) && !v.to_string().contains(OLD),
+            "{v}"
+        );
+        assert_eq!(
+            crate::secrets::read(&secrets)
+                .unwrap()
+                .iter()
+                .find(|(n, _)| n == "M52PROVIDERKEY")
+                .unwrap()
+                .1,
+            NEW
+        );
+        // In use from the next call: the running process's env has it.
+        assert_eq!(std::env::var("M52PROVIDERKEY").as_deref(), Ok(NEW));
+        std::env::remove_var("M52PROVIDERKEY");
+
+        // Hosts: only a page-shaped tool key, only real site names, asked first.
+        let (s, v) = call(
+            &ctx,
+            "POST secrets/hosts",
+            json!({ "name": "M52PROVIDERKEY", "hosts": "api.new.example", "confirm": true }),
+        )
+        .await;
+        assert_eq!(s, 409, "{v}");
+        let (s, _) = call(
+            &ctx,
+            "POST secrets/hosts",
+            json!({ "name": "M52TOOLKEY", "hosts": "localhost", "confirm": true }),
+        )
+        .await;
+        assert_eq!(s, 400);
+        let (s, v) = call(
+            &ctx,
+            "POST secrets/hosts",
+            json!({ "name": "M52TOOLKEY", "hosts": "api.new.example" }),
+        )
+        .await;
+        assert_eq!((s, v["confirm"].is_string()), (409, true), "{v}");
+        let (s, v) = call(
+            &ctx,
+            "POST secrets/hosts",
+            json!({ "name": "M52TOOLKEY", "hosts": "api.new.example", "confirm": true }),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        let cfg: toml::Table = std::fs::read_to_string(&file).unwrap().parse().unwrap();
+        assert_eq!(
+            cfg["secrets"]["M52TOOLKEY"],
+            toml::Value::Array(vec!["api.new.example".into()])
+        );
     }
 
     /// M50: an MCP address with a key, from the page: connected once, the

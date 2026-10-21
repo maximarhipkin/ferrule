@@ -185,8 +185,26 @@ last ran on.
 A gateway started with `--provider` stays on it until it restarts without
 that flag. `/model` says so.
 
-## Photos: which models see them
+## Making media: image and video generation
 
+With `[media] provider = "<id>"` naming a connected provider whose
+endpoint speaks OpenRouter's media API (`/images/generations`,
+`/videos`), chat sessions get two tools (M51, `docs/m51-media.md`):
+
+- **`generate_image`** makes (or, with `reference` paths, edits) an
+  image, saves it under `media/` in the workspace and sends it to the
+  chat.
+- **`generate_video`** starts an async render, answers at once with a
+  job id, and the built-in `ferrule-media` task (every minute on the
+  scheduler) delivers the MP4 when it's done — a restart loses nothing,
+  and a failure is said in the chat.
+
+`[media] image_model` / `video_model` set the defaults a call can
+override; `max_per_day` caps generations per UTC day (fail-closed);
+every call and delivery is a ledger row with `call_kind = "media"`.
+Sub-agents don't get the tools: their answers go through the parent.
+
+## Photos: which models see them
 A photo sent in a chat (Telegram, WhatsApp, the dashboard and the other
 channels that save files) reaches the model as a picture when the model can
 see one. Each provider decides this for itself, so it stays right when a

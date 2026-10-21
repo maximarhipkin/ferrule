@@ -1,5 +1,5 @@
 use super::*;
-use crate::gate::GateVerdict;
+use crate::gate::{GateVerdict, ProbeOut};
 use ferrule_core::{CompletionResponse, CoreError, LedgerRecord};
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -323,4 +323,154 @@ async fn the_plan_spends_and_writes_nothing() {
     assert_eq!(plan.check.as_deref(), Some("true"));
     assert!(s.rows.0.lock().unwrap().is_empty());
     assert!(!s.env.dir.root().exists());
+}
+
+/// M53: a gate with no check that probes — fixed probe outcome.
+struct ProbeGate {
+    finished: bool,
+    tail: String,
+    seen: Mutex<Vec<Option<String>>>,
+}
+
+#[async_trait::async_trait]
+impl Gate for ProbeGate {
+    fn check(&self) -> Option<String> {
+        None
+    }
+    async fn run(&self, _r: GateRun<'_>) -> GateVerdict {
+        panic!("no check, so the pass must probe, not gate")
+    }
+    async fn probe(&self, r: GateRun<'_>) -> Option<ProbeOut> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(r.playbook_block.map(str::to_string));
+        Some(ProbeOut {
+            finished: self.finished,
+            incomplete: (!self.finished).then(|| "step limit".to_string()),
+            tail: self.tail.clone(),
+        })
+    }
+}
+
+/// A gate with no check and no probe support: the pre-M53 behaviour.
+struct BlindGate;
+
+#[async_trait::async_trait]
+impl Gate for BlindGate {
+    fn check(&self) -> Option<String> {
+        None
+    }
+    async fn run(&self, _r: GateRun<'_>) -> GateVerdict {
+        panic!("no check, so the pass must probe, not gate")
+    }
+}
+
+fn setup_with_gate(
+    gate: Arc<dyn Gate>,
+    answers: &[Option<&str>],
+    eps: Vec<Episode>,
+) -> (Env, Arc<Rows>) {
+    let d = tempfile::tempdir().unwrap();
+    let rows = Arc::new(Rows(Mutex::default()));
+    let env = Env {
+        dir: LearnDir::new(&d.path().join("learn")),
+        provider: Arc::new(Queue(Mutex::new(
+            answers.iter().map(|a| a.map(str::to_string)).collect(),
+        ))),
+        provider_name: "queue".into(),
+        model: "m".into(),
+        ledger: Some(rows.clone()),
+        price: Arc::new(|_: &LedgerRecord| None),
+        priced: false,
+        day_before: Spent::default(),
+        memory_db: None,
+        gate,
+        sessions_dir: None,
+        task_episodes: eps,
+    };
+    // The TempDir must outlive the pass: leak it into the Env's dir path.
+    // (Tests drop everything at the end of the function scope instead.)
+    std::mem::forget(d);
+    (env, rows)
+}
+
+#[tokio::test]
+async fn a_check_lesson_is_kept_when_the_probe_wins_the_judge() {
+    let gate = Arc::new(ProbeGate {
+        finished: true,
+        tail: "probe: finished, no errors".into(),
+        seen: Mutex::default(),
+    });
+    let answers = [
+        Some(ADD),
+        Some(r#"{"better":true,"why":"it finished without retries"}"#),
+    ];
+    let (env, rows) = setup_with_gate(gate.clone(), &answers, vec![ep(1)]);
+    let p = run_pass(&opts(), &env).await.unwrap();
+    assert_eq!(p.status, DONE, "{:?}", p.notes);
+    assert_eq!(p.changes.len(), 1, "{:?}", p.rejected);
+    match &p.changes[0] {
+        Change::Playbook { gate, .. } => assert!(gate.contains("kept by the judge"), "{gate}"),
+        _ => panic!(),
+    }
+    assert!(env
+        .dir
+        .read_playbook()
+        .unwrap()
+        .contains("Run cargo fmt before the tests."));
+    let seen = gate.seen.lock().unwrap()[0].clone().unwrap();
+    assert!(seen.contains("Run cargo fmt"));
+    let rows = rows.0.lock().unwrap().clone();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[1].origin.as_deref(), Some("judge"));
+    assert!(rows.iter().all(|r| r.call_kind == "learn"));
+}
+
+#[tokio::test]
+async fn the_judges_no_rejects_and_a_broken_probe_rejects() {
+    let answers = [Some(ADD), Some(r#"{"better":false,"why":"same failure"}"#)];
+    let (env, _) = setup_with_gate(
+        Arc::new(ProbeGate {
+            finished: true,
+            tail: "t".into(),
+            seen: Mutex::default(),
+        }),
+        &answers,
+        vec![ep(1)],
+    );
+    let p = run_pass(&opts(), &env).await.unwrap();
+    assert!(p.changes.is_empty());
+    assert!(
+        p.rejected[0].reason.contains("the judge said no"),
+        "{:?}",
+        p.rejected
+    );
+    assert_eq!(env.dir.read_playbook().unwrap(), "");
+
+    // An unfinished probe never reaches the judge (no second answer queued).
+    let (env, _) = setup_with_gate(
+        Arc::new(ProbeGate {
+            finished: false,
+            tail: String::new(),
+            seen: Mutex::default(),
+        }),
+        &[Some(ADD)],
+        vec![ep(1)],
+    );
+    let p = run_pass(&opts(), &env).await.unwrap();
+    assert!(p.changes.is_empty());
+    assert!(
+        p.rejected[0].reason.contains("stopped before finishing"),
+        "{:?}",
+        p.rejected
+    );
+}
+
+#[tokio::test]
+async fn a_gate_that_cannot_probe_still_rejects_without_a_check() {
+    let (env, _) = setup_with_gate(Arc::new(BlindGate), &[Some(ADD)], vec![ep(1)]);
+    let p = run_pass(&opts(), &env).await.unwrap();
+    assert!(p.changes.is_empty());
+    assert_eq!(p.rejected[0].reason, "no check to gate on");
 }

@@ -42,7 +42,7 @@ pub struct GateVerdict {
 }
 
 impl GateVerdict {
-    fn fail(reason: impl Into<String>) -> Self {
+    pub(crate) fn fail(reason: impl Into<String>) -> Self {
         Self {
             passed: false,
             reason: reason.into(),
@@ -52,9 +52,28 @@ impl GateVerdict {
 
 #[async_trait::async_trait]
 pub trait Gate: Send + Sync {
-    /// The command a verdict rests on; `None` rejects every add and edit.
+    /// The command a verdict rests on; `None` rejects every add and edit
+    /// unless the gate also [`probe`](Gate::probe)s.
     fn check(&self) -> Option<String>;
     async fn run(&self, run: GateRun<'_>) -> GateVerdict;
+    /// M53: re-run the episode with the candidate lesson, no check, and
+    /// bring back the probe's transcript tail for the judge. `None` =
+    /// this gate can't probe (the default).
+    async fn probe(&self, run: GateRun<'_>) -> Option<ProbeOut> {
+        let _ = run;
+        None
+    }
+}
+
+/// What a probe (M53) brings back.
+#[derive(Debug, Clone)]
+pub struct ProbeOut {
+    /// The re-run finished (no `incomplete` note, inside the timeout).
+    pub finished: bool,
+    /// Why it didn't, when it didn't.
+    pub incomplete: Option<String>,
+    /// The probe transcript's tail, rendered for the judge.
+    pub tail: String,
 }
 
 /// The real gate: ferrule's engineered harness (the one `ferrule eval`
@@ -96,19 +115,56 @@ impl Gate for WorkspaceGate {
         let _ = fs::remove_dir_all(&scratch);
         verdict
     }
+
+    async fn probe(&self, r: GateRun<'_>) -> Option<ProbeOut> {
+        let pass = r
+            .pass_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("pass");
+        let scratch = self.scratch_root.join(format!("probe-{pass}-{}", r.n));
+        let _ = fs::remove_dir_all(&scratch);
+        let name = format!("probe-{}", r.n);
+        let ran = self.run_agent(&scratch, &name, None, &r).await;
+        let _ = fs::remove_dir_all(&scratch);
+        let (transcript, incomplete) = match ran {
+            Ok(t) => t,
+            Err(why) => {
+                return Some(ProbeOut {
+                    finished: false,
+                    incomplete: Some(why),
+                    tail: String::new(),
+                })
+            }
+        };
+        let finished = incomplete.is_none();
+        Some(ProbeOut {
+            finished,
+            incomplete,
+            tail: crate::episode::render_tail(&transcript),
+        })
+    }
 }
 
 impl WorkspaceGate {
-    async fn run_in(&self, scratch: &Path, check: &str, r: GateRun<'_>) -> GateVerdict {
+    /// Copy the workspace, run the episode's goal with the candidate
+    /// playbook: the shared half of the gate and the probe (M53). Returns
+    /// the probe transcript's path (kept in the pass dir) and the agent's
+    /// incomplete note, if it stopped early.
+    async fn run_agent(
+        &self,
+        scratch: &Path,
+        name: &str,
+        check: Option<&str>,
+        r: &GateRun<'_>,
+    ) -> Result<(PathBuf, Option<String>), String> {
         let workspace = scratch.join("workspace");
         let state = scratch.join("state");
-        if let Err(e) = copy_workspace(&self.workspace, &workspace, &self.skip) {
-            return GateVerdict::fail(e);
-        }
-        if let Err(e) = fs::create_dir_all(&state) {
-            return GateVerdict::fail(format!("could not make the scratch copy: {e}"));
-        }
-        let transcript = Transcript::create(r.pass_dir, &format!("gate-{}", r.n)).ok();
+        copy_workspace(&self.workspace, &workspace, &self.skip)?;
+        fs::create_dir_all(&state).map_err(|e| format!("could not make the scratch copy: {e}"))?;
+        let transcript = Transcript::create(r.pass_dir, name)
+            .map_err(|e| format!("could not start the transcript: {e}"))?;
+        let transcript_path = transcript.path().to_path_buf();
         let mut agent = variant::build(variant::Build {
             variant: Variant::Engineered,
             provider: self.provider.clone(),
@@ -118,15 +174,15 @@ impl WorkspaceGate {
             workspace: &workspace,
             state: &state,
             max_iterations: self.max_iterations,
-            check: Some(check),
-            transcript,
+            check,
+            transcript: Some(transcript),
             playbook: r.playbook_block,
             edit_tools: Default::default(),
         })
         .with_ledger(
             r.sink.clone(),
             crate::budget::CALL_KIND,
-            Some(format!("gate:{}", r.n)),
+            Some(name.to_string()),
             self.model.clone(),
         )
         .with_budget(r.meter.clone() as Arc<dyn Budget>);
@@ -137,15 +193,27 @@ impl WorkspaceGate {
         let _ = drain.await;
         match run {
             Err(_) => {
-                return GateVerdict::fail(format!(
-                    "the gate run took longer than {}s",
+                return Err(format!(
+                    "the run took longer than {}s",
                     self.run_timeout.as_secs()
                 ))
             }
-            Ok(Err(e)) => return GateVerdict::fail(format!("the gate run failed: {e}")),
+            Ok(Err(e)) => return Err(format!("the run failed: {e}")),
             Ok(Ok(_)) => {}
         }
-        if let Some(why) = &agent.incomplete {
+        Ok((transcript_path, agent.incomplete.clone()))
+    }
+
+    async fn run_in(&self, scratch: &Path, check: &str, r: GateRun<'_>) -> GateVerdict {
+        let workspace = scratch.join("workspace");
+        let (_, incomplete) = match self
+            .run_agent(scratch, &format!("gate-{}", r.n), Some(check), &r)
+            .await
+        {
+            Ok(t) => t,
+            Err(why) => return GateVerdict::fail(why),
+        };
+        if let Some(why) = &incomplete {
             if r.meter.exceeded().is_some() {
                 return GateVerdict::fail("budget reached during the gate");
             }

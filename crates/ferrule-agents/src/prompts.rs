@@ -40,6 +40,14 @@ pub const CHAT_FILES: &str = "## Files in this chat\n\
 To send the person you're chatting with a file (an image, a PDF, a report you wrote), save it in the workspace \
 and call `send_file`. If this channel can't take files, the tool says so; then say where the file is.";
 
+/// Added to a chat session's system prompt with the media tools (M51).
+/// Constant per session, so the prompt prefix stays byte-stable.
+pub const CHAT_MEDIA: &str = "## Making images and video\n\
+To create an image, call `generate_image` (with `reference` paths it edits those images). To create a video, \
+call `generate_video`: it answers at once with a job id, and the finished clip is sent to this chat when it's \
+done — never wait on it. Every generation spends the owner's money, video most of all: say the price class \
+before a big batch, and stop when the daily cap says it's reached.";
+
 /// Added to the system prompt of the owner's own chat session, with the
 /// `ferrule_admin` tool (M48).
 pub const OWNER_ADMIN: &str = "## Running Ferrule for the owner\n\

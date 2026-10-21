@@ -6031,6 +6031,216 @@ run in this session beyond `rustfmt`. `make check` and a live Telegram
 turn on `claude-code/*` ("send me <file>", "what's in my Gmail") are
 still to do. No tests were added (not asked).
 
+### 2026-10-20 — Research: Harness², the 2026 field, media generation and the dashboard Safe (Kimi)
+
+**Scope.** Max: pull latest, read google-research/harness2, research the
+top 5 existing agents, audit ferrule's code/design/dashboard/security/
+abilities, find what we're missing — OpenRouter image/video mid
+conversation, sub-agents on another OpenRouter model, self-improvement,
+a "safe" in the dashboard — and stay in sync with other sessions via
+PLAN.md. Research only; no code changed.
+
+**What was done.**
+- Repo pulled (`dadf357`, clean). PLAN.md re-read: current through M50 +
+  the 2026-10-20 gateway/trust/claude-bridge entries.
+- Read Harness² (arXiv:2610.14224): task-level Propose–Probe–Compose
+  without ground truth, harnessing-level recursion, eight editable
+  harness components. Ferrule has all eight components and an offline
+  learning loop (M16); it lacks *online per-task* refinement and
+  *verifier-free* probing.
+- Field scan (Claude Code, Codex, Gemini CLI/Antigravity, OpenCode, Pi;
+  OpenClaw as the community outlier): ferrule matches hooks, subagents,
+  skills, sandboxing, provider-agnosticism; gaps are subagent effort
+  control, LSP diagnostics in the edit loop, WhatsApp — and **no leader
+  has native image/video generation tools**.
+- Code audit confirmed: `spawn_agent` already takes a `model` (M21,
+  supervisor-checked) — "another agent on another OpenRouter model" is
+  built; vision input (M47) and Telegram file sending exist; **no media
+  generation tool exists**; the dashboard can add new `[secrets]` keys
+  but cannot rotate an existing one (`tool_keys.rs` refuses existing
+  names).
+
+**Findings written up** in `docs/research-harness2-media.md` (linked
+from the README's Documentation section), with three proposals:
+- **M51 media generation**: `generate_image` (OpenRouter `/images`,
+  sync, reference images = editing) and `generate_video` (OpenRouter
+  `/videos` async job API — submit, persist job ID, an M3 one-shot task
+  polls and delivers the MP4 via `send_file`). Ledger `call_kind =
+  "media"` caps; everything through the credential proxy.
+- **M52 dashboard Safe**: add rotate-existing-key to the M50 keys panel
+  (write-only, one confirm card, config undo covers the rest).
+- **M53 contrastive probing**: Harness²'s one idea worth stealing,
+  scoped into M16's spine — when a failed task has no verify command,
+  keep a playbook delta only if a judge prefers the re-run's transcript;
+  record active skills + playbook hash in transcript meta so "which
+  harness produced this run" is answerable.
+
+**Not done.** No code, no `make check` (docs + PLAN only; nothing built
+or run per the standing rule). M51–M53 await Max's go. Left uncommitted
+for Max to review.
+
+**Sync note for other sessions.** If you build any of M51/M52/M53,
+edit `docs/research-harness2-media.md`'s proposal section in place and
+note it here — don't fork the design into a second doc.
+
+### 2026-10-20 (late) — M51 design: media generation from the chat (Kimi)
+
+**Scope.** Max approved starting M51 with the design doc.
+
+**What was written.** `docs/m51-media.md` (linked from the roadmap as
+"### M51 — media generation", status: design, awaiting Max's go):
+- **`ferrule-media`** client crate in the `ferrule-embed` shape: one
+  `MediaBackend` trait, OpenRouter implementation through the
+  credential proxy (key from provider config, never the shell),
+  `FakeMedia` for tests.
+- **Two chat-bound tools** next to `SendFileTool`: `generate_image`
+  (sync, reference images are the editing path, 120 s timeout, saves to
+  `media/` and delivers to the chat) and `generate_video` (async:
+  submit, one row in a `media_jobs` SQLite table, immediate truthful
+  job-id answer; no tokens spent waiting).
+- **The poller is a built-in scheduler job** (`with_builtin`, the M16
+  precedent), not a model task: polls pending rows every minute,
+  downloads and delivers finished MP4s, fails truthfully, survives
+  restarts via SQLite.
+- **Caps and honesty**: `[media]` table (defaults from capability
+  discovery, `max_per_day` fail-closed), ledger `call_kind = "media"`,
+  first call per run trust-gated as spend, sub-agents get the tools
+  without chat delivery (the M12 rule).
+- Verified seams while designing: `Tool` trait in `ferrule-core`,
+  gateway chat-bound tools dir, `Scheduler::with_builtin`, ledger
+  call-kind precedent (`"learn"`), embed crate's proxy pattern.
+
+**Not done.** No code; `make check` not run (docs-only, per the
+standing rule). M52 and M53 are still design-only in
+`docs/research-harness2-media.md`. Uncommitted for Max's review.
+
+### 2026-10-20 (late) — M52 design: the dashboard Safe (Kimi)
+
+**Scope.** Max: "write the plan for M52 first."
+
+**What was written.** `docs/m52-dashboard-safe.md` (roadmap section
+"### M52 — the dashboard Safe", status: design, awaiting Max's go).
+Read `tool_keys.rs` in full first; the design's hinge: **rotate changes
+only the value**, so the "in use elsewhere" rule that makes M50's
+add/remove refuse provider keys doesn't apply — rotate is the one
+operation that is safe for exactly the keys M50 won't touch
+(`OPENROUTER_API_KEY`, connection secrets, channel tokens).
+- **Part 1, rotate**: `POST secrets/rotate {name, value}` — allowed for
+  any name in the secrets file; write-then-swap (a failed write leaves
+  the old value), same one-line value checks as add, the new value also
+  pushed into the running process's env so providers pick it up without
+  a restart; confirm card says what breaks if the new key is wrong;
+  audited by name only.
+- **Part 2, edit hosts**: `POST secrets/hosts {name, hosts}` for
+  `[secrets]` tool keys only, same host grammar as add, written through
+  `setup::write_secret_hosts` so the config page's undo covers it.
+- **Part 3, the page**: the M50 keys panel becomes Safe, linked from
+  Connect and Settings; each row shows name, hosts, "used by" in words;
+  Rotate/Edit hosts/Remove in a `⋯` menu. Write-only is the page's
+  stated promise: no reveal, no export, ever.
+
+**Not done.** No code; `make check` not run (docs-only). M53 remains
+design-only in the research doc. Uncommitted.
+
+### 2026-10-20 (late) — M53 design: contrastive probing (Kimi)
+
+**Scope.** Max: "write the m53."
+
+**What was written.** `docs/m53-contrastive-probing.md` (roadmap section
+"### M53 — contrastive probing", status: design, awaiting Max's go).
+Read the `ferrule-learn` module surfaces first (`pass.rs`, `reflect.rs`,
+`gate.rs`, `episode.rs`) so the design sits on what exists.
+- **The probe path**: episodes without a verify command — today
+  reflected on and dropped — get a second gate: one re-run in the
+  `WorkspaceGate` scratch copy with the candidate lesson, then a judge
+  call contrasts the two transcripts (fixed rubric: finished, fewer
+  retries, truthful status, no new damage). Kept only if the probe wins;
+  tie/unreadable/error rejects. Fail-closed, K=1, offline, inside the
+  learn caps (`call_kind = "learn"`).
+- **Provenance**: "kept by judge" next to "kept by check" in
+  `learn show`; judge verdict + both transcript excerpts land in the
+  pass folder; revert unchanged.
+- **Harness versioning**: session-start transcript meta gains active
+  skill list + playbook hash + config hash (hashes, never contents), so
+  "which harness produced this run" is answerable from the ledger.
+- **Deliberately out, stated for the next session**: online mid-run
+  harness editing (breaks the byte-stable prompt prefix — the playbook
+  changing *between* runs is the ferrule-shaped version), K > 1,
+  parallel probes, playbook rewrites, judging memory merges. Possible
+  follow-up named: a `/probe` chat door on the M43 pattern.
+
+**Not done.** No code; `make check` not run (docs-only). All three
+designs (M51 media, M52 Safe, M53 probing) are now written and await
+Max's go. Everything uncommitted for review.
+
+### 2026-10-21 — M51 + M52 + M53 built (Kimi)
+
+**Scope.** Max: "start building everything m51, m52, m53." Designs:
+`docs/m51-media.md`, `docs/m52-dashboard-safe.md`,
+`docs/m53-contrastive-probing.md`.
+
+**M52 — the dashboard Safe.** `tool_keys.rs` gains `rotate` (any kept
+key's value replaced write-then-swap, provider keys included — the name
+and hosts don't move — pushed into the running process's env so it works
+without a restart) and `hosts_edit` (page-shaped tool keys only, through
+`write_secret_hosts`, config undo covers it); `list` now returns every
+kept key with `used_by` in words and per-op flags. The Connect panel is
+renamed **Safe** with Rotate/Sites/Remove per row. Dispatched as
+`POST secrets/rotate` and `POST secrets/hosts`. New dashboard API test
+covers the refusals, the confirm cards, the env update and the
+write-only rule (no value ever returned).
+
+**M53 — contrastive probing.** `ferrule-learn`: new `judge.rs`
+(fixed-rubric transcript contrast, strict JSON, fail-closed), `Gate`
+gains `probe()` (default: unsupported → old "no check" rejection keeps
+working for gates that don't probe), `WorkspaceGate` shares one
+`run_agent` helper between the check gate and the probe (the gate
+agent's built-in stop-check is preserved). The pass probes and judges
+check-less episodes instead of rejecting them; "kept by the judge" goes
+in the changelog next to "kept by the check". Transcript meta: a
+`harness` line per agent build — skill names + SKILL.md hashes, playbook
+hash, config hash (FNV-1a, no deps, never contents) via
+`Transcript::log_harness`, wired in `build_agent_from` (covers CLI,
+gateway and children).
+
+**M51 — media generation.** New `ferrule-media` crate in the
+`ferrule-embed` shape: `MediaBackend` trait, `OpenRouterMedia`
+(`/images/generations` sync with reference images, `/videos` submit +
+poll, placeholder key + egress client through the credential proxy),
+`FakeMedia`, and `JobStore` (SQLite `media_jobs`: pending videos survive
+a restart; every generation counted for the cap). Gateway:
+`GenerateImageTool` (save to `media/`, deliver to the session's chat)
+and `GenerateVideoTool` (submit, row, immediate job-id answer), both
+chat-bound like `send_file`; the `MediaPoller` built-in scheduler task
+(every minute) polls, downloads, delivers, and says failures in the
+chat. `[media]` config: provider, default models, fail-closed
+`max_per_day`; ledger rows `call_kind = "media"`. Wired in
+`gateway_factory` + `run_gateway` (bind on router, `ensure_builtin`
+like M16). Deviations from the design are listed in the doc: no per-run
+approval card, no sub-agent variant, no dashboard card / doctor line.
+
+**Also fixed (not mine):** `router.rs`'s merged-follow-ups loop tripped
+clippy's `while_immutable_condition` on main (the commit's PLAN entry
+says `make check` wasn't run); rewritten as `if … { loop { … } }`,
+semantics unchanged.
+
+**Checks.** `make check` exit 0: fmt and clippy clean, **1856 passed,
+0 failed, 28 ignored** (1844 → 1856). New tests: the Safe API test, 3
+probe tests + judge unit tests in ferrule-learn, the harness-stamp
+transcript test, ferrule-media unit tests, and 4 gateway media
+integration tests (image saved+sent+counted, cap refuses in words,
+video answered-now-delivered-by-poller, failure said in chat).
+
+**Not verified live.** A real OpenRouter image/video call, a real
+render delivered to Telegram, the Safe from a real browser, a real
+nightly pass with a probe. Sub-agent media tools and the per-run
+approval card are the named follow-ups.
+
+**Merged.** PR #48 (5 commits + 1 Windows test fix) is in main as of
+4e60ea3; CI green on ubuntu-24.04, macos-14 and windows-latest. (The one
+CI failure along the way was mine: a test asserted a Unix path
+separator.)
+
 ### 2026-10-20 — M54 protected autonomous mode: design and build (Claude, Opus 5.5)
 
 **Scope.** The owner runs a personal Telegram bot on an Ubuntu server and
