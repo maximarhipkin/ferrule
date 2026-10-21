@@ -1566,6 +1566,16 @@ Current State; numbers are claimed there before anything is built.
     message counts as outside content in every mode. M63.1's Home
     Assistant POSTs are behind it. `docs/m19-trust-cost.md` §6b. Not run
     live.
+  - **M64.1, the design**: `docs/m64-proactive.md`. What it learns
+    (commitments, open loops, patterns, M56.4's preferences) from the
+    owner's own messages only; commitments extracted in the heartbeat's
+    one call (no tool round trip, no prefix change, any language); a
+    built-in `ferrule-proactive` task every 3 h that skips the model when
+    nothing changed; levels off, suggest (Do it / Not now / Never) and act
+    (reminders and the owner's own tasks, with Undo); quiet hours, a daily
+    message cap, a gap, a dollar cap, a cheaper model; Never and Not-now
+    feedback; the Proactive page, `/proactive`, `/commitments`; owner-only
+    and inside every gate.
 
 **Still open from earlier tracks.**
 

@@ -9627,3 +9627,45 @@ alone and on the rerun): a flaky test, noted.
 from `python` or a script isn't seen (as for DELETE). Every guest turn
 now writes one `untrusted_seen` audit line (pruned with the audit log).
 
+### 2026-10-21 — M64.1: the proactive agent's design (Claude, Opus 5.5)
+
+M64's task 1, in the `autopilot` worktree: `docs/m64-proactive.md`,
+linked from the README's "Running it day to day" list.
+
+**What it settles.** What it learns (commitments and deadlines, open
+loops, recurring patterns, M56.4's preferences) and from what (the
+owner's own messages in their private chat and the dashboard's, which a
+new door records with their time, and the owner's scheduled tasks; never
+a guest's or a group's). The store (`<data>/proactive/proactive.db`,
+hidden from guests). The heartbeat: a built-in task, every 3 h at minute
+7 in the owner's timezone, skipped in quiet hours, under the kill switch
+and caps, its own dollar cap, the daily message cap and the gap; one
+model call only when its inputs' digest changed; at most one message a
+pass. The levels: off (notice only), suggest (Do it / Not now / Never),
+act (only a reminder for a stated commitment and an owner's own task
+from a pattern, with Undo; nothing built on calendar or mail text is done
+by itself). Reminders are built-in one-off tasks whose text is delivered
+as is, with no model call, so outside text never becomes a prompt.
+Feedback: buttons and Telegram's 👍/👎 through M53.5's sink; Never is a
+clearable per-kind list; Not now backs a kind off 2^(n-1) days. The
+page, `/proactive`, `/commitments`.
+
+**A choice, justified in the doc (§1).** Commitments are extracted in the
+heartbeat's one call rather than by a `note_commitment` tool (a round
+trip of the whole conversation per call, a schema in every request's
+prefix) or a post-turn pass (a call per message, or an English keyword
+filter). Cost: a few hundred input tokens on a call that happens anyway;
+delay: until the next pass, while an explicit "remind me at 9" stays the
+chat model's no-card `task_add`.
+
+**Verified on 2026-10-21:** OpenClaw's heartbeat page (heartbeat folded
+into automation jobs, a "Proactive check" job every 30 minutes,
+`NO_REPLY`, `activeHours`, `skipIfScratchEmpty`, `delivery.target:
+"owner"`). OpenAI's Pulse pages answered 403 and aren't cited.
+
+**Tests changed, none added.** **Checks.** `make check` exited 0: 1891
+passed, 0 failed, 28 ignored, 73 binaries (macOS).
+
+**Open.** It's a design: tasks 2–5 build it, and their entries say where
+the build departs from it.
+
