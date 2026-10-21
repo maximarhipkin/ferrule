@@ -169,8 +169,10 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     let discord_on = discord(&mut r, &cfg, offline).await;
     let slack_on = slack(&mut r, &cfg, offline).await;
     // Any chat channel makes this a gateway that should be running.
-    let chat_on =
-        telegram_on || discord_on || slack_on || m39_channels(&mut r, &cfg, offline).await;
+    // Every channel's line, whichever came first (`||` used to skip the
+    // M39 channels whenever Telegram was on).
+    let others_on = m39_channels(&mut r, &cfg, offline).await;
+    let chat_on = telegram_on || discord_on || slack_on || others_on;
     let backend = sandbox(&mut r, &cfg, &secrets_path);
     open_box_check(&mut r, &cfg);
     managed_check(&mut r, &cfg);
@@ -1636,7 +1638,9 @@ fn egress_check(r: &mut Report, cfg: &config::Config) {
             return;
         }
     };
-    let commands = if policy.has_rules() || set_secrets(cfg) {
+    let commands = if policy.enforce {
+        "web_fetch, web_search, MCP and shell commands (bound to the proxy)"
+    } else if policy.has_rules() || set_secrets(cfg) {
         "web_fetch, web_search, MCP and shell commands"
     } else {
         "web_fetch, web_search and MCP (commands: no rules, left direct)"
@@ -1645,6 +1649,55 @@ fn egress_check(r: &mut Report, cfg: &config::Config) {
         "egress",
         format!("{} · applies to {commands}", policy.describe().join(" · ")),
     );
+    // M54.4: whether the binding holds here.
+    if policy.enforce {
+        if !cfg.sandbox.network {
+            r.note(
+                "egress",
+                "enforce is on, and [sandbox] network = false refuses every IP connection anyway",
+            );
+        } else {
+            match Sandbox::new(crate::sandbox_policy(cfg)) {
+                Ok(s) => match s.with_proxy_only(Some(0)).proxy_enforcement() {
+                    Ok(()) => r.ok(
+                        "egress",
+                        "enforce: sandboxed commands reach only the proxy's port and the allowed Unix sockets; ssh, UDP and clients that ignore HTTPS_PROXY can't connect",
+                    ),
+                    Err(why) => {
+                        r.fail(
+                            "egress",
+                            format!("enforce is on but can't be applied here, so every command is refused: {why}"),
+                        );
+                        r.hint("turn `enforce` off in [egress], or fix the sandbox (docs/egress.md, \"Binding commands to the proxy\")");
+                    }
+                },
+                Err(e) => r.fail("egress", format!("enforce needs the sandbox: {e}")),
+            }
+        }
+    }
+    let since_audit = chrono::Utc::now() - chrono::Duration::hours(24);
+    if let Ok(dir) = config::data_dir() {
+        let audit = ferrule_trust::audit::Audit::new(dir.join("trust").join("audit.jsonl"));
+        let mut hosts: Vec<String> = audit
+            .read(Some(since_audit))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.event == "egress")
+            .filter_map(|e| e.detail["host"].as_str().map(str::to_string))
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        if !hosts.is_empty() {
+            r.note(
+                "egress",
+                format!(
+                    "{} host{} reached through the proxy in 24 h; `ferrule egress log` lists them",
+                    hosts.len(),
+                    if hosts.len() == 1 { "" } else { "s" }
+                ),
+            );
+        }
+    }
     let since = chrono::Utc::now() - chrono::Duration::hours(24);
     let records = crate::ledger::ledger_path()
         .ok()
@@ -2261,7 +2314,121 @@ async fn m39_channels(r: &mut Report, cfg: &config::Config, offline: bool) -> bo
         http(r, cfg, h, offline).await;
         on = true;
     }
+    if let Some(w) = &cfg.gateway.whatsapp_personal {
+        whatsapp_personal(r, cfg, w, offline).await;
+        on = true;
+    }
+    if let Some(m) = &cfg.gateway.imessage {
+        imessage(r, cfg, m, offline).await;
+        on = true;
+    }
     on
+}
+
+/// M59: personal WhatsApp through WAHA: the session is paired and
+/// working, and who may write.
+async fn whatsapp_personal(
+    r: &mut Report,
+    cfg: &config::Config,
+    w: &crate::channels::settings::WhatsAppPersonal,
+    offline: bool,
+) {
+    use ferrule_gateway::channels::waha;
+    let name = "whatsapp (personal)";
+    let wc = match crate::channels::bridges::waha_config(w, None) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail(name, format!("{e:#}"));
+            return;
+        }
+    };
+    let owner = cfg.trust.whatsapp_personal_owner.is_some();
+    let allowed = w.allowed_users.len() + usize::from(owner);
+    let lists = format!(
+        "{allowed} number(s), {} group(s) allowed",
+        w.allowed_groups.len()
+    );
+    if offline {
+        r.ok(
+            name,
+            format!(
+                "WAHA at {} · session {} · not checked · {lists}",
+                wc.url, wc.session
+            ),
+        );
+    } else {
+        match waha::probe(wc).await {
+            Ok(p) if p.working() => r.ok(name, format!("{} · {lists}", p.summary())),
+            Ok(p) => {
+                r.fail(name, p.explain());
+                r.hint("WAHA's dashboard is at its address + /dashboard");
+            }
+            Err(why) => {
+                r.fail(name, why);
+                r.hint("is the WAHA container running? `docker ps`; then the dashboard's WhatsApp (personal) card → Test");
+                return;
+            }
+        }
+    }
+    r.note(
+        name,
+        "unofficial WhatsApp Web automation: WhatsApp's terms don't allow it and the number can be banned (docs/m59-channels.md)",
+    );
+    if allowed == 0 && w.allowed_groups.is_empty() {
+        r.warn(name, "no one is allowed, so it answers no one");
+        r.hint("add numbers to [gateway.whatsapp_personal] allowed_users (your own allows Message yourself)");
+    }
+}
+
+/// M59: iMessage through BlueBubbles Server: the Mac answers, and who
+/// may write.
+async fn imessage(
+    r: &mut Report,
+    cfg: &config::Config,
+    m: &crate::channels::settings::IMessage,
+    offline: bool,
+) {
+    use ferrule_gateway::channels::bluebubbles as bb;
+    let bc = match crate::channels::bridges::bb_config(m, None) {
+        Ok(c) => c,
+        Err(e) => {
+            r.fail("imessage", format!("{e:#}"));
+            return;
+        }
+    };
+    let owner = cfg.trust.imessage_owner.is_some();
+    let allowed = m.allowed_users.len() + usize::from(owner);
+    let lists = format!("{allowed} address(es) allowed");
+    if offline {
+        r.ok(
+            "imessage",
+            format!("BlueBubbles at {} · not checked · {lists}", bc.url),
+        );
+    } else {
+        match bb::probe(bc).await {
+            Ok(p) => {
+                r.ok("imessage", format!("{} · {lists}", p.summary()));
+                if m.private_api && !p.private_api {
+                    r.warn(
+                        "imessage",
+                        "[gateway.imessage] private_api is on, but the server's Private API isn't: sends will fail",
+                    );
+                    r.hint(
+                        "set private_api = false, or set up the Private API in BlueBubbles Server",
+                    );
+                }
+            }
+            Err(why) => {
+                r.fail("imessage", why);
+                r.hint("is the Mac awake, and BlueBubbles Server running on it? Then the dashboard's iMessage card → Test");
+                return;
+            }
+        }
+    }
+    if allowed == 0 {
+        r.warn("imessage", "no one is allowed, so it answers no one");
+        r.hint("add your number or Apple ID email to [gateway.imessage] allowed_users");
+    }
 }
 
 /// The HTTP API: its keys, what answers on its port, and the tunnel.

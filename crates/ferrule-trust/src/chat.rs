@@ -39,6 +39,8 @@ impl ChatRef {
     pub fn channel_title(&self) -> String {
         match self.channel.as_str() {
             "whatsapp" => return "WhatsApp".into(),
+            "whatsapp_personal" => return "WhatsApp (personal)".into(),
+            "imessage" => return "iMessage".into(),
             "http" => return "HTTP API".into(),
             _ => {}
         }

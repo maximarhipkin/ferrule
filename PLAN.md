@@ -138,7 +138,11 @@ append-only.
     commit each.
   - **`autopilot` / PR #52 (open):** among its commits M60 and **M61
     screen viewing (screenshots and recordings of the owner's own
-    screen, view only)**, `docs/m61-screen.md`.
+    screen, view only)**, `docs/m61-screen.md`; then **M59** (personal
+    WhatsApp through WAHA, iMessage through BlueBubbles,
+    `docs/m59-channels.md`) and **M54.4** (`[egress] enforce`: commands
+    bound to the proxy, opt-in; every destination in the audit log,
+    `ferrule egress log`).
   - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
     `docs/research-harness2-media.md`, `docs/m51-media.md`,
     `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
@@ -158,7 +162,10 @@ append-only.
   session, M55–M59 the gap analysis, M60 images in tool results
   (2026-10-21, `autopilot`), M61 screen viewing (screenshots and
   recordings of the owner's own screen, view only; 2026-10-21,
-  `autopilot`). The next free number is **M62**.
+  `autopilot`). **M59 is claimed and built** (2026-10-21, `autopilot`
+  worktree, PR #52): personal WhatsApp and iMessage through bridges the
+  owner runs. So is M54's numbered item **M54.4** (binding egress through
+  the proxy, logged). The next free number is **M62**.
   The first claim wins, and a later collision shifts the unclaimed
   numbers, never a claimed one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -8571,3 +8578,187 @@ restart. A recording holds the turn for its length plus the conversion
 the tools. A recording over Telegram's 50 MB bot limit can't be sent.
 Doctor's test checks the permission of the terminal it runs in, not the
 service's. Nothing prunes `media/screen/`.
+
+### 2026-10-21 — M59: personal WhatsApp and iMessage, through bridges the owner runs (Claude, Opus 5.5)
+
+Claims **M59**, in the `autopilot` worktree (PR #52). Current State
+updated: the claim, and M59 among PR #52's commits.
+
+**Why.** The gap analysis's M59.1: the owner's contacts are on a personal
+WhatsApp number and on iMessage, and the M39 WhatsApp channel needs a
+Business number from Meta. A WhatsApp Web protocol client in Rust would
+put a moving, unofficial protocol and its terms-of-service risk inside
+ferrule, so each channel talks to a bridge the owner runs instead, the
+way Signal talks to signal-cli.
+
+**What changed.**
+- `ferrule-gateway/src/channels/waha.rs` (new), channel
+  `whatsapp_personal`: WAHA's REST API out (`/api/sendText`,
+  `/api/sendImage` for JPEG/PNG, `/api/sendFile`, `/api/startTyping` and
+  `stopTyping`, `X-Api-Key`), its WebSocket in
+  (`/ws?session=…&events=message.any&events=session.status`, the key as
+  its documented `x-api-key` query parameter; `ws::connect` never puts
+  the URL in an error). Before each socket, `GET /api/sessions/{session}`:
+  not `WORKING` (QR scan pending, stopped) is the channel's problem in
+  words, retried with backoff. Ping every 30 s, three silent ones
+  reconnect. Who gets in: a DM from `allowed_users` (digits; `@c.us`
+  ids shortened to them, `@lid` and `@g.us` kept whole), an
+  `allowed_groups` group on an @mention of the linked number or a reply
+  to it, and the "Message yourself" chat when the account's own number is
+  allowed; what ferrule sent is remembered ten minutes by id key and text
+  so its echo there isn't answered. `Access::silent()`: a stranger is
+  never told anything. Media in through WAHA's `media.url`, fetched with
+  the key only from WAHA's own base address (another host is refused),
+  capped by `read_capped`, saved to the inbox. No reactions (a 👀 would
+  come from the owner), buttons or edits.
+- `ferrule-gateway/src/channels/bluebubbles.rs` (new), channel
+  `imessage`: BlueBubbles Server's REST API with the password as its
+  documented `password` query parameter (never logged). Polls `POST
+  /api/v1/message/query` (ASC, `after`, `with` chat/attachment/handle)
+  every `poll_secs`, two minutes behind the newest message seen, deduped
+  by guid; the position in `<data>/gateway/imessage/cursor`, replayed at
+  most a day back; the first sweep only marks history seen. One-to-one
+  conversations only (`;-;` guids); group chats, `isFromMe`, tapbacks and
+  group events are ignored; addresses normalised (`+` and digits, emails
+  lower case). Sends through `/api/v1/message/text` and
+  `/message/attachment` (multipart via `files::multipart`), `apple-script`
+  unless `private_api`, which adds typing and `selectedMessageGuid`
+  replies. Attachments in through `/attachment/{guid}/download`.
+- `ferrule-trust`: both channels in `OWNER_CHANNELS` (after email),
+  `whatsapp_personal_owner` and `imessage_owner`, their titles.
+- `ferrule-cli`: `[gateway.whatsapp_personal]` (url, session,
+  `api_key_env` = `WAHA_API_KEY`, allowed_users, allowed_groups,
+  max_file_mb) and `[gateway.imessage]` (url, `password_env` =
+  `BLUEBUBBLES_PASSWORD`, private_api, poll_secs, allowed_users,
+  max_file_mb) in `channels/settings.rs`; `channels/bridges.rs` (new): the
+  adapters' settings and both dashboard cards (fields, guide, Test,
+  check); `channels/mod.rs`: the table, secret envs (so the keys are
+  scrubbed from commands, redacted and taken out of tool results like
+  every channel token), allow-lists, the instance clash account and its
+  words; `main.rs` `build_channels`; `setup/bridges.rs` (new): a guided
+  step and a menu entry each (address, key checked live, WAHA's session
+  waited for, numbers typed); `doctor.rs`: a line each (WAHA session
+  `WORKING`, a terms-of-service note; BlueBubbles answers, `private_api`
+  matches the server), and a fix: `telegram_on || … || m39_channels(…)`
+  short-circuited, so with Telegram on no M39 channel had a doctor line;
+  now they always run.
+- `tests_e2e/setup_wizard.py`: the two new guided prompts ("Connect a
+  personal WhatsApp number", "Connect iMessage"). `hidden_keys.py` drives
+  no setup prompt, so it is unchanged.
+- Docs: new `docs/m59-channels.md` (the risks first, why bridges and why
+  WAHA and BlueBubbles, setup, who gets an answer, what works, how each
+  connects, secrets, what's open, sources); `docs/channels.md` (the
+  picker table, a section each); the README (overview, gateway row,
+  setup list, crate line, Guides); the roadmap's M59 line.
+
+**Shared behaviour, no change needed:** owner/guest classification
+(`trust::owners` reads the channel table), the paste guard (M52.5,
+`gateway.rs`), steering and the busy notice (M56.1, the router),
+transcription of `audio/*` attachments, `send_file`. Neither channel can
+delete a pasted message, so the reply asks the sender to.
+
+**Others' surfaces, smallest changes:** `ferrule-trust/src/config.rs`
+(two owner fields and the channel list; M54 owns `guard.rs` and
+`classify.rs`, untouched). The config editor's guard already refuses
+`url`, `*_env`, `allowed*` and `*owner*` keys by name.
+
+**Tests changed, none added** (the owner's standing rule). No existing
+test needed a change.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** No live bridge was available: WAHA's WebSocket with two
+`events` parameters and its query-string key, the send responses' id
+shapes per engine (the echo check falls back to text), BlueBubbles'
+`after` in milliseconds and `handle` on query results are as documented,
+not observed. `@lid`-only contacts must be listed by that id, and the
+self chat is found by the `@c.us` id only. iMessage groups aren't
+supported. No pairing by code in setup (numbers are typed). The gap
+analysis suggested a feature-flagged crate; these are two modules in
+`ferrule-gateway`, opt-in by config like every other channel.
+
+### 2026-10-21 — M54.4: network through the proxy, logged, opt-in (Claude, Opus 5.5)
+
+Claims M54's numbered item **M54.4**, in the `autopilot` worktree (PR
+#52). Current State updated: the claim, and M54.4 among PR #52's
+commits. M54 owns `crates/ferrule-sandbox`; this is M54's own item.
+
+**Why.** The gap analysis's M54.4: egress is advisory for programs that
+ignore `HTTPS_PROXY` (ssh, database clients, UDP connect directly,
+`docs/egress.md`), and the owner can't see where data went. The policy
+stays allow-by-default (the analysis and M54 agree on no default-deny);
+what changes is that the owner can make the proxy the only way out, and
+that every destination it lets through is written down.
+
+**What changed.**
+- `ferrule-proxy`: `EgressPolicy::enforce` and `enforced()`, a
+  `describe` line for it; `commands_proxied()` is true under it (so
+  commands always get `HTTPS_PROXY` and the CA bundle);
+  `Broker::enforced_port()`; `Destination` and `Broker::on_destination`:
+  after the policy passes a CONNECT or a plain-HTTP request, the hook
+  gets (source, method, host, port), at most once a minute per source,
+  host and port (`DESTINATION_EVERY`). Never a path, header or body.
+- `ferrule-sandbox`: `Sandbox::with_proxy_only(port)`, `proxy_port()`
+  (network on, not hide-only, not the desktop/browser helper) and
+  `proxy_enforcement()`. `command()` refuses every command, with the
+  reason, when binding is asked for and can't be applied (no backend,
+  `mode = "off"`, Windows, a Linux supervisor that can't run). macOS:
+  `seatbelt::bind_to_proxy` appends `(deny network-outbound (remote ip
+  "*:*"))` and `(allow network-outbound (remote ip "localhost:<port>"))`
+  after the profile. Linux (cfg-gated, **CI-compiled only**: this Mac
+  can't build it): `UnixSockets` gains `any` and `proxy_port`; the
+  supervisor runs whenever binding is on (every Unix socket allowed when
+  `unix_sockets = ["*"]`), and `connect_for` lets an IP connect through
+  only to `127.0.0.0/8`/`::1`/`::ffff:127.x` on the proxy's port,
+  connecting the copy itself with the address it checked (`to_proxy`,
+  `ip_of` for the log line); `linux::apply` takes `proxy_only`, and
+  `seccomp::filter_with(.., stream_only)` refuses every `socket()` but
+  `AF_UNIX` and `AF_INET`/`AF_INET6` `SOCK_STREAM`, and `MSG_FASTOPEN` on
+  `sendto`/`sendmsg`/`sendmmsg` (`filter` keeps its signature, so its
+  test is unchanged). Landlock ABI 4 net rules weren't used: port-only
+  (any host on the proxy's port) and no UDP. The shell tool's model note
+  says direct connections are refused (a constant for the config; the
+  port isn't in it, so the prefix stays byte-stable).
+- `ferrule-cli`: `[egress] enforce` (default false); on Windows the
+  config refuses it at load with why. `proxied(sandbox, broker)` replaces
+  the five places that attached the proxy (the shared sandbox, the
+  Claude-plan engine's, owner mode's, `mcp add`'s, the config follower's)
+  and binds when enforced; `ferrule sandbox` binds its own and prints
+  `egress    bound: …` or why not. `egress::report_destinations` writes each destination to
+  the trust audit log as `egress` (`<data>/trust/audit.jsonl`), wired
+  next to `report_denials`; `ferrule egress log [--since]` lists them by
+  `host:port` with who asked, logged and refused counts, last seen (a
+  `PARITY` row in `dashboard/console.rs`, read, so the page's console runs
+  it too). Doctor's `egress` section: enforce's state (applies, can't apply and
+  why, or `network = false` already), and the hosts reached in 24 h.
+  Setup's Network policy summary says "commands bound to the proxy". The
+  config editor can't change it (`egress` is in `WHOLE`).
+- Docs: `docs/egress.md` ("Binding commands to the proxy (`enforce`)",
+  what breaks and how to allow it, a socat `ProxyCommand` tunnel for ssh,
+  "Where requests went: the audit log", the table), `docs/sandbox.md`
+  (the table row, the Network section), `docs/m37-control-room.md` §4.1
+  (the `egress log` row), the roadmap's M54.4 line.
+
+**Tests changed, none added** (the owner's standing rule):
+`seatbelt.rs`'s `unix_sockets_are_refused_then_let_back_in_from_the_allowlist`
+spells out the two new `UnixSockets` fields.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean. The first run failed one test,
+`every_subcommand_has_a_place_on_the_page_or_a_reason`, until `egress log`
+had its console row and doc row. The Linux code (`linux.rs`,
+`supervisor.rs`, the Landlock branch of `Sandbox::command`) isn't built on
+macOS: CI's Linux job is its first compile.
+
+**Open.** Nothing here was run with `enforce = true`: the Seatbelt rules'
+syntax and effect on a real Mac, and the Linux supervisor's IP check and
+the new seccomp instructions on a real kernel (CI compiles them; no test
+exercises them), are unverified. First checks: `ferrule sandbox -- curl
+-sS https://example.com` (goes) and `ferrule sandbox -- nc -z example.com
+22` (refused). Name lookups through the system resolver (mDNSResponder;
+nscd or resolved's socket) still leak a little in DNS queries. Local TCP
+servers, ssh and TCP database clients stop working under it (documented,
+with the tunnel). The audit log grows by one line per destination a
+minute; nothing prunes it. `ferrule trust audit` now lists `egress`
+events among the rest.

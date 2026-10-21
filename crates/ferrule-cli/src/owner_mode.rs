@@ -784,9 +784,7 @@ fn fallback_launcher(cfg: &Config) -> Result<Sandbox, String> {
         return Ok(sandbox);
     }
     let sandbox = match crate::shared_broker(cfg).map_err(|e| format!("{e:#}"))? {
-        Some(broker) => sandbox.with_env(broker.child_env()).with_egress(Some(
-            crate::tool_egress(broker).map_err(|e| format!("{e:#}"))?,
-        )),
+        Some(broker) => crate::proxied(sandbox, broker).map_err(|e| format!("{e:#}"))?,
         None => sandbox,
     };
     Ok(crate::managed::guard(sandbox))

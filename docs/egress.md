@@ -10,8 +10,9 @@ as-built notes are in [m33-ops.md](m33-ops.md) §1. The sandbox itself is in
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | `web_fetch`, `web_search`, MCP over HTTP, plugins | enforced (the proxy) | enforced | enforced |
-| Shell commands that honour `HTTPS_PROXY` | enforced once there are rules or secrets | same | same |
-| Shell commands that ignore the proxy | **not stopped** (advisory) | same | same |
+| Shell commands that honour `HTTPS_PROXY` | enforced once there are rules or secrets (or `enforce`) | same | same |
+| Shell commands that ignore the proxy | **not stopped** (advisory); refused with `enforce = true` | same; refused with `enforce = true` | **not stopped**; `enforce` is refused |
+| Where requests went | the audit log (`ferrule egress log`) | same | same |
 | Unix-socket allowlist | enforced (seccomp user notification) | Seatbelt profile (checked by the macOS CI test, not by hand) | not implemented |
 
 ## The default: public yes, private no
@@ -126,11 +127,126 @@ check it, and sends the name on. Two consequences:
 - **Ferrule's own updates aren't either**: the hosts they reach are in
   [updates.md](updates.md#network).
 
-**The proxy is advisory for shell commands.** `curl`, `pip`, `npm`, `git` and
-most HTTP clients honour `HTTPS_PROXY`; a program that ignores it (or `ssh`, a
-database client, anything over UDP) connects directly while `network = true`.
-Use `[sandbox] network = false` to stop that; a binding `enforce` mode is a
-follow-up.
+**The proxy is advisory for shell commands, unless you bind them.** `curl`,
+`pip`, `npm`, `git` and most HTTP clients honour `HTTPS_PROXY`; a program that
+ignores it (or `ssh`, a database client, anything over UDP) connects directly
+while `network = true`. `[egress] enforce = true` stops that (next section);
+`[sandbox] network = false` stops every connection.
+
+## Binding commands to the proxy (`enforce`)
+
+M54.4. Opt-in, off by default:
+
+```toml
+[egress]
+enforce = true
+```
+
+With it, a sandboxed command's IP connections can reach **only the
+proxy's port on `127.0.0.1`**, and Unix sockets only from the
+[allowlist](#unix-sockets). Everything a command sends out goes through the
+proxy, where the rest of `[egress]` applies and every destination is logged.
+The policy itself stays allow-by-default: `enforce` doesn't refuse any host,
+it only removes the way around the proxy. Commands always get the proxy's
+settings (`HTTPS_PROXY` and the CA bundle) while it's on, and the shell
+tool's description tells the model that direct connections are refused.
+
+**How each OS binds them:**
+
+- **macOS:** two Seatbelt rules appended to the profile: `(deny
+  network-outbound (remote ip "*:*"))`, then `(allow network-outbound
+  (remote ip "localhost:<port>"))`. Unix sockets keep their own rules, so
+  name lookups through mDNSResponder still work.
+- **Linux:** the connect supervisor that enforces the Unix-socket allowlist
+  (seccomp user notification) also checks every IP `connect(2)`: only
+  `127.0.0.0/8` or `::1` on the proxy's port goes, and ferrule makes that
+  connection itself with the address it checked. The seccomp filter refuses
+  every socket but Unix ones and IPv4/IPv6 streams (so no UDP, raw or packet
+  sockets), and `MSG_FASTOPEN` on `sendto`, `sendmsg` and `sendmmsg`, which
+  would open a TCP connection without a `connect`. It needs what the
+  supervisor needs (Linux 5.6+, `pidfd_getfd`; see [When it can't
+  run](#when-it-cant-run)). Landlock's network rules (ABI 4) aren't used:
+  they name a port, not an address, so any host on the proxy's port would
+  pass, and they don't cover UDP. This code is compiled and tested by
+  Linux CI only.
+- **Windows:** refused. The config doesn't load with `enforce = true`, and
+  says why: the restricted-token sandbox can't limit a command's
+  connections to one port.
+
+**When it can't be applied** (no sandbox, `mode = "off"`, or on Linux a
+supervisor that can't run, as inside most Docker containers), every
+command is **refused** with the reason, rather than run unbound. `ferrule
+doctor`'s `egress` line and `ferrule sandbox` (`egress   bound: …`) say
+which.
+
+**Not bound:** a helper whose config turns its sandbox off (`sandbox =
+false` on an MCP server; in owner mode it keeps the sandbox, and so the
+binding), and the browser: Chrome and agent-browser talk to
+each other over a local debugging port, and Chrome is pointed at the proxy
+already. Ferrule's own requests (models, channels, updates) aren't
+commands and aren't bound; SSH workspaces run `ssh` from ferrule itself, so
+they keep working. Listening on a port and accepting connections stay as
+they were.
+
+### What breaks under `enforce`, and how to allow it
+
+| What | Why | What to do |
+|---|---|---|
+| `ssh`, `scp`, `rsync` over ssh | a direct TCP connection | tunnel it through the proxy (below), or use HTTPS |
+| `git` over ssh (`git@github.com:…`) | ssh | an `https://` remote, with a token in `[secrets]` bound to the host |
+| Database clients over TCP (`psql -h db.example.com`, `redis-cli`) | direct TCP | a Unix socket on the allowlist (local PostgreSQL and MySQL sockets are in the defaults), or a tunnel through the proxy |
+| A local server on TCP (`curl localhost:3000`, a test suite's own server) | only the proxy's port is reachable on loopback | a Unix socket, or run that check outside ferrule |
+| DNS lookups over UDP (Linux), `ping`, anything UDP or ICMP | no UDP or raw sockets | HTTP clients don't need them behind a proxy: the proxy resolves the name |
+| Programs that ignore `HTTPS_PROXY` | they connect directly | set their own proxy option to the value of `HTTPS_PROXY` |
+
+**A tunnel through the proxy.** The proxy accepts `CONNECT host:port` for
+any port, checks it against `[egress]` like any request, logs it, and
+passes the bytes through. `HTTPS_PROXY` holds its address and credentials
+(`http://ferrule:<token>@127.0.0.1:<port>`), so a client that can use an
+HTTP proxy with basic auth works. For ssh, a `ProxyCommand` that speaks
+`CONNECT`, for example with socat:
+
+```sh
+p=${HTTPS_PROXY#http://}; auth=${p%@*}; hp=${p#*@}
+ssh -o ProxyCommand="socat - PROXY:${hp%:*}:%h:%p,proxyport=${hp##*:},proxyauth=$auth" user@host
+```
+
+There is no per-host exception for direct connections by design: an
+exception would be a way around the proxy and its log. To run without the
+binding, set `enforce = false` (the default).
+
+**Still open:** name lookups through the system resolver (mDNSResponder on
+macOS; nscd or systemd-resolved's socket on Linux, which are on the default
+socket allowlist) still happen, so a command can leak a little data in DNS
+queries. The Linux binding and the Seatbelt rules haven't been run on a
+real machine yet (no test was added for them); `ferrule sandbox -- curl -sS
+https://example.com` (goes) and `ferrule sandbox -- nc -z example.com 22`
+(refused) are the first checks.
+
+## Where requests went: the audit log
+
+M54.4. In every mode, each destination the proxy lets a request go to is
+written to the trust audit log (`<data>/trust/audit.jsonl`) as an `egress`
+event: who asked (`command` for a sandboxed command or helper, `tool` for
+ferrule's own clients acting for the model), the method (`CONNECT`, or the
+plain-HTTP method), the host and the port. **Never** a path, a query, a
+header or a body, and never a key. A destination is written at most once a
+minute per source, host and port, so a busy client doesn't flood the log.
+
+```bash
+ferrule egress log                # the last 24 h, by host
+ferrule egress log --since 7d
+ferrule trust audit --since 1h    # every event, refusals (egress_denied) included
+```
+
+`ferrule egress log` lists each `host:port` with who asked, how many times
+it was logged and refused, and when last. `ferrule doctor` counts the hosts
+reached in the last 24 h.
+
+What the log covers is what goes through the proxy: ferrule's own tools for
+the model always, and commands when they are proxied (`[secrets]`, `[egress]`
+rules or `enforce`). Without `enforce`, a command that ignores
+`HTTPS_PROXY` connects directly and isn't in the log.
 
 ## What a refusal looks like
 
@@ -260,6 +376,10 @@ ferrule sandbox                      # includes the sockets state
 ferrule sandbox -- curl -sS http://169.254.169.254/        # the 403 text (with rules or secrets set)
 ferrule sandbox -- curl --unix-socket /var/run/docker.sock http://x/_ping   # refused on Linux and macOS
 ```
+
+With `[egress] enforce = true`, `ferrule sandbox` shows `egress    bound:
+IP connections only to the proxy (127.0.0.1:<port>)`, or why it can't be
+applied.
 
 The tests: `cargo test -p ferrule-proxy --test it policy::` (the policy, DNS,
 denial pages, the source split) and `cargo test -p ferrule-sandbox --test

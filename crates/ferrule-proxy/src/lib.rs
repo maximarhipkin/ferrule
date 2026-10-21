@@ -23,7 +23,7 @@ mod subst;
 mod upstream;
 
 pub use ca::default_ca_bundle;
-pub use egress::{Denial, EgressPolicy, Source};
+pub use egress::{Denial, Destination, EgressPolicy, Source};
 pub use hosts::HostPattern;
 pub use placeholder::{placeholder, KNOWN_PREFIXES};
 pub use server::EGRESS_HEADER;
@@ -213,6 +213,8 @@ impl Broker {
             egress: cfg.egress,
             deny_hook: RwLock::new(None),
             use_hook: RwLock::new(None),
+            destination_hook: RwLock::new(None),
+            destinations: Default::default(),
             denials: Default::default(),
             reported: Default::default(),
             ca,
@@ -372,6 +374,21 @@ impl Broker {
         *self.shared.use_hook.write().unwrap() = Some(Arc::new(hook));
     }
 
+    /// M54.4: called with where each request the policy lets through goes
+    /// (who asked, the method, the host and port; never a path, a header
+    /// or a body), at most once a minute per source, host and port.
+    pub fn on_destination(&self, hook: impl Fn(&Destination) + Send + Sync + 'static) {
+        *self.shared.destination_hook.write().unwrap() = Some(Arc::new(hook));
+    }
+
+    /// M54.4: the port sandboxed commands are bound to under `[egress]
+    /// enforce`, or `None` when they aren't.
+    pub fn enforced_port(&self) -> Option<u16> {
+        self.egress()
+            .is_some_and(|e| e.enforce)
+            .then(|| self.addr.port())
+    }
+
     /// Requests refused since start.
     pub fn denials(&self) -> u64 {
         self.shared
@@ -400,7 +417,8 @@ impl Broker {
     }
 
     /// Whether sandboxed commands are pointed at the proxy: when a secret
-    /// is bound, or the egress policy has rules of its own. The default
+    /// is bound, the egress policy has rules of its own, or `[egress]
+    /// enforce` binds commands to it (M54.4). The default
     /// policy alone leaves commands as they were (an upgrade mustn't push a
     /// working `pip install` through a new proxy nobody asked for).
     pub fn commands_proxied(&self) -> bool {
@@ -409,7 +427,7 @@ impl Broker {
                 .shared
                 .egress
                 .as_ref()
-                .is_some_and(EgressPolicy::has_rules)
+                .is_some_and(|e| e.has_rules() || e.enforce)
     }
 
     /// Variables to set on every sandboxed command: the placeholders, the

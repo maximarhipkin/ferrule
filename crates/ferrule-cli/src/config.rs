@@ -581,6 +581,12 @@ pub struct GatewayConfig {
     /// M39: `[gateway.http]`, `POST /v1/messages` for your own programs.
     #[serde(default)]
     pub http: Option<crate::channels::settings::HttpApi>,
+    /// M59: `[gateway.whatsapp_personal]`, a personal number through WAHA.
+    #[serde(default)]
+    pub whatsapp_personal: Option<crate::channels::settings::WhatsAppPersonal>,
+    /// M59: `[gateway.imessage]`, through BlueBubbles Server on a Mac.
+    #[serde(default)]
+    pub imessage: Option<crate::channels::settings::IMessage>,
 }
 
 /// `[gateway] cache_ttl` (M57.4).
@@ -997,6 +1003,11 @@ pub struct EgressConfig {
     /// Private hosts, IPs or CIDRs reachable anyway. The metadata address
     /// needs its exact IP here.
     pub private_allow: Vec<String>,
+    /// M54.4: bind sandboxed commands to the proxy: their IP connections
+    /// reach only its loopback port, so programs that ignore `HTTPS_PROXY`
+    /// (ssh, database clients, UDP) can't go around it. Off by default;
+    /// refused on Windows.
+    pub enforce: bool,
 }
 
 impl Default for EgressConfig {
@@ -1007,6 +1018,7 @@ impl Default for EgressConfig {
             deny: Vec::new(),
             private: "block".into(),
             private_allow: Vec::new(),
+            enforce: false,
         }
     }
 }
@@ -1024,13 +1036,21 @@ impl EgressConfig {
             "allow" => false,
             other => bail!("[egress] private = \"{other}\": use \"block\" or \"allow\""),
         };
-        ferrule_proxy::EgressPolicy::new(
+        if self.enforce && cfg!(windows) {
+            bail!(
+                "[egress] enforce = true isn't available on Windows: its sandbox (a restricted \
+                 token in a job) can't limit a command's connections to one port. Remove it; \
+                 the proxy still checks and logs what goes through it (docs/egress.md)"
+            );
+        }
+        Ok(ferrule_proxy::EgressPolicy::new(
             default_deny,
             &self.allow,
             &self.deny,
             block_private,
             &self.private_allow,
-        )
+        )?
+        .enforced(self.enforce))
     }
 }
 

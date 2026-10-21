@@ -104,6 +104,8 @@ pub const CARDS: &[&Spec] = &[
     &super::mattermost::SPEC,
     &super::email::SPEC,
     &super::signal::SPEC,
+    &super::bridges::WAHA_SPEC,
+    &super::bridges::BB_SPEC,
     &super::http::SPEC,
 ];
 
@@ -127,6 +129,8 @@ pub fn icon(name: &str) -> &'static str {
         "signal" => "M12 3a9 9 0 1 0 0 18c-1.5 0-3-.4-4.3-1L4 21l1-3.7A9 9 0 0 1 12 3z",
         "mattermost" => "M12 3a9 9 0 1 0 6 2.3M15 7l-3 7-2-3",
         "http" => "M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16",
+        "whatsapp_personal" => "M4 20l1.5-4.5A8 8 0 1 1 8.5 18.5z M12 8v4l2 2",
+        "imessage" => "M4 5h16v11H9l-5 4z",
         _ => "M4 12h16",
     }
 }

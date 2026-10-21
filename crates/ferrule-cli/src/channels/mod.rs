@@ -3,6 +3,7 @@
 //! sandbox's secret names, streaming, setup's forgetting, the doctor and
 //! the dashboard) asks here, so a new channel can't be half wired.
 
+pub mod bridges;
 pub mod card;
 pub mod discord_slack;
 pub mod email;
@@ -79,6 +80,18 @@ pub const CHANNELS: &[Info] = &[
         owner_key: "email_owner",
     },
     Info {
+        name: "whatsapp_personal",
+        title: "WhatsApp (personal)",
+        users_key: "[gateway.whatsapp_personal] allowed_users",
+        owner_key: "whatsapp_personal_owner",
+    },
+    Info {
+        name: "imessage",
+        title: "iMessage",
+        users_key: "[gateway.imessage] allowed_users",
+        owner_key: "imessage_owner",
+    },
+    Info {
         name: "http",
         title: "HTTP API",
         users_key: "the HTTP API's client keys",
@@ -100,6 +113,8 @@ pub fn configured(cfg: &Config, name: &str) -> bool {
         "signal" => g.signal.is_some(),
         "email" => g.email.is_some(),
         "http" => g.http.is_some(),
+        "whatsapp_personal" => g.whatsapp_personal.is_some(),
+        "imessage" => g.imessage.is_some(),
         _ => false,
     }
 }
@@ -141,6 +156,14 @@ pub fn secret_envs_of(cfg: &Config, name: &str) -> Vec<String> {
             .email
             .as_ref()
             .map_or_else(Vec::new, |e| vec![e.password_env.as_ref()]),
+        "whatsapp_personal" => g
+            .whatsapp_personal
+            .as_ref()
+            .map_or_else(Vec::new, |w| vec![Some(&w.api_key_env)]),
+        "imessage" => g
+            .imessage
+            .as_ref()
+            .map_or_else(Vec::new, |m| vec![Some(&m.password_env)]),
         _ => vec![],
     };
     v.into_iter().flatten().cloned().collect()
@@ -201,6 +224,26 @@ pub fn allowed_users(cfg: &Config, name: &str) -> Vec<String> {
                     .iter()
                     .filter(|s| !s.starts_with('@'))
                     .cloned()
+                    .collect()
+            })
+            .unwrap_or_default(),
+        "whatsapp_personal" => g
+            .whatsapp_personal
+            .as_ref()
+            .map(|w| {
+                w.allowed_users
+                    .iter()
+                    .map(|u| ferrule_gateway::channels::waha::normalize(u))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        "imessage" => g
+            .imessage
+            .as_ref()
+            .map(|m| {
+                m.allowed_users
+                    .iter()
+                    .map(|u| ferrule_gateway::channels::bluebubbles::normalize(u))
                     .collect()
             })
             .unwrap_or_default(),
@@ -285,6 +328,18 @@ pub fn account(
                 m.server_url.trim_end_matches('/').to_ascii_lowercase()
             ))
         }),
+        // M59: one WAHA session (one paired number) in two instances.
+        "whatsapp_personal" => g.whatsapp_personal.as_ref().map(|w| {
+            format!(
+                "{}, session {}",
+                w.url.trim().trim_end_matches('/').to_ascii_lowercase(),
+                w.session.trim()
+            )
+        }),
+        "imessage" => g
+            .imessage
+            .as_ref()
+            .map(|m| m.url.trim().trim_end_matches('/').to_ascii_lowercase()),
         _ => None,
     }
 }
@@ -297,6 +352,8 @@ pub fn account_clash(channel: &str, id: &str, other: &str) -> String {
         "email" => format!("the same mailbox ({id}) as the instance `{other}`: whichever looks first takes a mail and marks it read, so each answers about half. Give each instance its own mailbox"),
         "signal" => format!("the same Signal number ({id}) as the instance `{other}`: signal-cli locks its data for one daemon, so the second one fails to start, and a number's messages reach only one of them. Link another number, or run one instance on it"),
         "mattermost" => format!("the same Mattermost bot ({id}) as the instance `{other}`: both would answer every message. Give each instance its own bot account (Integrations → Bot Accounts)"),
+        "whatsapp_personal" => format!("the same WAHA session ({id}) as the instance `{other}`: both would answer every message on that number. Pair another number in its own WAHA session"),
+        "imessage" => format!("the same BlueBubbles server ({id}) as the instance `{other}`: both would answer every message. Run one instance on it"),
         "http-port" => format!("port {id} for the HTTP API, like the instance `{other}`: the second gateway can't listen there, and a program with the first's key would reach the first. Set another `[gateway.http] port`"),
         "signal-port" => format!("port {id} for its own signal-cli daemon, like the instance `{other}`: the second gateway would find the first's daemon and talk to its number. Set another `[gateway.signal] port`"),
         _ => format!("the same {channel} account ({id}) as the instance `{other}`: give one of them its own"),

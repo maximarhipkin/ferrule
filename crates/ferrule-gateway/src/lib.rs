@@ -30,8 +30,8 @@ pub use channel::{
     buttons_as_text, send_with_buttons, Button, ButtonAction, Channel, ChannelCapabilities,
 };
 pub use channels::{
-    DiscordChannel, EmailChannel, HttpChannel, LocalChannel, MatrixChannel, MattermostChannel,
-    SignalChannel, SlackChannel, TelegramChannel, WhatsAppChannel,
+    BlueBubblesChannel, DiscordChannel, EmailChannel, HttpChannel, LocalChannel, MatrixChannel,
+    MattermostChannel, SignalChannel, SlackChannel, TelegramChannel, WahaChannel, WhatsAppChannel,
 };
 pub use error::GatewayError;
 pub use gateway::{ChannelRestarts, Gateway, Interceptor, ACK_EMOJI, BUSY_NOTICE_AFTER};

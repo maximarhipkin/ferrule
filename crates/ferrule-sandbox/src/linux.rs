@@ -291,7 +291,9 @@ fn annotate(err: io::Error, what: &str) -> io::Error {
 /// `owner` mode make folders on the way down to those (plus, when
 /// `network` is false, no sockets but Unix ones, and with `unix` only the
 /// Unix sockets it allows — see [`crate::supervisor`]) right before it
-/// execs.
+/// execs. `proxy_only` (M54.4, `[egress] enforce`): the supervisor lets IP
+/// connects reach only `unix`'s proxy port, and the filter refuses every
+/// socket but Unix ones and IPv4/IPv6 streams, and TCP Fast Open.
 #[allow(clippy::too_many_arguments)]
 pub fn apply(
     cmd: &mut Command,
@@ -302,18 +304,28 @@ pub fn apply(
     protected: &[PathBuf],
     owner: bool,
     unix: Option<Arc<UnixSockets>>,
+    proxy_only: bool,
 ) -> io::Result<()> {
     let ruleset = ruleset(abi, writable, hidden, protected, owner)?;
     let supervised = unix.is_some();
+    let proxy_only = proxy_only && network;
+    if proxy_only && !unix.as_ref().is_some_and(|u| u.proxy_port.is_some()) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "binding commands to the proxy needs the connect supervisor",
+        ));
+    }
     let filter = if network && !supervised {
         None
     } else {
-        Some(seccomp::filter(!network, supervised).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Unsupported,
-                "no seccomp filter for this architecture",
-            )
-        })?)
+        Some(
+            seccomp::filter_with(!network, supervised, proxy_only).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "no seccomp filter for this architecture",
+                )
+            })?,
+        )
     };
     let handoff = unix.map(crate::supervisor::start).transpose()?;
     // SAFETY: the hook only makes raw syscalls on data prepared above — no
@@ -392,6 +404,34 @@ mod seccomp {
     pub(super) const SYS_CONNECT: u32 = 203;
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     pub(super) const SYS_IO_URING_SETUP: u32 = 425;
+    // M54.4: the sends that can open a TCP connection (MSG_FASTOPEN).
+    #[cfg(target_arch = "x86_64")]
+    const SYS_SENDTO: u32 = 44;
+    #[cfg(target_arch = "x86_64")]
+    const SYS_SENDMSG: u32 = 46;
+    #[cfg(target_arch = "x86_64")]
+    const SYS_SENDMMSG: u32 = 307;
+    #[cfg(target_arch = "aarch64")]
+    const SYS_SENDTO: u32 = 206;
+    #[cfg(target_arch = "aarch64")]
+    const SYS_SENDMSG: u32 = 211;
+    #[cfg(target_arch = "aarch64")]
+    const SYS_SENDMMSG: u32 = 269;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    const OFF_ARG1: u32 = 24;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    const OFF_ARG2: u32 = 32;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    const OFF_ARG3: u32 = 40;
+    // From linux/bpf_common.h and linux/socket.h, spelled out here.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    const BPF_ALU: u32 = 0x04;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    const BPF_AND: u32 = 0x50;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    const BPF_JSET: u32 = 0x40;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    const MSG_FASTOPEN: u32 = 0x2000_0000;
 
     // struct seccomp_data { int nr; u32 arch; u64 ip; u64 args[6]; }
     pub(super) const OFF_NR: u32 = 0;
@@ -416,6 +456,20 @@ mod seccomp {
 
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     pub fn filter(deny_network: bool, notify_connect: bool) -> Option<Vec<libc::sock_filter>> {
+        filter_with(deny_network, notify_connect, false)
+    }
+
+    /// [`filter`], and with `stream_only` (M54.4, `[egress] enforce`):
+    /// `socket()` only for Unix sockets and IPv4/IPv6 streams (no UDP, raw
+    /// or other families), and no `MSG_FASTOPEN` on `sendto`, `sendmsg` or
+    /// `sendmmsg`, which would open a TCP connection without the
+    /// `connect()` the supervisor checks.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    pub fn filter_with(
+        deny_network: bool,
+        notify_connect: bool,
+        stream_only: bool,
+    ) -> Option<Vec<libc::sock_filter>> {
         use libc::{BPF_ABS, BPF_JEQ, BPF_JGE, BPF_K, BPF_LD, BPF_RET, BPF_W};
         let load = |off| stmt(BPF_LD | BPF_W | BPF_ABS, off);
         let mut p = vec![
@@ -444,6 +498,36 @@ mod seccomp {
             p.push(jump(BPF_JEQ, libc::AF_UNIX as u32));
             fix.push((p.len() - 1, To::Allow, To::Deny));
             p[at].jf = 2; // not socket(): past the domain check, A still holds nr
+        }
+        if stream_only {
+            p.push(jump(BPF_JEQ, SYS_SOCKET));
+            let at = p.len() - 1;
+            p.push(load(OFF_ARG0));
+            p.push(jump(BPF_JEQ, libc::AF_UNIX as u32));
+            fix.push((p.len() - 1, To::Allow, To::Next));
+            p.push(jump(BPF_JEQ, libc::AF_INET as u32));
+            let inet = p.len() - 1;
+            p[inet].jt = 1; // to the type check, past AF_INET6
+            p.push(jump(BPF_JEQ, libc::AF_INET6 as u32));
+            fix.push((p.len() - 1, To::Next, To::Deny));
+            p.push(load(OFF_ARG1));
+            // The type without SOCK_NONBLOCK and SOCK_CLOEXEC.
+            p.push(stmt(BPF_ALU | BPF_AND | BPF_K, 0xf));
+            p.push(jump(BPF_JEQ, libc::SOCK_STREAM as u32));
+            fix.push((p.len() - 1, To::Allow, To::Deny));
+            p[at].jf = (p.len() - at - 1) as u8; // not socket(): A still holds nr
+            for (nr, flags) in [
+                (SYS_SENDTO, OFF_ARG3),
+                (SYS_SENDMMSG, OFF_ARG3),
+                (SYS_SENDMSG, OFF_ARG2),
+            ] {
+                p.push(jump(BPF_JEQ, nr));
+                let at = p.len() - 1;
+                p[at].jf = 2; // another call: past the flags check
+                p.push(load(flags));
+                p.push(jump(BPF_JSET, MSG_FASTOPEN));
+                fix.push((p.len() - 1, To::Deny, To::Allow));
+            }
         }
         p.push(jump(BPF_JEQ, SYS_IO_URING_SETUP));
         fix.push((p.len() - 1, To::Deny, To::Next));
@@ -477,6 +561,15 @@ mod seccomp {
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     pub fn filter(_deny_network: bool, _notify_connect: bool) -> Option<Vec<libc::sock_filter>> {
+        None
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    pub fn filter_with(
+        _deny_network: bool,
+        _notify_connect: bool,
+        _stream_only: bool,
+    ) -> Option<Vec<libc::sock_filter>> {
         None
     }
 }

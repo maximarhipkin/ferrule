@@ -13,6 +13,7 @@ The design and its as-built notes are in
 | Writes | workspace, temp, `writable_roots` | same | same |
 | Denied reads | all of them | all of them | ferrule's secrets and `deny_read`; the default credential dirs only in the file tools |
 | `network = false` | enforced | enforced | **not enforced** (needs admin) |
+| `[egress] enforce` (IP only to the proxy) | the connect supervisor + seccomp | a Seatbelt rule | refused |
 | Ferrule's own environment | closed (ptrace scoping) | closed (no `/proc`) | closed (process DACL) |
 | Kill the whole tree | process group | process group | the job |
 
@@ -106,6 +107,20 @@ real values on the hosts they are bound to. The same proxy enforces the
 `[egress]` network policy: which hosts the model's tools and proxied
 commands may reach, with private addresses and cloud metadata blocked by
 default. See [egress.md](egress.md).
+
+On its own that is advisory: a program that ignores `HTTPS_PROXY` (ssh, a
+database client, anything over UDP) connects directly. **`[egress] enforce
+= true`** (M54.4, off by default) makes the sandbox bind commands to the
+proxy: their IP connections reach only the proxy's port on `127.0.0.1`.
+On macOS it's a Seatbelt rule; on Linux the Unix-socket supervisor checks
+IP connects too, and the seccomp filter refuses UDP, raw sockets and TCP
+Fast Open; on Windows the config refuses it. Where it can't be applied,
+commands are refused, not run unbound. ssh, git over ssh, TCP database
+clients and local TCP servers stop working under it;
+[egress.md](egress.md#binding-commands-to-the-proxy-enforce) has the list
+and the ways around it (a tunnel through the proxy, an HTTPS remote, a
+Unix socket). Every destination that goes through the proxy is in the
+audit log either way (`ferrule egress log`).
 
 ### Plain HTTP
 

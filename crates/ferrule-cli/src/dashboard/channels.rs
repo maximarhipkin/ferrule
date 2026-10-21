@@ -108,6 +108,7 @@ pub fn list(ctx: &Ctx) -> Answer {
                 "guide": spec.map(|s| s.guide).unwrap_or_default().iter().map(|g| json!({"text": g.text, "url": g.url})).collect::<Vec<_>>(),
                 "doc": match c.name {
                     "discord" | "slack" => format!("docs/{}.md", c.name),
+                    "whatsapp_personal" => "docs/channels.md#personal-whatsapp".to_string(),
                     name => format!("docs/channels.md#{name}"),
                 },
                 // The HTTP API's keys: what they are, never a key.

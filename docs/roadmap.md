@@ -1307,6 +1307,17 @@ all fail; and `make check` is green on Linux, macOS and Windows.
   inherits them; a child gets one only by name (`env_passthrough`, an
   owner hook's `env`), and an exported variable still wins
   (`docs/sandbox.md`, "Env").
+- **M54.4, network through the proxy, logged, opt-in**: `[egress] enforce
+  = true` binds sandboxed commands to the credential proxy (their IP
+  connections reach only its loopback port: a Seatbelt rule on macOS; on
+  Linux the Unix-socket connect supervisor checks IP connects too and the
+  seccomp filter refuses UDP, raw sockets and TCP Fast Open; refused on
+  Windows; commands refused where it can't hold). The policy stays
+  allow-by-default. In every mode each destination the proxy lets through
+  goes to the trust audit log (source, method, host, port; never a path or
+  body), shown by `ferrule egress log` (`docs/egress.md`, "Binding
+  commands to the proxy" and "Where requests went"). Not run on a real
+  machine yet; the Linux part is CI-compiled only.
 
 ## Other open tracks
 
@@ -1403,7 +1414,14 @@ Current State; numbers are claimed there before anything is built.
     converter (`evals/terminal-bench/convert.py`, not yet run on real
     tasks), and the A/B-before-landing policy (`docs/eval.md`).
   - **M59** channels not worth chasing yet: personal WhatsApp and
-    iMessage.
+    iMessage. Built on `autopilot` as two opt-in channels that talk to a
+    bridge the owner runs, never a protocol client in ferrule:
+    `[gateway.whatsapp_personal]` through WAHA (its REST API out, its
+    WebSocket in; the terms-of-service risk stated plainly) and
+    `[gateway.imessage]` through BlueBubbles Server on a Mac (its REST
+    API, polled). Allow-lists, keys in `secrets.env`, setup steps,
+    dashboard cards and doctor lines; not run against a live bridge
+    (`docs/m59-channels.md`).
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
     key fields in the dashboard, the Safe page, `secret_request`, safe
     config editing, a chat paste guard, step-up auth) and to M54

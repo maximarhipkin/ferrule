@@ -9,7 +9,7 @@
 //! anyone on the path would see the real value.
 
 use crate::ca::Ca;
-use crate::egress::{Denial, EgressPolicy, Source, Verdict};
+use crate::egress::{Denial, Destination, EgressPolicy, Source, Verdict};
 use crate::hosts::HostPattern;
 use crate::subst::{Scrubbed, Swaps};
 use crate::upstream::{self, Upstream};
@@ -45,6 +45,9 @@ pub(crate) type ProxyBody = BoxBody<Bytes, hyper::Error>;
 /// a refusal from the site's own 403.
 pub const EGRESS_HEADER: &str = "x-ferrule-egress";
 const REPORT_EVERY: Duration = Duration::from_secs(10);
+/// M54.4: a destination is handed to the hook at most this often per
+/// source, host and port, so a busy client doesn't flood the audit log.
+const DESTINATION_EVERY: Duration = Duration::from_secs(60);
 
 pub(crate) struct Secret {
     /// Its env var's name: what `secret.used` reports (M52.2).
@@ -58,6 +61,7 @@ pub(crate) struct Secret {
 
 pub(crate) type DenyHook = Arc<dyn Fn(&Denial) + Send + Sync>;
 pub(crate) type UseHook = Arc<dyn Fn(&crate::SecretUse) + Send + Sync>;
+pub(crate) type DestinationHook = Arc<dyn Fn(&Destination) + Send + Sync>;
 
 pub(crate) struct Shared {
     /// Decoded `Proxy-Authorization` credentials a request must carry:
@@ -70,6 +74,10 @@ pub(crate) struct Shared {
     pub deny_hook: std::sync::RwLock<Option<DenyHook>>,
     /// M52.2: told each bound secret a request carries to its host.
     pub use_hook: std::sync::RwLock<Option<UseHook>>,
+    /// M54.4: told where requests the policy let through go.
+    pub destination_hook: std::sync::RwLock<Option<DestinationHook>>,
+    /// When each (source, host, port) was last handed to it.
+    pub destinations: std::sync::Mutex<HashMap<(Source, String, u16), Instant>>,
     pub denials: AtomicU64,
     /// When each (source, host, reason) was last reported, so a retry loop
     /// doesn't flood the ledger. Enforcement isn't rate-limited.
@@ -114,6 +122,35 @@ impl Shared {
         if let Some(hook) = hook {
             hook(denial);
         }
+    }
+
+    /// M54.4: hands the destination hook where a request the policy let
+    /// through goes, at most once a minute per source, host and port.
+    fn note_destination(&self, source: Source, method: &str, host: &str, port: u16) {
+        let Some(hook) = self.destination_hook.read().unwrap().clone() else {
+            return;
+        };
+        {
+            let mut seen = self.destinations.lock().unwrap();
+            let now = Instant::now();
+            let key = (source, host.to_string(), port);
+            if seen
+                .get(&key)
+                .is_some_and(|t| now.duration_since(*t) < DESTINATION_EVERY)
+            {
+                return;
+            }
+            if seen.len() > 4096 {
+                seen.retain(|_, t| now.duration_since(*t) < DESTINATION_EVERY);
+            }
+            seen.insert(key, now);
+        }
+        hook(&Destination {
+            source,
+            method: method.to_string(),
+            host: host.to_string(),
+            port,
+        });
     }
 
     /// Which client this is, from its proxy credentials.
@@ -273,6 +310,7 @@ async fn handle(
             ))
         }
     };
+    shared.note_destination(source, "CONNECT", &host, port);
     // Connect before answering, so a dead host is a 502 the client can
     // report rather than a tunnel that closes on the first byte.
     let tcp = match upstream::connect(shared.upstream.as_ref(), &host, port, addrs.as_deref()).await
@@ -572,6 +610,7 @@ async fn plain_http(
         Err(Ok(denial)) => return denied(&denial.message("http")),
         Err(Err(e)) => return text(StatusCode::BAD_GATEWAY, &format!("ferrule proxy: {e}\n")),
     };
+    shared.note_destination(source, &method, &host, port);
     let swaps = shared.swaps_for(&host);
     if swaps.is_some() && !is_loopback(&host) {
         return text(

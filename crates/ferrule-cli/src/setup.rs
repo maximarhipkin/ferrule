@@ -1,5 +1,5 @@
 //! `ferrule setup`: the interactive installer. The first run walks through
-//! a model provider and its key, Telegram, Discord, Slack, WhatsApp, tool credentials, web search, the sandbox,
+//! a model provider and its key, Telegram, Discord, Slack, WhatsApp, the other channels, tool credentials, web search, the sandbox,
 //! the browser and the background service; later runs open a menu to change any one
 //! part. Answers are checked live where they can be (the key opens the
 //! model list, the bot token answers `getMe`) and saved the moment they're
@@ -7,6 +7,7 @@
 //! secrets file, never into the config, and config edits keep the file's
 //! comments and layout.
 
+mod bridges;
 mod channels;
 mod email;
 mod http_api;
@@ -195,6 +196,14 @@ async fn guided(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
     if settle(signal::step(t, true).await)?.quit() {
         return Ok(false);
     }
+    heading("WhatsApp (personal)");
+    if settle(bridges::waha_step(t, true).await)?.quit() {
+        return Ok(false);
+    }
+    heading("iMessage");
+    if settle(bridges::bb_step(t, true).await)?.quit() {
+        return Ok(false);
+    }
     heading("HTTP API");
     if settle(http_api::step(t, true).await)?.quit() {
         return Ok(false);
@@ -257,6 +266,8 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             format!("Mattermost           {}", mattermost::summary(&cfg)),
             format!("Email                {}", email::summary(&cfg)),
             format!("Signal               {}", signal::summary(&cfg)),
+            format!("WhatsApp (personal)  {}", bridges::waha_summary(&cfg)),
+            format!("iMessage             {}", bridges::bb_summary(&cfg)),
             format!("HTTP API             {}", http_api::summary(&cfg)),
             format!("Tool credentials     {}", credentials_summary(&cfg)),
             format!("Web search           {}", web_search_summary(&cfg)),
@@ -295,17 +306,19 @@ async fn menu(t: &mut Target, http: &reqwest::Client) -> Result<bool> {
             6 => mattermost::step(t, false).await,
             7 => email::step(t, false).await,
             8 => signal::step(t, false).await,
-            9 => http_api::step(t, false).await,
-            10 => credentials_step(t, http, false).await,
-            11 => web_search_step(t, false),
-            12 => memory_step(t, false).await,
-            13 => sandbox_step(t, false),
-            14 => network_step(t, false),
-            15 => browser_step(t),
-            16 => crate::mcp_add::setup_step(t, false).await,
-            17 => crate::import::setup_step(t, false).await,
-            18 => remote::step(t).await,
-            19 => service_step(t, false),
+            9 => bridges::waha_step(t, false).await,
+            10 => bridges::bb_step(t, false).await,
+            11 => http_api::step(t, false).await,
+            12 => credentials_step(t, http, false).await,
+            13 => web_search_step(t, false),
+            14 => memory_step(t, false).await,
+            15 => sandbox_step(t, false),
+            16 => network_step(t, false),
+            17 => browser_step(t),
+            18 => crate::mcp_add::setup_step(t, false).await,
+            19 => crate::import::setup_step(t, false).await,
+            20 => remote::step(t).await,
+            21 => service_step(t, false),
             n if Some(n) == another => another_instance(),
             _ => break,
         };
@@ -671,7 +684,12 @@ fn network_summary(cfg: &config::Config) -> String {
     } else {
         "private ranges blocked"
     };
-    format!("{open} · {private}")
+    let bound = if e.enforce {
+        " · commands bound to the proxy"
+    } else {
+        ""
+    };
+    format!("{open} · {private}{bound}")
 }
 
 fn browser_summary(cfg: &config::Config) -> String {

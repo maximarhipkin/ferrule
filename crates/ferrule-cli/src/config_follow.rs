@@ -206,16 +206,8 @@ impl Follower {
         }
         self.secrets = wanted;
         if let Some(broker) = self.broker {
-            match crate::tool_egress(broker) {
-                Ok(egress) => {
-                    let sandbox = manager
-                        .sandbox()
-                        .as_ref()
-                        .clone()
-                        .with_env(broker.child_env())
-                        .with_egress(Some(egress));
-                    manager.set_sandbox(Arc::new(sandbox));
-                }
+            match crate::proxied(manager.sandbox().as_ref().clone(), broker) {
+                Ok(sandbox) => manager.set_sandbox(Arc::new(sandbox)),
                 Err(e) => tracing::warn!("{e:#}; new servers won't have the new secrets"),
             }
         }
