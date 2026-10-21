@@ -13,8 +13,11 @@ use std::sync::Arc;
 
 /// How the folded head of a session becomes its summary.
 pub trait Compactor: Send + Sync {
-    /// The request whose answer replaces the folded messages, rendered
-    /// "role: body" by the agent. The agent sends it like any other call
+    /// The request whose answer replaces the folded messages. The agent
+    /// renders that text itself: no system prompt, each tool call by
+    /// name with its arguments, each result under its tool's name, and
+    /// the whole piece already cut to the summary model's budget. The
+    /// agent sends the request like any other call
     /// (retried, a ledger row, charged to the budget, under the kill
     /// switch), rebuilds its context around the answer and logs it as the
     /// fold record.

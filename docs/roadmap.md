@@ -1448,6 +1448,11 @@ Current State; numbers are claimed there before anything is built.
   are git-ignored and hidden from guests' sessions. No mouse, keyboard
   or app control. Built on `autopilot`, not run live
   (`docs/m61-screen.md`).
+- **M62, compaction that can see the work.** The summary model is shown
+  tool names, arguments and a gist of each result, and not the system
+  prompt. The request is cut to the context window (in pieces when the
+  head is longer), and a summary call that fails folds a shortened
+  extract instead of ending the run (`docs/m62-compaction.md`).
 - **Wave A, after the 2026-10-21 test phase** (one commit per task on
   `autopilot`; the re-audit's follow-ups):
   - **Test-phase fixes**: shortened results and compaction summaries say

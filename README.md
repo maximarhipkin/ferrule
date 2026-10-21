@@ -691,7 +691,9 @@ and a dated entry for every session.
   (lessons without a check, learned skills) ·
   [`m57-context-hygiene.md`](docs/m57-context-hygiene.md) (deferred tool
   schemas and `tool_search`, per-file loop notes, budget notes, raised
-  effort).
+  effort) ·
+  [`m62-compaction.md`](docs/m62-compaction.md) (a compaction summary
+  that sees tool calls and stays inside the model's window).
 - Running it day to day: [`dashboard.md`](docs/dashboard.md)
   ([`m50-connect.md`](docs/m50-connect.md): connecting everything from
   the page) ·

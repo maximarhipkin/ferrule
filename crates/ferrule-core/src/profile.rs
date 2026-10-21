@@ -129,18 +129,44 @@ impl HarnessProfile {
     }
 }
 
-/// Structured compaction template. Checklist sections prevent the silent
-/// information loss that freeform summarization causes.
+/// Structured compaction template (M62). The sections are the ones a
+/// later turn actually needs: every user request, the decisions, the
+/// files, the errors and how they were fixed, what's still open, and
+/// the work in progress. Checklist sections are what keep a summary
+/// from silently dropping one of those. Claude Code's compaction prompt
+/// is the reference for the list.
 pub const COMPACTION_TEMPLATE: &str = "\
-Summarize this agent session so work can continue seamlessly. Fill every section \
-(write \"none\" if empty):
+Summarize this agent session so work can continue seamlessly. Be faithful: \
+keep names, full paths, commands and error text, and do not invent anything. \
+Fill every section (write \"none\" if empty):
 
 ## Session Intent
-## Files Touched (full paths)
+What the user is trying to get done.
+
+## All User Requests
+Every user message that states a request, correction or decision, in order, \
+as close to the original words as length allows. Do not include tool results.
+
 ## Key Decisions
+Choices already made, and why, including anything the user insisted on.
+
+## Files Touched (full paths)
+Files read, written or edited, with full paths, and the other resources that \
+matter (commands, urls, tools).
+
+## Errors and Fixes
+Each error, quoted, and how it was fixed or that it is still open.
+
 ## Important Facts Established
-## Active Goals
+## Pending Tasks
+Work the user asked for that is not finished.
+
+## Current State
+What was in progress immediately before this summary, and where it stands.
+
 ## Next Steps
+The next step that follows the current work and the user's latest request. \
+Do not resume a request that is already finished.
 
 Conversation to compress:
 ";

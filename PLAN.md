@@ -143,6 +143,12 @@ append-only.
     `docs/m59-channels.md`) and **M54.4** (`[egress] enforce`: commands
     bound to the proxy, opt-in; every destination in the audit log,
     `ferrule egress log`).
+  - **M62, compaction's summary input** (this session,
+    `cursor/compaction-summary-m62-a6a4`): the summarizer sees tool
+    names, arguments and a gist of each result, not the system prompt;
+    the summary request is cut to the context window; a failed summary
+    call folds an extract instead of ending the run
+    (`docs/m62-compaction.md`).
   - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
     `docs/research-harness2-media.md`, `docs/m51-media.md`,
     `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
@@ -165,7 +171,10 @@ append-only.
   `autopilot`). **M59 is claimed and built** (2026-10-21, `autopilot`
   worktree, PR #52): personal WhatsApp and iMessage through bridges the
   owner runs. So is M54's numbered item **M54.4** (binding egress through
-  the proxy, logged). The next free number is **M62**.
+  the proxy, logged). **M62** (2026-10-21, compaction's summary input:
+  tool calls visible, the system prompt left out, the request bounded
+  so a too-long summary cannot kill the run) is claimed by this session.
+  The next free number is **M63**.
   The first claim wins, and a later collision shifts the unclaimed
   numbers, never a claimed one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -9057,3 +9066,67 @@ binaries (macOS), clippy clean.
 **Open.** The subscription plans' own tokens (ChatGPT's, Claude's in
 `private/`) aren't in the list. Doctor's `history` scan doesn't look in
 claude's config dir (`<data>/claude-code/`). Not run live.
+
+### 2026-10-21 — M62: compaction sees the tools, and the summary call cannot overflow the run
+
+Claims **M62** (the next free number was M62; the next is now M63), on
+`cursor/compaction-summary-m62-a6a4`. Current State updated in place:
+the claim, M62 in the in-flight list.
+
+**Why.** A read of `Agent::compact` (confirmed with tests that failed on
+the old code) showed two holes. The summary request was `role: content`
+only, so a tool call arrived as `assistant:` plus `tool:` and the result
+text: no tool name, no arguments. The system prompt was in that text, so
+every compaction summarized it again. The request had no size bound. A
+history with one 200,000-character tool result and no transcript made
+the summary call return "prompt is too long", `compact` returned that
+error, and the run ended with the history unchanged.
+
+**What changed.**
+- `crates/ferrule-core/src/summary.rs` (new): the folded head rendered
+  for the summary model. System messages are left out. A call is
+  `assistant → name(arguments)` with long string arguments shortened
+  (500) and the arguments capped (2,000). A result is `tool name:` or
+  `tool name (error):`, at most 4,000 characters, an error keeping its
+  head and its tail. A result is named from the nearest preceding call
+  with its id. One message stops at 10,000 characters. The rendered
+  text is split into pieces that fit a budget taken from the agent's
+  context window (template, output reserve and a tenth of the window
+  held back). A later piece carries the summary so far, shortened so it
+  still fits.
+- `Agent::compact` sends that text. A summary the model rejects as too
+  long is tried again in pieces half the size, up to three more times.
+  Any failure after that, or any other summary error, folds a shortened
+  extract of the rendered head (at most 12,000 characters) that says
+  the summary model failed. The run continues, and the oversized result
+  is no longer in the live history. Skill blocks are still elided from
+  the request and carried verbatim. The fold still never cuts between a
+  call and its results. `Touched` is unchanged.
+- `COMPACTION_TEMPLATE` now asks for every user request, the decisions,
+  files and other resources, errors and how they were fixed, pending
+  tasks, and the work in progress. It still starts "Summarize this
+  agent session", which is what the eval harness recognizes.
+- The routing-off golden records the one summary request this changes.
+  Nothing else in that session moved.
+- Docs: `docs/m62-compaction.md`, the roadmap's M62 line, the README's
+  documentation list.
+
+**Tests.** New, and each of the two symptoms failed on the old code
+before the fix: the summarizer sees `shell` and `rm -rf build_PROBE`
+and the error text, and does not see the system prompt; a 200,000-character
+tool result compacts with every summary request under 40,000 characters
+and the run answers; a summary model that rejects every summary request
+still folds an extract and the turn completes. Unit tests cover the
+cap, an error's tail, piece boundaries, a small window's budget, and a
+reused call id naming the result from the call that precedes it.
+
+**Checks.** `make check` exited 0: 1902 passed, 0 failed, 29 ignored
+(Linux). `cargo clippy -p ferrule-core --all-targets -- -D warnings` is
+clean. Workspace clippy (as `make check` runs it) still warns that
+`ferrule-sandbox`'s `filter` is unused; that warning predates M62.
+
+**Open.** Not run against a live model. The budget is the agent's
+window, so a much smaller `[agent] compaction_model` pays for one
+rejected call before the pieces shrink. The extract is the rendered
+head, cut down, not the checklist. The last few files' contents are
+not re-attached after a fold; `Touched` already lists the paths.
