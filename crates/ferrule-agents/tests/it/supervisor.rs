@@ -378,6 +378,7 @@ async fn a_finished_child_wakes_its_idle_root_with_a_fenced_notice() {
                 worktree: true,
                 model: None,
                 effort: None,
+                fork: false,
             },
         )
         .unwrap();
@@ -434,6 +435,7 @@ async fn a_notice_that_cant_wake_waits_in_the_inbox_until_wait_takes_the_report(
                 worktree: true,
                 model: None,
                 effort: None,
+                fork: false,
             },
         )
         .unwrap();
@@ -475,6 +477,7 @@ async fn a_child_runs_on_a_named_connected_model_and_an_unconnected_one_is_refus
         worktree: false,
         model: Some(model.into()),
         effort: None,
+        fork: false,
     };
     // No check set: a named model is refused, nothing is started.
     let err = rig.sup.spawn("r", ask("fast")).err().unwrap().to_string();

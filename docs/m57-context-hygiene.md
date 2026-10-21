@@ -357,3 +357,71 @@ being tracked, even if it left processes of its own running (`cmd &`):
 on Unix ferrule doesn't stop those (on Windows the sandbox's job object
 ends them when the command does). A finished sub-agent's jobs run until
 its agent is closed.
+
+## Fork sub-agents (M57.7)
+
+A child started by `spawn_agent` sees only its task. A parent that has
+just read the code or settled a plan has to restate it in the task, and
+whatever it leaves out the child reads again. `spawn_agent {"fork":
+true}` starts the child from a bounded copy of the end of the parent's
+conversation instead, with the task after it.
+
+**What the child starts from** (`crates/ferrule-agents/src/fork.rs`,
+`Supervisor::fork_from` in `supervisor.rs`):
+
+1. The parent's transcript, read with its folds applied
+   (`Transcript::read_messages`), so a compacted parent hands over its
+   summary and the kept tail, not the folded past. System messages are
+   left out: the child's own system prompt (its role, its id, the agent
+   tools) is built as for any child.
+2. The turn in progress is cut off: the parent's last assistant message
+   that has a tool call without a result (the `spawn_agent` call itself),
+   and everything after it.
+3. Walking back from the end, messages are taken while their estimates
+   (`Message::est_tokens`, about 4 characters a token) fit in `[agents]
+   fork_tokens`, 16,000 by default. A message's text longer than
+   `fork_tokens` characters (about a quarter of the budget) is cut first,
+   with a note saying so; tool-call arguments aren't cut. Each copied
+   message loses the parent model's reasoning, and its provider's native
+   blocks, which are bound to the prefix they were made under (a
+   compaction drops those from its kept tail for the same reason, M23).
+4. Tool results at the front of the copy, whose call didn't fit, are
+   dropped, so the copy opens at a user or an assistant message and never
+   separates a call from its results.
+5. A header goes first, as a user message: whose conversation follows,
+   how many of its messages were copied, that the requests in it were
+   made to the parent, that a file should be read again before it is
+   changed, and that the task comes after it.
+6. The task is the newest user message, as for any child: the child's
+   run starts with it.
+
+**Logged.** Header and copy are written to the child's own transcript
+before the child is built, with a `parent` meta line (so `ferrule
+sessions` names the session it was forked from), and replayed
+from there like any child's history. Model-visible means logged, and
+`resume_agent` replays the same copy. The parent's transcript is only
+read.
+
+**Refusals.** `fork_tokens = 0` turns forking off, and a parent without
+a transcript can't fork; either way `spawn_agent` refuses before
+anything starts and says to put what the child needs in `task`. When
+none of the conversation fits, the child starts from its task alone and
+the spawn result says so; otherwise the result says how many of the
+parent's messages it got and about how many tokens they are.
+
+**Cost.** The copy is input to every call the child makes: up to
+`fork_tokens` more per call, read from the prompt cache after the first
+call where the provider caches, because it sits in the child's prefix
+and is only appended to. The `spawn_agent` description says a fork reads
+its copy on every call. The `fork` argument and that sentence add about
+320 characters to the tool's definition
+([agents.md](agents.md#what-it-costs)).
+
+**Open.** No test covers a fork and none was run by hand (the owner's
+rule); nothing is measured through `ferrule eval`. The budget is a fixed
+number of tokens, not a share of the child's own context window. A
+single huge tool call (a `write_file` of a whole file) can end the copy
+early, since arguments aren't cut. A worker in its own worktree starts
+at the parent's HEAD, so files the copy shows the parent reading may
+hold uncommitted changes the worktree doesn't have; the header's re-read
+line is the only guard (the child's M57.3 stamps start empty).

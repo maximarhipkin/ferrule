@@ -299,6 +299,7 @@ impl Exec<'_> {
             worktree: true,
             model: node.model.clone(),
             effort: None,
+            fork: false,
         };
         self.sup
             .spawn(self.root, req)

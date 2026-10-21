@@ -1210,7 +1210,11 @@ Current State; numbers are claimed there before anything is built.
     input examples in `edit_file`'s `edits` and four agent tools'
     descriptions (`ferrule_admin` waits for M54); M57.6,
     `shell {background: true}` and `shell_job` (status, tail, kill), at
-    most 4 jobs, killed when the session or lane ends, local shell only.
+    most 4 jobs, killed when the session or lane ends, local shell only;
+    M57.7, `spawn_agent {fork: true}`: the child starts from the end of
+    its parent's conversation (at most `[agents] fork_tokens`, 16,000
+    estimated tokens; never cut between a call and its results), logged
+    in its own transcript, then its task.
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
     the core, eval as the gate.

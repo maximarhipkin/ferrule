@@ -152,6 +152,7 @@ impl AgentTool {
                     .get("worktree")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
+                let fork = args.get("fork").and_then(Value::as_bool).unwrap_or(false);
                 let model = str_arg(args, "model").map(str::to_string);
                 let effort = match str_arg(args, "effort") {
                     None => None,
@@ -173,6 +174,7 @@ impl AgentTool {
                             worktree,
                             model,
                             effort,
+                            fork,
                         },
                     )
                     .map_err(|e| self.map_err(e))?;
@@ -284,6 +286,7 @@ impl Tool for AgentTool {
                         "name": {"type": "string", "description": "A short label, for you and the owner."},
                         "role": {"type": "string", "enum": ["worker", "planner", "verifier"]},
                         "worktree": {"type": "boolean", "description": "In a git repo: its own worktree and branch (default true). false shares your files."},
+                        "fork": {"type": "boolean", "description": "Start it from a copy of the end of your conversation, then the task (default false: the task alone)."},
                         "model": {"type": "string", "description": "Only if the owner asked for it: a connected model (provider/model or an alias) to run it on. Leave it out to use its role's model or yours."},
                         "effort": {"type": "string", "enum": ["low", "medium", "high"], "description": "Reasoning effort for all its turns, where its model takes one: low for lookups and mechanical edits, high for hard design or debugging. Leave it out for the usual."}
                     },

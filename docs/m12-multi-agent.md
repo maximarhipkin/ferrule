@@ -120,7 +120,8 @@ do simple things yourself; one child for one separable job; two to four
 for a comparison or independent parts; more only for broad work that
 splits cleanly and is worth many times the tokens. Give each child a
 complete task — goal, what's already known, what to return — because it
-sees nothing of your conversation.
+sees nothing of your conversation (unless it is forked: M57.7,
+[m57-context-hygiene.md](m57-context-hygiene.md#fork-sub-agents-m577)).
 
 **Summary contract.** A child's system prompt says its final answer goes to
 another agent, not a person, and must be a distilled report of at most

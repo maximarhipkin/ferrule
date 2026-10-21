@@ -7009,3 +7009,53 @@ no test yet.
 the model asks with `tail`. Processes a job's command leaves behind after
 it exits aren't tracked on Unix. A finished sub-agent's jobs run until
 it's closed.
+
+### 2026-10-21 — M57.7: fork sub-agents (Claude, Opus 5.5)
+
+**Why.** A child saw only its brief, so a parent that had just read the
+code or settled a plan restated it in the task, and whatever it left out
+the child read again.
+
+**What changed.**
+- `ferrule-agents/src/fork.rs` (new): `tail(history, budget)`. Leaves
+  out system messages; cuts off the parent's turn in progress (the last
+  assistant message with a call that has no result yet, the
+  `spawn_agent` call itself, and what follows); walks back from the end
+  while `est_tokens` fits the budget, each message's text cut at
+  `budget` characters (about a quarter of it) and its reasoning and
+  native blocks dropped; then skips tool results at the front, so the
+  copy never separates a call from its results.
+- `supervisor.rs`: `SpawnRequest::fork`, `Limits::fork_tokens` (16,000;
+  0 refuses forks). `Supervisor::fork_from` reads the parent's
+  transcript (`<sessions>/<parent session>.jsonl`, folds applied) before
+  anything is inserted, so a refusal leaves nothing behind, and puts
+  `prompts::fork_header` first. `start` takes the fork and logs a
+  `parent` meta line, the header and the copy into the child's
+  transcript before building it; the replay that follows is the usual
+  one, so `resume_agent` (which passes no fork) replays the same copy.
+  The task stays the run's message, so it is the newest user message.
+  The spawn result notes how many messages and about how many tokens the
+  child got, or that none fit. Spawning is still immediate.
+- `tools.rs`, `prompts.rs`: the `fork` boolean in `spawn_agent`'s schema,
+  a sentence in its description (a fork reads its copy on every call),
+  about 320 characters together; `fork_header`.
+- `ferrule-cli/src/config.rs`: `[agents] fork_tokens`, the sample config.
+  `graph.rs` sets `fork: false`.
+- Docs: `m57-context-hygiene.md` (new section), `agents.md` (config, the
+  size table, "Forked children"), `m12-multi-agent.md` (the "sees
+  nothing of your conversation" line), README (the Sub-agents row), the
+  roadmap.
+
+**Tests changed, none added.** The `SpawnRequest` literals in
+`ferrule-agents`' tests (`board.rs`, `supervisor.rs` ×3,
+`common/mod.rs`, `worktree.rs`) gained `fork: false`.
+
+**Checks.** `make check` exited 0 with M57.6 staged and M57.7 in the
+working tree: 1881 passed, 0 failed, 28 ignored, 73 binaries (macOS).
+
+**Open.** No test covers a fork and none was run by hand (the owner's
+rule); not measured through `ferrule eval`. The budget is a fixed token
+count, not a share of the child's context window. Tool-call arguments
+aren't cut, so one huge `write_file` call ends the copy early. A worker's
+worktree is at the parent's HEAD, so the copy may show uncommitted files
+the worktree lacks; the header asks the child to re-read before editing.

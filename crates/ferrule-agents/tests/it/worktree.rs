@@ -69,6 +69,7 @@ fn spawn_as(sup: &Supervisor, caller: &str, role: Role, worktree: bool) -> Spawn
             worktree,
             model: None,
             effort: None,
+            fork: false,
         },
     )
     .unwrap()

@@ -34,6 +34,17 @@ pub fn child_prompt(id: &str, parent: &str, role: Role) -> String {
     )
 }
 
+/// M57.7: the first message of a forked child, before the copy of its
+/// parent's conversation.
+pub fn fork_header(parent: &str, copied: usize, total: usize) -> String {
+    format!(
+        "[ferrule] You are a fork of agent {parent}. The messages from here up to your task are the last \
+         {copied} of its {total} messages, copied so you start knowing what it knew. They are its \
+         conversation, not yours: the requests in them were made to it, and files may have changed since \
+         it read them, so read a file again before you change it. Your task is the message after them."
+    )
+}
+
 /// Added to a chat session's system prompt, with the `send_file` tool
 /// (M39), so a model on any engine knows the chat takes files.
 pub const CHAT_FILES: &str = "## Files in this chat\n\
@@ -76,7 +87,9 @@ a comparison or independent parts; more only for broad work that splits cleanly.
 as much as a whole chat of its own, and a tree of agents typically uses several times (up to ~15x) the tokens \
 of doing the work alone — spawn when the parallelism or the separation is worth that.\n\
 The agent sees nothing of your conversation: give it a complete task — the goal, what is already known, \
-constraints, and what to return. Its final answer comes back as a short report.\n\
+constraints, and what to return. Or fork it (fork: true): it starts from a copy of the end of your conversation, \
+so the task needn't repeat what you just read or decided, but it reads that copy again on every call. Its final \
+answer comes back as a short report.\n\
 Roles: \"worker\" (default) does the work; \"planner\" splits a job and runs workers; \"verifier\" checks \
 a change or claim without modifying anything.\n\
 Example: {\"task\": \"In src/date.rs, make parse_date accept ISO week dates such as 2026-W05 (today it returns \

@@ -5,12 +5,13 @@
 
 use crate::error::AgentsError;
 use crate::fence::{cap, fence, first_line};
+use crate::fork;
 use crate::lifecycle;
 use crate::prompts;
 use crate::store::{AgentRow, AgentStore, Status};
 use crate::tools;
 use crate::worktree;
-use ferrule_core::message::Role as MsgRole;
+use ferrule_core::message::{Message, Role as MsgRole};
 use ferrule_core::{
     Agent, Budget, CoreError, HookEvent, HookSet, Inbox, StopFlag, Transcript, Usage,
 };
@@ -35,6 +36,9 @@ pub struct Limits {
     /// Tokens a tree's spawned agents may spend in `budget_window_secs`.
     pub max_tokens: u64,
     pub budget_window_secs: i64,
+    /// M57.7: the most of its parent's conversation, in estimated tokens,
+    /// a `spawn_agent {fork: true}` child starts with; 0 refuses forks.
+    pub fork_tokens: usize,
 }
 
 impl Default for Limits {
@@ -45,6 +49,7 @@ impl Default for Limits {
             max_agents: 12,
             max_tokens: 2_000_000,
             budget_window_secs: 24 * 3600,
+            fork_tokens: 16_000,
         }
     }
 }
@@ -149,6 +154,20 @@ pub struct SpawnRequest {
     pub model: Option<String>,
     /// M57.2: `low`, `medium` or `high`, for every call it makes.
     pub effort: Option<String>,
+    /// M57.7: start it from the end of the caller's conversation, then
+    /// the task, instead of from the task alone.
+    pub fork: bool,
+}
+
+/// M57.7: what a forked child starts from.
+struct Fork {
+    /// The parent's session: the child transcript's `parent` meta.
+    session: String,
+    /// A header, then the end of the parent's conversation; empty when
+    /// none of it fit.
+    messages: Vec<Message>,
+    /// What the spawn result says about it.
+    note: String,
 }
 
 /// What `close_tree` did.
@@ -505,6 +524,10 @@ impl Supervisor {
                 })?)
             }
         };
+        let fork = match req.fork {
+            true => Some(self.fork_from(&parent)?),
+            false => None,
+        };
         let row = {
             let _guard = self.spawn_lock.lock().unwrap();
             let depth = parent.depth + 1;
@@ -550,8 +573,9 @@ impl Supervisor {
             row
         };
         let mut row = row;
-        let notes = self.place(&mut row, &parent, req.worktree);
-        if let Err(e) = self.start(&row, &req.task) {
+        let mut notes = self.place(&mut row, &parent, req.worktree);
+        notes.extend(fork.as_ref().map(|f| f.note.clone()));
+        if let Err(e) = self.start(&row, &req.task, fork.as_ref()) {
             let _ = self
                 .store
                 .finish(&row.id, Status::Failed, &e.to_string(), now());
@@ -565,6 +589,51 @@ impl Supervisor {
             notes,
             wakes_parent: parent_is_root && self.can_wake(&parent.id),
             parent_is_root,
+        })
+    }
+
+    /// M57.7: the end of `parent`'s conversation, read from its transcript
+    /// and cut to `fork_tokens` ([`fork::tail`]), behind a header that
+    /// says whose it is.
+    fn fork_from(&self, parent: &AgentRow) -> Result<Fork, AgentsError> {
+        let budget = self.limits.fork_tokens;
+        let refuse = |why: &str| {
+            AgentsError::Invalid(format!(
+                "can't fork: {why}. Spawn it without `fork` and put what it needs in `task`"
+            ))
+        };
+        if budget == 0 {
+            return Err(refuse("forking is off here ([agents] fork_tokens = 0)"));
+        }
+        let history = Transcript::open(&self.sessions_dir, &parent.session)
+            .map_err(|_| refuse("your conversation has no transcript to copy"))?
+            .read_messages()
+            .map_err(|e| refuse(&format!("your transcript can't be read ({e})")))?;
+        let (copy, total) = fork::tail(history, budget);
+        if copy.is_empty() {
+            return Ok(Fork {
+                session: parent.session.clone(),
+                messages: Vec::new(),
+                note: format!(
+                    "None of your conversation fit in a fork's {budget} tokens; it starts from your task alone."
+                ),
+            });
+        }
+        let tokens: usize = copy.iter().map(Message::est_tokens).sum();
+        let note = format!(
+            "It starts from the last {} of your {total} messages (about {tokens} tokens), then your task.",
+            copy.len()
+        );
+        let mut messages = vec![Message::user(prompts::fork_header(
+            &parent.id,
+            copy.len(),
+            total,
+        ))];
+        messages.extend(copy);
+        Ok(Fork {
+            session: parent.session.clone(),
+            messages,
+            note,
         })
     }
 
@@ -619,9 +688,17 @@ impl Supervisor {
 
     /// Builds the agent for `row` from its transcript and runs it on
     /// `message` in the background. The row must already say `running`.
-    fn start(&self, row: &AgentRow, message: &str) -> Result<(), AgentsError> {
+    /// A fork's copy goes into the transcript first: model-visible means
+    /// logged, and a resume replays it.
+    fn start(&self, row: &AgentRow, message: &str, fork: Option<&Fork>) -> Result<(), AgentsError> {
         let role = Role::parse(&row.role).unwrap_or(Role::Worker);
         let transcript = Transcript::create(&self.sessions_dir, &row.session)?;
+        if let Some(fork) = fork.filter(|f| !f.messages.is_empty()) {
+            transcript.log_meta("parent", &fork.session)?;
+            for m in &fork.messages {
+                transcript.log_message(m)?;
+            }
+        }
         let history = transcript.read_messages().unwrap_or_default();
         let spec = ChildSpec {
             id: row.id.clone(),
@@ -911,7 +988,7 @@ impl Supervisor {
                 self.store.clear_worktree(id, &row.workspace)?;
             }
         }
-        if let Err(e) = self.start(&row, message) {
+        if let Err(e) = self.start(&row, message, None) {
             let _ = self.store.finish(id, Status::Failed, &e.to_string(), now());
             self.bump();
             return Err(e);

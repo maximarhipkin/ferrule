@@ -1450,6 +1450,9 @@ pub struct AgentsConfig {
     /// Tokens all of one tree's sub-agents may use per window.
     pub max_tokens: u64,
     pub budget_window_hours: u32,
+    /// M57.7: the most of a parent's conversation (estimated tokens) a
+    /// `spawn_agent {fork: true}` child starts with; 0 refuses forks.
+    pub fork_tokens: usize,
     /// Per role (`worker`, `planner`, `verifier`): a provider other than
     /// the one the root runs on.
     pub roles: HashMap<String, RoleConfig>,
@@ -1465,6 +1468,7 @@ impl Default for AgentsConfig {
             max_agents: l.max_agents,
             max_tokens: l.max_tokens,
             budget_window_hours: (l.budget_window_secs / 3600) as u32,
+            fork_tokens: l.fork_tokens,
             roles: HashMap::new(),
         }
     }
@@ -1478,6 +1482,7 @@ impl AgentsConfig {
             max_agents: self.max_agents,
             max_tokens: self.max_tokens,
             budget_window_secs: i64::from(self.budget_window_hours.max(1)) * 3600,
+            fork_tokens: self.fork_tokens,
         }
     }
 }
@@ -1785,6 +1790,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # max_agents = 12            # open (not closed) per tree
 # max_tokens = 2000000       # all of a tree's sub-agents together, per window;
 # budget_window_hours = 24   # the agent you talk to isn't counted
+# fork_tokens = 16000        # spawn_agent {fork}: most of the parent's
+#                            # conversation a child starts with; 0 = no forks
 # [agents.roles.verifier]   # a role on another provider, from [providers]
 # provider = "local"
 #
