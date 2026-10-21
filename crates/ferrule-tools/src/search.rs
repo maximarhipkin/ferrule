@@ -76,6 +76,17 @@ impl SearchProvider {
         !matches!(self, Self::Searxng | Self::Duckduckgo)
     }
 
+    /// The variable its key is saved under by `ferrule setup`
+    /// (`BRAVE_API_KEY` for Brave); `None` for the ones without a key.
+    pub fn key_env(self) -> Option<&'static str> {
+        match self {
+            Self::Brave => Some("BRAVE_API_KEY"),
+            Self::Tavily => Some("TAVILY_API_KEY"),
+            Self::Exa => Some("EXA_API_KEY"),
+            Self::Searxng | Self::Duckduckgo => None,
+        }
+    }
+
     fn path(self) -> &'static str {
         match self {
             Self::Brave => "/res/v1/web/search",

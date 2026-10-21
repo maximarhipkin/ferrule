@@ -1222,6 +1222,10 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
                 ),
             );
         }
+        // M56.3: nor carry a key to a host it isn't sent to now.
+        if let Some(why) = crate::dashboard::config_page::key_moved(&old, &new) {
+            return bad(403, why);
+        }
     }
     need!(confirmed(
         body,

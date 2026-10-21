@@ -67,8 +67,35 @@ From the chat (M56.3), `ferrule_admin config_set` changes `provider`
 `region`, `language`, `max_output_tokens`, `timeout_secs`,
 `price_per_search_usd` and `max_searches_per_day`, each with the owner's
 tap; so does the dashboard's Config form. `api_key_env` and `endpoint`
-stay off limits there: they decide where a key goes, so they're set here
-or in `ferrule setup`, and a new key comes through `secret_request`.
+can't be set there: they decide where a key goes, so they're set here or
+in `ferrule setup`, and a new key comes through `secret_request`.
+
+**A new provider never inherits the old one's key**
+(`config_page::search_key`). The key is bound to the endpoint's host
+(below), so a bare provider switch would send Brave's key to Tavily. A
+provider change from the chat or the form instead drops a custom
+`endpoint` and picks the key itself:
+
+- DuckDuckGo or off: `api_key_env` is dropped (DuckDuckGo takes no key;
+  a leftover `api_key_env` beside `provider = "duckduckgo"` isn't bound
+  to its host either).
+- Brave, Tavily or Exa: a `[secrets]` entry already bound to the
+  provider's host (the key in use now, then the provider's own name, then
+  any other), else the provider's own variable (`BRAVE_API_KEY`,
+  `TAVILY_API_KEY`, `EXA_API_KEY`, the names `ferrule setup` uses) if it
+  has a saved value and `[secrets]` doesn't name it. That one is bound to
+  the provider's own host and nowhere else.
+- Nothing fits: the change is refused, naming the `secret_request` that
+  would make a key (name and host). Once the owner pastes it, the same
+  `config_set` goes through.
+
+Behind it, every write from the chat or the Config page (the form, the
+editor, a restore or undo, the chat's `config_restore`) is refused if it
+would send any key to a host it isn't sent to now
+(`config_page::key_moved`, comparing the bindings the old and new file
+load to). The one new binding let through is a provider's own variable
+on its own host. A hand edit of the file isn't checked: whoever edits
+the file decides where its keys go.
 
 Or by hand:
 

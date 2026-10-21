@@ -1306,6 +1306,19 @@ impl WebSearchConfig {
             .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
     }
 
+    /// M56.3: the key's variable and host when the key is its provider's
+    /// own (`BRAVE_API_KEY` for Brave) going to that provider's own host:
+    /// the one binding a change from the chat or the Config page may make
+    /// that wasn't there before.
+    pub fn own_key(&self) -> Option<(String, String)> {
+        let p = self.provider().ok()??;
+        let var = p.key_env()?;
+        if self.api_key_env.as_deref() != Some(var) || self.endpoint.is_some() {
+            return None;
+        }
+        Some((var.to_string(), self.host(p)?))
+    }
+
     /// Everything the tool needs but the key's placeholder.
     pub fn settings(&self) -> Result<Option<SearchSettings>> {
         let Some(p) = self.provider()? else {
@@ -1346,7 +1359,12 @@ impl WebSearchConfig {
             bail!("[web_search] max_output_tokens must be at least 100");
         }
         let mut s = SearchSettings::new(p, endpoint);
-        s.key_env = self.api_key_env.clone().filter(|e| !e.is_empty());
+        // DuckDuckGo takes no key: one left named here isn't bound to its
+        // host (M56.3).
+        s.key_env = self
+            .api_key_env
+            .clone()
+            .filter(|e| !e.is_empty() && p != SearchProvider::Duckduckgo);
         s.max_results = self.max_results;
         s.safe_search = safe_search;
         s.region = self.region.clone().filter(|r| !r.is_empty());

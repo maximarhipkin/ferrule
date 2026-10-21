@@ -1347,7 +1347,11 @@ Current State; numbers are claimed there before anything is built.
     sets web search and turns the browser on (`config_set`), and in a
     turn with no outside content schedules, pauses or deletes the owner's
     own tasks and switches among connected models without a card, with a
-    receipt and Undo (`docs/m48-self-service.md`, "After M48").
+    receipt and Undo (`docs/m48-self-service.md`, "After M48"); then a
+    fix to it: a search provider switch from the chat or the Config page
+    takes only a key already bound to the new provider's host (or that
+    provider's own saved variable), and no page or chat write may bind a
+    key to a host it isn't bound to now (`docs/web-search.md`).
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,

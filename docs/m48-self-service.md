@@ -1749,6 +1749,22 @@ Built on `autopilot` (2026-10-21), from the gap analysis's M56.3.
   `web_search.api_key_env` and `endpoint` stay guarded by name: they move
   where a key goes. A managed bot without the browser refuses turning it
   on (`locks.rs`).
+- **A provider switch doesn't take the old key along** (the security fix
+  after M56.3). `[web_search]`'s key is bound to the endpoint's host by
+  the loader, so switching `provider` alone would have sent provider A's
+  key to provider B's host (and the raw editor could do that before
+  M56.3). Now `config/set` on `web_search.provider` drops a custom
+  `endpoint` and names a key that goes to the new host already: a
+  `[secrets]` entry bound there, or the provider's own variable
+  (`TAVILY_API_KEY`) when it is saved and not in `[secrets]`; DuckDuckGo
+  and off drop `api_key_env`. Nothing fits: refused with the
+  `secret_request` to make (`config_page::search_key`). `guarded_change`
+  lets `api_key_env` change, and `endpoint` go, only together with
+  `provider`; `config_page::key_moved` then refuses any page or chat write
+  (the form, the editor, restore, undo, the chat's `config_restore`) that
+  would bind any key to a host it isn't bound to now, except a provider's
+  own variable on its own host. So a key's hosts never widen from here.
+  Details: [web-search.md](web-search.md).
 - **`mcp_add` was already an op outside owner mode** (M54 §6.2, with the
   card): a key goes in only as `${NAME}` of a `[secrets]` entry, and a new
   key through `secret_request`. Nothing new was needed.

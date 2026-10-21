@@ -8355,3 +8355,52 @@ question already waiting in the chat still blocks a tap-free op. The
 web search provider can be switched while `api_key_env` names another
 provider's key (the key then goes to the new provider's host, with the
 owner's tap). No live run.
+
+### 2026-10-21 — M56.3 fix: a search provider switch never takes the old key along (Claude, Opus 5.5)
+
+**Why.** M56.3 made `web_search.provider` settable from the chat and the
+Config form, and the raw Config editor could already change it. The
+loader binds `[web_search] api_key_env` to the endpoint's host
+(`Config::finish`), so switching Brave to Tavily would have bound
+`BRAVE_API_KEY` to `api.tavily.com`: provider A's key sent to provider
+B's host (M56.3's own entry listed it as open). And a `duckduckgo`
+provider with a leftover `api_key_env` bound that key to DuckDuckGo's
+host.
+
+**What changed.**
+- `config_page::set` on `web_search.provider` (`search_key`): every
+  switch drops a custom `endpoint`; DuckDuckGo and off drop
+  `api_key_env`; Brave, Tavily and Exa take a key that already goes to
+  the new host (a `[secrets]` entry bound there: the key in use, then the
+  provider's own name, then any other), else the provider's own variable
+  (`ferrule_tools::search::SearchProvider::key_env`: `BRAVE_API_KEY`,
+  `TAVILY_API_KEY`, `EXA_API_KEY`) when it is saved and not in
+  `[secrets]`, which binds it to that host alone. Nothing fits: a 409
+  naming the `secret_request` (name and host) to make, and nothing
+  changes. The answer says which key and host (`said`).
+- `config_page::key_moved`, run with `guarded_change` by `commit` (the
+  form, the editor, version restore, undo), by `check`, and by the chat's
+  `config_restore` (`api.rs`): refuses a write that would bind any key to
+  a host it isn't bound to now (comparing the bindings the old and new
+  file load to; a file that doesn't load counts as its `[secrets]`). The
+  one new binding let through is a provider's own variable on its own
+  host (`WebSearchConfig::own_key`). `guarded_change` lets
+  `web_search.api_key_env` change, and `endpoint` go, only together with
+  `provider`.
+- `WebSearchConfig::settings`: DuckDuckGo takes no key, so a leftover
+  `api_key_env` beside it isn't bound to its host.
+- Docs: `web-search.md` ("A new provider never inherits the old one's
+  key"), `m48-self-service.md` (After M48), the roadmap's M56.3 line.
+
+**Tests changed, none added** (the owner's standing rule). No existing
+test needed a change.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** A hand edit of the file isn't checked (whoever edits the file
+decides). A provider switch from the chat asks for the card before the
+key check, so a switch with no fitting key is refused after the tap. The
+key a switch leaves behind stays bound in the running proxy until a
+restart (`config_follow` doesn't unbind), to its old host only. No live
+run.
