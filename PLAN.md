@@ -7980,3 +7980,45 @@ only one `.prev` was kept.
 and the terminal aren't versions of their own (the next page write
 keeps the file as they left it). The chat's `config_set` sends no
 `base_hash`, so it isn't stale-checked.
+
+### 2026-10-21 — M52.6: step-up for Safe writes, a `__Host-` cookie, hardened remote (Claude, Opus 5.5)
+
+**Why.** A stolen dashboard cookie could rotate, delete or re-route any
+key for the rest of its 12-hour session; the cookie had no `__Host-`
+prefix (OWASP's advice); and the only remote path was a quick tunnel.
+
+**What changed.**
+- `dashboard/mod.rs`: `STEP_UP_PATHS` (the Safe's rotate, delete, hosts,
+  remove) answer 403 `step_up` unless the session was opened in the last
+  10 minutes or its owner allowed it in their chat in the last 10;
+  `POST /api/stepup` asks (`Hub::ask_in`, an owner chat that isn't the
+  dashboard's, the server's own words, `op = dashboard.step_up`, five
+  minutes) and `GET /api/stepup` says where it stands; the state is per
+  session, in memory. The cookie is read by `cookie_name`. Opt-in
+  `[dashboard] tailscale_users`: off this machine, a request without one
+  of those `Tailscale-User-Login`s is refused.
+- `dashboard/auth.rs`: `HOST_COOKIE` and `cookie_name` (`__Host-` over
+  HTTPS at `Path=/`), used by `set_cookie` and `clear_cookie`;
+  `Sessions::opened_ms`; `now_ms` public.
+- `dashboard/chat.rs`: a step-up card is left out of the page's
+  approvals and its code refused by `approvals/answer`.
+- `config.rs`: `DashboardConfig.tailscale_users` and its example line.
+  `config_page.rs`: `tailscale_users` is a guarded field.
+- `app.js`: `act` meets a `step_up` 403 with "Confirm it's you" → "Ask in
+  my chat", polls, and sends the write again on Allow; `lang-he.js` has
+  the four new strings.
+- Docs: `m52-dashboard-safe.md` ("M52.6": the two hardened remote
+  setups; Cloudflare Access's origin JWT check is a follow-up),
+  `m22-dashboard.md` (Threat model), `dashboard.md`, the roadmap.
+
+**Smallest change on another surface.** `config_page.rs`'s guarded keys
+(M54's list) gained `tailscale_users`.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js`.
+
+**Open.** No step-up answered from a real chat; no request through a
+real Tailscale Serve. Tunnel sessions from before the cookie rename end
+once. Cloudflare Access JWT validation at the origin isn't built.

@@ -1169,6 +1169,11 @@ log shows the act by name only.
   20 versions in `<data>/config-history/` (secrets hidden), each
   previewed and restored through the save's guard
   (`docs/m52-dashboard-safe.md`, "M52.4").
+- **M52.6**: the Safe's writes need a login under 10 minutes old or the
+  owner's Allow in their chat; the session cookie takes `__Host-` where
+  the origin allows; opt-in `[dashboard] tailscale_users` for Tailscale
+  Serve. A Cloudflare Access JWT check at the origin is documented as a
+  follow-up (`docs/m52-dashboard-safe.md`, "M52.6").
 
 ### M53 — contrastive probing
 
@@ -1356,10 +1361,11 @@ Current State; numbers are claimed there before anything is built.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
     key fields in the dashboard, the Safe page, `secret_request`, safe
     config editing, a chat paste guard, step-up auth) and to M54
-    (M54.1–M54.7). M52.1, M52.2, M52.4 and M52.5 are built on
+    (M54.1–M54.7). M52.1, M52.2, M52.4, M52.5 and M52.6 are built on
     `autopilot` (`docs/m22-dashboard.md`, "Threat model";
-    `docs/m52-dashboard-safe.md`, "M52.2" and "M52.4"; `docs/channels.md`,
-    "Keys pasted into a chat"); M52.3 is M54's `secret_request`.
+    `docs/m52-dashboard-safe.md`, "M52.2", "M52.4" and "M52.6";
+    `docs/channels.md`, "Keys pasted into a chat"); M52.3 is M54's
+    `secret_request`.
 
 **Still open from earlier tracks.**
 

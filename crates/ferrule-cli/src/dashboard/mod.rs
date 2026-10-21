@@ -197,10 +197,36 @@ pub struct Dashboard {
     started: Instant,
     /// One-time keys the page seals typed keys to (M52.1).
     seals: sealed::Seals,
+    /// M52.6: each session's chat confirmation, by the cookie's hash.
+    step_ups: Arc<Mutex<std::collections::HashMap<String, StepUp>>>,
     pub ctx: Ctx,
 }
 
 const HEALTH_ONLY: &str = "this bot's page has no public address: set FERRULE_PUBLIC_URL (or [dashboard] public_url) to the URL it is opened at";
+
+/// M52.6: the Safe's writes. Each needs a login from the last
+/// [`STEP_UP_MS`], or the owner's Allow in their chat within it.
+const STEP_UP_PATHS: &[&str] = &[
+    "/api/secrets/rotate",
+    "/api/secrets/delete",
+    "/api/secrets/hosts",
+    "/api/secrets/remove",
+];
+const STEP_UP_MS: u64 = 10 * 60 * 1000;
+/// How long the owner has to answer the chat's card.
+const STEP_UP_ASK: Duration = Duration::from_secs(5 * 60);
+const STEP_UP: &str = "Changing a key needs a login from the last 10 minutes. Confirm it in your chat, or open a new link with /dashboard.";
+/// The approvals' `op` for a step-up question: the dashboard can't answer
+/// one of these itself (`chat::answer`).
+pub(crate) const STEP_UP_OP: &str = "dashboard.step_up";
+
+/// One session's step-up (M52.6), in memory: a restart asks again.
+#[derive(Debug, Clone, Default)]
+struct StepUp {
+    pending: bool,
+    approved_ms: Option<u64>,
+    refused: Option<String>,
+}
 
 /// The page's HTML for a page served under `base` ("" or "/b/<id>"): the
 /// base path in a meta tag for the script, and in every asset's address.
@@ -289,6 +315,7 @@ impl Dashboard {
             nonces,
             started: Instant::now(),
             seals: sealed::Seals::default(),
+            step_ups: Arc::default(),
             ctx,
         })
     }
@@ -583,6 +610,116 @@ impl Dashboard {
         }
     }
 
+    /// The session cookie's name on `host` (M52.6: `__Host-` where the
+    /// origin allows it).
+    fn cookie_name(&self, host: &str) -> &'static str {
+        auth::cookie_name(self.secure_for(host), &self.cookie_path(host))
+    }
+
+    /// Whether `cookie`'s session may make a Safe write now: opened in the
+    /// last 10 minutes, or the owner allowed it in their chat in the last
+    /// 10 (M52.6).
+    fn stepped_up(&self, cookie: &str) -> bool {
+        let now = auth::now_ms();
+        let fresh = |t: u64| now.saturating_sub(t) < STEP_UP_MS;
+        self.sessions.opened_ms(cookie).is_some_and(fresh)
+            || self
+                .step_ups
+                .lock()
+                .unwrap()
+                .get(&ferrule_connections::seal::sha256_b64(cookie.as_bytes()))
+                .and_then(|s| s.approved_ms)
+                .is_some_and(fresh)
+    }
+
+    /// `GET /api/stepup`: where this session's step-up stands.
+    fn step_up_state(&self, cookie: &str) -> Response {
+        let state = self
+            .step_ups
+            .lock()
+            .unwrap()
+            .get(&ferrule_connections::seal::sha256_b64(cookie.as_bytes()))
+            .cloned()
+            .unwrap_or_default();
+        Response::json(
+            200,
+            &json!({
+                "fresh": self.stepped_up(cookie),
+                "pending": state.pending,
+                "refused": state.refused,
+            }),
+        )
+    }
+
+    /// `POST /api/stepup {path, name?}`: asks the owner, in a chat that
+    /// isn't this page, whether this browser may change keys for 10
+    /// minutes. The words are the server's: the page only says which
+    /// write and which key's name.
+    fn step_up_ask(&self, cookie: &str, host: &str, body: &Value) -> Response {
+        if self.stepped_up(cookie) {
+            return Response::json(200, &json!({ "fresh": true }));
+        }
+        let no_chat = "There's no chat to confirm it in: open a new login link with /dashboard (or `ferrule dashboard link` on the machine).";
+        let Some(hub) = self.ctx.hub.clone() else {
+            return refuse(409, no_chat);
+        };
+        let Some(chat) = hub.owners().into_iter().find(|o| o.channel != "dashboard") else {
+            return refuse(409, no_chat);
+        };
+        let doing = match body.get("path").and_then(Value::as_str).unwrap_or("") {
+            "secrets/rotate" => "replace a key",
+            "secrets/delete" => "delete a key",
+            "secrets/hosts" => "change where a tool key may be sent",
+            "secrets/remove" => "remove a tool key",
+            _ => "change keys",
+        };
+        let name: String = body
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|n| {
+                (1..=80).contains(&n.len())
+                    && n.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_:.-".contains(&b))
+            })
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        let key = ferrule_connections::seal::sha256_b64(cookie.as_bytes());
+        {
+            let mut all = self.step_ups.lock().unwrap();
+            let s = all.entry(key.clone()).or_default();
+            if s.pending {
+                return Response::json(200, &json!({ "asked": true }));
+            }
+            *s = StepUp {
+                pending: true,
+                ..StepUp::default()
+            };
+        }
+        let at = auth::host_key(host);
+        let text = format!(
+            "The dashboard, signed in from {at}, wants to {doing}{name}. Is that you? Allow lets that browser change keys for 10 minutes."
+        );
+        let map = self.step_ups.clone();
+        tokio::spawn(async move {
+            let q = ferrule_trust::hub::Question {
+                subject: "dashboard step-up",
+                what: "a key change on the dashboard",
+                text: &text,
+                timeout: STEP_UP_ASK,
+                op: Some(STEP_UP_OP),
+            };
+            let answer = hub.ask_in("dashboard", Some(chat), q).await;
+            let mut all = map.lock().unwrap();
+            let s = all.entry(key).or_default();
+            s.pending = false;
+            match answer {
+                Ok(_) => s.approved_ms = Some(auth::now_ms()),
+                Err(why) => s.refused = Some(why),
+            }
+        });
+        Response::json(200, &json!({ "asked": true }))
+    }
+
     /// The path without the public address's prefix; a proxy that strips
     /// it itself sends paths that don't have it, and those stay as they are.
     fn strip_base(&self, path: &str) -> String {
@@ -621,9 +758,11 @@ impl Dashboard {
         let json = head
             .header("content-type")
             .is_some_and(|c| c.starts_with("application/json"));
-        let granted =
-            self.sessions
-                .check(head.cookie(auth::COOKIE), &host, self.links.revoked_ms());
+        let granted = self.sessions.check(
+            head.cookie(self.cookie_name(&host)),
+            &host,
+            self.links.revoked_ms(),
+        );
         let csrf = head.header(auth::CSRF_HEADER).unwrap_or("");
         match granted {
             Some(g)
@@ -651,6 +790,22 @@ impl Dashboard {
         let host = req.header("host").unwrap_or("").to_ascii_lowercase();
         if !self.host_allowed(&host) {
             return Response::text(421, "unknown host");
+        }
+        // M52.6, opt-in: off this machine, only the owner's tailnet login
+        // (Tailscale Serve sets the header and strips a client's own).
+        if !self.settings.tailscale_users.is_empty() && !self.is_loopback(&host) {
+            let who = req.header("tailscale-user-login").unwrap_or("");
+            if !self
+                .settings
+                .tailscale_users
+                .iter()
+                .any(|u| !who.is_empty() && u.eq_ignore_ascii_case(who))
+            {
+                return Response::text(
+                    403,
+                    "this page answers only its owner's tailnet login ([dashboard] tailscale_users)",
+                );
+            }
         }
         let get = req.method == "GET" || req.method == "HEAD";
         match (req.method.as_str(), req.path.as_str()) {
@@ -739,7 +894,7 @@ impl Dashboard {
         if req.path == "/api/login" && !get {
             return self.login(&host, &body);
         }
-        let cookie = req.cookie(auth::COOKIE);
+        let cookie = req.cookie(self.cookie_name(&host));
         let Some(granted) = self.sessions.check(cookie, &host, self.links.revoked_ms()) else {
             return refuse(401, "not logged in: ask for a new link with /dashboard");
         };
@@ -751,7 +906,23 @@ impl Dashboard {
         }
         self.touch();
         let secure = self.secure_for(&host);
+        // M52.6: a Safe write from a login older than 10 minutes needs
+        // the owner's Allow in their chat first (the page asks for it).
+        if !get
+            && STEP_UP_PATHS.contains(&req.path.as_str())
+            && cookie.is_some_and(|c| !self.stepped_up(c))
+        {
+            return Response::json(403, &json!({ "error": STEP_UP, "step_up": true }));
+        }
         match (get, req.path.as_str()) {
+            (true, "/api/stepup") => match cookie {
+                Some(c) => self.step_up_state(c),
+                None => refuse(401, "not logged in"),
+            },
+            (false, "/api/stepup") => match cookie {
+                Some(c) => self.step_up_ask(c, &host, &body),
+                None => refuse(401, "not logged in"),
+            },
             (true, "/api/session") => Response::json(
                 200,
                 &json!({

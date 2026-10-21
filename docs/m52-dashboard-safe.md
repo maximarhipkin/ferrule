@@ -236,3 +236,62 @@ From the 2026-10-20 gap analysis (M52.4). Built on `autopilot`, in
   guarded field back from the chat) is unchanged.
 
 **Not verified live.** Not used from a real browser.
+
+## M52.6 — step-up for Safe writes, `__Host-`, hardened remote (2026-10-21)
+
+From the 2026-10-20 gap analysis (M52.6). Built on `autopilot`, in
+`dashboard/mod.rs`, `auth.rs`, `chat.rs` and `app.js`.
+
+- **Step-up.** `POST /api/secrets/{rotate,delete,hosts,remove}` from a
+  session opened more than 10 minutes ago gets a 403 with `step_up:
+  true` ("Changing a key needs a login from the last 10 minutes…"),
+  before anything else runs. The page then offers to ask in the owner's
+  chat: `POST /api/stepup {path, name}` sends an approval card (the
+  trust hub's `ask_in`, five minutes to answer) to the first owner chat
+  that isn't the dashboard's own, with the server's words: which write,
+  the key's name (checked to letters, digits and `_:.-`) and the host
+  the session was opened on. The page polls `GET /api/stepup` and, on
+  Allow, sends the write again; the Allow covers that session's Safe
+  writes for 10 minutes. A fresh login link (`/dashboard`) does the same
+  without asking. The step-up card can't be answered on the page:
+  `approvals` doesn't list it and `approvals/answer` refuses its code
+  (`op = dashboard.step_up`), so a stolen cookie can't vouch for
+  itself. The state is in memory: a restart asks again. Adding a new
+  tool key isn't gated (M54's `secret_request` link is a fresh login
+  anyway), and the chat's own ops never pass through the page's
+  sessions.
+- **`__Host-` cookie.** Where the origin allows it (HTTPS and `Path=/`;
+  the page never sets `Domain`) the session cookie is
+  `__Host-ferrule_dash`; on loopback over plain HTTP and under a
+  `public_url` with a path prefix it stays `ferrule_dash`
+  (`auth::cookie_name`). Sessions made before this change used the old
+  name on tunnels, so they end once: send `/dashboard` for a new link.
+- **Hardened remote, opt-in.** Two documented setups, for owners who
+  want more than a quick tunnel and a login link:
+  - **Tailscale Serve** (implemented): `tailscale serve` the page's
+    local port, set `[dashboard] public_url` to the `ts.net` address,
+    `remote = "off"`, and `tailscale_users = ["you@example.com"]`. Off
+    this machine the page then answers only requests whose
+    `Tailscale-User-Login` is one of those logins, before the login
+    cookie is even read. Serve adds that header for tailnet users and
+    removes a client's own copy "to avoid header spoofing"; Funnel
+    (public) traffic and tagged devices get no identity header, so they
+    are refused ([Tailscale Serve](https://tailscale.com/kb/1312/serve)).
+    The login link and session still apply on top. A quick tunnel's host
+    is refused too while it's set. `tailscale_users` is guarded on the
+    Config page (it decides who gets in).
+  - **A named Cloudflare tunnel behind Cloudflare Access** (documented,
+    not implemented): a named tunnel to the page's port, an Access
+    application on its hostname with a policy for the owner's email,
+    `public_url` set to that hostname and `remote = "off"`. Access then
+    stops anyone else at Cloudflare's edge. Validating Access's JWT at
+    the origin (the `Cf-Access-Jwt-Assertion` header, its signature
+    against the team's `/cdn-cgi/access/certs` keys, its `aud` and
+    expiry; [Cloudflare](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/))
+    needs a JWKS fetch, a cache and RS256 verification, which is not a
+    small change, so it's a follow-up. Until then the page's own login
+    is what the origin checks.
+
+**Not verified live.** No step-up has been answered from a real
+Telegram chat, and no request has come through a real Tailscale Serve
+or Cloudflare Access.

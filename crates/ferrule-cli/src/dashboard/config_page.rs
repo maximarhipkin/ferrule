@@ -63,6 +63,7 @@ fn guarded_key(key: &str) -> bool {
                 | "issuer"
                 | "sandbox"
                 | "signal_cli"
+                | "tailscale_users"
         )
         || k.ends_with("_env")
         || k.ends_with("url")

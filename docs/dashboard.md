@@ -243,6 +243,12 @@ decisions are in [m50-connect.md](m50-connect.md).
   offer, the sealing key and the proxy's CA, say why. **History** lists
   key, config and approval changes of the last 90 days by name only.
   Details: [m52-dashboard-safe.md](m52-dashboard-safe.md), "M52.2".
+  Since M52.6 Rotate, Delete, Sites and Remove need a login from the last
+  10 minutes; an older one is offered **Ask in my chat**, a card in the
+  owner's chat whose Allow lets that browser change keys for 10 minutes
+  (it can't be answered on the page). Opt-in: `[dashboard]
+  tailscale_users` admits only those tailnet logins through Tailscale
+  Serve ([m52-dashboard-safe.md](m52-dashboard-safe.md), "M52.6").
 - **Discord and Slack** have cards like the other channels: token(s),
   allowed users and channels, **Test** (Discord's gives the link that
   invites the bot to your server), **Save and turn on**. The page doesn't

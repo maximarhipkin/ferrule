@@ -271,6 +271,27 @@
   // A POST; a destructive one comes back 409 with its question, and goes
   // again with `confirm` once the owner says yes. The button shows it is
   // working and can't be pressed twice.
+  // M52.6: asks the owner, in their chat, to vouch for this browser; true
+  // once they tap Allow there (the server keeps it for 10 minutes).
+  async function stepUp(path, body) {
+    const go = await ask({ title: tr("Confirm it's you"), text: tr("Changing a key needs a login from the last 10 minutes. Ferrule can ask you in your chat now; tap Allow there and this carries on. Or open a new link with /dashboard."), confirm: tr("Ask in my chat") });
+    if (!go) return false;
+    let r;
+    try { r = await api("/api/stepup", { path, name: (body && (body.name || body.id)) || "" }); } catch (e) { toast(e.message, "bad"); return false; }
+    if (r.fresh) return true;
+    toast(tr("Asked in your chat: tap Allow there."));
+    const until = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < until) {
+      await new Promise((done) => setTimeout(done, 2000));
+      let st;
+      try { st = await api("/api/stepup"); } catch (_) { continue; }
+      if (st.fresh) return true;
+      if (st.refused) { toast(st.refused, "bad"); return false; }
+      if (!st.pending) return false;
+    }
+    return false;
+  }
+
   async function act(path, body, button) {
     if (button) {
       if (button.getAttribute("aria-busy") === "true") return null;
@@ -278,13 +299,23 @@
     }
     try {
       let r;
+      // M52.6: a key change from a login older than 10 minutes is asked
+      // in the owner's chat first, then sent again.
+      const send = async (b) => {
+        try {
+          return await api("/api/" + path, b);
+        } catch (e) {
+          if (e.status === 403 && e.data && e.data.step_up && await stepUp(path, b)) return api("/api/" + path, b);
+          throw e;
+        }
+      };
       try {
-        r = await api("/api/" + path, body || {});
+        r = await send(body || {});
       } catch (e) {
         if (e.status !== 409 || !e.data || !e.data.confirm) throw e;
         const yes = await ask({ title: tr("Are you sure?"), text: e.data.confirm, confirm: tr("Yes, do it"), danger: true });
         if (!yes) return null;
-        r = await api("/api/" + path, Object.assign({}, body, { confirm: true }));
+        r = await send(Object.assign({}, body, { confirm: true }));
       }
       if (r.said) sayFor(button, r.said, r.ok === false);
       if (r.links) linksDialog(r.links);

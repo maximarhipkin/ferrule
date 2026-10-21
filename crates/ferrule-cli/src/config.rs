@@ -1390,6 +1390,11 @@ pub struct DashboardConfig {
     pub session_hours: u64,
     /// An unused login link expires after this.
     pub link_minutes: u64,
+    /// M52.6, opt-in hardened remote: the page is reached through
+    /// Tailscale Serve, and off this machine it answers only requests whose
+    /// `Tailscale-User-Login` (set by Serve, which strips a client's own)
+    /// is one of these logins. Empty: no such check.
+    pub tailscale_users: Vec<String>,
 }
 
 impl Default for DashboardConfig {
@@ -1403,6 +1408,7 @@ impl Default for DashboardConfig {
             idle_minutes: 30,
             session_hours: 12,
             link_minutes: 10,
+            tailscale_users: Vec::new(),
         }
     }
 }
@@ -1638,6 +1644,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # [dashboard]
 # bind = "127.0.0.1"                        # a container needs 0.0.0.0 (FERRULE_DASHBOARD_BIND)
 # public_url = "https://bots.example.com/b/b_4f2a/"   # behind a proxy (FERRULE_PUBLIC_URL)
+# tailscale_users = ["you@example.com"]  # through Tailscale Serve only: off this
+#                            # machine, only these tailnet logins (docs/m52-dashboard-safe.md)
 
 # [scheduler]
 # tick_interval_secs = 30   # how often to check for due tasks
