@@ -1537,6 +1537,21 @@ Current State; numbers are claimed there before anything is built.
     The credential goes only to the saved hosts; redirects elsewhere are
     refused. A small XML and iCalendar reader, no new dependency. Not run
     live.
+  - **M63.4, catalog v2 and one-step add**: `catalog.toml` gains `kind`
+    (remote, stdio, skill), exact npm pins, the MCP Registry name, `auth`
+    none, a `secret` block (the key's name and its only hosts),
+    `read_only_url` and `writes`. `ferrule_admin` `mcp_add` with `catalog`
+    (and the Extensions page's Add) takes everything from the entry, asks
+    for a missing key with `secret_request` and adds the server the moment
+    it's saved; a sign-in entry sends its button, a skill is turned on.
+    An added server is marked `catalog` (a connected service for the
+    gate: untrusted reads, gated writes, `write_tools`); a stdio one keeps
+    its state in `<data>/mcp-private`, hidden from commands (not on
+    Windows). New entries: Todoist, Google Maps Grounding Lite, Mapbox,
+    Microsoft 365 (personal, `@softeria/ms-365-mcp-server@0.170.2`),
+    Google's Calendar, Docs, Sheets and People previews, the bundled
+    skills. The trust model (why curated, no public hub) is in the doc.
+    Not run live.
 
 **Still open from earlier tracks.**
 

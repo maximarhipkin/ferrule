@@ -1994,16 +1994,24 @@ fn hidden_paths(owner: bool) -> Vec<PathBuf> {
         return Vec::new();
     };
     let private = data.join("private");
-    let _ = std::fs::create_dir_all(&private);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o700));
+    // M63.4: made now, so a server's sign-in written there later is
+    // inside something hidden already.
+    let private_mcp = data.join(ferrule_extensions::layout::PRIVATE_MCP);
+    for dir in [&private, &private_mcp] {
+        let _ = std::fs::create_dir_all(dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
     }
     let mut hidden: Vec<PathBuf> = backup::SECRETS
         .iter()
         // Not `ssh`: known_hosts and the SSH workspaces' anchors, no key in it.
         .filter(|rel| **rel != "ssh")
+        // M63.4: Windows hides a path with a DACL every sandboxed process
+        // shares, so a server would be shut out of its own state there too.
+        .filter(|rel| !(cfg!(windows) && **rel == ferrule_extensions::layout::PRIVATE_MCP))
         .map(|rel| {
             rel.split('/')
                 .fold(data.clone(), |dir, part| dir.join(part))

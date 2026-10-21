@@ -673,8 +673,8 @@ and a dated entry for every session.
 - The agent's reach: [`skills.md`](docs/skills.md) (Agent Skills, keyword
   triggers, the bundled ones) ·
   [`m63-connections-wave-b.md`](docs/m63-connections-wave-b.md) (the
-  bundled skills pack: weather, news, Hacker News, exchange rates, maps,
-  Home Assistant) · [`plugins.md`](docs/plugins.md) (WASM, capability-gated) ·
+  bundled skills pack, mail from any provider, CalDAV and secret-address
+  calendars, the vetted catalog and its one-step add) · [`plugins.md`](docs/plugins.md) (WASM, capability-gated) ·
   [`m17-mcp-add.md`](docs/m17-mcp-add.md) (add an MCP server without a
   restart) · [`m13-self-extension.md`](docs/m13-self-extension.md) (the
   agent installing vetted extensions itself) ·

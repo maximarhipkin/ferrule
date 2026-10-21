@@ -10,6 +10,7 @@
 //! own handlers (`dashboard::api::act`), so there is one code path for it
 //! whoever asks.
 
+pub(crate) mod catalog;
 mod describe;
 pub(crate) mod doctor;
 mod door;
@@ -160,6 +161,12 @@ pub enum Op {
         enabled_tools: Vec<String>,
         replace: bool,
     },
+    /// M63.4: `mcp_add` with `catalog`: everything from the catalog entry,
+    /// its key asked for with `secret_request` (`catalog::add`).
+    McpAddCatalog {
+        catalog: String,
+        write: bool,
+    },
     HooksTrust {
         sha: String,
     },
@@ -238,6 +245,8 @@ struct Args {
     replace: Option<bool>,
     hosts: Option<Vec<String>>,
     why: Option<String>,
+    catalog: Option<String>,
+    write: Option<bool>,
 }
 
 impl Op {
@@ -294,6 +303,26 @@ impl Op {
             "mcp_on" => Op::McpOn { name: need!(name) },
             "mcp_off" => Op::McpOff { name: need!(name) },
             "mcp_remove" => Op::McpRemove { name: need!(name) },
+            "mcp_add" if a.catalog.is_some() => {
+                // Everything comes from the catalog: nothing the model
+                // names may change where the server runs or its key goes.
+                if a.command.is_some()
+                    || a.url.is_some()
+                    || a.env.is_some()
+                    || a.headers.is_some()
+                    || a.enabled_tools.is_some()
+                    || a.hosts.is_some()
+                {
+                    return Err(
+                        "`mcp_add` with `catalog` takes only `catalog` and `write`: the rest comes from the catalog"
+                            .into(),
+                    );
+                }
+                Op::McpAddCatalog {
+                    catalog: need!(catalog).trim().to_ascii_lowercase(),
+                    write: a.write.unwrap_or(false),
+                }
+            }
             "mcp_add" => Op::McpAdd {
                 name: need!(name),
                 command: a.command.clone().unwrap_or_default(),
@@ -378,7 +407,7 @@ impl Op {
             Op::McpOn { .. } => "mcp_on",
             Op::McpOff { .. } => "mcp_off",
             Op::McpRemove { .. } => "mcp_remove",
-            Op::McpAdd { .. } => "mcp_add",
+            Op::McpAdd { .. } | Op::McpAddCatalog { .. } => "mcp_add",
             Op::HooksTrust { .. } => "hooks_trust",
             Op::HooksUntrust => "hooks_untrust",
             Op::TaskAdd { .. } => "task_add",

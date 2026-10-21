@@ -188,6 +188,27 @@ output_caps = { get_issue = 2000 }          # one tool's results
   first and last characters (one fifth and four fifths of the cap, at
   most 2k and 8k) and that path.
 
+M63.4 adds three keys, written by an add from the catalog
+(`docs/m63-connections-wave-b.md` §4) and usable by hand:
+
+```toml
+[[mcp.servers]]
+name = "todoist"
+catalog = "todoist"          # a connected service for the trust gate
+write_tools = ["add-tasks"]  # writes, whatever their readOnlyHint says
+private_state = true         # its state under <data>/mcp-private, hidden
+```
+
+- **`catalog`.** The server counts as a connected service (M20): what it
+  reads marks the run as having read outside content (M54.5), and a tool
+  without `readOnlyHint`, or one in `write_tools`, waits for the owner's
+  yes. Only while `[connections] gate_writes` is on, as for connections.
+- **`write_tools`.** Remote tool names treated as changing something.
+- **`private_state`.** The server's home, caches and temp dir are
+  `<data>/mcp-private/<name>`, which commands and the file tools can't
+  read (`docs/sandbox.md`); the server itself reaches its own folder and
+  no other server's. For a server that keeps a token cache.
+
 ## 4. Removal
 
 - `ferrule mcp remove <name>`, for a configured server, deletes that

@@ -65,6 +65,15 @@ pub fn server_table(cfg: &McpServerConfig) -> Table {
     if !cfg.enabled_tools.is_empty() {
         t.insert("enabled_tools", strings(&cfg.enabled_tools));
     }
+    if !cfg.write_tools.is_empty() {
+        t.insert("write_tools", strings(&cfg.write_tools));
+    }
+    if let Some(id) = &cfg.catalog {
+        t.insert("catalog", toml_edit::value(id));
+    }
+    if cfg.private_state {
+        t.insert("private_state", toml_edit::value(true));
+    }
     if let Some(n) = cfg.max_output_chars {
         t.insert("max_output_chars", toml_edit::value(n as i64));
     }

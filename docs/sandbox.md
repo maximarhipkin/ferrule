@@ -41,7 +41,10 @@ so the model gets refused either way. The list has three parts:
 1. **Ferrule's secrets.** These are always denied and can't be opened
    from the config: `<data>/private` (the saved keys, the connections
    store, the hooks trust list, dashboard sessions), `<data>/proxy/keys`,
-   `<data>/claude-code` and the Matrix session file (every credential
+   `<data>/claude-code`, `<data>/mcp-private` (the state of MCP servers
+   that keep their own sign-in, M63.4; each such server reaches its own
+   folder there and no other's; not on Windows, where the hiding DACL
+   would shut the server out too) and the Matrix session file (every credential
    path the backup leaves out, except `ssh`: known_hosts and the SSH
    workspaces' local folders hold no key), `<data>/gateway` (channel
    state, which can hold credentials and messages waiting to be sent),

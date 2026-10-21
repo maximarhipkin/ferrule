@@ -98,6 +98,15 @@ pub struct AddArgs {
     /// Skip the closing doctor run (the setup wizard's step)
     #[arg(skip)]
     pub no_doctor: bool,
+    /// M63.4: the catalog entry it comes from (a connected service for
+    /// the trust gate), the tools it lists as writes, and whether its
+    /// state dir is the hidden kind.
+    #[arg(skip)]
+    pub catalog: Option<String>,
+    #[arg(skip)]
+    pub write_tools: Vec<String>,
+    #[arg(skip)]
+    pub private_state: bool,
 }
 
 /// `ferrule mcp disable|enable`, through the shared settings operation (M24).
@@ -345,6 +354,9 @@ fn server_config(a: &AddArgs, secret_names: &[String]) -> Result<McpServerConfig
         enabled_tools: a.enabled_tools.clone(),
         max_output_chars: a.max_output,
         output_caps,
+        catalog: a.catalog.clone(),
+        write_tools: a.write_tools.clone(),
+        private_state: a.private_state,
         ..Default::default()
     };
     for r in secret_refs(&cfg) {
@@ -496,7 +508,7 @@ pub async fn add_to(path: PathBuf, mut a: AddArgs) -> Result<Vec<String>> {
     // 4-5. Start it as the daemon would, list and scan.
     let workspace = dunce::canonicalize(&a.workspace)
         .map_err(|e| anyhow!("workspace {}: {e}", a.workspace.display()))?;
-    let state_dir = layout.mcp_state(&a.name);
+    let state_dir = layout.mcp_state_for(&entry);
     let fresh_dir = !state_dir.exists();
     let (sandbox, broker) = probe_sandbox(&cfg, &new)?;
     let manager = ExtensionManager::new(ManagerConfig {

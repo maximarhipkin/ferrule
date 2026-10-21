@@ -18,7 +18,7 @@ pub mod store;
 pub mod tools;
 pub mod tunnel;
 
-pub use catalog::{AuthKind, Catalog, ClientKind, ReadOnly, Service};
+pub use catalog::{AuthKind, Catalog, ClientKind, Kind, ReadOnly, SecretSpec, Service};
 pub use config::ConnectionsConfig;
 pub use service::{Action, Actor, Button, Chat, Connections, Events, Reply, Snapshot, Status};
 pub use store::{Record, State, Store};

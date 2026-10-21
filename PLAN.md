@@ -152,11 +152,13 @@ below it is append-only.
   6. the paste guard's link to the Safe, and keyless search that says
      when DuckDuckGo refuses;
   7. CI hygiene: this refresh, the Windows self-test flake (below).
-- **In flight** (2026-10-21, night): **wave B, M63** on `autopilot`:
+- **Wave B, M63** (2026-10-21, night) on `autopilot`, after wave A:
   connections, skills and the catalog (re-audit Part 2 and Part 3
-  #3–#6), one commit and one Session Log entry per task: the bundled
-  skills pack; IMAP/SMTP mail from any provider; CalDAV and read-only
-  ICS calendars; catalog v2 with one-step add. Design and status:
+  #3–#6), one commit and one Session Log entry per task: M63.1 the
+  bundled skills pack; M63.2 IMAP/SMTP mail from any provider; M63.3
+  CalDAV and read-only secret-address calendars; M63.4 catalog v2 with
+  one-step add (`mcp_add` with `catalog`, the Extensions page's Add).
+  Built, `make check` green, nothing run live. Design and status:
   `docs/m63-connections-wave-b.md`.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
@@ -170,10 +172,10 @@ below it is append-only.
   2. **The eval gate has never gated** (M58.5): M56.4's prompt line,
      M58.3's tool cut, M57.5's examples and M57.1's threshold sit in the
      prompt prefix unmeasured; no nightly job.
-  3. **Connections**: a curated catalog v2 with one-step add, a bundled
-     skills pack (weather, RSS, HN, maps, Home Assistant REST),
-     any-provider IMAP/SMTP mail, CalDAV/ICS calendars (re-audit Part 3
-     #3–#6).
+  3. **Connections** (wave B built them, M63): run them live, above all
+     Todoist's DCR, the Microsoft 365 server's sign-in in the sandbox,
+     iCloud's CalDAV discovery and the mail presets; CardDAV contacts and
+     Outlook.com mail (OAuth only) are still missing.
   4. **M53.1's evidence**: no control run without the lesson, unblinded
      labels; fix before offering learning in owner mode.
   5. **CIMD and pre-registered OAuth clients; MCP 2026-07-28**
@@ -9478,3 +9480,86 @@ have no tests. No time zone conversion: ranges are compared on each
 event's own clock, and no `TZID` is written (floating or UTC times only).
 Updating or deleting one occurrence of a repeating event isn't offered
 (the whole series changes). CardDAV contacts (re-audit #9) are not here.
+
+### 2026-10-21 — M63.4: catalog v2 and one-step add (Claude, Opus 5.5)
+
+Wave B, task 4, in the `autopilot` worktree. The re-audit's Part 2 §2d
+("A built-in curated catalog") and Part 3 #3. Touches M54's surfaces with
+the smallest changes, said here: `ferrule-sandbox` (`for_helper`, one
+carve), `self_service/` (the `mcp_add` op's `catalog`, a continuation in
+`keys.rs`), `backup::SECRETS` (one entry, which hides it).
+
+**What changed.**
+- `ferrule-connections` `catalog.rs`: `kind` (remote, stdio, skill),
+  `auth = "none"` (and `"key"` as `api_key`), `package` (an exact
+  `npm:name@x.y.z`, ranges and tags refused), `args`, `read_only_args`,
+  `env`, `integrity` (recorded, not checked), `registry`, `secret`
+  (`{name, hosts, header, value}`; a remote entry's hosts must include its
+  url's host), `read_only_url` (on the url's host), `writes`, `skill`;
+  `Service::check_v2`, `secret_header`. `names()` lists only what
+  connects; the Connections page, `ferrule connections setup` and
+  `/connect`/`connection_request` refuse a stdio or skill entry with where
+  to add it instead. A connection's MCP config carries `writes`.
+- `catalog.toml`: Todoist (hosted, OAuth DCR, its write tools), Google
+  Maps Grounding Lite and Mapbox (keys with `secret` blocks), Microsoft 365
+  for a personal account (`@softeria/ms-365-mcp-server@0.170.2`, stdio,
+  read-only by default), Google's Calendar, Docs, Sheets and People MCP
+  previews, and the six bundled skills.
+- `ferrule-mcp`: `[[mcp.servers]]` `write_tools` (gated as writes whatever
+  the hint), `catalog` (the entry it came from), `private_state`.
+- `ferrule-cli` `connections::set_gate`: a config server with `catalog` is
+  in the hub's connected list (untrusted reads, gated writes), refreshed
+  whenever the config's servers are (`with_connections`).
+- `<data>/mcp-private`: in `backup::SECRETS`, so hidden from commands and
+  the file tools (not on Windows: the Windows sandbox hides by a DACL every
+  sandboxed process shares); a `private_state` server's state dir is
+  there (`Layout::mcp_state_for`), and `Sandbox::for_helper` replaces the
+  hidden folder, for that server only, with its other entries.
+- `self_service`: `mcp_add` with `catalog` (+ `write`) is
+  `Op::McpAddCatalog`, refused with any other field; its card
+  (`catalog::card`) says what runs, where, and which key goes where;
+  `catalog::add` signs in (an OAuth entry's button), turns on a skill, or
+  adds the server with the entry's settings, asking for a missing key with
+  `secret_request` and registering `keys::when_saved`, so the server is
+  added the moment the Safe saves the key, and the session is woken with
+  the outcome. `mcp_add`'s `AddArgs` gained the three new fields.
+- Dashboard: Extensions → "From the catalog" (stdio, skills, remote
+  entries with a `secret`) with Add (`POST mcp/catalog`, confirmed; a
+  missing key opens the Safe filled in, and the same continuation
+  finishes the add). Managed mode's extensions lock refuses both.
+- `ferrule-agents` prompts: the admin tool's descriptions mention
+  `catalog` (the prompt prefix changes once, at the upgrade).
+- Docs: `m63-connections-wave-b.md` §4 (the schema, the flow, what an
+  added server is held to, every entry with its sources, the trust model:
+  why curated, why no public hub), `connections.md` ("The catalog"),
+  `m17-mcp-add.md` (the three keys), `sandbox.md` (`mcp-private`), the
+  roadmap's M63.4 line, the README's list.
+
+**Verified on 2026-10-21:** Todoist's hosted URL (Doist's README) and its
+tool names (`src/utils/tool-names.ts`); Grounding Lite's endpoint, header,
+tools and terms (Google's page); Mapbox's hosted endpoint and Bearer
+token (its guide); the Softeria package's latest version, licence and
+integrity (npm's registry API) and its flags, env and cache (README);
+Google's four preview endpoints and scopes (Workspace guide); the MCP
+Registry names (its API) and its moderation policy. **Not verified:**
+Todoist accepting ferrule's DCR; any of it live.
+
+**Found on the way.** `MS365_MCP_USE_KEYTAR` can't be set: `mcp_add`
+refuses an env name that looks like a key ("KEY" is in it), so the server
+relies on its own fallback when there's no credential store (a key file
+beside the cache, per its README). Native connections reach their
+services directly, not through the proxy's egress policy (as before
+M63; noted, not changed).
+
+**Tests changed, none added** (the owner's standing rule): the catalog
+test's names and Google tile.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** Nothing added against the real services; the carve in
+`for_helper` not run on Linux or macOS; private state not hidden on
+Windows; `integrity` recorded, not enforced; a continuation lives in
+memory (a restart before the key is saved forgets the add); the
+dashboard's Add from a key-missing entry gives its outcome in the log,
+not on the page.

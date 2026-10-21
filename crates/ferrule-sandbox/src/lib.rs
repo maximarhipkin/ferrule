@@ -459,9 +459,34 @@ impl Sandbox {
     /// the model's commands), and the network always on, since reaching a
     /// service is what most helpers are for. Relative `extra` paths are
     /// relative to the workspace, like `writable_roots`.
+    ///
+    /// M63.4: a state dir inside a hidden dir (`<data>/mcp-private/<name>`)
+    /// is the helper's own: that hidden dir is replaced, for this helper
+    /// only, by its other entries, so it reaches its own state and no
+    /// sibling's.
     pub fn for_helper(&self, state_dir: &Path, extra: &[PathBuf]) -> Self {
         let mut helper = self.clone();
         helper.policy.network = true;
+        let mut siblings = Vec::new();
+        helper.policy.hidden.retain(|hidden| {
+            let Some(own) = state_dir
+                .strip_prefix(hidden)
+                .ok()
+                .and_then(|rest| rest.components().next())
+            else {
+                return true;
+            };
+            if let Ok(entries) = std::fs::read_dir(hidden) {
+                siblings.extend(
+                    entries
+                        .flatten()
+                        .filter(|e| e.file_name() != own.as_os_str())
+                        .map(|e| e.path()),
+                );
+            }
+            false
+        });
+        helper.policy.hidden.extend(siblings);
         helper.helper_roots.push(state_dir.to_path_buf());
         helper.helper_roots.extend(extra.iter().cloned());
         helper

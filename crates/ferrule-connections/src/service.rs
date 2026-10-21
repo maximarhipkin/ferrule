@@ -722,6 +722,7 @@ impl Connections {
         reason: &str,
     ) -> Result<String> {
         let service = self.catalog.resolve(what)?;
+        not_a_connection(&service)?;
         let name = service.name.clone();
         if let Some(r) = self.store.load()?.iter().find(|r| r.name == name) {
             if r.state == State::Connected && (r.write || !write) {
@@ -1046,6 +1047,7 @@ impl Connections {
             _ => bail!("only the owner can connect a service"),
         };
         let service = self.catalog.resolve(what)?;
+        not_a_connection(&service)?;
         let name = service.name.clone();
         let (ask_chat, requested_by, write) = {
             let mut inner = self.inner.lock().unwrap();
@@ -2075,6 +2077,7 @@ impl Connections {
             name: record.name.clone(),
             url: Some(service.url(record.write).to_string()),
             headers,
+            write_tools: service.writes.clone(),
             ..Default::default()
         }
     }
@@ -2177,6 +2180,21 @@ impl Connections {
 enum Path {
     Relay(Relay, Slot),
     Tunnel(tunnel::Listener, tunnel::Tunnel),
+}
+
+/// M63.4: a catalog entry that isn't a remote server (a pinned stdio
+/// server, a bundled skill, one that needs no sign-in) is added with
+/// `mcp_add`'s `catalog`, not connected.
+fn not_a_connection(service: &Service) -> Result<()> {
+    if service.kind != crate::catalog::Kind::Remote || service.auth == AuthKind::None {
+        bail!(
+            "{} isn't connected from here: it's added from the catalog (the dashboard's \
+             Extensions page, or ferrule_admin mcp_add with catalog \"{}\")",
+            service.title(),
+            service.name
+        );
+    }
+    Ok(())
 }
 
 /// `YYYY-MM-DD` as the end of that day (UTC), for a key's expiry.

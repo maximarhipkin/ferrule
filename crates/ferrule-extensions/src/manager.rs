@@ -600,6 +600,7 @@ impl ExtensionManager {
         }
         if purge {
             let _ = fs::remove_dir_all(self.cfg.layout.mcp_state(name));
+            let _ = fs::remove_dir_all(self.cfg.layout.mcp_private_state(name));
         }
         Ok(())
     }
@@ -1260,7 +1261,7 @@ impl ExtensionManager {
         cfg: McpServerConfig,
     ) -> Result<(Arc<McpClient>, Vec<McpToolInfo>)> {
         let name = cfg.name.clone();
-        let state_dir = self.cfg.layout.mcp_state(&name);
+        let state_dir = self.cfg.layout.mcp_state_for(&cfg);
         fs::create_dir_all(&state_dir)?;
         let host = ServerHost {
             sandbox: self.sandbox(),

@@ -72,7 +72,9 @@ impl Tool for AdminTool {
                     "enabled_tools": { "type": "array", "items": { "type": "string" } },
                     "replace": { "type": "boolean" },
                     "hosts": { "type": "array", "items": { "type": "string" } },
-                    "why": { "type": "string" }
+                    "why": { "type": "string" },
+                    "catalog": { "type": "string" },
+                    "write": { "type": "boolean" }
                 },
                 "required": ["op"],
                 "additionalProperties": false
@@ -269,6 +271,11 @@ pub(super) async fn ask_and_run(
     let done = match &op {
         Op::Update => start_update(admin, ctx, here, session),
         Op::Restart => start_restart(admin, ctx, here, session),
+        Op::McpAddCatalog { catalog, write } => {
+            super::catalog::add(admin, ctx, here, session, catalog, *write, &by)
+                .await
+                .map_err(|e| ctx.redactor.redact(&e))
+        }
         _ => run(&op, ctx, &by, here).await,
     };
     hub.audit().record(

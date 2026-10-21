@@ -3,15 +3,15 @@
 The re-audit of 2026-10-21 (Part 2, "Connections, plugins and apps", and
 Part 3 #3–#6) found that ferrule could reach a lot by hand and very little
 by default. Its competitors ship everyday skills (OpenClaw's weather,
-Hermes's maps), email beyond Gmail, CalDAV calendars and a list of vetted
+Hermes's keyless maps) and Hermes a list of 66 staff-reviewed MCP
 servers, while ferrule had no bundled skills, Gmail as its only mailbox,
-Google as its only calendar and sixteen catalog entries. Wave B closes
-those four gaps, one commit per task:
+Google as its only calendar and sixteen catalog entries (the re-audit's
+§2b). Wave B closes those four gaps, one commit per task:
 
 1. [A bundled first-party skills pack](#1-the-bundled-skills-pack) (M63.1).
 2. [Email from any provider over IMAP and SMTP](#2-mail-from-any-provider) (M63.2).
 3. [Calendars over CalDAV, and read-only ICS](#3-calendars-caldav-and-a-secret-address) (M63.3).
-4. Catalog v2 and one-step add (M63.4).
+4. [Catalog v2 and one-step add](#4-catalog-v2-and-one-step-add) (M63.4).
 
 The rules every task keeps: keys come through `secret_request` (or the
 dashboard's forms) and are bound to hosts that come from the catalog or
@@ -269,9 +269,10 @@ like Gmail's, and is bound to its hosts there (the record's `hosts`).
   from the first byte (587 with STARTTLS), the full address as user name,
   an app password required:
   <https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports>;
-  making one: <https://www.fastmail.help/hc/en-us/articles/360058752854>
-  (read through a search result, not the page itself). Not on the Basic
-  plan, per third-party guides (unverified).
+  making one (Settings → Privacy & Security → Connected apps & API
+  tokens → Manage app passwords and access; not on the Basic plan, which
+  has no IMAP, SMTP or CalDAV):
+  <https://www.fastmail.help/hc/en-us/articles/360058752854>.
 - **Yahoo Mail**: `imap.mail.yahoo.com` 993, `smtp.mail.yahoo.com` 465 or
   587, the full address, an app password:
   <https://help.yahoo.com/kb/SLN4075.html>; Account Security → Create app
@@ -395,3 +396,179 @@ Nothing was run against a real server: not iCloud's discovery or its
 the repeat expansion have no tests (the owner's rule: no new tests); the
 existing suite only checks that the catalog parses. Time zones are not
 converted: a range is compared on each event's own clock.
+
+## 4. Catalog v2 and one-step add
+
+### The schema
+
+`crates/ferrule-connections/catalog.toml` keeps its tables and gains
+(validated in `Service::check_v2`):
+
+| Key | What |
+|---|---|
+| `kind` | `remote` (the default: the vendor hosts it at `url`), `stdio` (a pinned package run in the sandbox) or `skill` (a bundled skill, `skill`) |
+| `auth` | `oauth`, `api_key` (also `key`) or `none` |
+| `package` | stdio: `npm:<name>@<x.y.z>`, one exact version (a range or a tag is refused); `args`, `read_only_args` (added unless the add is for writes), `env` (no keys) |
+| `integrity` | the npm tarball's integrity as published, kept for the record; `npx` doesn't check it against this, and neither does ferrule yet |
+| `registry` | the server's name in the official MCP Registry: an identity, not a vouching |
+| `secret` | `{ name, hosts, header, value }`: the key an add asks for and the only hosts it is bound to; a remote entry's hosts must include its url's host |
+| `read_only_url` | the address used while read-only (the default), on the url's host |
+| `writes` | tools that change something whatever their hints say |
+| `preset` | (M63.2) field values the catalog fixes |
+
+### One step
+
+- **From a chat**: `ferrule_admin` `mcp_add` with `catalog` (and `write`
+  for changes). Any other field with it is refused: the address, the
+  package, the arguments, the header and the key's hosts all come from the
+  entry. Outside owner mode it is one card, as every change; the card says
+  what runs, where, and which key goes to which hosts.
+  - `oauth`: the owner gets the connection's Sign in button
+    (`Connections::request`), the M20 flow.
+  - a `secret` not saved yet: `secret_request` with the catalog's name and
+    hosts (M54 §6.3's link to the Safe), and a continuation registered on
+    that name (`keys::when_saved`): when the Safe saves it, the server is
+    added and the session that asked is woken with the outcome. If the
+    owner changed the sites so the catalog's host isn't among them,
+    nothing is added and the bot is told why. A name already saved but
+    bound elsewhere, or kept for something else, is refused, never
+    rebound.
+  - otherwise (key saved, or none needed): `mcp add` with the entry's
+    settings (`self_service/catalog.rs` `install`): started in its
+    sandbox, listed and scanned, then written to `[[mcp.servers]]`, where
+    the running gateway loads it.
+  - `skill`: the bundled skill turned on (it usually is).
+- **From the dashboard**: Extensions → **From the catalog** lists the
+  entries the Connections page doesn't add (stdio, skills, and the remote
+  ones with a `secret`), with **Add** (`POST mcp/catalog`, confirmed with
+  the same text as the card). A missing key opens the Safe with its name
+  and sites filled in, and the same continuation adds the server once it's
+  saved. Sign-ins and key forms stay on the Connections page; Google Maps
+  and Mapbox are in both places (a key form there, sealed in the
+  connection store; or the Safe through the catalog).
+- **Managed mode's extensions lock** refuses both, as it refuses `mcp_add`.
+
+### What an added server is held to
+
+- **Marked `catalog = "<id>"`** in `[[mcp.servers]]`. The trust hub's list
+  of connected services now takes these too (`connections::set_gate`,
+  refreshed whenever the config's servers are), so its reads are outside
+  content (M54.5) and every tool without `readOnlyHint`, or in `writes`
+  (`write_tools`, enforced in `ferrule_mcp::build_tools`), is a connected
+  write behind the gates and standing grants. Only while `[connections]
+  gate_writes` is on, as for connections.
+- **A stdio entry** runs as `npx -y <name>@<exact version>` with its
+  args, sandboxed like every stdio server, with `private_state = true`:
+  its home, caches and temp dir are `<data>/mcp-private/<name>`. That
+  folder is in the backup's secrets list, so it is hidden from commands
+  and the file tools in every mode; `Sandbox::for_helper` replaces it, for
+  that server only, by its other entries, so the server reaches its own
+  folder and no sibling's. Microsoft 365's server keeps its token cache
+  there; its README says the cache's encryption key goes to the OS
+  credential store through keytar, or, "without a credential store", to a
+  `.cache-key` file beside the cache. Inside the sandbox ferrule expects
+  the second (unverified); `MS365_MCP_USE_KEYTAR=0` would force it, but a
+  variable named like a key is refused in an MCP server's `env`
+  (`mcp_add`'s rule), so it isn't set. **Not on Windows**: the Windows sandbox hides a path with a
+  DACL every sandboxed process shares, which would shut the server out of
+  its own folder, so there the folder isn't hidden.
+- **Its key** is a `[secrets]` entry: commands and the server see a
+  placeholder, and the proxy swaps the real value in only on requests to
+  the catalog's hosts (M7, M54.2).
+
+### The entries, checked on 2026-10-21
+
+- **Todoist** (`remote`, `oauth` with DCR):
+  `https://ai.todoist.net/mcp`, "Primary URL (Streamable HTTP)", OAuth in
+  the browser: <https://github.com/Doist/todoist-mcp>. MCP Registry name
+  `net.todoist/mcp` with that remote (the registry's API,
+  `registry.modelcontextprotocol.io/v0/servers?search=todoist`). The
+  `writes` list is the add/update/complete/move/delete tools named in the
+  repo's `src/utils/tool-names.ts` on `main`. **Not verified:** that
+  Todoist accepts ferrule's dynamic client registration (the README says
+  OAuth, not DCR; the re-audit cites Hermes for DCR working).
+- **Google Maps Grounding Lite** (`remote`, key): `https://mapstools.googleapis.com/mcp`,
+  the key in `X-Goog-Api-Key`, tools `search_places`, `lookup_weather`,
+  `compute_routes`, `resolve_names`, `resolve_maps_urls`; no turn-by-turn;
+  pay-as-you-go; Google Maps attribution and no use with models that train
+  on the input: <https://developers.google.com/maps/ai/grounding-lite>.
+  Registry `com.googleapis.mapstools/mcp`. The page doesn't say preview or
+  GA.
+- **Mapbox** (`remote`, key): `https://mcp.mapbox.com/mcp`, a Mapbox
+  access token as `authorization: Bearer <token>`:
+  <https://github.com/mapbox/mcp-server/blob/main/docs/hosted-mcp-guide.md>.
+  Registry `io.github.mapbox/mcp-server`. Tools (directions, matrix,
+  isochrone, geocoding, search, static maps) from the README; which of
+  them the hosted endpoint offers isn't stated.
+- **Microsoft 365 for a personal account** (`stdio`, `none`):
+  `@softeria/ms-365-mcp-server` pinned at **0.170.2**, the latest on npm
+  on 2026-10-21 (published 2026-10-19), MIT, integrity as recorded:
+  <https://registry.npmjs.org/@softeria%2Fms-365-mcp-server>. Device-code
+  sign-in through its `login` tool; `--read-only` "disabling write
+  operations"; personal accounts by default; `MS365_MCP_TENANT_ID =
+  "consumers"` because, per the README, refresh tokens from the default
+  `common` authority are rejected as of June 2026; the token cache under
+  the server's home (`~/.config/ms-365-mcp-server/` on Linux, which the
+  sandbox puts in the server's state dir): <https://github.com/Softeria/ms-365-mcp-server>.
+  Registry `io.github.Softeria/ms-365-mcp-server`. Needs Node (`npx`).
+  Work accounts (`--org-mode`, a tenant) aren't this entry. Microsoft's
+  own Work IQ MCP needs an Entra work tenant (re-audit Part 2 §2c #7).
+- **Google Calendar, Docs, Sheets and People MCP** (`remote`, `oauth`
+  with the owner's client, previews beside the Gmail and Drive ones):
+  `https://calendarmcp.googleapis.com/mcp/v1`,
+  `https://docsmcp.googleapis.com/mcp/v1`,
+  `https://sheetsmcp.googleapis.com/mcp/v1`,
+  `https://people.googleapis.com/mcp/v1`, with the scopes the page lists
+  (Calendar's and People's are read-only only), Developer Preview
+  enrolment, and an OAuth client with "Use this client for an AI-powered
+  agent" ticked: <https://developers.google.com/workspace/guides/configure-mcp-servers>.
+  Whether consumer @gmail.com accounts can use them, the page doesn't say.
+- **The six bundled skills** (`skill`): §1.
+
+Left out on purpose: Microsoft's Work IQ (a work tenant only), Slack,
+Asana and Dropbox (no DCR for an untrusted client), Home Assistant's own
+MCP server (Client ID Metadata Documents, which ferrule doesn't do yet),
+finance and password managers (re-audit Part 2 §2c #12, #16).
+
+### The trust model: why a curated list, and no public hub
+
+- **Curated by hand, compiled in.** Each entry names an official,
+  maintained server (the vendor's own, or for Microsoft 365 the widely
+  used open-source one, pinned), with its address or exact package checked
+  against the vendor's docs, and its key's hosts fixed. A compiled-in
+  entry is the owner's pre-approval of *what* runs; the card (or owner
+  mode) is the approval of *that* it runs. The owner's own entries
+  (`[[connections.custom]]`) sit beside them.
+- **No auto-install from a public plugin or skill hub.** In February 2026,
+  341 of 2,857 skills on OpenClaw's ClawHub were found to be malicious,
+  most delivering a credential stealer through fake setup steps ([The
+  Hacker News](https://thehackernews.com/2026/02/researchers-find-341-malicious-clawhub.html));
+  Snyk's ToxicSkills study found a critical issue in 13.4% of 3,984 skills
+  ([Snyk](https://snyk.io/blog/toxicskills-malicious-ai-agent-skills-clawhub)).
+  The official MCP Registry "does not make guarantees about moderation,
+  and consumers should assume minimal-to-no moderation" ([its moderation
+  policy](https://github.com/modelcontextprotocol/registry/blob/main/docs/modelcontextprotocol-io/moderation-policy.mdx),
+  read 2026-10-21), so a `registry` name here is an identity, not a
+  vouching. (The ClawHub and Snyk figures are the re-audit's, read on
+  2026-10-21, not read again for this section.)
+- **Pinned, scanned, sandboxed.** A stdio entry is one exact version, never
+  `latest`; every added server's tools are scanned before it's written
+  (M13's scanner, M17's flow); stdio servers run in the OS sandbox with
+  the network through the proxy; remote ones spawn nothing at all, which
+  is why vendor-hosted servers are preferred.
+- **Keys never from the model.** The key's name and hosts are the
+  catalog's; the value goes from the owner to the Safe, never through a
+  chat or the model; the model and the server see a placeholder.
+- **What it reads is someone else's text** (M54.5), and what it changes
+  asks first (M19), owner mode included after outside content.
+
+### Not verified
+
+Nothing was added against the real services: not Todoist's DCR, not a
+Maps or Mapbox key through the proxy, not the Microsoft 365 server's
+device-code sign-in in the sandbox or its token cache under
+`<data>/mcp-private`, not the Google previews. The carve in
+`Sandbox::for_helper` (a server reaching its own folder in a hidden one)
+wasn't run on Linux or macOS; on Windows the folder isn't hidden. The
+`integrity` is recorded, not checked. No new tests (the owner's rule); the
+catalog test lists the new names.

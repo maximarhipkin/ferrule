@@ -29,6 +29,26 @@ static ROUTER: Mutex<Option<Weak<Router>>> = Mutex::new(None);
 // asked for and not saved.
 static ASKED: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
+/// M63.4: what finishes once a name is saved (a catalog server's add),
+/// given the hosts the owner saved it for; its words go to the session
+/// that asked. The last to register for a name wins.
+pub type Then = Box<
+    dyn FnOnce(Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+        + Send,
+>;
+
+static THEN: OnceLock<Mutex<HashMap<String, Then>>> = OnceLock::new();
+
+/// Runs `then` when the key `name` is saved (from the page or a link).
+// ponytail: in memory, like ASKED: a restart forgets it, and the owner
+// adds the server again.
+pub fn when_saved(name: &str, then: Then) {
+    THEN.get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(name.to_string(), then);
+}
+
 pub fn bind(router: Weak<Router>) {
     *ROUTER.lock().unwrap_or_else(|e| e.into_inner()) = Some(router);
 }
@@ -50,26 +70,35 @@ pub fn asked(name: &str, session: &str) {
 // happened, so a slow reload wakes the bot early; the upgrade is to wake
 // from config_follow once it has bound the key.
 pub fn saved(name: &str, hosts: &[String]) {
-    let Some(session) = ASKED
+    let session = ASKED
         .get()
-        .and_then(|m| m.lock().unwrap_or_else(|e| e.into_inner()).remove(name))
-    else {
+        .and_then(|m| m.lock().unwrap_or_else(|e| e.into_inner()).remove(name));
+    let then = THEN
+        .get()
+        .and_then(|m| m.lock().unwrap_or_else(|e| e.into_inner()).remove(name));
+    if session.is_none() && then.is_none() {
         return;
-    };
-    let Some(router) = ROUTER.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-        return;
-    };
+    }
+    let router = ROUTER.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let Ok(rt) = tokio::runtime::Handle::try_current() else {
         return;
     };
-    let text = format!(
+    let mut text = format!(
         "[the owner saved the key {name}; it is sent only to {}]",
         hosts.join(", ")
     );
+    let hosts = hosts.to_vec();
     rt.spawn(async move {
         tokio::time::sleep(SYNC_EVERY + Duration::from_secs(1)).await;
-        if let Some(router) = router.upgrade() {
-            router.wake(&session, text);
+        if let Some(then) = then {
+            text.push(' ');
+            text.push_str(&then(hosts).await);
+        }
+        match (session, router.and_then(|r| r.upgrade())) {
+            (Some(session), Some(router)) => {
+                router.wake(&session, text);
+            }
+            _ => tracing::info!("{text}"),
         }
     });
 }

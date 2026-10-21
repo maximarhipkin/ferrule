@@ -298,12 +298,18 @@ pub fn callbacks(conns: &Connections) -> Vec<(String, String)> {
 
 /// The options on `tile` (or the one service named), simplest first.
 pub fn options<'a>(conns: &'a Connections, what: &str) -> Vec<&'a Service> {
-    let all = conns.catalog().services();
-    let on_tile: Vec<&Service> = all.iter().filter(|s| s.tile() == what).collect();
+    // M63.4: stdio servers and skills are added from the catalog, not here.
+    let all: Vec<&Service> = conns
+        .catalog()
+        .services()
+        .iter()
+        .filter(|s| s.kind == ferrule_connections::Kind::Remote)
+        .collect();
+    let on_tile: Vec<&Service> = all.iter().copied().filter(|s| s.tile() == what).collect();
     if !on_tile.is_empty() {
         return on_tile;
     }
-    all.iter().filter(|s| s.name == what).collect()
+    all.into_iter().filter(|s| s.name == what).collect()
 }
 
 /// `ferrule connections setup [service]`.
@@ -562,6 +568,7 @@ async fn print_checklist(conns: &Connections) -> Result<()> {
         .catalog()
         .services()
         .iter()
+        .filter(|s| s.kind == ferrule_connections::Kind::Remote)
         .map(|s| s.tile())
         .collect();
     tiles.dedup();

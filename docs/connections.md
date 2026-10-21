@@ -248,6 +248,35 @@ The **Calendar** tile reaches calendars without a Google Cloud project:
 - **What's read is outside content.** An event's title and notes are
   whoever made it; a write after reading them asks you first (M54.5).
 
+## The catalog: one step to add a vetted server (M63.4)
+
+Some services aren't a sign-in or a key form on this page: a pinned
+local server (Microsoft 365 for an Outlook.com account), a server whose
+key the bot asks you for in a chat, a bundled skill. They're on the
+dashboard's **Extensions** page under **From the catalog**, each with
+**Add**, and the bot can add them for you with `ferrule_admin` `mcp_add`
+and `catalog` (one card to approve; at once in owner mode):
+
+- **Everything comes from the catalog**: the server's address or its
+  pinned package, its arguments, which of its tools are writes, and the
+  key it needs with the sites that key may go to. The bot can't change
+  any of it.
+- **A missing key** is asked for with `secret_request`: you get a link to
+  the Safe with its name and sites filled in, paste the key there, and
+  the server is added the moment it's saved (from the page, Add opens the
+  Safe the same way).
+- **What's added** is started in the sandbox and scanned like any `mcp
+  add`, and marked as from the catalog, so what it reads is outside
+  content and what it changes asks you first.
+
+The entries, each checked against its vendor's docs on 2026-10-21:
+Todoist's hosted server (sign in), Google Maps Grounding Lite and Mapbox
+(a key), Microsoft 365 for a personal account (a pinned package that signs
+in by itself, its sign-in in a hidden folder), Google's Calendar, Docs,
+Sheets and People MCP previews (on the Google tile), and the six bundled
+skills. Why a short curated list and no public plugin hub, and every
+source: `docs/m63-connections-wave-b.md` §4.
+
 ## Any MCP server with a key
 
 From the dashboard (M50): **Connect → Any app by its address**, then the

@@ -67,7 +67,27 @@ impl Layout {
     pub fn mcp_state(&self, name: &str) -> PathBuf {
         self.data_dir.join("mcp").join(mcp_dir_name(name))
     }
+
+    /// M63.4: the state dir of a server with `private_state`, under
+    /// `<data>/mcp-private`, which commands and the file tools can't read
+    /// (the server itself can: `Sandbox::for_helper`).
+    pub fn mcp_private_state(&self, name: &str) -> PathBuf {
+        self.data_dir.join(PRIVATE_MCP).join(mcp_dir_name(name))
+    }
+
+    /// The state dir `cfg`'s server runs with.
+    pub fn mcp_state_for(&self, cfg: &ferrule_mcp::McpServerConfig) -> PathBuf {
+        if cfg.private_state {
+            self.mcp_private_state(&cfg.name)
+        } else {
+            self.mcp_state(&cfg.name)
+        }
+    }
 }
+
+/// Under the data dir: the private servers' state (M63.4). Hidden from
+/// commands like `private/` (it is in the backup's secrets list).
+pub const PRIVATE_MCP: &str = "mcp-private";
 
 /// A server name as a directory name. A name that had to be changed gets a
 /// hash of the original, so `a.b` and `a_b` don't share a home. Installed

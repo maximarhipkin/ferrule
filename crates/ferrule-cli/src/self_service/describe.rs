@@ -274,6 +274,7 @@ pub async fn describe(op: &Op, ctx: &Ctx, here: &ChatRef) -> Result<String, Stri
             }
             text
         }
+        Op::McpAddCatalog { catalog, write } => super::catalog::card(ctx, catalog, *write)?,
         Op::PackageInstall { packages } => {
             super::packages::check(packages)?;
             format!(
