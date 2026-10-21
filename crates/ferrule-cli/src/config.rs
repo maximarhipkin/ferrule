@@ -786,6 +786,10 @@ pub struct Config {
     /// provider is named.
     #[serde(default)]
     pub media: MediaConfig,
+    /// M61: screenshots and short recordings of the owner's own screen,
+    /// view only, off unless turned on (docs/m61-screen.md).
+    #[serde(default)]
+    pub screen: crate::screen::ScreenConfig,
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,

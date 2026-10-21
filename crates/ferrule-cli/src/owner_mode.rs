@@ -179,13 +179,15 @@ const GUEST_MEMORY: &str = "guest-memory";
 /// What only the owner's sessions may read, hidden from everyone else's
 /// commands and file tools in every mode: [`history`], the owner's
 /// long-term memory (`memory.db` and SQLite's files beside it), the other
-/// chats' memories, and the learned skills (the pass keeps some for the
-/// owner's chats).
-pub fn guest_hidden() -> Vec<PathBuf> {
+/// chats' memories, the learned skills (the pass keeps some for the
+/// owner's chats), and M61's captures of the owner's screen in
+/// `workspace`.
+pub fn guest_hidden(workspace: &Path) -> Vec<PathBuf> {
+    let mut hidden = vec![workspace.join(crate::screen::DIR)];
     let Ok(data) = config::data_dir() else {
-        return Vec::new();
+        return hidden;
     };
-    let mut hidden = history();
+    hidden.extend(history());
     hidden.extend(
         [
             "memory.db",

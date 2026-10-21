@@ -212,7 +212,50 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     }
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
+    screen_check(&mut r, &cfg).await;
     Ok(r.finish())
+}
+
+/// M61: whether screen viewing can work here: on, a desktop to see, and a
+/// test capture in the tools' sandbox, to a temporary file deleted at once.
+/// Off is a note; on with no desktop here is a warning (the gateway may
+/// run where there is one); a capture that fails is a failure.
+async fn screen_check(r: &mut Report, cfg: &config::Config) {
+    if !cfg.screen.enabled {
+        r.note("screen", "screen viewing: off ([screen] enabled = false)");
+        return;
+    }
+    if let Err(why) = crate::screen::desktop() {
+        r.warn(
+            "screen",
+            format!("screen viewing is on, but there's no screen to see from here: {why}"),
+        );
+        r.hint("the gateway offers the screen tools only where it can see the screen, and its log says why when it can't");
+        return;
+    }
+    let sandbox = match Sandbox::new(crate::sandbox_policy(cfg)) {
+        Ok(sandbox) => sandbox,
+        Err(e) => {
+            r.fail("screen", format!("no sandbox to capture in: {e}"));
+            return;
+        }
+    };
+    if let Err(why) = crate::screen::test_capture(&sandbox).await {
+        r.fail("screen", why);
+        return;
+    }
+    r.ok(
+        "screen",
+        "screen viewing: on; a test capture from here worked (nothing kept)",
+    );
+    let exe = service::installed_exe().map_or_else(
+        || "the ferrule binary the service runs".to_string(),
+        |p| tilde(&p),
+    );
+    r.note(
+        "screen",
+        format!("the service is its own program to macOS: if its captures fail or show only the wallpaper, allow {exe} in System Settings → Privacy & Security → Screen Recording"),
+    );
 }
 
 /// M44: managed mode, the policy in force and what protects commands.

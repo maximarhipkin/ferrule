@@ -54,7 +54,10 @@ append-only.
     on `main` as `6efe413`, then PR #50 (the owner's Telegram groups get
     owner mode) as `f70984e`. `autopilot` continues as **PR #49**: M58.1–
     M58.5, M53.2 onward and the M51/M52 follow-ups, with `main` merged in
-    after M53.2 (`6efe413`) and after M51.4 (`f70984e`).
+    after M53.2 (`6efe413`) and after M51.4 (`f70984e`). PR #49 merged
+    to `main` on 2026-10-21, then PR #51 (the security and approvals
+    group); `autopilot` continues as **PR #52** (open), M60 and M61
+    among its commits.
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
   green predicate (`AGENTS.md`). The last full run on `autopilot` before
   this rewrite: 1869 passed, 0 failed, 28 ignored across 71 test
@@ -128,10 +131,14 @@ append-only.
   - **M54, protected autonomous mode** is merged to `main` (`6efe413`).
     Its open edges (a live Linux run, macOS owner mode, per-session
     helpers for guests) are in its Session Log entry.
-  - **`autopilot` / PR #49:** M58.1–M58.5 (simplify, remove or make
-    opt-in), the M53 follow-ups (M53.2, M53.3, M53.4, M53.5, M53.7),
-    and the M51/M52 follow-ups (M51.4, M51.3, M52.2, M52.4, M52.6; M52.3
-    is M54's `secret_request`), one commit each.
+  - **`autopilot` / PR #49 (merged 2026-10-21):** M58.1–M58.5
+    (simplify, remove or make opt-in), the M53 follow-ups (M53.2,
+    M53.3, M53.4, M53.5, M53.7), and the M51/M52 follow-ups (M51.4,
+    M51.3, M52.2, M52.4, M52.6; M52.3 is M54's `secret_request`), one
+    commit each.
+  - **`autopilot` / PR #52 (open):** among its commits M60 and **M61
+    screen viewing (screenshots and recordings of the owner's own
+    screen, view only)**, `docs/m61-screen.md`.
   - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
     `docs/research-harness2-media.md`, `docs/m51-media.md`,
     `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
@@ -149,7 +156,9 @@ append-only.
     parent's number.
 - **Milestone numbers are claimed:** M51–M53 Kimi, M54 the autonomy
   session, M55–M59 the gap analysis, M60 images in tool results
-  (2026-10-21, `autopilot`). The next free number is **M61**.
+  (2026-10-21, `autopilot`), M61 screen viewing (screenshots and
+  recordings of the owner's own screen, view only; 2026-10-21,
+  `autopilot`). The next free number is **M62**.
   The first claim wins, and a later collision shifts the unclaimed
   numbers, never a claimed one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -8468,3 +8477,97 @@ arrives the oldest turns into a note, so the prompt cache misses from
 there (M47's trade). Responses could take images inside
 `function_call_output`; the follow-up user message was chosen because
 the same builder serves the Codex backend.
+
+### 2026-10-21 — M61: screen viewing, view only (Claude, Opus 5.5)
+
+Claims **M61**, in the `autopilot` worktree (PR #52). Current State
+updated: the claim, the next free number (M62), and PR #49 and #51
+merged with `autopilot` continuing as PR #52.
+
+**Why.** The owner wants to ask the bot from their chat what's on their
+Mac's screen, or for a short clip of it, without remote-desktop software.
+By the owner's explicit choice it is **view only**: no mouse, keyboard,
+app launching or other input, not even as stubs. M60 made a tool's
+images reach the model, which a screenshot needs.
+
+**What changed.**
+- `ferrule-cli/src/screen.rs` (new): `[screen]` (`enabled = false`,
+  `max_record_secs = 120`, `window_minutes = 30`); `desktop()` (macOS,
+  not started from SSH, `launchctl managername` says `Aqua`; asked once
+  per process); `Screen`, one per gateway: the owner's yes held in
+  memory for `window_minutes` across the owner's chats, asked through
+  `Hub::ask_in` with Allow / Refuse, one card at a time, in owner mode
+  too; a refusal goes back to the model and counts through
+  `Hub::denied` (M56.2). The `screenshot {display?}` and
+  `record_screen {seconds}` tools (deferrable, serial group `screen`,
+  `changes_files` false); `record_screen` isn't offered with
+  `max_record_secs = 0`. `test_capture` for doctor.
+- Captures: `/usr/sbin/screencapture` (`-x -t png` with `-m` or `-D n`;
+  `-x -v -V <secs>`), `/usr/bin/sips` (a JPEG copy at most 1600 px on
+  its long side when the PNG is over M60's 3.5 MB cap; the PNG stays
+  whole), and an `ffmpeg` from `PATH` or Homebrew's dirs (H.264 MP4 at
+  most 1920 px wide, no audio, the `.mov` deleted; without one the
+  `.mov` stays and the answer says why). All run in the shared sandbox
+  as a helper with desktop services (`for_helper(media/screen)
+  .with_desktop_services()`, the browser's loosening). Files go to
+  `<workspace>/media/screen/` with a `.gitignore` of `*`; a folder that
+  leads outside the workspace is refused. The model picks only checked
+  numbers; no text of its reaches a command line.
+- Every capture calls `Hub::saw_untrusted(session, tool)`, so M54.5's
+  gate applies for the rest of the run, and audits `screen_capture`
+  (`what`: "screenshot taken" or "recording N s", and the file name).
+- `main.rs` `gateway_factory`: `Screen::offered` once (the log says why
+  when `[screen]` is on and there's no desktop); a chat session gets the
+  tools and `prompts::CHAT_SCREEN` (new, constant) only when it's local,
+  the owner's (`owner_mode::owner_tree`) and `Screen` exists. The card
+  goes to the session's chat (`self_service::offered`), else the primary
+  owner chat.
+- `owner_mode::guest_hidden` now takes the workspace and adds
+  `<workspace>/media/screen`, so the commands, file tools and
+  `send_file` of every session that isn't the owner's can't read the
+  captures. Callers: `build_agent_from`, `session_hidden` (which takes
+  the workspace too) and `subscription/claude.rs`.
+- `dashboard/config_page.rs`: `screen` in `WHOLE`, so the editor,
+  restores and the chat's `config_restore` can't turn it on (it was
+  never a form field, so `config_set` couldn't).
+- `doctor.rs` `screen_check`: off is a note; on with no desktop here a
+  warning saying why; else one test capture in the tools' sandbox to a
+  temp file deleted at once (a failure fails, naming the Screen
+  Recording setting), and a note naming the service's binary to allow.
+- Docs: new `docs/m61-screen.md` (what it does, what it deliberately
+  doesn't, consent, outside content, privacy, permissions, limits),
+  linked from the README's Guides; the roadmap's M61 line; `vision.md`
+  (the screenshot as a tool image, the `sips` copy),
+  `m57-context-hygiene.md` (the deferrable list), `m19-trust-cost.md`
+  §6b (what marks a run), `m54-autonomous.md` (what `guest_hidden`
+  adds).
+
+**Others' surfaces, smallest changes:** `config_page::WHOLE` (M54's
+config guard lists, in M52's editor) gains `screen`;
+`owner_mode::guest_hidden` (M54 §7) gains the workspace parameter and
+one path. No `ferrule setup` prompt changed, so `tests_e2e/` is
+untouched.
+
+**Tests changed, none added** (the owner's standing rule). No existing
+test needed a change.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Permissions the owner grants.** macOS Screen Recording (System
+Settings → Privacy & Security → Screen Recording) for the program that
+starts the capture: the ferrule binary the service runs (`ferrule
+doctor` names it; `<data>/bin/ferrule` in owner mode), or Terminal for a
+gateway started there. Then `[screen] enabled = true` in the config
+file and a gateway restart.
+
+**Open.** No live run: no capture was taken while building this, so
+`screencapture` and `sips` under the Seatbelt profile with desktop
+services, how macOS attributes the permission for the LaunchAgent's
+captures, and the MP4 conversion are unverified; `ferrule doctor` on the
+Mac is the first check. The window can't be closed early except by a
+restart. A recording holds the turn for its length plus the conversion
+(not an M57.6 background job). macOS only; Linux and Windows don't offer
+the tools. A recording over Telegram's 50 MB bot limit can't be sent.
+Doctor's test checks the permission of the terminal it runs in, not the
+service's. Nothing prunes `media/screen/`.

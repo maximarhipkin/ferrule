@@ -1420,6 +1420,16 @@ Current State; numbers are claimed there before anything is built.
   after the batch's results, marked as tool output. A note for a model
   that can't see, the newest four images as pixels, a 3.5 MB cap. Built
   on `autopilot` (`docs/vision.md`).
+- **M61, screen viewing.** View only, by the owner's choice: in the
+  owner's own chats, `screenshot` (the model sees it) and
+  `record_screen` (an MP4 when ffmpeg is there, sent with `send_file`)
+  of the owner's Mac screen. Off unless `[screen] enabled`; macOS in the
+  logged-in desktop session only; a card asks first, and a yes holds
+  `window_minutes` (30) in memory, owner mode included. Every capture
+  marks the run as having read outside content (M54.5); the captures
+  are git-ignored and hidden from guests' sessions. No mouse, keyboard
+  or app control. Built on `autopilot`, not run live
+  (`docs/m61-screen.md`).
 
 **Still open from earlier tracks.**
 

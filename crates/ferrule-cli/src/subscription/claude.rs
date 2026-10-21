@@ -72,7 +72,7 @@ pub fn engine_config(cfg: &Config) -> Result<EngineConfig> {
     let data = config::data_dir()?;
     let dir = s.config_dir(&data);
     let workspace = std::env::current_dir().unwrap_or_else(|_| data.clone());
-    let mut e = EngineConfig::new(s.binary(), dir.clone(), workspace);
+    let mut e = EngineConfig::new(s.binary(), dir.clone(), workspace.clone());
     e.private_dir = Some(crate::secrets::private_dir()?);
     e.repair = crate::update::claude::Claude::from_config(cfg, &data).map(|c| {
         Arc::new(crate::update::claude::Fixer::new(data.clone(), c))
@@ -86,8 +86,9 @@ pub fn engine_config(cfg: &Config) -> Result<EngineConfig> {
         .ok()
         .map(|exe| (exe, vec!["claude-mcp".to_string()]));
     e.sandbox = Some(crate::engine_sandbox(cfg, &dir)?);
-    // M54 §7: a guest session's claude can't read the owner's transcripts.
-    e.guest_hidden = crate::owner_mode::guest_hidden();
+    // M54 §7: a guest session's claude can't read the owner's transcripts
+    // (nor M61's screen captures).
+    e.guest_hidden = crate::owner_mode::guest_hidden(&workspace);
     Ok(e)
 }
 

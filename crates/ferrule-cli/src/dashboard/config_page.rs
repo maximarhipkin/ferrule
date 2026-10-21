@@ -36,6 +36,8 @@ const WHOLE: &[&str] = &[
     "browser",
     "plans",
     "plugins",
+    // M61: seeing the owner's screen is turned on in the file alone.
+    "screen",
 ];
 
 /// M56.3: fields inside a [`WHOLE`] section the page and the chat may

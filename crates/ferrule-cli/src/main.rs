@@ -39,6 +39,7 @@ mod plan;
 mod plugins_cli;
 mod probe;
 mod remote;
+mod screen;
 mod secret_meta;
 mod secrets;
 mod self_extend;
@@ -1320,12 +1321,12 @@ pub(crate) fn child_builder(
             agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
                 media.clone(),
                 &spec.id,
-                session_hidden(false, false),
+                session_hidden(false, false, &spec.workspace),
             )));
             agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
                 media.clone(),
                 &spec.id,
-                session_hidden(false, false),
+                session_hidden(false, false, &spec.workspace),
             )));
             if media.speaks() {
                 agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
@@ -1457,7 +1458,7 @@ fn build_agent_from(
     // the owner's memory, history or learned skills.
     let guest = !owner_mode::owner_tree(&cfg, &*trust::hub(&cfg)?, &tree);
     if guest {
-        sandbox = Arc::new(sandbox.narrowed(&owner_mode::guest_hidden()));
+        sandbox = Arc::new(sandbox.narrowed(&owner_mode::guest_hidden(&tool_ctx.workspace)));
     }
     let provider = Arc::new(if guest { provider.guest() } else { provider });
     if let Some(spec) = child {
@@ -1999,11 +2000,12 @@ fn hidden_paths(owner: bool) -> Vec<PathBuf> {
 /// What a session's own in-process tools (`send_file`, the media tools'
 /// references) may not read: [`hidden_paths`] as this mode has it for the
 /// owner (`on`: owner mode), and for anyone else's session (`!owners`)
-/// what only the owner's may read too (`owner_mode::guest_hidden`).
-fn session_hidden(on: bool, owners: bool) -> Vec<PathBuf> {
+/// what only the owner's may read too (`owner_mode::guest_hidden`, with
+/// the screen captures in `workspace`).
+fn session_hidden(on: bool, owners: bool, workspace: &Path) -> Vec<PathBuf> {
     let mut hidden = hidden_paths(on && owners);
     if !owners {
-        hidden.extend(owner_mode::guest_hidden());
+        hidden.extend(owner_mode::guest_hidden(workspace));
     }
     hidden
 }
@@ -2909,6 +2911,9 @@ async fn gateway_factory(
             std::slice::from_ref(&workspace),
         ));
     }
+    // M61: the owner's own screen, view only, when `[screen]` is on and
+    // there's a desktop to see.
+    let screen = screen::Screen::offered(&cfg.screen, trust::hub(cfg)?, sandbox.clone());
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     mcp_tools.ask_the_owner(trust::hub(cfg)?);
     let ledger_sink = ledger::build_sink(cfg);
@@ -2958,7 +2963,7 @@ async fn gateway_factory(
             agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
                 files.clone(),
                 session_id,
-                session_hidden(owner, owners),
+                session_hidden(owner, owners, &workspace),
             )));
             // M51: media generation, bound to the same chat.
             if let Some(media) = &media {
@@ -2966,12 +2971,12 @@ async fn gateway_factory(
                 agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
                     media.clone(),
                     session_id,
-                    session_hidden(owner, owners),
+                    session_hidden(owner, owners, &workspace),
                 )));
                 agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
                     media.clone(),
                     session_id,
-                    session_hidden(owner, owners),
+                    session_hidden(owner, owners, &workspace),
                 )));
                 // M51.4: a voice reply.
                 if media.speaks() {
@@ -2980,6 +2985,15 @@ async fn gateway_factory(
                         media.clone(),
                         session_id,
                     )));
+                }
+            }
+            // M61: screenshots and recordings of the owner's screen, in the
+            // owner's own chats only. The card goes to this chat (from an
+            // owner-mode group, to the primary owner chat).
+            if let Some(screen) = screen.as_ref().filter(|_| owners) {
+                agent.append_system_prompt(ferrule_agents::prompts::CHAT_SCREEN);
+                for tool in screen.tools(session_id, self_service::offered(&hub, session_id)) {
+                    agent.register_tool(tool);
                 }
             }
         }

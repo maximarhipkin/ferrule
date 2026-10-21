@@ -675,6 +675,8 @@ and a dated entry for every session.
   restart) · [`m13-self-extension.md`](docs/m13-self-extension.md) (the
   agent installing vetted extensions itself) ·
   [`browser.md`](docs/browser.md) · [`web-search.md`](docs/web-search.md) ·
+  [`m61-screen.md`](docs/m61-screen.md) (screenshots and short
+  recordings of the owner's own Mac screen, view only) ·
   [`connections.md`](docs/connections.md) (Jira, Gmail, Google, Notion…:
   which way in, step by step) ·
   [`ssh.md`](docs/ssh.md) (workspaces on other machines).

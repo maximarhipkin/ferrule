@@ -757,7 +757,7 @@ and a privacy hole found on review. Code paths are under `crates/`.
    `<data>/guest-memory/<chat>.db` (`owner_mode::guest_memory`, keyed by
    `chat_of`), `Sandbox::narrowed` in every mode (`guest_hidden` adds
    `memory.db` and its WAL files, `guest-memory/` and `learned-skills/`
-   to §7's two), and only its own scope's lessons and learned skills
+   to §7's two; M61 adds the workspace's `media/screen/`), and only its own scope's lessons and learned skills
    (`learn::prompt_section`/`skill_view` with `only`,
    `ferrule_learn::prompt_block_only`, `skills::Entry::kept_for`). A
    guest's `/plan`, `/goal` or `/graph` run learns in its chat's scope,

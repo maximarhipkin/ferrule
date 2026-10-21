@@ -23,6 +23,9 @@ decides what goes on the wire: the pixels, or a one-line note.
 - **`generate_image`** ([models.md](models.md), "Making media"): the image
   it saved under `media/`, so the model can check what it made before
   saying so. That costs an image's tokens per call.
+- **`screenshot`** (M61, [m61-screen.md](m61-screen.md)): a capture of
+  the owner's own Mac screen, offered only in the owner's chats with
+  `[screen]` on.
 
 A tool adds an image with `ToolOutput::with_images`; the agent puts the
 images on the tool's result message (`Message::images`).
@@ -87,9 +90,11 @@ the same trade since M47.
 
 ## Size
 
-The workspace has no image library, so nothing is shrunk or recompressed.
-An image over **3.5 MB** (`ferrule_core::vision::MAX_IMAGE_BYTES`, about
-4.7 MB as base64, under the 5 MB per image Anthropic's API takes,
+The workspace has no image library, so ferrule itself shrinks or
+recompresses nothing (`screenshot`'s smaller copy is made by macOS's
+`sips`, below). An image over **3.5 MB**
+(`ferrule_core::vision::MAX_IMAGE_BYTES`, about 4.7 MB as base64, under
+the 5 MB per image Anthropic's API takes,
 [vision docs](https://docs.claude.com/en/docs/build-with-claude/vision))
 isn't sent:
 
@@ -98,6 +103,9 @@ isn't sent:
   copy (resized with a shell command) can be read".
 - An MCP result gets a line naming the file and why it isn't shown.
 - `generate_image` adds "It isn't shown to you: …" to its answer.
+- `screenshot` keeps the PNG whole for the owner and shows the model a
+  JPEG copy at most 1600 pixels on its long side, made with macOS's
+  `sips`.
 
 The driver checks again when it sends (the bytes are still an image,
 still under the cap); a file that has gone or changed becomes a note

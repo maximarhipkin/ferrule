@@ -29,9 +29,9 @@ model that guesses right loses nothing.
 `crates/ferrule-core/src/tool.rs`): every MCP tool (`mcp__<server>__*`,
 the browser's and connections' included), the self-extension tools
 (`mcp_add`, `skill_install` and the rest), `connection_request`,
-`generate_image` and `generate_video`, and `shell_job` (M57.6). Everything
-else (the file tools, the shell, memory, sub-agents, the chat tools) is
-always sent whole.
+`generate_image` and `generate_video`, `shell_job` (M57.6), and
+`screenshot` and `record_screen` (M61). Everything else (the file tools,
+the shell, memory, sub-agents, the chat tools) is always sent whole.
 
 **When** (`[agent] defer_tools`):
 

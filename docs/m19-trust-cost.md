@@ -265,7 +265,9 @@ sub-agent's read counts for its whole tree): `web_fetch` and
 tools (`mcp__browser__*`), a connected service's read (a tool of a
 connected server that doesn't change things: reading mail, messages,
 documents), and a shell command whose program is an HTTP client
-(`curl`, `wget`, httpie, `xh`, `gh`, `lynx`, `w3m`). In owner mode a
+(`curl`, `wget`, httpie, `xh`, `gh`, `lynx`, `w3m`). M61's
+`screenshot` and `record_screen` mark the run themselves once a capture
+is taken ([m61-screen.md](m61-screen.md)). In owner mode a
 run for someone who isn't the owner (a guest's chat with `[trust] gates
 = false`) starts having read it. A new run (each chat turn) starts
 clean. The first source is written to the audit log
