@@ -404,11 +404,12 @@ impl Tool for GenerateVideoTool {
             .into_owned();
         let mut row =
             ferrule_media::JobStore::video(&job.id, &model, &prompt, &out.to_string_lossy());
-        if let Some((channel, chat_id)) = self
+        let chat = self
             .shared
             .router()
-            .and_then(|r| r.chat_of(&self.session_id))
-        {
+            .and_then(|r| r.chat_of(&self.session_id));
+        let has_chat = chat.is_some();
+        if let Some((channel, chat_id)) = chat {
             row.channel = Some(channel);
             row.chat_id = Some(chat_id);
         }
@@ -422,6 +423,14 @@ impl Tool for GenerateVideoTool {
             started.elapsed().as_millis() as u64,
             None,
         );
+        if !has_chat {
+            // M51.3: a sub-agent (or a run with no chat) gets the file,
+            // not a delivery.
+            return Ok(ToolOutput::ok(format!(
+                "Making it — job {} on {model}. A render takes minutes; the gateway saves it as {rel} when it's done. This session has no chat to send it to: report that path, and send_file can deliver it once it's there.",
+                job.id
+            )));
+        }
         Ok(ToolOutput::ok(format!(
             "Making it — job {} on {model}. A render takes minutes; I'll send {rel} here when it's done.",
             job.id

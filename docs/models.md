@@ -213,7 +213,9 @@ endpoint speaks OpenRouter's media API (`/images/generations`,
 the defaults a call can override; `max_per_day` caps generations per
 UTC day, voice replies included (fail-closed); every call and delivery
 is a ledger row with `call_kind = "media"`.
-Sub-agents don't get the tools: their answers go through the parent.
+Sub-agents get the tools only in the `media` role (M51.3,
+`docs/agents.md`): they save the files in the parent's workspace and
+the parent sends them.
 
 ## Photos: which models see them
 A photo sent in a chat (Telegram, WhatsApp, the dashboard and the other

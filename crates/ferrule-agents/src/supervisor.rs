@@ -69,6 +69,10 @@ pub enum Role {
     Worker,
     Planner,
     Verifier,
+    /// M51.3: makes images, video or speech with the media tools, in its
+    /// parent's workspace (never a worktree), so the parent can send the
+    /// files. Only where the embedding program has media tools to give it.
+    Media,
 }
 
 impl Role {
@@ -77,6 +81,7 @@ impl Role {
             "worker" => Some(Role::Worker),
             "planner" => Some(Role::Planner),
             "verifier" => Some(Role::Verifier),
+            "media" => Some(Role::Media),
             _ => None,
         }
     }
@@ -86,6 +91,7 @@ impl Role {
             Role::Worker => "worker",
             Role::Planner => "planner",
             Role::Verifier => "verifier",
+            Role::Media => "media",
         }
     }
 }
@@ -573,7 +579,9 @@ impl Supervisor {
             row
         };
         let mut row = row;
-        let mut notes = self.place(&mut row, &parent, req.worktree);
+        // M51.3: a media agent's files are for its parent to send, so it
+        // works in the parent's workspace.
+        let mut notes = self.place(&mut row, &parent, req.worktree && req.role != Role::Media);
         notes.extend(fork.as_ref().map(|f| f.note.clone()));
         if let Err(e) = self.start(&row, &req.task, fork.as_ref()) {
             let _ = self

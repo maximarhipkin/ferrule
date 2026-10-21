@@ -1135,6 +1135,10 @@ priced in the ledger, capped per day, and surviving a gateway restart.
   on OpenRouter with its reported cost in the ledger, and `ferrule
   doctor`'s `media` line (ffmpeg, libass) (`docs/m51-media.md`,
   "M51.4"). Not run against a live key.
+- **M51.3**: a `media` sub-agent role with `generate_image`,
+  `generate_video` and `speak`, always in its parent's workspace so the
+  parent sends the files; gateway only (`docs/agents.md`,
+  `docs/m51-media.md`, "M51.3").
 
 ### M52 — the dashboard Safe
 

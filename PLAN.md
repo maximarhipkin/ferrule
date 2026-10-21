@@ -7854,3 +7854,36 @@ reactions or the media tools to fit inside; they keep M54's.
 
 **Checks.** `make check` exited 0 on the merge (the numbers are in the
 merge commit's message).
+
+### 2026-10-21 — M51.3: a `media` role for sub-agents (Claude, Opus 5.5)
+
+**Why.** Jobs like "make four variants, pick one, animate it" spend the
+chat model's context and bill on tool calls a cheap model could make.
+Roles were worker, planner and verifier only, and sub-agents never got
+the media tools.
+
+**What changed.**
+- `ferrule-agents`: `Role::Media` (`parse`, `as_str`), its child
+  prompt, `spawn_agent`'s role enum and description, and `spawn` never
+  places a media child in a worktree, so its `media/` is its parent's.
+- `ferrule-cli`: `child_builder` takes the gateway's `MediaShared` and
+  registers `generate_image`, `generate_video` and `speak` for a media
+  child (hidden paths: the strictest list); without it (terminal `run`,
+  a terminal graph) a media spawn fails with the reason. The role and
+  graph error messages name `media`; the example config shows
+  `[agents.roles.media]`.
+- `ferrule-gateway`: `generate_video` in a session with no chat says the
+  gateway saves the clip at its path, not that it will send it here.
+- Docs: `agents.md` (Roles, `media`), `m51-media.md` ("M51.3"),
+  `models.md`, the roadmap.
+
+**Smallest change on another surface.** `graph.rs` (M42): the
+`child_builder` call gained `None` and its role error names `media`.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** No media child has run against OpenRouter. A video a child
+starts is saved, not delivered; nothing tells the parent when it lands.

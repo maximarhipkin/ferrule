@@ -23,6 +23,11 @@ pub fn child_prompt(id: &str, parent: &str, role: Role) -> String {
         Role::Verifier => "You are a verifier agent: check the claim or change you were given, don't make \
              or fix it. Run what proves it (tests, builds, reading the code), and say plainly whether it \
              holds, with the evidence. If you find a problem, report it; don't repair it.",
+        Role::Media => "You are a media agent: make the images, video or speech you were asked for with \
+             generate_image, generate_video and speak, look at what you made, and try again only when it \
+             misses the brief. Every call spends money: make no more than the task asks. You can't send \
+             anything to the chat; report the path of each finished file (and any video job still \
+             rendering), and the agent that started you sends them.",
     };
     format!(
         "## You are agent {id}\n\
@@ -130,7 +135,8 @@ constraints, and what to return. Or fork it (fork: true): it starts from a copy 
 so the task needn't repeat what you just read or decided, but it reads that copy again on every call. Its final \
 answer comes back as a short report.\n\
 Roles: \"worker\" (default) does the work; \"planner\" splits a job and runs workers; \"verifier\" checks \
-a change or claim without modifying anything.\n\
+a change or claim without modifying anything; \"media\" makes images, video or speech in your workspace and \
+reports the files for you to send (only where the media tools are on).\n\
 Example: {\"task\": \"In src/date.rs, make parse_date accept ISO week dates such as 2026-W05 (today it returns \
 Err). Keep the existing formats working, add a test, run cargo test, and report what you changed.\", \
 \"name\": \"iso-weeks\"}";

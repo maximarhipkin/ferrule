@@ -83,6 +83,9 @@ fork_tokens = 16000        # the most of its parent's conversation a fork starts
 
 [agents.roles.verifier]    # a role on another provider, from [providers]
 provider = "cheap"
+
+[agents.roles.media]       # M51.3: optional, a cheap model that calls tools
+model = "cheap"
 ```
 
 - **`max_children`** and **`max_agents`**: when either is reached,
@@ -92,10 +95,22 @@ provider = "cheap"
   the tree. When it's spent, each child stops at its next step with an
   answer that says why, and `spawn_agent` refuses. The window is trailing,
   so a gateway chat can keep using agents day after day.
-- **Roles**: `worker` (the default), `planner` and `verifier`. A role
-  without a provider uses the nearest ancestor's role provider, and
+- **Roles**: `worker` (the default), `planner`, `verifier` and `media`. A
+  role without a provider uses the nearest ancestor's role provider, and
   otherwise the root's provider. An unknown role or provider name stops
   ferrule at start, and `ferrule doctor` says which one.
+- **`media`** (M51.3): a child for multi-step creative work ("make four
+  variants, pick one, animate it") off the chat model's context and
+  bill. It gets `generate_image`, `generate_video` and `speak` on top of
+  the usual tools, always works in its parent's workspace (never a
+  worktree, whatever `worktree` says), and has no chat: the tools save
+  under `media/` and say so, and its report names the files for the
+  parent to `send_file`. A video it starts is saved there when the
+  render finishes. Only the gateway with `[media]` on has the media
+  tools; anywhere else (`ferrule run`, a terminal graph) a `media` spawn
+  fails and says to spawn a worker. `[agents.roles.media] model` is
+  optional: without it the child runs on its parent's model, like any
+  role. The media tools' daily cap counts the child's calls too.
 - A child can't change any of this. The tools take no arguments for it,
   and a child's children count against the same tree.
 - **Effort** (M57.2): `spawn_agent`'s `effort` (`low`, `medium`, `high`)

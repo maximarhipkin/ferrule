@@ -218,7 +218,7 @@ impl AgentTool {
             None => Role::Worker,
             Some(r) => Role::parse(r).ok_or_else(|| {
                 self.fail(format!(
-                    "unknown role {r:?}; use worker, planner or verifier"
+                    "unknown role {r:?}; use worker, planner, verifier or media"
                 ))
             })?,
         };
@@ -382,7 +382,7 @@ impl Tool for AgentTool {
                     "properties": {
                         "task": {"type": "string", "description": "The complete task: goal, context, constraints, what to report."},
                         "name": {"type": "string", "description": "A short label, for you and the owner."},
-                        "role": {"type": "string", "enum": ["worker", "planner", "verifier"]},
+                        "role": {"type": "string", "enum": ["worker", "planner", "verifier", "media"]},
                         "worktree": {"type": "boolean", "description": "In a git repo: its own worktree and branch (default true). false shares your files."},
                         "fork": {"type": "boolean", "description": "Start it from a copy of the end of your conversation, then the task (default false: the task alone)."},
                         "model": {"type": "string", "description": "Only if the owner asked for it: a connected model (provider/model or an alias) to run it on. Leave it out to use its role's model or yours."},

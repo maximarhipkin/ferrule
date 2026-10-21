@@ -172,7 +172,7 @@ fn validate(file: GraphFile) -> Result<Graph> {
                 if let Some(role) = &n.role {
                     if Role::parse(role).is_none() {
                         bail!(
-                            "node {:?}: no such role {role:?}; the roles are worker, planner and verifier",
+                            "node {:?}: no such role {role:?}; the roles are worker, planner, verifier and media",
                             n.id
                         );
                     }
@@ -834,7 +834,7 @@ pub async fn run(file: &Path, opts: RunOpts) -> Result<GraphReport> {
             let mcp_tools =
                 crate::connect_mcp_servers(&servers, sandbox.clone(), &workspace).await?;
             let sink = crate::ledger::build_sink(&cfg);
-            let build = crate::child_builder(opts.max_iterations, mcp_tools);
+            let build = crate::child_builder(opts.max_iterations, mcp_tools, None);
             let Some(sup) = crate::agents::supervisor(&cfg, opts.model.clone(), sink, build)?
             else {
                 bail!("a graph needs sub-agents: set `[agents] enabled = true`");

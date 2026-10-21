@@ -212,3 +212,39 @@ endpoint has been made with a real key, and no voice note has been sent
 to a real Telegram chat. The speech call has no cost in its ledger row
 (the trust caps don't see it; the daily count does). Sub-agents get the
 tool only with M51.3, the media role.
+
+## M51.3 — a `media` role for sub-agents (2026-10-21)
+
+From the 2026-10-20 gap analysis (M51.3). Built on `autopilot`.
+
+- **`Role::Media`** in `ferrule-agents` (`supervisor.rs`), offered in
+  `spawn_agent`'s `role` enum and description, and allowed in
+  `[agents.roles.media]` and graph nodes. Its child prompt says to make
+  only what the task asks, look at the result, and report each file's
+  path, because it can't send anything to the chat.
+- **Its files land where the parent's `send_file` reaches them.** The
+  supervisor never gives a media child a worktree (`place` gets `want =
+  false` for it), so it works in the parent's workspace and `media/` is
+  the parent's.
+- **The tools.** `child_builder` (`ferrule-cli/src/main.rs`) registers
+  `generate_image`, `generate_video` and, when on, `speak` for a media
+  child, on the gateway's shared `[media]` handle: the same backend,
+  proxy placeholder, daily cap and ledger rows as the chat's tools. The
+  child's session has no chat, so the image and speech tools save and
+  say "send_file can deliver it", and `generate_video` now says the
+  gateway saves the clip at its path when the render finishes (it used
+  to promise to send it "here", untrue without a chat). References
+  resolve with the strictest hidden list (a guest's).
+- **Where it can't run.** `ferrule run` and a terminal `ferrule graph`
+  build children without the media handle, so a media spawn there
+  fails with "a media agent needs the media tools … Spawn a worker
+  instead" (the factory's error is the spawn's answer). Graphs run from
+  the gateway use the gateway's supervisor, so they have it.
+- **The model.** `[agents.roles.media] model = "<ref>"` is optional, as
+  for every role; the report's "cheap, tool-capable" is the owner's
+  pick, since no image model takes tools.
+
+**Not verified live.** No media child has run against OpenRouter. A
+video a child starts is saved, not sent: the parent learns it's there
+only by looking (the poller logs it), so a parent that wants the clip
+in the chat sends it itself later.

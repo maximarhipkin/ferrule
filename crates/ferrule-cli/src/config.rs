@@ -1805,6 +1805,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 #                            # conversation a child starts with; 0 = no forks
 # [agents.roles.verifier]   # a role on another provider, from [providers]
 # provider = "local"
+# [agents.roles.media]      # M51.3: image, video and voice jobs; a cheap model
+# model = "openrouter/google/gemini-2.5-flash"  # that calls tools ([media] on)
 #
 # [trust]                    # M19 (docs/m19-trust-cost.md). Caps are 0 = off;
 # max_tokens_per_run = 5000000  # a run is one prompt and its sub-agents.

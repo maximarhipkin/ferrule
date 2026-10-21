@@ -1274,7 +1274,7 @@ async fn build_root(
         None,
         verify,
     )?;
-    let build = child_builder(max_iterations, mcp_tools);
+    let build = child_builder(max_iterations, mcp_tools, None);
     let Some(sup) = agents::supervisor(&cfg, provider_name, sink, build)? else {
         return Ok((agent, None));
     };
@@ -1283,13 +1283,23 @@ async fn build_root(
 }
 
 /// How the supervisor builds a child: like any agent, on its spec's
-/// workspace and session, narrowed to its role.
+/// workspace and session, narrowed to its role. M51.3: a `media` child
+/// also gets the media tools, which only the gateway with `[media]` on
+/// has (`media`); elsewhere it can't start, and the spawn says why.
 pub(crate) fn child_builder(
     max_iterations: usize,
     mcp_tools: self_extend::Extensions,
+    media: Option<Arc<ferrule_gateway::tools::MediaShared>>,
 ) -> agents::Build {
     Arc::new(move |scope, spec, tag| {
-        build_agent_from(
+        let media = match (spec.role, &media) {
+            (ferrule_agents::Role::Media, None) => bail!(
+                "a media agent needs the media tools, and this process has none: they run in the gateway with [media] on (docs/m51-media.md). Spawn a worker instead"
+            ),
+            (ferrule_agents::Role::Media, Some(m)) => Some(m.clone()),
+            _ => None,
+        };
+        let mut agent = build_agent_from(
             scope,
             spec.workspace.clone(),
             max_iterations,
@@ -1298,7 +1308,28 @@ pub(crate) fn child_builder(
             tag,
             Some(spec),
             None,
-        )
+        )?;
+        if let Some(media) = media {
+            // No chat: the tools save into the parent's workspace and say
+            // so; the parent sends the files. References resolve with every
+            // hidden path a guest's would (the strictest list).
+            agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
+                media.clone(),
+                &spec.id,
+                hidden_paths(false),
+            )));
+            agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
+                media.clone(),
+                &spec.id,
+                hidden_paths(false),
+            )));
+            if media.speaks() {
+                agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
+                    media, &spec.id,
+                )));
+            }
+        }
+        Ok(agent)
     })
 }
 
@@ -2851,7 +2882,7 @@ async fn gateway_factory(
         cfg,
         provider.clone(),
         ledger_sink.clone(),
-        child_builder(max_iterations, mcp_tools.clone()),
+        child_builder(max_iterations, mcp_tools.clone(), media.clone()),
     )?;
     let factory_sup = sup.clone();
     let owner = owner_mode::on(cfg);
