@@ -1338,7 +1338,12 @@ Current State; numbers are claimed there before anything is built.
     audio sends, whole albums and video messages, Discord's file
     downloads (`docs/channels.md`, "Photos" and "Voice messages");
     M56.8, keyless DuckDuckGo search by default and as the fallback
-    (`docs/web-search.md`).
+    (`docs/web-search.md`); M56.2, standing grants ("Always here": one
+    exact command in one workspace, or a connected service's change to
+    the same address or domain; listed and revoked on Settings; never
+    after outside content for a send) and deny-and-continue (a refusal
+    goes back to the model; 3 in a row or 20 in a run stop the run and
+    tell the owner) (`docs/m19-trust-cost.md` §7b–7c).
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,

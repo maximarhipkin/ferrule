@@ -102,6 +102,60 @@ pub fn classify(tool: &str, args: &Value, bound_hosts: &[HostPattern]) -> Option
     classify_command(command, bound_hosts)
 }
 
+/// M56.2: the words a standing "Always here" grant binds a shell call to:
+/// `command` must be exactly the one simple command `g` gates, with
+/// nothing the shell would expand or chain (no `$`, backquote, glob,
+/// brace, `~` or escape), so the words are what runs. `None`: it can be
+/// approved once or for the run, never for good.
+pub fn grantable_command(command: &str, g: &Gated) -> Option<Vec<String>> {
+    let segments = segments(command);
+    let [only] = segments.as_slice() else {
+        return None;
+    };
+    let literal = !only.contains(['$', '`', '*', '?', '[', '{', '~', '\\']);
+    (literal && only.trim() == g.command).then(|| words(only))
+}
+
+/// M56.2: who a connected service's change goes to, lower-cased: the
+/// addresses in `to`, `recipient` or `recipients` (a comma-separated
+/// string or a list), plus `cc` and `bcc`. Empty when the call names no
+/// `to` of its own (a reply that goes to a thread's sender): then no
+/// standing grant can cover it.
+pub fn recipients(args: &Value) -> Vec<String> {
+    let field = |key: &str| -> Vec<String> {
+        let raw: Vec<String> = match args.get(key) {
+            Some(Value::String(s)) => s.split([',', ';']).map(str::to_string).collect(),
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
+        raw.iter()
+            .map(|a| {
+                let a = a.trim();
+                let inner = match (a.rfind('<'), a.rfind('>')) {
+                    (Some(l), Some(r)) if l < r => &a[l + 1..r],
+                    _ => a,
+                };
+                inner.trim().to_lowercase()
+            })
+            .filter(|a| !a.is_empty())
+            .collect()
+    };
+    let mut out: Vec<String> = ["to", "recipient", "recipients"]
+        .iter()
+        .flat_map(|k| field(k))
+        .collect();
+    if out.is_empty() {
+        return out;
+    }
+    out.extend(["cc", "bcc"].iter().flat_map(|k| field(k)));
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// M20: a tool of a connected service (`mcp__<name>__*`, `name` in
 /// `connected`) that can change things: every tool whose server doesn't
 /// mark it read-only. The hint only ever skips the gate for a tool that

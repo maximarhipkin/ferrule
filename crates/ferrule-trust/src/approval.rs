@@ -3,7 +3,9 @@
 //! Each question gets a short code, used once. Only "yes" runs anything: a
 //! bare `yes` when exactly one question is pending in the chat, or `yes
 //! <code>`. `always` reads as `yes`, and for a gated command it also
-//! allows the same command for the rest of the run. `no <code>` refuses
+//! allows the same command for the rest of the run; `remember` (the
+//! "Always here" button, M56.2) also keeps it as a standing grant where
+//! the question offers that, else reads as `always`. `no <code>` refuses
 //! that one, and any other text refuses every pending question in the
 //! chat, so nothing waits on a reply that meant something else. A message that could mean either of two questions
 //! approves neither. A slash command is never an answer (it passes through
@@ -29,6 +31,8 @@ pub enum Answer {
     Yes,
     /// Yes, and the same command for the rest of the run.
     Always,
+    /// Yes, and from now on (M56.2): a standing grant.
+    Remember,
     /// Refused, with what the owner said.
     No(String),
 }
@@ -44,6 +48,8 @@ struct Pending {
     op: Option<String>,
     /// `always` may allow it for the rest of the run (a gated command).
     for_run: bool,
+    /// `remember` may keep it as a standing grant (M56.2).
+    remember: bool,
     tx: oneshot::Sender<Answer>,
 }
 
@@ -76,9 +82,17 @@ pub struct Approvals {
     inner: Mutex<Inner>,
 }
 
+/// How far a yes reaches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    Once,
+    Run,
+    Here,
+}
+
 enum Said {
-    /// The code, and whether it was `always`.
-    Yes(Option<String>, bool),
+    /// The code, and how far it reaches.
+    Yes(Option<String>, Reach),
     No(Option<String>),
     Other,
 }
@@ -96,8 +110,9 @@ fn parse(text: &str) -> Said {
         return Said::Other;
     }
     match first {
-        "yes" => Said::Yes(code, false),
-        "always" => Said::Yes(code, true),
+        "yes" => Said::Yes(code, Reach::Once),
+        "always" => Said::Yes(code, Reach::Run),
+        "remember" => Said::Yes(code, Reach::Here),
         "no" if code.is_some() => Said::No(code),
         _ => Said::Other,
     }
@@ -116,10 +131,14 @@ pub fn is_code(s: &str) -> bool {
     }
 }
 
-/// Sends `p` its yes: for the rest of the run when the owner said
-/// `always` and the question offers that.
-fn approve(p: Pending, always: bool) -> String {
-    if always && p.for_run {
+/// Sends `p` its yes: from now on when the owner said `remember` and the
+/// question offers that, for the rest of the run when they said `always`
+/// (or `remember`) and it offers that.
+fn approve(p: Pending, reach: Reach) -> String {
+    if reach == Reach::Here && p.remember {
+        let _ = p.tx.send(Answer::Remember);
+        format!("Approved from now on ({}): {}", p.code, p.what)
+    } else if reach != Reach::Once && p.for_run {
         let _ = p.tx.send(Answer::Always);
         format!("Approved for this run ({}): {}", p.code, p.what)
     } else {
@@ -195,6 +214,7 @@ impl Approvals {
             timeout,
             op,
             for_run: false,
+            remember: false,
             tx,
         });
         (code, rx)
@@ -208,10 +228,24 @@ impl Approvals {
         what: &str,
         timeout: Duration,
     ) -> (String, oneshot::Receiver<Answer>) {
+        self.open_for_gate(chat, what, timeout, true, false)
+    }
+
+    /// `open_for` a gated call, saying what more a yes may reach: the rest
+    /// of the run (`always`), and from now on (`remember`, M56.2).
+    pub fn open_for_gate(
+        &self,
+        chat: impl Into<ChatRef>,
+        what: &str,
+        timeout: Duration,
+        for_run: bool,
+        remember: bool,
+    ) -> (String, oneshot::Receiver<Answer>) {
         let (code, rx) = self.open_for(chat, what, Some(timeout), None);
         let mut inner = self.inner.lock().unwrap();
         if let Some(p) = inner.pending.iter_mut().find(|p| p.code == code) {
-            p.for_run = true;
+            p.for_run = for_run;
+            p.remember = remember;
         }
         (code, rx)
     }
@@ -260,7 +294,7 @@ impl Approvals {
         let i = inner.pending.iter().position(|p| p.code == code)?;
         let p = take(&mut inner, i);
         if allow {
-            Some(approve(p, false))
+            Some(approve(p, Reach::Once))
         } else {
             let _ = p.tx.send(Answer::No(said.to_string()));
             Some(format!("Refused ({}): {}", p.code, p.what))
@@ -336,8 +370,8 @@ impl Approvals {
                 .find(|&i| inner.pending[i].code == code)
         };
         match said {
-            Said::Yes(None, always) if here.len() == 1 => {
-                Some(approve(take(&mut inner, here[0]), always))
+            Said::Yes(None, reach) if here.len() == 1 => {
+                Some(approve(take(&mut inner, here[0]), reach))
             }
             Said::Yes(None, _) => {
                 let codes: Vec<String> = here
@@ -355,8 +389,8 @@ impl Approvals {
                     codes.join(", or ")
                 ))
             }
-            Said::Yes(Some(code), always) => match find(&inner, &code) {
-                Some(i) => Some(approve(take(&mut inner, i), always)),
+            Said::Yes(Some(code), reach) => match find(&inner, &code) {
+                Some(i) => Some(approve(take(&mut inner, i), reach)),
                 None => Some(format!(
                     "No question with code {code} is waiting; nothing was approved."
                 )),

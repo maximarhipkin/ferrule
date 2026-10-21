@@ -820,7 +820,7 @@ async fn anything_but_yes_refuses_and_the_run_goes_on() {
         "{}",
         results[0]
     );
-    assert!(results[0].ends_with("It was not run."));
+    assert!(results[0].contains("It was not run."));
     assert_eq!(r.answer, "done");
 }
 

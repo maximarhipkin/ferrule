@@ -8254,3 +8254,54 @@ encrypted), and the file isn't sealed under a keychain key (the
 report's optional half). Gate scripts and a transcription command have
 no `env` of their own. No live run (Linux `/proc/<pid>/environ`, macOS
 `ps eww`).
+
+### 2026-10-21 — M56.2: standing grants and deny-and-continue (Claude, Opus 5.5)
+
+**Why.** With owner mode off and the gates on, nothing lasted past a run:
+"Allow for this run" covered one shell command until the run ended, and
+a connected service's change asked every time, the same send to the
+owner's own address included. And a refusal only came back as the tool's
+result, so a model could keep trying variants, a card each, with no end.
+
+**What changed.**
+- `ferrule-trust` `grants`: `Grants` over `<data>/private/grants.json`
+  (0600, hidden from commands and the file tools in every mode, left out
+  of backups), read at each check; `Grant` (shell: argv and cwd; a
+  connected change: tool and an address or `@domain`), `Spec` (what
+  "Always here" would keep), `add`, `revoke`, `widen`.
+- `classify`: `grantable_command` (the command is exactly the one
+  simple command the gate found, with nothing the shell would expand or
+  chain) and `recipients` (`to`/`recipient(s)` plus `cc`/`bcc`; none
+  when the call names no `to`).
+- `approval`: `Answer::Remember`, `remember <code>`, `open_for_gate`;
+  a `remember` where it isn't offered reads as `always` or `yes`.
+- `hub`: the grants; `use_standing` (audited with route `standing`);
+  `ask_gate(…, remember)` adds the **Always here** button and its line,
+  and keeps the grant on that answer (`grant_added`); `denied`,
+  `let_through`, `escalated` with `DENIALS_IN_A_ROW` (3) and
+  `DENIALS_IN_A_RUN` (20), audited `denials_escalated`.
+- `guard`: `TrustGuard::workspace`; `standing` builds the spec, and
+  none for a call that leaves the box once the run read outside content
+  (M54.5's rule, in owner mode or not); `ask` tries the run grant, then a
+  standing one, refuses without a question once escalated, counts
+  refusals and appends the next step to the refusal;
+  `before_model_call` ends an escalated run with its answer.
+- `ferrule-cli`: `trust::equip` takes the workspace; the dashboard's
+  `GET grants`, `POST grants/revoke` and `grants/widen` (confirmed,
+  audited), and a **Standing approvals** card on Settings with Revoke
+  and Whole domain (Hebrew included). The email channel reads
+  `remember <code>` as an answer.
+- Docs: `m19-trust-cost.md` §6b, §7b, §7c and the audit list,
+  `m48-self-service.md` D9, the roadmap.
+
+**Tests changed, none added.** One refusal assertion now checks
+`contains` (the refusal has the next step after "It was not run.").
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** "Allow for this run" still covers a whole command when its
+first gated part was granted (`a; b` with `a` granted runs `b` too); the
+standing grant avoids that by taking only single commands. No CLI for
+grants (the dashboard only). The escalation thresholds aren't settings.
+A terminal run's question never offers Always here. No live run.

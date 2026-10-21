@@ -444,7 +444,7 @@ fn owner_trust(cfg: &config::Config) -> Result<Option<ferrule_eval::OwnerTrust>>
             task_shape: "eval".into(),
             origin: None,
         };
-        let (tag, guard) = crate::trust::equip(&cfg, tree, false, Some(tag))
+        let (tag, guard) = crate::trust::equip(&cfg, tree, false, Some(tag), None)
             .expect("the hub was built before the suite started");
         (tag.sink, guard as Arc<dyn ferrule_core::Guard>)
     })))

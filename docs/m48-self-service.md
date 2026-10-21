@@ -377,7 +377,9 @@ with the safe default and is repeated in the final report.
     "Allow for this run" lets one gated *shell* command run again
     without asking until the run ends (`docs/m19-trust-cost.md` §7).
     Admin questions never offer it, so D9 still holds for every
-    `ferrule_admin` op.
+    `ferrule_admin` op. M56.2's standing grants ("Always here", §7b
+    there) don't change that either: only gated shell commands and
+    connected services' changes offer them.
 - **D10 — Codes never run out.** After 1000 failed 2-character draws,
   `open_for` draws 3-character codes (letter, digit, letter: 4608 codes).
   Fixes bug 6.

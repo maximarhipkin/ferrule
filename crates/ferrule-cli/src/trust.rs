@@ -223,11 +223,14 @@ pub fn tree_of(
 /// What `build_agent_from` hands the agent: its ledger tag with the sink
 /// wrapped so every call is stamped with the tree, priced and charged to
 /// the hub (with no ledger, the hub is still charged), and its guard.
+/// `workspace` is where its commands run: a standing shell grant names it
+/// (M56.2).
 pub fn equip(
     cfg: &Config,
     tree: &str,
     child: bool,
     ledger: Option<LedgerTag>,
+    workspace: Option<&std::path::Path>,
 ) -> Result<(LedgerTag, Arc<TrustGuard>)> {
     let hub = hub(cfg)?;
     let (inner, shape, origin) = match ledger {
@@ -256,7 +259,8 @@ pub fn equip(
         .planning(is_planning(tree))
         .gates(!owners)
         .untrusted_gate(owner_mode && cfg.trust.untrusted_send_gate)
-        .guest_input(owner_mode && !owners);
+        .guest_input(owner_mode && !owners)
+        .workspace(workspace);
     let guard = if child { root.child() } else { root };
     Ok((
         LedgerTag {

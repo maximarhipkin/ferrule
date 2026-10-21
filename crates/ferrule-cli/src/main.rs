@@ -1577,7 +1577,13 @@ fn build_agent_from(
         memory_tools::MemoryAccess::for_child(child)
     };
     // M19: the owner's caps, kill switch and approval gates, per run tree.
-    let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
+    let (ledger, guard) = trust::equip(
+        &cfg,
+        &tree,
+        child.is_some(),
+        ledger,
+        Some(&tool_ctx.workspace),
+    )?;
     let session_id = transcript
         .as_ref()
         .and_then(|t| t.path().file_stem())

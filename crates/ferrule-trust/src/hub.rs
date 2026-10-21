@@ -7,6 +7,7 @@ use crate::audit::Audit;
 use crate::chat::ChatRef;
 use crate::clock::Clock;
 use crate::config::TrustConfig;
+use crate::grants::{Grants, Spec};
 use crate::kill::{stop_message, KillSwitch, StopInfo};
 use crate::meter::{Meter, Spend};
 use async_trait::async_trait;
@@ -94,7 +95,18 @@ struct RunState {
     granted: HashSet<String>,
     /// M54.5: what first brought outside content into this run.
     untrusted: Option<String>,
+    /// M56.2: gated calls refused since the last one let through.
+    denied_streak: u32,
+    /// M56.2: gated calls refused in this run.
+    denied_total: u32,
+    /// M56.2: the run's answer once too many were refused.
+    escalated: Option<String>,
 }
+
+/// M56.2: refusals in a row, and in one run, after which the run stops
+/// and the owner is told instead of the model trying yet another way.
+pub const DENIALS_IN_A_ROW: u32 = 3;
+pub const DENIALS_IN_A_RUN: u32 = 20;
 
 /// A question for `Hub::ask_in`.
 pub struct Question<'a> {
@@ -129,6 +141,8 @@ pub struct Hub {
     bound: Vec<HostPattern>,
     /// M20: the connected services, whose changing tools are gated.
     connected: RwLock<Vec<String>>,
+    /// M56.2: the owner's standing grants.
+    grants: Grants,
 }
 
 impl Hub {
@@ -162,6 +176,7 @@ impl Hub {
             poll: Duration::from_secs(1),
             bound,
             connected: RwLock::new(Vec::new()),
+            grants: Grants::in_data_dir(data),
         };
         // A restart doesn't warn twice for today's windows.
         let today = hub.meter.day(hub.clock.now()).to_string();
@@ -234,6 +249,11 @@ impl Hub {
 
     pub fn approvals(&self) -> &Approvals {
         &self.approvals
+    }
+
+    /// M56.2: the standing grants ("Always here").
+    pub fn grants(&self) -> &Grants {
+        &self.grants
     }
 
     pub fn set_notifier(&self, n: Option<Arc<dyn Notifier>>) {
@@ -372,6 +392,89 @@ impl Hub {
             json!({"subject": subject, "route": "grant", "answer": "granted"}),
         );
         true
+    }
+
+    /// M56.2: whether a standing grant lets `spec` through; when so, the
+    /// audit log records which one, and the run's refusal streak ends.
+    pub fn use_standing(&self, tree: &str, spec: &Spec, subject: &str) -> bool {
+        let found = match spec {
+            Spec::Command { argv, cwd, .. } => self.grants.command(argv, cwd).map(|g| g.id),
+            Spec::Send { tool, to, .. } => self.grants.send(tool, to).map(|ids| ids.join(",")),
+        };
+        let Some(id) = found else {
+            return false;
+        };
+        let run = self.run_id(tree);
+        self.answered(
+            tree,
+            &run,
+            json!({"subject": subject, "route": "standing", "answer": "granted", "grant": id}),
+        );
+        self.let_through(tree);
+        true
+    }
+
+    /// M56.2: a gated call in `tree`'s run went ahead; the refusal streak
+    /// starts again.
+    pub fn let_through(&self, tree: &str) {
+        if let Some(r) = self.runs.lock().unwrap().get_mut(tree) {
+            r.denied_streak = 0;
+        }
+    }
+
+    /// M56.2: a gated call in `tree`'s run was refused. Counts it and
+    /// returns what the model is told after the refusal: try another way,
+    /// or, at [`DENIALS_IN_A_ROW`] in a row or [`DENIALS_IN_A_RUN`] in all,
+    /// that the run stops here. Then [`Hub::escalated`] holds the run's
+    /// answer for the owner, and the audit log has `denials_escalated`.
+    pub fn denied(&self, tree: &str, what: &str) -> String {
+        let (run, streak, total, newly) = {
+            let mut runs = self.runs.lock().unwrap();
+            let r = runs.entry(tree.to_string()).or_insert_with(|| RunState {
+                id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
+                ..RunState::default()
+            });
+            r.denied_streak += 1;
+            r.denied_total += 1;
+            let over = r.denied_streak >= DENIALS_IN_A_ROW || r.denied_total >= DENIALS_IN_A_RUN;
+            let newly = over && r.escalated.is_none();
+            if newly {
+                let count = if r.denied_streak >= DENIALS_IN_A_ROW {
+                    format!("{} in a row", r.denied_streak)
+                } else {
+                    format!("{} in this run", r.denied_total)
+                };
+                r.escalated = Some(format!(
+                    "I stopped here: {count} of my actions needed your approval and were refused, the last {what}. I haven't tried another way since. Tell me how to go on, or approve it when I ask again."
+                ));
+            }
+            (r.id.clone(), r.denied_streak, r.denied_total, newly)
+        };
+        if newly {
+            self.audit.record(
+                self.clock.now(),
+                "denials_escalated",
+                Some(tree),
+                Some(&run),
+                json!({"in_a_row": streak, "in_the_run": total, "last": what}),
+            );
+        }
+        if self.escalated(tree).is_some() {
+            format!(
+                " That makes {total} refused in this run ({streak} in a row), so the run stops here and the owner is told."
+            )
+        } else {
+            " Don't retry it as it is: do the task another way that doesn't need it, or finish and say what you need from the owner.".into()
+        }
+    }
+
+    /// M56.2: the run's answer once too many of its calls were refused.
+    pub fn escalated(&self, tree: &str) -> Option<String> {
+        self.runs
+            .lock()
+            .unwrap()
+            .get(tree)
+            .and_then(|r| r.escalated.clone())
     }
 
     /// One provider call's row, as it goes to the ledger.
@@ -747,12 +850,15 @@ impl Hub {
         question: &str,
         timeout: Duration,
     ) -> Result<(), String> {
-        self.ask_gate(tree, subject, question, timeout, false).await
+        self.ask_gate(tree, subject, question, timeout, false, None)
+            .await
     }
 
     /// `ask_owner` for a gated command. With `for_run` the owner can also
     /// allow it for the rest of the run ("Allow for this run", `always
-    /// <code>`); `use_grant` then lets the same `subject` through.
+    /// <code>`); `use_grant` then lets the same `subject` through. With
+    /// `remember` (M56.2), from now on ("Always here", `remember <code>`):
+    /// the grant is kept, and `use_standing` lets it through after.
     pub async fn ask_gate(
         &self,
         tree: &str,
@@ -760,6 +866,7 @@ impl Hub {
         question: &str,
         timeout: Duration,
         for_run: bool,
+        remember: Option<&Spec>,
     ) -> Result<(), String> {
         let q = Question {
             subject,
@@ -768,7 +875,7 @@ impl Hub {
             timeout,
             op: None,
         };
-        self.ask(tree, None, q, for_run).await.map(|_| ())
+        self.ask(tree, None, q, for_run, remember).await.map(|_| ())
     }
 
     /// Asks in `chat` (the primary owner chat when `None`), as `ask_owner`
@@ -780,7 +887,7 @@ impl Hub {
         chat: Option<ChatRef>,
         q: Question<'_>,
     ) -> Result<String, String> {
-        self.ask(tree, chat, q, false).await
+        self.ask(tree, chat, q, false, None).await
     }
 
     async fn ask(
@@ -789,6 +896,7 @@ impl Hub {
         chat: Option<ChatRef>,
         q: Question<'_>,
         for_run: bool,
+        remember: Option<&Spec>,
     ) -> Result<String, String> {
         let Question {
             subject,
@@ -818,8 +926,9 @@ impl Hub {
                 chat.channel_title()
             ));
         };
-        let (code, rx) = if for_run {
-            self.approvals.open_for_run(&chat, what, timeout)
+        let (code, rx) = if for_run || remember.is_some() {
+            self.approvals
+                .open_for_gate(&chat, what, timeout, for_run, remember.is_some())
         } else {
             self.approvals
                 .open_for(&chat, what, Some(timeout), op.map(str::to_string))
@@ -833,11 +942,17 @@ impl Hub {
             subject,
             done: false,
         };
-        let always = if for_run {
-            ", or `always` to allow it for the rest of this run"
+        let mut always = if for_run {
+            ", or `always` to allow it for the rest of this run".to_string()
         } else {
-            ""
+            String::new()
         };
+        if let Some(spec) = remember {
+            always.push_str(&format!(
+                ", or `remember` to allow {} (revoke it on the dashboard's Settings)",
+                spec.offer()
+            ));
+        }
         let text = format!("{question}\nReply `yes` to allow it{always}. Anything else, or no answer in {}, refuses it. (code {code})", minutes(timeout));
         self.audit.record(
             self.clock.now(),
@@ -849,6 +964,9 @@ impl Hub {
         let mut choices = vec![("Allow".to_string(), format!("yes {code}"))];
         if for_run {
             choices.push(("Allow for this run".to_string(), format!("always {code}")));
+        }
+        if remember.is_some() {
+            choices.push(("Always here".to_string(), format!("remember {code}")));
         }
         choices.push(("Refuse".to_string(), format!("no {code}")));
         if let Err(e) = notifier.send_choices(&chat, &text, &choices).await {
@@ -868,6 +986,26 @@ impl Hub {
                     }
                 }
                 waiting.finish("always");
+                Ok(code)
+            }
+            Ok(Ok(Answer::Remember)) => {
+                waiting.finish("remember");
+                if let Some(spec) = remember {
+                    match self
+                        .grants
+                        .add(spec, &self.clock.now().to_rfc3339())
+                    {
+                        Ok(kept) => self.audit.record(
+                            self.clock.now(),
+                            "grant_added",
+                            Some(tree),
+                            run.as_deref(),
+                            json!({"subject": subject, "grants": kept.iter().map(|g| json!({"id": g.id, "what": g.describe()})).collect::<Vec<_>>()}),
+                        ),
+                        // Allowed this once all the same: the owner said yes.
+                        Err(e) => tracing::warn!("a standing grant wasn't kept: {e}"),
+                    }
+                }
                 Ok(code)
             }
             Ok(Ok(Answer::No(said))) => {

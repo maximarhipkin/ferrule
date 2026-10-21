@@ -283,7 +283,9 @@ untrusted input keeps it rare, so ordinary use still has no prompts.
 
 **Repeats.** A gated shell command offers "Allow for this run" (PR #44's
 per-run grant), so a retried push asks once. A connected service's
-change is asked about each time.
+change is asked about each time: a standing grant ("Always here", §7b)
+never covers a call that leaves the box once the run has read outside
+content, and the question then doesn't offer one.
 
 **Who's asked** is §7's table: the owner chat for a chat turn, the
 terminal for a terminal run, and nobody for a scheduled task, so a task
@@ -347,9 +349,60 @@ pending in that chat:
 
 Only "yes" runs the command. A refusal of any kind (no, other text,
 timeout, unattended, Telegram unreachable, the run halted while waiting)
-returns `refused by ferrule: … (why)` as the tool's result.
+returns `refused by ferrule: … (why)` as the tool's result, and §7c says
+what the model does next.
 
 The terminal: the same text on stderr, one line read from stdin, same rule.
+
+## 7b. Standing grants: "Always here" (M56.2)
+
+A question can offer a third yes, the **Always here** button (`remember`
+/ `remember k7`), when what it asks about has a narrow shape:
+
+- **A shell command** that is exactly the one simple command the gate
+  found (no `;`, `&&`, `|`, `$(…)`, no `sh -c` around it) and that the
+  shell wouldn't expand (no `$`, backquote, glob, brace, `~` or escape).
+  The grant is those words, quotes removed, in that workspace: `rm -rf
+  build` in `~/proj`. Anything else, the same words in another folder
+  included, asks.
+- **A connected service's change** that names its recipients (`to`,
+  `recipient`, `recipients`, plus `cc` and `bcc`): one grant per
+  address, for that tool. A later call is let through only when every
+  address it names is covered. A call that names no `to` of its own (a
+  Gmail reply that goes to the thread's sender) never is. On the
+  dashboard a grant to one address can be widened to its domain.
+- Nothing else: a plugin tool that asks on every call, an admin change, a
+  plan, or a terminal run.
+
+The text then says ``or `remember` to allow this exact command in
+~/proj from now on``. A `remember` where it isn't offered is an `always`
+(or a `yes`).
+
+Grants live in `<data>/private/grants.json` (0600), the directory the
+sandbox hides from commands and the file tools refuse, so the agent can
+neither read nor write them; backups leave them out. The file is read at
+each check, so a revoke holds at once. The dashboard's **Settings →
+Standing approvals** lists them with **Revoke** (and **Whole domain** for
+a send to one address); each is audited.
+
+First-time actions stay gated: a grant only comes from the owner's tap.
+**Outside content wins**: once a run has read outside content (§6b's
+sources), no standing grant covers a call that leaves the box (a
+connected change, a force push, a DELETE to a bound host), in owner mode
+or not, and that question offers no "Always here".
+
+## 7c. Refused: try another way, then stop (M56.2)
+
+A refused call goes back to the model as its result, with the next step
+spelled out: don't retry it as it is; do the task another way that
+doesn't need it, or finish and say what's needed from the owner. The
+hub counts the refusals of gated calls in each run (not plan mode's):
+after **3 in a row** (none let through between them) or **20 in the
+run**, the run stops before its next model call, and its answer (what the
+owner reads in the chat, or a scheduled task's result) says so: how many
+were refused, the last one, and that nothing else was tried. A gated call
+asked about after that is refused without a question. The audit log gets
+`denials_escalated`.
 
 ## 8. Plan mode
 
@@ -438,8 +491,11 @@ suite was also run with the switch on and tiny caps.
 `<data>/trust/audit.jsonl`, one line per event: `cap_stop`, `cap_warning`,
 `stop_engaged`, `stop_cleared`, `untrusted_seen` (M54.5: the source),
 `approval_asked`, `approval_answered`
-(`yes`, `always`, `no`, `timeout`, `unattended`, `unreachable`, `halted`,
-and `granted` with route `grant` each time a command runs on an `always`),
+(`yes`, `always`, `remember`, `no`, `timeout`, `unattended`,
+`unreachable`, `halted`, and `granted` with route `grant` each time a
+command runs on an `always`, route `standing` on a standing grant),
+`grant_added`, `grant_revoked`, `grant_widened`, `denials_escalated`
+(M56.2),
 `plan_proposed`, `plan_approved`, `plan_rejected`, `plan_executed`. Each has the time, the
 tree, the run and the detail (the command, the cap and spend, the plan
 hash). `ferrule trust audit [--since 7d]` prints it; `ferrule trust status`
