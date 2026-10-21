@@ -416,14 +416,26 @@ a one-line reason. After it, it runs in owner mode and without gates.
 
 ### Other people's chats
 
-Only your private chat, the dashboard chat and what they start (a
-sub-agent, a task, a `/plan`, `/goal` or `/graph` run) get owner mode.
-Every other session (a group, another allowed person, the HTTP API, a
-task made elsewhere) gets `workspace-write`, and can't read your
-`sessions/` or `learn/`; the claude engine is narrowed per session too. A
-run in the gateway that no chat traces to counts as someone else's.
+Your private chat, your Telegram groups, the dashboard chat and what they
+start (a sub-agent, a task, a `/plan`, `/goal` or `/graph` run) get owner
+mode. Every other session (another allowed person, another channel's
+group, the HTTP API, a task made elsewhere) gets `workspace-write`, and
+can't read your `sessions/` or `learn/`; the claude engine is narrowed per
+session too. A run in the gateway that no chat traces to counts as someone
+else's.
 
-**Known limit: guests share the helpers.** MCP servers, your `[hooks]`, the
+**A Telegram group is yours.** When the config asks for owner mode (held
+or fallen back), the bot admits only your own messages in an allowed
+group: Telegram's sender id must be your private chat's id
+(`TelegramChannel::with_only_owner_in_groups`). Anyone else there,
+including an anonymous admin, is ignored. So a group runs like your
+private chat: no approvals, `ferrule_admin` (its login and key links still
+go to your private chat), your transcripts. Add someone to such a group
+and the bot still answers only you.
+
+**Known limit: guests share the helpers.** This matters only if you allow
+someone else (another allowed Telegram chat, another channel, the HTTP
+API). MCP servers, your `[hooks]`, the
 browser, graph check commands and the host launcher are process-wide, and
 the workspace is shared. A guest's chat that uses them reaches what the
 owner sandbox reaches: never the keys or ferrule's protected files, but a

@@ -9,7 +9,7 @@ use crate::service;
 use crate::setup::tilde;
 use ferrule_gateway::{TaskStore, SCHEDULER_PSEUDO_CHANNEL};
 use ferrule_sandbox::{host, Mode, Policy, Sandbox};
-use ferrule_trust::Hub;
+use ferrule_trust::{ChatRef, Hub};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -117,12 +117,12 @@ pub fn guest_hidden() -> Vec<PathBuf> {
 }
 
 /// Whether the run tree `tree` gets owner mode (§1): the owner's private
-/// chat, the dashboard chat or the gateway's own terminal; a scheduled
-/// task made there or with no chat; a plan, goal or graph run started
-/// there; and runs from the terminal. Every other chat, and whatever was
-/// started from one, gets `workspace-write`, and so does a run in the
-/// gateway that no chat traces to. A sub-agent's tree is its root's, so
-/// it follows the root.
+/// chat, a Telegram group, the dashboard chat or the gateway's own
+/// terminal; a scheduled task made there or with no chat; a plan, goal or
+/// graph run started there; and runs from the terminal. Every other chat,
+/// and whatever was started from one, gets `workspace-write`, and so does
+/// a run in the gateway that no chat traces to. A sub-agent's tree is its
+/// root's, so it follows the root.
 pub fn owner_tree(hub: &Hub, tree: &str) -> bool {
     if owner_chat(hub, tree) {
         return true;
@@ -145,10 +145,23 @@ pub fn owner_tree(hub: &Hub, tree: &str) -> bool {
     GATEWAY.get().is_none()
 }
 
-/// The owner's private chat, the dashboard chat, or the gateway's own
-/// terminal (`[gateway] local = true`), where whoever types started it.
+/// The owner's private chat, the dashboard chat, the gateway's own terminal
+/// (`[gateway] local = true`), where whoever types started it, or a
+/// Telegram group (see [`owner_group`]).
 fn owner_chat(hub: &Hub, session: &str) -> bool {
-    crate::self_service::offered(hub, session).is_some() || session.starts_with("local__")
+    crate::self_service::offered(hub, session).is_some()
+        || session.starts_with("local__")
+        || owner_group(session).is_some()
+}
+
+/// A Telegram group's session, as the chat its answers go to. Only the
+/// owner's messages reach it whenever the config asks for owner mode
+/// (`TelegramChannel::with_only_owner_in_groups`), and only owner mode
+/// asks this, so in owner mode a group is the owner's chat.
+pub fn owner_group(session: &str) -> Option<ChatRef> {
+    let (info, chat) = crate::channels::of_session(session)?;
+    (info.name == "telegram" && chat.parse::<i64>().ok()? < 0)
+        .then(|| ChatRef::new(info.name, chat))
 }
 
 /// A scheduled task made in an owner chat, or with no chat. One that can't

@@ -51,9 +51,10 @@ append-only.
     merged into it on 2026-10-21, after M56.6.
   - Since then (2026-10-21): PR #47 merged to `main` as `2c74bdb`, then
     **M54** (protected autonomous mode, `docs/m54-autonomous.md`) landed
-    on `main` as `6efe413`. `autopilot` continues as **PR #49**: M58.1–
-    M58.5 and M53.2 onward, with `main` at `6efe413` merged in after
-    M53.2.
+    on `main` as `6efe413`, then PR #50 (the owner's Telegram groups get
+    owner mode) as `f70984e`. `autopilot` continues as **PR #49**: M58.1–
+    M58.5, M53.2 onward and the M51/M52 follow-ups, with `main` merged in
+    after M53.2 (`6efe413`) and after M51.4 (`f70984e`).
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
   green predicate (`AGENTS.md`). The last full run on `autopilot` before
   this rewrite: 1869 passed, 0 failed, 28 ignored across 71 test
@@ -7797,3 +7798,59 @@ the shell could cut or convert media (ferrule ships no ffmpeg).
 and no voice note sent to a real chat. The speech answer carries no
 cost, so its ledger row has none and the trust caps don't count it (the
 daily count does). Sub-agents get `speak` with M51.3.
+
+### 2026-10-21 — M54 follow-up: the owner's Telegram groups get owner mode (Claude, Opus 5.5)
+
+**Why.** The owner talks to the bot from their private chat and from
+several Telegram groups, with no one else. M54 treated every group as
+someone else's chat (`workspace-write`, approvals, no `ferrule_admin`, no
+transcripts), so the groups never got owner mode.
+
+**What changed.**
+- `TelegramChannel::with_only_owner_in_groups` (`ferrule-gateway`
+  `channels/telegram.rs` `admits`): in an allowed group, only a message
+  whose sender id is the owner's private chat id gets in. That includes
+  button taps; an anonymous admin or anyone else is ignored (debug log).
+  With no owner chat, no group message gets in. `main.rs` turns it on
+  whenever `owner_mode::wanted(cfg)`.
+- `owner_mode::owner_chat` counts a Telegram group (`owner_group`, a
+  negative chat id) as the owner's. `owner_tree` is only asked in owner
+  mode, where the sender check holds.
+- `gateway_factory` gives a group `ferrule_admin` when owner mode is on
+  (`Admin::autonomous`). No cards are shown there; login and key links
+  still go to the private chat (`send_link`).
+- `docs/sandbox.md` "Other people's chats" says so.
+
+**Dropped.** A guest-isolation design (separate folders, memory and
+claude state per guest; no MCP for guests; per-tree hooks) was written
+and approved, then shelved when the owner said no one else will use the
+bot. It is in the session notes, not the repo. Its findings matter only
+if someone else is allowed in. Guests would share the owner's
+`memory.db` through the in-process memory tools, and on the Claude plan
+engine a guest's claude can read running owner turns' bridge tokens in
+the shared config dir. Also, the supervisor keeps one hook set per
+process, which is the last root attached.
+
+**Checked.** `make check` passed on macOS (1881 passed, 0 failed, 28
+ignored). No test was added (not asked). No live run on the Linux
+server yet.
+
+### 2026-10-21 — main (`f70984e`, PR #50) merged into `autopilot` (Claude, Opus 5.5)
+
+**Why.** PR #50 (the M54 follow-up above: the owner's Telegram groups
+get owner mode) landed on `main`, and PR #49 conflicted with it.
+
+**What was resolved.** Only `PLAN.md` conflicted: both sides appended
+2026-10-21 entries. Every entry from both sides is kept; the M54
+follow-up's entry goes after `autopilot`'s M51.4, and the copy of M54's
+"Follow-ups" list git offered from `main`'s side is dropped because it
+is already in M54's entry above. `main.rs`, `owner_mode.rs`,
+`telegram.rs` and `docs/sandbox.md` merged cleanly: the group sender
+check (`admits`) sits beside M51.4's `sendVoice` branch in
+`telegram.rs`, and the factory's `ferrule_admin` offer beside the media
+tools in `gateway_factory`. PR #50 shelved guest isolation (its entry,
+"Dropped"), so there are no new guest rules for memory, learning,
+reactions or the media tools to fit inside; they keep M54's.
+
+**Checks.** `make check` exited 0 on the merge (the numbers are in the
+merge commit's message).

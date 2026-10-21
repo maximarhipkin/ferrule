@@ -124,6 +124,9 @@ pub struct TelegramChannel {
     /// Where notices about the bot itself go (M19c): a conflict, a
     /// removed webhook.
     owner: Option<i64>,
+    /// M54 owner mode: a group runs with the owner's reach, so only the
+    /// owner's own messages there reach the agent.
+    only_owner_in_groups: bool,
     /// What `setMyCommands` registers (M48).
     menu: Vec<crate::menu::Command>,
     conflict_after: Duration,
@@ -176,6 +179,7 @@ impl TelegramChannel {
             backoff_max: BACKOFF_MAX,
             last_ok_poll: Mutex::new(None),
             owner: None,
+            only_owner_in_groups: false,
             menu: crate::menu::BUILT_IN.to_vec(),
             conflict_after: CONFLICT_AFTER,
             conflict: Mutex::new(None),
@@ -224,6 +228,15 @@ impl TelegramChannel {
         self
     }
 
+    /// In an allowed group, admit only the owner's messages (Telegram's
+    /// `from.id` against the owner's private chat id, which is their user
+    /// id); everyone else there is ignored. With no owner, no group
+    /// message gets in.
+    pub fn with_only_owner_in_groups(mut self, on: bool) -> Self {
+        self.only_owner_in_groups = on;
+        self
+    }
+
     /// The commands under the `/` button: the owner's private chat gets
     /// all of them, a group only the ones anyone may send.
     pub fn with_menu(mut self, cmds: Vec<crate::menu::Command>) -> Self {
@@ -245,6 +258,16 @@ impl TelegramChannel {
             return false;
         };
         if self.allowed_chats.contains(&chat) {
+            let from_owner = self
+                .owner
+                .is_some_and(|o| msg.sender_id.as_deref() == Some(o.to_string().as_str()));
+            if chat < 0 && self.only_owner_in_groups && !from_owner {
+                tracing::debug!(
+                    sender = %msg.sender,
+                    "telegram: ignored a message in group {chat}: owner mode answers only the owner there"
+                );
+                return false;
+            }
             return true;
         }
         let due = {

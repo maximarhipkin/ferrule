@@ -2697,6 +2697,8 @@ fn build_channels(
             TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone())
                 .with_allowed_chats(cfg.gateway.telegram_allowed_chats.clone())
                 .with_owner(trust::owner_chat(cfg))
+                // M54: owner mode treats a group as the owner's chat.
+                .with_only_owner_in_groups(owner_mode::wanted(cfg))
                 .with_menu(self_service::menu::all(cfg.dashboard.enabled))
                 .with_conflict_after(Duration::from_secs(
                     cfg.health.telegram_conflict_secs.max(1),
@@ -2916,9 +2918,12 @@ async fn gateway_factory(
             // default 5 minutes; a scheduled task's run doesn't wait.
             agent.set_cache_ttl(chat_cache_ttl.clone());
         }
-        // M48: the owner's own chat can change Ferrule, with the owner's tap.
+        // M48: the owner's own chat can change Ferrule, with the owner's tap;
+        // in owner mode, a Telegram group of the owner's too (no cards there).
         if let Some(admin) = &admin {
-            if let Some(here) = self_service::offered(&admin.hub, session_id) {
+            let here = self_service::offered(&admin.hub, session_id)
+                .or_else(|| owner_mode::owner_group(session_id).filter(|_| admin.autonomous()));
+            if let Some(here) = here {
                 agent.append_system_prompt(if admin.autonomous() {
                     ferrule_agents::prompts::OWNER_ADMIN_AUTONOMOUS
                 } else {
