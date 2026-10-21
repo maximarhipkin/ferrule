@@ -121,7 +121,7 @@ async fn the_nesting_limit_refuses_and_the_deepest_level_cant_start_agents() {
         .expect("the child's call");
     assert!(!tools.iter().any(|t| t.ends_with("_agent")), "{tools:?}");
     // The board and the task list are there at every level.
-    assert!(tools.contains(&"board_post".to_string()), "{tools:?}");
+    assert!(tools.contains(&"board".to_string()), "{tools:?}");
     drop(offered);
 }
 
@@ -139,7 +139,7 @@ async fn the_running_children_limit_refuses_until_one_is_closed() {
     let err = spawn(&rig.sup, "r", "c").unwrap_err();
     assert!(matches!(err, AgentsError::Limit(_)));
     assert!(err.to_string().contains("2 agents running"), "{err}");
-    assert!(err.to_string().contains("wait_agent"), "{err}");
+    assert!(err.to_string().contains("message_agent"), "{err}");
 
     let closed = rig.sup.close("r", &a).await.unwrap();
     assert!(closed.contains(&a));

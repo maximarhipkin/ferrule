@@ -60,7 +60,7 @@ pub const RESULT_CAP: usize = 8_000;
 const NOTICE_CHARS: usize = 200;
 const DEFAULT_WAIT_SECS: u64 = 300;
 const MAX_WAIT_SECS: u64 = 3600;
-/// How long `close_agent` waits for a child to stop at its next step
+/// How long `stop_agent` waits for a child to stop at its next step
 /// before aborting it.
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
 
@@ -180,7 +180,7 @@ pub struct Closed {
 
 pub(crate) struct InboxItem {
     pub(crate) text: String,
-    /// A notice about this child; dropped once `wait_agent` returned the
+    /// A notice about this child; dropped once `message_agent` returned the
     /// child's result, so nothing is said twice.
     pub(crate) about: Option<String>,
     /// Wakes the agent when it's an idle root.
@@ -275,7 +275,7 @@ pub struct Supervisor {
     /// Limit checks and the insert that follows them happen under this, so
     /// two spawns at once can't both take the last slot.
     spawn_lock: Mutex<()>,
-    /// Bumped whenever an agent's status changes; `wait_agent` watches it.
+    /// Bumped whenever an agent's status changes; `message_agent` watches it.
     tick: watch::Sender<u64>,
     waker: RwLock<Option<Arc<dyn Waker>>>,
     /// Where children's worktrees go; none, and every child shares its
@@ -477,7 +477,7 @@ impl Supervisor {
         let row = self.get(id)?;
         if row.parent.as_deref() != Some(caller) {
             return Err(AgentsError::Invalid(format!(
-                "agent {id} isn't one you started; list_agents shows yours"
+                "agent {id} isn't one you started; message_agent with no ids lists yours"
             )));
         }
         Ok(row)
@@ -487,8 +487,8 @@ impl Supervisor {
         let running = self.store.running_children(&parent.id)?;
         if running >= self.limits.max_children {
             return Err(AgentsError::Limit(format!(
-                "you already have {running} agents running, the limit is {} at once: wait_agent for one \
-                 to finish or close_agent one first",
+                "you already have {running} agents running, the limit is {} at once: wait for one to \
+                 finish (message_agent) or stop one (stop_agent) first",
                 self.limits.max_children
             )));
         }
@@ -541,7 +541,7 @@ impl Supervisor {
             let open = self.store.open_in_tree(&parent.tree)?;
             if open >= self.limits.max_agents {
                 return Err(AgentsError::Limit(format!(
-                    "this tree already has {open} open agents, the limit is {}: close_agent the ones \
+                    "this tree already has {open} open agents, the limit is {}: stop_agent the ones \
                      you are done with",
                     self.limits.max_agents
                 )));
@@ -846,7 +846,7 @@ impl Supervisor {
                 ("untrusted", Some("true")),
             ],
             &format!(
-                "Agent {label} {verb}: {}\nCall wait_agent with its id for the full report.",
+                "Agent {label} {verb}: {}\nCall message_agent with its id for the full report.",
                 first_line(&text, NOTICE_CHARS)
             ),
         );
@@ -963,7 +963,7 @@ impl Supervisor {
             match row.status {
                 Status::Running => {
                     return Err(AgentsError::Invalid(format!(
-                        "agent {id} is still running; wait_agent for it first"
+                        "agent {id} is still running; wait for it first (message_agent)"
                     )))
                 }
                 Status::Closed => {

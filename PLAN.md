@@ -7196,3 +7196,78 @@ about, not fewer lines.
 
 **Open.** The three seams above. The gap analysis's "several hundred
 fewer lines" needs those. `run_inner` alone is still about 500 lines.
+
+### 2026-10-21 — M58.3: eleven agent tools cut to five; `log_diary` into `write_todos` (Claude, Opus 5.5)
+
+**Why.** Every call of an agent that can spawn carried eleven agent tool
+definitions, about 1.5k tokens. Claude Code ships three (`Agent`,
+`SendMessage`, `TaskStop`). The diary and the todo list were two planning
+surfaces for one job.
+
+**What changed.**
+- `ferrule-core/src/tool.rs`: `Tool::replaced_by()` (default `None`).
+  The registry still finds such a tool by name. `ToolRegistry::all()`
+  leaves it out, so it's in no `definitions()`, deferral or
+  `tool_search`, and it still shadows a source's tool of that name.
+- `ferrule-agents/src/tools.rs`: the offered tools are now
+  - `spawn_agent` (unchanged: `fork`, `effort` and the rest);
+  - `message_agent {ids?, message?, timeout_seconds?}`: `ids` alone
+    waits (was `wait_agent`); one id and a `message` sends a running
+    child a direct message, or resumes any other child (was
+    `resume_agent`); neither lists (was `list_agents`);
+  - `stop_agent {id}` (was `close_agent`);
+  - `board {body?, topic?, to?, since?}`: with `body` it posts or sends a
+    direct message, without it reads (was `board_post` and `board_read`);
+  - `tasks {action: add|list|claim|done, …}` (was the four `task_*`).
+
+  An agent at `max_depth` gets `board` and `tasks`. The eleven old names
+  are registered too, as before, with `replaced_by` set. They're never
+  offered, their old behavior stays, and each call logs a `warn!`
+  deprecation. Their definitions keep only the `required` fields, for
+  M25's misfit count. One helper per operation now serves both names.
+- Model-visible text names the new tools: the spawn result, the child
+  notice, the limit errors, "you hold task …".
+- `ferrule-tools/src/diary.rs`: `write_todos {todos?, note?}`. `todos`
+  overwrites `TODO.md` as before. `note` appends a timestamped line to
+  `diary.md`. A call with neither is an error; it used to write an empty
+  list. `log_diary {entry}` stays registered with `replaced_by` set. The
+  append is one shared function.
+- The system prompt's planning sentence names only `write_todos`
+  (`ferrule-cli/src/main.rs`, one line; `ferrule-eval/src/variant.rs` in
+  step).
+- `ferrule-otel`: `message_agent` and `stop_agent` count as agent tools.
+
+**Size** (name + description + compact JSON schema, measured from the
+source with a throwaway script in the scratchpad):
+
+| | Before | After |
+|---|---|---|
+| An agent that can spawn | 11 tools, 5,314 characters (5,911 with the prompt addition) | 5 tools, 4,497 (5,094) |
+| An agent at `max_depth` | 6 tools, 1,967 (2,564) | 2 tools, 1,337 (1,934) |
+| `write_todos` + `log_diary` | 628 | 539 |
+
+`spawn_agent` is 2,302 of the 4,497, unchanged on purpose: its cost
+guidance and M57.5's example stay.
+
+**Tests changed, none added.** `tests/it/supervisor.rs`: the
+offered-tools check looks for `board`, and the limit error for
+`message_agent`. The other agent tests still call the old names, so they
+now cover the aliases.
+
+**Docs.** `agents.md` (new "The tools", the size table, old names in the
+text), README (the Tools and Sub-agents rows), `m12-multi-agent.md` (a
+note), `m35-subscriptions.md` (the bridge table), `m57-context-hygiene.md`,
+the roadmap.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.**
+- Not A/B'd through `ferrule eval`, which the gap analysis asks for
+  before this lands (M58.5's policy now says so too).
+- Drop the old names (Kinds `Wait`…`TaskDone` and `DiaryTool`) in the
+  release after this one.
+- A Claude-plan agent keeps no diary. `log_diary` was bridged, and
+  `write_todos` stays off the bridge because claude has `TodoWrite`.
+- A resumed claude session that remembers an old name sees it gone from
+  the bridge's list and has to use the new one.

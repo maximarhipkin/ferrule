@@ -1234,7 +1234,12 @@ Current State; numbers are claimed there before anything is built.
     failure taxonomy (`FailureClass` is `failure::Kind`'s coarse view),
     routing's repeat counts kept with the stuck detector
     (`stuck::Streaks`), and a compaction strategy's request sent through
-    `call_provider` (`docs/m42-harness-engineering.md`, part 7).
+    `call_provider` (`docs/m42-harness-engineering.md`, part 7); M58.3,
+    the eleven agent tools cut to five (`spawn_agent`, `message_agent`,
+    `stop_agent`, `board`, `tasks`; the old names callable, never offered,
+    for one release) and `log_diary` merged into `write_todos` as `note`,
+    taking an agent that can spawn from ~5,900 to ~5,100 characters of
+    tool definitions (`docs/agents.md`, "The tools").
   - **M59** channels not worth chasing yet: personal WhatsApp and
     iMessage.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted

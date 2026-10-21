@@ -475,9 +475,9 @@ fn tool_type(name: &str) -> (&'static str, Option<&str>) {
         return ("extension", rest.split("__").next());
     }
     match name {
-        "spawn_agent" | "wait_agent" | "resume_agent" | "close_agent" | "list_agents" => {
-            ("agent", None)
-        }
+        "spawn_agent" | "message_agent" | "stop_agent" => ("agent", None),
+        // The names before M58.3, kept for one release.
+        "wait_agent" | "resume_agent" | "close_agent" | "list_agents" => ("agent", None),
         _ if name.contains("__") => ("extension", None),
         _ => ("function", None),
     }

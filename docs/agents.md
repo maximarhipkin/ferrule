@@ -19,12 +19,13 @@ things itself, use one child for one separable job, and use more only
 when the work splits cleanly.
 
 The agent tools themselves take room in every call of an agent that has
-them. Measured on the tool definitions ferrule sends:
+them. Measured on the tool definitions ferrule sends (name, description
+and schema, plus the prompt addition):
 
-| Agent | Tools | Size of their definitions plus the prompt addition |
+| Agent | Tools | Size |
 |---|---|---|
-| The root, or any agent that can still spawn | 11 | ~5,100 characters, about 1.3k tokens (M57.2's `effort` argument adds ~230 characters, M57.5's examples ~500, M57.7's `fork` ~320) |
-| An agent at `max_depth` (no spawn/wait/resume/close) | 6 | ~2,600 characters, about 0.7k tokens (M57.5's examples add ~200) |
+| The root, or any agent that can still spawn | 5 | ~5,100 characters, about 1.3k tokens; `spawn_agent` alone is ~2,300 (11 tools and ~5,900 before M58.3) |
+| An agent at `max_depth` (only `board` and `tasks`) | 2 | ~1,900 characters, about 0.5k tokens (6 tools and ~2,600 before M58.3) |
 | A child, in addition | | ~450 characters for "you are agent …, report to …" |
 
 A forked child (below) also reads its copy of the parent's conversation,
@@ -45,6 +46,26 @@ The limits below stop a tree that runs away.
   ```sh
   jq -s 'map(select(.origin == "agent:a-1f2e3d4c")) | map(.input_tokens + .output_tokens) | add' ledger.jsonl
   ```
+
+## The tools
+
+Five, after Claude Code's `Agent`, `SendMessage` and `TaskStop` (M58.3):
+
+| Tool | What it does |
+|---|---|
+| `spawn_agent {task, name?, role?, worktree?, fork?, model?, effort?}` | Starts a child in the background and returns its id at once |
+| `message_agent {ids?, message?, timeout_seconds?}` | With `ids` alone, waits until one of them finishes (default 300 s, at most 3600) and returns each one's status and report. With one id and a `message`, a running child reads it at its next step, and a finished, failed or interrupted one runs again with it. With neither, lists your children |
+| `stop_agent {id}` | Stops a child (at its next step) and everything it started |
+| `board {body?, topic?, to?, since?}` | With `body`, posts to the tree's board, or with `to` sends one agent a direct message. Without `body`, reads it |
+| `tasks {action, …}` | The tree's task list: `add`, `list`, `claim`, `done` |
+
+An agent at `max_depth` gets only `board` and `tasks`. Before M58.3 there
+were eleven tools: `wait_agent`, `resume_agent` and `list_agents`
+(now `message_agent`), `close_agent` (now `stop_agent`), `board_post`
+and `board_read` (now `board`), and `task_add`, `task_list`, `task_claim`
+and `task_done` (now `tasks`). Those names still work for one release,
+so a transcript or a session that uses them goes on working. They are
+never offered, and each call logs a deprecation warning.
 
 ## Config
 
@@ -102,7 +123,7 @@ provider = "cheap"
   arrives is run again, and its answer goes to the chat like any reply. The
   tree lives as long as the gateway runs.
 - **Scheduled tasks**: never woken. A task's run ends when it answers, so
-  it has to `wait_agent` for what it needs. `ferrule tasks run-now` closes
+  it has to wait for what it needs (`message_agent` with the ids). `ferrule tasks run-now` closes
   the task's tree before it exits. Under the gateway, a child still running
   when the task's run ends goes on running, and its report reaches the
   task's next run.
@@ -125,7 +146,7 @@ the end of the parent's conversation, then the task. The details are in
   doesn't push out everything before it.
 - A header first says whose conversation it is and that the task comes
   after it. Header and copy go into the child's own transcript, so
-  `resume_agent` replays them.
+  a child that's messaged again (`message_agent`) replays them.
 - The spawn result says how many of the parent's messages the child got.
 
 ## Worktrees
@@ -135,7 +156,7 @@ worktree, under `<data dir>/worktrees/<id>`, on a new branch
 `ferrule/<id>`. It can commit there. The parent's checkout never changes;
 the parent merges or cherry-picks the branch when it wants the work.
 
-Closing a child (`close_agent`, the end of a `ferrule run` or `chat`, or
+Closing a child (`stop_agent`, the end of a `ferrule run` or `chat`, or
 `ferrule agents close`) commits whatever it left uncommitted to its
 branch, then removes the worktree. The branch is deleted only if it holds
 no commits beyond where it started. Otherwise the output names it.
@@ -189,7 +210,7 @@ records which process runs it.
   whose process is gone. It leaves alone the agents another live process
   runs.
 - Nothing restarts by itself. An interrupted agent's transcript is on
-  disk, and its parent can `resume_agent` it.
+  disk, and its parent can run it again with `message_agent`.
 - `ferrule agents list` marks agents that run in another process.
   `ferrule agents close` refuses to close them, because only that process
   can stop them.
