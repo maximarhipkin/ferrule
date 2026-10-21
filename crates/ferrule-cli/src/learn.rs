@@ -125,20 +125,29 @@ pub enum LearnCmd {
 
 /// The `[Playbook]` section for a system prompt, if there are lessons and
 /// `[learning] playbook` is on: the global lessons, and (M53.4) those of
-/// `scope`.
-pub fn prompt_section(cfg: &LearningConfig, scope: Option<&str>) -> Option<String> {
+/// `scope`. With `only`, for a session that isn't the owner's, `scope`'s
+/// alone: a global lesson may have been learned in the owner's chats.
+pub fn prompt_section(cfg: &LearningConfig, scope: Option<&str>, only: bool) -> Option<String> {
     if !cfg.playbook {
         return None;
     }
     let dir = LearnDir::new(&config::data_dir().ok()?);
     let text = dir.read_playbook().ok()?;
-    ferrule_learn::prompt_block_for(&text, scope, cfg.max_bullets, PROMPT_CHARS).text
+    match scope.filter(|_| only) {
+        Some(scope) => {
+            ferrule_learn::prompt_block_only(&text, scope, cfg.max_bullets, PROMPT_CHARS)
+        }
+        None => ferrule_learn::prompt_block_for(&text, scope, cfg.max_bullets, PROMPT_CHARS),
+    }
+    .text
 }
 
 /// M53.4: the scope an agent of run tree `tree` learns and is taught in:
 /// a scheduled task's (`scheduler__<task>`), a gateway chat's
-/// (`<channel>__<chat>`), else its workspace's.
-pub fn scope_for(tree: &str, workspace: &Path) -> String {
+/// (`<channel>__<chat>`), else its workspace's. A `guest` run that is
+/// neither (a plan, goal or graph run from someone else's chat) takes the
+/// chat it traces to instead, never the workspace the owner's runs share.
+pub fn scope_for(tree: &str, workspace: &Path, guest: bool) -> String {
     let scheduler = format!("{SCHEDULER_PSEUDO_CHANNEL}__");
     if let Some(task) = tree.strip_prefix(&scheduler) {
         return ferrule_learn::scope::task(task);
@@ -146,15 +155,19 @@ pub fn scope_for(tree: &str, workspace: &Path) -> String {
     if crate::channels::of_session(tree).is_some() {
         return ferrule_learn::scope::chat(tree);
     }
+    if guest {
+        return ferrule_learn::scope::chat(&crate::owner_mode::chat_of(tree));
+    }
     ferrule_learn::scope::workspace(workspace)
 }
 
 /// M53.3: an agent's view of the learned skills. One loads only while its
 /// SKILL.md is the one the pass kept (`learn/skills.json`, which no agent
 /// can read or write: the lock of M13's path) and it still scans clean;
-/// M53.4: and only when it was kept for `scope` or is global. Every other
-/// skill passes. Checked on use, cached by modification time.
-pub fn skill_view(scope: Option<String>) -> ferrule_skills::Keep {
+/// M53.4: and only when it was kept for `scope` or is global, or with
+/// `only` (a session that isn't the owner's) kept for `scope` itself.
+/// Every other skill passes. Checked on use, cached by modification time.
+pub fn skill_view(scope: Option<String>, only: bool) -> ferrule_skills::Keep {
     let data = config::data_dir().ok();
     let cache = Mutex::new(ViewCache::default());
     Arc::new(move |s: &ferrule_skills::Skill| {
@@ -162,7 +175,10 @@ pub fn skill_view(scope: Option<String>) -> ferrule_skills::Keep {
             return true;
         }
         match &data {
-            Some(data) => cache.lock().unwrap().allows(data, s, scope.as_deref()),
+            Some(data) => cache
+                .lock()
+                .unwrap()
+                .allows(data, s, scope.as_deref(), only),
             None => false,
         }
     })
@@ -181,7 +197,13 @@ struct ViewCache {
 }
 
 impl ViewCache {
-    fn allows(&mut self, data: &Path, s: &ferrule_skills::Skill, scope: Option<&str>) -> bool {
+    fn allows(
+        &mut self,
+        data: &Path,
+        s: &ferrule_skills::Skill,
+        scope: Option<&str>,
+        only: bool,
+    ) -> bool {
         let dir = LearnDir::new(data);
         let at = modified(&dir.root().join("skills.json"));
         if self.index.as_ref().is_none_or(|(m, _)| *m != at) {
@@ -191,7 +213,10 @@ impl ViewCache {
             .index
             .as_ref()
             .and_then(|(_, i)| i.skills.get(&s.name))
-            .filter(|e| e.applies(scope))
+            .filter(|e| match scope.filter(|_| only) {
+                Some(scope) => e.kept_for(scope),
+                None => e.applies(scope),
+            })
             .map(|e| e.digest.clone())
         else {
             return false;
@@ -434,7 +459,7 @@ pub fn task_episodes(data: &Path, cursor: i64) -> Result<Vec<Episode>> {
             transcript: transcript.exists().then_some(transcript),
             at: at(run),
             // M53.4: what a task's run teaches applies to that task.
-            scope: Some(scope_for(&session, data)),
+            scope: Some(scope_for(&session, data, false)),
         });
     }
     Ok(out)

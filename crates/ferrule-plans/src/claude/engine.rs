@@ -96,8 +96,8 @@ pub struct EngineConfig {
     /// The M26 sandbox; claude runs under it as a helper. `None`: not
     /// confined (tests, or the sandbox off).
     pub sandbox: Option<Sandbox>,
-    /// M54: what a session that isn't the owner's has hidden on top, when
-    /// `sandbox` is owner mode (see [`Sandbox::narrowed`]).
+    /// M54: what a session that isn't the owner's has hidden on top (see
+    /// [`Sandbox::narrowed`]).
     pub guest_hidden: Vec<PathBuf>,
     /// M36: updates claude when a turn failed because it is too old or its
     /// install is broken; the turn is then tried once more.
@@ -635,8 +635,8 @@ impl Provider for ClaudeCode {
     }
 
     /// The same engine, sharing its paused turns, with claude run in the
-    /// narrowed sandbox: `workspace-write`, `guest_hidden` hidden too, where
-    /// this one is owner mode.
+    /// narrowed sandbox: `guest_hidden` hidden too, and `workspace-write`
+    /// where this one is owner mode.
     fn guest(&self) -> Option<Arc<dyn Provider>> {
         let mut config = (*self.config).clone();
         config.sandbox = config.sandbox.map(|s| s.narrowed(&config.guest_hidden));

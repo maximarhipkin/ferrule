@@ -210,6 +210,14 @@ impl Playbook {
             .collect()
     }
 
+    /// The lessons kept for `scope` itself, without the global ones.
+    pub fn lessons_only(&self, scope: &str) -> Vec<Lesson> {
+        self.lessons()
+            .into_iter()
+            .filter(|l| l.scope.as_deref() == Some(scope))
+            .collect()
+    }
+
     fn scope_of(&self, id: u32) -> Option<Option<String>> {
         self.lines.iter().find_map(|l| match l {
             Line::Lesson {
@@ -442,7 +450,29 @@ pub fn prompt_block_for(
     max_lessons: usize,
     max_chars: usize,
 ) -> PromptBlock {
-    let lessons = Playbook::parse(playbook).lessons_for(scope);
+    block_of(
+        Playbook::parse(playbook).lessons_for(scope),
+        max_lessons,
+        max_chars,
+    )
+}
+
+/// [`prompt_block`] with `scope`'s lessons alone, for a session that isn't
+/// the owner's: a global lesson may have been learned in the owner's chats.
+pub fn prompt_block_only(
+    playbook: &str,
+    scope: &str,
+    max_lessons: usize,
+    max_chars: usize,
+) -> PromptBlock {
+    block_of(
+        Playbook::parse(playbook).lessons_only(scope),
+        max_lessons,
+        max_chars,
+    )
+}
+
+fn block_of(lessons: Vec<Lesson>, max_lessons: usize, max_chars: usize) -> PromptBlock {
     let mut out = String::from(PROMPT_INTRO);
     let mut used = 0;
     let mut kept = 0;

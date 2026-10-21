@@ -1317,12 +1317,12 @@ pub(crate) fn child_builder(
             agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
                 media.clone(),
                 &spec.id,
-                hidden_paths(false),
+                session_hidden(false, false),
             )));
             agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
                 media.clone(),
                 &spec.id,
-                hidden_paths(false),
+                session_hidden(false, false),
             )));
             if media.speaks() {
                 agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
@@ -1450,7 +1450,9 @@ fn build_agent_from(
     let tree = trust::tree_of(child, transcript.as_ref());
     // M54 §1: owner mode is for the owner's own trees; any other chat, and
     // a task made in one, keeps `workspace-write`, the claude engine too.
-    let guest = sandbox.is_owner() && !owner_mode::owner_tree(&*trust::hub(&cfg)?, &tree);
+    // In every mode such a session's commands and file tools can't read
+    // the owner's memory, history or learned skills.
+    let guest = !owner_mode::owner_tree(&cfg, &*trust::hub(&cfg)?, &tree);
     if guest {
         sandbox = Arc::new(sandbox.narrowed(&owner_mode::guest_hidden()));
     }
@@ -1558,8 +1560,14 @@ fn build_agent_from(
         }
     }
     // M15: the root corrects and deletes memories, a writing child only
-    // adds, a read-only child only recalls (docs/m15-memory.md §8).
-    let memory_db = config::data_dir()?.join("memory.db");
+    // adds, a read-only child only recalls (docs/m15-memory.md §8). The
+    // owner's memory, profile block included, is the owner's sessions'
+    // only; anyone else's chat keeps one of its own.
+    let memory_db = if guest {
+        owner_mode::guest_memory(&tree)?
+    } else {
+        config::data_dir()?.join("memory.db")
+    };
     let access = if planning {
         memory_tools::MemoryAccess::Read
     } else {
@@ -1703,10 +1711,12 @@ fn build_agent_from(
     let mut stamp = ferrule_core::HarnessStamp::default();
     // M53.4: the scope this tree learns and is taught in (its chat, its
     // scheduled task or its workspace); a sub-agent shares its root's.
-    let learn_scope = learn::scope_for(&tree, &tool_ctx.workspace);
+    // Anyone else's session is taught only what was learned in its own
+    // scope: the global lessons and skills may come from the owner's.
+    let learn_scope = learn::scope_for(&tree, &tool_ctx.workspace, guest);
     if cfg.skills.enabled && !planning {
         let (skills, tools) =
-            mcp_tools.skill_tools(Some(learn::skill_view(Some(learn_scope.clone()))));
+            mcp_tools.skill_tools(Some(learn::skill_view(Some(learn_scope.clone()), guest)));
         let set = skills.get();
         stamp.skills = set
             .skills
@@ -1729,7 +1739,7 @@ fn build_agent_from(
 
     // M16: the playbook's lessons, read per agent so a pass's changes show
     // up in the next session. The file itself is hidden from the agent.
-    if let Some(block) = learn::prompt_section(&cfg.learning, Some(&learn_scope)) {
+    if let Some(block) = learn::prompt_section(&cfg.learning, Some(&learn_scope), guest) {
         stamp.playbook = Some(ferrule_core::fnv64(block.as_bytes()));
         system.push_str(&format!("\n\n{block}"));
     }
@@ -1972,6 +1982,18 @@ fn hidden_paths(owner: bool) -> Vec<PathBuf> {
     // (WhatsApp's held.json can hold a /dashboard login link).
     hidden.push(data.join("gateway"));
     if !owner {
+        hidden.extend(owner_mode::history());
+    }
+    hidden
+}
+
+/// What a session's own in-process tools (`send_file`, the media tools'
+/// references) may not read: [`hidden_paths`] as this mode has it for the
+/// owner (`on`: owner mode), and for anyone else's session (`!owners`)
+/// what only the owner's may read too (`owner_mode::guest_hidden`).
+fn session_hidden(on: bool, owners: bool) -> Vec<PathBuf> {
+    let mut hidden = hidden_paths(on && owners);
+    if !owners {
         hidden.extend(owner_mode::guest_hidden());
     }
     hidden
@@ -2890,6 +2912,7 @@ async fn gateway_factory(
     let factory_sup = sup.clone();
     let owner = owner_mode::on(cfg);
     let hub = trust::hub(cfg)?;
+    let tree_cfg = cfg.clone();
     let chat_cache_ttl = cfg.gateway.cache_ttl.asked();
     let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
         let (shape, origin) = ledger::classify_session(session_id);
@@ -2912,13 +2935,14 @@ async fn gateway_factory(
         // workspace's files aren't here to send. Sub-agents don't get it:
         // their answer goes to their parent, which sends the file.
         if channels::of_session(session_id).is_some() && remote::current().is_none() {
-            // M54 §7: another person's chat sends no transcript.
-            let owners = owner && owner_mode::owner_tree(&hub, session_id);
+            // M54 §7: another person's chat sends no transcript, and in
+            // every mode none of the owner's memory or learned skills.
+            let owners = owner_mode::owner_tree(&tree_cfg, &hub, session_id);
             agent.append_system_prompt(ferrule_agents::prompts::CHAT_FILES);
             agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
                 files.clone(),
                 session_id,
-                hidden_paths(owners),
+                session_hidden(owner, owners),
             )));
             // M51: media generation, bound to the same chat.
             if let Some(media) = &media {
@@ -2926,12 +2950,12 @@ async fn gateway_factory(
                 agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
                     media.clone(),
                     session_id,
-                    hidden_paths(owners),
+                    session_hidden(owner, owners),
                 )));
                 agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
                     media.clone(),
                     session_id,
-                    hidden_paths(owners),
+                    session_hidden(owner, owners),
                 )));
                 // M51.4: a voice reply.
                 if media.speaks() {

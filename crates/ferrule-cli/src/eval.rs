@@ -294,7 +294,7 @@ pub async fn cmd(op: EvalCmd) -> Result<()> {
                 // Read only for a suite that opts in (M16 §9).
                 playbook: suite
                     .owner_playbook
-                    .then(|| crate::learn::prompt_section(&cfg.learning, None))
+                    .then(|| crate::learn::prompt_section(&cfg.learning, None, false))
                     .flatten(),
                 // M19 §10: the owner's hub is only built for a suite that
                 // opts in, so a default run doesn't read its state at all.

@@ -8024,3 +8024,59 @@ prefix (OWASP's advice); and the only remote path was a quick tunnel.
 **Open.** No step-up answered from a real chat; no request through a
 real Tailscale Serve. Tunnel sessions from before the cookie rename end
 once. Cloudflare Access JWT validation at the origin isn't built.
+
+### 2026-10-21 — The owner's memory stays with the owner's chats (Claude, Opus 5.5)
+
+Claim: the security and approvals group on `autopilot` (PR #49): this
+fix, then M54.3, M54.6, M54.5, M54.2, M56.2 and M56.3, one commit each.
+
+**Why.** `memory.db` was shared by every chat. M56.4's profile block,
+the per-message recall and `remember`/`recall`/`forget` therefore gave
+another allowed person's chat, a guest in a group, or a non-owner HTTP
+API client the owner's facts, and let it change them. Lessons and
+learned skills had the same shape: a global lesson (learned in two of
+the owner's chats, or written by hand) and a workspace lesson reached
+every session, including a guest's `/plan` run.
+
+**What changed.** M54's owner classification decides it, in every mode:
+- `owner_mode.rs`: `owner_tree(cfg, hub, tree)` (a Telegram group is
+  the owner's only while `wanted(cfg)`, when the channel admits only the
+  owner there); `chat_of(tree)`; `guest_memory(tree)` →
+  `<data>/guest-memory/<chat>.db`; `history()` (sessions, learn) and
+  `guest_hidden()` = history plus `memory.db`, `-wal`, `-shm`,
+  `guest-memory/`, `learned-skills/`.
+- `ferrule-sandbox` `Sandbox::narrowed`: adds `hide` in every mode, and
+  still maps owner mode to `workspace-write`. The claude engine's
+  `guest()` follows.
+- `main.rs` `build_agent_from`: `guest` in every mode; a guest is
+  narrowed, its provider is `guest()`, its memory tools and
+  `GoalRecall` (so the profile block and the per-message recall) use its
+  own file; `session_hidden` for `send_file` and the media tools.
+  `hidden_paths(false)` still hides only sessions and learn from
+  everyone, so the owner's commands outside owner mode read `memory.db`
+  as before.
+- Learning: `learn::scope_for(.., guest)` keys a guest run that isn't a
+  chat or task by the chat it traces to; `prompt_section` and
+  `skill_view` take `only`; `ferrule_learn::prompt_block_only`,
+  `Playbook::lessons_only`, `skills::Entry::kept_for`.
+- Docs: `memory.md` "Whose memory", `sandbox.md` (Reads, Other people's
+  chats), `m54-autonomous.md` "Amendments after the build" (1), the
+  roadmap.
+
+**Smallest change on another surface.** `ferrule-sandbox` `narrowed`
+(M54's) and `ferrule-learn`'s playbook and skills index (M53.4's).
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** Shared helpers (MCP servers, the browser, hooks) aren't
+narrowed per session, so a guest-steered filesystem MCP server reads
+what they read (`memory.db` in every mode). On the Claude plan engine
+claude's own state dir is shared by every chat. A guest's learned
+skill loads but its scripts can't run from its shell. The learning pass
+still reads global lessons when it reflects on a guest's episode, and a
+guest lesson repeated in an owner scope is promoted to global (guest to
+owner, the other direction). Guests' memory files aren't in `ferrule
+memory`, the dashboard or the memory merges. No live run.
