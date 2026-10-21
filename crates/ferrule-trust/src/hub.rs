@@ -92,6 +92,8 @@ struct RunState {
     /// Gated commands the owner allowed for the rest of this run, by the
     /// subject they were asked about: "`<command>` (<kind>)".
     granted: HashSet<String>,
+    /// M54.5: what first brought outside content into this run.
+    untrusted: Option<String>,
 }
 
 /// A question for `Hub::ask_in`.
@@ -318,6 +320,40 @@ impl Hub {
 
     pub fn run_id(&self, tree: &str) -> Option<String> {
         self.runs.lock().unwrap().get(tree).map(|r| r.id.clone())
+    }
+
+    /// M54.5: `tree`'s run has read content from outside (`source`, a tool
+    /// name or "a guest's message"). The first one is kept, and audited.
+    pub fn saw_untrusted(&self, tree: &str, source: &str) {
+        let run = {
+            let mut runs = self.runs.lock().unwrap();
+            let run = runs.entry(tree.to_string()).or_insert_with(|| RunState {
+                id: uuid::Uuid::new_v4().simple().to_string()[..12].to_string(),
+                ..RunState::default()
+            });
+            if run.untrusted.is_some() {
+                return;
+            }
+            run.untrusted = Some(source.to_string());
+            run.id.clone()
+        };
+        self.audit.record(
+            self.clock.now(),
+            "untrusted_seen",
+            Some(tree),
+            Some(&run),
+            json!({"source": source}),
+        );
+    }
+
+    /// M54.5: what first brought outside content into `tree`'s run, if
+    /// anything did.
+    pub fn untrusted(&self, tree: &str) -> Option<String> {
+        self.runs
+            .lock()
+            .unwrap()
+            .get(tree)
+            .and_then(|r| r.untrusted.clone())
     }
 
     /// Whether the owner allowed `subject` for the rest of `tree`'s run;

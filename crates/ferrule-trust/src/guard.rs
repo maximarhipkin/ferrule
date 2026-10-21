@@ -1,6 +1,6 @@
 //! `TrustGuard`: the hub, seen from one agent in a run tree.
 
-use crate::classify::{classify, classify_connected, classify_declared, Gated};
+use crate::classify::{classify, classify_connected, classify_declared, untrusted_source, Gated};
 use crate::hub::{Hub, Prompter};
 use async_trait::async_trait;
 use ferrule_core::{Guard, GuardedCall, Verdict};
@@ -27,7 +27,15 @@ pub struct TrustGuard {
     route: Route,
     planning: bool,
     gates: bool,
+    /// M54.5: where this run's gates are off, a send after outside content
+    /// still asks.
+    untrusted_gate: bool,
+    /// M54.5: the run's own input is someone else's (a guest's message).
+    guest_input: bool,
 }
+
+/// What a guest's run starts having read.
+const GUEST_INPUT: &str = "a message from someone who isn't the owner";
 
 impl TrustGuard {
     /// The root agent of `tree` (a session id). A scheduled task's tree is
@@ -45,6 +53,8 @@ impl TrustGuard {
             route,
             planning: false,
             gates: true,
+            untrusted_gate: false,
+            guest_input: false,
         }
     }
 
@@ -59,6 +69,21 @@ impl TrustGuard {
     /// don't depend on it.
     pub fn gates(mut self, on: bool) -> Self {
         self.gates = on;
+        self
+    }
+
+    /// M54.5: with the gates off (owner mode), a connected service's
+    /// change, a force push or branch deletion and a DELETE to a bound host
+    /// still ask once the run has read content from outside.
+    pub fn untrusted_gate(mut self, on: bool) -> Self {
+        self.untrusted_gate = on;
+        self
+    }
+
+    /// M54.5: the run answers someone who isn't the owner, so it has read
+    /// outside content from its start.
+    pub fn guest_input(mut self, on: bool) -> Self {
+        self.guest_input = on;
         self
     }
 
@@ -83,11 +108,56 @@ impl TrustGuard {
         &self.hub
     }
 
-    fn refusal(g: &Gated, why: &str) -> String {
+    fn refusal(g: &Gated, why: &str, after: Option<&str>) -> String {
+        let after = after
+            .map(|source| format!(" after this run read outside content ({source})"))
+            .unwrap_or_default();
         format!(
-            "`{}` is a {}, which needs the owner's approval, and {why}. It was not run.",
+            "`{}` is a {}, which needs the owner's approval{after}, and {why}. It was not run.",
             g.command, g.kind
         )
+    }
+
+    /// Asks whoever can say yes about `g`; `after` is the outside content
+    /// this run read first, when that is why it asks (M54.5).
+    async fn ask(&self, tool: &str, g: Gated, after: Option<&str>) -> Verdict {
+        let subject = format!("`{}` ({})", g.command, g.kind);
+        if self.hub.use_grant(&self.tree, &subject) {
+            return Verdict::Allow;
+        }
+        // Only a shell gate's subject is the command itself; a service's or
+        // a plugin's names just the tool, whatever its arguments.
+        let for_run = tool == "shell";
+        let read = after
+            .map(|source| format!(", after reading outside content ({source})"))
+            .unwrap_or_default();
+        let outcome = match &self.route {
+            Route::Unattended(why) => {
+                self.hub.refuse_unattended(&self.tree, &subject, why);
+                Err(format!("{why}, so nobody can approve it"))
+            }
+            Route::Owner { chat_label } => {
+                let run = self.hub.run_id(&self.tree).unwrap_or_default();
+                let question = format!(
+                    "ferrule wants to run, in {chat_label} (run {run}){read}:\n`{}` — {}.",
+                    g.command, g.kind
+                );
+                let timeout = Duration::from_secs(self.hub.config().approval_timeout_secs);
+                self.hub
+                    .ask_gate(&self.tree, &subject, &question, timeout, for_run)
+                    .await
+            }
+            Route::Terminal(p) => {
+                let question = format!("ferrule wants to run `{}` — {}{read}.", g.command, g.kind);
+                self.hub
+                    .ask_terminal(&self.tree, &subject, &question, p.clone())
+                    .await
+            }
+        };
+        match outcome {
+            Ok(()) => Verdict::Allow,
+            Err(why) => Verdict::Refuse(Self::refusal(&g, &why, after)),
+        }
     }
 }
 
@@ -97,6 +167,9 @@ impl Guard for TrustGuard {
         if self.root {
             self.hub.begin_run(&self.tree);
         }
+        if self.guest_input {
+            self.hub.saw_untrusted(&self.tree, GUEST_INPUT);
+        }
     }
 
     fn before_model_call(&self) -> Option<String> {
@@ -105,6 +178,14 @@ impl Guard for TrustGuard {
     }
 
     async fn before_tool_call(&self, call: GuardedCall<'_>) -> Verdict {
+        if untrusted_source(
+            call.tool,
+            call.args,
+            call.changes_files,
+            &self.hub.connected(),
+        ) {
+            self.hub.saw_untrusted(&self.tree, call.tool);
+        }
         let gated = || {
             classify(call.tool, call.args, self.hub.bound_hosts())
                 .or_else(|| {
@@ -137,44 +218,24 @@ impl Guard for TrustGuard {
             return Verdict::Allow;
         }
         if !self.gates || !self.hub.config().gates {
-            return Verdict::Allow;
+            // M54.5: the one gate left. The confused deputy: the proxy
+            // swaps in the owner's key for its own host, so an injected
+            // page or email never needs to see a key to send mail as the
+            // owner or delete a remote branch.
+            if !self.untrusted_gate {
+                return Verdict::Allow;
+            }
+            let Some(source) = self.hub.untrusted(&self.tree) else {
+                return Verdict::Allow;
+            };
+            return match gated().filter(|g| g.kind.leaves_the_box()) {
+                Some(g) => self.ask(call.tool, g, Some(&source)).await,
+                None => Verdict::Allow,
+            };
         }
-        let Some(g) = gated() else {
-            return Verdict::Allow;
-        };
-        let subject = format!("`{}` ({})", g.command, g.kind);
-        if self.hub.use_grant(&self.tree, &subject) {
-            return Verdict::Allow;
-        }
-        // Only a shell gate's subject is the command itself; a service's or
-        // a plugin's names just the tool, whatever its arguments.
-        let for_run = call.tool == "shell";
-        let outcome = match &self.route {
-            Route::Unattended(why) => {
-                self.hub.refuse_unattended(&self.tree, &subject, why);
-                Err(format!("{why}, so nobody can approve it"))
-            }
-            Route::Owner { chat_label } => {
-                let run = self.hub.run_id(&self.tree).unwrap_or_default();
-                let question = format!(
-                    "ferrule wants to run, in {chat_label} (run {run}):\n`{}` — {}.",
-                    g.command, g.kind
-                );
-                let timeout = Duration::from_secs(self.hub.config().approval_timeout_secs);
-                self.hub
-                    .ask_gate(&self.tree, &subject, &question, timeout, for_run)
-                    .await
-            }
-            Route::Terminal(p) => {
-                let question = format!("ferrule wants to run `{}` — {}.", g.command, g.kind);
-                self.hub
-                    .ask_terminal(&self.tree, &subject, &question, p.clone())
-                    .await
-            }
-        };
-        match outcome {
-            Ok(()) => Verdict::Allow,
-            Err(why) => Verdict::Refuse(Self::refusal(&g, &why)),
+        match gated() {
+            Some(g) => self.ask(call.tool, g, None).await,
+            None => Verdict::Allow,
         }
     }
 

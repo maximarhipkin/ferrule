@@ -60,6 +60,13 @@ pub struct TrustConfig {
     pub plan_timeout_secs: u64,
     /// The approval gates on destructive shell commands.
     pub gates: bool,
+    /// M54.5: in owner mode, where a run's gates are off, one stays. In a
+    /// run that has read content from outside (a web page or search, the
+    /// browser, a connected service's read, a fetch from the shell, a
+    /// guest's message), a connected service's change, a force push or
+    /// branch deletion, and a DELETE to a bound host still ask. Guarded:
+    /// the bot can't turn it off.
+    pub untrusted_send_gate: bool,
 }
 
 impl Default for TrustConfig {
@@ -86,6 +93,7 @@ impl Default for TrustConfig {
             approval_timeout_secs: 600,
             plan_timeout_secs: 3600,
             gates: true,
+            untrusted_send_gate: true,
         }
     }
 }

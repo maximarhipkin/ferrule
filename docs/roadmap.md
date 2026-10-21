@@ -1294,6 +1294,13 @@ all fail; and `make check` is green on Linux, macOS and Windows.
   a red notice on the dashboard's Home that says what's open, with an
   "Ask me first" button; only owner mode's closes, for a day
   (`docs/sandbox.md`, "Turn it on and off").
+- **M54.5, one gate in owner mode**: once a run has read outside
+  content (the web, the browser, a connected service's read, a shell
+  `curl`, a guest's message), a connected service's change, a force push
+  or branch deletion and a `DELETE` to a bound host ask first, against
+  the confused deputy the proxy would otherwise be (`[trust]
+  untrusted_send_gate`, default on, guarded; `docs/m19-trust-cost.md`
+  §6b).
 
 ## Other open tracks
 

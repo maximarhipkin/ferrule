@@ -8153,3 +8153,42 @@ reminder either.
 **Open.** The Home notice reads the config file, so an edit not yet
 applied by a restart shows early (owner mode itself follows this
 process's fallback). The notice text isn't translated. No live run.
+
+### 2026-10-21 — M54.5: one gate in owner mode, for sends after outside content (Claude, Opus 5.5)
+
+**Why.** Owner mode turned every gate off for the owner's chats. The
+proxy hands the real key to its own host whoever asked, so an injected
+email or web page could send mail as the owner, delete a remote branch
+or `DELETE` on a bound API without ever seeing a key: a confused deputy
+the placeholders don't prevent (Meta's Rule of Two).
+
+**What changed.**
+- `ferrule-trust`: `[trust] untrusted_send_gate` (default true; "gate"
+  in the name keeps it guarded from `config_set`, `config_restore` and
+  the Config page). `Kind::leaves_the_box` (`ConnectedWrite`,
+  `ForcePush`, `HttpDelete`). `classify::untrusted_source`: `web_fetch`,
+  `web_search`, `mcp__browser__*`, a connected service's read, a shell
+  command whose program is an HTTP client. `RunState::untrusted`,
+  `Hub::saw_untrusted` (first source, audited `untrusted_seen`) and
+  `Hub::untrusted`. `TrustGuard`: `untrusted_gate`, `guest_input`; the
+  ask flow moved into `ask(tool, g, after)`, whose question and refusal
+  name the outside content; with the gates off it asks only for a
+  leaving class after outside content.
+- `ferrule-cli` `trust::equip`: `untrusted_gate` while owner mode runs
+  and the setting is on; a guest's run in owner mode starts marked.
+  `owner_mode::openings`' owner-mode text says what still asks.
+- Docs: `m19-trust-cost.md` §6b (and the config block, the audit list),
+  `sandbox.md` owner mode, `m54-autonomous.md` §5 and amendment 4, the
+  roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** A connected service's change is asked about every time (no
+per-run grant: its subject is the tool's name). Scheduled tasks that
+read and then send are refused in owner mode. Not seen as outside
+content: a fetch through `python`, `git clone`, an `mcp_add` server's
+reads (and its writes aren't classified), a forwarded message. No live
+run.

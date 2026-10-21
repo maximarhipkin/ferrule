@@ -337,7 +337,17 @@ In your private chat or the dashboard chat, with no approval prompt,
 `ferrule_admin` runs every change op at once and logs it
 (`self_service.ran`, by `<channel> chat <id> (owner mode)`). Its answer
 starts "Done:" or "Not done:". The trust gates are off for your chats
-and for the sub-agents and tasks you start there. The new ops:
+and for the sub-agents and tasks you start there, except one (M54.5):
+once a run has read outside content (a web page or search, the browser,
+a connected service's mail or messages, a `curl` from the shell), a
+connected service's change (an email, a message), a force push or
+branch deletion, and a `DELETE` to a host with a bound key ask you
+first. The proxy hands your key to its own host whoever asked, so an
+injected email could otherwise send mail as you without ever seeing the
+key. A new message starts clean, a shell command offers "Allow for this
+run", and a scheduled task, which has nobody to ask, is refused.
+`[trust] untrusted_send_gate = false`, set on the machine, turns it off
+([m19-trust-cost.md](m19-trust-cost.md) §6b). The new ops:
 
 | Op | What it does |
 |---|---|

@@ -39,6 +39,53 @@ impl fmt::Display for Kind {
     }
 }
 
+impl Kind {
+    /// M54.5: reaches past this machine and can't be taken back: what an
+    /// injected page or email would steer the owner's keys toward.
+    pub fn leaves_the_box(self) -> bool {
+        matches!(
+            self,
+            Kind::ForcePush | Kind::HttpDelete | Kind::ConnectedWrite
+        )
+    }
+}
+
+/// M54.5: a call whose result is content from outside the owner's control,
+/// so the model may be reading someone else's instructions after it: a web
+/// page or search, the browser, a connected service's read (email,
+/// messages, documents), or a shell command that fetches (`curl`, `wget`,
+/// httpie, `xh`, `gh`). A connected service's change doesn't count: its
+/// answer is a status, and two sends in a row stay untapped.
+pub fn untrusted_source(tool: &str, args: &Value, changes: bool, connected: &[String]) -> bool {
+    match tool {
+        "web_fetch" | "web_search" => true,
+        "shell" => args
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(fetches),
+        _ => {
+            let Some((server, _)) = tool.strip_prefix("mcp__").and_then(|r| r.split_once("__"))
+            else {
+                return false;
+            };
+            server == "browser" || (!changes && connected.iter().any(|c| c == server))
+        }
+    }
+}
+
+/// Whether some simple command in `command` is an HTTP client.
+fn fetches(command: &str) -> bool {
+    segments(command).iter().any(|segment| {
+        let words = words(segment);
+        unwrap(&words).first().is_some_and(|w| {
+            matches!(
+                program(w).as_str(),
+                "curl" | "wget" | "http" | "https" | "xh" | "xhs" | "gh" | "lynx" | "w3m"
+            )
+        })
+    })
+}
+
 /// A gated command: what kind, and the part of the command that is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gated {

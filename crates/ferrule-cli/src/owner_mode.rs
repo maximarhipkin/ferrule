@@ -122,12 +122,20 @@ pub struct Opening {
 pub fn openings(cfg: &Config) -> Vec<Opening> {
     let mut out = Vec::new();
     if on(cfg) {
+        // M54.5: the one gate left, or that it's off too.
+        let asks = if cfg.trust.untrusted_send_gate {
+            "only a send, a force-push or a DELETE after it has read outside content asks you \
+             first"
+        } else {
+            "nothing asks you first, not even a send after it has read outside content ([trust] \
+             untrusted_send_gate = false)"
+        };
         out.push(Opening {
             id: "open-owner",
-            what: "Owner mode is on: the bot's commands can write everywhere your account can \
-                   except the keys and ferrule's own files, the network is open, and nothing \
-                   asks you first."
-                .into(),
+            what: format!(
+                "Owner mode is on: the bot's commands can write everywhere your account can \
+                 except the keys and ferrule's own files, the network is open, and {asks}."
+            ),
             close: "Settings → Autonomy → Ask me first closes it (the gateway restarts).",
         });
     }

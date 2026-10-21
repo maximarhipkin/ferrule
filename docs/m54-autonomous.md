@@ -314,7 +314,8 @@ workspace's hooks run in the session's sandbox in every mode.
   Every run is audited: `self_service.ran` with
   `by = "<channel> chat <id> (owner mode)"`.
 - **Trust gates are off**, the same as `[trust] gates = false`, whatever
-  the config says.
+  the config says, except one (amendment 4): a send, a force push or a
+  `DELETE` to a bound host after the run read outside content.
 - **What stays owner-only:**
   - `config_set` keeps refusing guarded fields (unchanged).
   - `config_restore` from the chat now also refuses a restore that
@@ -797,6 +798,22 @@ and a privacy hole found on review. Code paths are under `crates/`.
    buttons. The sandbox-off and gates-off notices can't be closed
    (`notices::unclosable`); owner mode's closes for a day, as it's a
    choice the dashboard offers, and comes back while still true.
+4. **One gate stays in owner mode (M54.5).** §5 turned the gates off
+   ("not safety from the bot"). That left a confused deputy open: the
+   proxy swaps the real key in for its own host whoever asked, so an
+   injected email or page could send mail as the owner, delete a remote
+   branch or `DELETE` on a bound API without ever seeing a key. Now
+   `[trust] untrusted_send_gate` (default on, guarded by its name)
+   keeps `ConnectedWrite`, `ForcePush` and `HttpDelete`
+   (`Kind::leaves_the_box`) gated in a run that has read outside
+   content: `classify::untrusted_source` (`web_fetch`, `web_search`,
+   the browser, a connected service's read, a shell HTTP client) marks
+   the run (`Hub::saw_untrusted`, `RunState::untrusted`, audited as
+   `untrusted_seen`), and a guest's run in owner mode starts marked
+   (`TrustGuard::guest_input`). `TrustGuard::untrusted_gate` is set by
+   `trust::equip` only while owner mode runs. The question names the
+   source; a shell command keeps "Allow for this run"; a scheduled task
+   is refused. User docs: `m19-trust-cost.md` §6b.
 
 ## Build plan
 
