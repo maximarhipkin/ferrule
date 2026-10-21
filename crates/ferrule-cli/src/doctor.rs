@@ -1134,6 +1134,14 @@ async fn slack(r: &mut Report, cfg: &config::Config, offline: bool) -> bool {
 
 /// The backend commands run confined by, `None` if they don't.
 fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> Backend {
+    // M54: owner mode that can't hold falls back, in the gateway's workspace.
+    let gateway_workspace = service::installed()
+        .map(|(_, ws)| ws)
+        .unwrap_or_else(|| PathBuf::from(cfg.workspace.as_deref().unwrap_or(".")));
+    if let Some(why) = crate::owner_mode::refusal(cfg, &gateway_workspace) {
+        r.warn("sandbox", format!("owner mode is off: {why}"));
+        r.hint("until that's fixed, the gateway runs commands in the workspace-write sandbox, and says so in your chat");
+    }
     let sandbox = match Sandbox::new(crate::sandbox_policy(cfg)) {
         Ok(sandbox) => sandbox,
         Err(e) => {
@@ -1166,10 +1174,12 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> Backend
         }
         return Backend::None;
     }
-    let mode = match cfg.sandbox.mode {
+    // What runs here, which after an owner-mode fallback isn't the config's.
+    let mode = match sandbox.policy().mode {
         Mode::Off => "off",
         Mode::ReadOnly => "read-only",
         Mode::WorkspaceWrite => "workspace-write",
+        Mode::Owner => "owner",
     };
     let network = if cfg.sandbox.network {
         "network on"
@@ -1411,7 +1421,7 @@ fn agents_check(r: &mut Report, cfg: &config::Config, confined: bool) {
             "a read-only verifier rests on its tool set and prompt: shell commands aren't confined",
         );
     }
-    if std::process::Command::new("git")
+    if std::process::Command::new(ferrule_sandbox::host::system_program("git"))
         .arg("--version")
         .output()
         .is_err()

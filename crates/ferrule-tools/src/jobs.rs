@@ -51,6 +51,8 @@ pub struct Job {
     /// Workspace-relative, as the model sees it.
     log: String,
     path: PathBuf,
+    /// The file the job was started with ([`identity`]).
+    made: Option<(u64, u64)>,
     started: Instant,
     /// The process (and, on Unix, its group's) id.
     pid: Option<u32>,
@@ -90,7 +92,14 @@ impl Job {
 
     /// `job 2 (`npm run dev`): running for 1m 05s, 4210 bytes of output in …`.
     fn line(&self) -> String {
-        let bytes = std::fs::metadata(&self.path).map_or(0, |m| m.len());
+        // Same rule as `tail`: a log swapped for a link (or any other file)
+        // must not leak that file's size.
+        let size = match std::fs::symlink_metadata(&self.path) {
+            Ok(m) if !m.is_symlink() && self.is_ours(&m).is_ok() => {
+                format!("{} bytes of output", m.len())
+            }
+            _ => "output unavailable (the log isn't the job's own file)".to_string(),
+        };
         let state = match *self.end.lock().unwrap() {
             None => format!("running for {}", human(self.started.elapsed())),
             Some((End::Exited(code), took)) => {
@@ -99,16 +108,34 @@ impl Job {
             Some((End::Killed, took)) => format!("killed after {}", human(took)),
         };
         format!(
-            "job {} (`{}`): {state}, {bytes} bytes of output in {}",
+            "job {} (`{}`): {state}, {size} in {}",
             self.id, self.command, self.log
         )
+    }
+
+    /// Whether `meta` describes the file the job was started with.
+    fn is_ours(&self, meta: &std::fs::Metadata) -> std::io::Result<()> {
+        if !meta.is_file() || identity(meta) != self.made {
+            return Err(std::io::Error::other(
+                "it isn't the file the job was started with",
+            ));
+        }
+        Ok(())
     }
 
     /// The last `n` lines of the job's output.
     fn tail(&self, n: usize) -> String {
         let read = || -> std::io::Result<String> {
+            // This reads in ferrule's own process, and a sandboxed command
+            // can swap the log for a link to a file it can't read itself
+            // (the keys): only the file the job was started with is read.
+            if std::fs::symlink_metadata(&self.path)?.is_symlink() {
+                return Err(std::io::Error::other("it was replaced by a link"));
+            }
             let mut f = std::fs::File::open(&self.path)?;
-            let len = f.metadata()?.len();
+            let meta = f.metadata()?;
+            self.is_ours(&meta)?;
+            let len = meta.len();
             let from = len.saturating_sub(TAIL_BYTES);
             f.seek(SeekFrom::Start(from))?;
             let mut bytes = Vec::new();
@@ -122,6 +149,21 @@ impl Job {
             }
             Err(e) => format!("[could not read {}: {e}]", self.log),
         }
+    }
+}
+
+/// A file's device and inode, so `tail` reads only the log it made (Unix;
+/// elsewhere `None`, and only a link is refused).
+pub(crate) fn identity(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.dev(), meta.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
     }
 }
 
@@ -162,12 +204,14 @@ impl Jobs {
     }
 
     /// Starts watching `child`, already spawned with its output going to
-    /// `path` (`log` as shown), and returns the new job's id.
+    /// `path` (`log` as shown; `made`: its [`identity`]), and returns the
+    /// new job's id.
     pub(crate) fn add(
         &self,
         command: &str,
         log: String,
         path: PathBuf,
+        made: Option<(u64, u64)>,
         mut child: tokio::process::Child,
     ) -> u32 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
@@ -177,6 +221,7 @@ impl Jobs {
             command: command.to_string(),
             log,
             path,
+            made,
             started: Instant::now(),
             pid: child.id(),
             killed: AtomicBool::new(false),

@@ -246,7 +246,12 @@ pub fn equip(
         None => inner,
     };
     let sink = Arc::new(TrustSink::new(inner, hub.clone(), tree, Some(price)));
-    let root = TrustGuard::root(hub, tree, route_for(tree)).planning(is_planning(tree));
+    // Owner mode runs the owner's own trees without approval questions;
+    // guests keep the hub's `gates` (docs/m54-autonomous.md §5).
+    let gates = !(crate::owner_mode::on(cfg) && crate::owner_mode::owner_tree(&hub, tree));
+    let root = TrustGuard::root(hub, tree, route_for(tree))
+        .planning(is_planning(tree))
+        .gates(gates);
     let guard = if child { root.child() } else { root };
     Ok((
         LedgerTag {

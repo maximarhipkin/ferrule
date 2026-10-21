@@ -557,6 +557,7 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::Off => "off",
         Mode::ReadOnly => "read-only",
         Mode::WorkspaceWrite => "workspace-write",
+        Mode::Owner => "owner",
     }
 }
 
@@ -2882,7 +2883,11 @@ fn update_step(t: &mut Target) -> Result<()> {
 /// `ferrule setup --refresh-service`: write the installed service's units
 /// again, update units included, from what it runs now. No questions, so
 /// install.sh can run it after an upgrade.
-pub fn refresh_service() -> Result<()> {
+///
+/// M54 §3: with `exe`, the units name that binary instead, and the service
+/// isn't restarted. The gateway moving itself into its data dir calls it so,
+/// and its own exit restarts it.
+pub fn refresh_service_with(exe: Option<PathBuf>) -> Result<()> {
     match service::status() {
         service::Status::Installed { .. } => {}
         service::Status::NotInstalled => {
@@ -2895,7 +2900,8 @@ pub fn refresh_service() -> Result<()> {
         "the service's unit doesn't name its config and workspace; \
          `ferrule setup` → Background service → Reinstall writes it again",
     )?;
-    let exe = match service::installed_exe() {
+    let restart = exe.is_none();
+    let exe = match exe.or_else(service::installed_exe) {
         Some(exe) => exe,
         None => dunce::canonicalize(std::env::current_exe()?)?,
     };
@@ -2912,7 +2918,11 @@ pub fn refresh_service() -> Result<()> {
         path_env,
         instance: crate::instance::current(),
     };
-    let notes = service::install(&spec)?;
+    let notes = if restart {
+        service::install(&spec)?
+    } else {
+        service::rewrite(&spec)?
+    };
     ok("the service's units are current, and updates install by themselves");
     for note in notes {
         info(note);

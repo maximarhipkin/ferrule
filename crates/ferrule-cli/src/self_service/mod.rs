@@ -13,8 +13,10 @@
 mod describe;
 pub(crate) mod doctor;
 mod door;
+pub(crate) mod keys;
 mod locks;
 pub mod menu;
+mod packages;
 pub mod promise;
 pub(crate) mod restart;
 mod run;
@@ -52,6 +54,9 @@ pub const READ_OPS: &[&str] = &[
     "tasks",
     "connections",
     "config_get",
+    "secrets",
+    "secret_request",
+    "dashboard_link",
 ];
 
 /// Ops that change something: each asks the owner first.
@@ -66,6 +71,7 @@ pub const CHANGE_OPS: &[&str] = &[
     "mcp_on",
     "mcp_off",
     "mcp_remove",
+    "mcp_add",
     "hooks_trust",
     "hooks_untrust",
     "task_add",
@@ -79,6 +85,8 @@ pub const CHANGE_OPS: &[&str] = &[
     "config_restore",
     "backup",
     "disconnect",
+    "package_install",
+    "package_remove",
     "update",
     "restart",
 ];
@@ -103,6 +111,14 @@ pub enum Op {
     ConfigGet {
         key: Option<String>,
     },
+    Secrets,
+    /// The owner is sent a link to add the key (M54 §6.3, `keys::request`).
+    SecretRequest {
+        name: String,
+        hosts: Vec<String>,
+        why: String,
+    },
+    DashboardLink,
     ModelDefault {
         model: String,
     },
@@ -133,6 +149,15 @@ pub enum Op {
     },
     McpRemove {
         name: String,
+    },
+    McpAdd {
+        name: String,
+        command: Vec<String>,
+        url: Option<String>,
+        env: Vec<String>,
+        headers: Vec<String>,
+        enabled_tools: Vec<String>,
+        replace: bool,
     },
     HooksTrust {
         sha: String,
@@ -175,6 +200,12 @@ pub enum Op {
     Disconnect {
         name: String,
     },
+    PackageInstall {
+        packages: Vec<String>,
+    },
+    PackageRemove {
+        packages: Vec<String>,
+    },
     Update,
     Restart,
 }
@@ -197,6 +228,15 @@ struct Args {
     schedule: Option<String>,
     kind: Option<String>,
     timezone: Option<String>,
+    packages: Option<Vec<String>>,
+    command: Option<Vec<String>>,
+    url: Option<String>,
+    env: Option<Vec<String>>,
+    headers: Option<Vec<String>>,
+    enabled_tools: Option<Vec<String>>,
+    replace: Option<bool>,
+    hosts: Option<Vec<String>>,
+    why: Option<String>,
 }
 
 impl Op {
@@ -227,6 +267,13 @@ impl Op {
             "tasks" => Op::Tasks,
             "connections" => Op::Connections,
             "config_get" => Op::ConfigGet { key: a.key.clone() },
+            "secrets" => Op::Secrets,
+            "secret_request" => Op::SecretRequest {
+                name: need!(name),
+                hosts: need!(hosts),
+                why: need!(why),
+            },
+            "dashboard_link" => Op::DashboardLink,
             "model_default" => Op::ModelDefault {
                 model: need!(model),
             },
@@ -246,6 +293,15 @@ impl Op {
             "mcp_on" => Op::McpOn { name: need!(name) },
             "mcp_off" => Op::McpOff { name: need!(name) },
             "mcp_remove" => Op::McpRemove { name: need!(name) },
+            "mcp_add" => Op::McpAdd {
+                name: need!(name),
+                command: a.command.clone().unwrap_or_default(),
+                url: a.url.clone(),
+                env: a.env.clone().unwrap_or_default(),
+                headers: a.headers.clone().unwrap_or_default(),
+                enabled_tools: a.enabled_tools.clone().unwrap_or_default(),
+                replace: a.replace.unwrap_or(false),
+            },
             "hooks_trust" => Op::HooksTrust { sha: need!(sha) },
             "hooks_untrust" => Op::HooksUntrust,
             "task_add" => Op::TaskAdd {
@@ -273,6 +329,12 @@ impl Op {
             "config_restore" => Op::ConfigRestore,
             "backup" => Op::Backup,
             "disconnect" => Op::Disconnect { name: need!(name) },
+            "package_install" => Op::PackageInstall {
+                packages: need!(packages),
+            },
+            "package_remove" => Op::PackageRemove {
+                packages: need!(packages),
+            },
             "update" => Op::Update,
             "restart" => Op::Restart,
             other => {
@@ -302,6 +364,9 @@ impl Op {
             Op::Tasks => "tasks",
             Op::Connections => "connections",
             Op::ConfigGet { .. } => "config_get",
+            Op::Secrets => "secrets",
+            Op::SecretRequest { .. } => "secret_request",
+            Op::DashboardLink => "dashboard_link",
             Op::ModelDefault { .. } => "model_default",
             Op::ModelHere { .. } => "model_here",
             Op::ModelFallback { .. } => "model_fallback",
@@ -312,6 +377,7 @@ impl Op {
             Op::McpOn { .. } => "mcp_on",
             Op::McpOff { .. } => "mcp_off",
             Op::McpRemove { .. } => "mcp_remove",
+            Op::McpAdd { .. } => "mcp_add",
             Op::HooksTrust { .. } => "hooks_trust",
             Op::HooksUntrust => "hooks_untrust",
             Op::TaskAdd { .. } => "task_add",
@@ -325,6 +391,8 @@ impl Op {
             Op::ConfigRestore => "config_restore",
             Op::Backup => "backup",
             Op::Disconnect { .. } => "disconnect",
+            Op::PackageInstall { .. } => "package_install",
+            Op::PackageRemove { .. } => "package_remove",
             Op::Update => "update",
             Op::Restart => "restart",
         }
@@ -363,20 +431,28 @@ pub struct Admin {
     router: OnceLock<Weak<Router>>,
     /// What the update ops install with; tests point it at a mock.
     updater: OnceLock<Updater>,
+    /// Owner mode (M54 §5): change ops run at once, without the card.
+    autonomous: bool,
 }
 
 /// The apply flow to use and whether the update units are installed.
 type Updater = Arc<dyn Fn() -> Result<(Apply<'static>, bool), String> + Send + Sync>;
 
 impl Admin {
-    pub fn new(hub: Arc<Hub>) -> Arc<Self> {
+    pub fn new(hub: Arc<Hub>, autonomous: bool) -> Arc<Self> {
         Arc::new(Self {
             hub,
             bound: OnceLock::new(),
             ask_for: ASK_FOR,
             router: OnceLock::new(),
             updater: OnceLock::new(),
+            autonomous,
         })
+    }
+
+    /// Whether change ops run without asking the owner (owner mode).
+    pub fn autonomous(&self) -> bool {
+        self.autonomous
     }
 
     /// A test's card that waits `ask_for`, not ten minutes.
@@ -388,6 +464,7 @@ impl Admin {
             ask_for,
             router: OnceLock::new(),
             updater: OnceLock::new(),
+            autonomous: false,
         })
     }
 
@@ -403,6 +480,7 @@ impl Admin {
     }
 
     pub fn bind_router(&self, router: Weak<Router>) {
+        keys::bind(router.clone());
         let _ = self.router.set(router);
     }
 
@@ -421,6 +499,14 @@ impl Admin {
 
     pub fn bind_own(&self, ctx: Ctx) {
         let _ = self.bound.set(Bound::Own(Box::new(ctx)));
+    }
+
+    /// The page, when it's on in this process.
+    pub(crate) fn page(&self) -> Option<&Arc<Dashboard>> {
+        match self.bound.get()? {
+            Bound::Page(d) => Some(d),
+            Bound::Own(_) => None,
+        }
     }
 
     pub(crate) fn ctx(&self) -> Option<&Ctx> {

@@ -49,6 +49,30 @@ pub fn resolve(workspace: &Path, hidden: &[PathBuf], path: &str) -> Result<PathB
     Ok(resolved)
 }
 
+/// Refuses a write to `resolved` (what [`resolve`] returned for the
+/// model's `path`) under `protected`: M54 owner mode's paths, which the
+/// model may read but changes only through `ferrule_admin`.
+pub fn refuse_protected(
+    resolved: &Path,
+    protected: &[PathBuf],
+    path: &str,
+) -> Result<(), CoreError> {
+    let fold = cfg!(any(target_os = "macos", windows));
+    if protected
+        .iter()
+        .map(|p| real(&lexical(p)).unwrap_or_else(|| lexical(p)))
+        .any(|p| within(resolved, &p, fold))
+    {
+        return Err(CoreError::ToolFailed {
+            tool: "fs".into(),
+            message: format!(
+                "`{path}` is one of ferrule's own files (or starts programs outside the sandbox): you can read it, not write it; ferrule changes only through ferrule_admin"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Write `bytes` to `path` atomically: a temp file in the same directory,
 /// flushed, given the original's permissions, then renamed over it. A
 /// crash leaves the old file or the new one, never half of each. Parent
@@ -197,10 +221,12 @@ impl Tool for ReadFileTool {
     }
 }
 
-/// `write_file`. [`WriteFileTool::hiding`] adds paths it refuses even inside the workspace.
+/// `write_file`. [`WriteFileTool::hiding`] adds paths it refuses even inside the workspace,
+/// [`WriteFileTool::protecting`] paths it reads but doesn't write.
 #[derive(Default)]
 pub struct WriteFileTool {
     hidden: Vec<PathBuf>,
+    protected: Vec<PathBuf>,
     stamps: Option<FileStamps>,
 }
 
@@ -208,8 +234,14 @@ impl WriteFileTool {
     pub fn hiding(hidden: Vec<PathBuf>) -> Self {
         Self {
             hidden,
-            stamps: None,
+            ..Self::default()
         }
+    }
+
+    /// See [`refuse_protected`].
+    pub fn protecting(mut self, protected: Vec<PathBuf>) -> Self {
+        self.protected = protected;
+        self
     }
 
     /// M57.3: what it writes counts as read, for `edit_file`'s stale-file
@@ -239,11 +271,9 @@ impl Tool for WriteFileTool {
         }
     }
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
-        let path = resolve(
-            &ctx.workspace,
-            &self.hidden,
-            args["path"].as_str().unwrap_or(""),
-        )?;
+        let shown = args["path"].as_str().unwrap_or("");
+        let path = resolve(&ctx.workspace, &self.hidden, shown)?;
+        refuse_protected(&path, &self.protected, shown)?;
         let content = args["content"].as_str().unwrap_or("").to_string();
         let target = path.clone();
         let bytes = content.clone();

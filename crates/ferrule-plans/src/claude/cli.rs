@@ -5,6 +5,7 @@
 use super::env;
 use super::token::Token;
 use anyhow::{anyhow, bail, Context, Result};
+use ferrule_sandbox::Sandbox;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -61,6 +62,32 @@ pub fn command(binary: &Path, config_dir: &Path, token: Option<&Token>, args: &[
     cmd
 }
 
+/// [`command`], started through `sandbox` when one is given (owner mode):
+/// the same argv and environment. It runs in `config_dir`, which a helper
+/// sandbox grants.
+pub fn command_in(
+    binary: &Path,
+    config_dir: &Path,
+    token: Option<&Token>,
+    args: &[&str],
+    sandbox: Option<&Sandbox>,
+) -> Result<Command> {
+    let Some(sandbox) = sandbox else {
+        return Ok(command(binary, config_dir, token, args));
+    };
+    let spec = env::command(
+        args.iter().map(|a| a.to_string()).collect(),
+        config_dir,
+        token,
+        std::env::vars_os().map(|(k, _)| k.to_string_lossy().into_owned()),
+    );
+    let mut cmd = sandbox
+        .command(binary, &spec.args, config_dir)
+        .map_err(|e| anyhow!("couldn't sandbox {}: {e}", binary.display()))?;
+    spec.apply_std(&mut cmd);
+    Ok(cmd)
+}
+
 /// Runs `cmd` to the end with no input, killing it after `limit`.
 fn run(mut cmd: Command, limit: Duration) -> Result<std::process::Output> {
     cmd.stdin(Stdio::null())
@@ -81,10 +108,11 @@ fn run(mut cmd: Command, limit: Duration) -> Result<std::process::Output> {
     }
 }
 
-/// `claude --version`'s first word ("2.1.283").
-pub fn version(binary: &Path, config_dir: &Path) -> Result<String> {
-    let out = run(command(binary, config_dir, None, &["--version"]), QUICK)
-        .with_context(|| format!("running {} --version", binary.display()))?;
+/// `claude --version`'s first word ("2.1.283"), run under `sandbox` when
+/// one is given.
+pub fn version(binary: &Path, config_dir: &Path, sandbox: Option<&Sandbox>) -> Result<String> {
+    let cmd = command_in(binary, config_dir, None, &["--version"], sandbox)?;
+    let out = run(cmd, QUICK).with_context(|| format!("running {} --version", binary.display()))?;
     let text = String::from_utf8_lossy(&out.stdout);
     text.split_whitespace()
         .next()
@@ -118,13 +146,23 @@ impl AuthStatus {
 }
 
 /// Asks claude whether it's signed in under `config_dir` (with `token`
-/// when ferrule holds one). No model call is made.
-pub fn auth_status(binary: &Path, config_dir: &Path, token: Option<&Token>) -> Result<AuthStatus> {
-    let out = run(
-        command(binary, config_dir, token, &["auth", "status", "--json"]),
-        QUICK,
-    )
-    .with_context(|| format!("running {} auth status", binary.display()))?;
+/// when ferrule holds one), under `sandbox` when one is given. No model
+/// call is made.
+pub fn auth_status(
+    binary: &Path,
+    config_dir: &Path,
+    token: Option<&Token>,
+    sandbox: Option<&Sandbox>,
+) -> Result<AuthStatus> {
+    let cmd = command_in(
+        binary,
+        config_dir,
+        token,
+        &["auth", "status", "--json"],
+        sandbox,
+    )?;
+    let out =
+        run(cmd, QUICK).with_context(|| format!("running {} auth status", binary.display()))?;
     // Not signed in exits 1 with the same JSON.
     let text = String::from_utf8_lossy(&out.stdout);
     serde_json::from_str(text.trim()).with_context(|| {

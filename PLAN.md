@@ -49,6 +49,11 @@ append-only.
     update/restore defects, a test race), M55.3, M55.4, M55.5, M55.1,
     this rewrite, and the items after it. `main` (`2ffa669`, PR #48) was
     merged into it on 2026-10-21, after M56.6.
+  - Since then (2026-10-21): PR #47 merged to `main` as `2c74bdb`, then
+    **M54** (protected autonomous mode, `docs/m54-autonomous.md`) landed
+    on `main` as `6efe413`. `autopilot` continues as **PR #49**: M58.1–
+    M58.5 and M53.2 onward, with `main` at `6efe413` merged in after
+    M53.2.
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
   green predicate (`AGENTS.md`). The last full run on `autopilot` before
   this rewrite: 1869 passed, 0 failed, 28 ignored across 71 test
@@ -119,12 +124,12 @@ append-only.
     v0.13.1). The numbers M45 and M46 were never used.
   - After M50, on `main` only: PRs #44, #45 and #46 (above).
 - **In flight** (2026-10-21):
-  - **M54, protected autonomous mode.** The owner approved the design
-    on 2026-10-20 (`docs/m54-autonomous.md`, in the worktree of branch
-    `claude/laughing-chebyshev-5cd4a6`). It is being built there,
-    uncommitted on `dadf357`.
-  - **`autopilot` / PR #47:** the M55 items and the M52 and M56 items
-    this branch's Session Log entries name.
+  - **M54, protected autonomous mode** is merged to `main` (`6efe413`).
+    Its open edges (a live Linux run, macOS owner mode, per-session
+    helpers for guests) are in its Session Log entry.
+  - **`autopilot` / PR #49:** M58.1–M58.5 (simplify, remove or make
+    opt-in) and the M53 follow-ups (M53.2, M53.3, M53.4, M53.5, M53.7),
+    one commit each.
   - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
     `docs/research-harness2-media.md`, `docs/m51-media.md`,
     `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
@@ -5838,6 +5843,131 @@ Read the `ferrule-learn` module surfaces first (`pass.rs`, `reflect.rs`,
 designs (M51 media, M52 Safe, M53 probing) are now written and await
 Max's go. Everything uncommitted for review.
 
+### 2026-10-20 — M54 protected autonomous mode: design and build (Claude, Opus 5.5)
+
+**Scope.** The owner runs a personal Telegram bot on an Ubuntu server and
+wants it to run and improve itself (NanoClaw-style) without a terminal,
+with the keys still hidden. The stopgap they run now (`[sandbox] mode =
+"off"`, `[trust] gates = false`) exposes `private/secrets.env`. This
+session designs the replacement: `[sandbox] mode = "owner"`. Design in
+`docs/m54-autonomous.md`.
+
+**The design in short.** Commands may write everything the account can,
+except the keys (hidden) and a protected set that decides what runs
+outside the sandbox (read-only): the data dir, the config dir, the user
+systemd dirs and `environment.d`. The binary moves into the data dir.
+Outside the sandbox, the gateway runs only root-owned programs and its
+own binary. Hooks, gates, worktree git and helper version checks go
+through the sandbox. Credential files outside `private/` (the Matrix
+session, …) get hidden in every mode. `ferrule_admin` change ops and
+the trust gates stop asking.
+New ops: `package_install`/`package_remove` (apt via `sudo -n` in the
+gateway), `mcp_add`, `secret_request` (a Keys link to the owner, who
+pastes the key; the asking session is woken), `secrets` and
+`dashboard_link`. Transcripts and learn notes become readable. A
+dashboard switch is the owner's way in and out.
+
+**Review.** A builder-check pass read the design against the code.
+Its findings are folded in:
+- hooks and gate scripts run unsandboxed today;
+- `hooks_trust` without a card would trust them;
+- worktree git's `hooksPath` sits in a writable temp dir;
+- other credentials sit in the data dir;
+- helpers lift the socket allowlist;
+- `offered()` can't decide who gets owner mode.
+
+The macOS (Seatbelt) side wasn't checked in that pass.
+
+**Status.** Design approved by the owner (2026-10-20). Built 2026-10-21 in
+ten tasks and, at the owner's choice, merged into local `main` (not
+pushed) after merging main's PR #48 and PR #47 into the branch; `make
+check` there: 1881 passed, 0 failed, 28 ignored. The merge with autopilot
+also closed two leaks it brought: `shell_job tail` and its status line
+read a job's log in ferrule's own process, so a log swapped for a link
+to a hidden file gave away its content or size. Design, with the rulings made while building:
+`docs/m54-autonomous.md`; user docs: `docs/sandbox.md`, "Owner mode".
+
+**Built, by task.**
+1. The sandbox's owner mode (`ferrule-sandbox`): `Mode::Owner`, a
+   read-only `protected` list, `/` writable carved around hidden and
+   protected, `MAKE_DIR` on the way down, the socket allowlist kept,
+   `narrowed()` for other people's chats. Linux only: macOS and Windows
+   refuse it.
+2. Spawns through the sandbox: `host.rs` (`set`, `command`,
+   `system_program`), hooks, scheduler gates, transcription, the tunnel,
+   `agent-browser --version`, claude's version check and updater, worktree
+   git (`set_git`, hooks path `/dev/null` on Unix, in every mode),
+   signal-cli; `git`, `ssh`, `systemctl`, `loginctl` and `ps` through
+   `system_program`.
+3. Host wiring (`ferrule-cli/src/owner_mode.rs`, `main.rs`): the protected
+   set, `owner_tree`, `refusal`, the fallback and its owner-policy
+   launcher, `arm` for every process, every `backup::SECRETS` entry but
+   `ssh` hidden plus the gateway's state dir, the file tools refusing
+   protected writes, `ferrule sandbox` and doctor. 3b: the claude engine's
+   `guest()` sandbox (`Provider::guest`, `RoutedProvider`).
+4. No gates for the owner's trees (`TrustGuard::gates`, `trust::equip`).
+5. The binary moves into `<data>/bin` (hard link, units rewritten and
+   reloaded, atomic symlink swap; `setup::refresh_service_with`,
+   `service::rewrite`).
+6. Change ops without the card (`ask_and_run`, the autonomous prompt
+   strings, `config_restore` refusing guarded fields from the chat).
+7. The new ops: `package_install`/`package_remove` (`packages.rs`),
+   `mcp_add`, `secrets`, `dashboard_link`.
+8. `secret_request` (`keys.rs`): the Keys link with a prefill, the wake
+   when the key is saved, the reason allowlist.
+9. The owner's switch: Settings, Autonomy; `sandbox/mode`, page-only.
+10. Docs: `docs/sandbox.md`, `docs/m54-autonomous.md` (status and
+    "Corrections made while building"), `docs/roadmap.md`, README.
+
+**Main corrections to the design** (all in the doc's "Corrections made
+while building"): Linux only; `system_program` instead of `PATH` for
+unsandboxed spawns; `arm` in every process; `wanted` (config asks) versus
+`on` (running); guests can't read `sessions/` or `learn/`; `<data>/ssh`
+stays visible, `<data>/gateway` is hidden; a hard link and an atomic
+symlink swap, not a rename; `relocated()` for non-gateway processes;
+refusal beside another instance; apt's plan is checked; the
+`secret_request` reason is an allowlist; `describe` still runs in owner
+mode; after a fallback the helpers get an owner-policy sandbox, not the
+fallback one; `mcp_add` passes the header key names to the probe. The
+design's rows for the key-form `node` and cloudflared's version check
+were test-only code.
+
+**Checked.** `make check` passed on macOS: 1844 passed, 0 failed, 28
+ignored, with one environment override (the eval starter-suite test needs
+commit signing off, because the owner's global git config signs through
+1Password; M54 doesn't touch it). **Not compiled:** the Linux-only
+owner-mode code (`ferrule-sandbox` `linux.rs`, `supervisor.rs`, the
+`cfg(linux)` apply call). A Linux `cargo check` or a CI run is needed
+before merge. No live run yet: the "Done means" list in the design doc is
+still to do on a Linux server. No test was added (not asked). Existing
+assertions were updated where a signature or a count changed
+(`self_service/tests.rs`: 35 to 41 ops; `update/tests.rs`;
+`ferrule-plans/tests/it/claude_update.rs`).
+
+**Follow-ups.**
+- Fixed here because it blocked `make check`: a pre-existing clippy error
+  from PR #46 in `crates/ferrule-gateway/src/router.rs` (~835), `while
+  person && merges` rewritten as `if ... { loop {...} }`.
+- The eval starter-suite test depends on the machine's global git signing
+  config; it fails where commits are signed through an agent such as
+  1Password.
+- Pre-existing: `backup::SECRETS` doesn't list `gateway/http/clients.json`
+  (the HTTP API clients' key hashes), so a backup contains it, and the bot
+  can ask for a backup and read it.
+- macOS owner mode: ancestor unlink-deny anchors and a hard-link probe on
+  a Mac.
+- Per-session helpers for guests (MCP servers, hooks, the browser, graph
+  check commands, the host launcher, the shared workspace and its git
+  filter drivers); until then guests reach the owner sandbox's reach
+  there, never the keys.
+- Deferred minors worth doing: wake from `config_follow` once the key is
+  bound, not after a fixed delay; remember who asked in a file, not in
+  memory; prune `ORIGINS`; `supervised()`/`INVOCATION_ID` exactness and
+  `manager()`'s fallback check; the apt dry run's sudoers shape and its
+  English-only message matching; `mcp_add` card pre-checks and the
+  duplicated `${...}` scanner; `keys::bind`'s router order against Admin;
+  `Command::new` outside tests re-grepped for a spawn the table misses.
+
 ### 2026-10-21 — M51 + M52 + M53 built (Kimi)
 
 **Scope.** Max: "start building everything m51, m52, m53." Designs:
@@ -7406,3 +7536,27 @@ evidence), `pass/tests.rs`'s `ADD` and retire answer, and the CLI's
 **Open.**
 - No real pass has run with the new prompt or limits.
 - Nothing verifies that the cited moment is in the transcript.
+
+### 2026-10-21 — main (`6efe413`, M54) merged into `autopilot` (Claude, Opus 5.5)
+
+**Why.** M54 (protected autonomous mode) landed on `main`, and PR #49
+(`autopilot`) conflicted with it. Merged, not rebased, at a clean point
+after M53.2 and before M53.3.
+
+**Resolved.**
+- `PLAN.md`: every Session Log entry kept. M54's entry is dated
+  2026-10-20, so it sits after the last 2026-10-20 entry (Kimi's M53
+  design), before the first 2026-10-21 one. Neither side had edited
+  Current State; it now says M54 is on `main` and `autopilot` is PR #49.
+- `docs/roadmap.md`: both kept, our M53 follow-ups block, then M54's
+  section.
+- Everything else merged without a conflict. Checked by hand:
+  `crates/ferrule-tools/src/jobs.rs` and `shell.rs` are `main`'s byte for
+  byte, so M54's fix to M57.6's `shell_job` (a job's log is no longer
+  read in ferrule's own process, where a log swapped for a link to
+  `private/secrets.env` leaked it) is what runs. M54's new prompt and op
+  text names no agent tool M58.3 renamed (its `task_add` is a
+  `ferrule_admin` op, not the old agent tool).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS). M54's Linux-only code is still not compiled here.

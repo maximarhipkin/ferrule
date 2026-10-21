@@ -252,6 +252,39 @@ pub async fn describe(op: &Op, ctx: &Ctx, here: &ChatRef) -> Result<String, Stri
                 ),
             }
         }
+        Op::McpAdd {
+            name,
+            command,
+            url,
+            env,
+            headers,
+            replace,
+            ..
+        } => {
+            super::run::mcp_keys(ctx, env, headers)?;
+            let what = match url {
+                Some(url) => url.clone(),
+                None => command.join(" "),
+            };
+            let mut text = format!(
+                "Add the MCP server {name} ({what}); it starts now and its tools are scanned first."
+            );
+            if *replace {
+                text.push_str(&format!(" It replaces the configured server {name}."));
+            }
+            text
+        }
+        Op::PackageInstall { packages } => {
+            super::packages::check(packages)?;
+            format!(
+                "Install system packages with sudo apt-get: {}.",
+                packages.join(", ")
+            )
+        }
+        Op::PackageRemove { packages } => {
+            super::packages::check(packages)?;
+            format!("Remove system packages: {}.", packages.join(", "))
+        }
         Op::HooksTrust { sha } => {
             let v = get(ctx, "settings").await?;
             let h = &v["workspace_hooks"];

@@ -61,7 +61,7 @@ fn a_native_install_updates_itself_with_no_input_and_no_autoupdater_block() {
         assert_eq!(update::blocked(&install), None, "our own files");
     }
     let config = tmp.path().join("config");
-    let done = update::update(&install, &config, Duration::from_secs(60)).unwrap();
+    let done = update::update(&install, &config, Duration::from_secs(60), None).unwrap();
     assert_eq!(
         done,
         update::Updated {
@@ -80,7 +80,7 @@ fn a_failed_update_says_why() {
     let claude = native_install(tmp.path());
     std::fs::write(claude.parent().unwrap().join("fake-update-fails"), "").unwrap();
     let install = update::detect(&claude).unwrap();
-    let e = update::update(&install, tmp.path(), Duration::from_secs(60)).unwrap_err();
+    let e = update::update(&install, tmp.path(), Duration::from_secs(60), None).unwrap_err();
     let text = format!("{e:#}");
     assert!(
         // `claude.exe update failed` on Windows.
@@ -98,7 +98,7 @@ fn an_install_ferrule_cant_update_names_the_command() {
     copy_fake(&claude);
     let install = update::detect(&claude).unwrap();
     assert_eq!(install.method, Method::Unknown);
-    let e = update::update(&install, tmp.path(), Duration::from_secs(60)).unwrap_err();
+    let e = update::update(&install, tmp.path(), Duration::from_secs(60), None).unwrap_err();
     assert!(format!("{e}").contains("the way you installed it"), "{e}");
     assert!(!claude.parent().unwrap().join("fake-update.json").exists());
 }
@@ -124,6 +124,7 @@ impl Repairer for Here {
             &update::detect(&self.claude)?,
             &self.config,
             Duration::from_secs(60),
+            None,
         )?;
         Ok(())
     }

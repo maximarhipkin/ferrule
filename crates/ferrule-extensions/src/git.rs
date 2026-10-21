@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn git(cwd: Option<&Path>, args: &[&str]) -> Result<String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(ferrule_sandbox::host::system_program("git"));
     cmd.args([
         "-c",
         "http.lowSpeedLimit=1000",

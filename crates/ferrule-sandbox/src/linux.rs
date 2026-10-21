@@ -34,6 +34,7 @@ const WRITE_FILE: u64 = 1 << 1;
 const READ_FILE: u64 = 1 << 2;
 const READ_DIR: u64 = 1 << 3;
 // 1<<4 REMOVE_DIR … 1<<12 MAKE_SYM: ABI 1's directory-only rights.
+const MAKE_DIR: u64 = 1 << 7;
 const ABI1_ALL: u64 = (1 << 13) - 1;
 const REFER: u64 = 1 << 13; // ABI 2
 const TRUNCATE: u64 = 1 << 14; // ABI 3
@@ -93,7 +94,13 @@ fn handled_fs(abi: u32) -> u64 {
     rights
 }
 
-fn ruleset(abi: u32, writable: &[PathBuf], hidden: &[PathBuf]) -> io::Result<OwnedFd> {
+fn ruleset(
+    abi: u32,
+    writable: &[PathBuf],
+    hidden: &[PathBuf],
+    protected: &[PathBuf],
+    owner: bool,
+) -> io::Result<OwnedFd> {
     let handled = handled_fs(abi);
     let attr = RulesetAttr {
         handled_access_fs: handled,
@@ -131,6 +138,7 @@ fn ruleset(abi: u32, writable: &[PathBuf], hidden: &[PathBuf]) -> io::Result<Own
         Path::new("/"),
         EXECUTE | READ_FILE | READ_DIR,
         hidden,
+        READ_DIR,
     )?;
     // `cmd > /dev/null` opens with O_TRUNC, hence TRUNCATE.
     allow(
@@ -138,16 +146,29 @@ fn ruleset(abi: u32, writable: &[PathBuf], hidden: &[PathBuf]) -> io::Result<Own
         Path::new("/dev/null"),
         (READ_FILE | WRITE_FILE | TRUNCATE | IOCTL_DEV) & handled,
     )?;
+    // Owner mode carves `/` itself, so `mkdir ~/proj` must work on the way
+    // down; the next command's ruleset grants the new folder in full.
+    let level = if owner { READ_DIR | MAKE_DIR } else { READ_DIR };
     for root in writable {
-        allow_carved(&ruleset, root, handled, hidden)?;
+        // A protected path that contains the root doesn't wall it: that root
+        // is a deliberate grant (an MCP state dir, a sub-agent's worktree).
+        let mut walls = hidden.to_vec();
+        walls.extend(protected.iter().filter(|p| !root.starts_with(p)).cloned());
+        allow_carved(&ruleset, root, handled, &walls, level)?;
     }
     Ok(ruleset)
 }
 
 /// `allow` for every rule `carve` computes. The top rule must succeed; an
 /// entry that vanished or can't be opened since `read_dir` is skipped.
-fn allow_carved(ruleset: &OwnedFd, root: &Path, access: u64, hidden: &[PathBuf]) -> io::Result<()> {
-    for (path, access) in carve(root, access, hidden) {
+fn allow_carved(
+    ruleset: &OwnedFd,
+    root: &Path,
+    access: u64,
+    walls: &[PathBuf],
+    level: u64,
+) -> io::Result<()> {
+    for (path, access) in carve(root, access, walls, level) {
         match allow(ruleset, &path, access) {
             Err(e) if path != root => {
                 tracing::debug!("sandbox: skipping {}: {e}", path.display())
@@ -158,35 +179,48 @@ fn allow_carved(ruleset: &OwnedFd, root: &Path, access: u64, hidden: &[PathBuf])
     Ok(())
 }
 
-/// The rules that grant `access` beneath `root` except under `hidden`.
+/// The rules that grant `access` beneath `root` except under `walls` (the
+/// hidden paths, and for a write grant the protected ones).
 ///
-/// Landlock can only add rights, so hiding a subtree means never granting
-/// its ancestors: each directory on the way down gets `READ_DIR` alone (so
-/// `ls ~` still works) and every other entry of it gets the full `access`.
+/// Landlock can only add rights, so walling off a subtree means never
+/// granting its ancestors: each directory on the way down gets `access &
+/// level` alone (`READ_DIR`, so `ls ~` still works; owner mode adds
+/// `MAKE_DIR`) and every other entry of it gets the full `access`.
 /// `READ_DIR` is inherited like any right, so the file *names* inside a
 /// hidden directory stay listable; their contents don't. A symlink is judged by
-/// where it points, so one aimed into a hidden path grants nothing. All
-/// paths must be canonical. With nothing hidden under `root` this is just
+/// where it points, so one aimed into a walled path grants nothing. All
+/// paths must be canonical. With no wall under `root` this is just
 /// `[(root, access)]`.
 ///
 /// Rules bind to inodes, so renaming an ancestor doesn't expose anything;
 /// entries created after the ruleset is built get no rule at the carved
-/// levels, and a bind mount of a hidden directory elsewhere isn't covered.
-pub(crate) fn carve(root: &Path, access: u64, hidden: &[PathBuf]) -> Vec<(PathBuf, u64)> {
+/// levels, and a bind mount of a walled directory elsewhere isn't covered.
+pub(crate) fn carve(
+    root: &Path,
+    access: u64,
+    walls: &[PathBuf],
+    level: u64,
+) -> Vec<(PathBuf, u64)> {
     let mut rules = Vec::new();
-    carve_into(root, access, hidden, &mut rules);
+    carve_into(root, access, walls, level, &mut rules);
     rules
 }
 
-fn carve_into(dir: &Path, access: u64, hidden: &[PathBuf], rules: &mut Vec<(PathBuf, u64)>) {
-    if hidden.iter().any(|h| dir.starts_with(h)) {
+fn carve_into(
+    dir: &Path,
+    access: u64,
+    walls: &[PathBuf],
+    level: u64,
+    rules: &mut Vec<(PathBuf, u64)>,
+) {
+    if walls.iter().any(|h| dir.starts_with(h)) {
         return;
     }
-    if !hidden.iter().any(|h| h.starts_with(dir)) {
+    if !walls.iter().any(|h| h.starts_with(dir)) {
         rules.push((dir.to_path_buf(), access));
         return;
     }
-    rules.push((dir.to_path_buf(), access & READ_DIR));
+    rules.push((dir.to_path_buf(), access & level));
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -195,14 +229,14 @@ fn carve_into(dir: &Path, access: u64, hidden: &[PathBuf], rules: &mut Vec<(Path
         let Ok(real) = path.canonicalize() else {
             continue; // dangling symlink: nothing to grant
         };
-        if hidden.iter().any(|h| real.starts_with(h)) {
+        if walls.iter().any(|h| real.starts_with(h)) {
             continue;
         }
-        if hidden.iter().any(|h| h.starts_with(&real)) {
+        if walls.iter().any(|h| h.starts_with(&real)) {
             // Another ancestor. Walk it under its own name only; a symlink
             // to it would otherwise grant the whole subtree.
             if real == path {
-                carve_into(&path, access, hidden, rules);
+                carve_into(&path, access, walls, level, rules);
             }
             continue;
         }
@@ -252,19 +286,24 @@ fn annotate(err: io::Error, what: &str) -> io::Error {
     io::Error::new(err.kind(), format!("{what}: {err}"))
 }
 
-/// Arrange for `cmd` to confine itself to `writable`, keep out of `hidden`
-/// (plus, when `network` is false, no sockets but Unix ones, and with
-/// `unix` only the Unix sockets it allows — see [`crate::supervisor`])
-/// right before it execs.
+/// Arrange for `cmd` to confine itself to `writable`, keep out of `hidden`,
+/// not write `protected` outside a root that lies inside one, and in
+/// `owner` mode make folders on the way down to those (plus, when
+/// `network` is false, no sockets but Unix ones, and with `unix` only the
+/// Unix sockets it allows — see [`crate::supervisor`]) right before it
+/// execs.
+#[allow(clippy::too_many_arguments)]
 pub fn apply(
     cmd: &mut Command,
     abi: u32,
     network: bool,
     writable: &[PathBuf],
     hidden: &[PathBuf],
+    protected: &[PathBuf],
+    owner: bool,
     unix: Option<Arc<UnixSockets>>,
 ) -> io::Result<()> {
-    let ruleset = ruleset(abi, writable, hidden)?;
+    let ruleset = ruleset(abi, writable, hidden, protected, owner)?;
     let supervised = unix.is_some();
     let filter = if network && !supervised {
         None
@@ -550,7 +589,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("gone"), root.join("dangling")).unwrap();
         let all = EXECUTE | READ_FILE | READ_DIR;
 
-        let mut rules = carve(&root, all, std::slice::from_ref(&hidden));
+        let mut rules = carve(&root, all, std::slice::from_ref(&hidden), READ_DIR);
         rules.sort();
         let rel: Vec<(String, u64)> = rules
             .iter()
@@ -569,18 +608,25 @@ mod tests {
             ]
         );
 
-        assert_eq!(carve(&root, all, &[]), [(root.clone(), all)]);
+        assert_eq!(carve(&root, all, &[], READ_DIR), [(root.clone(), all)]);
         assert_eq!(
             carve(
                 &root.join("share/other"),
                 all,
-                std::slice::from_ref(&hidden)
+                std::slice::from_ref(&hidden),
+                READ_DIR
             ),
             [(root.join("share/other"), all)],
             "a root beside the hidden path is untouched"
         );
         assert!(
-            carve(&hidden.join("x"), all, std::slice::from_ref(&hidden)).is_empty(),
+            carve(
+                &hidden.join("x"),
+                all,
+                std::slice::from_ref(&hidden),
+                READ_DIR
+            )
+            .is_empty(),
             "a root inside it grants nothing"
         );
     }

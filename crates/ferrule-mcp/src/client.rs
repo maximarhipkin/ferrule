@@ -125,7 +125,9 @@ impl McpClient {
                 helper
             }
         } else {
+            // Owner mode keeps the sandbox and its state dir grant.
             host.sandbox
+                .for_helper(&host.state_dir, &cfg.writable_roots)
                 .unconfined(format!("mcp.servers `{}` has sandbox = false", cfg.name))
         };
         Ok(Self {

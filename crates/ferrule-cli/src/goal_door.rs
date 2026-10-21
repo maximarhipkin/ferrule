@@ -30,6 +30,8 @@ impl GoalDoor {
     fn start(&self, msg: &InboundMessage, text: &str) -> Option<String> {
         let lane_chat = uuid::Uuid::new_v4().to_string();
         let session = ferrule_gateway::session::session_id(GOAL_CHANNEL, &lane_chat);
+        // M54: the loop runs in owner mode only if the chat it came from would.
+        crate::owner_mode::started_from(&session, &msg.channel, &msg.chat_id);
         let prepared =
             match goal::prepare_as(Some(text.to_string()), Vec::new(), None, Some(session)) {
                 Ok(p) => p,

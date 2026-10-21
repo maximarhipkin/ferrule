@@ -2,13 +2,36 @@
 //! verifier's throwaway snapshot. Plain `git` calls; when one fails the
 //! child shares its parent's workspace and a note says why.
 //!
-//! These calls run in ferrule's own process, outside any sandbox, on a
-//! repo a child could write to, so every one goes through
-//! [`ferrule_sandbox::host_git`], which turns off what git would otherwise
-//! run from it: hooks, an fsmonitor, and the repo's own filter drivers.
+//! These calls run on a repo a child could write to, so every one goes
+//! through [`ferrule_sandbox::host_git`], which turns off what git would
+//! otherwise run from it: hooks, an fsmonitor, and the repo's own filter
+//! drivers. They run in ferrule's own process, outside any sandbox, unless
+//! the host sets a launcher ([`set_git`]): then git runs through that, so
+//! the commands the repo's config defines (filters, the pager, ssh) are
+//! confined too.
 
 use ferrule_sandbox::host_git;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::{Arc, OnceLock};
+
+/// Builds a `git` command that runs in the given directory, sandboxed.
+pub type GitCommand = Arc<dyn Fn(&Path) -> io::Result<Command> + Send + Sync>;
+
+static LAUNCHER: OnceLock<GitCommand> = OnceLock::new();
+
+/// Sets how every worktree `git` is started. Once per process; a second
+/// call keeps the first. Unset, it's a plain `git`.
+pub fn set_git(f: GitCommand) {
+    let _ = LAUNCHER.set(f);
+}
+
+/// `git -C dir args…` through [`host_git`], started by the launcher when
+/// one is set.
+fn run_git(dir: &Path, args: &[&str]) -> io::Result<Output> {
+    host_git::git_with(LAUNCHER.get().map(|l| l.as_ref()), dir, args)
+}
 
 /// A child's own copy of the repo.
 #[derive(Debug, Clone)]
@@ -29,7 +52,7 @@ pub(crate) struct Made {
 pub(crate) type Shared = Option<String>;
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = host_git::git(dir, args).map_err(|e| format!("git couldn't run: {e}"))?;
+    let out = run_git(dir, args).map_err(|e| format!("git couldn't run: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {
@@ -181,7 +204,7 @@ pub(crate) fn snapshot(parent_workspace: &Path, root: &Path, id: &str) -> Result
 
 fn copy_changes(repo: &Repo, to: &Path, root: &Path, id: &str) -> Result<(), String> {
     let patch = root.join(format!("{id}.patch"));
-    let diff = host_git::git(
+    let diff = run_git(
         &repo.top,
         &[
             "diff",

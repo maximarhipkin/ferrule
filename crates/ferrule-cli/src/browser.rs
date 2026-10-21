@@ -78,7 +78,12 @@ pub fn sandbox_blocker(cfg: Option<&config::Config>) -> Option<&'static str> {
 /// ferrule's sandbox, as a helper with the server's state dir, when there
 /// is a sandbox here. `no_sandbox` turns Chrome's own off.
 pub fn launch_test(cfg: &config::Config, chrome: &Path, no_sandbox: bool) -> Result<(), String> {
-    let sandbox = Sandbox::new(crate::sandbox_policy(cfg)).ok();
+    let sandbox = match Sandbox::new(crate::sandbox_policy(cfg)) {
+        Ok(sandbox) => Some(sandbox),
+        // Owner mode, even fallen back, never launches Chrome unconfined.
+        Err(e) if crate::owner_mode::wanted(cfg) => return Err(e),
+        Err(_) => None,
+    };
     let state_dir = crate::mcp_state_dir(mcp::SERVER_NAME).map_err(|e| e.to_string())?;
     let workspace = std::env::current_dir().unwrap_or_else(|_| state_dir.clone());
     let confine = sandbox

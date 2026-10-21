@@ -11,6 +11,7 @@ use ferrule_core::provider::Provider;
 use ferrule_plans::claude::cli::{self, AuthStatus};
 use ferrule_plans::claude::token::{self, Credential, TokenStore};
 use ferrule_plans::claude::{ClaudeCode, EngineConfig};
+use ferrule_sandbox::Sandbox;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -51,6 +52,19 @@ pub fn config_dir(s: &ClaudeCodePlanConfig) -> Result<PathBuf> {
     Ok(s.config_dir(&config::data_dir()?))
 }
 
+/// Owner mode, held or fallen back: the sandbox claude's own commands
+/// (`--version`, `auth …`) run in, with its config dir writable for a
+/// login. `None` in any other mode.
+fn owner_sandbox(dir: &Path) -> Result<Option<Sandbox>> {
+    let Ok((cfg, _)) = Config::load() else {
+        return Ok(None);
+    };
+    if !crate::owner_mode::wanted(&cfg) {
+        return Ok(None);
+    }
+    Ok(Some(crate::engine_sandbox(&cfg, dir)?.for_helper(dir, &[])))
+}
+
 /// The engine's settings from the config: the binary and config dir, the
 /// limits, the bridge (this binary's hidden `claude-mcp`) and the sandbox.
 pub fn engine_config(cfg: &Config) -> Result<EngineConfig> {
@@ -72,6 +86,8 @@ pub fn engine_config(cfg: &Config) -> Result<EngineConfig> {
         .ok()
         .map(|exe| (exe, vec!["claude-mcp".to_string()]));
     e.sandbox = Some(crate::engine_sandbox(cfg, &dir)?);
+    // M54 §7: a guest session's claude can't read the owner's transcripts.
+    e.guest_hidden = crate::owner_mode::guest_hidden();
     Ok(e)
 }
 
@@ -99,7 +115,9 @@ fn auth_status(binary: &Path, dir: &Path) -> Result<AuthStatus, String> {
             return r.clone();
         }
     }
-    let r = cli::auth_status(binary, dir, None).map_err(|e| format!("{e:#}"));
+    let r = owner_sandbox(dir)
+        .and_then(|sandbox| cli::auth_status(binary, dir, None, sandbox.as_ref()))
+        .map_err(|e| format!("{e:#}"));
     *last = Some((Instant::now(), dir.to_path_buf(), r.clone()));
     r
 }
@@ -188,12 +206,19 @@ pub async fn login(paste_token: bool) -> Result<()> {
             bail!("`ferrule login claude` opens Anthropic's own sign-in and needs a terminal; `--token` takes a setup-token from `claude setup-token` instead");
         }
         println!("Signing in through Claude Code (Anthropic's own sign-in)…");
+        let sandbox = owner_sandbox(&dir)?;
         let status = tokio::task::spawn_blocking({
             let (binary, dir) = (binary.clone(), dir.clone());
             move || {
-                cli::command(&binary, &dir, None, &["auth", "login", "--claudeai"])
-                    .status()
-                    .context("running claude auth login")
+                cli::command_in(
+                    &binary,
+                    &dir,
+                    None,
+                    &["auth", "login", "--claudeai"],
+                    sandbox.as_ref(),
+                )?
+                .status()
+                .context("running claude auth login")
             }
         })
         .await??;
@@ -258,10 +283,13 @@ pub async fn logout() -> Result<()> {
     let own = dir.starts_with(config::data_dir()?);
     let binary = s.binary();
     if own && cli::find(&binary).is_some() && dir.exists() {
+        let sandbox = owner_sandbox(&dir)?;
         let out = tokio::task::spawn_blocking(move || {
-            cli::command(&binary, &dir, None, &["auth", "logout"])
-                .stdin(std::process::Stdio::null())
-                .output()
+            anyhow::Ok(
+                cli::command_in(&binary, &dir, None, &["auth", "logout"], sandbox.as_ref())?
+                    .stdin(std::process::Stdio::null())
+                    .output()?,
+            )
         })
         .await??;
         if out.status.success() {
@@ -298,7 +326,9 @@ pub async fn setup_step(t: &mut crate::setup::Target) -> Result<bool> {
         }
         Some(path) => {
             let dir = config_dir(&s)?;
-            match cli::version(&path, &dir) {
+            match owner_sandbox(&dir)
+                .and_then(|sandbox| cli::version(&path, &dir, sandbox.as_ref()))
+            {
                 Ok(v) => ok(format!("Claude Code {v} at {}", path.display())),
                 Err(e) => warn(format!("{e:#}")),
             }
@@ -381,7 +411,9 @@ pub fn check(s: &ClaudeCodePlanConfig, now: u64) -> Check {
             ));
             return c;
         }
-        Some(path) => match cli::version(&path, &dir) {
+        Some(path) => match owner_sandbox(&dir)
+            .and_then(|sandbox| cli::version(&path, &dir, sandbox.as_ref()))
+        {
             Ok(v) => c.ok.push(format!("Claude Code {v} ({})", path.display())),
             Err(e) => c.warn.push((format!("{e:#}"), None)),
         },
@@ -409,7 +441,9 @@ pub fn check(s: &ClaudeCodePlanConfig, now: u64) -> Check {
                 }
             }
             if matches!(cred, Credential::ClaudeLogin) {
-                match cli::auth_status(&binary, &dir, None) {
+                match owner_sandbox(&dir)
+                    .and_then(|sandbox| cli::auth_status(&binary, &dir, None, sandbox.as_ref()))
+                {
                     Ok(a) if a.is_plan() => c.ok.push(format!(
                         "claude is signed in{}{}",
                         a.email.map(|e| format!(" as {e}")).unwrap_or_default(),

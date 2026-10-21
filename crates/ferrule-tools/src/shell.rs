@@ -71,6 +71,7 @@ impl ShellTool {
         }
         let (file, log) = ferrule_core::tool::new_spill_file(workspace).map_err(Self::failed)?;
         let path = workspace.join(&log);
+        let made = file.metadata().ok().and_then(|m| crate::jobs::identity(&m));
         let err = file
             .try_clone()
             .map_err(|e| Self::failed(format!("{log}: {e}")))?;
@@ -90,7 +91,7 @@ impl ShellTool {
             .stderr(Stdio::from(err))
             .kill_on_drop(true);
         let child = command.spawn().map_err(|e| Self::failed(e.to_string()))?;
-        let id = self.jobs.add(cmd, log.clone(), path, child);
+        let id = self.jobs.add(cmd, log.clone(), path, made, child);
         Ok(format!(
             "Started job {id} in the background: `{cmd}`. Its output (stdout and stderr) goes to {log}. \
              See how it's doing with shell_job {{\"id\": {id}, \"action\": \"status\"}} or \"tail\", \

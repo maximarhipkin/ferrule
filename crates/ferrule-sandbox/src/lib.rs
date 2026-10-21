@@ -29,6 +29,7 @@
 //!
 //! Not covered: anything that needs a kernel bug.
 
+pub mod host;
 pub mod host_git;
 pub mod launch;
 #[cfg(target_os = "linux")]
@@ -74,6 +75,10 @@ pub enum Mode {
     /// of the filesystem is read-only.
     #[default]
     WorkspaceWrite,
+    /// Writes go everywhere the account can, except `hidden` and
+    /// `protected`; reads everywhere but `hidden`. Linux only, and always
+    /// required: it never degrades to running commands unsandboxed.
+    Owner,
 }
 
 /// The `[sandbox]` config section. Unknown keys are an error: a misspelt
@@ -107,6 +112,13 @@ pub struct Policy {
     /// skipped.
     #[serde(skip)]
     pub hidden: Vec<PathBuf>,
+    /// Paths sandboxed commands can read but not write, even inside a
+    /// writable root: what runs outside the sandbox, or tells something
+    /// there what to run. A writable root that lies inside one stays
+    /// writable. Filled in by the host, not read from the config. Missing
+    /// ones are skipped.
+    #[serde(skip)]
+    pub protected: Vec<PathBuf>,
     /// Extra paths sandboxed commands and the file tools can't read (or
     /// write). `~/` is the home dir; relative paths are relative to the
     /// workspace.
@@ -150,6 +162,7 @@ impl Default for Policy {
             env_passthrough: Vec::new(),
             secret_vars: Vec::new(),
             hidden: Vec::new(),
+            protected: Vec::new(),
             deny_read: Vec::new(),
             allow_read: Vec::new(),
             deny_default_reads: true,
@@ -249,13 +262,28 @@ impl Sandbox {
 
     /// Detect a backend and prove it works by running `sh -c 'exit 0'` under
     /// it. When it doesn't, `policy.require` decides between an error and a
-    /// logged warning plus unsandboxed execution.
-    pub fn new(policy: Policy) -> Result<Self, String> {
+    /// logged warning plus unsandboxed execution. Owner mode is always
+    /// required: degraded, it would leave the keys readable.
+    pub fn new(mut policy: Policy) -> Result<Self, String> {
         if policy.mode == Mode::Off {
             return Ok(Self {
                 policy,
                 ..Self::off()
             });
+        }
+        if policy.mode == Mode::Owner {
+            // ponytail: Linux only. Seatbelt matches paths, so renaming an
+            // ancestor of a denied path undoes the deny; owner mode on macOS
+            // needs ancestor unlink-deny anchors and a hard-link probe on a Mac.
+            if !cfg!(target_os = "linux") {
+                let os = match std::env::consts::OS {
+                    "macos" => "macOS",
+                    "windows" => "Windows",
+                    other => other,
+                };
+                return Err(format!("owner mode needs Linux; this is {os}"));
+            }
+            policy.require = true;
         }
         let attempt = detect(&policy).and_then(|backend| {
             let sandbox = Self {
@@ -291,6 +319,9 @@ impl Sandbox {
                 }
                 Ok(sandbox)
             }
+            Err(reason) if policy.mode == Mode::Owner => Err(format!(
+                "owner mode needs the sandbox, but it can't be applied: {reason}"
+            )),
             Err(reason) if policy.require => Err(format!(
                 "sandbox.require is set but the sandbox can't be applied: {reason}"
             )),
@@ -346,6 +377,24 @@ impl Sandbox {
         self.hide_only
     }
 
+    /// Whether this is owner mode ([`Mode::Owner`]).
+    pub fn is_owner(&self) -> bool {
+        self.policy.mode == Mode::Owner
+    }
+
+    /// The same sandbox with owner mode narrowed to `workspace-write`, for
+    /// sessions that aren't the owner's, with `hide` hidden too: what owner
+    /// mode lets the owner's commands read but no one else's. Any other
+    /// mode is unchanged, and `hide` ignored.
+    pub fn narrowed(&self, hide: &[PathBuf]) -> Sandbox {
+        let mut s = self.clone();
+        if s.is_owner() {
+            s.policy.mode = Mode::WorkspaceWrite;
+            s.policy.hidden.extend(hide.iter().cloned());
+        }
+        s
+    }
+
     /// Variables to set on every command, after secrets are scrubbed — so a
     /// scrubbed name can come back holding a placeholder.
     pub fn with_env(mut self, env: Vec<(String, String)>) -> Self {
@@ -387,7 +436,7 @@ impl Sandbox {
     pub fn for_child(&self, extra: &[PathBuf], read_only: bool) -> Self {
         let mut child = self.clone();
         if read_only {
-            if child.policy.mode == Mode::WorkspaceWrite {
+            if matches!(child.policy.mode, Mode::WorkspaceWrite | Mode::Owner) {
                 child.policy.mode = Mode::ReadOnly;
             }
         } else {
@@ -425,7 +474,15 @@ impl Sandbox {
     /// the helper can't read ferrule's secrets, the credential dirs, or
     /// (Landlock, Windows) ferrule's own process. Windows keeps the job
     /// too. [`Sandbox::is_active`] is false either way.
+    ///
+    /// Owner mode has no such exemption: the helper keeps the owner
+    /// sandbox, Unix-socket allowlist included, with the network on.
     pub fn unconfined(&self, reason: impl Into<String>) -> Self {
+        if self.is_owner() {
+            let mut owner = self.clone();
+            owner.policy.network = true;
+            return owner;
+        }
         Self {
             policy: Policy {
                 network: true,
@@ -531,7 +588,21 @@ impl Sandbox {
                 Ok(()) => self.unix_sockets(workspace).map(std::sync::Arc::new),
                 Err(_) => None,
             };
-            linux::apply(&mut cmd, abi, self.policy.network, &roots, &hidden, unix)?;
+            // Hide-only enforces the read denies alone.
+            let protected = match self.hide_only {
+                true => Vec::new(),
+                false => self.protected_paths(),
+            };
+            linux::apply(
+                &mut cmd,
+                abi,
+                self.policy.network,
+                &roots,
+                &hidden,
+                &protected,
+                self.is_owner(),
+                unix,
+            )?;
         }
         Ok(cmd)
     }
@@ -539,8 +610,8 @@ impl Sandbox {
     /// The Unix sockets a command started in `workspace` may connect to, or
     /// `None` when none are restricted here: `unix_sockets = ["*"]`, no
     /// confining backend (Windows included), a hide-only sandbox, or the
-    /// browser helper (a desktop app, not something the model steers to a
-    /// socket).
+    /// browser helper outside owner mode (a desktop app, not something the
+    /// model steers to a socket).
     pub fn unix_sockets(&self, workspace: &Path) -> Option<UnixSockets> {
         if !self.restricts_unix() {
             return None;
@@ -549,7 +620,8 @@ impl Sandbox {
         if self.policy.unix_sockets_default {
             entries.extend(default_unix_sockets());
         }
-        let mut own = self.writable_roots(workspace);
+        // The roots `workspace-write` grants, never owner mode's `/`.
+        let mut own = self.granted_roots(workspace);
         if cfg!(target_os = "macos") {
             // No peer check under Seatbelt, so only dirs nothing else
             // shares: not `/tmp`, where the owner's tmux server lives.
@@ -559,9 +631,10 @@ impl Sandbox {
     }
 
     fn restricts_unix(&self) -> bool {
+        // Owner mode keeps the allowlist for the browser helper too.
         matches!(self.backend, Backend::Landlock { .. } | Backend::Seatbelt)
             && !self.hide_only
-            && !self.desktop
+            && !(self.desktop && !self.is_owner())
             && !self.policy.unix_sockets.iter().any(|e| e.trim() == "*")
     }
 
@@ -603,8 +676,27 @@ impl Sandbox {
     }
 
     /// Canonical directories (or files) the sandboxed command may write,
-    /// missing ones skipped. Empty in read-only mode.
+    /// missing ones skipped. Empty in read-only mode. Owner mode puts `/`
+    /// first, carved around `hidden` and `protected`; the rest only matter
+    /// where they lie inside a protected path.
     pub fn writable_roots(&self, workspace: &Path) -> Vec<PathBuf> {
+        let granted = self.granted_roots(workspace);
+        if !(self.is_owner() && cfg!(target_os = "linux")) {
+            return granted;
+        }
+        let mut roots = vec![PathBuf::from("/")];
+        roots.extend(
+            granted
+                .into_iter()
+                .filter(|r| r.as_path() != Path::new("/")),
+        );
+        roots
+    }
+
+    /// What `workspace-write` makes writable, in owner mode too: the
+    /// workspace, `writable_roots`, the helper roots and temp. Only the
+    /// helper roots in read-only mode.
+    fn granted_roots(&self, workspace: &Path) -> Vec<PathBuf> {
         let read_only = self.policy.mode == Mode::ReadOnly;
         if read_only && self.helper_roots.is_empty() {
             return Vec::new();
@@ -654,6 +746,12 @@ impl Sandbox {
     /// secrets, the part of [`Sandbox::read_denies`] no config can open.
     pub fn hidden_paths(&self) -> Vec<PathBuf> {
         canonical_existing(&self.policy.hidden)
+    }
+
+    /// `policy.protected`, canonical, missing ones skipped: readable, not
+    /// writable, except a writable root inside one.
+    pub fn protected_paths(&self) -> Vec<PathBuf> {
+        canonical_existing(&self.policy.protected)
     }
 
     /// Everything commands and the file tools may not read, as configured:
@@ -730,6 +828,23 @@ impl Sandbox {
         if !self.is_active() {
             return None;
         }
+        let net = match (self.policy.network, self.backend) {
+            (true, _) => "Network access is allowed.",
+            // Not enforced there (doctor says so); the model is still told.
+            (false, Backend::Windows) => "Don't use the network.",
+            (false, _) => "Network access is blocked.",
+        };
+        // Built from the mode and the network alone, so the prefix stays
+        // byte-stable.
+        if self.is_owner() {
+            return Some(format!(
+                "Commands run in a sandbox that writes everywhere this account can, except \
+                 ferrule's own files and the saved keys. Change ferrule only through \
+                 ferrule_admin. A new folder directly in ~, ~/.config, ~/.local or \
+                 ~/.local/share can be filled from your next command: mkdir it first. \
+                 Elsewhere a refused write fails with \"{DENIED}\". {net}"
+            ));
+        }
         let fs = match self.policy.mode {
             Mode::ReadOnly => "The filesystem is read-only.".to_string(),
             _ => {
@@ -750,12 +865,6 @@ impl Sandbox {
                     "Writes are only allowed in {places}; elsewhere they fail with \"{DENIED}\"."
                 )
             }
-        };
-        let net = match (self.policy.network, self.backend) {
-            (true, _) => "Network access is allowed.",
-            // Not enforced there (doctor says so); the model is still told.
-            (false, Backend::Windows) => "Don't use the network.",
-            (false, _) => "Network access is blocked.",
         };
         Some(format!("Commands run in a sandbox. {fs} {net}"))
     }

@@ -1,5 +1,6 @@
 //! `/update`, `/restart` and `/doctor` in the owner's chat (M48): the same
-//! ops as the tool, so a person who types the command gets the same card.
+//! ops as the tool, so a person who types the command gets the same card,
+//! or in owner mode the same run without one (M54 §5).
 
 use super::tool::ask_and_run;
 use super::{doctor, offered, run, update, Admin, Op};
@@ -11,6 +12,12 @@ pub struct SelfServiceDoor {
     admin: Arc<Admin>,
 }
 
+/// The answer outside the owner's private chat, per mode.
+const ELSEWHERE: &str =
+    "Ask me in our private chat: that's where I show you what changes and you approve it.";
+const ELSEWHERE_AUTONOMOUS: &str =
+    "Ask me in our private chat: that's the only place I change Ferrule from.";
+
 impl SelfServiceDoor {
     pub const HANDLES: &'static [&'static str] = &["update", "restart", "doctor"];
 
@@ -18,7 +25,7 @@ impl SelfServiceDoor {
         Self { admin }
     }
 
-    /// `/update`: check, then the card.
+    /// `/update`: check, then the card (in owner mode, the update).
     async fn update(admin: Arc<Admin>, here: ChatRef, session: String) {
         if let Some(why) = admin
             .ctx()
@@ -51,7 +58,7 @@ impl SelfServiceDoor {
 
     async fn ask(admin: &Admin, here: &ChatRef, session: &str, op: Op) {
         let text = match ask_and_run(admin, here, session, op).await {
-            // An approved update or restart ends with the process's own
+            // An update or restart that runs ends with the process's own
             // message once it's back.
             Ok(said) => said,
             Err(why) => why,
@@ -59,7 +66,8 @@ impl SelfServiceDoor {
         admin.hub.tell_in(here, text);
     }
 
-    /// `/doctor`: the report, then at most `MOST_FIXES` fix cards.
+    /// `/doctor`: the report, then at most `MOST_FIXES` fix cards (in
+    /// owner mode, fixes).
     async fn doctor(admin: Arc<Admin>, here: ChatRef, session: String) {
         let Some(ctx) = admin.ctx() else {
             return admin.hub.tell_in(
@@ -105,8 +113,12 @@ impl ferrule_gateway::Interceptor for SelfServiceDoor {
         let session = ferrule_gateway::session::session_id(&msg.channel, &msg.chat_id);
         let Some(here) = offered(&self.admin.hub, &session) else {
             return Some(
-                "Ask me in our private chat: that's where I show you what changes and you approve it."
-                    .into(),
+                if self.admin.autonomous() {
+                    ELSEWHERE_AUTONOMOUS
+                } else {
+                    ELSEWHERE
+                }
+                .into(),
             );
         };
         let admin = self.admin.clone();

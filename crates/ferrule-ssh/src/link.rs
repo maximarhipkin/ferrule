@@ -942,7 +942,7 @@ pub fn ssh_program(target: &Target) -> PathBuf {
     }
     match std::env::var_os("FERRULE_SSH") {
         Some(p) if !p.is_empty() => PathBuf::from(p),
-        _ => PathBuf::from("ssh"),
+        _ => ferrule_sandbox::host::system_program("ssh"),
     }
 }
 

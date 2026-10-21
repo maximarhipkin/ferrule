@@ -21,6 +21,11 @@
 //!
 //! A caller that diffs passes `--no-ext-diff --no-textconv`: an empty
 //! `diff.<x>.textconv` isn't "none" to git but a command that fails.
+//!
+//! A caller that has a sandbox for it passes a launcher ([`git_with`]): git
+//! then runs confined, with the same pins (sub-agent worktree git, M54 §4).
+//! Without one, in owner mode `git` is [`crate::host::system_program`]'s,
+//! never a `PATH` lookup the bot could shadow.
 
 use std::collections::BTreeSet;
 use std::io::{self, Read};
@@ -32,12 +37,21 @@ use std::time::{Duration, Instant};
 /// FIFO planted as `.git/HEAD` blocks git's read forever).
 pub const TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Builds `git` to run in a directory (its working dir), before any
+/// option: a sandbox's command, say.
+pub type Launcher = dyn Fn(&Path) -> io::Result<Command> + Send + Sync;
+
 /// `git -C dir args…` with stdout and stderr captured. A run past
 /// [`TIMEOUT`] is killed and is an error, and so is a repo config this
 /// can't neutralise.
 pub fn git(dir: &Path, args: &[&str]) -> io::Result<Output> {
+    git_with(None, dir, args)
+}
+
+/// [`git`], started by `launch` when there is one (each of its git runs).
+pub fn git_with(launch: Option<&Launcher>, dir: &Path, args: &[&str]) -> io::Result<Output> {
     let listed = run(
-        base(dir).args(["config", "--list", "--show-scope", "-z"]),
+        base(launch, dir)?.args(["config", "--list", "--show-scope", "-z"]),
         TIMEOUT,
     )?;
     if !listed.status.success() {
@@ -48,7 +62,7 @@ pub fn git(dir: &Path, args: &[&str]) -> io::Result<Output> {
         )));
     }
     let keys = repo_keys(&listed.stdout);
-    let mut cmd = base(dir);
+    let mut cmd = base(launch, dir)?;
     for name in repo_filters(&keys)? {
         for key in ["clean", "smudge", "process"] {
             cmd.arg("-c").arg(format!("filter.{name}.{key}="));
@@ -89,28 +103,35 @@ fn found_top(dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn base(dir: &Path) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(dir)
-        // `/dev/null` holds no hooks on any platform and nobody can add one;
-        // a temp dir could be written by a sandboxed command.
-        .args([
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-        ])
-        // ferrule's own commits are never signed: `gpg.program` is config
-        // too, and the owner's global gpgsign would prompt for a commit
-        // that isn't theirs.
-        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
-        .stdin(Stdio::null())
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE");
-    cmd
+/// `git` for `dir` with the pins: the launcher's command (which runs in
+/// `dir`), else `git -C dir`.
+fn base(launch: Option<&Launcher>, dir: &Path) -> io::Result<Command> {
+    let mut cmd = match launch {
+        Some(launch) => launch(dir)?,
+        None => {
+            let mut cmd = Command::new(crate::host::system_program("git"));
+            cmd.arg("-C").arg(dir);
+            cmd
+        }
+    };
+    // `/dev/null` holds no hooks on any platform and nobody can add one;
+    // a temp dir could be written by a sandboxed command.
+    cmd.args([
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+    ])
+    // ferrule's own commits are never signed: `gpg.program` is config
+    // too, and the owner's global gpgsign would prompt for a commit
+    // that isn't theirs.
+    .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+    .stdin(Stdio::null())
+    .env("GIT_TERMINAL_PROMPT", "0")
+    .env_remove("GIT_DIR")
+    .env_remove("GIT_WORK_TREE")
+    .env_remove("GIT_INDEX_FILE");
+    Ok(cmd)
 }
 
 /// The filter drivers the repo's own config keys name.

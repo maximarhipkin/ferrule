@@ -1175,6 +1175,53 @@ each in `docs/m53-contrastive-probing.md`):
   cite the transcript moment behind each change, treats "no change" as
   the default and a one-off defect as noise.
 
+### M54 — protected autonomous mode
+
+**Status.** Built on branch `claude/laughing-chebyshev-5cd4a6`
+(`docs/m54-autonomous.md`; user docs `docs/sandbox.md`, "Owner mode").
+Not compiled or run: the owner's rules said to write no tests and run
+nothing, so `make check` and a live run on a Linux server with a systemd
+user service, apt and `sudo -n` are still to do. Linux only.
+- **`[sandbox] mode = "owner"`**: commands write everywhere the account
+  can, except the keys (hidden) and a protected set that decides what
+  runs outside the sandbox (read-only): the data dir, the config dir, the
+  user systemd dirs and `environment.d`. `mkdir` works on the way down;
+  the Unix-socket allowlist stays on.
+- **Nothing the model can influence runs outside the sandbox**: hooks,
+  gate scripts, worktree git, signal-cli, the tunnel, transcription and
+  claude's helpers go through it; `git`, `ssh`, `systemctl` come only
+  from root-owned system dirs. The binary moves to `<data>/bin/ferrule`
+  (a hard link, then a symlink swap) and the service is rewritten.
+- **No approvals** for the owner's own chats: `ferrule_admin` change ops
+  run at once and are logged, and the trust gates are off there. Other
+  people's chats keep `workspace-write` and can't read the transcripts.
+- **New `ferrule_admin` ops**: `package_install` and `package_remove`
+  (apt through `sudo -n`, checked against apt's own plan), `mcp_add`,
+  `secret_request` (a one-time link to paste a key; the asking session
+  wakes when it is saved), `secrets` and `dashboard_link`.
+- **The owner's switch**: Settings, Autonomy, "Protected autonomous" or
+  "Ask me first". Nothing in the chat can change `[sandbox]`.
+- **Fixes for every mode**: credential files outside `private/` and the
+  gateway's state dir are hidden; worktree git no longer trusts a hooks
+  folder in temp; `config_restore` from the chat can't bring back a
+  guarded field.
+- **When it can't hold** (not Linux, no user service, another instance,
+  an SSH workspace, no Landlock) the gateway falls back to
+  `workspace-write` and tells the owner why. It never runs commands
+  unsandboxed.
+- **Left open**: shared MCP servers, hooks and the browser reach the
+  owner sandbox's reach for guests; the apt op needs passwordless sudo;
+  macOS needs ancestor unlink-deny anchors and a hard-link probe; the
+  backup includes the HTTP API clients' key hashes.
+
+**Done means.** On a Linux box with a user unit, apt and `sudo -n`, with
+`mode = "owner"` and no approval prompt: the bot connects an MCP server
+that needs a key (the owner pastes the key on a link), sends a dashboard
+link that isn't in its transcript, installs `jq`, changes a setting and
+restarts, and answers from yesterday's transcript; from its shell, reading
+`private/secrets.env` and writing the config, the binary or `daemon-reload`
+all fail; and `make check` is green on Linux, macOS and Windows.
+
 ## Other open tracks
 
 **In flight** (2026-10-21). Who owns which files is in `PLAN.md`'s

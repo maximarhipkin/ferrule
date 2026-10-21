@@ -2689,7 +2689,9 @@
     // holds — names, where each goes and what uses it, never a value.
     // Add a new tool key, rotate any kept value, move a tool key's
     // sites, remove a page-made one. One confirm card per change.
-    toolKeyPanel() {
+    // `pre`: the name and sites the bot asked for (M54 §6.3), filled in on
+    // the first draw, with the key's field focused.
+    toolKeyPanel(pre) {
       const box = el("div", { class: "stack" });
       const draw = async () => {
         let r;
@@ -2697,6 +2699,7 @@
         const name = el("input", { name: "name", placeholder: "WEATHER_API_KEY", autocomplete: "off", spellcheck: "false", "aria-label": "Its name" });
         const value = el("input", { type: "password", name: "value", placeholder: "the key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The key" });
         const sites = el("input", { name: "hosts", placeholder: "api.weather.example", autocomplete: "off", spellcheck: "false", "aria-label": "Sites it may be sent to" });
+        if (pre) { name.value = pre.name; sites.value = pre.hosts; }
         const save = el("button", { class: "primary", text: "Save" });
         save.disabled = !r.here || !!r.locked;
         save.onclick = async () => {
@@ -2750,6 +2753,7 @@
               el("span", { class: "hint", text: "comma-separated: api.example.com, or *.example.com for all of its addresses" })),
             el("div", { class: "row" }, save),
             el("p", { class: "muted small m0", text: "A key is never shown again after it's saved — Rotate replaces one without showing the old, Remove forgets it." })));
+        if (pre) { pre = null; value.focus(); }
       };
       draw();
       connectPanel({ title: "Safe", intro: "Every key the bot holds: the brain's, the chat apps', tools'. Rotate a leaked one, move where one may be sent, or add a key for a command. Values never come back to this page, and the model never sees them.",
@@ -3235,6 +3239,10 @@
       try {
         r = await api("/api/backups");
       } catch (e) { r = null; }
+      // The Autonomy row needs the config; without one it isn't shown.
+      try {
+        this.autonomy = (await api("/api/settings")).autonomy || null;
+      } catch (e) { this.autonomy = null; }
       this.draw(r);
       // A backup runs in the background: look again until it is done.
       clearTimeout(this.poll);
@@ -3249,6 +3257,14 @@
       const lang = card({ title: tr("Language"), icon: "globe" },
         el("p", { class: "muted small mt0", text: tr("Hebrew reads right to left. What you and your bot write always follows its own direction.") }),
         chips(tr("Language"), [["en", "English"], ["he", "עברית"]], LANG, (v) => { if (v !== LANG && window.ferruleLang) window.ferruleLang.set(v); }));
+      // The owner's switch (M54): a managed bot's sandbox is the panel's.
+      const auto = this.autonomy && !MANAGED.on
+        ? card({ title: tr("Autonomy"), icon: "lock" },
+          el("p", { class: "muted small mt0", text: tr("Protected autonomous does everything itself and can't see your keys. Changing it restarts the bot.") }),
+          this.autonomy === "off" ? el("p", { class: "small", text: tr("Sandbox off (set on the machine)") }) : null,
+          chips(tr("Autonomy"), [["owner", tr("Protected autonomous")], ["ask", tr("Ask me first")]], this.autonomy,
+            async (v) => { if (v !== this.autonomy && await act("sandbox/mode", { mode: v })) this.load(); }))
+        : null;
       const list = r && r.files && r.files.length
         ? el("div", { class: "plain-list" }, r.files.map((f) => el("div", { class: "item file" },
           el("div", { class: "grow" },
@@ -3270,7 +3286,7 @@
           button(tr("Show the setup checklist again"), { onclick: () => { home.show(); toast(tr("The checklist is back on Home.")); } }),
           button(tr("Keyboard shortcuts"), { onclick: () => shortcuts() }),
           button(tr("Sign out"), { icon: "power", onclick: () => document.getElementById("logout").click() })));
-      setKids(this.box, look, lang, bak, more);
+      setKids(this.box, look, lang, auto, bak, more);
     },
     async backup() {
       const r = await act("backup", {});
@@ -3627,7 +3643,9 @@
     // to a server, and it's gone from the address bar at once. A section
     // name after '#' is just navigation, from a saved tab.
     const hash = location.hash.length > 1 ? location.hash.slice(1) : "";
+    let asked = null;
     if (hash && !order.includes(hash)) {
+      asked = keyAsked();
       history.replaceState(null, "", BASE + "/");
       try {
         SESSION = await api("/api/login", { token: hash });
@@ -3646,7 +3664,22 @@
     document.getElementById("find").hidden = false;
     MANAGED = await api("/api/managed").catch(() => ({ on: false }));
     buildNav();
-    show(order.includes(hash) ? hash : "health", { focus: false });
+    if (asked && sections.connect) {
+      show("connect", { focus: false });
+      sections.connect.toolKeyPanel(asked);
+    } else show(order.includes(hash) ? hash : "health", { focus: false });
+  }
+
+  // M54 §6.3: the key the bot asked the owner for rides its login link's
+  // query (`?key=NAME&hosts=a,b`), read before the address bar is wiped.
+  // A name the page wouldn't take, or sites with odd characters, are
+  // ignored.
+  function keyAsked() {
+    const q = new URLSearchParams(location.search);
+    const name = (q.get("key") || "").trim();
+    if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(name)) return null;
+    const hosts = (q.get("hosts") || "").trim();
+    return { name, hosts: /^[a-z0-9.*, -]*$/i.test(hosts) ? hosts.split(",").map((h) => h.trim()).filter(Boolean).join(", ") : "" };
   }
 
   document.addEventListener("DOMContentLoaded", start);

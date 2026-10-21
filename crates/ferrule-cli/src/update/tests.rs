@@ -1348,6 +1348,7 @@ fn claude_at(binary: &Path, root: &Path, mock: &Mock) -> super::claude::Claude {
         binary: binary.into(),
         config_dir: root.join("claude-code"),
         npm: format!("{}{DIST_TAGS}", mock.base),
+        sandbox: None,
     }
 }
 

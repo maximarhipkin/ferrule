@@ -1043,6 +1043,9 @@ pub struct RoutedProvider {
     /// The provider it was built on, for rows of calls that never ran.
     name: String,
     lane: Mutex<routing::Lane>,
+    /// M54: a session that isn't the owner's; each call goes to the
+    /// model's guest copy ([`Provider::guest`]) when it has one.
+    guest: bool,
 }
 
 impl RoutedProvider {
@@ -1052,6 +1055,15 @@ impl RoutedProvider {
             scope,
             name,
             lane: Mutex::default(),
+            guest: false,
+        }
+    }
+
+    /// For a session that isn't the owner's (M54 §1).
+    pub fn guest(self) -> Self {
+        Self {
+            guest: true,
+            ..self
         }
     }
 
@@ -1088,7 +1100,12 @@ impl Provider for RoutedProvider {
             provider: route.entry.provider.clone(),
             model: route.entry.model.clone(),
         };
-        let result = route.client.complete(req).await;
+        let client = if self.guest {
+            route.client.guest().unwrap_or_else(|| route.client.clone())
+        } else {
+            route.client.clone()
+        };
+        let result = client.complete(req).await;
         self.models.served(&self.scope, &route, result.is_ok());
         self.models
             .plan_signin(&route.entry, result.as_ref().map(|_| ()));

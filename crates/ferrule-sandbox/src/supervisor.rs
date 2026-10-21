@@ -541,8 +541,17 @@ fn run_probe(abi: u32) -> Result<(), String> {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        crate::linux::apply(&mut cmd, abi, true, &[], &[], Some(Arc::new(allow)))
-            .map_err(|e| e.to_string())?;
+        crate::linux::apply(
+            &mut cmd,
+            abi,
+            true,
+            &[],
+            &[],
+            &[],
+            false,
+            Some(Arc::new(allow)),
+        )
+        .map_err(|e| e.to_string())?;
         // SAFETY: raw syscalls on addresses built above.
         unsafe {
             cmd.pre_exec(move || {

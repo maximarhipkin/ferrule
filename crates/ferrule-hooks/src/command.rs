@@ -1,11 +1,12 @@
 //! A command hook: the platform's shell runs it with the payload as JSON
 //! on stdin — as the owner, outside the sandbox, or in the sandbox when it
-//! has one (a workspace's hooks). On timeout the whole process tree is
-//! killed, not just the shell at the top.
+//! has one (a workspace's hooks). In owner mode the owner's own hooks run
+//! in the sandbox too (see [`ferrule_sandbox::host`]). On timeout the
+//! whole process tree is killed, not just the shell at the top.
 
 use ferrule_core::lifecycle::{HookHandler, HookInput, HookRun};
 use ferrule_core::tool::ToolContext;
-use ferrule_sandbox::{Sandbox, Shell};
+use ferrule_sandbox::{host, Sandbox, Shell};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -46,22 +47,20 @@ impl HookHandler for CommandHook {
     async fn run(&self, input: &HookInput, ctx: &ToolContext) -> HookRun {
         let payload = serde_json::to_vec(input).unwrap_or_default();
         let shell = Shell::get();
-        let mut cmd = match &self.sandbox {
-            Some(sandbox) => {
-                match sandbox.command(&shell.program, shell.args(&self.command), &ctx.workspace) {
-                    Ok(cmd) => Command::from(cmd),
-                    Err(e) => {
-                        return HookRun {
-                            spawn_error: Some(e.to_string()),
-                            ..Default::default()
-                        }
-                    }
+        let args = shell.args(&self.command);
+        let built = match &self.sandbox {
+            Some(sandbox) => sandbox.command(&shell.program, args, &ctx.workspace),
+            // The owner's own hooks: as the owner, or in owner mode through
+            // the host launcher (M54 §4).
+            None => host::command(&shell.program, args, &ctx.workspace),
+        };
+        let mut cmd = match built {
+            Ok(cmd) => Command::from(cmd),
+            Err(e) => {
+                return HookRun {
+                    spawn_error: Some(e.to_string()),
+                    ..Default::default()
                 }
-            }
-            None => {
-                let mut cmd = Command::new(&shell.program);
-                cmd.args(shell.args(&self.command));
-                cmd
             }
         };
         #[cfg(unix)]

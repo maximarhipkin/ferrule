@@ -147,6 +147,15 @@ pub trait Provider: Send + Sync {
     fn route_tag(&self) -> Option<crate::routing::RouteTag> {
         None
     }
+
+    /// This provider for a session that isn't the owner's (M54): the same
+    /// state, with whatever it runs itself held to the stricter sandbox.
+    /// `None`: it runs nothing itself, so it serves guests as it is.
+    // ponytail: only the claude engine runs tools in its own process;
+    // other providers return None.
+    fn guest(&self) -> Option<std::sync::Arc<dyn Provider>> {
+        None
+    }
 }
 
 /// What a provider may know about the run calling it (M35). The agent

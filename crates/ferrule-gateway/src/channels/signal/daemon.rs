@@ -74,21 +74,24 @@ impl SignalChannel {
     /// couldn't start.
     async fn run_daemon(&self, d: &Daemon) -> Result<String, String> {
         let args = d.args(&self.cfg.account);
-        let mut cmd = tokio::process::Command::new(&d.program);
-        cmd.args(&args)
-            .stdin(Stdio::null())
+        let couldnt = |e: &dyn std::fmt::Display| {
+            format!(
+                "couldn't start {}: {e}; install signal-cli (https://github.com/AsamK/signal-cli) or set [gateway.signal] signal_cli to its path",
+                d.program.display()
+            )
+        };
+        // No working directory of its own: it keeps the process's.
+        let std_cmd = ferrule_sandbox::host::command(&d.program, &args, std::path::Path::new("."))
+            .map_err(|e| couldnt(&e))?;
+        let mut cmd = tokio::process::Command::from(std_cmd);
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .kill_on_drop(true);
         match d.log.as_ref().and_then(|p| open_log(p, &d.program, &args)) {
             Some(f) => cmd.stderr(f),
             None => cmd.stderr(Stdio::null()),
         };
-        let mut child = cmd.spawn().map_err(|e| {
-            format!(
-                "couldn't start {}: {e}; install signal-cli (https://github.com/AsamK/signal-cli) or set [gateway.signal] signal_cli to its path",
-                d.program.display()
-            )
-        })?;
+        let mut child = cmd.spawn().map_err(|e| couldnt(&e))?;
         // Up long enough: it started well, whatever the earlier tries did.
         let healthy = tokio::time::sleep(self.timing.healthy);
         tokio::pin!(healthy);
