@@ -1167,6 +1167,14 @@ pass.
 "kept by judge" next to "kept by check" in `ferrule learn show` — and
 every lesson stays readable and revertible the M16 way.
 
+**Follow-ups from the gap analysis** (built on `autopilot`, one section
+each in `docs/m53-contrastive-probing.md`):
+- **M53.2**, evidence discipline and honest clipping: tool results
+  clipped at 10,000 characters (head and tail) in a 40,000-character
+  window, every cut marked as the renderer's, and a reflector that must
+  cite the transcript moment behind each change, treats "no change" as
+  the default and a one-off defect as noise.
+
 ## Other open tracks
 
 **In flight** (2026-10-21). Who owns which files is in `PLAN.md`'s

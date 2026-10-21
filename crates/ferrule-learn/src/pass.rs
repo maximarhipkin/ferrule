@@ -346,7 +346,11 @@ async fn body(
                 continue;
             }
         };
-        let Proposal { delta, reason } = proposal;
+        let Proposal {
+            delta,
+            reason,
+            evidence,
+        } = proposal;
         let Some(delta) = delta else {
             note(rec, ep, format!("no change: {reason}"));
             cursor = cursor.max(ep.at);
@@ -500,13 +504,15 @@ async fn body(
         dir.log(
             &id,
             "change",
-            json!({ "episode": ep.key, "applied": applied, "reason": reason }),
+            json!({ "episode": ep.key, "applied": applied, "reason": reason,
+                    "evidence": evidence }),
         );
         rec.changes.push(Change::Playbook {
             applied,
             reason,
             episode: ep.key.clone(),
             gate: gate_reason,
+            evidence,
         });
         note(rec, ep, format!("{op} kept"));
         cursor = cursor.max(ep.at);
@@ -748,6 +754,7 @@ pub fn changelog(p: &PassRecord, diff: &str) -> String {
                     reason,
                     episode,
                     gate,
+                    evidence,
                 } => {
                     let text = match (&applied.old, &applied.new) {
                         (Some(o), Some(n)) => format!("{o:?} → {n:?}"),
@@ -755,8 +762,13 @@ pub fn changelog(p: &PassRecord, diff: &str) -> String {
                         (Some(o), None) => format!("{o:?}"),
                         (None, None) => String::new(),
                     };
+                    let cited = if evidence.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; evidence: {evidence:?}")
+                    };
                     format!(
-                        "playbook {} pb-{}: {text} — {reason} (from {episode}; gate: {gate})",
+                        "playbook {} pb-{}: {text} — {reason} (from {episode}; gate: {gate}{cited})",
                         applied.op, applied.id
                     )
                 }

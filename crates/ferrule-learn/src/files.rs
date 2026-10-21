@@ -43,6 +43,9 @@ pub enum Change {
         episode: String,
         #[serde(default)]
         gate: String,
+        /// M53.2: the transcript moment the reflector cited.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        evidence: String,
     },
     Memory {
         new_id: i64,

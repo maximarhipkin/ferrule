@@ -7363,3 +7363,46 @@ the roadmap.
 - The fingerprint's `prompt` hash includes the check command's absolute
   suite path, so it compares runs on one machine, not across machines.
 - On Windows the denies are ACLs the launcher writes on the grader files.
+
+### 2026-10-21 — M53.2: reflector evidence discipline and honest clipping (Claude, Opus 5.5)
+
+**Claim.** This session builds the gap analysis's remaining M53 items on
+`autopilot` (worktree `.claude/worktrees/autopilot`), one commit each:
+M53.2, M53.3, M53.4, M53.5 and M53.7. M53.1's contrast gate and M53.6's
+harness stamp are Kimi's (PR #48) and are built on, not redone. `main`
+(`2c74bdb`, the PR #47 merge, no content change) was merged in first.
+
+**Why.**
+- The reflector read tool results cut at 1,500 characters in a
+  12,000-character window. Harness² refuses to clip below 10,000, "in
+  the range that fabricates defects": a cut test log reads like a run
+  that stopped short.
+- Nothing asked the reflector for evidence, said "no change" was a fine
+  answer, or called a one-off defect noise. Spurious lessons follow.
+
+**What changed.**
+- `episode.rs`: `TOOL_RESULT_CHARS` 10,000 and `TAIL_CHARS` 40,000
+  (about 10k tokens). An oversized result keeps its head and tail with
+  `[… N characters clipped here by the renderer, not by the run]`
+  between them, and the other cut markers say "by the renderer".
+- `reflect.rs`: the system prompt's evidence rules (no change is the
+  default; cite the moment; once is noise; outages get nothing;
+  truncation markers are the renderer's). `add`/`edit`/`retire` need an
+  `evidence` field, or the answer is rejected. `Proposal.evidence`.
+- `judge.rs`: the truncation-marker line.
+- `files.rs`/`pass.rs`: `Change::Playbook.evidence` (serde default), in
+  `log.jsonl` and the changelog line.
+- Docs: `m53-contrastive-probing.md` ("M53.2"), `m16-learning-loop.md`
+  §1, §3 and §4, the roadmap.
+
+**Tests changed, none added.** The answers that gained `evidence`:
+`reflect.rs`'s parse tests (and one more garbage case: an add without
+evidence), `pass/tests.rs`'s `ADD` and retire answer, and the CLI's
+`tests/it/learn.rs` reflector answer.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.**
+- No real pass has run with the new prompt or limits.
+- Nothing verifies that the cited moment is in the transcript.

@@ -304,7 +304,7 @@ fn story_server(fixed: Arc<AtomicBool>, gate_helps: bool) -> (String, Arc<Mutex<
     model_server(Arc::new(move |req: &Value| {
         if is_reflector(req) {
             return answer(&format!(
-                r#"{{"op":"add","text":"{LESSON}","reason":"the run never wrote result.txt"}}"#
+                r#"{{"op":"add","text":"{LESSON}","evidence":"[user] [ferrule] Stopping here, twice","reason":"the run never wrote result.txt"}}"#
             ));
         }
         if is_consolidation(req) {

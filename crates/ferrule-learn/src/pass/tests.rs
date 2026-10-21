@@ -134,7 +134,7 @@ fn setup(answers: &[Option<&str>], passes: bool, eps: Vec<Episode>) -> Setup {
     }
 }
 
-const ADD: &str = r#"{"op":"add","text":"Run cargo fmt before the tests.","reason":"fmt failed"}"#;
+const ADD: &str = r#"{"op":"add","text":"Run cargo fmt before the tests.","evidence":"[tool] cargo fmt --check: diff in src/lib.rs, twice","reason":"fmt failed"}"#;
 
 #[tokio::test]
 async fn a_gated_lesson_is_kept_journaled_and_diffed() {
@@ -190,7 +190,7 @@ async fn guards_reject_duplicates_unknown_ids_and_garbage_without_a_gate_run() {
         &[
             Some(ADD),
             Some(ADD),
-            Some(r#"{"op":"retire","id":"pb-9"}"#),
+            Some(r#"{"op":"retire","id":"pb-9","evidence":"[user] retry"}"#),
             Some("I think you should be careful"),
         ],
         true,

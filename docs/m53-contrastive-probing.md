@@ -125,3 +125,43 @@ mode, judge ensembles, natural-language rubrics from the owner. If
 probing proves itself on the nightly pass, the *next* milestone after
 this one can consider a `/probe` chat door — the M43 pattern — that
 runs one contrastive probe on demand for a task the owner names.
+
+## M53.2 — evidence discipline and honest clipping
+
+Built 2026-10-21 on `autopilot`, from the gap analysis's M53.2.
+
+**Why.** The reflector clipped each tool result to 1,500 characters and
+read only the last 12,000 of a transcript. Harness² refuses to clip
+below 10,000 characters, "in the range that fabricates defects"
+([spec.py](https://github.com/google-research/harness2/blob/1cfe254e8d25b15f37048c3730134686abe60335/harness2/core/spec.py#L163-L167)):
+a test log cut at 1,500 characters reads like a run that stopped short.
+Its reflector rules also treat "keep the base" as a real answer and an
+edit that can't name its moment as speculation
+([prompts.py](https://github.com/google-research/harness2/blob/1cfe254e8d25b15f37048c3730134686abe60335/harness2/core/prompts.py#L859-L874)).
+
+**What changed.**
+
+- **Clipping** (`episode.rs`). `TOOL_RESULT_CHARS` is 10,000 and
+  `TAIL_CHARS` 40,000, about 10k tokens, room for four results that
+  size. A result over the limit keeps its head and its tail, with
+  `[… N characters clipped here by the renderer, not by the run]` in
+  between. The left-out-messages line and the cut of one oversized
+  message say "by the renderer" too. The reflector has no tools, so
+  serving the transcript as a file it reads was not an option.
+- **Budget.** At most five episodes a pass is about 50k tokens of
+  reflector input, inside `[learning]`'s default 300,000 tokens a pass.
+  A judge call (M53) reads two tails, about 20k tokens.
+- **Rules** (`reflect.rs`'s system prompt): no change is the default
+  and a fine answer; every change cites the transcript moment it rests
+  on; a defect seen once in one run is noise (only a mistake the
+  transcript shows more than once counts); an outage, provider error or
+  one-off gets nothing; truncation markers are the renderer's, not the
+  agent's behaviour. The judge's prompt gets the truncation line too.
+- **Evidence is required.** `add`, `edit` and `retire` carry
+  `"evidence"`. Without it the answer is rejected as "not a valid
+  delta: no evidence". A kept change keeps its evidence in `pass.json`,
+  `log.jsonl` and the changelog line.
+
+**Not done.** Nothing checks that the cited moment is really in the
+transcript; the owner reads it next to the change. No real pass has run
+with the new prompt.
