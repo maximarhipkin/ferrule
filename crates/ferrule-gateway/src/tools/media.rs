@@ -4,6 +4,7 @@
 //! `media/` in the workspace, sent to the session's chat. Videos are an
 //! async job: submitted, one row in the `media_jobs` table, an immediate
 //! answer; the [`MediaPoller`] built-in task polls, downloads and delivers.
+//! M51.4: `speak`, a sync call like an image, sent as a voice note.
 //!
 //! Spend honesty: the daily cap (`[media] max_per_day`) is checked before
 //! every call from the store — fail-closed — and every call and delivery
@@ -18,7 +19,7 @@ use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use ferrule_core::{LedgerRecord, LedgerSink};
 use ferrule_media::jobs::now_unix;
-use ferrule_media::{ImageReq, JobStore, MediaBackend, VideoReq, VideoState};
+use ferrule_media::{ImageReq, JobStore, MediaBackend, SpeechReq, VideoReq, VideoState};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, Weak};
@@ -35,6 +36,8 @@ pub struct MediaShared {
     pub max_per_day: u64,
     pub ledger: Option<Arc<dyn LedgerSink>>,
     router: OnceLock<Weak<Router>>,
+    /// M51.4: `speak`'s default model and voice; unset, no `speak`.
+    speech: OnceLock<(String, Option<String>)>,
 }
 
 impl MediaShared {
@@ -54,11 +57,23 @@ impl MediaShared {
             max_per_day,
             ledger,
             router: OnceLock::new(),
+            speech: OnceLock::new(),
         })
     }
 
     pub fn bind(&self, router: &Arc<Router>) {
         let _ = self.router.set(Arc::downgrade(router));
+    }
+
+    /// M51.4: turn `speak` on with its default model (and voice; `None` is
+    /// the model's own). The first call wins.
+    pub fn set_speech(&self, model: String, voice: Option<String>) {
+        let _ = self.speech.set((model, voice));
+    }
+
+    /// Whether `speak` is on.
+    pub fn speaks(&self) -> bool {
+        self.speech.get().is_some()
     }
 
     fn router(&self) -> Option<Arc<Router>> {
@@ -389,11 +404,12 @@ impl Tool for GenerateVideoTool {
             .into_owned();
         let mut row =
             ferrule_media::JobStore::video(&job.id, &model, &prompt, &out.to_string_lossy());
-        if let Some((channel, chat_id)) = self
+        let chat = self
             .shared
             .router()
-            .and_then(|r| r.chat_of(&self.session_id))
-        {
+            .and_then(|r| r.chat_of(&self.session_id));
+        let has_chat = chat.is_some();
+        if let Some((channel, chat_id)) = chat {
             row.channel = Some(channel);
             row.chat_id = Some(chat_id);
         }
@@ -407,9 +423,155 @@ impl Tool for GenerateVideoTool {
             started.elapsed().as_millis() as u64,
             None,
         );
+        if !has_chat {
+            // M51.3: a sub-agent (or a run with no chat) gets the file,
+            // not a delivery.
+            return Ok(ToolOutput::ok(format!(
+                "Making it — job {} on {model}. A render takes minutes; the gateway saves it as {rel} when it's done. This session has no chat to send it to: report that path, and send_file can deliver it once it's there.",
+                job.id
+            )));
+        }
         Ok(ToolOutput::ok(format!(
             "Making it — job {} on {model}. A render takes minutes; I'll send {rel} here when it's done.",
             job.id
+        )))
+    }
+}
+
+/// M51.4: the longest text `speak` reads out (a voice reply, not a
+/// document; the speech models' own limits are a few thousand characters).
+const SPEAK_MAX_CHARS: usize = 4000;
+
+/// M51.4: `speak {text, voice?}`, a voice reply: OpenRouter's
+/// `/audio/speech`, saved under `media/`, sent to the chat as a voice note.
+pub struct SpeakTool {
+    shared: Arc<MediaShared>,
+    session_id: String,
+}
+
+impl SpeakTool {
+    pub fn new(shared: Arc<MediaShared>, session_id: impl Into<String>) -> Self {
+        Self {
+            shared,
+            session_id: session_id.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for SpeakTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "speak".into(),
+            description: "Say something out loud: turn `text` into speech, save it in the workspace under media/ and send it to this chat as a voice message. Use it when the person asks for a voice reply or sent a voice message and wants one back; write the text as it should be spoken. Each call spends a little money.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "What to say, as it should be spoken (at most 4,000 characters)" },
+                    "voice": { "type": "string", "description": "A voice the speech model knows; the configured one when omitted" }
+                },
+                "required": ["text"]
+            }),
+        }
+    }
+
+    fn changes_files(&self) -> bool {
+        true
+    }
+
+    /// M57.1: rare, and loaded when wanted.
+    fn deferrable(&self) -> bool {
+        true
+    }
+
+    async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
+        let Some((model, default_voice)) = self.shared.speech.get().cloned() else {
+            return Err(failed(
+                "speak",
+                "no speech model is set ([media] speech_model)",
+            ));
+        };
+        let text = args["text"].as_str().unwrap_or_default().trim().to_string();
+        if text.is_empty() {
+            return Err(failed("speak", "say what to speak"));
+        }
+        let chars = text.chars().count();
+        if chars > SPEAK_MAX_CHARS {
+            return Err(failed(
+                "speak",
+                format!("that's {chars} characters; a voice reply takes at most {SPEAK_MAX_CHARS}. Shorten it, or send it as text"),
+            ));
+        }
+        self.shared
+            .check_cap()
+            .map_err(|e| failed("speak", e.to_string()))?;
+        let voice = args["voice"]
+            .as_str()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .or(default_voice);
+        let started = std::time::Instant::now();
+        let out = match self
+            .shared
+            .backend
+            .speak(SpeechReq {
+                text: text.clone(),
+                model: Some(model.clone()),
+                voice,
+            })
+            .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                self.shared.ledger(
+                    &self.session_id,
+                    &model,
+                    started.elapsed().as_millis() as u64,
+                    Some(&e.to_string()),
+                );
+                return Err(failed("speak", e.to_string()));
+            }
+        };
+        let path = fresh_path(&ctx.workspace, &out.format);
+        std::fs::write(&path, &out.bytes)
+            .map_err(|e| failed("speak", format!("{}: {e}", path.display())))?;
+        let rel = path
+            .strip_prefix(&ctx.workspace)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        let mut job = ferrule_media::JobStore::speech(&rel, &model, &text, &rel);
+        let chat = self
+            .shared
+            .router()
+            .and_then(|r| r.chat_of(&self.session_id));
+        if let Some((channel, chat_id)) = &chat {
+            job.channel = Some(channel.clone());
+            job.chat_id = Some(chat_id.clone());
+        }
+        self.shared
+            .store
+            .record(&job)
+            .map_err(|e| failed("speak", e.to_string()))?;
+        self.shared.ledger(
+            &self.session_id,
+            &model,
+            started.elapsed().as_millis() as u64,
+            None,
+        );
+        if let Some((channel_name, chat_id)) = chat {
+            if let Err(e) = send_out(&self.shared, &channel_name, &chat_id, &path, "", true).await {
+                return Ok(ToolOutput::ok(format!(
+                    "Saved {rel}, but sending it to the chat failed: {e}. The file is there."
+                )));
+            }
+            return Ok(ToolOutput::ok(format!(
+                "Said it: {rel} is sent to this chat as a voice message."
+            )));
+        }
+        Ok(ToolOutput::ok(format!(
+            "Saved {rel}. This session has no chat to send it to; send_file can deliver it where needed."
         )))
     }
 }
@@ -421,6 +583,19 @@ async fn deliver(
     chat_id: &str,
     path: &std::path::Path,
     caption: &str,
+) -> Result<(), String> {
+    send_out(shared, channel_name, chat_id, path, caption, false).await
+}
+
+/// `voice`: the attachment's kind is `voice`, which Telegram sends with
+/// `sendVoice` (M51.4); other channels send it by its file type.
+async fn send_out(
+    shared: &MediaShared,
+    channel_name: &str,
+    chat_id: &str,
+    path: &std::path::Path,
+    caption: &str,
+    voice: bool,
 ) -> Result<(), String> {
     let router = shared.router().ok_or("the gateway isn't running")?;
     let channel = router
@@ -435,7 +610,11 @@ async fn deliver(
         text: caption.chars().take(900).collect(),
         reply_to: None,
         attachments: vec![Attachment {
-            kind: files::mime_for(&name).to_string(),
+            kind: if voice {
+                "voice".into()
+            } else {
+                files::mime_for(&name).to_string()
+            },
             url: path.to_string_lossy().into_owned(),
             name: Some(name),
         }],

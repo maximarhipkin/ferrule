@@ -415,10 +415,10 @@ exist and missed most that did):
 | `send_file` | a workspace file to this chat (M39); only the gateway knows the chat |
 | `ask_user`, `react`, `edit_message` | a question with buttons, a reaction, an edit of the last reply in this chat (M56.6); only the gateway knows the chat. Bridged by the registry rule below with no list change |
 | `web_search` | when configured: one backend, one bill, one egress policy |
-| `spawn_agent`, `wait_agent`, `resume_agent`, `close_agent`, `list_agents`, `board_post`, `board_read`, `task_add`, `task_list`, `task_claim`, `task_done` | sub-agents on whatever model they pick, with their board and task list (M12) |
+| `spawn_agent`, `message_agent`, `stop_agent`, `board`, `tasks` (the eleven agent tools before M58.3) | sub-agents on whatever model they pick, with their board and task list (M12) |
 | `ferrule_admin` | the owner's chat changes Ferrule, scheduled tasks included (M48) |
 | `connection_request`, `connection_list` | ask the owner for a connection, see what's connected (M20) |
-| the M13 extension tools, `plugin__*` WASM tools, `log_diary` | whatever the agent has, it has here too |
+| the M13 extension tools, `plugin__*` WASM tools | whatever the agent has, it has here too. `log_diary` was bridged until M58.3 merged it into `write_todos`, which claude's `TodoWrite` stands in for, so a Claude-plan agent keeps no diary |
 | every `mcp__*` tool | Ferrule's MCP servers: a connection (Gmail, Google, Jira), an `[mcp]` server, the browser. Claude loads none of its own (`--strict-mcp-config`), so without the bridge it has none of them |
 
 Only tools the agent already has are offered: the list is `req.tools`

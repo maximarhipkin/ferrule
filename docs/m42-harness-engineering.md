@@ -163,6 +163,11 @@ from = "verify" to = "ship" on = "pass"
   satisfied (the batch waits for *all*, not the first).
 - **Verifier agents** end with `VERDICT: PASS|FAIL`; anything unclear
   fails closed.
+- **Select nodes** (M53.7, opt-in, for rare check-less, high-stakes
+  outputs): `kind = "select"` runs `k` agents (default 3, 2 to 5) on the
+  same `task`, and a verifier agent picks one deliverable, shown under
+  seeded anonymous labels, with `PICK: <label>`; no clear pick fails
+  closed (`docs/m53-contrastive-probing.md`, "M53.7").
 - **Success**: `succeed_when = "<node>"`, or every terminal node (no
   non-feedback way out) passing. The report is truthful per node:
   pass/fail/never ran, exit 0 or 2.
@@ -174,27 +179,49 @@ The orchestration tax rule from L14 holds: one node and one check stay
 exactly `verify_command`'s job — a graph is opt-in per task, never the
 default path.
 
-Still open: a run's own resumable state (a cut graph restarts), gateway
-channels starting graphs, `graph list`/`graph stop` for long ones, and
-approval routed to the owner's chat instead of the terminal.
+**Where it lives (M58.4, 2026-10-21).** The runner is outside the core:
+`crates/ferrule-cli/src/graph.rs`, plus `graph_door.rs` for `/graph`.
+Neither `ferrule-core` nor `ferrule-agents` has graph-only code. The
+runner calls the supervisor's public `spawn`, `get`, `changed` and
+`close`, and `ferrule-tools`' `CommandVerifier`, which the other loops
+use too.
+
+It runs only when asked:
+- `ferrule graph run`;
+- the owner's `/graph` in a chat (M43);
+- the dashboard console's `graph run`.
+
+`ferrule run` and `ferrule chat` never reach it. The gateway's `/graph`
+door reads a message's first word and passes every other message on
+untouched.
+
+Still open: a run's own resumable state (a cut graph restarts),
+`graph list`/`graph stop` for long ones, and a script-shaped replacement
+(a script that calls `ferrule run --goal --verify` per step, like Claude
+Code's `Workflow`), which the gap analysis suggests over the TOML runner.
+M43 added starting a graph from a chat, with approvals in the owner's
+chat.
 
 ## Part 7 — pluggable compaction and a session tree (done)
 
 Pi's two state-layer ideas, mapped to ferrule:
 
 - **Compaction as a strategy.** `ferrule_core::compactor::Compactor` is
-  the seam (`summarize(transcript_text) -> summary`); the agent keeps the
-  built-in checklist pipeline on its own model when none is set, and the
-  fold record doesn't change either way. The first strategy is
-  `TemplateCompactor` — the same template on any provider it's handed.
-  Pi's other examples (topic-based folding, a custom prompt) are now one
-  trait impl away. A strategy's calls don't get the agent's ledger rows,
-  retries, budget charge or kill switch. `[agent] compaction_model =
-  "fast"` (resolved and validated at agent build, routed through the
-  model catalog with fallbacks) therefore isn't a strategy since
-  2026-10-19: the agent runs its own pipeline on that model
-  (`Agent::with_compaction_provider`), through `call_provider` like every
-  other model call.
+  the seam: `request(transcript_text)` is the summary request, and
+  `provider()` optionally names the model it goes to. When no strategy is
+  set, the agent keeps the built-in checklist pipeline on its own model.
+  The fold record doesn't change either way. The first strategy is
+  `TemplateCompactor`, the same template on any provider it's handed. A
+  custom prompt is one trait impl away. Folding by topic in several calls
+  isn't, since M58.1: the agent sends a strategy's one request through
+  `call_provider`, so a summary always gets the agent's ledger row,
+  retries, fallback, budget charge and kill switch. Before that, a
+  strategy made its own call outside all of them.
+- **`[agent] compaction_model = "fast"`** isn't a strategy (since
+  2026-10-19). It is resolved and validated at agent build and routed
+  through the model catalog with fallbacks. The agent runs its own
+  pipeline on that model (`Agent::with_compaction_provider`), through
+  `call_provider` like every other model call.
 - **Session tree.** A transcript forks: `Transcript::open` reads a
   session without writing to it, `fork(session_id, at)` writes a new
   transcript with `parent`/`fork_at` meta and the fold-applied messages

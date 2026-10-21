@@ -604,6 +604,11 @@ Merged to `main` (PR #19).
   section and API, doctor.
 - `ferrule eval --variant routing` compares cheap only, routed and strong
   only on pass rate and cost.
+- **Strictly opt-in (M58.2):** only `enabled = true` turns it on, written
+  by `ferrule model route set`, setup's Routing entry, the dashboard or
+  by hand. It stays opt-in until a real pair is measured, for two
+  reasons: it has only mock numbers, and an escalation is a mid-session
+  model switch that costs the prompt cache (`docs/routing.md`).
 
 **Done means.** On a real pair, `routed` passes close to `strong` at close
 to `cheap`'s price, and the ledger says why each escalation happened.
@@ -981,7 +986,9 @@ Code / Codex / DeepSeek / Pi breakdowns).
   graph — agent, check and approval nodes; pass/fail/always edges; a fail
   edge back is a rollback with the check's output as the repair
   instruction; fan-out in parallel, fan-in on every input. Deterministic
-  Rust routes; the agents work.
+  Rust routes; the agents work. The runner is in `ferrule-cli`
+  (`graph.rs`, `graph_door.rs`), not `ferrule-core`, and runs only when
+  called (M58.4).
 - **Pluggable compaction and a session tree:** `[agent] compaction_model`
   summarizes on a cheaper model through the new `Compactor` seam, and
   `ferrule chat --fork SESSION [--at N]` branches a session (the parent
@@ -1122,6 +1129,17 @@ Not tried against a real OpenRouter key or a real render yet.
 5-second clip of it" answers now and delivers the MP4 minutes later —
 priced in the ledger, capped per day, and surviving a gateway restart.
 
+**Follow-ups from the gap analysis, on `autopilot`** (2026-10-21):
+- **M51.4**: `speak {text, voice?}` over OpenRouter's `/audio/speech`
+  (MP3, sent to Telegram with `sendVoice`, no ffmpeg), `[transcription]`
+  on OpenRouter with its reported cost in the ledger, and `ferrule
+  doctor`'s `media` line (ffmpeg, libass) (`docs/m51-media.md`,
+  "M51.4"). Not run against a live key.
+- **M51.3**: a `media` sub-agent role with `generate_image`,
+  `generate_video` and `speak`, always in its parent's workspace so the
+  parent sends the files; gateway only (`docs/agents.md`,
+  `docs/m51-media.md`, "M51.3").
+
 ### M52 — the dashboard Safe
 
 **Status.** Built (`docs/m52-dashboard-safe.md`; user docs
@@ -1137,6 +1155,25 @@ priced in the ledger, capped per day, and surviving a gateway restart.
 **Done means.** A leaked OpenRouter key is rotated from a phone in one
 paste, the bot answers on the new key without a restart, and the audit
 log shows the act by name only.
+
+**Follow-ups from the gap analysis, on `autopilot`** (2026-10-21):
+- **M52.3** (`secret_request`) is done by M54's `secret_request` op,
+  which opens the Safe prefilled (`docs/m54-autonomous.md` §6.3).
+- **M52.2**: the Safe is the whole inventory (model providers,
+  channels, connected services, tool keys, system) with where each is
+  kept, its sites, saved and changed dates, last use (the proxy's
+  `secret.used`, the ledger for provider keys), Delete for every kind and
+  a by-name history (`docs/m52-dashboard-safe.md`, "M52.2").
+- **M52.4**: the Config page shows a value-by-value diff before Save,
+  refuses a stale save with HTTP 409 (`base_hash`), and keeps the last
+  20 versions in `<data>/config-history/` (secrets hidden), each
+  previewed and restored through the save's guard
+  (`docs/m52-dashboard-safe.md`, "M52.4").
+- **M52.6**: the Safe's writes need a login under 10 minutes old or the
+  owner's Allow in their chat; the session cookie takes `__Host-` where
+  the origin allows; opt-in `[dashboard] tailscale_users` for Tailscale
+  Serve. A Cloudflare Access JWT check at the origin is documented as a
+  follow-up (`docs/m52-dashboard-safe.md`, "M52.6").
 
 ### M53 — contrastive probing
 
@@ -1159,6 +1196,37 @@ pass.
 **Done means.** A check-less failure can teach the playbook one line —
 "kept by judge" next to "kept by check" in `ferrule learn show` — and
 every lesson stays readable and revertible the M16 way.
+
+**Follow-ups from the gap analysis** (built on `autopilot`, one section
+each in `docs/m53-contrastive-probing.md`):
+- **M53.2**, evidence discipline and honest clipping: tool results
+  clipped at 10,000 characters (head and tail) in a 40,000-character
+  window, every cut marked as the renderer's, and a reflector that must
+  cite the transcript moment behind each change, treats "no change" as
+  the default and a one-off defect as noise.
+- **M53.3**, learned skills and scripts: a `skill` delta written to
+  `<data>/learned-skills/<name>/` after Harness²'s validators (a
+  description, reachable through the catalog, every referenced script
+  shipped, scripts that parse in the sandbox) and M13's inspect-and-scan
+  path, gated like a lesson, locked by digest in `learn/skills.json`,
+  loaded as origin `learned`, revertible.
+- **M53.4**, scoped learning: lessons (`[pb-N @scope]`) and learned
+  skills keyed to a workspace, a gateway chat or a scheduled task; a
+  prompt gets the global ones and its scope's; kept in a second scope,
+  one is promoted to global; near the cap (90%), an add retires the
+  reflector's pick or the lesson no pass kept for longest.
+- **M53.5**, visible learning: the nightly pass tells the owner's chat
+  each lesson or skill it kept, one "Learned" line with an Undo button
+  (`/unlearn`, `ferrule learn revert --change N`, one change at a time);
+  with learning on, the owner's 👎 on a Telegram reply becomes an episode
+  cut at that reply, judged knowing the owner reacted, and a later 👍 in
+  the chat marks it fixed. Learning stays off by default.
+- **M53.7**, an opt-in blind selection node: `kind = "select"` in
+  `ferrule graph` runs k agents (default 3, 2 to 5) on one task, shuffles
+  their deliverables under seeded anonymous labels, and a verifier agent
+  picks one against Harness²'s ordered checklist with `PICK: <label>`;
+  an unclear pick fails the node. For rare check-less, high-stakes
+  outputs; best-of-n stays out of every default path.
 
 ### M54 — protected autonomous mode
 
@@ -1264,15 +1332,40 @@ Current State; numbers are claimed there before anything is built.
     in its own transcript, then its task.
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
-    the core, eval as the gate.
+    the core, eval as the gate. Done on `autopilot`: M58.2, M25 routing
+    verified strictly opt-in and documented as staying so until a real
+    pair is measured (`docs/routing.md`); M58.4, the graph runner
+    confirmed outside `ferrule-core` (it's `ferrule-cli`'s `graph.rs`)
+    and off the `run`/`chat` path (`docs/m42-harness-engineering.md`,
+    part 6); M58.1, four of the loop's seven seams consolidated in
+    `ferrule-core`: one `abandon_rest` for the "not run" endings, one
+    failure taxonomy (`FailureClass` is `failure::Kind`'s coarse view),
+    routing's repeat counts kept with the stuck detector
+    (`stuck::Streaks`), and a compaction strategy's request sent through
+    `call_provider` (`docs/m42-harness-engineering.md`, part 7); M58.3,
+    the eleven agent tools cut to five (`spawn_agent`, `message_agent`,
+    `stop_agent`, `board`, `tasks`; the old names callable, never offered,
+    for one release) and `log_diary` merged into `write_todos` as `note`,
+    taking an agent that can spawn from ~5,900 to ~5,100 characters of
+    tool definitions (`docs/agents.md`, "The tools"); M58.5, eval as the
+    gate: `ferrule eval run --ablate <part>` (an `ablated` arm without
+    one component), M53's harness stamp per task run (now with `prompt`
+    and `tools` hashes) and a "harness changed" line in the diff, a
+    grader-leak tripwire (graders and checks hidden from the agent's
+    sandbox, the workspace searched for copies, a leak an error;
+    `--allow-grader-reads` without a sandbox), a Terminal-Bench-style
+    converter (`evals/terminal-bench/convert.py`, not yet run on real
+    tasks), and the A/B-before-landing policy (`docs/eval.md`).
   - **M59** channels not worth chasing yet: personal WhatsApp and
     iMessage.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
     key fields in the dashboard, the Safe page, `secret_request`, safe
     config editing, a chat paste guard, step-up auth) and to M54
-    (M54.1–M54.7). M52.1 and M52.5 are built on `autopilot`
-    (`docs/m22-dashboard.md`, "Threat model"; `docs/channels.md`, "Keys
-    pasted into a chat").
+    (M54.1–M54.7). M52.1, M52.2, M52.4, M52.5 and M52.6 are built on
+    `autopilot` (`docs/m22-dashboard.md`, "Threat model";
+    `docs/m52-dashboard-safe.md`, "M52.2", "M52.4" and "M52.6";
+    `docs/channels.md`, "Keys pasted into a chat"); M52.3 is M54's
+    `secret_request`.
 
 **Still open from earlier tracks.**
 

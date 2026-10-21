@@ -1,9 +1,11 @@
 //! ferrule-learn: the M16 learning loop. An offline pass reviews runs that
-//! failed or needed retries, proposes one-line playbook deltas that are kept
-//! only when a re-run of the task passes its check, merges near-duplicate
+//! failed or needed retries, proposes one-line playbook deltas or (M53.3)
+//! skills that are kept only when a re-run of the task passes its check or
+//! (M53) wins the judge's contrast, merges near-duplicate
 //! memories through M15's UPDATE, and writes every change to a readable,
-//! revertable file — within caps read from the ledger. Design:
-//! `docs/m16-learning-loop.md`.
+//! revertable file — within caps read from the ledger. M53.5: the owner's
+//! 👎 on a chat reply is an episode too, and each kept change can be undone
+//! on its own. Design: `docs/m16-learning-loop.md`.
 
 pub mod budget;
 pub mod consolidate;
@@ -15,11 +17,15 @@ pub mod judge;
 pub mod pass;
 pub mod playbook;
 pub mod reflect;
+pub mod scope;
 pub mod screen;
+pub mod skills;
+pub mod thumbs;
 
 pub use budget::{Caps, LearnSink, Meter, PriceFn, Spent, CALL_KIND};
 pub use episode::Episode;
 pub use files::{LearnDir, PassRecord, State};
 pub use gate::{Gate, GateRun, GateVerdict, ProbeOut, WorkspaceGate};
-pub use pass::{plan, revert, run_pass, Env, Options, Plan};
-pub use playbook::{prompt_block, Applied, Delta, Lesson, Playbook, PromptBlock};
+pub use pass::{plan, revert, revert_change, run_pass, Env, Learned, OnKept, Options, Plan};
+pub use playbook::{prompt_block, prompt_block_for, Applied, Delta, Lesson, Playbook, PromptBlock};
+pub use skills::SkillDraft;

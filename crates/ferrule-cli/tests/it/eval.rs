@@ -161,6 +161,7 @@ fn the_smoke_ab_passes_under_ferrule_and_loses_the_context_and_verify_tasks_naiv
         &[
             "eval",
             "run",
+            "--allow-grader-reads",
             suite.to_str().unwrap(),
             "--tag",
             "smoke",
@@ -232,6 +233,7 @@ fn the_budget_cap_stops_the_binary_with_exit_code_3() {
         &[
             "eval",
             "run",
+            "--allow-grader-reads",
             suite.to_str().unwrap(),
             "--tag",
             "smoke",
@@ -255,6 +257,7 @@ fn the_dry_run_prices_the_worst_case_and_calls_nothing() {
         &[
             "eval",
             "run",
+            "--allow-grader-reads",
             suite.to_str().unwrap(),
             "--tag",
             "smoke",
@@ -315,6 +318,7 @@ fn a_second_run_reports_its_diff_against_the_first() {
     let args = [
         "eval",
         "run",
+        "--allow-grader-reads",
         suite.to_str().unwrap(),
         "--task",
         "fix-median",
@@ -427,6 +431,7 @@ fn an_eval_run_sends_no_receipts_pings_heartbeats_or_notices() {
     cmd.args([
         "eval",
         "run",
+        "--allow-grader-reads",
         suite.to_str().unwrap(),
         "--task",
         "fix-median",
@@ -510,6 +515,7 @@ fn the_eval_estimate_still_matches_the_mocks_use() {
         &[
             "eval",
             "run",
+            "--allow-grader-reads",
             suite().to_str().unwrap(),
             "--tag",
             "smoke",
@@ -591,6 +597,7 @@ fn the_routing_variant_moves_the_weak_models_failed_check_up_and_prices_each_row
         &[
             "eval",
             "run",
+            "--allow-grader-reads",
             suite.to_str().unwrap(),
             "--tag",
             "smoke",
@@ -662,7 +669,14 @@ fn the_routing_variant_takes_its_pair_from_the_tiers_and_says_what_it_needs() {
     let tiered = routing_home("http://127.0.0.1:9/v1", "http://127.0.0.1:9/v1", true);
     let suite = suite();
     let run = |extra: &[&str]| {
-        let mut args = vec!["eval", "run", suite.to_str().unwrap(), "--tag", "smoke"];
+        let mut args = vec![
+            "eval",
+            "run",
+            "--allow-grader-reads",
+            suite.to_str().unwrap(),
+            "--tag",
+            "smoke",
+        ];
         args.extend_from_slice(extra);
         let out = ferrule(tiered.path(), &args);
         let (stdout, stderr) = texts(&out);
@@ -692,6 +706,7 @@ fn the_routing_variant_takes_its_pair_from_the_tiers_and_says_what_it_needs() {
         &[
             "eval",
             "run",
+            "--allow-grader-reads",
             suite.to_str().unwrap(),
             "--variant",
             "routing",
@@ -724,7 +739,12 @@ fn live_routing_smoke_compares_cheap_routed_and_strong() {
     }
     let data = tempfile::tempdir().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_ferrule"))
-        .args(["eval", "run", suite().to_str().unwrap()])
+        .args([
+            "eval",
+            "run",
+            "--allow-grader-reads",
+            suite().to_str().unwrap(),
+        ])
         .args(["--tag", "smoke", "--variant", "routing", "--max-usd", "1"])
         .env("FERRULE_CONFIG", config)
         .env("FERRULE_DATA_DIR", data.path())

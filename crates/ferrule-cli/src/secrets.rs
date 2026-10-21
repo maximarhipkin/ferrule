@@ -178,7 +178,10 @@ pub fn set(path: &Path, name: &str, value: &str) -> Result<()> {
     }
     let mut text = lines.join("\n");
     text.push('\n');
-    write_private(path, &text)
+    write_private(path, &text)?;
+    // M52.2: the Safe's dates (names and times only).
+    crate::secret_meta::wrote(dir, name, replaced);
+    Ok(())
 }
 
 /// Drop `name`'s lines from the file; other lines and comments are kept.
@@ -198,7 +201,11 @@ pub fn remove(path: &Path, name: &str) -> Result<()> {
     }
     let mut text = kept.join("\n");
     text.push('\n');
-    write_private(path, &text)
+    write_private(path, &text)?;
+    if let Some(dir) = path.parent() {
+        crate::secret_meta::forgot(dir, name);
+    }
+    Ok(())
 }
 
 pub(crate) fn create_private_dir(dir: &Path) -> Result<()> {

@@ -244,6 +244,18 @@ pub fn rotate(ctx: &Ctx, body: &Value) -> Answer {
     // environment first (`models.rs`'s `key()`): put the new value there
     // too, so the change works without a restart.
     std::env::set_var(name, value);
+    // M52.2: a tool key the proxy swaps in takes the new value now; the
+    // old placeholder keeps working for commands started before.
+    // Only a `[secrets]` name: the proxy isn't started for anything else.
+    if let Some(cfg) = config(ctx) {
+        if let Some(spec) = cfg.secrets.get(name) {
+            if let Ok(Some(broker)) = crate::shared_broker(&cfg) {
+                if let Err(e) = broker.bind(name, &ferrule_proxy::SecretRule::from(spec), value) {
+                    tracing::warn!("{name} rotated, but the proxy kept the old value: {e:#}");
+                }
+            }
+        }
+    }
     audit(ctx, "dashboard.secret.rotate", json!({ "name": name }));
     ok(json!({
         "ok": true,
@@ -303,7 +315,7 @@ pub fn hosts_edit(ctx: &Ctx, body: &Value) -> Answer {
 
 /// What uses a name, in words: the provider brains, the channels and the
 /// MCP apps the config names it for. Never the value.
-fn used_by(config_text: &str, name: &str) -> Vec<String> {
+pub(super) fn used_by(config_text: &str, name: &str) -> Vec<String> {
     let Ok(doc) = config_text.parse::<toml::Table>() else {
         return vec![];
     };
@@ -362,7 +374,7 @@ fn used_by(config_text: &str, name: &str) -> Vec<String> {
 }
 
 /// Managed mode: keys for tools are for commands, which `shell` covers.
-fn locked() -> Option<String> {
+pub(super) fn locked() -> Option<String> {
     crate::managed::policy()
         .filter(|p| !p.shell)
         .map(|p| format!("Keys for tools are locked on this bot: {}.", p.why()))
@@ -453,7 +465,7 @@ fn hosts(text: &str) -> Result<Vec<String>, String> {
 
 /// Whether the config names `name` anywhere outside `[secrets]`: as a
 /// `*_env` key's value, in a `secrets` list, or as `${NAME}` in a string.
-fn named_in(config_text: &str, name: &str) -> bool {
+pub(super) fn named_in(config_text: &str, name: &str) -> bool {
     let Ok(mut doc) = config_text.parse::<toml::Table>() else {
         // A config that doesn't read: assume the worst.
         return true;

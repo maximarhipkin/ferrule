@@ -8,6 +8,11 @@ rejected, and why). Per-session workspaces were dropped (msg 3088): a child
 gets its own git worktree only when it works on the same repo as its parent.
 Everything else shares the parent's workspace.
 
+M58.3 (2026-10-21) collapsed the eleven agent tools this design names
+into five: `spawn_agent`, `message_agent`, `stop_agent`, `board` and
+`tasks` (`docs/agents.md`, "The tools"). The old names stay callable for
+one release. The mechanics below are unchanged.
+
 ## What it is
 
 One agent can hand work to others and keep going. A parent calls

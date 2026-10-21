@@ -123,3 +123,175 @@ Reading values back (never), per-key spend caps (the ledger's job), a
 system-keychain backend (the secrets file stays the one store),
 rotating the dashboard's own sign-in from the page (Settings already
 has sign-out; a sign-in change stays a `ferrule setup` act).
+
+## M52.2 — the whole inventory, last used, Delete, history (2026-10-21)
+
+From the 2026-10-20 gap analysis (M52.2). Built on `autopilot`. Kimi's
+rotate and edit-hosts (parts 1 and 2 above) were already in; this adds
+the rest of the Safe page. M52.3 (`secret_request`) is M54's
+`secret_request` op, which opens this panel with the name and sites
+filled in (`docs/m54-autonomous.md` §6.3); nothing was rebuilt for it.
+
+**Where each kind is stored, traced in the code** (the gap analysis's
+open question). A provider's key and a channel's tokens are values in
+`private/secrets.env` under the names the config gives them:
+`models_page::provider_save` calls `secrets::set(&place.secrets,
+&w.key_env, k)` and writes only `api_key_env` (the name) into
+`[providers.X]`; `channels::card::save` sets each typed secret in the
+same file and writes `*_env` names into `[gateway…]`. A `[secrets]`
+tool key is a value in that file plus its hosts in the config.
+Connections are sealed (AES-256-GCM) in
+`private/connections/connections.json`, plan sign-ins in
+`private/plans/chatgpt.json` and `claude-code.json`, all under
+`private/connections.key` (or `$FERRULE_CONNECTIONS_KEY`). A name can
+also come from the environment ferrule was started with; the page shows
+that and can't change it.
+
+- **Inventory** (`dashboard/safe.rs`, `GET secrets` gains `groups`;
+  `keys` stays as it was for the chat's `secrets` op): Model providers,
+  Channels, Connected services, Tool keys, System. Each entry: where it
+  is kept, the hosts it goes to (a tool key's proxy list; a provider's
+  address, which ferrule calls itself; a channel's API host), what uses
+  it, saved and changed dates, last use, and Delete or why not. No
+  value, no reveal, in the answer or the page.
+- **Dates.** `secret_meta.rs` keeps `secrets.meta.json` beside the
+  secrets file (in the private dir the sandbox hides): per name, when it
+  was first written, when its value last changed, and its last use and
+  host. `secrets::set` and `remove` stamp it (two lines in M54's
+  `secrets.rs`). A key saved before M52.2 shows "not recorded" until its
+  next write; connections and plan sign-ins have their own dates.
+- **Last used.** `ferrule-proxy` hands `Broker::on_use` a
+  `SecretUse {name, host}` whenever a request carries a bound secret's
+  placeholder where it's swapped (a credential header, `Basic`
+  credentials included, or an allowed URL). The process writes it at
+  most once a minute per name. A provider's key goes from ferrule's own
+  process, not the proxy, so its last use is also read from the ledger's
+  last 512 KB (the provider's newest row); channel tokens and connection
+  tokens are said to be untracked.
+- **Delete for every kind** (`POST secrets/delete {id}`, one confirm
+  card naming what stops working, audited as
+  `dashboard.secret.delete` by name): a kept value leaves the secrets
+  file, this process's environment and the proxy (`Broker::unbind`),
+  and a page-shaped `[secrets]` entry goes with it; a connection is
+  disconnected (its grant revoked where the service allows); the
+  ChatGPT sign-in's file and the Claude setup-token are deleted; the
+  page's sign-ins all end. A name set in the environment can't be
+  deleted from the page, and says so. The sealing key and the proxy's CA
+  have no Delete: the first would orphan every sealed connection and
+  sign-in, and the second holds no key of the owner's and every running
+  command trusts it.
+- **Rotate goes live in the proxy too**: rotating a `[secrets]` key now
+  rebinds it (`Broker::bind`), so commands get the new value at once
+  instead of after a restart.
+- **History** (`GET secrets/audit`): `dashboard.secret.*`,
+  `self_service.secret*`, `config_*`, `approval_*`, `channel.*` and the
+  sandbox switch from the last 90 days, newest first, 200 at most, each
+  as its time, event, the name it concerns (a key's name, config
+  sections, an approval's op) and who.
+
+**Not verified live.** Not opened from a real phone; the use hook has
+not been watched on a real proxied request. A ChatGPT sign-out from the
+page deletes the local sign-in without asking OpenAI to revoke it
+(`ferrule logout chatgpt` does both).
+
+## M52.4 — safe config editing (2026-10-21)
+
+From the 2026-10-20 gap analysis (M52.4). Built on `autopilot`, in
+`dashboard/config_page.rs` and `app.js`.
+
+- **A diff before Save.** `config/check` returns `diff`: every leaf the
+  edit changes, `key: before → after`, through the redactor, a secret
+  field as "(hidden)" (`unhide` refuses a changed secret anyway), 200
+  rows at most. The page's **Save the file** runs the check first and
+  shows the diff with a **Save these N changes** button; nothing is
+  written before that tap. A form field is one change and saves as it
+  did.
+- **A `base_hash` round trip.** `GET config` returns `hash`, the
+  SHA-256 (base64) of the file on disk. The page sends it back as
+  `base_hash` with `config/check`, `config/save`, `config/set`,
+  `config/undo`, `config/restore` and `config/version/restore`; when
+  the file's hash differs, the write is refused with HTTP 409, `stale:
+  true` and "The config changed since this page loaded it … reload …,
+  then make your change again". A write without `base_hash` (the chat's
+  `config_set`, an older page) is checked as before, without it.
+- **The last 20 versions** in `<data>/config-history/`: `<ms>.toml`, the
+  file with its secret fields hidden (`hide`, the page's own
+  placeholder), so the history holds config and never a value, and
+  `<ms>.json` (when, how, by whom, the sections it changed). Each page
+  write keeps the file as it found it (so a change made elsewhere since
+  the last version is kept too) and the file it wrote; a version equal
+  to the newest isn't kept twice; the oldest beyond 20 go. The autonomy
+  switch and the last-good restore keep theirs too. Writes made by the
+  other pages (the Safe's sites, a channel's card, a provider) and by the
+  terminal aren't versions of their own; the next page write keeps the
+  file as they left it.
+- **Restore with a preview.** `GET config/versions` lists them (and
+  which one is the file now); `GET config/version?id=` is the diff a
+  restore would make; `POST config/version/restore {id}` asks once,
+  puts the hidden secrets back from the file as it is (a secret field
+  that differs refuses, as in the editor) and writes through `commit`
+  with the same guard as Undo: a guarded field (a command, a gate, who
+  gets in, where a secret goes) is refused unless the file on disk
+  doesn't read at all. M54's rule for the chat's `config_restore` (no
+  guarded field back from the chat) is unchanged.
+
+**Not verified live.** Not used from a real browser.
+
+## M52.6 — step-up for Safe writes, `__Host-`, hardened remote (2026-10-21)
+
+From the 2026-10-20 gap analysis (M52.6). Built on `autopilot`, in
+`dashboard/mod.rs`, `auth.rs`, `chat.rs` and `app.js`.
+
+- **Step-up.** `POST /api/secrets/{rotate,delete,hosts,remove}` from a
+  session opened more than 10 minutes ago gets a 403 with `step_up:
+  true` ("Changing a key needs a login from the last 10 minutes…"),
+  before anything else runs. The page then offers to ask in the owner's
+  chat: `POST /api/stepup {path, name}` sends an approval card (the
+  trust hub's `ask_in`, five minutes to answer) to the first owner chat
+  that isn't the dashboard's own, with the server's words: which write,
+  the key's name (checked to letters, digits and `_:.-`) and the host
+  the session was opened on. The page polls `GET /api/stepup` and, on
+  Allow, sends the write again; the Allow covers that session's Safe
+  writes for 10 minutes. A fresh login link (`/dashboard`) does the same
+  without asking. The step-up card can't be answered on the page:
+  `approvals` doesn't list it and `approvals/answer` refuses its code
+  (`op = dashboard.step_up`), so a stolen cookie can't vouch for
+  itself. The state is in memory: a restart asks again. Adding a new
+  tool key isn't gated (M54's `secret_request` link is a fresh login
+  anyway), and the chat's own ops never pass through the page's
+  sessions.
+- **`__Host-` cookie.** Where the origin allows it (HTTPS and `Path=/`;
+  the page never sets `Domain`) the session cookie is
+  `__Host-ferrule_dash`; on loopback over plain HTTP and under a
+  `public_url` with a path prefix it stays `ferrule_dash`
+  (`auth::cookie_name`). Sessions made before this change used the old
+  name on tunnels, so they end once: send `/dashboard` for a new link.
+- **Hardened remote, opt-in.** Two documented setups, for owners who
+  want more than a quick tunnel and a login link:
+  - **Tailscale Serve** (implemented): `tailscale serve` the page's
+    local port, set `[dashboard] public_url` to the `ts.net` address,
+    `remote = "off"`, and `tailscale_users = ["you@example.com"]`. Off
+    this machine the page then answers only requests whose
+    `Tailscale-User-Login` is one of those logins, before the login
+    cookie is even read. Serve adds that header for tailnet users and
+    removes a client's own copy "to avoid header spoofing"; Funnel
+    (public) traffic and tagged devices get no identity header, so they
+    are refused ([Tailscale Serve](https://tailscale.com/kb/1312/serve)).
+    The login link and session still apply on top. A quick tunnel's host
+    is refused too while it's set. `tailscale_users` is guarded on the
+    Config page (it decides who gets in).
+  - **A named Cloudflare tunnel behind Cloudflare Access** (documented,
+    not implemented): a named tunnel to the page's port, an Access
+    application on its hostname with a policy for the owner's email,
+    `public_url` set to that hostname and `remote = "off"`. Access then
+    stops anyone else at Cloudflare's edge. Validating Access's JWT at
+    the origin (the `Cf-Access-Jwt-Assertion` header, its signature
+    against the team's `/cdn-cgi/access/certs` keys, its `aud` and
+    expiry; [Cloudflare](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/))
+    needs a JWKS fetch, a cache and RS256 verification, which is not a
+    small change, so it's a follow-up. Until then the page's own login
+    is what the origin checks.
+
+**Not verified live.** No step-up has been answered from a real
+Telegram chat, and no request has come through a real Tailscale Serve
+or Cloudflare Access.

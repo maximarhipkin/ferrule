@@ -76,6 +76,7 @@ fn ep(n: i64) -> Episode {
         fixed: true,
         transcript: None,
         at: n * 100,
+        scope: None,
     }
 }
 
@@ -125,6 +126,7 @@ fn setup(answers: &[Option<&str>], passes: bool, eps: Vec<Episode>) -> Setup {
         gate: gate.clone(),
         sessions_dir: None,
         task_episodes: eps,
+        on_kept: None,
     };
     Setup {
         _d: d,
@@ -134,7 +136,7 @@ fn setup(answers: &[Option<&str>], passes: bool, eps: Vec<Episode>) -> Setup {
     }
 }
 
-const ADD: &str = r#"{"op":"add","text":"Run cargo fmt before the tests.","reason":"fmt failed"}"#;
+const ADD: &str = r#"{"op":"add","text":"Run cargo fmt before the tests.","evidence":"[tool] cargo fmt --check: diff in src/lib.rs, twice","reason":"fmt failed"}"#;
 
 #[tokio::test]
 async fn a_gated_lesson_is_kept_journaled_and_diffed() {
@@ -190,7 +192,7 @@ async fn guards_reject_duplicates_unknown_ids_and_garbage_without_a_gate_run() {
         &[
             Some(ADD),
             Some(ADD),
-            Some(r#"{"op":"retire","id":"pb-9"}"#),
+            Some(r#"{"op":"retire","id":"pb-9","evidence":"[user] retry"}"#),
             Some("I think you should be careful"),
         ],
         true,
@@ -390,6 +392,7 @@ fn setup_with_gate(
         gate,
         sessions_dir: None,
         task_episodes: eps,
+        on_kept: None,
     };
     // The TempDir must outlive the pass: leak it into the Env's dir path.
     // (Tests drop everything at the end of the function scope instead.)

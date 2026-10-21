@@ -171,6 +171,20 @@ pub fn render(run: &SuiteRun) -> String {
             pair.cheap, pair.strong
         );
     }
+    if !run.ablated.is_empty() {
+        let _ = writeln!(
+            out,
+            "ablated: the engineered harness without {}",
+            run.ablated.join(", ")
+        );
+    }
+    if run.unguarded {
+        let _ = writeln!(
+            out,
+            "UNGUARDED: the agent could read this suite's graders and checks \
+             (--allow-grader-reads), so a pass may be a leak"
+        );
+    }
     let variants: Vec<Variant> = {
         let mut v: Vec<Variant> = run.results.iter().map(|r| r.variant).collect();
         v.sort();
@@ -214,9 +228,14 @@ pub fn render(run: &SuiteRun) -> String {
     let sums = summarize(&run.results);
     let mut header = vec![String::new()];
     header.extend(variants.iter().map(|v| v.to_string()));
-    let ab = variants == [Variant::Engineered, Variant::Naive];
-    if ab {
-        header.push("engineered − naive".into());
+    // Two variants (an A/B, or an ablation): the difference, first − second.
+    let pair = match variants.as_slice() {
+        [a, b] => Some((*a, *b)),
+        _ => None,
+    };
+    let ab = pair.is_some();
+    if let Some((a, b)) = pair {
+        header.push(format!("{a} − {b}"));
     }
     let get = |v: &Variant| sums.get(v).cloned().unwrap_or_default();
     let rate = |s: &VariantSummary| match s.pass_rate() {
@@ -232,7 +251,10 @@ pub fn render(run: &SuiteRun) -> String {
         }
         rows.push(row);
     };
-    let (e, n) = (get(&Variant::Engineered), get(&Variant::Naive));
+    let (e, n) = match pair {
+        Some((a, b)) => (get(&a), get(&b)),
+        None => Default::default(),
+    };
     line(
         "pass rate",
         &rate,

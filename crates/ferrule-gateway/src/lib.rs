@@ -39,8 +39,8 @@ pub use health::{
     Health, HealthSettings, Heartbeat, Leftover, Notice, RecentLog, Redactor, RunningMarker,
     StallHook,
 };
-pub use message::{Attachment, InboundMessage, OutboundMessage};
-pub use router::{AgentFactory, Drained, LaneSnapshot, Reply, Reset, Router, NEW_HINT};
+pub use message::{Attachment, InboundMessage, OutboundMessage, Reaction, ReactionSink};
+pub use router::{AgentFactory, Drained, LaneSnapshot, Replied, Reply, Reset, Router, NEW_HINT};
 pub use scheduler::{
     ensure_builtin, BuiltinJob, BuiltinSpec, Ensured, Hold, JobReport, BUILTIN_CHANNEL,
 };

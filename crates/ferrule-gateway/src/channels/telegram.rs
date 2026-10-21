@@ -24,7 +24,7 @@ use crate::channel::{Button, ButtonAction, Channel, ChannelCapabilities};
 use crate::channels::files::{self, Inbox, Refused, Saved};
 use crate::error::GatewayError;
 use crate::health::human;
-use crate::message::{Attachment, InboundMessage, OutboundMessage};
+use crate::message::{Attachment, InboundMessage, OutboundMessage, Reaction, ReactionSink};
 use crate::stream::chunks;
 use crate::typing::Typing;
 use serde_json::{json, Value};
@@ -138,7 +138,16 @@ pub struct TelegramChannel {
     /// Where voice notes and audio files are saved (M41); `None` leaves
     /// them unread, as before.
     inbox: Option<Inbox>,
+    /// M53.5: where reactions in the allowed chats go. Only with one are
+    /// they asked for (`allowed_updates`).
+    reactions: Option<ReactionSink>,
 }
+
+/// `getUpdates`' `allowed_updates`, URL-encoded: messages and button taps,
+/// and (M53.5) reactions when something reads them.
+const UPDATES: &str = "%5B%22message%22%2C%22callback_query%22%5D";
+const UPDATES_WITH_REACTIONS: &str =
+    "%5B%22message%22%2C%22callback_query%22%2C%22message_reaction%22%5D";
 
 impl TelegramChannel {
     /// Real usage: talks to `https://api.telegram.org`.
@@ -177,7 +186,15 @@ impl TelegramChannel {
             ignored: Mutex::new(HashMap::new()),
             albums: Mutex::new(HashSet::new()),
             inbox: None,
+            reactions: None,
         }
+    }
+
+    /// M53.5: asks Telegram for reactions too, and hands those set in an
+    /// allowed chat to `sink` (the learning loop reads the owner's 👍/👎).
+    pub fn with_reactions(mut self, sink: Option<ReactionSink>) -> Self {
+        self.reactions = sink;
+        self
     }
 
     /// Saves the files people send here (voice notes and audio, which the
@@ -348,6 +365,17 @@ impl TelegramChannel {
     /// One update, admitted and its file taken: what to forward, if
     /// anything.
     async fn take_update(&self, update: &Value) -> Option<Parsed> {
+        if let Some(r) = update.get("message_reaction") {
+            if let (Some(sink), Some(r)) = (&self.reactions, Self::parse_reaction(r)) {
+                if r.chat_id
+                    .parse::<i64>()
+                    .is_ok_and(|c| self.allowed_chats.contains(&c))
+                {
+                    sink(r);
+                }
+            }
+            return None;
+        }
         if let Some(id) = update["callback_query"]["id"].as_str() {
             // Stops the button's spinner; the tap itself is handled
             // like typed text below.
@@ -372,8 +400,13 @@ impl TelegramChannel {
     /// offset advances past every update returned.
     async fn fetch_updates(&self, wait: u64) -> Result<Vec<Value>, PollError> {
         let offset = self.offset.load(Ordering::SeqCst);
+        let updates = if self.reactions.is_some() {
+            UPDATES_WITH_REACTIONS
+        } else {
+            UPDATES
+        };
         let url = format!(
-            "{}?timeout={wait}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D",
+            "{}?timeout={wait}&offset={offset}&allowed_updates={updates}",
             self.api_url("getUpdates")
         );
         let resp = self
@@ -1142,6 +1175,27 @@ impl TelegramChannel {
         })
     }
 
+    /// M53.5: a `message_reaction` update: who set what on which message.
+    /// One set anonymously (as a chat) has no person behind it and is left.
+    fn parse_reaction(r: &Value) -> Option<Reaction> {
+        let emoji = r
+            .get("new_reaction")?
+            .as_array()?
+            .iter()
+            .filter(|t| t.get("type").and_then(Value::as_str) == Some("emoji"))
+            .filter_map(|t| t.get("emoji").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect();
+        Some(Reaction {
+            channel: "telegram".into(),
+            chat_id: r.get("chat")?.get("id")?.as_i64()?.to_string(),
+            message_id: r.get("message_id")?.as_i64()?.to_string(),
+            user_id: r.get("user")?.get("id")?.as_i64()?.to_string(),
+            emoji,
+            at: r.get("date").and_then(Value::as_i64).unwrap_or(0),
+        })
+    }
+
     /// An inline keyboard, one button per row. `callback_data` holds at
     /// most 64 bytes; a longer command can't be a button.
     fn keyboard(buttons: &[Button]) -> Result<Value, GatewayError> {
@@ -1274,8 +1328,10 @@ impl TelegramChannel {
     /// `sendPhoto` for a photo, `sendVideo` for a video (it plays inline),
     /// `sendVoice` for an Ogg/Opus voice note, `sendAudio` for an MP3 or
     /// M4A (M56.7), else `sendDocument`, which keeps the bytes and name as
-    /// they are. One Telegram refuses as that kind (a 400: its size,
-    /// dimensions or format) goes again as a document. The message's id.
+    /// they are. An attachment of kind `voice` (M51.4's `speak`) that's an
+    /// MP3 or M4A goes with `sendVoice` too, which takes those formats. One
+    /// Telegram refuses as that kind (a 400: its size, dimensions or
+    /// format) goes again as a document. The message's id.
     async fn send_file(
         &self,
         chat: &str,
@@ -1283,6 +1339,7 @@ impl TelegramChannel {
         caption: Option<&str>,
     ) -> Result<Option<String>, GatewayError> {
         let (name, mime, bytes) = files::read_outgoing(att)?;
+        let voice = att.kind == "voice";
         let mime = if att.kind.contains('/') {
             att.kind.as_str()
         } else {
@@ -1323,6 +1380,9 @@ impl TelegramChannel {
             }
             m if m.starts_with("video/") => ("sendVideo", "video"),
             "audio/ogg" | "audio/opus" => ("sendVoice", "voice"),
+            "audio/mpeg" | "audio/mp3" | "audio/mp4" | "audio/x-m4a" | "audio/m4a" if voice => {
+                ("sendVoice", "voice")
+            }
             "audio/mpeg" | "audio/mp3" | "audio/mp4" | "audio/x-m4a" | "audio/m4a" => {
                 ("sendAudio", "audio")
             }

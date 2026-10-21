@@ -228,6 +228,27 @@ decisions are in [m50-connect.md](m50-connect.md).
   covers it); **Remove** forgets a page-made one. Rotate needs the page
   opened from the running bot (`/dashboard`) and asks once with a card
   that says what breaks if the new key is wrong. Values never come back.
+  Since M52.2 the Safe is the whole inventory, in five groups: **Model
+  providers** (each provider's key, the ChatGPT sign-in, the Claude
+  setup-token), **Channels** (each channel's tokens), **Connected
+  services** (each connection's sealed sign-in or key), **Tool keys**
+  (`[secrets]`) and **System** (kept keys no setting claims, the relay's
+  key, the sealing key, the proxy's CA, the page's own sign-ins). Each
+  says where it's kept (the secrets file, the environment ferrule started
+  with, or a sealed file), the sites it goes to, when it was saved and
+  changed, and when it was last used: the proxy's last swap
+  (`secret.used`), or for a provider key its last model call in the
+  ledger. **Delete** works for every kind (a connection is disconnected,
+  a plan signed out, the page's sign-ins all ended); the two it doesn't
+  offer, the sealing key and the proxy's CA, say why. **History** lists
+  key, config and approval changes of the last 90 days by name only.
+  Details: [m52-dashboard-safe.md](m52-dashboard-safe.md), "M52.2".
+  Since M52.6 Rotate, Delete, Sites and Remove need a login from the last
+  10 minutes; an older one is offered **Ask in my chat**, a card in the
+  owner's chat whose Allow lets that browser change keys for 10 minutes
+  (it can't be answered on the page). Opt-in: `[dashboard]
+  tailscale_users` admits only those tailnet logins through Tailscale
+  Serve ([m52-dashboard-safe.md](m52-dashboard-safe.md), "M52.6").
 - **Discord and Slack** have cards like the other channels: token(s),
   allowed users and channels, **Test** (Discord's gives the link that
   invites the bot to your server), **Save and turn on**. The page doesn't
@@ -291,7 +312,17 @@ M37 made the page the place you run your agent from. The design is in
   form per section. **Check** gives the loader's own message and line.
   **Save** writes atomically and keeps `ferrule.toml.prev` for **Undo**.
   Fields that carry commands, gates, secret routing or who gets in can
-  only change on the machine.
+  only change on the machine. Since M52.4, **Save** first shows what
+  changes, value by value (a secret field says "(hidden)"), and saves
+  only with **Save these N changes**; every write from the page (a form
+  field, the file, Undo, a restore) carries the hash of the file it was
+  loaded from, and a file changed since (from another tab, the chat or
+  the machine) is refused with "reload, then make your change again"
+  (HTTP 409) instead of being silently undone; and **Versions** keeps the
+  last 20 versions under `<data>/config-history/` (secret fields hidden,
+  so no value is kept), each with **Preview** (its diff against the file
+  now) and **Restore**, which goes through the same checks and guard as
+  a save ([m52-dashboard-safe.md](m52-dashboard-safe.md), "M52.4").
 - **Everything works with every model down.** Nothing on the page calls
   a model, except Chat and the model tests you press.
 

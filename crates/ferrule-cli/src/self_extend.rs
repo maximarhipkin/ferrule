@@ -134,9 +134,16 @@ impl Extensions {
     }
 
     /// Skills as tools over the live set: `activate_skill` knows a skill
-    /// installed mid-session.
-    pub fn skill_tools(&self) -> (SkillsHandle, Arc<LiveSkillTools>) {
-        let handle = self.skills();
+    /// installed mid-session. `keep` is this agent's view of it (M53.3:
+    /// which learned skills it may load).
+    pub fn skill_tools(
+        &self,
+        keep: Option<ferrule_skills::Keep>,
+    ) -> (SkillsHandle, Arc<LiveSkillTools>) {
+        let mut handle = self.skills();
+        if let Some(keep) = keep {
+            handle = handle.filtered(keep);
+        }
         (handle.clone(), Arc::new(LiveSkillTools::new(handle)))
     }
 
@@ -272,6 +279,12 @@ fn skills_handle(cfg: &config::SkillsConfig, workspace: &Path, layout: &Layout) 
     roots.push(SkillRoot {
         dir: layout.skills_dir(),
         scope: Scope::User,
+    });
+    // M53.3: the learning pass's, last; each agent's view keeps only those
+    // the pass kept as they are (`learn::skill_view`).
+    roots.push(SkillRoot {
+        dir: layout.data_dir().join(ferrule_learn::skills::DIR),
+        scope: Scope::Learned,
     });
     SkillsHandle::discovering(roots, cfg.disabled.clone())
 }

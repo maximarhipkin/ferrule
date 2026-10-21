@@ -127,6 +127,39 @@ impl Stuck {
     }
 }
 
+/// M25's no-progress counts, kept only while the provider routes: invalid
+/// tool calls in a row, and the same call in a row. A call is the same
+/// when its tool and arguments are, as [`Stuck`] compares them
+/// ([`Step`]'s action). Two rules differ from [`Stuck`]. The result
+/// doesn't count here. A move up a tier starts both counts again, so the
+/// next tier gets the same allowance.
+#[derive(Debug, Default)]
+pub struct Streaks {
+    misfits: u32,
+    last: Option<u64>,
+    repeats: u32,
+}
+
+impl Streaks {
+    /// Counts `step`, whose call didn't fit its tool when `misfit`:
+    /// invalid calls in a row, and the same call in a row, after it.
+    pub fn record(&mut self, step: &Step, misfit: bool) -> (u32, u32) {
+        self.misfits = if misfit { self.misfits + 1 } else { 0 };
+        self.repeats = match self.last {
+            Some(last) if last == step.action => self.repeats + 1,
+            _ => 1,
+        };
+        self.last = Some(step.action);
+        (self.misfits, self.repeats)
+    }
+
+    /// The turn moved up a tier: both counts start again.
+    pub fn moved(&mut self) {
+        self.misfits = 0;
+        self.repeats = 0;
+    }
+}
+
 /// M57.2: how many times one file may be changed in a run, with no passing
 /// check between, before the model is told to step back.
 pub const EDITS_PER_FILE: usize = 6;

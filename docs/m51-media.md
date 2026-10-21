@@ -164,3 +164,87 @@ shell already can, gated).
   bound in the backend.
 - The poller's note when a chat-less job finishes is a log line, not a
   chat message (there's nobody to tell).
+
+## M51.4 — voice replies, OpenRouter transcription, an ffmpeg line (2026-10-21)
+
+From the 2026-10-20 gap analysis (M51.4). Built on `autopilot`.
+
+- **`speak {text, voice?}`**, a chat tool beside `generate_image`
+  (`ferrule-gateway/src/tools/media.rs`). It calls OpenRouter's
+  `POST /api/v1/audio/speech` through the same `[media]` backend: the
+  provider's key as the proxy's placeholder, through the egress client,
+  never in a shell. The text is at most 4,000 characters. The audio is
+  saved as `media/<unix>-<n>.mp3` in the workspace, counted in the
+  `media_jobs` table (kind `speech`, so `max_per_day` covers it) and
+  written as a ledger row like the other media calls (`call_kind =
+  "media"`, `cost_usd` empty: the speech answer is raw audio with no
+  usage block). The chat's agent gets the tool, with a short
+  `CHAT_VOICE` section in its system prompt, only when `[media]
+  speech_model` isn't empty.
+- **Voice note, no ffmpeg.** OpenRouter's speech API offers only `mp3`
+  and `pcm` (`SpeechRequest.response_format` in its OpenAPI spec), no
+  Ogg/Opus. Telegram's `sendVoice` takes "an .OGG file encoded with
+  OPUS, or in .MP3 format, or in .M4A format" (Bot API), so the tool
+  asks for MP3 and sends it as an attachment of kind `voice`; the
+  Telegram channel sends an MP3 or M4A of that kind with `sendVoice`
+  instead of `sendAudio`. Other channels send it by its file type. A
+  `sendVoice` refusal (a 400, e.g. a user who blocks voice messages)
+  goes again as a document, as every refused kind does.
+- **Defaults.** `speech_model = "google/gemini-3.8-flash-tts"` (cheap and
+  multilingual on OpenRouter's speech list of 2026-10-21) and `voice`
+  unset, so the model picks its own; voice names are the model's (`Kore`
+  for Gemini, `sarah` for ElevenLabs, `en_paul_neutral` for Voxtral).
+- **Transcription through OpenRouter.** `[transcription] backend =
+  "openai", provider = "openrouter"` already borrowed the URL and key;
+  now a bare model name there (the default `whisper-1`) becomes
+  `openai/<name>`, OpenRouter's id, and OpenRouter's `usage.seconds` and
+  `usage.cost` are read: the ledger row holds the reported cost instead
+  of `price_per_minute`. The request is the same OpenAI-style multipart
+  upload, which OpenRouter's spec accepts. OpenAI, Groq, local servers
+  and the command backend are unchanged.
+- **`ferrule doctor`'s `media` line**: whether ffmpeg is on the PATH,
+  its version, and whether it has the `subtitles` filter (only in a
+  libass build). Informational: nothing in Ferrule needs ffmpeg; the
+  agent can use it through the sandboxed shell. There is no ffmpeg tool.
+
+**Not verified live.** No call to OpenRouter's speech or transcription
+endpoint has been made with a real key, and no voice note has been sent
+to a real Telegram chat. The speech call has no cost in its ledger row
+(the trust caps don't see it; the daily count does). Sub-agents get the
+tool only with M51.3, the media role.
+
+## M51.3 — a `media` role for sub-agents (2026-10-21)
+
+From the 2026-10-20 gap analysis (M51.3). Built on `autopilot`.
+
+- **`Role::Media`** in `ferrule-agents` (`supervisor.rs`), offered in
+  `spawn_agent`'s `role` enum and description, and allowed in
+  `[agents.roles.media]` and graph nodes. Its child prompt says to make
+  only what the task asks, look at the result, and report each file's
+  path, because it can't send anything to the chat.
+- **Its files land where the parent's `send_file` reaches them.** The
+  supervisor never gives a media child a worktree (`place` gets `want =
+  false` for it), so it works in the parent's workspace and `media/` is
+  the parent's.
+- **The tools.** `child_builder` (`ferrule-cli/src/main.rs`) registers
+  `generate_image`, `generate_video` and, when on, `speak` for a media
+  child, on the gateway's shared `[media]` handle: the same backend,
+  proxy placeholder, daily cap and ledger rows as the chat's tools. The
+  child's session has no chat, so the image and speech tools save and
+  say "send_file can deliver it", and `generate_video` now says the
+  gateway saves the clip at its path when the render finishes (it used
+  to promise to send it "here", untrue without a chat). References
+  resolve with the strictest hidden list (a guest's).
+- **Where it can't run.** `ferrule run` and a terminal `ferrule graph`
+  build children without the media handle, so a media spawn there
+  fails with "a media agent needs the media tools … Spawn a worker
+  instead" (the factory's error is the spawn's answer). Graphs run from
+  the gateway use the gateway's supervisor, so they have it.
+- **The model.** `[agents.roles.media] model = "<ref>"` is optional, as
+  for every role; the report's "cheap, tool-capable" is the owner's
+  pick, since no image model takes tools.
+
+**Not verified live.** No media child has run against OpenRouter. A
+video a child starts is saved, not sent: the parent learns it's there
+only by looking (the poller logs it), so a parent that wants the clip
+in the chat sends it itself later.

@@ -187,6 +187,7 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
             r.warn("voice", line);
         }
     }
+    ffmpeg_check(&mut r);
     telemetry_check(&mut r, &cfg);
     agents_check(&mut r, &cfg, confined);
     hooks_check(&mut r, &cfg, &path);
@@ -2554,6 +2555,46 @@ fn binary(r: &mut Report) {
             );
         }
     }
+}
+
+/// M51.4: whether the shell can cut and convert media (ferrule ships no
+/// ffmpeg and needs none), and burn subtitles (the `subtitles` filter
+/// exists only in an ffmpeg built with libass). Informational only.
+fn ffmpeg_check(r: &mut Report) {
+    let ffmpeg = ferrule_sandbox::host::system_program("ffmpeg");
+    let run = |arg: &str| {
+        std::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", arg])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let Some(version) = run("-version") else {
+        r.note(
+            "media",
+            "ffmpeg isn't on your PATH: the agent can't trim, convert or re-encode audio and video through the shell (nothing else needs it)",
+        );
+        r.hint("brew install ffmpeg, or apt install ffmpeg");
+        return;
+    };
+    let which = version
+        .split_whitespace()
+        .nth(2)
+        .map_or_else(String::new, |v| format!(" {v}"));
+    let libass = run("-filters").is_some_and(|f| {
+        f.lines()
+            .any(|l| l.split_whitespace().nth(1) == Some("subtitles"))
+    });
+    r.note(
+        "media",
+        if libass {
+            format!("ffmpeg{which} with libass: the shell can trim, convert and burn subtitles")
+        } else {
+            format!("ffmpeg{which} without libass: the shell can trim and convert; burning subtitles needs an ffmpeg built with libass")
+        },
+    );
 }
 
 /// Is there a Chrome or Chromium, does it start headless the way the

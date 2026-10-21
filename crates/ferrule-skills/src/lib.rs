@@ -19,7 +19,7 @@ pub mod triggers;
 pub use discover::{
     default_roots, discover, Diagnostic, Scope, Severity, Skill, SkillRoot, SkillSet,
 };
-pub use tool::{tools, LiveSkillTools, SkillsHandle, ACTIVATE_TOOL, READ_TOOL};
+pub use tool::{tools, Keep, LiveSkillTools, SkillsHandle, ACTIVATE_TOOL, READ_TOOL};
 pub use triggers::{SkillTriggers, TriggerOptions, Vet};
 
 impl SkillSet {

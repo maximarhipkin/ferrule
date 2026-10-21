@@ -113,9 +113,11 @@ impl CoreError {
 }
 
 /// What kind of failure a provider error is, for a router that escalates
-/// on some and not others (M25) and for the owner's words. Derived from the
-/// error text every driver produces (`HTTP {status}` plus the provider's
-/// own message), so it needs nothing new from the drivers.
+/// on some and not others (M25) and for a driver that asks again another
+/// way after a bad request. It is the coarse view of a
+/// [`crate::failure::Kind`], the one taxonomy ([`crate::failure::Kind::class`]),
+/// read from the error's structure and HTTP status
+/// ([`crate::failure::status_kind`]), never from the text-only kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureClass {
@@ -146,79 +148,12 @@ pub enum FailureClass {
 }
 
 impl CoreError {
-    /// This error's [`FailureClass`].
+    /// This error's [`FailureClass`]: what its structure and HTTP status
+    /// say. A `400` that names a model or a client version stays a bad
+    /// request here; [`crate::failure::classify`] reads those words too.
     pub fn class(&self) -> FailureClass {
-        let text = match self {
-            CoreError::MalformedResponse(_) => return FailureClass::Malformed,
-            CoreError::Failed(f) => {
-                use crate::failure::Kind;
-                return match f.kind {
-                    Kind::RateLimited | Kind::UsageLimit => FailureClass::RateLimited,
-                    Kind::Overloaded => FailureClass::Overloaded,
-                    Kind::Server => FailureClass::Server,
-                    Kind::Timeout => FailureClass::Timeout,
-                    Kind::Connect => FailureClass::Connect,
-                    Kind::Auth | Kind::ChatgptSignin | Kind::ClaudeSignin => FailureClass::Auth,
-                    Kind::ModelGone => FailureClass::ModelNotFound,
-                    Kind::ContextTooLong => FailureClass::ContextTooLong,
-                    Kind::Refused => FailureClass::Refused,
-                    Kind::Malformed => FailureClass::Malformed,
-                    Kind::BadRequest | Kind::ClientTooOld => FailureClass::BadRequest,
-                    _ => FailureClass::Other,
-                };
-            }
-            CoreError::Provider(t) => t.as_str(),
-            CoreError::Transient { message, .. } => message.as_str(),
-            _ => return FailureClass::Other,
-        };
-        let lower = text.to_ascii_lowercase();
-        if lower.starts_with("refused") {
-            return FailureClass::Refused;
-        }
-        if lower.contains("prompt is too long")
-            || lower.contains("context_length_exceeded")
-            || lower.contains("maximum context length")
-            || lower.contains("context window")
-        {
-            return FailureClass::ContextTooLong;
-        }
-        // An error in an HTTP 200 body (OpenRouter's upstream errors) says
-        // what went wrong only in its text.
-        match http_status(&lower).filter(|s| *s >= 400) {
-            Some(429) => FailureClass::RateLimited,
-            Some(529) => FailureClass::Overloaded,
-            Some(503) if lower.contains("overloaded") => FailureClass::Overloaded,
-            Some(408) => FailureClass::Timeout,
-            Some(s) if s >= 500 => FailureClass::Server,
-            Some(401 | 403) => FailureClass::Auth,
-            Some(404) => FailureClass::ModelNotFound,
-            Some(400 | 413 | 422) => FailureClass::BadRequest,
-            Some(_) => FailureClass::Other,
-            None if lower.contains("timed out") || lower.contains("timeout") => {
-                FailureClass::Timeout
-            }
-            None if lower.contains("connect") || lower.contains("dns") => FailureClass::Connect,
-            None if lower.contains("overloaded") => FailureClass::Overloaded,
-            None if lower.contains("rate limit")
-                || lower.contains("rate_limit")
-                || lower.contains("\"code\":429") =>
-            {
-                FailureClass::RateLimited
-            }
-            None if matches!(self, CoreError::Transient { .. }) => FailureClass::Server,
-            None => FailureClass::Other,
-        }
+        crate::failure::status_kind(self).class()
     }
-}
-
-/// The status in the first `http NNN` of an error's text.
-fn http_status(lower: &str) -> Option<u16> {
-    let at = lower.find("http ")? + "http ".len();
-    let digits: String = lower[at..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    (digits.len() == 3).then(|| digits.parse().ok()).flatten()
 }
 
 /// N from the "(tried N times)" [`CoreError::after_attempts`] adds.

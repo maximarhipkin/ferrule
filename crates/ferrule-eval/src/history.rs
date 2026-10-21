@@ -24,8 +24,8 @@ pub fn load_runs(root: &Path) -> Vec<SuiteRun> {
 }
 
 /// The latest run before `run` that is comparable for `variant`: the
-/// same suite, kind and model (for `--variant routing`, the same pair),
-/// and it ran that variant.
+/// same suite, kind and model (for `--variant routing`, the same pair;
+/// for `ablated`, the same parts left out), and it ran that variant.
 pub fn previous<'a>(
     runs: &'a [SuiteRun],
     run: &SuiteRun,
@@ -37,6 +37,7 @@ pub fn previous<'a>(
             && p.kind == run.kind
             && p.model == run.model
             && p.routing == run.routing
+            && (variant != Variant::Ablated || p.ablated == run.ablated)
             && p.results.iter().any(|r| r.variant == variant)
     })
 }
@@ -54,6 +55,60 @@ pub struct VariantDiff {
     pub changed: Vec<String>,
     pub new_tasks: Vec<String>,
     pub gone: Vec<String>,
+    /// M58.5: how the harness moved, when both runs recorded it.
+    pub harness: Option<HarnessChange>,
+}
+
+/// The harness stamps of the tasks both runs ran (M58.5): how many
+/// differ, and in which parts (`prompt`, `tools`, `config`, `skills`,
+/// `playbook`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HarnessChange {
+    pub tasks: usize,
+    pub changed: usize,
+    pub parts: BTreeSet<String>,
+}
+
+/// Each task's harness stamp in `run` for `variant` (its first result's).
+fn stamps(run: &SuiteRun, variant: Variant) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for r in run.results.iter().filter(|r| r.variant == variant) {
+        if !r.harness.is_empty() {
+            out.entry(r.task.clone())
+                .or_insert_with(|| r.harness.clone());
+        }
+    }
+    out
+}
+
+/// `key=value;…` as a map.
+fn stamp_parts(stamp: &str) -> BTreeMap<&str, &str> {
+    stamp
+        .split(';')
+        .filter_map(|part| part.split_once('='))
+        .collect()
+}
+
+fn harness_change(prev: &SuiteRun, run: &SuiteRun, variant: Variant) -> Option<HarnessChange> {
+    let (before, now) = (stamps(prev, variant), stamps(run, variant));
+    let mut h = HarnessChange::default();
+    for (task, was) in &before {
+        let Some(is) = now.get(task) else {
+            continue;
+        };
+        h.tasks += 1;
+        if was == is {
+            continue;
+        }
+        h.changed += 1;
+        let (a, b) = (stamp_parts(was), stamp_parts(is));
+        for key in a.keys().chain(b.keys()) {
+            if a.get(key) != b.get(key) {
+                h.parts.insert(key.to_string());
+            }
+        }
+    }
+    (h.tasks > 0).then_some(h)
 }
 
 /// A task's verdict across its repeats: `Some(true)` if every graded
@@ -91,6 +146,7 @@ pub fn diff(prev: &SuiteRun, run: &SuiteRun, variant: Variant) -> VariantDiff {
         changed: Vec::new(),
         new_tasks: Vec::new(),
         gone: Vec::new(),
+        harness: harness_change(prev, run, variant),
     };
     let names: BTreeSet<&String> = before.keys().chain(now.keys()).collect();
     for task in names {
@@ -162,6 +218,20 @@ pub fn render(diffs: &[Result<VariantDiff, Variant>]) -> String {
             rate(&d.now),
             report::signed_tokens(tok(&d.now) - tok(&d.before)),
         );
+        match &d.harness {
+            Some(h) if h.changed > 0 => {
+                let parts: Vec<&str> = h.parts.iter().map(String::as_str).collect();
+                let _ = writeln!(
+                    out,
+                    "    harness changed on {} of {} tasks: {}",
+                    h.changed,
+                    h.tasks,
+                    parts.join(", ")
+                );
+            }
+            Some(_) => out.push_str("    same harness\n"),
+            None => {}
+        }
         let mark = |t: &String| {
             if d.changed.contains(t) {
                 format!("{t} (task changed)")
@@ -232,6 +302,7 @@ mod tests {
             fingerprint: fp.into(),
             context_window: 32000,
             ferrule_version: "0".into(),
+            harness: String::new(),
         }
     }
 
@@ -250,6 +321,8 @@ mod tests {
             judge: None,
             self_judged: false,
             routing: None,
+            ablated: vec![],
+            unguarded: false,
         }
     }
 

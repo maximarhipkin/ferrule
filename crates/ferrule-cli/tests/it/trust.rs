@@ -849,7 +849,17 @@ fn eval_ignores_the_owners_caps_gates_and_switch_unless_the_suite_opts_in() {
         .success());
 
     let suite = eval_suite(home, "");
-    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    let out = ferrule(
+        home,
+        &[
+            "eval",
+            "run",
+            "--allow-grader-reads",
+            &suite,
+            "--variant",
+            "ab",
+        ],
+    );
     assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
     // Both variants ran past the caps, with the switch on, and the rm ran.
     assert_eq!(seen.lock().unwrap().len(), 4, "{}", describe(&out));
@@ -871,7 +881,17 @@ fn eval_ignores_the_owners_caps_gates_and_switch_unless_the_suite_opts_in() {
     // Opted in, the same suite is stopped before any model call.
     seen.lock().unwrap().clear();
     let suite = eval_suite(home, "owner_trust = true");
-    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    let out = ferrule(
+        home,
+        &[
+            "eval",
+            "run",
+            "--allow-grader-reads",
+            &suite,
+            "--variant",
+            "ab",
+        ],
+    );
     assert_eq!(out.status.code(), Some(3), "{}", describe(&out));
     assert!(seen.lock().unwrap().is_empty(), "{}", describe(&out));
     assert!(
@@ -888,7 +908,17 @@ fn an_eval_suite_that_opts_in_is_gated_unattended_and_counted() {
     let dir = home(&url, "");
     let home = dir.path();
     let suite = eval_suite(home, "owner_trust = true");
-    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    let out = ferrule(
+        home,
+        &[
+            "eval",
+            "run",
+            "--allow-grader-reads",
+            &suite,
+            "--variant",
+            "ab",
+        ],
+    );
     assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
     let results = tool_results(&seen);
     assert_eq!(results.len(), 2, "{}", describe(&out));
@@ -1120,7 +1150,17 @@ fn an_eval_that_opts_into_the_owners_trust_still_fires_no_hooks() {
     with_hooks(dir.path(), &["PreToolUse", "Stop"]);
     let home = dir.path();
     let suite = eval_suite(home, "owner_trust = true");
-    let out = ferrule(home, &["eval", "run", &suite, "--variant", "ab"]);
+    let out = ferrule(
+        home,
+        &[
+            "eval",
+            "run",
+            "--allow-grader-reads",
+            &suite,
+            "--variant",
+            "ab",
+        ],
+    );
     assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
     let results = tool_results(&seen);
     assert_eq!(results.len(), 2, "{}", describe(&out));

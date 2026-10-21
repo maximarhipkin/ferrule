@@ -61,12 +61,15 @@ pub struct Ledger {
 }
 
 impl Ledger {
+    /// `billed`: the cost the service reported itself (OpenRouter's
+    /// `usage.cost`, M51.4), which wins over `price_per_minute`.
     fn record(
         &self,
         audio: &Audio<'_>,
         model: &str,
         started: Instant,
         result: &Result<Heard, String>,
+        billed: Option<f64>,
     ) {
         let Some(sink) = &self.sink else {
             return;
@@ -76,8 +79,10 @@ impl Ledger {
                 "ok",
                 None,
                 None,
-                h.seconds
-                    .map(|s| s / 60.0 * self.price_per_minute.unwrap_or(0.0)),
+                billed.or_else(|| {
+                    h.seconds
+                        .map(|s| s / 60.0 * self.price_per_minute.unwrap_or(0.0))
+                }),
             ),
             Err(e) => (
                 "error",
@@ -117,7 +122,7 @@ impl Ledger {
 }
 
 /// An OpenAI-compatible `POST {base_url}/audio/transcriptions` (OpenAI,
-/// Groq, a local whisper server).
+/// Groq, OpenRouter (M51.4), a local whisper server).
 pub struct OpenAiTranscriber {
     pub base_url: String,
     /// The env var holding the key; read on every call, as provider calls
@@ -185,7 +190,9 @@ impl OpenAiTranscriber {
         Ok((status, text))
     }
 
-    async fn call(&self, audio: &Audio<'_>) -> Result<Heard, String> {
+    /// What was heard, and the cost the service reported (OpenRouter's
+    /// `usage.cost`), if it did.
+    async fn call(&self, audio: &Audio<'_>) -> Result<(Heard, Option<f64>), String> {
         let bytes = std::fs::read(audio.path)
             .map_err(|e| format!("couldn't read the saved audio file: {e}"))?;
         let name = upload_name(audio.path, audio.mime);
@@ -198,17 +205,29 @@ impl OpenAiTranscriber {
             return Err(refusal(status.as_u16(), &body, audio.mime, &self.key_env));
         }
         let heard = match serde_json::from_str::<Value>(&body) {
-            Ok(v) => Heard {
-                text: v["text"].as_str().unwrap_or("").trim().to_string(),
-                seconds: v["duration"].as_f64(),
-                language: v["language"].as_str().map(str::to_string),
-            },
+            // OpenRouter's plain `json` answer has the length and the cost
+            // under `usage`.
+            Ok(v) => (
+                Heard {
+                    text: v["text"].as_str().unwrap_or("").trim().to_string(),
+                    seconds: v["duration"]
+                        .as_f64()
+                        .or_else(|| v["usage"]["seconds"].as_f64()),
+                    language: v["language"].as_str().map(str::to_string),
+                },
+                v["usage"]["cost"]
+                    .as_f64()
+                    .filter(|c| c.is_finite() && *c >= 0.0),
+            ),
             // A server asked for json that answered plain text anyway.
-            Err(_) => Heard {
-                text: body.trim().to_string(),
-                seconds: None,
-                language: None,
-            },
+            Err(_) => (
+                Heard {
+                    text: body.trim().to_string(),
+                    seconds: None,
+                    language: None,
+                },
+                None,
+            ),
         };
         Ok(heard)
     }
@@ -218,13 +237,17 @@ impl OpenAiTranscriber {
 impl Transcriber for OpenAiTranscriber {
     async fn transcribe(&self, audio: &Audio<'_>) -> Result<Heard, String> {
         let started = Instant::now();
-        let mut result = self.call(audio).await;
+        let (mut result, billed) = match self.call(audio).await {
+            Ok((h, billed)) => (Ok(h), billed),
+            Err(e) => (Err(e), None),
+        };
         if let Ok(h) = &mut result {
             if h.seconds.is_none() {
                 h.seconds = file_seconds(audio.path, audio.mime);
             }
         }
-        self.ledger.record(audio, &self.model, started, &result);
+        self.ledger
+            .record(audio, &self.model, started, &result, billed);
         result
     }
 }
@@ -302,7 +325,7 @@ impl Transcriber for CommandTranscriber {
     async fn transcribe(&self, audio: &Audio<'_>) -> Result<Heard, String> {
         let started = Instant::now();
         let result = self.call(audio).await;
-        self.ledger.record(audio, "command", started, &result);
+        self.ledger.record(audio, "command", started, &result, None);
         result
     }
 }

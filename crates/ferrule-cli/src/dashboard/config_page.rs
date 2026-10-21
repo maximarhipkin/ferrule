@@ -5,6 +5,13 @@
 //! `<config>.prev`. Secret-looking fields are hidden on the way out and
 //! must come back unchanged. The last good copy is put back by
 //! `config/restore` (§1.3).
+//!
+//! M52.4: a save shows its diff of non-secret values first (`config/check`
+//! returns it); every write carries the `base_hash` of the file the page
+//! loaded, and a file changed since is refused with a 409 rather than
+//! silently undone; and the last [`KEEP`] versions are kept in
+//! `<data>/config-history/` with their secret fields hidden, each one
+//! previewed as a diff and restored through the same guard as a save.
 
 use super::api::{arg, bad, missing, need, ok, Answer};
 use super::Ctx;
@@ -56,6 +63,7 @@ fn guarded_key(key: &str) -> bool {
                 | "issuer"
                 | "sandbox"
                 | "signal_cli"
+                | "tailscale_users"
         )
         || k.ends_with("_env")
         || k.ends_with("url")
@@ -291,6 +299,145 @@ fn check_text(text: &str) -> Result<(), (Option<usize>, String)> {
     }
 }
 
+/// The versions `<data>/config-history/` keeps (M52.4).
+const KEEP: usize = 20;
+
+/// A file's text as the page's `base_hash`: SHA-256, base64.
+fn hash_of(text: &str) -> String {
+    ferrule_connections::seal::sha256_b64(text.as_bytes())
+}
+
+/// M52.4: refuses a write made from a page that loaded another version
+/// of the file than the one on disk now. No `base_hash` (the chat's ops,
+/// an older page) is let through as before.
+pub(super) fn fresh(path: &Path, body: &Value) -> Result<(), Answer> {
+    let Some(base) = body.get("base_hash").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let now = std::fs::read_to_string(path).unwrap_or_default();
+    if hash_of(&now) == base {
+        return Ok(());
+    }
+    Err(Some((
+        409,
+        json!({
+            "error": "The config changed since this page loaded it (another tab, the chat, or the machine). Nothing was saved: reload to see the file as it is now, then make your change again.",
+            "stale": true,
+        }),
+    )))
+}
+
+/// What `new` changes against `old`, leaf by leaf: a secret field says
+/// "(hidden)", everything goes through the redactor, 200 rows at most.
+fn diff(ctx: &Ctx, old: &DocumentMut, new: &DocumentMut) -> Vec<Value> {
+    let (a, b) = (leaves(old), leaves(new));
+    let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    keys.into_iter()
+        .filter(|k| a.get(*k) != b.get(*k))
+        .take(200)
+        .map(|k| {
+            let segs: Vec<String> = k.split('.').map(str::to_string).collect();
+            let secret = secret_key(key_of(&segs));
+            let shown = |v: Option<&String>| {
+                v.map(|v| {
+                    if secret {
+                        "(hidden)".to_string()
+                    } else {
+                        ctx.redactor.redact(v)
+                    }
+                })
+            };
+            json!({ "key": k, "before": shown(a.get(k)), "after": shown(b.get(k)) })
+        })
+        .collect()
+}
+
+fn history_dir(ctx: &Ctx) -> Option<PathBuf> {
+    ctx.data.as_ref().map(|d| d.join("config-history"))
+}
+
+/// The kept versions, newest first: (id, its text, its note).
+fn versions(dir: &Path) -> Vec<(String, String, Value)> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()?
+                .strip_suffix(".toml")
+                .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+                .map(str::to_string)
+        })
+        .collect();
+    ids.sort_by(|a, b| b.len().cmp(&a.len()).then(b.cmp(a)));
+    ids.into_iter()
+        .filter_map(|id| {
+            let text = std::fs::read_to_string(dir.join(format!("{id}.toml"))).ok()?;
+            let note = std::fs::read(dir.join(format!("{id}.json")))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(Value::Null);
+            Some((id, text, note))
+        })
+        .collect()
+}
+
+/// Keeps `doc` as a version (its secret fields hidden, so the history
+/// never holds a value), unless it's the newest one already; the oldest
+/// beyond [`KEEP`] go.
+fn keep_version(ctx: &Ctx, doc: &DocumentMut, how: &str, sections: &[String]) {
+    let Some(dir) = history_dir(ctx) else {
+        return;
+    };
+    let text = hide(doc);
+    if text.trim().is_empty() {
+        return;
+    }
+    let all = versions(&dir);
+    if all.first().is_some_and(|(_, t, _)| *t == text) {
+        return;
+    }
+    let mut id = chrono::Utc::now().timestamp_millis();
+    if let Some(newest) = all.first().and_then(|(i, _, _)| i.parse::<i64>().ok()) {
+        id = id.max(newest + 1);
+    }
+    let note = json!({
+        "at": chrono::Utc::now().to_rfc3339(),
+        "how": how,
+        "by": super::api::by(),
+        "sections": sections,
+    });
+    let written = std::fs::create_dir_all(&dir)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| crate::secrets::write_private(&dir.join(format!("{id}.toml")), &text))
+        .and_then(|()| {
+            crate::secrets::write_private(&dir.join(format!("{id}.json")), &note.to_string())
+        });
+    if let Err(e) = written {
+        tracing::warn!("config history: {e:#}");
+        return;
+    }
+    for (old, _, _) in versions(&dir).into_iter().skip(KEEP) {
+        let _ = std::fs::remove_file(dir.join(format!("{old}.toml")));
+        let _ = std::fs::remove_file(dir.join(format!("{old}.json")));
+    }
+}
+
+/// Keeps the file as it was before a write and as it is after (M52.4),
+/// for writers outside [`commit`]: the last good copy, the autonomy switch.
+pub(super) fn remember(ctx: &Ctx, before: &str, after: &str, how: &str) {
+    let (Ok(old), Ok(new)) = (before.parse::<DocumentMut>(), after.parse::<DocumentMut>()) else {
+        return;
+    };
+    let (sections, _) = changed_sections(&old, &new);
+    keep_version(ctx, &old, "found", &[]);
+    keep_version(ctx, &new, how, &sections);
+}
+
 fn place(ctx: &Ctx) -> Result<PathBuf, Answer> {
     ctx.config_path
         .clone()
@@ -364,9 +511,12 @@ fn commit(
         }
     }
     let (sections, restart) = changed_sections(old, new);
+    // M52.4: the file as it was (written here or elsewhere), then this.
+    keep_version(ctx, old, "found", &[]);
     if let Err(e) = write_keeping_prev(path, &text) {
         return bad(500, format!("{e:#}"));
     }
+    keep_version(ctx, new, how, &sections);
     audit(
         ctx,
         "config_saved",
@@ -554,6 +704,8 @@ pub fn get(ctx: &Ctx) -> Answer {
         .map(|(line, why)| json!({ "line": line, "error": ctx.redactor.redact(&why) }));
     ok(json!({
         "path": path.display().to_string(),
+        // M52.4: sent back with every write, so a stale page is refused.
+        "hash": hash_of(&text),
         "text": ctx.redactor.redact(&shown),
         "readable": doc.is_some(),
         "problem": reads,
@@ -590,9 +742,11 @@ fn incoming(
 }
 
 /// `POST /api/config/check {text}`: whether it reads and whether it may be
-/// saved, without saving.
+/// saved, without saving, and (M52.4) what it changes, value by value,
+/// secrets hidden.
 pub fn check(ctx: &Ctx, body: &Value) -> Answer {
-    let (_, old, new) = need!(incoming(ctx, body));
+    let (path, old, new) = need!(incoming(ctx, body));
+    need!(fresh(&path, body));
     if let Err((line, why)) = check_text(&new.to_string()) {
         return ok(json!({ "ok": false, "line": line, "error": ctx.redactor.redact(&why) }));
     }
@@ -604,22 +758,111 @@ pub fn check(ctx: &Ctx, body: &Value) -> Answer {
         );
     }
     let (sections, restart) = changed_sections(old, &new);
-    ok(json!({ "ok": true, "sections": sections, "restart": restart && !sections.is_empty() }))
+    ok(json!({
+        "ok": true,
+        "sections": sections,
+        "restart": restart && !sections.is_empty(),
+        "diff": diff(ctx, old, &new),
+    }))
 }
 
-/// `POST /api/config/save {text}`.
+/// `POST /api/config/save {text, base_hash?}`.
 pub fn save(ctx: &Ctx, body: &Value) -> Answer {
     let (path, old, new) = need!(incoming(ctx, body));
+    need!(fresh(&path, body));
     commit(ctx, &path, old.as_ref(), &new, "editor", true)
 }
 
-/// `POST /api/config/set {key, value}`: one form field.
+/// `GET /api/config/versions` (M52.4): the kept versions, newest first,
+/// with when, how and by whom each was written and which sections it
+/// changed; whether each is the file as it is now.
+pub fn versions_view(ctx: &Ctx) -> Answer {
+    let path = need!(place(ctx));
+    let Some(dir) = history_dir(ctx) else {
+        return ok(json!({ "versions": [] }));
+    };
+    let now = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| t.parse::<DocumentMut>().ok())
+        .map(|d| hide(&d));
+    let list: Vec<Value> = versions(&dir)
+        .into_iter()
+        .map(|(id, text, note)| {
+            json!({
+                "id": id,
+                "at": note["at"],
+                "how": note["how"],
+                "by": note["by"],
+                "sections": note["sections"],
+                "current": now.as_deref() == Some(text.as_str()),
+            })
+        })
+        .collect();
+    ok(json!({ "versions": list, "keep": KEEP }))
+}
+
+/// A kept version by its id, as a document.
+fn version(ctx: &Ctx, id: &str) -> Result<DocumentMut, Answer> {
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad(400, "`id` is a version's number"));
+    }
+    let dir = history_dir(ctx).ok_or_else(|| missing("the data directory"))?;
+    let text = std::fs::read_to_string(dir.join(format!("{id}.toml")))
+        .map_err(|_| bad(404, "that version isn't kept any more"))?;
+    text.parse::<DocumentMut>()
+        .map_err(|_| bad(422, "that version doesn't read"))
+}
+
+/// `GET /api/config/version?id=`: what restoring it would change in the
+/// file as it is now, as a diff of non-secret values.
+pub fn version_diff(ctx: &Ctx, req: &super::http::Request) -> Answer {
+    let id = req.query.get("id").map(String::as_str).unwrap_or_default();
+    let path = need!(place(ctx));
+    let target = need!(version(ctx, id));
+    let (_, old) = need!(read_doc(&path));
+    let empty = DocumentMut::new();
+    let old = old.as_ref().unwrap_or(&empty);
+    ok(json!({ "id": id, "diff": diff(ctx, old, &target) }))
+}
+
+/// `POST /api/config/version/restore {id, base_hash?, confirm}`: the file
+/// back to a kept version, through the same checks and guard as a save
+/// (its hidden secrets come back from the file as it is; a secret field
+/// that differs is refused, like the editor's).
+pub fn version_restore(ctx: &Ctx, body: &Value) -> Answer {
+    let id = need!(arg(body, "id")).to_string();
+    let path = need!(place(ctx));
+    need!(fresh(&path, body));
+    let mut new = need!(version(ctx, &id));
+    let (_, old) = need!(read_doc(&path));
+    let empty = DocumentMut::new();
+    let redact = |s: &str| ctx.redactor.redact(s);
+    if let Err(why) = unhide(old.as_ref().unwrap_or(&empty), &mut new, &redact) {
+        return bad(403, why);
+    }
+    let changes = diff(ctx, old.as_ref().unwrap_or(&empty), &new).len();
+    if changes == 0 {
+        return ok(json!({ "ok": true, "said": "The file is that version already." }));
+    }
+    need!(super::api::confirmed(
+        body,
+        format!(
+            "Put the config back to this version? It changes {changes} value(s); the file as it is now stays in the history."
+        )
+    ));
+    // As undo: a file that doesn't read is the way out, so not guarded.
+    let guard = old.is_some();
+    commit(ctx, &path, old.as_ref(), &new, "restore", guard)
+}
+
+/// `POST /api/config/set {key, value, base_hash?}`: one form field.
 pub fn set(ctx: &Ctx, body: &Value) -> Answer {
     let key = need!(arg(body, "key"));
     let Some(field) = FORM.iter().find(|f| f.key == key) else {
         return bad(400, format!("`{key}` isn't a field the page sets"));
     };
     let path = need!(place(ctx));
+    need!(fresh(&path, body));
     let (_, old) = need!(read_doc(&path));
     let Some(old) = old else {
         return bad(422, "the config file doesn't read as TOML; fix it in the editor or restore the last good copy");
@@ -688,9 +931,11 @@ fn put_back(ctx: &Ctx, from: &Path, how: &str, what: &str) -> Answer {
     commit(ctx, &path, old.as_ref(), &new, how, guard)
 }
 
-/// `POST /api/config/undo`: the file as it was before the page's last save.
-pub fn undo(ctx: &Ctx) -> Answer {
+/// `POST /api/config/undo {base_hash?}`: the file as it was before the
+/// page's last save.
+pub fn undo(ctx: &Ctx, body: &Value) -> Answer {
     let path = need!(place(ctx));
+    need!(fresh(&path, body));
     put_back(ctx, &prev_of(&path), "undo", "earlier copy")
 }
 
@@ -725,6 +970,7 @@ pub fn sandbox_mode(ctx: &Ctx, body: &Value) -> Answer {
         other => return bad(400, format!("`mode` is `owner` or `ask`, not `{other}`")),
     };
     let path = need!(place(ctx));
+    need!(fresh(&path, body));
     let mut t = match crate::setup::Target::load(path.clone()) {
         Ok(t) => t,
         Err(e) => return bad(422, format!("{e:#}")),
@@ -768,13 +1014,17 @@ pub fn sandbox_mode(ctx: &Ctx, body: &Value) -> Answer {
         }
     }
     // Same as the page's other writes: what was there stays as `.prev`.
-    if let Ok(now) = std::fs::read_to_string(&path) {
-        if let Err(e) = crate::secrets::write_private(&prev_of(&path), &now) {
+    let before = std::fs::read_to_string(&path).ok();
+    if let Some(now) = &before {
+        if let Err(e) = crate::secrets::write_private(&prev_of(&path), now) {
             return bad(500, format!("{e:#}"));
         }
     }
     if let Err(e) = t.save() {
         return bad(500, format!("{e:#}"));
+    }
+    if let (Some(before), Ok(after)) = (&before, std::fs::read_to_string(&path)) {
+        remember(ctx, before, &after, "autonomy");
     }
     audit(
         ctx,

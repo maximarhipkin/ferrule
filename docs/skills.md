@@ -22,7 +22,13 @@ Searched in this order; the first skill with a given name wins:
    (**user** skills);
 4. skills the agent installed itself with `skill_install`, under
    `<data>/extensions/skills`. They are scanned before install and
-   locked to the digest of their `SKILL.md` (docs/m13-self-extension.md).
+   locked to the digest of their `SKILL.md` (docs/m13-self-extension.md);
+5. skills the learning pass kept (**learned**, M53.3), under
+   `<data>/learned-skills`. Each one is offered only while its `SKILL.md`
+   is the one the pass recorded in `<data>/learn/skills.json` and it still
+   scans clean; it loads through the catalog, never by a trigger.
+   `ferrule learn revert` takes one back
+   ([m53-contrastive-probing.md](m53-contrastive-probing.md), "M53.3").
 
 Skills from OpenClaw or Hermes Agent install into 4. with `ferrule import`,
 after the same scan and your confirmation, one at a time

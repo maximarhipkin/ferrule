@@ -7,6 +7,30 @@ deliberately naive harness. It then reports the difference in pass rate,
 tokens and cost. The design and its reasoning are in
 [`m14-eval.md`](m14-eval.md).
 
+## The gate: every prompt, scaffold or default change runs an A/B (M58.5)
+
+**Every prompt line, scaffold or default change runs an A/B before it
+lands.** Anthropic gives every system-prompt change a per-model eval run,
+after one line cost 3%. "Simplest and best" stays a guess until it's a
+number. The A/B takes one of two shapes:
+
+- **A change to the harness** (a prompt line, a tool description, a
+  default):
+  1. Run the suite on the base build.
+  2. Run it again on the change, with the same model, suite, `--repeat`
+     and caps.
+  3. Read the second run's "since the last run" section. It gives the
+     pass-rate move per variant, and the harness line says what differs
+     between the two runs (`harness changed on 20 of 20 tasks: prompt`).
+     If it says `same harness`, the change never reached the agent.
+- **Removing or keeping a component:** `--ablate <part>` runs the
+  engineered harness with and without that part, task by task, in one run
+  (below).
+
+Use `--repeat 3` or more on the full suite, and one cheap model per
+change, then the models it ships for. A change that lands without one says
+so in its PLAN.md entry.
+
 ## Handoff: running the real A/B (for the agent that runs it)
 
 M14 shipped the machinery and proved it only against the mock model. The
@@ -75,6 +99,9 @@ EOF
 MOCK_KEY=x ferrule --config eval-mock.toml eval run evals/starter --tag smoke --variant ab
 kill %1
 ```
+
+On a machine where the sandbox can't run (it says so at the start), add
+`--allow-grader-reads`; see "The grader-leak tripwire".
 
 ### 2. A local model through Ollama
 
@@ -267,6 +294,13 @@ since the last run (same suite, kind and model):
   doing, not the model's. Scripts the commands call, such as
   `graders/*.py`, are not part of the fingerprint.
 - `new` and `not run this time`: tasks only one of the two runs had.
+- `harness changed on N of M tasks: …` (M58.5): each task run records
+  the harness that ran it. That's M53's stamp: the fixture's skills, the
+  playbook, the settings (`config`), the system prompt with its workspace
+  path replaced (`prompt`), and the tool definitions (`tools`), each
+  hashed. The line names the parts that differ. `same harness` means
+  none did. Runs saved before M58.5 have no stamp, and the line is left
+  out.
 - The first run of a suite says `no earlier run to compare with`.
 
 The comparison is read from the saved `run.json` files, not the ledger.
@@ -283,8 +317,9 @@ ferrule eval report starter --run 20260924T15   # a run id or a prefix of one
 - `0`: the suite ran. In a `capability` suite (like the starter one),
   failed tasks are results, not errors.
 - `1`: a grader couldn't decide (for example it crashed or timed out), a
-  task failed under the engineered variant in a `regression` suite, or
-  ferrule itself failed. (Naive is the baseline: its failures never fail
+  task run tripped the grader-leak tripwire (below), a task failed under
+  the engineered variant in a `regression` suite, or ferrule itself
+  failed. (Naive is the baseline: its failures never fail
   the run.)
 - `3`: the budget cap stopped the suite.
 
@@ -327,6 +362,113 @@ truncating from the front is what most simple agent loops do.
 `--variant routing` is a different comparison: ferrule's harness three
 times, on a cheap model, routed cheap → strong, and a strong model
 (`--cheap <ref> --strong <ref>`). It's in `docs/routing.md`, Measuring it.
+
+### One part at a time: `--ablate` (M58.5)
+
+`--ablate <part>` (repeatable) runs every task twice on the same model:
+`engineered`, as ferrule ships, and `ablated`, the same harness without
+the parts named. The report adds an `engineered − ablated` column, the
+way `--variant ab` adds `engineered − naive`.
+
+```sh
+ferrule eval run evals/starter --ablate repo-map --repeat 3
+ferrule eval run evals/starter --ablate verify --ablate stuck --tag verify
+```
+
+| part | the `ablated` arm runs without |
+|---|---|
+| `repo-map` | the repo map and `code_search` |
+| `verify` | the task's check: ferrule doesn't run it at the finish, and the prompt doesn't mention it |
+| `stuck` | the stuck detector and the per-file edit notes |
+| `compaction` | compaction: the history is truncated, as the naive harness does |
+| `retries` | retries of a failed model call |
+| `skills` | the fixture's skills |
+| `memory` | `remember` and `recall` |
+| `edit-file` | `edit_file` (`write_file` only) |
+| `effort-boost` | the raised effort on the first turn and after a failed check |
+| `stale-guard` | `edit_file`'s stale-file guard |
+| `baseline` | the workspace context baseline (`AGENTS.md`) |
+| `playbook` | the owner's playbook, for a suite with `owner_playbook = true` |
+
+`--ablate` can't be combined with `--variant`. A run's "since the last
+run" compares `ablated` only with an earlier run that left out the same
+parts.
+
+### The grader-leak tripwire (M58.5)
+
+The agent must never see how it's graded. One of Harness²'s rollouts
+downloaded its own rubric. So, in every run:
+
+- **Hidden:** the agent's shell runs in a copy of the eval's sandbox
+  that can't read three kinds of file: the suite file, every script a
+  task's grade command or check names under the suite's directory, and
+  the other files in that script's directory (`graders/` and `checks/`
+  in the starter suite). ferrule runs the checks and graders in the
+  sandbox without those denies, so they work as before. A task whose
+  check is hidden is told that only ferrule runs it ("Its files are
+  hidden from you"). Before, the prompt said it could run the check
+  itself.
+- **Searched:** before the agent starts and again before grading, the
+  workspace is searched for a copy of, or a link to, any of those files
+  (files under 32 bytes aren't compared).
+- **Probed:** before the agent starts, every one of those files must be
+  on the agent's sandbox's read-deny list. On Linux and macOS, one of
+  them is also read with `cat` from inside the sandbox, and that must
+  fail.
+
+A run that trips any of these is an error, not a verdict: `GRADER LEAK:
+…` in the progress line and in "why they failed", and exit status 1.
+
+When the sandbox can't hide anything (`[sandbox] mode = "off"`, or no
+backend on this machine), the suite doesn't start. Pass
+`--allow-grader-reads` to run it anyway. Its report then starts with
+`UNGUARDED`, and the probe is skipped; the workspace search still runs.
+The dashboard's model evaluation runs this way when the sandbox is off.
+On Windows the read-denies work like `deny_read`: the sandbox launcher
+denies the restricted token on those files.
+
+## An external benchmark: Terminal-Bench-style tasks (M58.5)
+
+The starter suite is ferrule's own. An external task set checks it
+against tasks nobody here wrote. `evals/terminal-bench/convert.py`
+(standard library only, nothing downloaded) turns a local checkout of
+Terminal-Bench-style tasks into a suite:
+
+```sh
+# a checkout you already have; the converter reads it, never fetches it
+python3 evals/terminal-bench/convert.py ~/src/terminal-bench/tasks /tmp/tb-suite --limit 20
+ferrule eval run /tmp/tb-suite --dry-run
+ferrule eval run /tmp/tb-suite --variant ab --repeat 3 --max-usd 10
+```
+
+It reads both layouts: Terminal-Bench 2's Harbor tasks (`instruction.md`,
+`task.toml`, `environment/`, `tests/`, `solution/solve.sh`) and
+Terminal-Bench 1's (`task.yaml`, a `Dockerfile` beside the files,
+`tests/`, `solution.sh`). Each task becomes a `[[task]]`:
+
+- the instruction is the prompt;
+- the environment's files, without the Dockerfile and compose files, are
+  the fixture;
+- `python3 -m pytest` on the task's `tests/test_outputs.py` is the
+  grader. It is copied to `graders/<id>/`, where the tripwire hides it.
+
+The tasks expect a container whose working directory is `/app`; the
+workspace stands in for it. `/app/…` in the prompt, the tests and the
+solution is rewritten to the workspace, and `/tests/…` in the tests to
+their copy.
+
+**What it can't do.** A task whose image runs `RUN` steps is skipped
+unless `--with-builds` (then this machine must already have what they
+install). A task whose compose file starts more than one service is
+always skipped. ferrule has no Docker runner, so a task that needs its
+image doesn't run here. The converter says which tasks it skipped and
+why. The graders need `python3` with `pytest` on the host.
+
+**Not run yet.** The converter was written from the two layouts as
+documented. It has not been run against a real checkout, and no
+Terminal-Bench number exists for ferrule. Check a converted suite with
+its reference solutions first: `solutions/<id>/solve.sh` run in a
+prepared fixture should pass its grader.
 
 ## The starter suite (`evals/starter`)
 

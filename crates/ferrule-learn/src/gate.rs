@@ -28,6 +28,9 @@ pub struct GateRun<'a> {
     pub episode: &'a Episode,
     /// The candidate playbook's `[Playbook]` section.
     pub playbook_block: Option<&'a str>,
+    /// M53.3: a candidate skill's draft directory. The run finds it as a
+    /// project skill of the scratch copy (`.ferrule/skills/<name>`).
+    pub skill: Option<&'a Path>,
     /// Tags, prices and charges the gate agent's calls.
     pub sink: Arc<dyn LedgerSink>,
     pub meter: Arc<Meter>,
@@ -61,6 +64,11 @@ pub trait Gate: Send + Sync {
     /// this gate can't probe (the default).
     async fn probe(&self, run: GateRun<'_>) -> Option<ProbeOut> {
         let _ = run;
+        None
+    }
+    /// M53.3: the sandbox a learned skill's parse checks run in; `None`
+    /// skips them with a note.
+    fn sandbox(&self) -> Option<Arc<Sandbox>> {
         None
     }
 }
@@ -98,6 +106,10 @@ pub struct WorkspaceGate {
 impl Gate for WorkspaceGate {
     fn check(&self) -> Option<String> {
         self.check.clone()
+    }
+
+    fn sandbox(&self) -> Option<Arc<Sandbox>> {
+        Some(self.sandbox.clone())
     }
 
     async fn run(&self, r: GateRun<'_>) -> GateVerdict {
@@ -161,6 +173,12 @@ impl WorkspaceGate {
         let workspace = scratch.join("workspace");
         let state = scratch.join("state");
         copy_workspace(&self.workspace, &workspace, &self.skip)?;
+        if let Some(skill) = r.skill {
+            let name = skill.file_name().unwrap_or_default();
+            let to = workspace.join(".ferrule").join("skills").join(name);
+            let _ = fs::remove_dir_all(&to);
+            copy_workspace(skill, &to, &[])?;
+        }
         fs::create_dir_all(&state).map_err(|e| format!("could not make the scratch copy: {e}"))?;
         let transcript = Transcript::create(r.pass_dir, name)
             .map_err(|e| format!("could not start the transcript: {e}"))?;
@@ -178,6 +196,8 @@ impl WorkspaceGate {
             transcript: Some(transcript),
             playbook: r.playbook_block,
             edit_tools: Default::default(),
+            ablate: &[],
+            check_sandbox: None,
         })
         .with_ledger(
             r.sink.clone(),

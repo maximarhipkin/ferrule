@@ -9,8 +9,11 @@ license = "MIT OR Apache-2.0"
 dunce = { workspace = true }
 ferrule-core = { path = "../ferrule-core" }
 ferrule-eval = { path = "../ferrule-eval" }
+# M53.3: the draft-check-scan path of M13's skill_keep, and discovery.
+ferrule-extensions = { path = "../ferrule-extensions" }
 ferrule-memory = { path = "../ferrule-memory" }
 ferrule-sandbox = { path = "../ferrule-sandbox" }
+ferrule-skills = { path = "../ferrule-skills" }
 ferrule-tools = { path = "../ferrule-tools" }
 tokio = { workspace = true }
 async-trait = { workspace = true }

@@ -97,6 +97,14 @@ says so and gives the local link with the SSH port-forward that reaches it.
   session was issued for are refused. XSS: the page builds DOM with
   `textContent`, never `innerHTML` with data; the CSP forbids inline
   script and any other origin. Clickjacking: `frame-ancestors 'none'`.
+- **A stolen session cookie** (M52.6) can't change keys on its own: the
+  Safe's writes (rotate, delete, sites, remove) need a login from the
+  last 10 minutes, or the owner's Allow on a card in their chat (never
+  answerable from the page itself), good for 10 minutes. Over HTTPS at
+  `Path=/` the cookie is `__Host-ferrule_dash`, which a browser accepts
+  only from that exact origin over HTTPS, so another host can't plant
+  one. Details and the opt-in hardened remote modes:
+  [m52-dashboard-safe.md](m52-dashboard-safe.md), "M52.6".
 - **Not defended:** a compromised machine or Telegram account, or
   Cloudflare itself. No SLA: a quick tunnel can drop; the page says so and
   `/dashboard` opens a new one.

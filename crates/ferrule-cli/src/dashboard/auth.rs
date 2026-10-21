@@ -12,13 +12,27 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const COOKIE: &str = "ferrule_dash";
+/// M52.6: the same cookie where the origin allows the `__Host-` prefix
+/// (HTTPS, `Path=/`, no `Domain`): a browser then refuses it from a
+/// sibling host or over plain HTTP, so nobody can plant one.
+pub const HOST_COOKIE: &str = "__Host-ferrule_dash";
+
+/// The session cookie's name for an origin: `secure` and a `/` path take
+/// the `__Host-` prefix.
+pub fn cookie_name(secure: bool, path: &str) -> &'static str {
+    if secure && path == "/" {
+        HOST_COOKIE
+    } else {
+        COOKIE
+    }
+}
 pub const CSRF_HEADER: &str = "x-ferrule-csrf";
 
 pub fn now_secs() -> u64 {
     now_ms() / 1000
 }
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -389,6 +403,13 @@ impl Sessions {
         })
     }
 
+    /// When the session behind `cookie` was opened (unix ms): M52.6's
+    /// "a login from the last 10 minutes".
+    pub fn opened_ms(&self, cookie: &str) -> Option<u64> {
+        let hash = seal::sha256_b64(cookie.as_bytes());
+        self.with(|f| f.sessions.get(&hash).map(|s| s.opened_ms))
+    }
+
     pub fn close(&self, cookie: &str) {
         let hash = seal::sha256_b64(cookie.as_bytes());
         if let Err(e) = self.change(|f| f.sessions.remove(&hash)) {
@@ -474,10 +495,13 @@ pub fn same(a: &str, b: &str) -> bool {
             == 0
 }
 
-/// The `Set-Cookie` for a new session; `Secure` over HTTPS (the tunnel).
+/// The `Set-Cookie` for a new session; `Secure` over HTTPS (the tunnel),
+/// and named with `__Host-` where that holds ([`cookie_name`]). Never a
+/// `Domain`.
 pub fn set_cookie(value: &str, secure: bool, max_age: Duration, path: &str) -> String {
     format!(
-        "{COOKIE}={value}; Path={path}; HttpOnly; SameSite=Strict; Max-Age={}{}",
+        "{}={value}; Path={path}; HttpOnly; SameSite=Strict; Max-Age={}{}",
+        cookie_name(secure, path),
         max_age.as_secs(),
         if secure { "; Secure" } else { "" }
     )
@@ -485,7 +509,8 @@ pub fn set_cookie(value: &str, secure: bool, max_age: Duration, path: &str) -> S
 
 pub fn clear_cookie(secure: bool, path: &str) -> String {
     format!(
-        "{COOKIE}=; Path={path}; HttpOnly; SameSite=Strict; Max-Age=0{}",
+        "{}=; Path={path}; HttpOnly; SameSite=Strict; Max-Age=0{}",
+        cookie_name(secure, path),
         if secure { "; Secure" } else { "" }
     )
 }

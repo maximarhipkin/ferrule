@@ -287,7 +287,8 @@ examples into the text every provider sends: a description.
 - Four agent tools (`crates/ferrule-agents/src/prompts.rs`):
   `spawn_agent` (a complete task: goal, constraints, what to report),
   `wait_agent` (two ids and a timeout), `board_post` (a finding with a
-  topic) and `task_add` (a dependency on another task). About 500
+  topic) and `task_add` (a dependency on another task); M58.3 carried
+  them into `message_agent`, `board` and `tasks`. About 500
   characters for an agent that can spawn, 200 for one at `max_depth`
   ([agents.md](agents.md#what-it-costs)).
 

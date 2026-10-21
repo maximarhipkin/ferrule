@@ -175,6 +175,23 @@ impl TranscriptionConfig {
     }
 }
 
+impl TranscriptionConfig {
+    /// The model id `base_url` knows. OpenRouter names OpenAI's models
+    /// `openai/<name>` (M51.4), so a bare name there, such as the default
+    /// `whisper-1`, gets that prefix; anywhere else the model is as set.
+    pub fn model_for(&self, base_url: &str) -> String {
+        let openrouter = url::Url::parse(base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .is_some_and(|h| h == "openrouter.ai" || h.ends_with(".openrouter.ai"));
+        if openrouter && !self.model.contains('/') {
+            format!("openai/{}", self.model)
+        } else {
+            self.model.clone()
+        }
+    }
+}
+
 fn check_url(url: &str) -> Result<()> {
     match url::Url::parse(url) {
         Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().is_some() => Ok(()),
@@ -187,7 +204,7 @@ pub fn how_to_turn_on(plan_only: bool) -> String {
     let mut s = String::from(
         "I got your voice message and saved it, but voice transcription is off, so I can't listen to it. \
          To turn it on, the owner can set OPENAI_API_KEY (an OpenAI API key), point [transcription] at \
-         another OpenAI-compatible service such as Groq, or give it a local command such as whisper.cpp \
+         another OpenAI-compatible service such as Groq or OpenRouter, or give it a local command such as whisper.cpp \
          (docs/channels.md, \"Voice messages\").",
     );
     if plan_only {
@@ -227,9 +244,9 @@ pub fn build(cfg: &Config, sink: Option<Arc<dyn LedgerSink>>) -> Result<Transcri
         Choice::OpenAi {
             base_url, key_env, ..
         } => Transcription::On(Arc::new(OpenAiTranscriber {
+            model: t.model_for(&base_url),
             base_url,
             key_env,
-            model: t.model.clone(),
             language: t.language.clone().filter(|l| !l.is_empty()),
             timeout,
             ledger: ledger(t.price_per_minute),
@@ -274,7 +291,7 @@ pub fn doctor_line(cfg: &Config) -> (bool, String) {
                 true,
                 format!(
                     "voice transcription: {} at {base_url} ({key}, {lang}; {why})",
-                    cfg.transcription.model
+                    cfg.transcription.model_for(&base_url)
                 ),
             )
         }

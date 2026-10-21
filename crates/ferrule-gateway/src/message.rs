@@ -43,3 +43,23 @@ pub struct OutboundMessage {
     #[serde(default)]
     pub attachments: Vec<Attachment>,
 }
+
+/// M53.5: someone's reaction on a message in a chat (Telegram's
+/// `message_reaction`), what it is now. Not a message: it never reaches a
+/// session, only a [`ReactionSink`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reaction {
+    pub channel: String,
+    pub chat_id: String,
+    /// The message reacted to.
+    pub message_id: String,
+    /// Who reacted: the channel's id for them.
+    pub user_id: String,
+    /// The emoji now set on it, in order; empty when they took theirs back.
+    pub emoji: Vec<String>,
+    /// Unix seconds.
+    pub at: i64,
+}
+
+/// Where a channel hands the reactions it hears.
+pub type ReactionSink = std::sync::Arc<dyn Fn(Reaction) + Send + Sync>;

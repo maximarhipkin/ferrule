@@ -23,9 +23,11 @@ fn state_file(ctx: &ToolContext, tool: &str, name: &str) -> Result<PathBuf, Core
     Ok(path)
 }
 
-/// `write_todos` — the agent maintains its own task list in
-/// `.ferrule/TODO.md`. Forces explicit planning, and the file doubles as a
-/// trajectory artifact you can diff and debug after the run.
+/// `write_todos` — the agent's own planning surface: its task list in
+/// `.ferrule/TODO.md` (overwritten), and its diary, `.ferrule/diary.md`
+/// (a `note` appended with a timestamp). Forces explicit planning, and the
+/// files double as a trajectory artifact you can diff and debug after the
+/// run. M58.3 merged `log_diary` into it as `note`.
 pub struct WriteTodosTool;
 
 #[async_trait::async_trait]
@@ -37,9 +39,11 @@ impl Tool for WriteTodosTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "write_todos".into(),
-            description: "Write the current task list as markdown (overwrites). \
-                          Use at the start of multi-step work and update as tasks \
-                          complete. Persisted to .ferrule/TODO.md in the workspace."
+            description: "Write the current task list as markdown (overwrites), and/or append a \
+                          `note` to the diary: a decision, a blocker, a milestone, especially \
+                          before and after risky operations. Use the list at the start of \
+                          multi-step work and update it as tasks complete. Persisted to \
+                          .ferrule/TODO.md and .ferrule/diary.md in the workspace."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -47,15 +51,25 @@ impl Tool for WriteTodosTool {
                     "todos": {
                         "type": "string",
                         "description": "Full markdown task list, e.g. '- [x] done item\\n- [ ] pending item'"
-                    }
-                },
-                "required": ["todos"]
+                    },
+                    "note": { "type": "string", "description": "One concise diary entry" }
+                }
             }),
         }
     }
 
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
-        let todos = args["todos"].as_str().unwrap_or("");
+        let note = args["note"].as_str().map(str::trim).unwrap_or("");
+        let Some(todos) = args["todos"].as_str() else {
+            if note.is_empty() {
+                return Err(CoreError::ToolFailed {
+                    tool: "write_todos".into(),
+                    message: "give `todos`, a `note`, or both".into(),
+                });
+            }
+            append_note(ctx, "write_todos", note).await?;
+            return Ok(ToolOutput::ok("note logged"));
+        };
         let path = state_file(ctx, "write_todos", "TODO.md")?;
         // The rename replaces a link put there since, rather than following it.
         crate::fs_tools::write_atomic(&path, todos.as_bytes()).map_err(|e| {
@@ -66,15 +80,19 @@ impl Tool for WriteTodosTool {
         })?;
         let open = todos.matches("- [ ]").count();
         let done = todos.matches("- [x]").count() + todos.matches("- [X]").count();
-        Ok(ToolOutput::ok(format!(
-            "todo list saved ({done} done, {open} open)"
-        )))
+        let mut out = format!("todo list saved ({done} done, {open} open)");
+        if !note.is_empty() {
+            append_note(ctx, "write_todos", note).await?;
+            out.push_str("; note logged");
+        }
+        Ok(ToolOutput::ok(out))
     }
 }
 
-/// `log_diary` — append-only agent diary at `.ferrule/diary.md`. The point
-/// is trajectory debugging: you don't fix bugs, you fix prompts, tools and
-/// trajectories — and the diary is how you see the trajectory.
+/// `log_diary`, kept callable for one release after M58.3 merged it into
+/// `write_todos` (`note`): never offered, and a call logs a deprecation
+/// warning. The diary is how you see the trajectory: you don't fix bugs,
+/// you fix prompts, tools and trajectories.
 pub struct DiaryTool;
 
 #[async_trait::async_trait]
@@ -86,19 +104,17 @@ impl Tool for DiaryTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "log_diary".into(),
-            description: "Append a timestamped progress note to the agent diary \
-                          (.ferrule/diary.md). Log decisions, blockers, and \
-                          milestones — especially before/after risky operations."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": { "entry": { "type": "string", "description": "One concise diary entry" } },
-                "required": ["entry"]
-            }),
+            description: "Deprecated: use write_todos with a `note`.".into(),
+            parameters: json!({"type": "object", "required": ["entry"]}),
         }
     }
 
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
+        tracing::warn!(
+            tool = "log_diary",
+            instead = "write_todos",
+            "a deprecated tool name was called (M58.3); it goes in the next release"
+        );
         let entry = args["entry"].as_str().unwrap_or("").trim();
         if entry.is_empty() {
             return Err(CoreError::ToolFailed {
@@ -106,36 +122,39 @@ impl Tool for DiaryTool {
                 message: "empty entry".into(),
             });
         }
-        let path = state_file(ctx, "log_diary", "diary.md")?;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let line = format!("- [t{ts}] {entry}\n");
-        use tokio::io::AsyncWriteExt;
-        let mut f = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await
-            .map_err(|e| CoreError::ToolFailed {
-                tool: "log_diary".into(),
-                message: e.to_string(),
-            })?;
-        f.write_all(line.as_bytes())
-            .await
-            .map_err(|e| CoreError::ToolFailed {
-                tool: "log_diary".into(),
-                message: e.to_string(),
-            })?;
-        // tokio's File hands the write to a blocking task; without flush the
-        // entry may not have landed when we return (or when the next append opens).
-        f.flush().await.map_err(|e| CoreError::ToolFailed {
-            tool: "log_diary".into(),
-            message: e.to_string(),
-        })?;
+        append_note(ctx, "log_diary", entry).await?;
         Ok(ToolOutput::ok("logged"))
     }
+
+    fn replaced_by(&self) -> Option<&'static str> {
+        Some("write_todos")
+    }
+}
+
+/// One timestamped line at the end of `.ferrule/diary.md`.
+async fn append_note(ctx: &ToolContext, tool: &str, entry: &str) -> Result<(), CoreError> {
+    let failed = |e: std::io::Error| CoreError::ToolFailed {
+        tool: tool.into(),
+        message: e.to_string(),
+    };
+    let path = state_file(ctx, tool, "diary.md")?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("- [t{ts}] {entry}\n");
+    use tokio::io::AsyncWriteExt;
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await
+        .map_err(failed)?;
+    f.write_all(line.as_bytes()).await.map_err(failed)?;
+    // tokio's File hands the write to a blocking task; without flush the
+    // entry may not have landed when we return (or when the next append opens).
+    f.flush().await.map_err(failed)?;
+    Ok(())
 }
 
 #[cfg(test)]

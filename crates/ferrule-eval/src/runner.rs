@@ -6,7 +6,7 @@ use crate::grade::{self, GraderResult};
 use crate::rubric::{self, Judge};
 use crate::sink::{Caps, EvalSink, Pricing, Totals};
 use crate::suite::{Suite, Task};
-use crate::variant::{self, MemoryTools, Variant};
+use crate::variant::{self, MemoryTools, Part, Variant};
 use anyhow::{Context as _, Result};
 use ferrule_core::{
     AgentEvent, CoreError, EvalTag, Guard, HarnessProfile, LedgerRecord, LedgerSink, Policy,
@@ -119,7 +119,7 @@ impl Env {
             model: a.model.clone(),
         };
         match (v, &self.routing) {
-            (Variant::Engineered | Variant::Naive, _) => Some(Serving {
+            (Variant::Engineered | Variant::Ablated | Variant::Naive, _) => Some(Serving {
                 provider: self.provider.clone(),
                 model: self.model.clone(),
             }),
@@ -184,6 +184,11 @@ pub struct Options {
     pub progress: Option<Progress>,
     /// M29: offer `edit_file` alongside `write_file`, or `write_file` only.
     pub edit_tools: variant::EditTools,
+    /// M58.5: what the `ablated` variant runs without.
+    pub ablate: Vec<Part>,
+    /// M58.5: run although the sandbox can't hide the suite's graders and
+    /// checks from the agent; the run is marked unguarded.
+    pub allow_grader_reads: bool,
 }
 
 impl Default for Options {
@@ -199,6 +204,8 @@ impl Default for Options {
             work_root: None,
             progress: None,
             edit_tools: variant::EditTools::Both,
+            ablate: Vec::new(),
+            allow_grader_reads: false,
         }
     }
 }
@@ -260,6 +267,10 @@ pub struct TaskResult {
     pub context_window: usize,
     #[serde(default)]
     pub ferrule_version: String,
+    /// M58.5: the harness that ran (M53's stamp: skills, playbook,
+    /// settings, prompt and tools, hashed).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub harness: String,
 }
 
 /// A whole suite run.
@@ -287,6 +298,13 @@ pub struct SuiteRun {
     /// M25: the models a `--variant routing` run compared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<RoutingPair>,
+    /// M58.5: what the `ablated` variant ran without.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ablated: Vec<String>,
+    /// M58.5: the agent could read the suite's graders and checks
+    /// (`--allow-grader-reads`): a pass may be a leak.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unguarded: bool,
 }
 
 /// `<UTC time to the millisecond>-<random>`: ids sort in the order the runs
@@ -322,6 +340,24 @@ pub async fn run_suite(suite: &Suite, env: &Env, opts: &Options) -> Result<Suite
         .join("ferrule-eval")
         .join(&run_id);
     std::fs::create_dir_all(&work).with_context(|| format!("creating {}", work.display()))?;
+    // M58.5: the agent's sandbox hides the suite file and every grader and
+    // check script; ferrule's checks and graders run in `env.sandbox`.
+    let mut protected: Vec<PathBuf> = tasks
+        .iter()
+        .flat_map(|t| crate::leak::protected(t, suite))
+        .collect();
+    protected.sort();
+    protected.dedup();
+    let agent_sandbox = Arc::new(crate::leak::hiding(&env.sandbox, &protected)?);
+    let unguarded = !agent_sandbox.hides_reads();
+    if unguarded && !opts.allow_grader_reads {
+        let why = agent_sandbox.degraded().unwrap_or("no sandbox backend");
+        anyhow::bail!(
+            "the sandbox can't hide this suite's graders and checks from the agent ({why}), so a \
+             pass could be a leak. Turn the sandbox on, or pass --allow-grader-reads to run \
+             anyway, marked unguarded"
+        );
+    }
     let transcripts = match &env.transcripts {
         Some(dir) => {
             let dir = dir.join(&run_id);
@@ -363,6 +399,9 @@ pub async fn run_suite(suite: &Suite, env: &Env, opts: &Options) -> Result<Suite
                     transcripts: transcripts.as_deref(),
                     keep: opts.keep,
                     edit_tools: opts.edit_tools,
+                    ablate: &opts.ablate,
+                    agent_sandbox: &agent_sandbox,
+                    probe: !unguarded,
                 })
                 .await;
                 say(&format!(
@@ -415,6 +454,12 @@ pub async fn run_suite(suite: &Suite, env: &Env, opts: &Options) -> Result<Suite
                 cheap: r.cheap.reference(),
                 strong: r.strong.reference(),
             }),
+        ablated: if opts.variants.contains(&Variant::Ablated) {
+            opts.ablate.iter().map(|p| p.as_str().to_string()).collect()
+        } else {
+            Vec::new()
+        },
+        unguarded,
     })
 }
 
@@ -440,6 +485,11 @@ struct RunOne<'a> {
     transcripts: Option<&'a std::path::Path>,
     keep: bool,
     edit_tools: variant::EditTools,
+    ablate: &'a [Part],
+    /// The sandbox the agent's shell runs in: the suite hidden.
+    agent_sandbox: &'a Arc<Sandbox>,
+    /// Probe that the hiding holds (off for an unguarded run).
+    probe: bool,
 }
 
 #[derive(Default)]
@@ -479,6 +529,7 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
         fingerprint: p.task.fingerprint.clone(),
         context_window: p.profile.context_window,
         ferrule_version: env!("CARGO_PKG_VERSION").into(),
+        harness: String::new(),
     };
 
     let Some(serving) = p.env.serving(p.variant) else {
@@ -501,14 +552,22 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
         .rubric
         .is_some()
         .then(|| rubric::Snapshot::take(&fixture.workspace));
+    // M58.5: a grader the agent could see voids the verdict.
+    let protected = crate::leak::protected(p.task, p.suite);
+    let leaked = |why: String| format!("GRADER LEAK: {why}");
+    // The agent's shell and the check, like setup and the graders: git
+    // without the owner's config. The agent's hides the suite.
+    let sandbox = crate::fixture::hermetic(p.agent_sandbox);
+    let check_sandbox = crate::fixture::hermetic(&p.env.sandbox);
+    if let Some(why) = crate::leak::check(&fixture.workspace, &protected, &sandbox, p.probe).await {
+        result.stopped_early = Some(leaked(why));
+        return finish(p, tag, result, started);
+    }
     let transcript = p
         .transcripts
         .and_then(|dir| Transcript::create(dir, p.label).ok());
     let stop = StopFlag::new();
-    // The agent's shell and the check, like setup and the graders: git
-    // without the owner's config.
-    let sandbox = crate::fixture::hermetic(&p.env.sandbox);
-    let agent = variant::build(variant::Build {
+    let (agent, stamp) = variant::build_stamped(variant::Build {
         variant: p.variant,
         provider: serving.provider,
         profile: p.profile,
@@ -525,7 +584,10 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
             .then_some(p.env.playbook.as_deref())
             .flatten(),
         edit_tools: p.edit_tools,
+        ablate: p.ablate,
+        check_sandbox: Some(&check_sandbox),
     });
+    result.harness = stamp.encode();
     let mut sink = p.sink.clone() as Arc<dyn LedgerSink>;
     let mut owner_stop = None;
     if let (true, Some(owner)) = (p.suite.owner_trust, &p.env.owner_trust) {
@@ -605,6 +667,13 @@ async fn run_one(p: RunOne<'_>) -> TaskResult {
         }
     };
 
+    // A copy of a grader the run made voids it too.
+    if let Some(why) = crate::leak::copies(&fixture.workspace, &protected) {
+        end(&mut result);
+        result.outcome = Outcome::Error;
+        result.stopped_early = Some(leaked(why));
+        return finish(p, tag, result, started);
+    }
     // Graded even after a timeout or an early stop: the work is what it is.
     let command = grade::command(p.task, &fixture.workspace, &p.env.sandbox).await;
     if let (Some(rubric), Some(before)) = (&p.task.grade.rubric, &before) {

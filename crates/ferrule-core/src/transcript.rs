@@ -42,6 +42,12 @@ pub struct HarnessStamp {
     pub skills: Vec<(String, u64)>,
     pub playbook: Option<u64>,
     pub config: Option<u64>,
+    /// M58.5: the system prompt as built, its workspace path replaced, so
+    /// a prompt line that changed shows (`ferrule eval` sets it).
+    pub prompt: Option<u64>,
+    /// M58.5: the tool definitions offered, names, descriptions and
+    /// schemas (`ferrule eval` sets it).
+    pub tools: Option<u64>,
 }
 
 /// FNV-1a 64, hex-rendered by [`HarnessStamp::encode`].
@@ -55,8 +61,9 @@ pub fn fnv64(bytes: &[u8]) -> u64 {
 }
 
 impl HarnessStamp {
-    /// `skills=name@hex,name@hex;playbook=hex;config=hex` — absent parts
-    /// are left out, so the line never claims a part it didn't see.
+    /// `skills=name@hex,name@hex;playbook=hex;config=hex;prompt=hex;tools=hex`
+    /// — absent parts are left out, so the line never claims a part it
+    /// didn't see.
     pub fn encode(&self) -> String {
         let mut s = String::new();
         let sep = |s: &mut String| {
@@ -78,9 +85,15 @@ impl HarnessStamp {
             sep(&mut s);
             s.push_str(&format!("playbook={p:016x}"));
         }
-        if let Some(c) = self.config {
-            sep(&mut s);
-            s.push_str(&format!("config={c:016x}"));
+        for (key, value) in [
+            ("config", self.config),
+            ("prompt", self.prompt),
+            ("tools", self.tools),
+        ] {
+            if let Some(v) = value {
+                sep(&mut s);
+                s.push_str(&format!("{key}={v:016x}"));
+            }
         }
         s
     }
@@ -330,6 +343,7 @@ mod tests {
             skills: vec![("review".into(), fnv64(b"skill body"))],
             playbook: Some(fnv64(b"- lesson one\n")),
             config: Some(fnv64(b"[agent]\n")),
+            ..Default::default()
         };
         t.log_harness(&stamp).unwrap();
         let meta = t.read_meta().unwrap();

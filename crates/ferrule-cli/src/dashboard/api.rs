@@ -111,7 +111,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "setup" => super::setup::view(ctx),
             "connections" => connections(ctx).await,
             "connections/checklist" => connections_checklist(ctx).await,
-            "secrets" => super::tool_keys::list(ctx),
+            "secrets" => super::safe::list(ctx),
+            "secrets/audit" => super::safe::audit_view(ctx),
             "models" => models(ctx),
             "models/choices" => super::models_page::choices(ctx),
             "models/provider/list" => super::models_page::provider_list(ctx, req).await,
@@ -133,6 +134,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "chat" => super::chat::view(ctx, req),
             "approvals" => super::chat::approvals(ctx),
             "config" => super::config_page::get(ctx),
+            "config/versions" => super::config_page::versions_view(ctx),
+            "config/version" => super::config_page::version_diff(ctx, req),
             "channels" => super::channels::list(ctx),
             "memory" => super::memory::list(ctx, req).await,
             "backups" => super::backup_page::list(ctx),
@@ -196,6 +199,7 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "secrets/remove" => super::tool_keys::remove(ctx, body),
         "secrets/rotate" => super::tool_keys::rotate(ctx, body),
         "secrets/hosts" => super::tool_keys::hosts_edit(ctx, body),
+        "secrets/delete" => super::safe::delete(ctx, body).await,
         "connections/key" | "connections/test" | "connections/cancel" | "connections/address" => {
             connection_key_op(ctx, path, body).await
         }
@@ -224,7 +228,8 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "config/check" => super::config_page::check(ctx, body),
         "config/save" => super::config_page::save(ctx, body),
         "config/set" => super::config_page::set(ctx, body),
-        "config/undo" => super::config_page::undo(ctx),
+        "config/undo" => super::config_page::undo(ctx, body),
+        "config/version/restore" => super::config_page::version_restore(ctx, body),
         "run/cancel" => {
             let id = need!(arg(body, "id"));
             ok(json!({ "ok": ctx.runs.cancel(id) }))
@@ -1174,6 +1179,7 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
     if now == good {
         return ok(json!({ "ok": true, "said": "The config is already the last good one." }));
     }
+    need!(super::config_page::fresh(file, body));
     // M54 §5: the chat may not bring back a guarded field (`mode = "off"`,
     // say) that the file has since lost; that stays the owner's, on the page.
     // A file that doesn't read counts as empty, so a guarded field in the
@@ -1204,6 +1210,9 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
     let prev = crate::dashboard::config_prev(file);
     let done = crate::secrets::write_private(&prev, &now)
         .and_then(|()| crate::secrets::write_private(file, &good));
+    if done.is_ok() {
+        super::config_page::remember(ctx, &now, &good, "last good");
+    }
     match done {
         Ok(()) => ok(json!({
             "ok": true,

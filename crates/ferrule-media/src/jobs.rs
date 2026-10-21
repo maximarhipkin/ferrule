@@ -1,6 +1,7 @@
 //! The `media_jobs` table (M51 §3): where an async video job lives between
 //! "submitted" and "delivered", so a gateway restart loses nothing, and
-//! where every media call — image or video — is counted for the daily cap.
+//! where every media call — image, video or speech — is counted for the
+//! daily cap.
 
 use crate::MediaError;
 use rusqlite::{params, Connection};
@@ -11,6 +12,8 @@ use std::sync::Mutex;
 pub enum JobKind {
     Image,
     Video,
+    /// M51.4: a `speak` reply.
+    Speech,
 }
 
 impl JobKind {
@@ -18,6 +21,7 @@ impl JobKind {
         match self {
             JobKind::Image => "image",
             JobKind::Video => "video",
+            JobKind::Speech => "speech",
         }
     }
 }
@@ -172,13 +176,22 @@ impl JobStore {
             state: "done".into(),
             ..Self::video(id, model, prompt, out_path)
         }
-        .with_kind()
+        .with_kind(JobKind::Image)
+    }
+
+    /// M51.4: a spoken reply, done at once like an image.
+    pub fn speech(id: &str, model: &str, text: &str, out_path: &str) -> MediaJob {
+        MediaJob {
+            state: "done".into(),
+            ..Self::video(id, model, text, out_path)
+        }
+        .with_kind(JobKind::Speech)
     }
 }
 
 impl MediaJob {
-    fn with_kind(mut self) -> Self {
-        self.kind = JobKind::Image.as_str().into();
+    fn with_kind(mut self, kind: JobKind) -> Self {
+        self.kind = kind.as_str().into();
         self
     }
 }

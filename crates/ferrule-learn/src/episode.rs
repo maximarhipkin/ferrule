@@ -12,9 +12,12 @@ use std::time::UNIX_EPOCH;
 pub const VERIFY_MARKER: &str = "fails, so this isn't done yet";
 /// The marker of a run stopped before it finished (step limit, budget …).
 pub const STOP_MARKER: &str = "[ferrule] Stopping here:";
-/// Characters of transcript the reflector sees, and of each tool result.
-pub const TAIL_CHARS: usize = 12_000;
-pub const TOOL_RESULT_CHARS: usize = 1_500;
+/// Characters of transcript the reflector sees (about 10k tokens), and of
+/// each tool result. M53.2: Harness² refuses to clip a result below 10,000
+/// characters, "in the range that fabricates defects"; the window holds
+/// four results that size.
+pub const TAIL_CHARS: usize = 40_000;
+pub const TOOL_RESULT_CHARS: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Episode {
@@ -34,10 +37,14 @@ pub struct Episode {
     pub transcript: Option<PathBuf>,
     /// Unix seconds; the review cursor moves over it.
     pub at: i64,
+    /// M53.4: where what it teaches applies (`crate::scope`): the task's,
+    /// or the session's `learn_scope` meta line. `None`: the pass's
+    /// workspace.
+    pub scope: Option<String>,
 }
 
 /// Transcript lines that are messages, as JSON; unreadable lines skipped.
-fn messages(path: &Path) -> Vec<Value> {
+pub(crate) fn messages(path: &Path) -> Vec<Value> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -48,17 +55,47 @@ fn messages(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-fn content(m: &Value) -> &str {
+/// The last value of a transcript's `key` meta line.
+pub fn meta(path: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    text.lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("meta"))
+        .filter(|v| v.get("key").and_then(Value::as_str) == Some(key))
+        .find_map(|v| v.get("value").and_then(Value::as_str).map(str::to_string))
+}
+
+/// The meta line a session's agent writes naming its scope (M53.4).
+pub const SCOPE_META: &str = "learn_scope";
+
+pub(crate) fn content(m: &Value) -> &str {
     m.get("content").and_then(Value::as_str).unwrap_or("")
 }
 
-fn role(m: &Value) -> &str {
+pub(crate) fn role(m: &Value) -> &str {
     m.get("role").and_then(Value::as_str).unwrap_or("")
 }
 
 fn first_line(s: &str, max: usize) -> String {
     let line = s.lines().next().unwrap_or("").trim();
     cut(line, max)
+}
+
+/// M53.2: a tool result over `max` keeps its head and its tail, with a
+/// marker that says the renderer cut it, so a reader never takes the cut
+/// for the agent's own output stopping short.
+fn clip(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max / 2).collect();
+    let tail: String = s.chars().skip(n - max / 2).collect();
+    format!(
+        "{head}\n[… {} characters clipped here by the renderer, not by the run]\n{tail}",
+        n - 2 * (max / 2)
+    )
 }
 
 fn cut(s: &str, max: usize) -> String {
@@ -135,11 +172,13 @@ fn session_episode(id: &str, path: &Path, at: i64) -> Option<Episode> {
         fixed: !stopped,
         transcript: Some(path.to_path_buf()),
         at,
+        scope: meta(path, SCOPE_META),
     })
 }
 
 /// The last [`TAIL_CHARS`] of a transcript's messages, for the reflector:
-/// one block per message, tool results cut to [`TOOL_RESULT_CHARS`].
+/// one block per message, tool results clipped to [`TOOL_RESULT_CHARS`].
+/// Every cut is marked as the renderer's (M53.2).
 pub fn render_tail(path: &Path) -> String {
     let mut blocks: Vec<String> = Vec::new();
     for m in messages(path) {
@@ -147,7 +186,7 @@ pub fn render_tail(path: &Path) -> String {
         let c = content(&m);
         if !c.is_empty() {
             let c = if role(&m) == "tool" {
-                cut(c, TOOL_RESULT_CHARS)
+                clip(c, TOOL_RESULT_CHARS)
             } else {
                 c.to_string()
             };
@@ -161,7 +200,7 @@ pub fn render_tail(path: &Path) -> String {
                     .get("arguments")
                     .map(Value::to_string)
                     .unwrap_or_default();
-                b.push_str(&format!("\n  -> {name} {}", cut(&args, TOOL_RESULT_CHARS)));
+                b.push_str(&format!("\n  -> {name} {}", clip(&args, TOOL_RESULT_CHARS)));
             }
         }
         blocks.push(b);
@@ -175,7 +214,10 @@ pub fn render_tail(path: &Path) -> String {
             if kept.is_empty() {
                 // One huge message: keep its end.
                 let skip = b.chars().count().saturating_sub(TAIL_CHARS);
-                kept.push(b.chars().skip(skip).collect::<String>());
+                kept.push(format!(
+                    "[… the first {skip} characters of this message clipped by the renderer]\n{}",
+                    b.chars().skip(skip).collect::<String>()
+                ));
             }
             break;
         }
@@ -184,7 +226,7 @@ pub fn render_tail(path: &Path) -> String {
     }
     if kept.len() < blocks.len() {
         out.push_str(&format!(
-            "[… {} earlier messages left out]\n",
+            "[… {} earlier messages left out by the renderer]\n",
             blocks.len() - kept.len()
         ));
     }

@@ -8,7 +8,7 @@ use crate::store::Status;
 use crate::supervisor::{now, InboxItem, Supervisor};
 use std::collections::HashMap;
 
-/// Entries one `board_read` returns.
+/// Entries one board read returns.
 const READ_LIMIT: usize = 50;
 
 impl Supervisor {
@@ -185,7 +185,7 @@ impl Supervisor {
         let lineage = self.lineage(caller)?;
         match self.store().claim(&me.tree, caller, &lineage, id, now())? {
             Ok(task) => Ok(format!(
-                "You hold task {}. Do it, then call task_done with its id and your result.\n\n{}",
+                "You hold task {}. Do it, then call tasks with action \"done\", its id and your result.\n\n{}",
                 task.id,
                 task_fence(&task)
             )),
@@ -235,7 +235,7 @@ impl Supervisor {
             .finish_task(id, caller, &result, failed, now())?
         {
             return Err(AgentsError::Invalid(format!(
-                "you don't hold task {id}; task_claim it first"
+                "you don't hold task {id}; claim it first"
             )));
         }
         Ok(if failed {

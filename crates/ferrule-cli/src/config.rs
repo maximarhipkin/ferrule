@@ -1239,7 +1239,8 @@ impl Default for WebSearchConfig {
 }
 
 /// M51: `[media]` — image and video generation through a connected
-/// provider (OpenRouter's `/images` and `/videos`).
+/// provider (OpenRouter's `/images` and `/videos`), and M51.4's spoken
+/// replies (`/audio/speech`).
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct MediaConfig {
@@ -1249,8 +1250,13 @@ pub struct MediaConfig {
     /// Defaults when a tool call doesn't name one.
     pub image_model: String,
     pub video_model: String,
-    /// Generations per day (images and video submits together); 0 = no
-    /// cap. Fail-closed: a store that can't be counted refuses.
+    /// M51.4: `speak`'s model; empty turns `speak` off.
+    pub speech_model: String,
+    /// `speak`'s voice (the model's own names); unset, the model's default.
+    pub voice: Option<String>,
+    /// Generations per day (images, video submits and spoken replies
+    /// together); 0 = no cap. Fail-closed: a store that can't be counted
+    /// refuses.
     pub max_per_day: u64,
 }
 
@@ -1260,6 +1266,9 @@ impl Default for MediaConfig {
             provider: None,
             image_model: "google/gemini-2.5-flash-image".into(),
             video_model: "google/veo-3.1".into(),
+            // OpenRouter's speech list, 2026-10-21: cheap, multilingual.
+            speech_model: "google/gemini-3.8-flash-tts".into(),
+            voice: None,
             max_per_day: 20,
         }
     }
@@ -1381,6 +1390,11 @@ pub struct DashboardConfig {
     pub session_hours: u64,
     /// An unused login link expires after this.
     pub link_minutes: u64,
+    /// M52.6, opt-in hardened remote: the page is reached through
+    /// Tailscale Serve, and off this machine it answers only requests whose
+    /// `Tailscale-User-Login` (set by Serve, which strips a client's own)
+    /// is one of these logins. Empty: no such check.
+    pub tailscale_users: Vec<String>,
 }
 
 impl Default for DashboardConfig {
@@ -1394,6 +1408,7 @@ impl Default for DashboardConfig {
             idle_minutes: 30,
             session_hours: 12,
             link_minutes: 10,
+            tailscale_users: Vec::new(),
         }
     }
 }
@@ -1629,6 +1644,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # [dashboard]
 # bind = "127.0.0.1"                        # a container needs 0.0.0.0 (FERRULE_DASHBOARD_BIND)
 # public_url = "https://bots.example.com/b/b_4f2a/"   # behind a proxy (FERRULE_PUBLIC_URL)
+# tailscale_users = ["you@example.com"]  # through Tailscale Serve only: off this
+#                            # machine, only these tailnet logins (docs/m52-dashboard-safe.md)
 
 # [scheduler]
 # tick_interval_secs = 30   # how often to check for due tasks
@@ -1701,7 +1718,9 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # provider = "openrouter"   # through a connected [providers.X]. Off until set.
 # image_model = "google/gemini-2.5-flash-image"
 # video_model = "google/veo-3.1"
-# max_per_day = 20          # images and video submits together; 0 = no cap.
+# speech_model = "google/gemini-3.8-flash-tts"  # `speak`, voice replies; "" = off
+# voice = "Kore"            # the speech model's own voice names; unset = its default
+# max_per_day = 20          # images, video submits and voice replies; 0 = no cap.
 #                            # Refuses fail-closed; every call is a ledger row.
 
 # [telemetry]               # OpenTelemetry traces of the agent's work over OTLP/HTTP
@@ -1794,6 +1813,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 #                            # conversation a child starts with; 0 = no forks
 # [agents.roles.verifier]   # a role on another provider, from [providers]
 # provider = "local"
+# [agents.roles.media]      # M51.3: image, video and voice jobs; a cheap model
+# model = "openrouter/google/gemini-2.5-flash"  # that calls tools ([media] on)
 #
 # [trust]                    # M19 (docs/m19-trust-cost.md). Caps are 0 = off;
 # max_tokens_per_run = 5000000  # a run is one prompt and its sub-agents.

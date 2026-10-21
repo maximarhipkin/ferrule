@@ -1,10 +1,14 @@
 //! OpenRouter's media endpoints: `POST {base}/images/generations`
-//! (OpenAI-compatible, sync) and `POST {base}/videos` + `GET
-//! {base}/videos/{id}` (async jobs). Reached through ferrule's credential
+//! (OpenAI-compatible, sync), `POST {base}/videos` + `GET
+//! {base}/videos/{id}` (async jobs) and `POST {base}/audio/speech` (M51.4,
+//! sync, raw audio back). Reached through ferrule's credential
 //! proxy: the caller hands over the proxy's placeholder key and an egress
 //! client from `ferrule_tools::egress::client_builder`, never a real key.
 
-use crate::{ImageOut, ImageReq, MediaBackend, MediaError, VideoJob, VideoReq, VideoState};
+use crate::{
+    AudioOut, ImageOut, ImageReq, MediaBackend, MediaError, SpeechReq, VideoJob, VideoReq,
+    VideoState,
+};
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -16,6 +20,8 @@ pub struct MediaSettings {
     pub base_url: String,
     pub image_model: String,
     pub video_model: String,
+    /// M51.4: `speak`'s default model.
+    pub speech_model: String,
     /// The proxy's placeholder for the key, sent as `Authorization: Bearer`.
     pub key: Option<String>,
     /// The key's env var, named in a 401's message.
@@ -59,6 +65,13 @@ impl OpenRouterMedia {
     }
 
     async fn checked(&self, req: reqwest::RequestBuilder) -> Result<Value, MediaError> {
+        let bytes = self.answer(req).await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| MediaError::BadAnswer(format!("not a JSON answer: {e}")))
+    }
+
+    /// A successful answer's body; every refusal a [`MediaError`].
+    async fn answer(&self, req: reqwest::RequestBuilder) -> Result<Vec<u8>, MediaError> {
         let transport = |e: reqwest::Error| MediaError::Transport {
             host: self.host.clone(),
             message: if e.is_timeout() {
@@ -101,8 +114,7 @@ impl OpenRouterMedia {
                 body,
             });
         }
-        serde_json::from_slice(&bytes)
-            .map_err(|e| MediaError::BadAnswer(format!("not a JSON answer: {e}")))
+        Ok(bytes.to_vec())
     }
 
     /// A workspace reference image as a data URL for the request.
@@ -265,6 +277,32 @@ impl MediaBackend for OpenRouterMedia {
         std::fs::write(dest, &bytes)
             .map_err(|e| MediaError::BadAnswer(format!("{}: {e}", dest.display())))
     }
+
+    async fn speak(&self, req: SpeechReq) -> Result<AudioOut, MediaError> {
+        let mut body = json!({
+            "model": req.model.as_deref().unwrap_or(&self.settings.speech_model),
+            "input": req.text,
+            // The API returns `mp3` or raw `pcm`, no Ogg/Opus; Telegram plays
+            // an MP3 as a voice note, so no re-encoding is needed.
+            "response_format": "mp3",
+        });
+        if let Some(voice) = &req.voice {
+            body["voice"] = json!(voice);
+        }
+        let bytes = self
+            .answer(self.post(self.url("/audio/speech"), &body))
+            .await?;
+        if sniff(&bytes) != Some("mp3") {
+            return Err(MediaError::BadAnswer(format!(
+                "the speech answer isn't MP3 audio ({} bytes)",
+                bytes.len()
+            )));
+        }
+        Ok(AudioOut {
+            bytes,
+            format: "mp3".into(),
+        })
+    }
 }
 
 /// The format by the file's first bytes, never by its name.
@@ -276,6 +314,9 @@ pub fn sniff(bytes: &[u8]) -> Option<&'static str> {
         Some(b) if b.starts_with(b"GIF8") => Some("gif"),
         // ftyp box at byte 4: mp4/mov/isom…
         Some(b) if &b[4..8] == b"ftyp" => Some("mp4"),
+        // An ID3 tag, or an MPEG audio frame's sync bits (after JPEG's
+        // FF D8, which they'd otherwise match).
+        Some(b) if b.starts_with(b"ID3") || (b[0] == 0xff && b[1] & 0xe0 == 0xe0) => Some("mp3"),
         _ => None,
     }
 }

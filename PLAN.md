@@ -49,6 +49,12 @@ append-only.
     update/restore defects, a test race), M55.3, M55.4, M55.5, M55.1,
     this rewrite, and the items after it. `main` (`2ffa669`, PR #48) was
     merged into it on 2026-10-21, after M56.6.
+  - Since then (2026-10-21): PR #47 merged to `main` as `2c74bdb`, then
+    **M54** (protected autonomous mode, `docs/m54-autonomous.md`) landed
+    on `main` as `6efe413`, then PR #50 (the owner's Telegram groups get
+    owner mode) as `f70984e`. `autopilot` continues as **PR #49**: M58.1–
+    M58.5, M53.2 onward and the M51/M52 follow-ups, with `main` merged in
+    after M53.2 (`6efe413`) and after M51.4 (`f70984e`).
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
   green predicate (`AGENTS.md`). The last full run on `autopilot` before
   this rewrite: 1869 passed, 0 failed, 28 ignored across 71 test
@@ -119,17 +125,19 @@ append-only.
     v0.13.1). The numbers M45 and M46 were never used.
   - After M50, on `main` only: PRs #44, #45 and #46 (above).
 - **In flight** (2026-10-21):
-  - **M54, protected autonomous mode.** The owner approved the design
-    on 2026-10-20 (`docs/m54-autonomous.md`, in the worktree of branch
-    `claude/laughing-chebyshev-5cd4a6`). It is being built there,
-    uncommitted on `dadf357`.
-  - **`autopilot` / PR #47:** the M55 items and the M52 and M56 items
-    this branch's Session Log entries name.
+  - **M54, protected autonomous mode** is merged to `main` (`6efe413`).
+    Its open edges (a live Linux run, macOS owner mode, per-session
+    helpers for guests) are in its Session Log entry.
+  - **`autopilot` / PR #49:** M58.1–M58.5 (simplify, remove or make
+    opt-in), the M53 follow-ups (M53.2, M53.3, M53.4, M53.5, M53.7),
+    and the M51/M52 follow-ups (M51.4, M51.3, M52.2, M52.4, M52.6; M52.3
+    is M54's `secret_request`), one commit each.
   - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
     `docs/research-harness2-media.md`, `docs/m51-media.md`,
     `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
-    Their named follow-ups (sub-agent media tools, a per-run approval
-    card, the remaining M52.x items) are open.
+    Their named follow-ups are built on `autopilot` (above) except a
+    per-run approval card for media spend and a Cloudflare Access JWT
+    check at the dashboard's origin (M52.6, documented).
   - **M55–M59, from `reports/Ferrule agent gap analysis.md`** (2026-10-20,
     in the main checkout and git-excluded, so `docs/roadmap.md`'s "Other
     open tracks" lists its items): M55 make main green and land the
@@ -5838,6 +5846,131 @@ Read the `ferrule-learn` module surfaces first (`pass.rs`, `reflect.rs`,
 designs (M51 media, M52 Safe, M53 probing) are now written and await
 Max's go. Everything uncommitted for review.
 
+### 2026-10-20 — M54 protected autonomous mode: design and build (Claude, Opus 5.5)
+
+**Scope.** The owner runs a personal Telegram bot on an Ubuntu server and
+wants it to run and improve itself (NanoClaw-style) without a terminal,
+with the keys still hidden. The stopgap they run now (`[sandbox] mode =
+"off"`, `[trust] gates = false`) exposes `private/secrets.env`. This
+session designs the replacement: `[sandbox] mode = "owner"`. Design in
+`docs/m54-autonomous.md`.
+
+**The design in short.** Commands may write everything the account can,
+except the keys (hidden) and a protected set that decides what runs
+outside the sandbox (read-only): the data dir, the config dir, the user
+systemd dirs and `environment.d`. The binary moves into the data dir.
+Outside the sandbox, the gateway runs only root-owned programs and its
+own binary. Hooks, gates, worktree git and helper version checks go
+through the sandbox. Credential files outside `private/` (the Matrix
+session, …) get hidden in every mode. `ferrule_admin` change ops and
+the trust gates stop asking.
+New ops: `package_install`/`package_remove` (apt via `sudo -n` in the
+gateway), `mcp_add`, `secret_request` (a Keys link to the owner, who
+pastes the key; the asking session is woken), `secrets` and
+`dashboard_link`. Transcripts and learn notes become readable. A
+dashboard switch is the owner's way in and out.
+
+**Review.** A builder-check pass read the design against the code.
+Its findings are folded in:
+- hooks and gate scripts run unsandboxed today;
+- `hooks_trust` without a card would trust them;
+- worktree git's `hooksPath` sits in a writable temp dir;
+- other credentials sit in the data dir;
+- helpers lift the socket allowlist;
+- `offered()` can't decide who gets owner mode.
+
+The macOS (Seatbelt) side wasn't checked in that pass.
+
+**Status.** Design approved by the owner (2026-10-20). Built 2026-10-21 in
+ten tasks and, at the owner's choice, merged into local `main` (not
+pushed) after merging main's PR #48 and PR #47 into the branch; `make
+check` there: 1881 passed, 0 failed, 28 ignored. The merge with autopilot
+also closed two leaks it brought: `shell_job tail` and its status line
+read a job's log in ferrule's own process, so a log swapped for a link
+to a hidden file gave away its content or size. Design, with the rulings made while building:
+`docs/m54-autonomous.md`; user docs: `docs/sandbox.md`, "Owner mode".
+
+**Built, by task.**
+1. The sandbox's owner mode (`ferrule-sandbox`): `Mode::Owner`, a
+   read-only `protected` list, `/` writable carved around hidden and
+   protected, `MAKE_DIR` on the way down, the socket allowlist kept,
+   `narrowed()` for other people's chats. Linux only: macOS and Windows
+   refuse it.
+2. Spawns through the sandbox: `host.rs` (`set`, `command`,
+   `system_program`), hooks, scheduler gates, transcription, the tunnel,
+   `agent-browser --version`, claude's version check and updater, worktree
+   git (`set_git`, hooks path `/dev/null` on Unix, in every mode),
+   signal-cli; `git`, `ssh`, `systemctl`, `loginctl` and `ps` through
+   `system_program`.
+3. Host wiring (`ferrule-cli/src/owner_mode.rs`, `main.rs`): the protected
+   set, `owner_tree`, `refusal`, the fallback and its owner-policy
+   launcher, `arm` for every process, every `backup::SECRETS` entry but
+   `ssh` hidden plus the gateway's state dir, the file tools refusing
+   protected writes, `ferrule sandbox` and doctor. 3b: the claude engine's
+   `guest()` sandbox (`Provider::guest`, `RoutedProvider`).
+4. No gates for the owner's trees (`TrustGuard::gates`, `trust::equip`).
+5. The binary moves into `<data>/bin` (hard link, units rewritten and
+   reloaded, atomic symlink swap; `setup::refresh_service_with`,
+   `service::rewrite`).
+6. Change ops without the card (`ask_and_run`, the autonomous prompt
+   strings, `config_restore` refusing guarded fields from the chat).
+7. The new ops: `package_install`/`package_remove` (`packages.rs`),
+   `mcp_add`, `secrets`, `dashboard_link`.
+8. `secret_request` (`keys.rs`): the Keys link with a prefill, the wake
+   when the key is saved, the reason allowlist.
+9. The owner's switch: Settings, Autonomy; `sandbox/mode`, page-only.
+10. Docs: `docs/sandbox.md`, `docs/m54-autonomous.md` (status and
+    "Corrections made while building"), `docs/roadmap.md`, README.
+
+**Main corrections to the design** (all in the doc's "Corrections made
+while building"): Linux only; `system_program` instead of `PATH` for
+unsandboxed spawns; `arm` in every process; `wanted` (config asks) versus
+`on` (running); guests can't read `sessions/` or `learn/`; `<data>/ssh`
+stays visible, `<data>/gateway` is hidden; a hard link and an atomic
+symlink swap, not a rename; `relocated()` for non-gateway processes;
+refusal beside another instance; apt's plan is checked; the
+`secret_request` reason is an allowlist; `describe` still runs in owner
+mode; after a fallback the helpers get an owner-policy sandbox, not the
+fallback one; `mcp_add` passes the header key names to the probe. The
+design's rows for the key-form `node` and cloudflared's version check
+were test-only code.
+
+**Checked.** `make check` passed on macOS: 1844 passed, 0 failed, 28
+ignored, with one environment override (the eval starter-suite test needs
+commit signing off, because the owner's global git config signs through
+1Password; M54 doesn't touch it). **Not compiled:** the Linux-only
+owner-mode code (`ferrule-sandbox` `linux.rs`, `supervisor.rs`, the
+`cfg(linux)` apply call). A Linux `cargo check` or a CI run is needed
+before merge. No live run yet: the "Done means" list in the design doc is
+still to do on a Linux server. No test was added (not asked). Existing
+assertions were updated where a signature or a count changed
+(`self_service/tests.rs`: 35 to 41 ops; `update/tests.rs`;
+`ferrule-plans/tests/it/claude_update.rs`).
+
+**Follow-ups.**
+- Fixed here because it blocked `make check`: a pre-existing clippy error
+  from PR #46 in `crates/ferrule-gateway/src/router.rs` (~835), `while
+  person && merges` rewritten as `if ... { loop {...} }`.
+- The eval starter-suite test depends on the machine's global git signing
+  config; it fails where commits are signed through an agent such as
+  1Password.
+- Pre-existing: `backup::SECRETS` doesn't list `gateway/http/clients.json`
+  (the HTTP API clients' key hashes), so a backup contains it, and the bot
+  can ask for a backup and read it.
+- macOS owner mode: ancestor unlink-deny anchors and a hard-link probe on
+  a Mac.
+- Per-session helpers for guests (MCP servers, hooks, the browser, graph
+  check commands, the host launcher, the shared workspace and its git
+  filter drivers); until then guests reach the owner sandbox's reach
+  there, never the keys.
+- Deferred minors worth doing: wake from `config_follow` once the key is
+  bound, not after a fixed delay; remember who asked in a file, not in
+  memory; prune `ORIGINS`; `supervised()`/`INVOCATION_ID` exactness and
+  `manager()`'s fallback check; the apt dry run's sudoers shape and its
+  English-only message matching; `mcp_add` card pre-checks and the
+  duplicated `${...}` scanner; `keys::bind`'s router order against Admin;
+  `Command::new` outside tests re-grepped for a spawn the table misses.
+
 ### 2026-10-21 — M51 + M52 + M53 built (Kimi)
 
 **Scope.** Max: "start building everything m51, m52, m53." Designs:
@@ -7060,130 +7193,613 @@ aren't cut, so one huge `write_file` call ends the copy early. A worker's
 worktree is at the parent's HEAD, so the copy may show uncommitted files
 the worktree lacks; the header asks the child to re-read before editing.
 
-### 2026-10-20 — M54 protected autonomous mode: design and build (Claude, Opus 5.5)
+### 2026-10-21 — M58.2: per-turn routing stays strictly opt-in (Claude, Opus 5.5)
 
-**Scope.** The owner runs a personal Telegram bot on an Ubuntu server and
-wants it to run and improve itself (NanoClaw-style) without a terminal,
-with the keys still hidden. The stopgap they run now (`[sandbox] mode =
-"off"`, `[trust] gates = false`) exposes `private/secrets.env`. This
-session designs the replacement: `[sandbox] mode = "owner"`. Design in
-`docs/m54-autonomous.md`.
+**Why.** The gap analysis's cut list keeps M25's cheap→strong routing
+opt-in until it's measured. Its central claim has only mock numbers
+(`docs/research-round2-improvements.md`, "Run `--variant routing` on a
+real model pair"), and an escalation is a mid-session model switch that
+costs the prompt cache.
 
-**The design in short.** Commands may write everything the account can,
-except the keys (hidden) and a protected set that decides what runs
-outside the sandbox (read-only): the data dir, the config dir, the user
-systemd dirs and `environment.d`. The binary moves into the data dir.
-Outside the sandbox, the gateway runs only root-owned programs and its
-own binary. Hooks, gates, worktree git and helper version checks go
-through the sandbox. Credential files outside `private/` (the Matrix
-session, …) get hidden in every mode. `ferrule_admin` change ops and
-the trust gates stop asking.
-New ops: `package_install`/`package_remove` (apt via `sudo -n` in the
-gateway), `mcp_add`, `secret_request` (a Keys link to the owner, who
-pastes the key; the asking session is woken), `secrets` and
-`dashboard_link`. Transcripts and learn notes become readable. A
-dashboard switch is the owner's way in and out.
+**What was checked.** Nothing turns it on implicitly:
+- `RoutingConfig::default()` has `enabled: false`.
+- `Routing::on()` is `enabled && usable()`, and `floor()` returns `None`
+  unless `on()`, so a tier ref is a plain model while it's off.
+- The only writers of `enabled = true` are `Models::set_routing` (`ferrule
+  model route set`, the dashboard's `/api/routing/set`) and setup's
+  `write_routing`. Setup reaches that only from its "Routing: start cheap,
+  escalate when needed" entry, never in the guided first run.
+- `/model strong` refuses while it's off.
+- Doctor stays silent while it's off.
+- Self-service and managed mode don't touch it.
+- The existing test `off_nothing_routes_and_a_tier_ref_is_just_its_model`
+  covers the off path.
 
-**Review.** A builder-check pass read the design against the code.
-Its findings are folded in:
-- hooks and gate scripts run unsandboxed today;
-- `hooks_trust` without a card would trust them;
-- worktree git's `hooksPath` sits in a writable temp dir;
-- other credentials sit in the data dir;
-- helpers lift the socket allowlist;
-- `offered()` can't decide who gets owner mode.
+No code change.
 
-The macOS (Seatbelt) side wasn't checked in that pass.
+**What changed (docs only).**
+- `docs/routing.md`: a paragraph on how it gets turned on and why it
+  isn't a default.
+- `docs/m25-routing.md`: a status note.
+- The roadmap: the M25 section and the M58 line.
+- README: the Providers row says "Opt-in routing, off unless you turn it
+  on".
 
-**Status.** Design approved by the owner (2026-10-20). Built 2026-10-21 in
-ten tasks and, at the owner's choice, merged into local `main` (not
-pushed) after merging main's PR #48 and PR #47 into the branch; `make
-check` there: 1881 passed, 0 failed, 28 ignored. The merge with autopilot
-also closed two leaks it brought: `shell_job tail` and its status line
-read a job's log in ferrule's own process, so a log swapped for a link
-to a hidden file gave away its content or size. Design, with the rulings made while building:
-`docs/m54-autonomous.md`; user docs: `docs/sandbox.md`, "Owner mode".
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
 
-**Built, by task.**
-1. The sandbox's owner mode (`ferrule-sandbox`): `Mode::Owner`, a
-   read-only `protected` list, `/` writable carved around hidden and
-   protected, `MAKE_DIR` on the way down, the socket allowlist kept,
-   `narrowed()` for other people's chats. Linux only: macOS and Windows
-   refuse it.
-2. Spawns through the sandbox: `host.rs` (`set`, `command`,
-   `system_program`), hooks, scheduler gates, transcription, the tunnel,
-   `agent-browser --version`, claude's version check and updater, worktree
-   git (`set_git`, hooks path `/dev/null` on Unix, in every mode),
-   signal-cli; `git`, `ssh`, `systemctl`, `loginctl` and `ps` through
-   `system_program`.
-3. Host wiring (`ferrule-cli/src/owner_mode.rs`, `main.rs`): the protected
-   set, `owner_tree`, `refusal`, the fallback and its owner-policy
-   launcher, `arm` for every process, every `backup::SECRETS` entry but
-   `ssh` hidden plus the gateway's state dir, the file tools refusing
-   protected writes, `ferrule sandbox` and doctor. 3b: the claude engine's
-   `guest()` sandbox (`Provider::guest`, `RoutedProvider`).
-4. No gates for the owner's trees (`TrustGuard::gates`, `trust::equip`).
-5. The binary moves into `<data>/bin` (hard link, units rewritten and
-   reloaded, atomic symlink swap; `setup::refresh_service_with`,
-   `service::rewrite`).
-6. Change ops without the card (`ask_and_run`, the autonomous prompt
-   strings, `config_restore` refusing guarded fields from the chat).
-7. The new ops: `package_install`/`package_remove` (`packages.rs`),
-   `mcp_add`, `secrets`, `dashboard_link`.
-8. `secret_request` (`keys.rs`): the Keys link with a prefill, the wake
-   when the key is saved, the reason allowlist.
-9. The owner's switch: Settings, Autonomy; `sandbox/mode`, page-only.
-10. Docs: `docs/sandbox.md`, `docs/m54-autonomous.md` (status and
-    "Corrections made while building"), `docs/roadmap.md`, README.
+**Open.** The real-pair measurement (M58.5's A/B) and Amp-style "ask the
+strong model" as the simpler alternative, which the gap analysis suggests
+and nobody has built.
 
-**Main corrections to the design** (all in the doc's "Corrections made
-while building"): Linux only; `system_program` instead of `PATH` for
-unsandboxed spawns; `arm` in every process; `wanted` (config asks) versus
-`on` (running); guests can't read `sessions/` or `learn/`; `<data>/ssh`
-stays visible, `<data>/gateway` is hidden; a hard link and an atomic
-symlink swap, not a rename; `relocated()` for non-gateway processes;
-refusal beside another instance; apt's plan is checked; the
-`secret_request` reason is an allowlist; `describe` still runs in owner
-mode; after a fallback the helpers get an owner-policy sandbox, not the
-fallback one; `mcp_add` passes the header key names to the probe. The
-design's rows for the key-form `node` and cloudflared's version check
-were test-only code.
+### 2026-10-21 — M58.4: the graph runner is already out of the core (Claude, Opus 5.5)
 
-**Checked.** `make check` passed on macOS: 1844 passed, 0 failed, 28
-ignored, with one environment override (the eval starter-suite test needs
-commit signing off, because the owner's global git config signs through
-1Password; M54 doesn't touch it). **Not compiled:** the Linux-only
-owner-mode code (`ferrule-sandbox` `linux.rs`, `supervisor.rs`, the
-`cfg(linux)` apply call). A Linux `cargo check` or a CI run is needed
-before merge. No live run yet: the "Done means" list in the design doc is
-still to do on a Linux server. No test was added (not asked). Existing
-assertions were updated where a signature or a count changed
-(`self_service/tests.rs`: 35 to 41 ops; `update/tests.rs`;
-`ferrule-plans/tests/it/claude_update.rs`).
+**Why.** The cut list wants `ferrule graph` (M42 part 6) opt-in and out
+of `ferrule-core`. Anthropic found planners worth their cost only beyond
+what the model does reliably alone.
 
-**Follow-ups.**
-- Fixed here because it blocked `make check`: a pre-existing clippy error
-  from PR #46 in `crates/ferrule-gateway/src/router.rs` (~835), `while
-  person && merges` rewritten as `if ... { loop {...} }`.
-- The eval starter-suite test depends on the machine's global git signing
-  config; it fails where commits are signed through an agent such as
-  1Password.
-- Pre-existing: `backup::SECRETS` doesn't list `gateway/http/clients.json`
-  (the HTTP API clients' key hashes), so a backup contains it, and the bot
-  can ask for a backup and read it.
-- macOS owner mode: ancestor unlink-deny anchors and a hard-link probe on
-  a Mac.
-- Per-session helpers for guests (MCP servers, hooks, the browser, graph
-  check commands, the host launcher, the shared workspace and its git
-  filter drivers); until then guests reach the owner sandbox's reach
-  there, never the keys.
-- Deferred minors worth doing: wake from `config_follow` once the key is
-  bound, not after a fixed delay; remember who asked in a file, not in
-  memory; prune `ORIGINS`; `supervised()`/`INVOCATION_ID` exactness and
-  `manager()`'s fallback check; the apt dry run's sudoers shape and its
-  English-only message matching; `mcp_add` card pre-checks and the
-  duplicated `${...}` scanner; `keys::bind`'s router order against Admin;
-  `Command::new` outside tests re-grepped for a spawn the table misses.
+**What was checked.** No move was needed:
+- The runner is `crates/ferrule-cli/src/graph.rs` (908 lines), plus
+  `graph_door.rs` (120) for `/graph`.
+- `ferrule-core` and `ferrule-agents` have no graph-only code. The runner
+  uses the supervisor's public `spawn`, `get`, `changed` and `close`
+  (`changed` also backs `main.rs`'s wait loop) and `ferrule-tools`'
+  `CommandVerifier`.
+- `graph::run` has two callers: `Cmd::Graph` in `main.rs` and
+  `GraphDoor::start`, which only an owner's `/graph` reaches. The
+  dashboard console's `graph run` runs the same subcommand.
+- `ferrule run` and `ferrule chat` never reach it.
+- The gateway's `GraphDoor` interceptor returns `None` for any message
+  whose first word isn't `/graph`.
+
+Gating it behind a cargo feature would change what `ferrule graph` users
+get, so it isn't gated.
+
+**What changed (docs only).**
+- `docs/m42-harness-engineering.md` part 6: "Where it lives", and its
+  stale "Still open" list fixed (M43 already starts graphs from a chat
+  with approvals there).
+- The roadmap: the M42 section and the M58 line.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** The gap analysis's script-shaped replacement (a script calling
+`ferrule run --goal --verify` per step) isn't built. The chat command
+menu still lists `/graph`. That list is in `self_service/menu.rs`, M54's
+surface, so it wasn't touched.
+
+### 2026-10-21 — M58.1: the loop's overlapping seams, consolidated (Claude, Opus 5.5)
+
+**Why.** The gap analysis found two failure taxonomies mapping into each
+other, two repeat detectors, three hand-written "not run" endings in
+`run_inner`, and a compaction path that skipped `call_provider`. Each is
+one more place to get a stop wrong.
+
+**What changed** (`crates/ferrule-core`, behavior-preserving unless said):
+- **(a) One `abandon_rest`.** The four places that ended a turn with
+  calls unanswered now share one helper. Those places are: stopped at the
+  gate, halted at the gate, interrupted mid-segment, and halted in a
+  PostToolUse hook. The helper finishes the announced calls as failed,
+  gives every remaining call the interrupt's "not run" result
+  (`Interrupt::note`), then halts or returns `Aborted`. The order of
+  events and pushes is unchanged. `unrun` is folded into it.
+- **(b) One failure taxonomy.** The status rules that were
+  `CoreError::class()` now return a `failure::Kind`
+  (`failure::status_kind`). `FailureClass` is its coarse view
+  (`Kind::class`, the one mapping), and `CoreError::class()` is
+  `status_kind(e).class()`. `from_class` (the reverse mapping) is gone,
+  and `classify` falls back to `status_kind`. Every error classifies as
+  before: a 400 naming a model is still `BadRequest` to routing and
+  `ModelGone` to `classify`. `http_status` moved to `failure.rs`.
+- **(c) Repeat detection.** Routing's two counters (invalid calls in a
+  row, the same call in a row) moved into `stuck::Streaks`. It keys the
+  same call by `Step`'s action hash, the same tool-and-arguments identity
+  `Stuck::detect` uses, instead of cloning a `(String, String)`. This is
+  not one algorithm. `Stuck` also needs the same result, and its nudge
+  clears its steps. Routing counts the call whatever the result and
+  restarts after each move. Merging them would change when a turn
+  escalates.
+- **(d) Compaction through `call_provider`.** It wasn't always. The
+  `[agent] compaction_model` path already was (M55.2). A `Compactor`
+  strategy (M42 part 7) made its own `provider.complete` call, with no
+  ledger row, retry, fallback or budget charge. The trait is now
+  `request(transcript_text) -> CompletionRequest` plus an optional
+  `provider()`. The agent sends it through `call_provider`, and
+  `provider_for("compaction")` picks the strategy's provider first. This
+  part is a behavior change, and only for a strategy. The binary sets
+  none; only `tests/it/history.rs` does, and it passes unchanged. The cost
+  is that a strategy can no longer make several calls (fold by topic).
+- Not done: the report's other three seams (a `Guard` absorbing
+  `StopFlag` and `Budget`, one `ContextSource`, verify as Stop hooks).
+  They weren't in this task.
+- Docs: `m42-harness-engineering.md` part 7, `m36-self-update.md` §6.1,
+  the roadmap.
+
+**Numbers.** `agent.rs` was 5,974 lines before and 5,976 after: the
+duplicated blocks are gone, and the helper and its doc are new.
+`ferrule-core/src` overall: +251/−213 (`error.rs` −65, `failure.rs` +66,
+`stuck.rs` +33, `compactor.rs` +2). The gain is one place each to reason
+about, not fewer lines.
+
+**Tests.** None changed, none added.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** The three seams above. The gap analysis's "several hundred
+fewer lines" needs those. `run_inner` alone is still about 500 lines.
+
+### 2026-10-21 — M58.3: eleven agent tools cut to five; `log_diary` into `write_todos` (Claude, Opus 5.5)
+
+**Why.** Every call of an agent that can spawn carried eleven agent tool
+definitions, about 1.5k tokens. Claude Code ships three (`Agent`,
+`SendMessage`, `TaskStop`). The diary and the todo list were two planning
+surfaces for one job.
+
+**What changed.**
+- `ferrule-core/src/tool.rs`: `Tool::replaced_by()` (default `None`).
+  The registry still finds such a tool by name. `ToolRegistry::all()`
+  leaves it out, so it's in no `definitions()`, deferral or
+  `tool_search`, and it still shadows a source's tool of that name.
+- `ferrule-agents/src/tools.rs`: the offered tools are now
+  - `spawn_agent` (unchanged: `fork`, `effort` and the rest);
+  - `message_agent {ids?, message?, timeout_seconds?}`: `ids` alone
+    waits (was `wait_agent`); one id and a `message` sends a running
+    child a direct message, or resumes any other child (was
+    `resume_agent`); neither lists (was `list_agents`);
+  - `stop_agent {id}` (was `close_agent`);
+  - `board {body?, topic?, to?, since?}`: with `body` it posts or sends a
+    direct message, without it reads (was `board_post` and `board_read`);
+  - `tasks {action: add|list|claim|done, …}` (was the four `task_*`).
+
+  An agent at `max_depth` gets `board` and `tasks`. The eleven old names
+  are registered too, as before, with `replaced_by` set. They're never
+  offered, their old behavior stays, and each call logs a `warn!`
+  deprecation. Their definitions keep only the `required` fields, for
+  M25's misfit count. One helper per operation now serves both names.
+- Model-visible text names the new tools: the spawn result, the child
+  notice, the limit errors, "you hold task …".
+- `ferrule-tools/src/diary.rs`: `write_todos {todos?, note?}`. `todos`
+  overwrites `TODO.md` as before. `note` appends a timestamped line to
+  `diary.md`. A call with neither is an error; it used to write an empty
+  list. `log_diary {entry}` stays registered with `replaced_by` set. The
+  append is one shared function.
+- The system prompt's planning sentence names only `write_todos`
+  (`ferrule-cli/src/main.rs`, one line; `ferrule-eval/src/variant.rs` in
+  step).
+- `ferrule-otel`: `message_agent` and `stop_agent` count as agent tools.
+
+**Size** (name + description + compact JSON schema, measured from the
+source with a throwaway script in the scratchpad):
+
+| | Before | After |
+|---|---|---|
+| An agent that can spawn | 11 tools, 5,314 characters (5,911 with the prompt addition) | 5 tools, 4,497 (5,094) |
+| An agent at `max_depth` | 6 tools, 1,967 (2,564) | 2 tools, 1,337 (1,934) |
+| `write_todos` + `log_diary` | 628 | 539 |
+
+`spawn_agent` is 2,302 of the 4,497, unchanged on purpose: its cost
+guidance and M57.5's example stay.
+
+**Tests changed, none added.** `tests/it/supervisor.rs`: the
+offered-tools check looks for `board`, and the limit error for
+`message_agent`. The other agent tests still call the old names, so they
+now cover the aliases.
+
+**Docs.** `agents.md` (new "The tools", the size table, old names in the
+text), README (the Tools and Sub-agents rows), `m12-multi-agent.md` (a
+note), `m35-subscriptions.md` (the bridge table), `m57-context-hygiene.md`,
+the roadmap.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.**
+- Not A/B'd through `ferrule eval`, which the gap analysis asks for
+  before this lands (M58.5's policy now says so too).
+- Drop the old names (Kinds `Wait`…`TaskDone` and `DiaryTool`) in the
+  release after this one.
+- A Claude-plan agent keeps no diary. `log_diary` was bridged, and
+  `write_todos` stays off the bridge because claude has `TodoWrite`.
+- A resumed claude session that remembers an old name sees it gone from
+  the bridge's list and has to use the new one.
+
+### 2026-10-21 — M58.5: eval as the gate, a harness fingerprint, a grader-leak tripwire, an external-benchmark converter (Claude, Opus 5.5)
+
+**Why.**
+- Nothing measured whether a prompt or default change helped. Anthropic
+  now runs a per-model eval on every system-prompt change.
+- A component could only be cut on faith.
+- Nothing stopped an agent from reading the eval's own graders. One of
+  Harness²'s rollouts downloaded its rubric. The starter suite's verify
+  tasks hand the agent the check's path, and the shell could `cat` it.
+
+**What changed.**
+- **(a) A/B of harness variants.** `ferrule eval run --ablate <part>`
+  (repeatable) runs every task as `engineered` and as `ablated` (the new
+  `Variant::Ablated`), the same harness without the named parts:
+  - `repo-map`, `verify`, `stuck`, `compaction`, `retries`, `skills`;
+  - `memory`, `edit-file`, `effort-boost`, `stale-guard`, `baseline`,
+    `playbook`.
+
+  Each part is applied in `variant::build`. `--ablate` can't be combined
+  with `--variant`. The report's difference column now covers any
+  two-variant run (`engineered − ablated`; `engineered − naive` is
+  unchanged). `SuiteRun.ablated` records the parts, and
+  `history::previous` compares `ablated` only with a run that left out
+  the same ones. Comparing two builds stays the existing "since the last
+  run" diff, now with the fingerprint below.
+- **(b) The harness fingerprint.**
+  - `HarnessStamp` (ferrule-core) gains `prompt` and `tools`.
+  - `variant::build_stamped` stamps the fixture's skills, the playbook,
+    `config` (the AgentConfig and profile), the system prompt with its
+    workspace path replaced, and the tool definitions. It writes the
+    stamp as the transcript's `harness` meta line (the learn gate's
+    transcripts get it too), and the runner keeps it per task run
+    (`TaskResult.harness`).
+  - `history` compares stamps task by task: "harness changed on N of M
+    tasks: prompt, tools", or "same harness".
+  - The CLI's own sessions are unchanged (`main.rs`, M54's).
+- **(c) The grader-leak tripwire** (`ferrule-eval/src/leak.rs`):
+  - Hidden: the agent's shell runs in a copy of the eval's sandbox whose
+    `deny_read` adds the suite file, every script a task's grade command
+    or check names under the suite dir, and the files beside them in
+    their own directory. `graders/` and `checks/` are hidden; `solutions/`
+    is not, because the mock plays it. The checks (a new
+    `Build::check_sandbox`) and the graders run in the eval's sandbox as
+    before. A check whose files are hidden is announced as ferrule's to
+    run, not the agent's.
+  - Searched and probed: before the run, and before grading, the
+    workspace is searched for copies of or links to those files. Before
+    the run each file must be on the deny list, and on Unix one is
+    `cat`ed from inside the sandbox.
+  - A hit is `Outcome::Error` with "GRADER LEAK: …", which is exit 1.
+  - With no sandbox that hides reads, `run_suite` refuses unless
+    `--allow-grader-reads`. The run is then `unguarded`, and its report
+    says so first. The dashboard's model eval (`model_eval/`) passes it,
+    with a comment saying why.
+- **(d) External benchmark.** `evals/terminal-bench/convert.py`
+  (standard library, downloads nothing) turns a local checkout of
+  Terminal-Bench 2 (Harbor) or 1 tasks into a suite:
+  - the instruction is the prompt;
+  - the environment's files, without the Dockerfile, are the fixture;
+  - pytest on `tests/test_outputs.py` is the grader, copied to
+    `graders/<id>/` (hidden by the tripwire);
+  - `/app` is rewritten to the workspace.
+
+  Tasks whose image has RUN steps are skipped unless `--with-builds`.
+  Multi-service ones are always skipped.
+- **Docs.**
+  - `eval.md`: "The gate" (the policy that every prompt line, scaffold or
+    default change runs an A/B before it lands), `--ablate`, the
+    tripwire, "An external benchmark", the harness line in "Since the
+    last run", exit status 1 and a note on the mock flow.
+  - `m53-contrastive-probing.md` §4, the README's Eval row, the roadmap.
+
+**Tests changed, none added.**
+- The struct literals that gained fields: `edit_tools.rs`, `gate.rs`,
+  and the helpers in `history.rs` and `transcript.rs`.
+- `suite_run.rs`'s `opts()`, and the CLI tests that run `eval run` on a
+  sandbox-off config (`eval.rs`, `dashboard.rs`, `hooks.rs`, `learn.rs`,
+  `trust.rs`), pass `--allow-grader-reads`.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.**
+- No eval was run: no A/B of M58.1–M58.3 yet, no `--ablate` run, no real
+  tripwire probe under Seatbelt or Landlock (the tests run with the
+  sandbox off), and the Terminal-Bench converter has never seen a real
+  checkout. All of these are the next real-model session's first job.
+- No nightly job.
+- The fingerprint's `prompt` hash includes the check command's absolute
+  suite path, so it compares runs on one machine, not across machines.
+- On Windows the denies are ACLs the launcher writes on the grader files.
+
+### 2026-10-21 — M53.2: reflector evidence discipline and honest clipping (Claude, Opus 5.5)
+
+**Claim.** This session builds the gap analysis's remaining M53 items on
+`autopilot` (worktree `.claude/worktrees/autopilot`), one commit each:
+M53.2, M53.3, M53.4, M53.5 and M53.7. M53.1's contrast gate and M53.6's
+harness stamp are Kimi's (PR #48) and are built on, not redone. `main`
+(`2c74bdb`, the PR #47 merge, no content change) was merged in first.
+
+**Why.**
+- The reflector read tool results cut at 1,500 characters in a
+  12,000-character window. Harness² refuses to clip below 10,000, "in
+  the range that fabricates defects": a cut test log reads like a run
+  that stopped short.
+- Nothing asked the reflector for evidence, said "no change" was a fine
+  answer, or called a one-off defect noise. Spurious lessons follow.
+
+**What changed.**
+- `episode.rs`: `TOOL_RESULT_CHARS` 10,000 and `TAIL_CHARS` 40,000
+  (about 10k tokens). An oversized result keeps its head and tail with
+  `[… N characters clipped here by the renderer, not by the run]`
+  between them, and the other cut markers say "by the renderer".
+- `reflect.rs`: the system prompt's evidence rules (no change is the
+  default; cite the moment; once is noise; outages get nothing;
+  truncation markers are the renderer's). `add`/`edit`/`retire` need an
+  `evidence` field, or the answer is rejected. `Proposal.evidence`.
+- `judge.rs`: the truncation-marker line.
+- `files.rs`/`pass.rs`: `Change::Playbook.evidence` (serde default), in
+  `log.jsonl` and the changelog line.
+- Docs: `m53-contrastive-probing.md` ("M53.2"), `m16-learning-loop.md`
+  §1, §3 and §4, the roadmap.
+
+**Tests changed, none added.** The answers that gained `evidence`:
+`reflect.rs`'s parse tests (and one more garbage case: an add without
+evidence), `pass/tests.rs`'s `ADD` and retire answer, and the CLI's
+`tests/it/learn.rs` reflector answer.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.**
+- No real pass has run with the new prompt or limits.
+- Nothing verifies that the cited moment is in the transcript.
+
+### 2026-10-21 — main (`6efe413`, M54) merged into `autopilot` (Claude, Opus 5.5)
+
+**Why.** M54 (protected autonomous mode) landed on `main`, and PR #49
+(`autopilot`) conflicted with it. Merged, not rebased, at a clean point
+after M53.2 and before M53.3.
+
+**Resolved.**
+- `PLAN.md`: every Session Log entry kept. M54's entry is dated
+  2026-10-20, so it sits after the last 2026-10-20 entry (Kimi's M53
+  design), before the first 2026-10-21 one. Neither side had edited
+  Current State; it now says M54 is on `main` and `autopilot` is PR #49.
+- `docs/roadmap.md`: both kept, our M53 follow-ups block, then M54's
+  section.
+- Everything else merged without a conflict. Checked by hand:
+  `crates/ferrule-tools/src/jobs.rs` and `shell.rs` are `main`'s byte for
+  byte, so M54's fix to M57.6's `shell_job` (a job's log is no longer
+  read in ferrule's own process, where a log swapped for a link to
+  `private/secrets.env` leaked it) is what runs. M54's new prompt and op
+  text names no agent tool M58.3 renamed (its `task_add` is a
+  `ferrule_admin` op, not the old agent tool).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS). M54's Linux-only code is still not compiled here.
+
+### 2026-10-21 — M53.3: learned skills and scripts, validated (Claude, Opus 5.5)
+
+**Why.** Harness²'s ablation ranks skills (5.3 points) and scripts (3.7)
+far above prompt lines (1.5), the only thing the pass could write. A
+procedure the agent fumbled twice belongs in a skill it loads on demand.
+
+**What changed.**
+- `ferrule-learn`:
+  - `reflect.rs`: a `skill` op (`name`, `description`, `body`,
+    optional `scripts`), evidence required; the prompt says when to
+    prefer a skill and lists the learned ones. `Proposal.skill`.
+  - `skills.rs` (new): `SkillDraft` and its shape checks; the
+    validators (M13's `inspect` and scan over SKILL.md, text files and
+    scripts; reachable through the catalog; every `scripts/…` path the
+    body names ships; `sh -n`/`bash -n`/`python3 -m py_compile` in the
+    gate's sandbox, a missing tool skipped with a note); `keep` and
+    `undo`; `learn/skills.json` (the digest lock); `LearnDir`'s
+    `skills_root`, `skills_index`, `learned_skills`.
+  - `pass/skill.rs` (new): shape, draft in a temp dir, validators, the
+    gate or the probe and judge, keep, journal. The probe-and-judge half
+    moved into `pass::judged`, shared with lessons.
+  - `gate.rs`: `GateRun.skill` puts the draft in the scratch copy as a
+    project skill; `Gate::sandbox` (the `WorkspaceGate`'s).
+  - `files.rs`: `Change::Skill`; changelog lines; `revert` undoes kept
+    skills newest first. The pass's answers may be 4,096 tokens (was
+    1,024): a skill's body and scripts need room.
+  - `screen.rs`: `denied` and `ferrule_data` helpers.
+- `ferrule-skills`: `Scope::Learned` ("learned"; never triggers);
+  `SkillsHandle::filtered` and `Keep`, one agent's view of the live set.
+- `ferrule-cli`: `<data>/learned-skills` is the last discovery root (the
+  gateway's live set and `ferrule skills`); `learn::skill_view` keeps a
+  learned skill only while its SKILL.md matches `skills.json` and scans
+  clean; `ferrule learn show` lists learned skills, `learn diff` shows
+  skill changes.
+- Docs: `m53-contrastive-probing.md` ("M53.3"), `skills.md` (source 5),
+  `m16-learning-loop.md` (the op table), the roadmap, the README's
+  learning row and Documentation list (the M53 doc wasn't linked).
+
+**Tests changed, none added.** `reflect.rs`'s `user_message` call takes
+the learned-skills list.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** No real pass has proposed a skill. Hand-editing a learned skill
+stops it loading (its digest changed). Nothing checks that the gate run
+activated the skill it was offered.
+
+### 2026-10-21 — M53.4: scoped lessons and skills; add one, cut one (Claude, Opus 5.5)
+
+**Why.** Every lesson reached every agent, so one project's or one
+chat's lesson could mislead another (scoping was worth 2.9 and 3.7
+points in Harness²'s ablation). A full playbook refused every new
+lesson instead of letting an old one go.
+
+**What changed.**
+- `ferrule-learn`:
+  - `scope.rs` (new): `workspace:<path>`, `chat:<session>`, `task:<id>`.
+  - `playbook.rs`: `[pb-N @scope]` lines (`Lesson.scope`), `lessons_for`,
+    `apply_in` (an add keyed to a scope), `Delta::Promote` (the pass's
+    only), `Applied.scope` so retire and promote invert, and
+    `prompt_block_for` (`prompt_block` is the global lessons only).
+  - `episode.rs`: `Episode.scope`, read from the session's
+    `learn_scope` meta line (`meta`, `SCOPE_META`).
+  - `pass.rs`: the reflector and the guards see the episode's view
+    (global and its scope); a repeat of another scope's lesson becomes a
+    `promote`; at 90% of `max_bullets` (`near_cap`) an add or promote
+    also retires the reflector's `"retire"` pick or the lesson no pass
+    kept for longest (`State.touched`), gated together and journaled as
+    two changes.
+  - `skills.rs`: `Entry.scope` and `applies`; `keep` promotes a skill
+    kept in a second scope; `learned_skills(scope)`.
+  - `reflect.rs`: `Proposal.retire`, the nearly-full note.
+- `ferrule-cli`: `learn::scope_for` (task, chat or workspace);
+  `build_agent_from` logs it as `learn_scope` and passes it to
+  `prompt_section` and `skill_view`; task episodes carry the task's
+  scope; `ferrule learn show` lists scoped lessons and skills; eval's
+  opt-in owner playbook gets the global lessons.
+- Docs: `m53-contrastive-probing.md` ("M53.4"), `m16-learning-loop.md`
+  (§3's line format and cap rule), the roadmap.
+
+**Tests changed, none added.** The struct literals that gained a field
+(`Lesson` in `screen.rs` and `reflect.rs`, `Episode` in `reflect.rs` and
+`pass/tests.rs`, `State` in `files.rs`). The CLI's learning story
+(`tests/it/learn.rs`): the task's lesson is now written
+`[pb-1 @task:<id>]`, reaches the task's next run but not a terminal
+`run` (it did before), and `learn diff` shows the tagged line.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** No real pass has run with scopes. A chat's lesson never reaches
+the gateway's other chats until a second chat keeps it. "Unused" can
+only mean "not kept again": ferrule can't see whether a lesson was
+followed.
+
+### 2026-10-21 — M53.5: visible learning with Undo; the owner's thumbs as a check (Claude, Opus 5.5)
+
+**Why.** Learning happened in a file the owner had to go and read, so a
+bad lesson stayed until someone looked, and a chat bot had no check to
+learn from at all. OpenClaw shows a "Learned" row with one-press Undo;
+Hermes's top complaint is a bot that always thinks it did well. The gate
+answers that only if the owner sees it work and can veto it.
+
+**What changed.**
+- `ferrule-learn`:
+  - `pass.rs`: `Env.on_kept` (`OnKept`, `Learned`) hears each lesson or
+    skill a pass kept, numbered, after the pass releases its lock;
+    `learned` writes the lines. `revert_change` undoes one change (an add
+    and the retire that made room for it together, or neither) and
+    journals it; `revert` and `resolve` skip changes undone that way.
+    The judge is told when the original run got the owner's 👎.
+  - `thumbs.rs` (new): `learn/reactions.jsonl`, a 👎's transcript cut in
+    `learn/reactions/` (checked against `Mark`, the reply's end), and
+    `episodes`: each 👎 after the cursor is an episode (outcome
+    `thumbs-down`, goal the reacted request, fixed by a later 👍 in the
+    chat). The pass reads them itself.
+  - `files.rs`: `PassRecord.undone` (`ChangeRevert`); the changelog's
+    "Undone one by one".
+  - `judge.rs`, `reflect.rs`: the 👎 in both prompts; the judge's
+    "fewer retries" reads "a visibly better final reply" for such a run.
+- `ferrule-trust`: `Hub::tell_owner_choices`, `tell_owner` with buttons.
+- `ferrule-gateway`: `Reaction` and `ReactionSink`; Telegram asks for
+  `message_reaction` only with a sink and hands over those in allowed
+  chats; `Router::with_replied` hears each reply's id once it's sent.
+- `ferrule-cli`: `learn::thumbs` (the sink: the owner's 👍/👎 only, on a
+  reply sent since the gateway started), built only with `[learning]
+  enabled`; the scheduled job sends "Learned: …" with an Undo button
+  (`/unlearn <pass> <change>`), which `OwnerDoor` handles for the owner,
+  on the dashboard's chat too; `ferrule learn revert … --change N`;
+  `learn diff` numbers changes; `learn show` counts reactions.
+- Docs: `m53-contrastive-probing.md` ("M53.5"), `m16-learning-loop.md`
+  (§7, §8), the roadmap, the README's learning row.
+
+**Default.** Learning stays off everywhere: M54's merged code sets no
+learning default, and the gap analysis's "on under protected autonomy"
+would start an unattended spend. The owner turns it on.
+
+**Tests changed, none added.** The two `Env` literals in
+`pass/tests.rs` gained `on_kept: None`; `PassRecord` in `files.rs`'s
+tests gained `undone`.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** Not run against a live Telegram bot (the reaction update, the
+button, the lines). Only Telegram's reactions are read; a reaction on a
+reply from before the gateway's last start, or on an earlier piece of a
+split reply, is dropped. The probe re-runs the reacted request without
+the chat's earlier turns. `learn/reactions/` is never pruned.
+
+### 2026-10-21 — M53.7: an opt-in blind selection node (Claude, Opus 5.5)
+
+**Why.** Some outputs have no check (a briefing, a contract summary) and
+cost a lot when wrong. Harness²'s selector picks among candidates shown
+anonymously in a shuffled order. Ferrule's routing research keeps
+best-of-n out of the defaults (k + 1 agents per answer, no source shows
+it paying off), and the selector errs, so this is a node a graph opts
+into, nothing more.
+
+**What changed.**
+- `ferrule-cli/src/graph.rs`: `kind = "select"` with `task`, `k`
+  (default 3, 2 to 5, checked at parse), `seed`, `judge_model`, and
+  `role` (worker or planner). It starts k agents on the same task, keeps
+  those that delivered, shuffles them by the seed (splitmix64,
+  Fisher-Yates) under labels A, B, C…, and spawns a verifier with the
+  task, the deliverables (16,000 characters each at most, head and tail,
+  the cut marked) and Harness²'s ordered checklist: delivered, matches
+  the requested shape, facts match the source, internally consistent,
+  usable, finished. `pick_of` reads `PICK: <label>`; no line, `none`,
+  an unknown label or two different picks fail the node, with the seed
+  and the verifier's last line. The pick passes with its agent, branch
+  and deliverable; every other candidate and the verifier are closed (all
+  of them when nothing is picked). `wait_all`
+  is the wait `wait_agents` used, shared. Select nodes run beside the
+  batch's agent nodes and take turns with each other.
+- Docs: `m53-contrastive-probing.md` ("M53.7", with why it isn't a
+  default), `m42-harness-engineering.md` (Part 6), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** No real run. The deliverable is each agent's report, not its
+files. k must fit `[agents] max_children` (4 by default) beside the
+graph's other running agents. Nothing measures how often the verifier
+picks the best one.
+
+### 2026-10-21 — M51.4: voice replies, OpenRouter transcription, an ffmpeg line (Claude, Opus 5.5)
+
+**Why.** The bot hears voice notes but can only answer in text, its
+transcription knew OpenAI, Groq and local servers but not the
+OpenRouter key most owners already connected, and nothing said whether
+the shell could cut or convert media (ferrule ships no ffmpeg).
+
+**What changed.**
+- `ferrule-media`: `SpeechReq`, `AudioOut` and `MediaBackend::speak`.
+  OpenRouter's `POST /audio/speech` (through the proxy's placeholder and
+  the egress client, like images) asks for `mp3`, the only compressed
+  format its spec offers (`mp3` or `pcm`), and refuses an answer that
+  isn't MP3 (`sniff` knows MP3 now). `answer` is the status handling
+  `checked` used, returning bytes. `JobKind::Speech` and
+  `JobStore::speech`, so `max_per_day` counts voice replies.
+  `FakeMedia::speak`.
+- `ferrule-gateway`: `SpeakTool` (`speak {text, voice?}`, at most 4,000
+  characters, deferrable): cap check, the call, `media/<unix>-<n>.mp3`,
+  a jobs row, a ledger row (`call_kind = "media"`), then the file to the
+  session's chat as an attachment of kind `voice`. `MediaShared::
+  set_speech` turns it on. Telegram's `send_file` sends an MP3 or M4A of
+  kind `voice` with `sendVoice` (the Bot API takes OGG/Opus, MP3 or
+  M4A there), so no ffmpeg is needed. `OpenAiTranscriber` reads
+  OpenRouter's `usage.seconds` and `usage.cost`; a reported cost wins
+  over `price_per_minute` in the ledger row.
+- `ferrule-cli`: `[media] speech_model` (default
+  `google/gemini-3.8-flash-tts`, from OpenRouter's speech list of
+  2026-10-21; `""` turns `speak` off) and `voice` (unset: the model's
+  own); the chat agent gets `speak` and `CHAT_VOICE` when it's on.
+  `[transcription]`'s `model_for`: on an `openrouter.ai` base URL a
+  model name without `/` becomes `openai/<name>`. `ferrule doctor`'s
+  `media` line: ffmpeg's version and whether it has the `subtitles`
+  filter (a libass build), as a note.
+- `ferrule-agents`: `prompts::CHAT_VOICE`.
+- Docs: `m51-media.md` ("M51.4"), `channels.md` ("Voice messages":
+  OpenRouter, answering in voice, the doctor line), `models.md`
+  ("Making media"), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** No live call to OpenRouter's speech or transcription endpoint
+and no voice note sent to a real chat. The speech answer carries no
+cost, so its ledger row has none and the trust caps don't count it (the
+daily count does). Sub-agents get `speak` with M51.3.
 
 ### 2026-10-21 — M54 follow-up: the owner's Telegram groups get owner mode (Claude, Opus 5.5)
 
@@ -7220,3 +7836,191 @@ process, which is the last root attached.
 **Checked.** `make check` passed on macOS (1881 passed, 0 failed, 28
 ignored). No test was added (not asked). No live run on the Linux
 server yet.
+
+### 2026-10-21 — main (`f70984e`, PR #50) merged into `autopilot` (Claude, Opus 5.5)
+
+**Why.** PR #50 (the M54 follow-up above: the owner's Telegram groups
+get owner mode) landed on `main`, and PR #49 conflicted with it.
+
+**What was resolved.** Only `PLAN.md` conflicted: both sides appended
+2026-10-21 entries. Every entry from both sides is kept; the M54
+follow-up's entry goes after `autopilot`'s M51.4, and the copy of M54's
+"Follow-ups" list git offered from `main`'s side is dropped because it
+is already in M54's entry above. `main.rs`, `owner_mode.rs`,
+`telegram.rs` and `docs/sandbox.md` merged cleanly: the group sender
+check (`admits`) sits beside M51.4's `sendVoice` branch in
+`telegram.rs`, and the factory's `ferrule_admin` offer beside the media
+tools in `gateway_factory`. PR #50 shelved guest isolation (its entry,
+"Dropped"), so there are no new guest rules for memory, learning,
+reactions or the media tools to fit inside; they keep M54's.
+
+**Checks.** `make check` exited 0 on the merge (the numbers are in the
+merge commit's message).
+
+### 2026-10-21 — M51.3: a `media` role for sub-agents (Claude, Opus 5.5)
+
+**Why.** Jobs like "make four variants, pick one, animate it" spend the
+chat model's context and bill on tool calls a cheap model could make.
+Roles were worker, planner and verifier only, and sub-agents never got
+the media tools.
+
+**What changed.**
+- `ferrule-agents`: `Role::Media` (`parse`, `as_str`), its child
+  prompt, `spawn_agent`'s role enum and description, and `spawn` never
+  places a media child in a worktree, so its `media/` is its parent's.
+- `ferrule-cli`: `child_builder` takes the gateway's `MediaShared` and
+  registers `generate_image`, `generate_video` and `speak` for a media
+  child (hidden paths: the strictest list); without it (terminal `run`,
+  a terminal graph) a media spawn fails with the reason. The role and
+  graph error messages name `media`; the example config shows
+  `[agents.roles.media]`.
+- `ferrule-gateway`: `generate_video` in a session with no chat says the
+  gateway saves the clip at its path, not that it will send it here.
+- Docs: `agents.md` (Roles, `media`), `m51-media.md` ("M51.3"),
+  `models.md`, the roadmap.
+
+**Smallest change on another surface.** `graph.rs` (M42): the
+`child_builder` call gained `None` and its role error names `media`.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** No media child has run against OpenRouter. A video a child
+starts is saved, not delivered; nothing tells the parent when it lands.
+
+### 2026-10-21 — M52.2: the Safe's inventory, last used, Delete for every kind, history (Claude, Opus 5.5)
+
+**Why.** Kimi's Safe could rotate a kept key and move a tool key's
+sites, but it listed only names in the secrets file and `[secrets]`,
+said nothing of connections, plan sign-ins or ferrule's own keys, had
+no dates or last use, and could remove only a page-made tool key.
+
+**Where keys live (traced first).** Provider keys and channel tokens
+are values in `private/secrets.env` under the config's `*_env` names
+(`models_page::provider_save`, `channels::card::save`); connections and
+plan sign-ins are sealed files under `private/`; a name may also come
+from the environment. The page says which, per entry.
+
+**What changed.**
+- `ferrule-proxy`: `server::Secret.name`; `Broker::on_use` gets a
+  `SecretUse {name, host}` for each bound secret a request carries where
+  it's swapped (credential headers, `Basic` included, allowed URLs), on
+  both the intercepted HTTPS and the plain-HTTP paths;
+  `Broker::unbind`.
+- `ferrule-cli`:
+  - `secret_meta.rs` (new): `secrets.meta.json` beside the secrets file,
+    names and times only: created, rotated, last used and host (written
+    at most once a minute per name). `secrets::set`/`remove` stamp it.
+    `shared_broker` registers the use hook.
+  - `dashboard/safe.rs` (new): `GET secrets` gains `groups` (model
+    providers with the ledger's last call per provider, the ChatGPT
+    sign-in, the Claude token; channels; connections; `[secrets]`;
+    system: unclaimed kept names, the relay key, the sealing key, the
+    proxy CA, the page's sign-ins); `POST secrets/delete {id}` for every
+    kind (a value from the file, the process env and the proxy; a
+    connection disconnected; a plan sign-in's file deleted; every page
+    session ended), refusing env-set names and the sealing key and CA
+    with the reason; `GET secrets/audit`, the by-name history.
+  - `tool_keys.rs`: rotate rebinds a `[secrets]` key in the proxy;
+    `used_by`, `named_in`, `locked` shared with `safe.rs`.
+  - `app.js`: the Safe panel draws the groups with saved, changed and
+    last-used lines, Delete or its reason, and a History fold;
+    `lang-he.js` has the five new words.
+- Docs: `m52-dashboard-safe.md` ("M52.2", with M52.3 noted as M54's
+  `secret_request`), `dashboard.md` (Safe), the roadmap.
+
+**Smallest change on another surface.** `secrets.rs` (M54's): two calls
+to `secret_meta` after a successful write or removal.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js`.
+
+**Open.** Not opened from a real browser; the use hook not watched on a
+real proxied request. Keys saved before M52.2 have no dates until their
+next write. Channel and connection tokens have no last use (ferrule's own
+clients send them). Deleting the ChatGPT sign-in from the page doesn't
+revoke it at OpenAI (`ferrule logout chatgpt` does). The old value isn't
+kept encrypted for N days after a rotation (the report's grace period):
+rotation still replaces it outright.
+
+### 2026-10-21 — M52.4: safe config editing (Claude, Opus 5.5)
+
+**Why.** `config/check` gave a verdict, not a diff; a page loaded before
+a change from Telegram or the machine silently undid it on save; and
+only one `.prev` was kept.
+
+**What changed.**
+- `dashboard/config_page.rs`: `diff` (leaf by leaf, redacted, secrets
+  "(hidden)") in `config/check`'s answer; `hash` in `GET config` and
+  `fresh`, which refuses a write whose `base_hash` isn't the file's
+  (409, `stale`), on check, save, set, undo, the version restore and the
+  autonomy switch; `<data>/config-history/` with `keep_version` (the
+  file hidden by `hide`, a note beside it, deduplicated, 20 kept) called
+  from `commit` before and after each write, and `remember` for the
+  writers outside it; `GET config/versions`, `GET config/version?id=`
+  (the diff a restore would make) and `POST config/version/restore`
+  (unhide from the file as it is, one confirm, `commit` with Undo's
+  guard).
+- `dashboard/api.rs`: the routes; the last-good `config/restore` checks
+  `base_hash` and keeps its versions (M54's chat guard unchanged).
+- `app.js`: Save reviews the diff and saves on "Save these N changes";
+  every config write sends `base_hash`; a **Versions** fold with Preview
+  and Restore.
+- Docs: `m52-dashboard-safe.md` ("M52.4"), `dashboard.md` (Config), the
+  roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js`.
+
+**Open.** Not used from a real browser. Config writes from other pages
+and the terminal aren't versions of their own (the next page write
+keeps the file as they left it). The chat's `config_set` sends no
+`base_hash`, so it isn't stale-checked.
+
+### 2026-10-21 — M52.6: step-up for Safe writes, a `__Host-` cookie, hardened remote (Claude, Opus 5.5)
+
+**Why.** A stolen dashboard cookie could rotate, delete or re-route any
+key for the rest of its 12-hour session; the cookie had no `__Host-`
+prefix (OWASP's advice); and the only remote path was a quick tunnel.
+
+**What changed.**
+- `dashboard/mod.rs`: `STEP_UP_PATHS` (the Safe's rotate, delete, hosts,
+  remove) answer 403 `step_up` unless the session was opened in the last
+  10 minutes or its owner allowed it in their chat in the last 10;
+  `POST /api/stepup` asks (`Hub::ask_in`, an owner chat that isn't the
+  dashboard's, the server's own words, `op = dashboard.step_up`, five
+  minutes) and `GET /api/stepup` says where it stands; the state is per
+  session, in memory. The cookie is read by `cookie_name`. Opt-in
+  `[dashboard] tailscale_users`: off this machine, a request without one
+  of those `Tailscale-User-Login`s is refused.
+- `dashboard/auth.rs`: `HOST_COOKIE` and `cookie_name` (`__Host-` over
+  HTTPS at `Path=/`), used by `set_cookie` and `clear_cookie`;
+  `Sessions::opened_ms`; `now_ms` public.
+- `dashboard/chat.rs`: a step-up card is left out of the page's
+  approvals and its code refused by `approvals/answer`.
+- `config.rs`: `DashboardConfig.tailscale_users` and its example line.
+  `config_page.rs`: `tailscale_users` is a guarded field.
+- `app.js`: `act` meets a `step_up` 403 with "Confirm it's you" → "Ask in
+  my chat", polls, and sends the write again on Allow; `lang-he.js` has
+  the four new strings.
+- Docs: `m52-dashboard-safe.md` ("M52.6": the two hardened remote
+  setups; Cloudflare Access's origin JWT check is a follow-up),
+  `m22-dashboard.md` (Threat model), `dashboard.md`, the roadmap.
+
+**Smallest change on another surface.** `config_page.rs`'s guarded keys
+(M54's list) gained `tailscale_users`.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js`.
+
+**Open.** No step-up answered from a real chat; no request through a
+real Tailscale Serve. Tunnel sessions from before the cookie rename end
+once. Cloudflare Access JWT validation at the origin isn't built.

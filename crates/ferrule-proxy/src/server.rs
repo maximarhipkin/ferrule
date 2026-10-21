@@ -47,6 +47,8 @@ pub const EGRESS_HEADER: &str = "x-ferrule-egress";
 const REPORT_EVERY: Duration = Duration::from_secs(10);
 
 pub(crate) struct Secret {
+    /// Its env var's name: what `secret.used` reports (M52.2).
+    pub name: String,
     pub hosts: Vec<HostPattern>,
     pub placeholder: String,
     pub real: String,
@@ -55,6 +57,7 @@ pub(crate) struct Secret {
 }
 
 pub(crate) type DenyHook = Arc<dyn Fn(&Denial) + Send + Sync>;
+pub(crate) type UseHook = Arc<dyn Fn(&crate::SecretUse) + Send + Sync>;
 
 pub(crate) struct Shared {
     /// Decoded `Proxy-Authorization` credentials a request must carry:
@@ -65,6 +68,8 @@ pub(crate) struct Shared {
     /// `None`: no policy at all (the pre-M33 proxy, secrets only).
     pub egress: Option<EgressPolicy>,
     pub deny_hook: std::sync::RwLock<Option<DenyHook>>,
+    /// M52.2: told each bound secret a request carries to its host.
+    pub use_hook: std::sync::RwLock<Option<UseHook>>,
     pub denials: AtomicU64,
     /// When each (source, host, reason) was last reported, so a retry loop
     /// doesn't flood the ledger. Enforcement isn't rate-limited.
@@ -145,6 +150,51 @@ impl Shared {
                 Err(Ok(d))
             }
             Verdict::Unresolved(e) => Err(Err(e)),
+        }
+    }
+
+    /// M52.2: hands the use hook every secret bound to `host` whose
+    /// placeholder this request carries where it's swapped: a credential
+    /// header (inside `Basic` credentials too) or, when allowed, the URL.
+    fn note_use(&self, host: &str, headers: &HeaderMap, path_and_query: &str) {
+        let Some(hook) = self.use_hook.read().unwrap().clone() else {
+            return;
+        };
+        let creds: Vec<Vec<u8>> = headers
+            .iter()
+            .filter(|(name, _)| crate::subst::is_credential_header(name))
+            .flat_map(|(_, value)| {
+                let raw = value.as_bytes();
+                let mut out = vec![raw.to_vec()];
+                if raw.len() > 6 && raw[..6].eq_ignore_ascii_case(b"basic ") {
+                    if let Ok(d) = STANDARD.decode(raw[6..].trim_ascii()) {
+                        out.push(d);
+                    }
+                }
+                out
+            })
+            .collect();
+        let carries = |p: &str| {
+            creds
+                .iter()
+                .any(|c| c.windows(p.len()).any(|w| w == p.as_bytes()))
+        };
+        let used: Vec<String> = self
+            .secrets
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|s| s.hosts.iter().any(|h| h.matches(host)))
+            .filter(|s| {
+                carries(&s.placeholder) || (s.in_url && path_and_query.contains(&s.placeholder))
+            })
+            .map(|s| s.name.clone())
+            .collect();
+        for name in used {
+            hook(&crate::SecretUse {
+                name,
+                host: host.to_string(),
+            });
         }
     }
 
@@ -459,6 +509,8 @@ async fn forward(
             parts.headers.insert(header::HOST, v);
         }
     }
+    let pq = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
+    origin.shared.note_use(&origin.host, &parts.headers, pq);
     for (name, value) in parts.headers.iter_mut() {
         if let Some(real) = swaps.inject_header(name, value) {
             *value = real;
@@ -547,6 +599,7 @@ async fn plain_http(
     let pq = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     let mut pq = pq.to_string();
     if let Some(swaps) = &swaps {
+        shared.note_use(&host, &parts.headers, &pq);
         // Identity bodies only, so the response can be scrubbed.
         parts.headers.remove(header::ACCEPT_ENCODING);
         for (name, value) in parts.headers.iter_mut() {

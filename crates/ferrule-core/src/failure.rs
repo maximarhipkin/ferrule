@@ -3,10 +3,12 @@
 //!
 //! A driver that can tell from the reply's structure what went wrong (a
 //! status and an error code, a stream event's reason) says so with
-//! [`CoreError::Failed`]. Everything else is read from the error's text,
-//! the way M21's [`FailureClass`] always has. Each [`Kind`] then says what
-//! can repair it, how long the model that hit it stays down, and the plain
-//! words for a chat and for the owner.
+//! [`CoreError::Failed`]. Everything else is read from the error's text:
+//! its HTTP status ([`status_kind`]) and the words only some failures use
+//! ([`classify_text`]). Each [`Kind`] then says what can repair it, how
+//! long the model that hit it stays down, and the plain words for a chat
+//! and for the owner. [`FailureClass`] is its coarse view
+//! ([`Kind::class`]), the one mapping between the two.
 
 use crate::error::{CoreError, FailureClass};
 use serde::{Deserialize, Serialize};
@@ -89,6 +91,30 @@ pub enum Repair {
 }
 
 impl Kind {
+    /// The coarse view routing and the drivers read: a plan's sign-in is
+    /// an auth failure, a client version a bad request, its usage limit a
+    /// rate limit.
+    pub fn class(self) -> FailureClass {
+        match self {
+            Kind::RateLimited | Kind::UsageLimit => FailureClass::RateLimited,
+            Kind::Overloaded => FailureClass::Overloaded,
+            Kind::Server => FailureClass::Server,
+            Kind::Timeout => FailureClass::Timeout,
+            Kind::Connect => FailureClass::Connect,
+            Kind::Auth | Kind::ChatgptSignin | Kind::ClaudeSignin => FailureClass::Auth,
+            Kind::ModelGone => FailureClass::ModelNotFound,
+            Kind::ContextTooLong => FailureClass::ContextTooLong,
+            Kind::Refused => FailureClass::Refused,
+            Kind::Malformed => FailureClass::Malformed,
+            Kind::BadRequest | Kind::ClientTooOld => FailureClass::BadRequest,
+            Kind::ClaudeTooOld
+            | Kind::ClaudeMissing
+            | Kind::DiskFull
+            | Kind::DataUnwritable
+            | Kind::Unknown => FailureClass::Other,
+        }
+    }
+
     pub fn repair(self) -> Repair {
         match self {
             Kind::ClientTooOld => Repair::RefreshClientVersion,
@@ -211,17 +237,74 @@ impl Kind {
 /// the text.
 pub fn classify(e: &CoreError) -> Kind {
     match e {
-        CoreError::Failed(f) => f.kind,
         CoreError::Io(io) => classify_io(io).unwrap_or(Kind::Unknown),
-        CoreError::MalformedResponse(_) => Kind::Malformed,
         CoreError::Provider(t) | CoreError::Transient { message: t, .. } => {
-            classify_text(t).unwrap_or_else(|| from_class(e.class()))
+            classify_text(t).unwrap_or_else(|| status_kind(e))
         }
         CoreError::ToolFailed { message, .. } => classify_text(message)
             .filter(|k| matches!(k, Kind::DiskFull | Kind::DataUnwritable))
             .unwrap_or(Kind::Unknown),
-        _ => Kind::Unknown,
+        _ => status_kind(e),
     }
+}
+
+/// What `e`'s structure and HTTP status say, without the words only some
+/// failures use ([`classify_text`]): the kind a driver set, else read from
+/// the error text every driver produces (`HTTP {status}` plus the
+/// provider's own message). [`CoreError::class`] is its coarse view.
+pub fn status_kind(e: &CoreError) -> Kind {
+    let text = match e {
+        CoreError::MalformedResponse(_) => return Kind::Malformed,
+        CoreError::Failed(f) => return f.kind,
+        CoreError::Provider(t) => t.as_str(),
+        CoreError::Transient { message, .. } => message.as_str(),
+        _ => return Kind::Unknown,
+    };
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("refused") {
+        return Kind::Refused;
+    }
+    if lower.contains("prompt is too long")
+        || lower.contains("context_length_exceeded")
+        || lower.contains("maximum context length")
+        || lower.contains("context window")
+    {
+        return Kind::ContextTooLong;
+    }
+    // An error in an HTTP 200 body (OpenRouter's upstream errors) says
+    // what went wrong only in its text.
+    match http_status(&lower).filter(|s| *s >= 400) {
+        Some(429) => Kind::RateLimited,
+        Some(529) => Kind::Overloaded,
+        Some(503) if lower.contains("overloaded") => Kind::Overloaded,
+        Some(408) => Kind::Timeout,
+        Some(s) if s >= 500 => Kind::Server,
+        Some(401 | 403) => Kind::Auth,
+        Some(404) => Kind::ModelGone,
+        Some(400 | 413 | 422) => Kind::BadRequest,
+        Some(_) => Kind::Unknown,
+        None if lower.contains("timed out") || lower.contains("timeout") => Kind::Timeout,
+        None if lower.contains("connect") || lower.contains("dns") => Kind::Connect,
+        None if lower.contains("overloaded") => Kind::Overloaded,
+        None if lower.contains("rate limit")
+            || lower.contains("rate_limit")
+            || lower.contains("\"code\":429") =>
+        {
+            Kind::RateLimited
+        }
+        None if matches!(e, CoreError::Transient { .. }) => Kind::Server,
+        None => Kind::Unknown,
+    }
+}
+
+/// The status in the first `http NNN` of an error's text.
+fn http_status(lower: &str) -> Option<u16> {
+    let at = lower.find("http ")? + "http ".len();
+    let digits: String = lower[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    (digits.len() == 3).then(|| digits.parse().ok()).flatten()
 }
 
 /// The call failed at the model provider (or its driver), not in a tool,
@@ -280,23 +363,6 @@ pub fn classify_io(e: &std::io::Error) -> Option<Kind> {
         E::PermissionDenied | E::ReadOnlyFilesystem => Some(Kind::DataUnwritable),
         _ => classify_text(&e.to_string())
             .filter(|k| matches!(k, Kind::DiskFull | Kind::DataUnwritable)),
-    }
-}
-
-fn from_class(class: FailureClass) -> Kind {
-    match class {
-        FailureClass::RateLimited => Kind::RateLimited,
-        FailureClass::Overloaded => Kind::Overloaded,
-        FailureClass::Server => Kind::Server,
-        FailureClass::Timeout => Kind::Timeout,
-        FailureClass::Connect => Kind::Connect,
-        FailureClass::Auth => Kind::Auth,
-        FailureClass::BadRequest => Kind::BadRequest,
-        FailureClass::ContextTooLong => Kind::ContextTooLong,
-        FailureClass::ModelNotFound => Kind::ModelGone,
-        FailureClass::Refused => Kind::Refused,
-        FailureClass::Malformed => Kind::Malformed,
-        FailureClass::Other => Kind::Unknown,
     }
 }
 

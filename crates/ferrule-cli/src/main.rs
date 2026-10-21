@@ -39,6 +39,7 @@ mod plan;
 mod plugins_cli;
 mod probe;
 mod remote;
+mod secret_meta;
 mod secrets;
 mod self_extend;
 mod self_service;
@@ -1274,7 +1275,7 @@ async fn build_root(
         None,
         verify,
     )?;
-    let build = child_builder(max_iterations, mcp_tools);
+    let build = child_builder(max_iterations, mcp_tools, None);
     let Some(sup) = agents::supervisor(&cfg, provider_name, sink, build)? else {
         return Ok((agent, None));
     };
@@ -1283,13 +1284,23 @@ async fn build_root(
 }
 
 /// How the supervisor builds a child: like any agent, on its spec's
-/// workspace and session, narrowed to its role.
+/// workspace and session, narrowed to its role. M51.3: a `media` child
+/// also gets the media tools, which only the gateway with `[media]` on
+/// has (`media`); elsewhere it can't start, and the spawn says why.
 pub(crate) fn child_builder(
     max_iterations: usize,
     mcp_tools: self_extend::Extensions,
+    media: Option<Arc<ferrule_gateway::tools::MediaShared>>,
 ) -> agents::Build {
     Arc::new(move |scope, spec, tag| {
-        build_agent_from(
+        let media = match (spec.role, &media) {
+            (ferrule_agents::Role::Media, None) => bail!(
+                "a media agent needs the media tools, and this process has none: they run in the gateway with [media] on (docs/m51-media.md). Spawn a worker instead"
+            ),
+            (ferrule_agents::Role::Media, Some(m)) => Some(m.clone()),
+            _ => None,
+        };
+        let mut agent = build_agent_from(
             scope,
             spec.workspace.clone(),
             max_iterations,
@@ -1298,7 +1309,28 @@ pub(crate) fn child_builder(
             tag,
             Some(spec),
             None,
-        )
+        )?;
+        if let Some(media) = media {
+            // No chat: the tools save into the parent's workspace and say
+            // so; the parent sends the files. References resolve with every
+            // hidden path a guest's would (the strictest list).
+            agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
+                media.clone(),
+                &spec.id,
+                hidden_paths(false),
+            )));
+            agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
+                media.clone(),
+                &spec.id,
+                hidden_paths(false),
+            )));
+            if media.speaks() {
+                agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
+                    media, &spec.id,
+                )));
+            }
+        }
+        Ok(agent)
     })
 }
 
@@ -1595,7 +1627,7 @@ fn build_agent_from(
     let mut system = format!(
         "You are an autonomous agent running inside ferrule. {workspace_line} \
          Use tools to act on the world; verify with evidence; save lasting facts about the person you work for (names, preferences, standing corrections) with the remember tool on your own, tagged profile or preference, without waiting to be asked. \
-         For multi-step work, maintain your task list with write_todos and log decisions with log_diary. {}",
+         For multi-step work, maintain your task list and log decisions with write_todos. {}",
         profile.system_directive
     );
 
@@ -1669,8 +1701,12 @@ fn build_agent_from(
     // M53: the harness stamp, one append-only transcript meta line naming
     // what produced this session — hashes, never contents.
     let mut stamp = ferrule_core::HarnessStamp::default();
+    // M53.4: the scope this tree learns and is taught in (its chat, its
+    // scheduled task or its workspace); a sub-agent shares its root's.
+    let learn_scope = learn::scope_for(&tree, &tool_ctx.workspace);
     if cfg.skills.enabled && !planning {
-        let (skills, tools) = mcp_tools.skill_tools();
+        let (skills, tools) =
+            mcp_tools.skill_tools(Some(learn::skill_view(Some(learn_scope.clone()))));
         let set = skills.get();
         stamp.skills = set
             .skills
@@ -1693,7 +1729,7 @@ fn build_agent_from(
 
     // M16: the playbook's lessons, read per agent so a pass's changes show
     // up in the next session. The file itself is hidden from the agent.
-    if let Some(block) = learn::prompt_section(&cfg.learning) {
+    if let Some(block) = learn::prompt_section(&cfg.learning, Some(&learn_scope)) {
         stamp.playbook = Some(ferrule_core::fnv64(block.as_bytes()));
         system.push_str(&format!("\n\n{block}"));
     }
@@ -1702,6 +1738,9 @@ fn build_agent_from(
         .map(|b| ferrule_core::fnv64(&b));
     if let Some(t) = &transcript {
         let _ = t.log_harness(&stamp);
+        // M53.4: the learning pass reads it to key what this session
+        // teaches.
+        let _ = t.log_meta(ferrule_learn::episode::SCOPE_META, &learn_scope);
     }
 
     if planning {
@@ -2060,6 +2099,8 @@ pub(crate) fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Brok
     let broker = Broker::start(broker_config(cfg)?, |name| std::env::var(name).ok())?;
     if let Some(b) = &broker {
         egress::report_denials(b, ledger::build_sink(cfg));
+        // M52.2: the Safe's "last used" (name and host, never a value).
+        b.on_use(|u| secret_meta::used(&u.name, &u.host));
     }
     // A racing caller's broker is dropped (and stopped) here; both get the winner.
     Ok(BROKER.get_or_init(|| broker).as_ref())
@@ -2673,6 +2714,7 @@ fn with_owner(cfg: &config::Config, channel: &str, users: &[String]) -> Vec<Stri
 fn build_channels(
     cfg: &config::Config,
     workspace: Option<&Path>,
+    reactions: Option<ferrule_gateway::ReactionSink>,
 ) -> Result<HashMap<String, Arc<dyn Channel>>> {
     let mut named_channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
 
@@ -2700,7 +2742,9 @@ fn build_channels(
                         ws,
                         ferrule_gateway::channels::files::DEFAULT_MAX_MB,
                     )
-                })),
+                }))
+                // M53.5: the owner's 👍/👎, only while learning is on.
+                .with_reactions(reactions),
         );
         named_channels.insert(telegram.name().to_string(), telegram);
     }
@@ -2841,7 +2885,7 @@ async fn gateway_factory(
         cfg,
         provider.clone(),
         ledger_sink.clone(),
-        child_builder(max_iterations, mcp_tools.clone()),
+        child_builder(max_iterations, mcp_tools.clone(), media.clone()),
     )?;
     let factory_sup = sup.clone();
     let owner = owner_mode::on(cfg);
@@ -2889,6 +2933,14 @@ async fn gateway_factory(
                     session_id,
                     hidden_paths(owners),
                 )));
+                // M51.4: a voice reply.
+                if media.speaks() {
+                    agent.append_system_prompt(ferrule_agents::prompts::CHAT_VOICE);
+                    agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
+                        media.clone(),
+                        session_id,
+                    )));
+                }
             }
         }
         // M56.6: ask with buttons, react, edit its last reply; its own chat only.
@@ -2985,7 +3037,10 @@ async fn run_gateway(
     )
     .await?;
 
-    let mut named_channels = build_channels(&cfg, Some(&workspace))?;
+    // M53.5: the owner's 👍/👎 on replies, when `[learning]` is on.
+    let thumbs = learn::thumbs(&cfg, trust::hub(&cfg)?)?;
+    let mut named_channels =
+        build_channels(&cfg, Some(&workspace), thumbs.as_ref().map(|t| t.sink()))?;
     if let Some(policy) = managed::policy() {
         named_channels.retain(|name, _| {
             let keep = policy.allows_channel(name);
@@ -3060,7 +3115,8 @@ async fn run_gateway(
             .with_streaming(streaming_channels(&cfg), StreamPacing::default())
             .with_typing(cfg.gateway.typing())
             .with_while_busy(cfg.gateway.while_busy)
-            .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
+            .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?)
+            .with_replied(thumbs.as_ref().map(|t| t.replied_hook())),
     );
     files.bind(&router);
     if let Some(m) = &media {
@@ -3157,6 +3213,7 @@ async fn run_gateway(
         &workspace,
         provider.clone(),
         true,
+        Some(hub.clone()),
     ));
     let scheduler_handle = {
         let scheduler = scheduler.clone();
@@ -3540,7 +3597,7 @@ async fn tasks_run_now(
     )
     .await?;
 
-    let named_channels = build_channels(&cfg, None)?;
+    let named_channels = build_channels(&cfg, None, None)?;
     let router = Arc::new(Router::new(
         sessions_dir,
         agent_factory,
@@ -3563,7 +3620,7 @@ async fn tasks_run_now(
         Some(why) => scheduler.refuse_gates(why),
         None => scheduler,
     };
-    let scheduler = learn::register(&cfg, scheduler, &workspace, provider, false);
+    let scheduler = learn::register(&cfg, scheduler, &workspace, provider, false, None);
 
     let outcome = scheduler.execute(&task).await;
     // Nothing is left behind to run in a process that's about to exit.
@@ -3619,7 +3676,14 @@ fn retirer(lanes: std::sync::Weak<Router>) -> models::Retire {
 
 fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skills::SkillSet {
     let paths: Vec<PathBuf> = cfg.paths.iter().map(|p| expand_home(p)).collect();
-    let roots = ferrule_skills::default_roots(workspace, cfg.project, &paths);
+    let mut roots = ferrule_skills::default_roots(workspace, cfg.project, &paths);
+    // M53.3: the learning pass's skills, listed as `learned`.
+    if let Ok(data) = config::data_dir() {
+        roots.push(ferrule_skills::SkillRoot {
+            dir: data.join(ferrule_learn::skills::DIR),
+            scope: ferrule_skills::Scope::Learned,
+        });
+    }
     let set = ferrule_skills::discover(&roots, &cfg.disabled);
     for d in &set.diagnostics {
         tracing::debug!(path = %d.path.display(), severity = ?d.severity, "skill: {}", d.message);

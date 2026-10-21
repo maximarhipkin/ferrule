@@ -80,7 +80,7 @@ pub fn check_roles(cfg: &Config) -> Result<()> {
     for (role, rc) in &cfg.agents.roles {
         if Role::parse(role).is_none() {
             bail!(
-                "[agents.roles.{role}]: no such role; the roles are worker, planner and verifier"
+                "[agents.roles.{role}]: no such role; the roles are worker, planner, verifier and media"
             );
         }
         if let Some(p) = &rc.provider {

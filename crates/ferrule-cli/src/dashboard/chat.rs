@@ -311,6 +311,8 @@ pub fn approvals(ctx: &Ctx) -> Answer {
         .approvals()
         .list()
         .into_iter()
+        // M52.6: a step-up is answered in the owner's chat, never here.
+        .filter(|w| w.op.as_deref() != Some(super::STEP_UP_OP))
         .map(|w| {
             json!({
                 "code": w.code,
@@ -339,6 +341,18 @@ pub fn answer(ctx: &Ctx, body: &Value) -> Answer {
     let Some(hub) = &ctx.hub else {
         return bad(404, "nothing is waiting");
     };
+    // M52.6: the page that asked to change keys can't vouch for itself.
+    if hub
+        .approvals()
+        .list()
+        .iter()
+        .any(|w| w.code == code && w.op.as_deref() == Some(super::STEP_UP_OP))
+    {
+        return bad(
+            403,
+            "This question is answered in your chat, not on the page: that's what shows it's you.",
+        );
+    }
     let Some(said) = hub
         .approvals()
         .decide(code, allow, "refused on the dashboard")

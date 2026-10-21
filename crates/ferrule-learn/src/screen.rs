@@ -59,8 +59,7 @@ pub fn check(text: &str, existing: &[Lesson], editing: Option<u32>) -> Result<()
     if t.starts_with('-') || t.starts_with("[pb-") || t.starts_with('#') {
         return Err("a lesson can't start with a list marker, an id or a heading".into());
     }
-    let lower = t.to_lowercase();
-    if let Some((_, what)) = DENIED.iter().find(|(p, _)| lower.contains(p)) {
+    if let Some(what) = denied(t) {
         return Err(format!("looks like it contains {what}"));
     }
     if t.split_whitespace().any(|w| {
@@ -83,6 +82,40 @@ pub fn check(text: &str, existing: &[Lesson], editing: Option<u32>) -> Result<()
         return Err(format!("repeats {name}"));
     }
     Ok(())
+}
+
+/// What of [`DENIED`] `text` contains, if anything: a lesson's screen, and
+/// (M53.3) a learned skill's description.
+pub fn denied(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    DENIED
+        .iter()
+        .find(|(p, _)| lower.contains(p))
+        .map(|(_, what)| *what)
+}
+
+/// M53.3: ferrule's own data, which no learned skill's body or script may
+/// name (the rest of [`DENIED`] is ordinary in a script).
+pub fn ferrule_data(text: &str) -> Option<&'static str> {
+    const OWN: &[(&str, &str)] = &[
+        ("data/private", "ferrule's private data"),
+        ("secrets.env", "ferrule's private data"),
+        ("data/learn", "ferrule's learning data"),
+        ("playbook.md", "the playbook file"),
+        ("skills.json", "the learned skills' record"),
+    ];
+    let lower = text.to_lowercase();
+    OWN.iter()
+        .find(|(p, _)| lower.contains(p))
+        .map(|(_, what)| *what)
+}
+
+/// Whether two lessons say the same thing: equal but for case, or a
+/// word-set Jaccard of at least [`DUPLICATE_JACCARD`] (M53.4: the same
+/// lesson kept in another scope is promoted).
+pub fn same(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
+        || jaccard(&word_set(a), &word_set(b)) >= DUPLICATE_JACCARD
 }
 
 pub fn word_set(s: &str) -> HashSet<String> {
@@ -109,10 +142,12 @@ mod tests {
             Lesson {
                 id: Some(1),
                 text: "Run cargo fmt before finishing a Rust change.".into(),
+                scope: None,
             },
             Lesson {
                 id: None,
                 text: "Answer in Hebrew in the support groups.".into(),
+                scope: None,
             },
         ]
     }

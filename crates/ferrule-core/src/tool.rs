@@ -261,6 +261,12 @@ pub trait Tool: Send + Sync {
     /// tool still holds, such as background jobs. A tool whose agent is
     /// dropped without this (a gateway lane closing) does it on drop.
     fn session_ended(&self) {}
+    /// M58.3: an old name kept callable for one release, so a transcript or
+    /// a session that still uses it works: the tool that replaced it. Such a
+    /// tool is never offered (not in [`ToolRegistry::definitions`]).
+    fn replaced_by(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// M57.1: the tool that loads deferred tools' schemas. The registry
@@ -523,18 +529,22 @@ impl ToolRegistry {
             .flat_map(|s| s.tools())
             .find(|t| t.definition().name == name)
     }
-    /// Every tool with its definition, sorted by name; a registered tool
-    /// shadows a source's of the same name.
+    /// Every tool offered, with its definition, sorted by name; a
+    /// registered tool shadows a source's of the same name. An old name
+    /// ([`Tool::replaced_by`]) is callable but not here.
     fn all(&self) -> Vec<(ToolDefinition, Arc<dyn Tool>)> {
         let mut all: Vec<_> = self
             .tools
             .values()
+            .filter(|t| t.replaced_by().is_none())
             .map(|t| (t.definition(), t.clone()))
             .collect();
         for source in &self.sources {
             for tool in source.tools() {
                 let def = tool.definition();
-                if !all.iter().any(|(d, _)| d.name == def.name) {
+                let shadowed = self.tools.contains_key(&def.name)
+                    || all.iter().any(|(d, _)| d.name == def.name);
+                if !shadowed && tool.replaced_by().is_none() {
                     all.push((def, tool));
                 }
             }
