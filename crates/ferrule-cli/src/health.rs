@@ -68,13 +68,63 @@ pub fn known_secrets(cfg: &Config) -> Vec<(String, String)> {
     names.extend(crate::secrets::loaded_names());
     names.sort();
     names.dedup();
-    names
+    let mut known: Vec<(String, String)> = names
         .into_iter()
         .filter_map(|n| {
             let value = crate::secrets::non_empty(&n)?;
             Some((n, value))
         })
-        .collect()
+        .collect();
+    known.extend(connection_secrets());
+    known
+}
+
+/// The connection store (`<data>/private/connections/`), when there's a
+/// data dir.
+fn connection_store() -> Option<ferrule_connections::Store> {
+    crate::secrets::private_dir()
+        .ok()
+        .map(|d| ferrule_connections::Store::new(&d))
+}
+
+/// Wave A (M54.3): the connections' OAuth access and refresh tokens,
+/// client secrets and keys, opened from the sealed store in memory and
+/// never written anywhere, named `connection <name>.<field>`.
+pub fn connection_secrets() -> Vec<(String, String)> {
+    connection_store()
+        .map(|store| {
+            store
+                .secret_values()
+                .into_iter()
+                .map(|(name, value)| (format!("connection {name}"), value))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The connection store's values, read again whenever its file changes:
+/// a refresh writes a new access token, and a tool result never shows
+/// one, old or new.
+struct Following {
+    store: Option<ferrule_connections::Store>,
+    seen: std::sync::Mutex<(Option<(u64, SystemTime)>, Redactor)>,
+}
+
+impl Following {
+    fn known(&self, text: &str) -> String {
+        let Some(store) = &self.store else {
+            return text.to_string();
+        };
+        let stamp = std::fs::metadata(store.path())
+            .ok()
+            .map(|m| (m.len(), m.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+        let mut seen = self.seen.lock().unwrap();
+        if seen.0 != stamp {
+            seen.1 = Redactor::new(store.secret_values().into_iter().map(|(_, v)| v));
+            seen.0 = stamp;
+        }
+        seen.1.known(text)
+    }
 }
 
 /// Hides the values of every secret the process holds
@@ -88,12 +138,23 @@ pub fn redactor(cfg: &Config) -> Redactor {
 /// the credential proxy becomes its placeholder (the same text commands
 /// see), any other known value `[redacted]`. The values are read here,
 /// once; a `[secrets]` entry the config follower binds later is the
-/// proxy's, so it's covered too.
+/// proxy's, so it's covered too. The connection store's are read again
+/// whenever it changes (wave A). A value under 6 characters is skipped
+/// (`Redactor::new`): it would cut ordinary words and numbers out of
+/// every result, and none of the keys ferrule makes or asks for is that
+/// short (`docs/sandbox.md`, "Env").
 pub fn scrub_tool_results(cfg: &Config) {
     let redactor = redactor(cfg);
-    ferrule_core::scrub::install(Arc::new(move |text: &str| match crate::started_broker() {
-        Some(broker) => redactor.known(&broker.scrub_text(text)),
-        None => redactor.known(text),
+    let connections = Following {
+        store: connection_store(),
+        seen: std::sync::Mutex::new((None, Redactor::new(Vec::new()))),
+    };
+    ferrule_core::scrub::install(Arc::new(move |text: &str| {
+        let text = match crate::started_broker() {
+            Some(broker) => redactor.known(&broker.scrub_text(text)),
+            None => redactor.known(text),
+        };
+        connections.known(&text)
     }));
 }
 

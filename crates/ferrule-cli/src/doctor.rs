@@ -1885,7 +1885,30 @@ fn memory_check(r: &mut Report, cfg: &config::Config) {
 /// Tool results lose them as they're made; anything saved before that is
 /// found here. Names and counts only, never a value.
 fn history_check(r: &mut Report, cfg: &config::Config) {
-    let known: Vec<(String, Vec<String>)> = crate::health::known_secrets(cfg)
+    let all = crate::health::known_secrets(cfg);
+    // M54.3: a value this short would cut ordinary words out of every
+    // tool result, so the scrub skips it, and so does this look.
+    let short: Vec<&str> = all
+        .iter()
+        .filter(|(_, v)| v.len() < 6)
+        .map(|(n, _)| n.as_str())
+        .collect();
+    if !short.is_empty() {
+        r.warn(
+            "history",
+            format!(
+                "{} under 6 characters, too short to scrub from tool results: {}",
+                if short.len() == 1 {
+                    "1 key value is".to_string()
+                } else {
+                    format!("{} key values are", short.len())
+                },
+                short.join(", ")
+            ),
+        );
+        r.hint("use a longer value, or keep it out of what the bot can print");
+    }
+    let known: Vec<(String, Vec<String>)> = all
         .into_iter()
         .filter(|(_, v)| v.len() >= 6)
         .map(|(name, value)| {

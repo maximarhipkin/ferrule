@@ -784,7 +784,13 @@ and a privacy hole found on review. Code paths are under `crates/`.
    the claude engine's own tools (its Bash, Read) don't pass through the
    loop, values under 6 characters are skipped, connection OAuth tokens
    aren't in the list, and the values are read once at startup (a
-   `[secrets]` key bound later is covered by the proxy).
+   `[secrets]` key bound later is covered by the proxy). Wave A
+   (2026-10-21) closed the third: the connection store's OAuth access
+   and refresh tokens, client secrets and keys are in the list
+   (`Store::secret_values`, opened in memory, never written), read again
+   whenever the store changes, so a refreshed token is covered too. The
+   other two are documented limits (`sandbox.md`, "Env";
+   `subscriptions.md`, "What the scrub can't reach").
 3. **A danger notice while the box is open (M54.6).** §8 gave the owner
    a switch but nothing that says the box is open, and the old stopgap
    showed how a "temporary" setting outlives its reason.

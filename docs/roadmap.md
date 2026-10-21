@@ -1479,6 +1479,12 @@ Current State; numbers are claimed there before anything is built.
     (`keep_days`, 14) and size (`max_mb`), and the audit log's egress
     lines (14 days) and other events (90); never transcripts, memory, the
     ledger, config or keys; doctor shows the sizes (`docs/housekeeping.md`).
+  - **Scrubbing gaps** (M54.3 follow-up): connections' OAuth access and
+    refresh tokens, client secrets and keys join the values hidden from
+    tool results, opened from the sealed store in memory and read again
+    when it changes; doctor names a key too short (under 6 characters)
+    to scrub; the Claude plan's own tools, which ferrule can't scrub, are
+    a documented limit (`docs/sandbox.md`, "Env"; `docs/subscriptions.md`).
 
 **Still open from earlier tracks.**
 

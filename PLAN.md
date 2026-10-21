@@ -9009,3 +9009,51 @@ binaries (macOS), clippy clean.
 to `housekeeping run`); a guest workspace elsewhere isn't. A running
 job's removed log frees its space only when the job ends. Not run on a
 real box.
+
+### 2026-10-21 — Wave A, task 5: closing the scrubbing gaps (Claude, Opus 5.5)
+
+M54.3's follow-up, in the `autopilot` worktree. Touches
+`ferrule-connections`' store with one read (`secret_values`).
+
+**Why.** M54.3's entry left three gaps (re-audit Part 1 M54.3, Part 3
+#9): connection OAuth tokens weren't among the known values the
+tool-result scrub hides; values under 6 characters are skipped without
+saying so; the Claude plan engine's own Bash and Read bypass ferrule's
+loop.
+
+**What changed.**
+- `ferrule-connections` `Store::secret_values`: every connection's
+  access and refresh token, client secret, API key and secret field
+  (`*password*`, `*token*`, `*secret*`, `key`, `*_key`; not the email,
+  site or account address), plus a service account JSON key's
+  `private_key`, named `<connection>.<field>`. Opened in memory, never
+  written.
+- `ferrule-cli` `health`: `known_secrets` adds them (`connection
+  <name>.<field>`), so the scrub, the health redactor and doctor's
+  `history` scan all have them at load. `scrub_tool_results` also keeps
+  a `Following` redactor that reads the store again whenever its file's
+  size or time changes, so a refreshed access token is hidden as soon as
+  it's saved (a stat per tool result).
+- Doctor's `history` line warns, by name, about a known value under 6
+  characters (too short to scrub); the reason (it would cut ordinary
+  words and numbers out of every result; none of ferrule's own keys is
+  that short) is in `health::scrub_tool_results`' doc and `sandbox.md`.
+- The Claude plan: claude's own tools' results go from the `claude`
+  process to Anthropic and its own session files without passing
+  ferrule's loop, and Claude Code offers no way for a caller to rewrite a
+  built-in tool's output, so they can't be scrubbed. Documented as a
+  known limit with what does protect them (the sandbox, the hidden
+  private dir, placeholders; the plan's own token unless
+  `scrub_subprocess_env`).
+- Docs: `sandbox.md` "Env" (connection values, the short-value rule,
+  "What the scrub can't reach"), `subscriptions.md` "What the scrub
+  can't reach", `m54-autonomous.md` amendment 2, the roadmap.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** The subscription plans' own tokens (ChatGPT's, Claude's in
+`private/`) aren't in the list. Doctor's `history` scan doesn't look in
+claude's config dir (`<data>/claude-code/`). Not run live.
