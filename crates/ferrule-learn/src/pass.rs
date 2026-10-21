@@ -149,7 +149,9 @@ async fn ask(
     let req = CompletionRequest {
         messages: vec![Message::system(system), Message::user(user)],
         tools: vec![],
-        max_output_tokens: Some(1024),
+        // M53.3: a skill's body and scripts need room; answers are capped
+        // by the pass's token budget either way.
+        max_output_tokens: Some(4096),
         temperature: Some(0.0),
         stream: None,
     };
@@ -181,6 +183,49 @@ async fn ask(
                 Some(&msg),
             ));
             Err(msg)
+        }
+    }
+}
+
+/// M53: no verifier, so one probe re-run with the change, then the judge
+/// contrasts the two transcripts. Fail-closed: anything but a clear
+/// "better" rejects.
+async fn judged(
+    env: &Env,
+    meter: &Arc<Meter>,
+    pass: &str,
+    ep: &Episode,
+    tail: &str,
+    change: &str,
+    run: GateRun<'_>,
+) -> GateVerdict {
+    match env.gate.probe(run).await {
+        None => GateVerdict::fail("no check to gate on"),
+        Some(p) if !p.finished => GateVerdict::fail(format!(
+            "the probe run stopped before finishing: {}",
+            p.incomplete.as_deref().unwrap_or("unknown")
+        )),
+        Some(p) => {
+            let answer = ask(
+                env,
+                meter,
+                pass,
+                "judge",
+                crate::judge::SYSTEM,
+                crate::judge::user_message(&ep.goal, change, tail, &p.tail),
+            )
+            .await;
+            match answer {
+                Err(e) => GateVerdict::fail(format!("the judge call failed: {e}")),
+                Ok(t) => match crate::judge::parse(&t) {
+                    Err(e) => GateVerdict::fail(format!("the judge's answer was unusable: {e}")),
+                    Ok(v) if v.better => GateVerdict {
+                        passed: true,
+                        reason: format!("kept by the judge: {}", v.why),
+                    },
+                    Ok(v) => GateVerdict::fail(format!("the judge said no: {}", v.why)),
+                },
+            }
         }
     }
 }
@@ -313,7 +358,7 @@ async fn body(
             &id,
             "reflect",
             reflect::SYSTEM,
-            reflect::user_message(&lessons, full, ep, &tail),
+            reflect::user_message(&lessons, full, &dir.learned_skills(), ep, &tail),
         )
         .await;
         let text = match answer {
@@ -348,9 +393,48 @@ async fn body(
         };
         let Proposal {
             delta,
+            skill: proposed_skill,
             reason,
             evidence,
         } = proposal;
+        // M53.3: a skill goes through its own validators, then the same gate.
+        if let Some(draft) = proposed_skill {
+            let block = prompt_block(&pb.render(), opts.max_bullets, opts.max_prompt_chars);
+            let flow = skill::delta(
+                skill::Ctx {
+                    env,
+                    meter,
+                    pass_dir: &pass_dir,
+                    gate_n: &mut gate_n,
+                    episode: ep,
+                    tail: &tail,
+                    playbook_block: block.text.as_deref(),
+                },
+                rec,
+                draft,
+                reason,
+                evidence,
+            )
+            .await?;
+            match flow {
+                skill::Flow::Next => {
+                    cursor = cursor.max(ep.at);
+                    rec.spent = meter.spent();
+                    dir.save_pass(rec)?;
+                    continue;
+                }
+                skill::Flow::BudgetBefore(why) => {
+                    stop = Some(Stop::Budget(why));
+                    skip_episodes(rec, &all[i..]);
+                    break;
+                }
+                skill::Flow::BudgetAfter(why) => {
+                    stop = Some(Stop::Budget(why));
+                    skip_episodes(rec, &all[i + 1..]);
+                    break;
+                }
+            }
+        }
         let Some(delta) = delta else {
             note(rec, ep, format!("no change: {reason}"));
             cursor = cursor.max(ep.at);
@@ -421,6 +505,7 @@ async fn body(
                 n: gate_n,
                 episode: ep,
                 playbook_block: block.text.as_deref(),
+                skill: None,
                 sink,
                 meter: meter.clone(),
                 pass_dir: &pass_dir,
@@ -428,40 +513,8 @@ async fn body(
             let verdict = if !probed {
                 env.gate.run(run).await
             } else {
-                // M53: no verifier — one probe re-run with the lesson,
-                // then the judge contrasts the two transcripts.
-                match env.gate.probe(run).await {
-                    None => GateVerdict::fail("no check to gate on"),
-                    Some(p) if !p.finished => GateVerdict::fail(format!(
-                        "the probe run stopped before finishing: {}",
-                        p.incomplete.as_deref().unwrap_or("unknown")
-                    )),
-                    Some(p) => {
-                        let lesson = dtext.as_deref().unwrap_or("");
-                        let answer = ask(
-                            env,
-                            meter,
-                            &id,
-                            "judge",
-                            crate::judge::SYSTEM,
-                            crate::judge::user_message(&ep.goal, lesson, &tail, &p.tail),
-                        )
-                        .await;
-                        match answer {
-                            Err(e) => GateVerdict::fail(format!("the judge call failed: {e}")),
-                            Ok(t) => match crate::judge::parse(&t) {
-                                Err(e) => GateVerdict::fail(format!(
-                                    "the judge's answer was unusable: {e}"
-                                )),
-                                Ok(v) if v.better => GateVerdict {
-                                    passed: true,
-                                    reason: format!("kept by the judge: {}", v.why),
-                                },
-                                Ok(v) => GateVerdict::fail(format!("the judge said no: {}", v.why)),
-                            },
-                        }
-                    }
-                }
+                let lesson = dtext.as_deref().unwrap_or("");
+                judged(env, meter, &id, ep, &tail, lesson, run).await
             };
             if !verdict.passed {
                 let budget = meter.exceeded();
@@ -787,6 +840,37 @@ pub fn changelog(p: &PassRecord, diff: &str) -> String {
                         .join(", "),
                     if *created { " (new)" } else { "" }
                 ),
+                Change::Skill {
+                    name,
+                    description,
+                    op,
+                    scripts,
+                    reason,
+                    episode,
+                    gate,
+                    evidence,
+                    notes,
+                    ..
+                } => {
+                    let with = if scripts.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" with {}", scripts.join(", "))
+                    };
+                    let cited = if evidence.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; evidence: {evidence:?}")
+                    };
+                    let noted = if notes.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {}", notes.join("; "))
+                    };
+                    format!(
+                        "skill {op} `{name}`{with}: {description:?} — {reason} (from {episode}; gate: {gate}{cited}{noted})"
+                    )
+                }
             })
             .collect(),
     );
@@ -884,6 +968,23 @@ pub fn revert(dir: &LearnDir, id: &str, memory_db: Option<&std::path::Path>) -> 
             }
         }
     }
+    // M53.3: learned skills, newest first.
+    for c in p.changes.iter().rev() {
+        if let Change::Skill {
+            name,
+            digest,
+            backup,
+            previous,
+            ..
+        } = c
+        {
+            match crate::skills::undo(dir, &id, name, digest, backup.as_deref(), previous.as_ref())
+            {
+                Ok(done) => undone.push(done),
+                Err(e) => not_undone.push(e),
+            }
+        }
+    }
     let merges: Vec<_> = p
         .changes
         .iter()
@@ -924,5 +1025,6 @@ pub fn revert(dir: &LearnDir, id: &str, memory_db: Option<&std::path::Path>) -> 
     Ok(p)
 }
 
+mod skill;
 #[cfg(test)]
 mod tests;

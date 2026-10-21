@@ -1670,7 +1670,7 @@ fn build_agent_from(
     // what produced this session — hashes, never contents.
     let mut stamp = ferrule_core::HarnessStamp::default();
     if cfg.skills.enabled && !planning {
-        let (skills, tools) = mcp_tools.skill_tools();
+        let (skills, tools) = mcp_tools.skill_tools(Some(learn::skill_view()));
         let set = skills.get();
         stamp.skills = set
             .skills
@@ -3614,7 +3614,14 @@ fn retirer(lanes: std::sync::Weak<Router>) -> models::Retire {
 
 fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skills::SkillSet {
     let paths: Vec<PathBuf> = cfg.paths.iter().map(|p| expand_home(p)).collect();
-    let roots = ferrule_skills::default_roots(workspace, cfg.project, &paths);
+    let mut roots = ferrule_skills::default_roots(workspace, cfg.project, &paths);
+    // M53.3: the learning pass's skills, listed as `learned`.
+    if let Ok(data) = config::data_dir() {
+        roots.push(ferrule_skills::SkillRoot {
+            dir: data.join(ferrule_learn::skills::DIR),
+            scope: ferrule_skills::Scope::Learned,
+        });
+    }
     let set = ferrule_skills::discover(&roots, &cfg.disabled);
     for d in &set.diagnostics {
         tracing::debug!(path = %d.path.display(), severity = ?d.severity, "skill: {}", d.message);

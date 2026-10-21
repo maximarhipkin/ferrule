@@ -165,6 +165,7 @@ none:
 | add | `{"op":"add","text":"…","evidence":"…","reason":"…"}` | a new `- [pb-N] text` line after the last lesson |
 | edit | `{"op":"edit","id":"pb-3","text":"…","evidence":"…","reason":"…"}` | that one line's text replaced in place |
 | retire | `{"op":"retire","id":"pb-3","evidence":"…","reason":"…"}` | that one line removed |
+| skill (M53.3) | `{"op":"skill","name":"…","description":"…","body":"…","scripts":{…},"evidence":"…","reason":"…"}` | no playbook line: a skill in `<data>/learned-skills/<name>/` (`docs/m53-contrastive-probing.md`) |
 | none | `{"op":"none","reason":"…"}` | nothing |
 
 M53.2: `evidence` cites the transcript moment the change rests on. A

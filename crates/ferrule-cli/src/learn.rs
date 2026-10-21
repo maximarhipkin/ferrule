@@ -15,9 +15,10 @@ use ferrule_gateway::{
 use ferrule_learn::files::{Change, DONE};
 use ferrule_learn::{Caps, Episode, LearnDir, Options, PassRecord, Spent, WorkspaceGate};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 /// The built-in task's name in `ferrule tasks list`.
 pub const TASK_NAME: &str = "ferrule-learn";
@@ -119,6 +120,72 @@ pub fn prompt_section(cfg: &LearningConfig) -> Option<String> {
     let dir = LearnDir::new(&config::data_dir().ok()?);
     let text = dir.read_playbook().ok()?;
     ferrule_learn::prompt_block(&text, cfg.max_bullets, PROMPT_CHARS).text
+}
+
+/// M53.3: an agent's view of the learned skills. One loads only while its
+/// SKILL.md is the one the pass kept (`learn/skills.json`, which no agent
+/// can read or write: the lock of M13's path) and it still scans clean.
+/// Every other skill passes. Checked on use, cached by modification time.
+pub fn skill_view() -> ferrule_skills::Keep {
+    let data = config::data_dir().ok();
+    let cache = Mutex::new(ViewCache::default());
+    Arc::new(move |s: &ferrule_skills::Skill| {
+        if s.scope != ferrule_skills::Scope::Learned {
+            return true;
+        }
+        match &data {
+            Some(data) => cache.lock().unwrap().allows(data, s),
+            None => false,
+        }
+    })
+}
+
+fn modified(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+#[derive(Default)]
+struct ViewCache {
+    index: Option<(Option<SystemTime>, ferrule_learn::skills::Index)>,
+    /// SKILL.md path → (its mtime, its length, the digest it was held
+    /// to, the verdict).
+    vetted: HashMap<PathBuf, (Option<SystemTime>, u64, String, bool)>,
+}
+
+impl ViewCache {
+    fn allows(&mut self, data: &Path, s: &ferrule_skills::Skill) -> bool {
+        let dir = LearnDir::new(data);
+        let at = modified(&dir.root().join("skills.json"));
+        if self.index.as_ref().is_none_or(|(m, _)| *m != at) {
+            self.index = Some((at, dir.skills_index()));
+        }
+        let Some(want) = self
+            .index
+            .as_ref()
+            .and_then(|(_, i)| i.skills.get(&s.name))
+            .map(|e| e.digest.clone())
+        else {
+            return false;
+        };
+        let meta = std::fs::metadata(&s.location).ok();
+        let stamp = (
+            meta.as_ref().and_then(|m| m.modified().ok()),
+            meta.map(|m| m.len()).unwrap_or(0),
+        );
+        if let Some((m, len, digest, ok)) = self.vetted.get(&s.location) {
+            if (*m, *len) == stamp && *digest == want {
+                return *ok;
+            }
+        }
+        let ok = ferrule_learn::skills::digest(s.dir()).as_ref() == Some(&want)
+            && ferrule_extensions::skill::vet_trigger(s.dir(), None).is_ok();
+        if !ok {
+            tracing::warn!(skill = %s.name, "a learned skill isn't the one the pass kept, or doesn't scan clean; it isn't offered");
+        }
+        self.vetted
+            .insert(s.location.clone(), (stamp.0, stamp.1, want, ok));
+        ok
+    }
 }
 
 fn spec(cfg: &LearningConfig) -> BuiltinSpec {
@@ -451,6 +518,13 @@ fn change_line(c: &Change) -> String {
             let ids: Vec<String> = replaced.iter().map(|i| format!("#{i}")).collect();
             format!("memory {} → #{new_id}: {content}", ids.join(", "))
         }
+        Change::Skill {
+            name,
+            description,
+            op,
+            reason,
+            ..
+        } => format!("skill {op} `{name}`: {description} — {reason}"),
     }
 }
 
@@ -480,6 +554,15 @@ fn show(dir: &LearnDir) -> Result<()> {
                 "{} lesson(s) left out by the caps ({} lessons, {PROMPT_CHARS} characters)",
                 block.omitted, l.max_bullets
             );
+        }
+    }
+    let skills = dir.learned_skills();
+    if skills.is_empty() {
+        println!("learned skills: none yet");
+    } else {
+        println!("learned skills ({}):", dir.skills_root().display());
+        for (name, description) in &skills {
+            println!("  {name}: {description}");
         }
     }
     let passes = dir.passes();
@@ -516,7 +599,7 @@ fn diff(dir: &LearnDir, pass: Option<String>) -> Result<()> {
     for c in p
         .changes
         .iter()
-        .filter(|c| matches!(c, Change::Memory { .. }))
+        .filter(|c| matches!(c, Change::Memory { .. } | Change::Skill { .. }))
     {
         println!("{}", change_line(c));
     }

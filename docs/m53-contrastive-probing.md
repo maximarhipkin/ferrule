@@ -165,3 +165,81 @@ edit that can't name its moment as speculation
 **Not done.** Nothing checks that the cited moment is really in the
 transcript; the owner reads it next to the change. No real pass has run
 with the new prompt.
+
+## M53.3 — learned skills and scripts, validated
+
+Built 2026-10-21 on `autopilot`, from the gap analysis's M53.3.
+
+**Why.** In Harness²'s ablation, taking skills away cost 5.3 points,
+scripts 3.7 and prompt lines 1.5, and skills and scripts were about half
+of all its kept edits
+([arXiv App. E](https://arxiv.org/html/2610.14224);
+[tree.py's validators](https://github.com/google-research/harness2/blob/1cfe254e8d25b15f37048c3730134686abe60335/harness2/core/tree.py#L216-L390)).
+The pass could only write one-line lessons. A procedure the agent
+fumbled twice is better kept as a skill it loads when a task matches.
+
+**The delta.** The reflector may answer
+`{"op":"skill","name":…,"description":…,"body":…,"scripts":{"scripts/x.sh":…},"evidence":…,"reason":…}`
+instead of a lesson (`reflect.rs`). It is told when to prefer one (a
+multi-step procedure fumbled more than once) and which learned skills
+already exist. Evidence is required, as for every change (M53.2).
+
+**The validators** (`ferrule-learn/src/skills.rs`), in order. Any
+failure rejects the skill with its reason in `pass.json` and the
+changelog.
+1. **Shape:** a name of lowercase words joined by hyphens, at most 40
+   characters; a one-line description of 10–300 characters that passes
+   the lesson screen; a body of at most 8,000 characters; at most five
+   scripts at `scripts/<file>`, each at most 8,000 characters; and no
+   path into ferrule's own data (`data/private`, `secrets.env`,
+   `data/learn`, `playbook.md`, `skills.json`).
+2. **M13's path:** the draft is written to a temp directory and read
+   back with ferrule-extensions' `inspect`, the function `skill_keep`
+   uses. That checks the frontmatter, the name and the description, and
+   runs the injection scan over SKILL.md and its text files. The same
+   scanner reads every script. A block finding rejects.
+3. **Reachable:** discovery over the draft finds it, the model may
+   activate it, its description reads back as written, and the catalog
+   lists it by name.
+4. **Every referenced script ships:** each `scripts/…` path the body
+   names is a file in the draft.
+5. **Scripts parse:** `sh -n`, `bash -n` or `python3 -I -m py_compile`,
+   picked by extension or shebang. They run in the sandbox (the gate's),
+   with the draft as their workspace, never outside it. A tool that
+   isn't installed skips its scripts with a note, and so does a platform
+   without `sh` (Windows). Other languages are kept unparsed with a note.
+
+**The gate.** The same contrast gate as a lesson. With a check, the
+episode's task is re-run in a scratch copy where the draft is a project
+skill (`.ferrule/skills/<name>`); it must finish and pass the check
+twice. Without one, the probe runs the same way and the judge contrasts
+the two transcripts.
+
+**Kept.** The draft is copied (no symlinks followed) to
+`<data>/learned-skills/<name>/`, and `<data>/learn/skills.json` records
+the SHA-256 of its SKILL.md and the pass. A learned skill of the same
+name is moved into the pass folder first (`skills/<n>-<name>`), and the
+change is a `replace`. The journal's `Change::Skill` carries the name,
+description, scripts, digest, gate, evidence and any validator notes.
+`ferrule learn show` lists the learned skills, `learn diff` the skill
+changes, and `learn revert` removes a kept skill (and puts back the one
+it replaced) when its SKILL.md is still the one the pass wrote.
+
+**Loading** (`ferrule-skills`, `ferrule-cli`). `<data>/learned-skills`
+is the last discovery root, with the new origin `Scope::Learned`
+(`ferrule skills` shows `learned`). Every other skill of the same name
+wins. Each agent's view of the live set (`SkillsHandle::filtered`,
+`learn::skill_view`) keeps a learned skill only while its SKILL.md
+matches the digest in `skills.json`, which sandboxed commands can't read
+or write, and a fresh injection scan of it is clean. That is the lock of
+M13's draft-check-scan-lock path. A learned skill is offered through the
+catalog and `activate_skill`, never by a keyword trigger. Commands can
+read the directory, so its scripts run. Under `workspace-write` and owner
+mode they can't write it, unless the data dir sits inside the workspace
+or the sandbox is off; then the digest lock is what holds.
+
+**Not done.** No real pass has proposed a skill yet. An owner who edits
+a learned skill by hand makes it stop loading (its digest changed); the
+fix is to move it to their own skills folder. The gate re-runs the
+episode with the skill offered, but nothing checks that the agent
+activated it.

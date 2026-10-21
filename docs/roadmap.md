@@ -1174,6 +1174,12 @@ each in `docs/m53-contrastive-probing.md`):
   window, every cut marked as the renderer's, and a reflector that must
   cite the transcript moment behind each change, treats "no change" as
   the default and a one-off defect as noise.
+- **M53.3**, learned skills and scripts: a `skill` delta written to
+  `<data>/learned-skills/<name>/` after Harness²'s validators (a
+  description, reachable through the catalog, every referenced script
+  shipped, scripts that parse in the sandbox) and M13's inspect-and-scan
+  path, gated like a lesson, locked by digest in `learn/skills.json`,
+  loaded as origin `learned`, revertible.
 
 ### M54 — protected autonomous mode
 

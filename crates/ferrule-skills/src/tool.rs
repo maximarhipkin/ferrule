@@ -32,6 +32,11 @@ pub fn tools(skills: Arc<SkillSet>) -> Vec<Arc<dyn Tool>> {
     LiveSkillTools::new(SkillsHandle::fixed(skills)).tools()
 }
 
+/// Which skills one agent's view keeps (M53.3): the learning pass's
+/// skills pass a fresh injection screen, and (M53.4) only those of the
+/// agent's scope.
+pub type Keep = Arc<dyn Fn(&Skill) -> bool + Send + Sync>;
+
 /// A skill set that can change while agents run (M13: a skill installed or
 /// removed mid-session). Clones share the set; `refresh` re-runs discovery
 /// over the roots it was made with.
@@ -41,6 +46,8 @@ pub struct SkillsHandle {
     roots: Arc<[SkillRoot]>,
     /// The owner can change it while agents run (M24).
     disabled: Arc<RwLock<Vec<String>>>,
+    /// This view's filter, applied on every `get`; `None` keeps all.
+    keep: Option<Keep>,
 }
 
 impl SkillsHandle {
@@ -51,6 +58,7 @@ impl SkillsHandle {
             current: Arc::new(RwLock::new(Arc::new(set))),
             roots: roots.into(),
             disabled: Arc::new(RwLock::new(disabled)),
+            keep: None,
         }
     }
 
@@ -60,11 +68,30 @@ impl SkillsHandle {
             current: Arc::new(RwLock::new(set)),
             roots: Arc::new([]),
             disabled: Arc::default(),
+            keep: None,
+        }
+    }
+
+    /// The same live set, seen through `keep`: refreshes and the owner's
+    /// switches still reach it, and what `keep` refuses is in neither the
+    /// catalog nor the tools.
+    pub fn filtered(&self, keep: Keep) -> Self {
+        Self {
+            keep: Some(keep),
+            ..self.clone()
         }
     }
 
     pub fn get(&self) -> Arc<SkillSet> {
-        self.current.read().unwrap().clone()
+        let set = self.current.read().unwrap().clone();
+        match &self.keep {
+            None => set,
+            Some(keep) => {
+                let mut view = (*set).clone();
+                view.skills.retain(|s| keep(s));
+                Arc::new(view)
+            }
+        }
     }
 
     /// Rediscover: what changed on disk is what the tools offer from the

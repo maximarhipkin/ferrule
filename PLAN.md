@@ -7560,3 +7560,51 @@ after M53.2 and before M53.3.
 
 **Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
 73 binaries (macOS). M54's Linux-only code is still not compiled here.
+
+### 2026-10-21 — M53.3: learned skills and scripts, validated (Claude, Opus 5.5)
+
+**Why.** Harness²'s ablation ranks skills (5.3 points) and scripts (3.7)
+far above prompt lines (1.5), the only thing the pass could write. A
+procedure the agent fumbled twice belongs in a skill it loads on demand.
+
+**What changed.**
+- `ferrule-learn`:
+  - `reflect.rs`: a `skill` op (`name`, `description`, `body`,
+    optional `scripts`), evidence required; the prompt says when to
+    prefer a skill and lists the learned ones. `Proposal.skill`.
+  - `skills.rs` (new): `SkillDraft` and its shape checks; the
+    validators (M13's `inspect` and scan over SKILL.md, text files and
+    scripts; reachable through the catalog; every `scripts/…` path the
+    body names ships; `sh -n`/`bash -n`/`python3 -m py_compile` in the
+    gate's sandbox, a missing tool skipped with a note); `keep` and
+    `undo`; `learn/skills.json` (the digest lock); `LearnDir`'s
+    `skills_root`, `skills_index`, `learned_skills`.
+  - `pass/skill.rs` (new): shape, draft in a temp dir, validators, the
+    gate or the probe and judge, keep, journal. The probe-and-judge half
+    moved into `pass::judged`, shared with lessons.
+  - `gate.rs`: `GateRun.skill` puts the draft in the scratch copy as a
+    project skill; `Gate::sandbox` (the `WorkspaceGate`'s).
+  - `files.rs`: `Change::Skill`; changelog lines; `revert` undoes kept
+    skills newest first. The pass's answers may be 4,096 tokens (was
+    1,024): a skill's body and scripts need room.
+  - `screen.rs`: `denied` and `ferrule_data` helpers.
+- `ferrule-skills`: `Scope::Learned` ("learned"; never triggers);
+  `SkillsHandle::filtered` and `Keep`, one agent's view of the live set.
+- `ferrule-cli`: `<data>/learned-skills` is the last discovery root (the
+  gateway's live set and `ferrule skills`); `learn::skill_view` keeps a
+  learned skill only while its SKILL.md matches `skills.json` and scans
+  clean; `ferrule learn show` lists learned skills, `learn diff` shows
+  skill changes.
+- Docs: `m53-contrastive-probing.md` ("M53.3"), `skills.md` (source 5),
+  `m16-learning-loop.md` (the op table), the roadmap, the README's
+  learning row and Documentation list (the M53 doc wasn't linked).
+
+**Tests changed, none added.** `reflect.rs`'s `user_message` call takes
+the learned-skills list.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** No real pass has proposed a skill. Hand-editing a learned skill
+stops it loading (its digest changed). Nothing checks that the gate run
+activated the skill it was offered.

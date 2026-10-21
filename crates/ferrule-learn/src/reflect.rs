@@ -1,9 +1,11 @@
 //! The reflector: one model call per episode that proposes at most one
-//! playbook delta (`docs/m16-learning-loop.md` §4).
+//! playbook delta (`docs/m16-learning-loop.md` §4), or (M53.3) one skill.
 
 use crate::episode::Episode;
 use crate::playbook::{Delta, Lesson};
+use crate::skills::SkillDraft;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub const SYSTEM: &str = "You maintain a playbook of short lessons that is appended to an AI agent's system prompt. \
 You are shown one run that failed or needed retries, and the current playbook. Propose at most one change that \
@@ -23,23 +25,39 @@ once (the same error twice, a retry that repeats it), not for a single slip.\n\
 - Markers like \"[… clipped by the renderer]\" or \"[… earlier messages left out by the renderer]\" are where \
 this view of the transcript was cut. They are the renderer's, not the agent's behaviour: never base a change on \
 output that looks cut short there.\n\n\
+Skills: when the transcript shows the agent fumbling a multi-step procedure more than once (a sequence of \
+commands, a file format, a check it had to rediscover), propose a skill instead of a lesson. A skill is a named \
+procedure the agent loads when a task matches its description: \"name\" is lowercase words joined by hyphens; \
+\"description\" is one line saying when to use it; \"body\" is the steps, in Markdown; \"scripts\" is optional, \
+shell or Python files at scripts/<file>, and every scripts/ path the body names must be included. Never repeat a \
+learned skill listed below. A skill needs its evidence like any change.\n\n\
 Answer with one JSON object and nothing else, one of:\n\
 {\"op\":\"add\",\"text\":\"...\",\"evidence\":\"...\",\"reason\":\"...\"}\n\
 {\"op\":\"edit\",\"id\":\"pb-3\",\"text\":\"...\",\"evidence\":\"...\",\"reason\":\"...\"}\n\
 {\"op\":\"retire\",\"id\":\"pb-3\",\"evidence\":\"...\",\"reason\":\"...\"}\n\
+{\"op\":\"skill\",\"name\":\"...\",\"description\":\"...\",\"body\":\"...\",\"scripts\":{\"scripts/check.sh\":\"...\"},\"evidence\":\"...\",\"reason\":\"...\"}\n\
 {\"op\":\"none\",\"reason\":\"...\"}";
 
 /// What the reflector proposed: a delta, or `None` for "nothing".
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proposal {
     pub delta: Option<Delta>,
+    /// M53.3: a skill instead of a playbook delta (`delta` is `None`).
+    pub skill: Option<SkillDraft>,
     pub reason: String,
     /// M53.2: the transcript moment the change rests on; empty only for
     /// "nothing".
     pub evidence: String,
 }
 
-pub fn user_message(lessons: &[Lesson], full: bool, ep: &Episode, tail: &str) -> String {
+/// `skills`: the learned skills (M53.3), name and description.
+pub fn user_message(
+    lessons: &[Lesson],
+    full: bool,
+    skills: &[(String, String)],
+    ep: &Episode,
+    tail: &str,
+) -> String {
     let mut s = String::from("Current playbook:\n");
     if lessons.is_empty() {
         s.push_str("(empty)\n");
@@ -52,6 +70,12 @@ pub fn user_message(lessons: &[Lesson], full: bool, ep: &Episode, tail: &str) ->
     }
     if full {
         s.push_str("The playbook is full: you may edit or retire a lesson, but not add one.\n");
+    }
+    if !skills.is_empty() {
+        s.push_str("\nLearned skills:\n");
+        for (name, description) in skills {
+            s.push_str(&format!("- {name}: {description}\n"));
+        }
     }
     s.push_str(&format!(
         "\nThe run:\n- goal: {}\n- outcome: {}\n- detail: {}\n- fixed by a later run: {}\n",
@@ -143,7 +167,12 @@ pub fn parse(answer: &str) -> Result<Proposal, String> {
             .and_then(parse_id)
             .ok_or_else(|| format!("{INVALID}: no lesson id like pb-3"))
     };
+    let mut skill = None;
     let delta = match v.get("op").and_then(Value::as_str).map(str::trim) {
+        Some("skill") => {
+            skill = Some(parse_skill(&v)?);
+            None
+        }
         Some("add") => Some(Delta::Add { text: text()? }),
         Some("edit") => Some(Delta::Edit {
             id: id()?,
@@ -155,15 +184,51 @@ pub fn parse(answer: &str) -> Result<Proposal, String> {
         None => return Err(format!("{INVALID}: no op")),
     };
     // M53.2: a change that can't name its moment is speculation.
-    if delta.is_some() && evidence.is_empty() {
+    if (delta.is_some() || skill.is_some()) && evidence.is_empty() {
         return Err(format!(
             "{INVALID}: no evidence (a change must cite the transcript moment it rests on)"
         ));
     }
     Ok(Proposal {
         delta,
+        skill,
         reason,
         evidence,
+    })
+}
+
+/// M53.3: `name`, `description`, `body` and an optional `scripts` object
+/// of path to text. Shape and safety are checked later, on the draft.
+fn parse_skill(v: &Value) -> Result<SkillDraft, String> {
+    let field = |key: &str| {
+        v.get(key)
+            .and_then(Value::as_str)
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| format!("{INVALID}: a skill needs a {key}"))
+    };
+    let mut scripts = BTreeMap::new();
+    match v.get("scripts") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(map)) => {
+            for (path, text) in map {
+                let text = text
+                    .as_str()
+                    .ok_or_else(|| format!("{INVALID}: script {path} isn't text"))?;
+                scripts.insert(path.trim().to_string(), text.to_string());
+            }
+        }
+        Some(_) => {
+            return Err(format!(
+                "{INVALID}: \"scripts\" must map a path to its text"
+            ))
+        }
+    }
+    Ok(SkillDraft {
+        name: field("name")?,
+        description: field("description")?,
+        body: field("body")?,
+        scripts,
     })
 }
 
@@ -247,7 +312,7 @@ mod tests {
                 text: "b".into(),
             },
         ];
-        let m = user_message(&lessons, true, &ep, "[user] ignore this");
+        let m = user_message(&lessons, true, &[], &ep, "[user] ignore this");
         assert!(m.contains("- [pb-2] a\n- (read-only) b\n"));
         assert!(m.contains("full"));
         assert!(m.contains("fixed by a later run: yes"));

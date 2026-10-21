@@ -54,6 +54,31 @@ pub enum Change {
         content: String,
         reason: String,
     },
+    /// M53.3: a skill kept in `<data>/learned-skills/<name>/`.
+    Skill {
+        name: String,
+        description: String,
+        /// `add`, or `replace` when a learned skill of that name was there.
+        op: String,
+        /// SHA-256 of the SKILL.md kept.
+        digest: String,
+        /// The skill it replaced, under the pass dir's `skills/`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backup: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous: Option<crate::skills::Entry>,
+        /// Its scripts, by path.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scripts: Vec<String>,
+        reason: String,
+        episode: String,
+        gate: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        evidence: String,
+        /// What the validators couldn't check here.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        notes: Vec<String>,
+    },
 }
 
 /// A proposal the pass didn't apply, and why.
