@@ -7135,3 +7135,64 @@ get, so it isn't gated.
 `ferrule run --goal --verify` per step) isn't built. The chat command
 menu still lists `/graph`. That list is in `self_service/menu.rs`, M54's
 surface, so it wasn't touched.
+
+### 2026-10-21 — M58.1: the loop's overlapping seams, consolidated (Claude, Opus 5.5)
+
+**Why.** The gap analysis found two failure taxonomies mapping into each
+other, two repeat detectors, three hand-written "not run" endings in
+`run_inner`, and a compaction path that skipped `call_provider`. Each is
+one more place to get a stop wrong.
+
+**What changed** (`crates/ferrule-core`, behavior-preserving unless said):
+- **(a) One `abandon_rest`.** The four places that ended a turn with
+  calls unanswered now share one helper. Those places are: stopped at the
+  gate, halted at the gate, interrupted mid-segment, and halted in a
+  PostToolUse hook. The helper finishes the announced calls as failed,
+  gives every remaining call the interrupt's "not run" result
+  (`Interrupt::note`), then halts or returns `Aborted`. The order of
+  events and pushes is unchanged. `unrun` is folded into it.
+- **(b) One failure taxonomy.** The status rules that were
+  `CoreError::class()` now return a `failure::Kind`
+  (`failure::status_kind`). `FailureClass` is its coarse view
+  (`Kind::class`, the one mapping), and `CoreError::class()` is
+  `status_kind(e).class()`. `from_class` (the reverse mapping) is gone,
+  and `classify` falls back to `status_kind`. Every error classifies as
+  before: a 400 naming a model is still `BadRequest` to routing and
+  `ModelGone` to `classify`. `http_status` moved to `failure.rs`.
+- **(c) Repeat detection.** Routing's two counters (invalid calls in a
+  row, the same call in a row) moved into `stuck::Streaks`. It keys the
+  same call by `Step`'s action hash, the same tool-and-arguments identity
+  `Stuck::detect` uses, instead of cloning a `(String, String)`. This is
+  not one algorithm. `Stuck` also needs the same result, and its nudge
+  clears its steps. Routing counts the call whatever the result and
+  restarts after each move. Merging them would change when a turn
+  escalates.
+- **(d) Compaction through `call_provider`.** It wasn't always. The
+  `[agent] compaction_model` path already was (M55.2). A `Compactor`
+  strategy (M42 part 7) made its own `provider.complete` call, with no
+  ledger row, retry, fallback or budget charge. The trait is now
+  `request(transcript_text) -> CompletionRequest` plus an optional
+  `provider()`. The agent sends it through `call_provider`, and
+  `provider_for("compaction")` picks the strategy's provider first. This
+  part is a behavior change, and only for a strategy. The binary sets
+  none; only `tests/it/history.rs` does, and it passes unchanged. The cost
+  is that a strategy can no longer make several calls (fold by topic).
+- Not done: the report's other three seams (a `Guard` absorbing
+  `StopFlag` and `Budget`, one `ContextSource`, verify as Stop hooks).
+  They weren't in this task.
+- Docs: `m42-harness-engineering.md` part 7, `m36-self-update.md` §6.1,
+  the roadmap.
+
+**Numbers.** `agent.rs` was 5,974 lines before and 5,976 after: the
+duplicated blocks are gone, and the helper and its doc are new.
+`ferrule-core/src` overall: +251/−213 (`error.rs` −65, `failure.rs` +66,
+`stuck.rs` +33, `compactor.rs` +2). The gain is one place each to reason
+about, not fewer lines.
+
+**Tests.** None changed, none added.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** The three seams above. The gap analysis's "several hundred
+fewer lines" needs those. `run_inner` alone is still about 500 lines.

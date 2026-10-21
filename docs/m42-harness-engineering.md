@@ -202,18 +202,21 @@ chat.
 Pi's two state-layer ideas, mapped to ferrule:
 
 - **Compaction as a strategy.** `ferrule_core::compactor::Compactor` is
-  the seam (`summarize(transcript_text) -> summary`); the agent keeps the
-  built-in checklist pipeline on its own model when none is set, and the
-  fold record doesn't change either way. The first strategy is
-  `TemplateCompactor` — the same template on any provider it's handed.
-  Pi's other examples (topic-based folding, a custom prompt) are now one
-  trait impl away. A strategy's calls don't get the agent's ledger rows,
-  retries, budget charge or kill switch. `[agent] compaction_model =
-  "fast"` (resolved and validated at agent build, routed through the
-  model catalog with fallbacks) therefore isn't a strategy since
-  2026-10-19: the agent runs its own pipeline on that model
-  (`Agent::with_compaction_provider`), through `call_provider` like every
-  other model call.
+  the seam: `request(transcript_text)` is the summary request, and
+  `provider()` optionally names the model it goes to. When no strategy is
+  set, the agent keeps the built-in checklist pipeline on its own model.
+  The fold record doesn't change either way. The first strategy is
+  `TemplateCompactor`, the same template on any provider it's handed. A
+  custom prompt is one trait impl away. Folding by topic in several calls
+  isn't, since M58.1: the agent sends a strategy's one request through
+  `call_provider`, so a summary always gets the agent's ledger row,
+  retries, fallback, budget charge and kill switch. Before that, a
+  strategy made its own call outside all of them.
+- **`[agent] compaction_model = "fast"`** isn't a strategy (since
+  2026-10-19). It is resolved and validated at agent build and routed
+  through the model catalog with fallbacks. The agent runs its own
+  pipeline on that model (`Agent::with_compaction_provider`), through
+  `call_provider` like every other model call.
 - **Session tree.** A transcript forks: `Transcript::open` reads a
   session without writing to it, `fork(session_id, at)` writes a new
   transcript with `parent`/`fork_at` meta and the fold-applied messages

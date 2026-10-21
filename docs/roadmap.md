@@ -1229,7 +1229,12 @@ Current State; numbers are claimed there before anything is built.
     pair is measured (`docs/routing.md`); M58.4, the graph runner
     confirmed outside `ferrule-core` (it's `ferrule-cli`'s `graph.rs`)
     and off the `run`/`chat` path (`docs/m42-harness-engineering.md`,
-    part 6).
+    part 6); M58.1, four of the loop's seven seams consolidated in
+    `ferrule-core`: one `abandon_rest` for the "not run" endings, one
+    failure taxonomy (`FailureClass` is `failure::Kind`'s coarse view),
+    routing's repeat counts kept with the stuck detector
+    (`stuck::Streaks`), and a compaction strategy's request sent through
+    `call_provider` (`docs/m42-harness-engineering.md`, part 7).
   - **M59** channels not worth chasing yet: personal WhatsApp and
     iMessage.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted

@@ -11,7 +11,7 @@ use crate::message::{Message, ToolCall, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use crate::routing::Signal;
-use crate::stuck::{EditCounts, Step, Stuck};
+use crate::stuck::{EditCounts, Step, Streaks, Stuck};
 use crate::textcall;
 use crate::tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
 use crate::transcript::Transcript;
@@ -287,6 +287,16 @@ enum Interrupt {
     Stopped,
 }
 
+impl Interrupt {
+    /// The result every call it left unrun gets.
+    fn note(&self) -> &'static str {
+        match self {
+            Interrupt::Halted(_) => "not run: ferrule halted the run",
+            Interrupt::Stopped => "not run: the agent was stopped",
+        }
+    }
+}
+
 /// A tool result with the PreToolUse hooks' note after it.
 fn with_pre_note(raw: &str, pre: &Fired) -> String {
     match &pre.context {
@@ -431,7 +441,8 @@ impl Agent {
     }
 
     /// How compaction summarizes: a strategy instead of the built-in
-    /// pipeline (e.g. the checklist template on a cheaper model).
+    /// pipeline (e.g. the checklist template on a cheaper model). Its
+    /// request is sent like any other call.
     pub fn with_compactor(mut self, compactor: Arc<dyn crate::compactor::Compactor>) -> Self {
         self.compactor = Some(compactor);
         self
@@ -976,13 +987,19 @@ impl Agent {
             .filter(|_| raised && self.effort.is_none())
     }
 
-    /// The provider a call of this kind runs on: the compaction model's
-    /// for a summary, when one is set (`[agent] compaction_model`).
+    /// The provider a call of this kind runs on. A summary goes to the
+    /// compaction strategy's model when it names one, else to the
+    /// compaction model's when one is set (`[agent] compaction_model`).
     fn provider_for(&self, call_kind: &str) -> &dyn Provider {
-        match (&self.compaction_provider, call_kind) {
-            (Some(p), "compaction") => p.as_ref(),
-            _ => self.provider.as_ref(),
+        if call_kind == "compaction" {
+            if let Some(p) = self.compactor.as_ref().and_then(|c| c.provider()) {
+                return p;
+            }
+            if let Some(p) = &self.compaction_provider {
+                return p.as_ref();
+            }
         }
+        self.provider.as_ref()
     }
 
     /// `sink`, timing the call's first streamed byte and the run's first
@@ -1313,8 +1330,7 @@ impl Agent {
         // M25, kept only when the provider routes: invalid tool calls in a
         // row, and the same call repeated in a row.
         let routes = self.provider.routes();
-        let mut misfits = 0;
-        let mut repeats: (Option<(String, String)>, u32) = (None, 0);
+        let mut streaks = Streaks::default();
         // M57.2: edits per file since the check last passed; the turns
         // whose effort is raised (the first, and the one after a failed
         // check); how low the steps and the token budget were last said
@@ -1529,28 +1545,19 @@ impl Agent {
                 let mut gated: Vec<Gated> = Vec::with_capacity(seg.len());
                 for call in seg {
                     if self.stopped() {
-                        // Every call needs a result, or the history can't
-                        // be sent again when the agent is resumed.
-                        self.unrun(&tx, &seg[..gated.len()]).await;
-                        for skipped in &calls[at..] {
-                            self.push(Message::tool_result(
-                                &skipped.id,
-                                "not run: the agent was stopped",
-                            ));
-                        }
-                        return Err(CoreError::Aborted("the agent was stopped".into()));
+                        let (announced, rest) = (&seg[..gated.len()], &calls[at..]);
+                        return self
+                            .abandon_rest(&tx, announced, rest, Interrupt::Stopped, iteration + 1)
+                            .await;
                     }
                     match self.gate(&tx, g, call).await {
                         Ok(passed) => gated.push(passed),
                         Err(why) => {
-                            self.unrun(&tx, &seg[..=gated.len()]).await;
-                            for skipped in &calls[at..] {
-                                self.push(Message::tool_result(
-                                    &skipped.id,
-                                    "not run: ferrule halted the run",
-                                ));
-                            }
-                            return Ok(self.halt(&tx, iteration + 1, why).await);
+                            let (announced, rest) = (&seg[..=gated.len()], &calls[at..]);
+                            let halted = Interrupt::Halted(why);
+                            return self
+                                .abandon_rest(&tx, announced, rest, halted, iteration + 1)
+                                .await;
                         }
                     }
                 }
@@ -1572,10 +1579,7 @@ impl Agent {
                 if let Some(interrupt) = interrupted {
                     // Halted or stopped mid-run: what finished keeps its
                     // result, the rest is marked not run.
-                    let note = match &interrupt {
-                        Interrupt::Halted(_) => "not run: ferrule halted the run",
-                        Interrupt::Stopped => "not run: the agent was stopped",
-                    };
+                    let note = interrupt.note();
                     for ((call, passed), done) in seg.iter().zip(&gated).zip(&ran) {
                         let (content, ok) = match done {
                             Some(done) => (with_pre_note(&done.raw, &passed.pre), done.ok),
@@ -1593,15 +1597,9 @@ impl Agent {
                         .await;
                         self.push(Message::tool_result(&call.id, content));
                     }
-                    for skipped in &calls[end..] {
-                        self.push(Message::tool_result(&skipped.id, note));
-                    }
-                    return match interrupt {
-                        Interrupt::Halted(why) => Ok(self.halt(&tx, iteration + 1, why).await),
-                        Interrupt::Stopped => {
-                            Err(CoreError::Aborted("the agent was stopped".into()))
-                        }
-                    };
+                    return self
+                        .abandon_rest(&tx, &[], &calls[end..], interrupt, iteration + 1)
+                        .await;
                 }
 
                 for (k, (call, (passed, done))) in
@@ -1646,14 +1644,11 @@ impl Agent {
                                 // The rest of the segment ran, but its
                                 // PostToolUse hooks didn't: not run, as a
                                 // halt mid-call is.
-                                self.unrun(&tx, &seg[k + 1..]).await;
-                                for skipped in &calls[at + k + 1..] {
-                                    self.push(Message::tool_result(
-                                        &skipped.id,
-                                        "not run: ferrule halted the run",
-                                    ));
-                                }
-                                return Ok(self.halt(&tx, iteration + 1, why).await);
+                                let (announced, rest) = (&seg[k + 1..], &calls[at + k + 1..]);
+                                let halted = Interrupt::Halted(why);
+                                return self
+                                    .abandon_rest(&tx, announced, rest, halted, iteration + 1)
+                                    .await;
                             }
                         };
                         for note in post.context.iter().chain(post.block.iter().map(|b| &b.1)) {
@@ -1677,24 +1672,14 @@ impl Agent {
                     }
                     self.push(Message::tool_result(&call.id, content));
                     if routes {
-                        misfits = if self.tools.misfit(&call.name, &call.arguments) {
-                            misfits + 1
-                        } else {
-                            0
-                        };
-                        let key = (call.name.clone(), call.arguments.to_string());
-                        repeats = match repeats {
-                            (Some(last), n) if last == key => (Some(last), n + 1),
-                            _ => (Some(key), 1),
-                        };
-                        // A move starts both counts again, so the next tier
-                        // gets the same allowance.
+                        let misfit = self.tools.misfit(&call.name, &call.arguments);
+                        let step = steps.last().expect("pushed above");
+                        let (misfits, repeats) = streaks.record(step, misfit);
                         let moved = (misfits > 0
                             && self.signal(&tx, Signal::ToolErrors(misfits)).await)
-                            || self.signal(&tx, Signal::Repeated(repeats.1)).await;
+                            || self.signal(&tx, Signal::Repeated(repeats)).await;
                         if moved {
-                            misfits = 0;
-                            repeats.1 = 0;
+                            streaks.moved();
                         }
                     }
                 }
@@ -1909,9 +1894,20 @@ impl Agent {
         })
     }
 
-    /// `ToolCallFinished` for calls announced but never answered.
-    async fn unrun(&self, tx: &mpsc::Sender<AgentEvent>, calls: &[ToolCall]) {
-        for call in calls {
+    /// Ends the run with the turn's remaining calls not run: `announced`
+    /// (started, never answered) get a failed `ToolCallFinished`, every
+    /// call in `rest` gets the interrupt's "not run" result (each call
+    /// needs one, or the history can't be sent again when the agent is
+    /// resumed), then it halts or stops.
+    async fn abandon_rest(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        announced: &[ToolCall],
+        rest: &[ToolCall],
+        interrupt: Interrupt,
+        iterations: usize,
+    ) -> Result<String, CoreError> {
+        for call in announced {
             self.emit(
                 tx,
                 AgentEvent::ToolCallFinished {
@@ -1922,6 +1918,13 @@ impl Agent {
                 },
             )
             .await;
+        }
+        for skipped in rest {
+            self.push(Message::tool_result(&skipped.id, interrupt.note()));
+        }
+        match interrupt {
+            Interrupt::Halted(why) => Ok(self.halt(tx, iterations, why).await),
+            Interrupt::Stopped => Err(CoreError::Aborted("the agent was stopped".into())),
         }
     }
 
@@ -2394,32 +2397,31 @@ impl Agent {
         input.trigger = Some("auto".into());
         self.fire(tx, HookEvent::PreCompact, input.clone()).await;
 
-        let summary = match &self.compactor {
-            // A strategy (M42 part 7) owns its model and its errors (no
-            // retry, ledger row or budget charge of the agent's); the fold
-            // record it produces is the same either way.
-            Some(compactor) => compactor.summarize(&transcript_text).await?,
-            None => {
-                let summary_req = CompletionRequest {
-                    messages: vec![Message::user(format!(
-                        "{COMPACTION_TEMPLATE}{transcript_text}"
-                    ))],
-                    tools: vec![],
-                    // The main calls' own settings: a reasoning model
-                    // (OpenAI's gpt-5, o-series) refuses `temperature: 0`
-                    // and `max_tokens` with a 400, and a compaction that
-                    // fails fails again on every later turn.
-                    max_output_tokens: self.config.max_output_tokens,
-                    temperature: self.config.temperature,
-                    stream: None,
-                };
-                self.call_provider(tx, summary_req, iteration, "compaction")
-                    .await?
-                    .message
-                    .content
-                    .unwrap_or_default()
-            }
+        // A strategy (M42 part 7) shapes the request and may name its
+        // model; either way the call is the agent's, through
+        // `call_provider` like every other (M58.1).
+        let summary_req = match &self.compactor {
+            Some(compactor) => compactor.request(&transcript_text),
+            None => CompletionRequest {
+                messages: vec![Message::user(format!(
+                    "{COMPACTION_TEMPLATE}{transcript_text}"
+                ))],
+                tools: vec![],
+                // The main calls' own settings: a reasoning model
+                // (OpenAI's gpt-5, o-series) refuses `temperature: 0`
+                // and `max_tokens` with a 400, and a compaction that
+                // fails fails again on every later turn.
+                max_output_tokens: self.config.max_output_tokens,
+                temperature: self.config.temperature,
+                stream: None,
+            },
         };
+        let summary = self
+            .call_provider(tx, summary_req, iteration, "compaction")
+            .await?
+            .message
+            .content
+            .unwrap_or_default();
 
         let mut rebuilt = Vec::with_capacity(keep + 2);
         if let Some(sys) = self

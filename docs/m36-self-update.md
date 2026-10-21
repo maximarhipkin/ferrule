@@ -410,7 +410,10 @@ by a new `CoreError::Failed(Failure)` whose display is the same
 `provider error: <message>` the text-only errors have, so logs and
 existing matches read the same. `failure::classify(&CoreError) -> Kind`
 uses the structured kind when the driver set one, and falls back to the
-error text (the M21 `FailureClass` rules, which it subsumes).
+error text (the M21 `FailureClass` rules, which it subsumes). Since M58.1
+there is one taxonomy: those status rules return a `Kind`
+(`failure::status_kind`), and `FailureClass` is its coarse view
+(`Kind::class`), so no mapping runs the other way.
 
 Each kind has a repair, whether it may be retried, whether the call falls
 back, the owner line and the chat words:
