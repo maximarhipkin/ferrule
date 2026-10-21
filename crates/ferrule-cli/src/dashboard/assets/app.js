@@ -3169,7 +3169,10 @@
     async load() {
       let c;
       try { c = await api("/api/config"); } catch (e) { return sectionError(this.box, e); }
-      const set = (key, value, b) => act("config/set", { key, value }, b);
+      // M52.4: every write says which file it was made from; a changed one
+      // is refused (409) instead of silently undone.
+      const base = { base_hash: c.hash };
+      const set = (key, value, b) => act("config/set", Object.assign({ key, value }, base), b);
       const row = (f) => {
         let input;
         const shown = f.value === null || f.value === undefined ? "" : String(f.value);
@@ -3196,22 +3199,60 @@
       const raw = el("textarea", { rows: 18, spellcheck: "false", class: "mono", "aria-label": "config file" });
       raw.value = c.text || "";
       const said = el("div");
+      // What a change does, value by value (secrets say "(hidden)").
+      const diffList = (rows) => el("div", { class: "logwrap" }, rows.map((d) =>
+        el("div", { class: "logline" },
+          el("span", { class: "txt mono", dir: "auto", text: d.key + ": " + (d.before === null ? "(not set)" : d.before) + "  →  " + (d.after === null ? "(removed)" : d.after) }))));
       const check = el("button", { text: "Check" });
+      // Check, then show the diff; `go` adds the button that saves it.
+      const review = async (go) => {
+        const r = await api("/api/config/check", Object.assign({ text: raw.value }, base));
+        if (!r.ok) return setKids(said, el("div", { class: "said bad msg", dir: "auto", text: (r.line ? "Line " + r.line + ": " : "") + r.error }));
+        if (!r.diff.length) return setKids(said, el("div", { class: "said ok", text: "Nothing changes: the file on disk already says this." }));
+        const yes = go ? el("button", { class: "primary", text: "Save these " + r.diff.length + " change(s)" }) : null;
+        if (yes) yes.onclick = async () => { if (await act("config/save", Object.assign({ text: raw.value }, base), yes)) { delete raw.dataset.dirty; setKids(said); } };
+        setKids(said, el("div", { class: "said ok", text: "Looks right" + (r.restart ? "; " + r.sections.join(", ") + " take effect after a restart" : "") + ". It changes:" }),
+          diffList(r.diff), yes ? el("div", { class: "row end" }, yes) : null);
+      };
       check.onclick = async () => {
         check.disabled = true;
-        try {
-          const r = await api("/api/config/check", { text: raw.value });
-          setKids(said, r.ok
-            ? el("div", { class: "said ok", text: "Looks right" + (r.restart ? "; " + r.sections.join(", ") + " take effect after a restart" : "") + "." })
-            : el("div", { class: "said bad msg", dir: "auto", text: (r.line ? "Line " + r.line + ": " : "") + r.error }));
-        } catch (e) { setKids(said, el("div", { class: "said bad msg", dir: "auto", text: e.message })); } finally { check.disabled = false; }
+        try { await review(false); } catch (e) { setKids(said, el("div", { class: "said bad msg", dir: "auto", text: e.message })); } finally { check.disabled = false; }
       };
       const save = el("button", { class: "primary", text: "Save the file" });
-      save.onclick = async () => { if (await act("config/save", { text: raw.value }, save)) delete raw.dataset.dirty; };
+      save.onclick = async () => {
+        save.disabled = true;
+        try { await review(true); } catch (e) { setKids(said, el("div", { class: "said bad msg", dir: "auto", text: e.message })); } finally { save.disabled = false; }
+      };
+      // The last versions (M52.4), each previewed as a diff, restorable.
+      const versions = el("div", { class: "stack" });
+      const showVersions = async () => {
+        let v;
+        try { v = await api("/api/config/versions"); } catch (e) { return sectionError(versions, e); }
+        if (!v.versions.length) return setKids(versions, el("p", { class: "muted", text: "No versions yet: one is kept each time the config is saved from this page." }));
+        setKids(versions, el("div", { class: "plain-list" }, v.versions.map((x) => {
+          const slot = el("div");
+          const preview = button("Preview", { onclick: async () => {
+            let d;
+            try { d = await api("/api/config/version?" + new URLSearchParams({ id: x.id })); } catch (e) { return setKids(slot, el("div", { class: "said bad msg", dir: "auto", text: e.message })); }
+            setKids(slot, d.diff.length ? frag(el("p", { class: "muted small m0", text: "Restoring it changes:" }), diffList(d.diff)) : el("p", { class: "muted small m0", text: "It's the same as the file now." }));
+          } });
+          const restore = x.current ? tag("now", "ok") : btn("Restore", "config/version/restore", Object.assign({ id: x.id }, base), "danger");
+          return el("div", { class: "item column" },
+            el("div", { class: "row" },
+              el("div", { class: "grow" },
+                el("div", { class: "t", text: ago(Date.parse(x.at) / 1000) + " · " + (x.how || "") + (x.by ? " · " + x.by : "") }),
+                el("div", { class: "d muted small", text: (x.sections || []).length ? "changed [" + x.sections.join("], [") + "]" : "the file as it was found" })),
+              preview, restore),
+            slot);
+        })), el("p", { class: "muted small m0", text: "The last " + v.keep + " versions, secrets hidden; a restore is checked like a save." }));
+      };
+      const hist = disc("config-versions", "card", el("h2", { class: "m0", text: "Versions" }), versions);
+      hist.addEventListener("toggle", () => { if (hist.open) showVersions(); });
+      if (hist.open) showVersions();
       setKids(this.box,
         secHead("Config", c.path,
-          c.prev ? btn("Undo the last save", "config/undo", {}) : null,
-          c.last_good ? btn("Back to the last one that loaded", "config/restore", {}, "danger") : null),
+          c.prev ? btn("Undo the last save", "config/undo", base) : null,
+          c.last_good ? btn("Back to the last one that loaded", "config/restore", base, "danger") : null),
         c.problem ? el("div", { class: "alert bad" }, el("div", { class: "body" },
           el("div", { class: "what", text: "The file doesn't load" + (c.problem.line ? " (line " + c.problem.line + ")" : "") }),
           el("div", { class: "fix msg", dir: "auto", text: c.problem.error }))) : null,
@@ -3221,7 +3262,8 @@
           el("p", { class: "muted small", text: "Secrets show as placeholders and stay as they are when you save. Commands, gates, secret routing and who gets in can only change on the machine." }),
           c.readable === false ? el("div", { class: "empty", text: "The file can't be read." }) : raw,
           said,
-          el("div", { class: "row end" }, check, save)));
+          el("div", { class: "row end" }, check, save)),
+        hist);
     },
   };
 

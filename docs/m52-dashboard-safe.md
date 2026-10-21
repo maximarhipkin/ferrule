@@ -193,3 +193,46 @@ that and can't change it.
 not been watched on a real proxied request. A ChatGPT sign-out from the
 page deletes the local sign-in without asking OpenAI to revoke it
 (`ferrule logout chatgpt` does both).
+
+## M52.4 — safe config editing (2026-10-21)
+
+From the 2026-10-20 gap analysis (M52.4). Built on `autopilot`, in
+`dashboard/config_page.rs` and `app.js`.
+
+- **A diff before Save.** `config/check` returns `diff`: every leaf the
+  edit changes, `key: before → after`, through the redactor, a secret
+  field as "(hidden)" (`unhide` refuses a changed secret anyway), 200
+  rows at most. The page's **Save the file** runs the check first and
+  shows the diff with a **Save these N changes** button; nothing is
+  written before that tap. A form field is one change and saves as it
+  did.
+- **A `base_hash` round trip.** `GET config` returns `hash`, the
+  SHA-256 (base64) of the file on disk. The page sends it back as
+  `base_hash` with `config/check`, `config/save`, `config/set`,
+  `config/undo`, `config/restore` and `config/version/restore`; when
+  the file's hash differs, the write is refused with HTTP 409, `stale:
+  true` and "The config changed since this page loaded it … reload …,
+  then make your change again". A write without `base_hash` (the chat's
+  `config_set`, an older page) is checked as before, without it.
+- **The last 20 versions** in `<data>/config-history/`: `<ms>.toml`, the
+  file with its secret fields hidden (`hide`, the page's own
+  placeholder), so the history holds config and never a value, and
+  `<ms>.json` (when, how, by whom, the sections it changed). Each page
+  write keeps the file as it found it (so a change made elsewhere since
+  the last version is kept too) and the file it wrote; a version equal
+  to the newest isn't kept twice; the oldest beyond 20 go. The autonomy
+  switch and the last-good restore keep theirs too. Writes made by the
+  other pages (the Safe's sites, a channel's card, a provider) and by the
+  terminal aren't versions of their own; the next page write keeps the
+  file as they left it.
+- **Restore with a preview.** `GET config/versions` lists them (and
+  which one is the file now); `GET config/version?id=` is the diff a
+  restore would make; `POST config/version/restore {id}` asks once,
+  puts the hidden secrets back from the file as it is (a secret field
+  that differs refuses, as in the editor) and writes through `commit`
+  with the same guard as Undo: a guarded field (a command, a gate, who
+  gets in, where a secret goes) is refused unless the file on disk
+  doesn't read at all. M54's rule for the chat's `config_restore` (no
+  guarded field back from the chat) is unchanged.
+
+**Not verified live.** Not used from a real browser.

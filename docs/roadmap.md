@@ -1164,6 +1164,11 @@ log shows the act by name only.
   kept, its sites, saved and changed dates, last use (the proxy's
   `secret.used`, the ledger for provider keys), Delete for every kind and
   a by-name history (`docs/m52-dashboard-safe.md`, "M52.2").
+- **M52.4**: the Config page shows a value-by-value diff before Save,
+  refuses a stale save with HTTP 409 (`base_hash`), and keeps the last
+  20 versions in `<data>/config-history/` (secrets hidden), each
+  previewed and restored through the save's guard
+  (`docs/m52-dashboard-safe.md`, "M52.4").
 
 ### M53 — contrastive probing
 
@@ -1351,10 +1356,10 @@ Current State; numbers are claimed there before anything is built.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
     key fields in the dashboard, the Safe page, `secret_request`, safe
     config editing, a chat paste guard, step-up auth) and to M54
-    (M54.1–M54.7). M52.1, M52.2 and M52.5 are built on `autopilot`
-    (`docs/m22-dashboard.md`, "Threat model"; `docs/m52-dashboard-safe.md`,
-    "M52.2"; `docs/channels.md`, "Keys pasted into a chat"); M52.3 is
-    M54's `secret_request`.
+    (M54.1–M54.7). M52.1, M52.2, M52.4 and M52.5 are built on
+    `autopilot` (`docs/m22-dashboard.md`, "Threat model";
+    `docs/m52-dashboard-safe.md`, "M52.2" and "M52.4"; `docs/channels.md`,
+    "Keys pasted into a chat"); M52.3 is M54's `secret_request`.
 
 **Still open from earlier tracks.**
 

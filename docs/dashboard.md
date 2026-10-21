@@ -306,7 +306,17 @@ M37 made the page the place you run your agent from. The design is in
   form per section. **Check** gives the loader's own message and line.
   **Save** writes atomically and keeps `ferrule.toml.prev` for **Undo**.
   Fields that carry commands, gates, secret routing or who gets in can
-  only change on the machine.
+  only change on the machine. Since M52.4, **Save** first shows what
+  changes, value by value (a secret field says "(hidden)"), and saves
+  only with **Save these N changes**; every write from the page (a form
+  field, the file, Undo, a restore) carries the hash of the file it was
+  loaded from, and a file changed since (from another tab, the chat or
+  the machine) is refused with "reload, then make your change again"
+  (HTTP 409) instead of being silently undone; and **Versions** keeps the
+  last 20 versions under `<data>/config-history/` (secret fields hidden,
+  so no value is kept), each with **Preview** (its diff against the file
+  now) and **Restore**, which goes through the same checks and guard as
+  a save ([m52-dashboard-safe.md](m52-dashboard-safe.md), "M52.4").
 - **Everything works with every model down.** Nothing on the page calls
   a model, except Chat and the model tests you press.
 

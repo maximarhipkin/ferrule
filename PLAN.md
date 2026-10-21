@@ -7944,3 +7944,39 @@ clients send them). Deleting the ChatGPT sign-in from the page doesn't
 revoke it at OpenAI (`ferrule logout chatgpt` does). The old value isn't
 kept encrypted for N days after a rotation (the report's grace period):
 rotation still replaces it outright.
+
+### 2026-10-21 — M52.4: safe config editing (Claude, Opus 5.5)
+
+**Why.** `config/check` gave a verdict, not a diff; a page loaded before
+a change from Telegram or the machine silently undid it on save; and
+only one `.prev` was kept.
+
+**What changed.**
+- `dashboard/config_page.rs`: `diff` (leaf by leaf, redacted, secrets
+  "(hidden)") in `config/check`'s answer; `hash` in `GET config` and
+  `fresh`, which refuses a write whose `base_hash` isn't the file's
+  (409, `stale`), on check, save, set, undo, the version restore and the
+  autonomy switch; `<data>/config-history/` with `keep_version` (the
+  file hidden by `hide`, a note beside it, deduplicated, 20 kept) called
+  from `commit` before and after each write, and `remember` for the
+  writers outside it; `GET config/versions`, `GET config/version?id=`
+  (the diff a restore would make) and `POST config/version/restore`
+  (unhide from the file as it is, one confirm, `commit` with Undo's
+  guard).
+- `dashboard/api.rs`: the routes; the last-good `config/restore` checks
+  `base_hash` and keeps its versions (M54's chat guard unchanged).
+- `app.js`: Save reviews the diff and saves on "Save these N changes";
+  every config write sends `base_hash`; a **Versions** fold with Preview
+  and Restore.
+- Docs: `m52-dashboard-safe.md` ("M52.4"), `dashboard.md` (Config), the
+  roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js`.
+
+**Open.** Not used from a real browser. Config writes from other pages
+and the terminal aren't versions of their own (the next page write
+keeps the file as they left it). The chat's `config_set` sends no
+`base_hash`, so it isn't stale-checked.
