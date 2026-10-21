@@ -130,19 +130,17 @@ impl Tool for CommitmentsTool {
                     &self.hub,
                     crate::self_service::offered(&self.hub, &self.session).as_ref(),
                     &store,
-                    &cfg.proactive,
+                    cfg.proactive.level,
                     tz,
                     &c,
                 )
                 .await {
                     Offered::Not(why) => format!("No reminder offered: {why}."),
-                    Offered::Asked(at) => format!(
-                        "The owner was sent a separate question with buttons: a reminder {}, yes or no. Don't ask again.",
-                        super::when(at, tz)
+                    Offered::Asked(q) => format!(
+                        "The owner was sent a separate question with buttons (\"{q}\"); don't ask again."
                     ),
-                    Offered::Done(at) => format!(
-                        "A reminder is set for {} (the owner got a receipt with Undo).",
-                        super::when(at, tz)
+                    Offered::Done(said) => format!(
+                        "Done: {said} (the owner got a receipt with Undo)."
                     ),
                     Offered::Failed(why) => format!("A reminder couldn't be offered: {why}."),
                 };

@@ -85,11 +85,81 @@ impl ProactiveDoor {
             [verb @ ("do" | "later" | "never" | "useful" | "undo"), id] => {
                 answer(&self.hub, verb, id).await
             }
+            ["patterns"] => patterns(&self.hub, msg).await,
             _ => plain(
-                "The buttons under a proactive message send `/proactive do|later|never|useful|undo <id>`.",
+                "`/proactive patterns` offers what you ask for again and again as a scheduled task. The buttons under a proactive message send `/proactive do|later|never|useful|undo <id>`.",
             ),
         }
     }
+}
+
+/// Patterns offered at once, at most this many to a command.
+const PATTERNS_SHOWN: usize = 3;
+
+/// `/proactive patterns`: the requests the owner repeats, each offered in
+/// its own message with Do it / Not now / Never. Asked, never done
+/// unasked, whatever the level: the owner asked to see them.
+async fn patterns(hub: &Hub, msg: &InboundMessage) -> (String, Vec<Button>) {
+    let (cfg, tz) = match settings() {
+        Ok(s) => s,
+        Err(e) => return plain(format!("The settings can't be read: {e:#}")),
+    };
+    if !cfg.proactive.patterns {
+        return plain("Pattern offers are off ([proactive] patterns = false).");
+    }
+    let store = match Store::open_default() {
+        Ok(s) => s,
+        Err(e) => return plain(format!("The proactive store can't be read: {e:#}")),
+    };
+    let found = match super::patterns::candidates(hub, &store, tz) {
+        Ok(f) => f,
+        Err(e) => return plain(format!("The patterns couldn't be counted: {e:#}")),
+    };
+    let kept = if super::on() {
+        "your messages since proactive was turned on"
+    } else {
+        "your one-off tasks only (proactive is off, so your messages aren't kept)"
+    };
+    if found.is_empty() {
+        return plain(format!(
+            "No new pattern: nothing asked 3 times on 3 days around the same time, in the last 28 days of {kept}."
+        ));
+    }
+    let here = ferrule_gateway::session::session_id(&msg.channel, &msg.chat_id);
+    let here = crate::self_service::offered(hub, &here);
+    let mut lines = vec![format!(
+        "{} pattern(s) in the last 28 days of {kept}; each comes as its own question.",
+        found.len()
+    )];
+    for p in found.iter().take(PATTERNS_SHOWN) {
+        let new = store::NewItem {
+            kind: p.kind(),
+            mode: String::new(),
+            text: String::new(),
+            action: Some(p.action()),
+            basis: "owner".into(),
+            commitment: None,
+        };
+        if let super::Offered::Failed(why) = super::offer(
+            hub,
+            here.as_ref(),
+            &store,
+            super::Level::Suggest,
+            new,
+            p.question(),
+        )
+        .await
+        {
+            lines.push(format!("\"{}\" couldn't be offered: {why}", p.key));
+        }
+    }
+    if found.len() > PATTERNS_SHOWN {
+        lines.push(format!(
+            "{} more after these are answered.",
+            found.len() - PATTERNS_SHOWN
+        ));
+    }
+    plain(lines.join("\n"))
 }
 
 fn plain(text: impl Into<String>) -> (String, Vec<Button>) {

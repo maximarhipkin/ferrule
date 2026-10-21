@@ -1586,6 +1586,14 @@ Current State; numbers are claimed there before anything is built.
     one-offs (`ferrule-reminder`) delivered as plain text, no model call;
     loops from the owner's tasks' failed or cut-short runs; delivery that
     waits and keeps the message id (`Hub::post_in`). Not run live.
+  - **M64.3, patterns**: the owner's kept messages (28 days) and one-off
+    tasks as word sets, clustered by Jaccard ≥ 0.5; 3 texts on 3 days
+    within 90 minutes of a median time make a candidate, scheduled daily,
+    on weekdays or weekly at that time (rounded down to the quarter
+    hour); left out when an owner's task already answers it, it's on the
+    Never list or was offered in 30 days. `proactive::offer`, the one way
+    an item reaches the owner; Do it adds the owner's task (Undo deletes
+    it); `/proactive patterns` offers the candidates now. Not run live.
 
 **Still open from earlier tracks.**
 

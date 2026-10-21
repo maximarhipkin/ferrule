@@ -18,6 +18,15 @@ pub const DIR: &str = "proactive";
 /// little more.
 pub const REQUESTS_KEPT_SECS: i64 = 30 * 86_400;
 
+/// One message the owner sent in their own chat.
+#[derive(Debug, Clone, Serialize)]
+pub struct Request {
+    pub id: i64,
+    pub at: i64,
+    pub session: String,
+    pub text: String,
+}
+
 /// Something the owner said they'd do, or left unfinished.
 #[derive(Debug, Clone, Serialize)]
 pub struct Commitment {
@@ -212,6 +221,15 @@ impl Store {
         Ok(id)
     }
 
+    /// The owner's messages since `since` (unix seconds), oldest first.
+    pub fn requests_since(&self, since: i64) -> Result<Vec<Request>> {
+        let db = self.db();
+        let mut st = db
+            .prepare("SELECT id, at, session, text FROM requests WHERE at >= ?1 ORDER BY at, id")?;
+        let rows = st.query_map(params![since], request)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     // ---- commitments and loops --------------------------------------------
 
     pub fn add_commitment(&self, c: &NewCommitment) -> Result<Commitment> {
@@ -319,6 +337,16 @@ impl Store {
             .optional()?)
     }
 
+    /// Items since `since`, oldest first.
+    pub fn items_since(&self, since: i64) -> Result<Vec<Item>> {
+        let db = self.db();
+        let mut st = db.prepare(&format!(
+            "SELECT {ITEM} FROM items WHERE at >= ?1 ORDER BY at, rowid"
+        ))?;
+        let rows = st.query_map(params![since], item)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub fn set_outcome(&self, id: &str, outcome: &str) -> Result<bool> {
         let n = self.db().execute(
             "UPDATE items SET outcome = ?2, outcome_at = ?3 WHERE id = ?1",
@@ -411,5 +439,14 @@ fn item(r: &Row<'_>) -> rusqlite::Result<Item> {
         outcome: r.get(9)?,
         outcome_at: r.get(10)?,
         undo: r.get(11)?,
+    })
+}
+
+fn request(r: &Row<'_>) -> rusqlite::Result<Request> {
+    Ok(Request {
+        id: r.get(0)?,
+        at: r.get(1)?,
+        session: r.get(2)?,
+        text: r.get(3)?,
     })
 }

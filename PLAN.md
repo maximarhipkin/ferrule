@@ -9712,3 +9712,36 @@ binaries (macOS), clippy clean.
 delivery, Telegram's message id with buttons. A reminder offered from a
 chat turn doesn't wait for quiet hours (the owner is there).
 
+### 2026-10-21 — M64.3: patterns, offered as scheduled tasks (Claude, Opus 5.5)
+
+M64's task 3, in the `autopilot` worktree.
+
+**What changed.**
+- `proactive/patterns.rs` (new): `words`, `similarity` (Jaccard),
+  `candidates` (the owner's kept messages from 28 days plus their one-off
+  tasks, greedy clusters, 3 texts on 3 days within 90 minutes of the
+  median time; daily, weekdays or one weekday; minus what an owner's
+  recurring task covers, the Never list and what was offered in 30
+  days), `Pattern` (key, cron, the owner's latest wording as the prompt,
+  `action`, a template `question`).
+- `proactive::offer`: the one way an item reaches the owner, by level
+  (noticed / asked with Do it, Not now, Never / done with a receipt and
+  Undo when built on the owner's words); `offer_reminder` uses it.
+- `/proactive patterns`: up to three candidates offered now, always
+  asked.
+- The store reads the kept messages and items since a time again.
+- Docs: `m64-proactive.md` ("Built: M64.3"), the roadmap.
+
+**Cheap by construction.** Counting only; no model call here. The pass
+(M64.4) phrases a candidate in the one call it makes anyway; the
+schedule and prompt stay ferrule's.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Not run live, and the clustering hasn't met real messages: its
+thresholds (0.5, 3 on 3 days, 90 minutes) are guesses to tune. English
+stop words only.
+

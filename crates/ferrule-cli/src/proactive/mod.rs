@@ -6,6 +6,7 @@
 
 pub mod door;
 pub mod loops;
+pub mod patterns;
 pub mod reminder;
 pub mod store;
 pub mod tool;
@@ -241,94 +242,75 @@ pub fn audit(hub: &Hub, event: &str, detail: serde_json::Value) {
     );
 }
 
-/// What became of offering a reminder for a commitment just noted.
+/// What became of an offer.
 pub enum Offered {
-    /// Nothing to remind about, or it's too late, or reminders are on the
-    /// Never list, or the level is `off`; the reason.
+    /// Not offered (nothing to remind about, too late, on the Never list,
+    /// or the level is `off`); why.
     Not(String),
-    /// Asked, with the buttons, for this time.
-    Asked(i64),
-    /// Done at `act`, with a receipt and Undo, for this time.
-    Done(i64),
+    /// Asked, with the buttons: the question.
+    Asked(String),
+    /// Done at `act`, with a receipt and Undo: what was done.
+    Done(String),
     /// It should have gone out and didn't: why.
     Failed(String),
 }
 
-/// A commitment with a due time gets a reminder offered (`suggest`) or
-/// made (`act`) through the scheduler (docs/m64-proactive.md §6), in
-/// `here` (the chat it was said in) or the owner's primary chat. Its
-/// basis is the owner's own words, so `act` may do it.
-pub async fn offer_reminder(
+/// Offers one item at `level` in `here` (an owner chat) or the owner's
+/// primary chat (docs/m64-proactive.md §6): at `off` it is only noticed;
+/// at `act` an action built on the owner's own words is done, with a
+/// receipt and Undo; anything else is asked, with Do it / Not now /
+/// Never.
+pub async fn offer(
     hub: &Hub,
     here: Option<&ChatRef>,
     store: &Store,
-    cfg: &ProactiveConfig,
-    tz: Tz,
-    c: &Commitment,
+    level: Level,
+    new: NewItem,
+    question: String,
 ) -> Offered {
-    let Some(due) = c.due else {
-        return Offered::Not("no due time was said".into());
-    };
-    let now = store::now();
-    let Some(at) = reminder_time(due, c.due_day, tz, now) else {
-        return Offered::Not("it's due too soon to remind".into());
-    };
-    if cfg.level == Level::Off {
-        return Offered::Not("proactive's level is off: it only notices".into());
-    }
-    if store.is_suppressed("reminder").unwrap_or(false) {
-        return Offered::Not("reminders are on the Never list (/proactive never)".into());
-    }
-    let action = Action::Reminder {
-        at,
-        text: c.text.clone(),
-    };
-    let act = cfg.level == Level::Act;
-    let text = if act {
-        format!("I'll remind you {}: {}", when(at, tz), c.text)
-    } else {
-        format!("Remind you {}: {}?", when(at, tz), c.text)
+    let act = level == Level::Act && new.basis == "owner" && new.action.is_some();
+    let mode = match level {
+        Level::Off => "noticed",
+        _ if act => "done",
+        _ => "suggest",
     };
     let item = match store.add_item(&NewItem {
-        kind: "reminder".into(),
-        mode: if act { "done" } else { "suggest" }.into(),
-        text: text.clone(),
-        action: Some(action.clone()),
-        basis: "owner".into(),
-        commitment: Some(c.id),
+        mode: mode.into(),
+        text: question.clone(),
+        ..new
     }) {
         Ok(i) => i,
         Err(e) => return Offered::Failed(format!("the proactive store: {e:#}")),
     };
+    if level == Level::Off {
+        audit(hub, "noticed", json!({"item": item.id, "kind": item.kind}));
+        return Offered::Not("proactive's level is off: it only notices".into());
+    }
     if act {
-        return match door::perform(hub, store, &item, "proactive (act)").await {
-            Ok(said) => {
-                let message = format!("Done without asking: {said}");
-                let sent = deliver(
-                    hub,
-                    here,
-                    store,
-                    &item.id,
-                    &message,
-                    vec![undo_button(&item.id)],
-                )
-                .await;
-                audit(
-                    hub,
-                    "done",
-                    json!({"item": item.id, "kind": item.kind, "commitment": c.id, "sent": sent.is_ok()}),
-                );
-                match sent {
-                    Ok(()) => Offered::Done(at),
-                    Err(e) => Offered::Failed(format!(
-                        "the reminder is set, but the receipt didn't go out: {e}"
-                    )),
-                }
-            }
+        let said = match door::perform(hub, store, &item, "proactive (act)").await {
+            Ok(said) => said,
             Err(e) => {
                 let _ = store.set_outcome(&item.id, "failed");
-                Offered::Failed(e)
+                return Offered::Failed(e);
             }
+        };
+        let sent = deliver(
+            hub,
+            here,
+            store,
+            &item.id,
+            &format!("Done without asking: {said}."),
+            vec![undo_button(&item.id)],
+        )
+        .await;
+        audit(
+            hub,
+            "done",
+            json!({"item": item.id, "kind": item.kind, "sent": sent.is_ok()}),
+        );
+        return match sent {
+            Ok(()) => Offered::Done(said),
+            Err(e) => Offered::Failed(format!("{said}, but the receipt didn't go out: {e}")),
         };
     }
     let sent = deliver(
@@ -336,22 +318,57 @@ pub async fn offer_reminder(
         here,
         store,
         &item.id,
-        &text,
+        &question,
         suggestion_buttons(&item.id),
     )
     .await;
     audit(
         hub,
         "suggested",
-        json!({"item": item.id, "kind": item.kind, "commitment": c.id, "sent": sent.is_ok()}),
+        json!({"item": item.id, "kind": item.kind, "sent": sent.is_ok()}),
     );
     match sent {
-        Ok(()) => Offered::Asked(at),
+        Ok(()) => Offered::Asked(question),
         Err(e) => {
             let _ = store.set_outcome(&item.id, "failed");
             Offered::Failed(e)
         }
     }
+}
+
+/// A commitment with a due time gets a reminder offered (`suggest`) or
+/// made (`act`) through the scheduler. Its basis is the owner's own
+/// words, so `act` may do it.
+pub async fn offer_reminder(
+    hub: &Hub,
+    here: Option<&ChatRef>,
+    store: &Store,
+    level: Level,
+    tz: Tz,
+    c: &Commitment,
+) -> Offered {
+    let Some(due) = c.due else {
+        return Offered::Not("no due time was said".into());
+    };
+    let Some(at) = reminder_time(due, c.due_day, tz, store::now()) else {
+        return Offered::Not("it's due too soon to remind".into());
+    };
+    if store.is_suppressed("reminder").unwrap_or(false) {
+        return Offered::Not("reminders are on the Never list (/proactive never)".into());
+    }
+    let new = NewItem {
+        kind: "reminder".into(),
+        mode: String::new(),
+        text: String::new(),
+        action: Some(Action::Reminder {
+            at,
+            text: c.text.clone(),
+        }),
+        basis: "owner".into(),
+        commitment: Some(c.id),
+    };
+    let question = format!("Remind you {}: {}?", when(at, tz), c.text);
+    offer(hub, here, store, level, new, question).await
 }
 
 /// Sends `text` with `buttons` to `here` (an owner chat) or the owner's

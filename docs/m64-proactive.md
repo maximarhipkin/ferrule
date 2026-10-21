@@ -392,3 +392,34 @@ the door, from the owner, never by the model.
   `quiet_hours` a `HH:MM-HH:MM` range, the zone, the dollar cap, a model
   that isn't empty); the example config has the block.
 
+## Built: M64.3, patterns
+
+- `proactive/patterns.rs`: `candidates` counts what §4 says. The words:
+  lower-cased letters and digits; English stop words, bare numbers and
+  ASCII words of one or two letters dropped (a short word in another
+  script is kept). A text joins the first cluster whose first text it
+  shares half the words with. A candidate needs 3 texts on 3 local days,
+  every one within 90 minutes of their median time of day; it is
+  scheduled at that median rounded down to the quarter hour (a little
+  before the owner usually asks): on that weekday when every day was the
+  same weekday, on weekdays (`1-5`) when there were 4 or more days and
+  all were Monday to Friday, else every day. Its key is its three
+  commonest words, sorted (`pattern:forecast-weather`); its task's name
+  is the key in words and its prompt the owner's latest wording. Left
+  out: one an enabled recurring task of the owner's already answers (half
+  the words shared with the task's prompt), one on the Never list, one
+  offered or noticed in the last 30 days.
+- The owner's one-off tasks count too, at the time each was set for.
+- `proactive::offer` is the one way an item reaches the owner (the
+  reminder offers of M64.2 go through it now): noticed at `off`; at
+  `act`, an action built on the owner's own words done, with a receipt
+  and Undo; anything else asked with Do it / Not now / Never. Do it on a
+  pattern adds the task with `TasksAdmin::add`, answering in the owner's
+  primary chat (audited `task.add`, by the owner's button or "proactive
+  (act)"); Undo deletes it.
+- `/proactive patterns` (the owner's): the candidates now, up to three
+  offered as questions (always asked, never done unasked: the owner
+  asked to see them), with a template question
+  (`Pattern::question`). The pass (M64.4) offers them by itself, its
+  model phrasing the question.
+
