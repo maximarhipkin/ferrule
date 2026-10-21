@@ -39,6 +39,7 @@ mod plan;
 mod plugins_cli;
 mod probe;
 mod remote;
+mod screen;
 mod secret_meta;
 mod secrets;
 mod self_extend;
@@ -654,8 +655,9 @@ fn log_filter(daemon: bool) -> tracing_subscriber::EnvFilter {
     EnvFilter::new(directives)
 }
 
-/// Sync on purpose: `--config` and the secrets file go into the environment
-/// before the runtime starts any thread, since `set_var` isn't thread-safe.
+/// Sync on purpose: `--config` goes into the environment before the
+/// runtime starts any thread, since `set_var` isn't thread-safe. The
+/// secrets file goes into memory, not the environment (M54.2).
 fn main() -> Result<()> {
     // On Windows, ferrule is also the sandbox's launcher (M26): run as
     // `ferrule __sandbox-launch <program> <args…>`, it never gets here.
@@ -732,7 +734,7 @@ fn main() -> Result<()> {
             }
         }
     }
-    secrets::load_into_env();
+    secrets::load();
     // M44: the panel's secret leaves the environment before any thread
     // starts, so no child inherits it.
     managed::take_panel_secret();
@@ -860,8 +862,10 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 ..
             }
     );
-    if arms {
-        if let Ok((cfg, _)) = config::Config::load() {
+    if let Ok((cfg, _)) = config::Config::load() {
+        // M54.3: before any agent runs, whatever the command.
+        health::scrub_tool_results(&cfg);
+        if arms {
             owner_mode::arm(&cfg, None);
         }
     }
@@ -1317,12 +1321,12 @@ pub(crate) fn child_builder(
             agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
                 media.clone(),
                 &spec.id,
-                session_hidden(false, false),
+                session_hidden(false, false, &spec.workspace),
             )));
             agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
                 media.clone(),
                 &spec.id,
-                session_hidden(false, false),
+                session_hidden(false, false, &spec.workspace),
             )));
             if media.speaks() {
                 agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
@@ -1454,7 +1458,7 @@ fn build_agent_from(
     // the owner's memory, history or learned skills.
     let guest = !owner_mode::owner_tree(&cfg, &*trust::hub(&cfg)?, &tree);
     if guest {
-        sandbox = Arc::new(sandbox.narrowed(&owner_mode::guest_hidden()));
+        sandbox = Arc::new(sandbox.narrowed(&owner_mode::guest_hidden(&tool_ctx.workspace)));
     }
     let provider = Arc::new(if guest { provider.guest() } else { provider });
     if let Some(spec) = child {
@@ -1574,7 +1578,13 @@ fn build_agent_from(
         memory_tools::MemoryAccess::for_child(child)
     };
     // M19: the owner's caps, kill switch and approval gates, per run tree.
-    let (ledger, guard) = trust::equip(&cfg, &tree, child.is_some(), ledger)?;
+    let (ledger, guard) = trust::equip(
+        &cfg,
+        &tree,
+        child.is_some(),
+        ledger,
+        Some(&tool_ctx.workspace),
+    )?;
     let session_id = transcript
         .as_ref()
         .and_then(|t| t.path().file_stem())
@@ -1990,11 +2000,12 @@ fn hidden_paths(owner: bool) -> Vec<PathBuf> {
 /// What a session's own in-process tools (`send_file`, the media tools'
 /// references) may not read: [`hidden_paths`] as this mode has it for the
 /// owner (`on`: owner mode), and for anyone else's session (`!owners`)
-/// what only the owner's may read too (`owner_mode::guest_hidden`).
-fn session_hidden(on: bool, owners: bool) -> Vec<PathBuf> {
+/// what only the owner's may read too (`owner_mode::guest_hidden`, with
+/// the screen captures in `workspace`).
+fn session_hidden(on: bool, owners: bool, workspace: &Path) -> Vec<PathBuf> {
     let mut hidden = hidden_paths(on && owners);
     if !owners {
-        hidden.extend(owner_mode::guest_hidden());
+        hidden.extend(owner_mode::guest_hidden(workspace));
     }
     hidden
 }
@@ -2109,16 +2120,23 @@ pub(crate) fn tool_egress(broker: &Broker) -> Result<Egress> {
     })
 }
 
+static BROKER: OnceLock<Option<Broker>> = OnceLock::new();
+
+/// The credential proxy if this process has started it, without starting
+/// it (M54.3's scrubber).
+pub(crate) fn started_broker() -> Option<&'static Broker> {
+    BROKER.get().and_then(Option::as_ref)
+}
+
 /// The credential proxy, started once per process on the current runtime
 /// and kept for its lifetime. Since M33 it always runs, for `[egress]`'s
 /// sake as well as `[secrets]`'; a refusal is written to the ledger and the
 /// trust audit.
 pub(crate) fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
-    static BROKER: OnceLock<Option<Broker>> = OnceLock::new();
     if let Some(broker) = BROKER.get() {
         return Ok(broker.as_ref());
     }
-    let broker = Broker::start(broker_config(cfg)?, |name| std::env::var(name).ok())?;
+    let broker = Broker::start(broker_config(cfg)?, secrets::var)?;
     if let Some(b) = &broker {
         egress::report_denials(b, ledger::build_sink(cfg));
         // M52.2: the Safe's "last used" (name and host, never a value).
@@ -2712,7 +2730,7 @@ fn streaming_channels(cfg: &config::Config) -> Vec<String> {
 
 /// A token from the env var `[gateway] <key>` names.
 fn channel_token(env_var: &str, key: &str) -> Result<String> {
-    std::env::var(env_var).map_err(|_| {
+    secrets::var(env_var).ok_or_else(|| {
         anyhow!("env var `{env_var}` not set (needed by [gateway].{key}) — run `ferrule setup`, or export it")
     })
 }
@@ -2746,7 +2764,7 @@ fn build_channels(
     }
 
     if let Some(env_var) = &cfg.gateway.telegram_token_env {
-        let token = std::env::var(env_var).map_err(|_| {
+        let token = secrets::var(env_var).ok_or_else(|| {
             anyhow!("env var `{env_var}` not set (needed by [gateway].telegram_token_env) — run `ferrule setup`, or export it")
         })?;
         let telegram: Arc<dyn Channel> = Arc::new(
@@ -2893,6 +2911,9 @@ async fn gateway_factory(
             std::slice::from_ref(&workspace),
         ));
     }
+    // M61: the owner's own screen, view only, when `[screen]` is on and
+    // there's a desktop to see.
+    let screen = screen::Screen::offered(&cfg.screen, trust::hub(cfg)?, sandbox.clone());
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     mcp_tools.ask_the_owner(trust::hub(cfg)?);
     let ledger_sink = ledger::build_sink(cfg);
@@ -2942,7 +2963,7 @@ async fn gateway_factory(
             agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
                 files.clone(),
                 session_id,
-                session_hidden(owner, owners),
+                session_hidden(owner, owners, &workspace),
             )));
             // M51: media generation, bound to the same chat.
             if let Some(media) = &media {
@@ -2950,12 +2971,12 @@ async fn gateway_factory(
                 agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
                     media.clone(),
                     session_id,
-                    session_hidden(owner, owners),
+                    session_hidden(owner, owners, &workspace),
                 )));
                 agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
                     media.clone(),
                     session_id,
-                    session_hidden(owner, owners),
+                    session_hidden(owner, owners, &workspace),
                 )));
                 // M51.4: a voice reply.
                 if media.speaks() {
@@ -2964,6 +2985,15 @@ async fn gateway_factory(
                         media.clone(),
                         session_id,
                     )));
+                }
+            }
+            // M61: screenshots and recordings of the owner's screen, in the
+            // owner's own chats only. The card goes to this chat (from an
+            // owner-mode group, to the primary owner chat).
+            if let Some(screen) = screen.as_ref().filter(|_| owners) {
+                agent.append_system_prompt(ferrule_agents::prompts::CHAT_SCREEN);
+                for tool in screen.tools(session_id, self_service::offered(&hub, session_id)) {
+                    agent.register_tool(tool);
                 }
             }
         }
@@ -3984,7 +4014,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         let placeholders_only = broker.secrets().iter().all(|s| {
             env.lines()
                 .any(|l| l == format!("{}={}", s.name, s.placeholder))
-                && std::env::var(&s.name).map_or(true, |real| !env.contains(&real))
+                && secrets::var(&s.name).is_none_or(|real| !env.contains(&real))
         });
         report(
             "[secrets] reach commands as placeholders only",

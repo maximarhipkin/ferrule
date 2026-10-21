@@ -562,7 +562,7 @@ fn mode_name(mode: Mode) -> &'static str {
 }
 
 fn key_is_set(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|v| !v.is_empty())
+    secrets::non_empty(name).is_some()
 }
 
 // ── Menu labels ────────────────────────────────────────────────────────
@@ -1099,7 +1099,7 @@ async fn add_keyed_provider(t: &mut Target, http: &reqwest::Client, local: bool)
     if !np.needs_key {
         let probe_key = key
             .clone()
-            .or_else(|| std::env::var(&np.key_env).ok())
+            .or_else(|| secrets::var(&np.key_env))
             .unwrap_or_else(|| "none".into());
         local::fit(t, http, &mut np, &probe_key).await?;
     }
@@ -1300,9 +1300,9 @@ fn write_extra_model(
 async fn add_model_step(t: &mut Target, http: &reqwest::Client, name: &str) -> Result<()> {
     let cfg = t.config()?;
     let p = cfg.providers[name].clone();
-    let models = match std::env::var(&p.api_key_env) {
+    let models = match secrets::var(&p.api_key_env) {
         _ if p.plan.is_some() => plan_models(&cfg, &p).await?,
-        Ok(key) => {
+        Some(key) => {
             match interruptible(probe::models(
                 http,
                 &p.base_url,
@@ -1318,7 +1318,7 @@ async fn add_model_step(t: &mut Target, http: &reqwest::Client, name: &str) -> R
                 }
             }
         }
-        Err(_) => Vec::new(),
+        None => Vec::new(),
     };
     let have: Vec<&String> = std::iter::once(&p.model).chain(p.models.keys()).collect();
     let offer: Vec<String> = models.into_iter().filter(|m| !have.contains(&m)).collect();
@@ -1408,7 +1408,7 @@ async fn ask_provider_key(
     http: &reqwest::Client,
     np: &NewProvider,
 ) -> Result<(Option<String>, Vec<String>)> {
-    let current = std::env::var(&np.key_env).ok().filter(|v| !v.is_empty());
+    let current = secrets::non_empty(&np.key_env);
     let anthropic = np.profile == "anthropic";
     if !np.needs_key {
         // Local servers take any key; the client still sends one.
@@ -1553,7 +1553,7 @@ async fn edit_provider(t: &mut Target, http: &reqwest::Client, name: &str) -> Re
             let models = if p.plan.is_some() {
                 plan_models(&cfg, &p).await?
             } else if key_is_set(&p.api_key_env) {
-                let key = std::env::var(&p.api_key_env)?;
+                let key = secrets::var(&p.api_key_env).unwrap_or_default();
                 match interruptible(probe::models(
                     http,
                     &p.base_url,
@@ -1648,8 +1648,7 @@ async fn telegram_step(t: &mut Target, http: &reqwest::Client, guided: bool) -> 
         .gateway
         .telegram_token_env
         .as_deref()
-        .and_then(|env| std::env::var(env).ok())
-        .filter(|v| !v.is_empty());
+        .and_then(secrets::non_empty);
     let Some(token) = token.filter(|_| !guided) else {
         let ask =
             Confirm::new("Connect a Telegram bot, so you can talk to the agent from your phone?")

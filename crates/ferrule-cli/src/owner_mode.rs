@@ -108,6 +108,61 @@ pub fn protected_paths() -> Vec<PathBuf> {
     paths
 }
 
+/// M54.6: one way the box is open, and how to close it.
+pub struct Opening {
+    /// Stable, for the dashboard's notices.
+    pub id: &'static str,
+    pub what: String,
+    pub close: &'static str,
+}
+
+/// M54.6: what's open while it is, for `ferrule doctor` and the
+/// dashboard's Home: owner mode running, the sandbox off, the approval
+/// gates off. Each says what it opens and how to close it.
+pub fn openings(cfg: &Config) -> Vec<Opening> {
+    let mut out = Vec::new();
+    if on(cfg) {
+        // M54.5: the one gate left, or that it's off too.
+        let asks = if cfg.trust.untrusted_send_gate {
+            "only a send, a force-push or a DELETE after it has read outside content asks you \
+             first"
+        } else {
+            "nothing asks you first, not even a send after it has read outside content ([trust] \
+             untrusted_send_gate = false)"
+        };
+        out.push(Opening {
+            id: "open-owner",
+            what: format!(
+                "Owner mode is on: the bot's commands can write everywhere your account can \
+                 except the keys and ferrule's own files, the network is open, and {asks}."
+            ),
+            close: "Settings → Autonomy → Ask me first closes it (the gateway restarts).",
+        });
+    }
+    if cfg.sandbox.mode == Mode::Off {
+        out.push(Opening {
+            id: "open-sandbox-off",
+            what: "The sandbox is off ([sandbox] mode = \"off\"): the bot's commands can read \
+                   your saved keys and rewrite ferrule's config and binary."
+                .into(),
+            close: "Settings → Autonomy → Ask me first (or Protected autonomous) turns it back \
+                    on; on the machine, set [sandbox] mode = \"workspace-write\" and restart.",
+        });
+    }
+    if !cfg.trust.gates {
+        out.push(Opening {
+            id: "open-gates-off",
+            what: "Approval gates are off ([trust] gates = false): recursive deletes, \
+                   force-pushes, DELETEs to bound hosts and sends through connected services \
+                   run without asking."
+                .into(),
+            close: "Settings → Autonomy → Ask me first removes it; on the machine, delete \
+                    gates = false under [trust] and restart.",
+        });
+    }
+    out
+}
+
 /// The session transcripts and the learning loop's notes: hidden from
 /// every command outside owner mode, and in owner mode from everyone's but
 /// the owner's (§7).
@@ -124,13 +179,15 @@ const GUEST_MEMORY: &str = "guest-memory";
 /// What only the owner's sessions may read, hidden from everyone else's
 /// commands and file tools in every mode: [`history`], the owner's
 /// long-term memory (`memory.db` and SQLite's files beside it), the other
-/// chats' memories, and the learned skills (the pass keeps some for the
-/// owner's chats).
-pub fn guest_hidden() -> Vec<PathBuf> {
+/// chats' memories, the learned skills (the pass keeps some for the
+/// owner's chats), and M61's captures of the owner's screen in
+/// `workspace`.
+pub fn guest_hidden(workspace: &Path) -> Vec<PathBuf> {
+    let mut hidden = vec![workspace.join(crate::screen::DIR)];
     let Ok(data) = config::data_dir() else {
-        return Vec::new();
+        return hidden;
     };
-    let mut hidden = history();
+    hidden.extend(history());
     hidden.extend(
         [
             "memory.db",

@@ -117,6 +117,18 @@ impl OpenAiCompatProvider {
         m
     }
 
+    /// M60: the user message with the images `held` from the tool results
+    /// just sent, if any, after them.
+    fn release(messages: &mut Vec<Value>, held: &mut (Vec<String>, Vec<Value>)) {
+        if held.1.is_empty() {
+            return;
+        }
+        let (calls, pics) = std::mem::take(held);
+        let mut content = vec![json!({ "type": "text", "text": vision::tool_images_lead(&calls) })];
+        content.extend(pics);
+        messages.push(json!({ "role": "user", "content": content }));
+    }
+
     fn tools_to_wire(tools: &[ToolDefinition]) -> Value {
         json!(tools
             .iter()
@@ -256,16 +268,41 @@ impl OpenAiCompatProvider {
         let sees = self.sees_images();
         let set = ferrule_core::vision::pixel_set(&req.messages);
         let mut pixels = false;
-        let messages: Vec<Value> = req
-            .messages
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
+        let mut messages: Vec<Value> = Vec::with_capacity(req.messages.len());
+        // M60: a tool message takes only text, so the images of a run of
+        // tool results follow it in one user message, marked as theirs.
+        let mut held: (Vec<String>, Vec<Value>) = (Vec::new(), Vec::new());
+        for (i, m) in req.messages.iter().enumerate() {
+            if m.role == Role::Tool && m.images.is_empty() {
+                messages.push(Self::wire(m, true, Vec::new()));
+                continue;
+            }
+            if m.role != Role::Tool {
+                Self::release(&mut messages, &mut held);
                 let parts = vision::parts(i, m, &set, sees);
                 pixels |= parts.iter().any(|p| matches!(p, Part::Pixels { .. }));
-                Self::wire(m, true, parts)
-            })
-            .collect();
+                messages.push(Self::wire(m, true, parts));
+                continue;
+            }
+            let (text, pics) = vision::tool_parts(i, m, &set, sees);
+            if !pics.is_empty() {
+                pixels = true;
+                held.0.push(m.tool_call_id.clone().unwrap_or_default());
+                held.1.extend(pics.into_iter().map(|(mime, data)| {
+                    json!({
+                        "type": "image_url",
+                        "image_url": { "url": format!("data:{mime};base64,{data}") },
+                    })
+                }));
+            }
+            let words = Message {
+                content: Some(text),
+                images: Vec::new(),
+                ..m.clone()
+            };
+            messages.push(Self::wire(&words, true, Vec::new()));
+        }
+        Self::release(&mut messages, &mut held);
         let mut payload = json!({
             "model": self.model,
             "messages": messages,

@@ -2,8 +2,8 @@
 //! server, per owner, in `<data>/dashboard/notices.json`, so it holds
 //! across a reload, another device and a restart. A hidden notice that is
 //! still true comes back after [`HIDE_FOR`], saying so; one whose text
-//! changed is a new notice. The kill switch and "no model can answer" never
-//! close.
+//! changed is a new notice. The kill switch, "no model can answer", the
+//! sandbox off and the gates off (M54.6) never close.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,9 @@ pub fn unclosable(id: &str) -> Option<&'static str> {
     match id {
         "kill" => Some("the kill switch stops every run; it shows until it's off"),
         "models-none" => Some("no model can answer; it shows until one can"),
+        "open-sandbox-off" | "open-gates-off" => {
+            Some("the box is open; it shows until it's closed")
+        }
         _ => None,
     }
 }

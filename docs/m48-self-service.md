@@ -377,7 +377,9 @@ with the safe default and is repeated in the final report.
     "Allow for this run" lets one gated *shell* command run again
     without asking until the run ends (`docs/m19-trust-cost.md` §7).
     Admin questions never offer it, so D9 still holds for every
-    `ferrule_admin` op.
+    `ferrule_admin` op. M56.2's standing grants ("Always here", §7b
+    there) don't change that either: only gated shell commands and
+    connected services' changes offer them.
 - **D10 — Codes never run out.** After 1000 failed 2-character draws,
   `open_for` draws 3-character codes (letter, digit, letter: 4608 codes).
   Fixes bug 6.
@@ -553,7 +555,7 @@ is to make Ferrule change itself without the owner meaning it.
 - **The dashboard's POST arms** (`api.rs:125–189`) use only `ctx`,
   `path` and `body`, never `req`. So they move into `act` as a block.
 - **`config/set` only sets the 19 form fields** (`config_page.rs:363`
-  `FORM`). That is the safe set for `config_set`.
+  `FORM`). That is the safe set for `config_set`. (29 since M56.3, below.)
 - **Docker is managed mode** (M44), so one lock covers both.
 - **Telegram's tap flow:**
   - a callback's `data` becomes the message text;
@@ -1542,7 +1544,8 @@ each one is for.
         keyboard" still singles out the card.
       - Telegram's keyboard is one button per row (`keyboard`,
         `telegram.rs:1008`), so `[0][0]` is Allow.
-    - Test `the_owner_switches_the_default_model_from_telegram_with_one_tap`:
+    - Test `the_owner_switches_the_default_model_from_telegram_with_one_tap`
+      (since M56.3 `…_without_a_tap`: a connected model switches with no card):
       1. Set up `a.fail_with(503)` and the fallback `["b"]` via the
          `[models.aliases]` replace trick.
       2. `tg.say(42, "the model is down, SWITCH_DEFAULT")`.
@@ -1730,3 +1733,53 @@ Where the code departed from the plan above, and why.
 GitHub release install; a real systemd restart and rollback; a real sandbox
 denial (the tool's config write was tested with a read-only file, not
 under bubblewrap).
+
+## After M48: M56.3, the chat administers what the owner asks for
+
+Built on `autopilot` (2026-10-21), from the gap analysis's M56.3.
+
+- **Web search and the browser from the chat.** `FORM` gained
+  `web_search.provider` (duckduckgo, brave, tavily, exa, off),
+  `max_results`, `safe_search`, `region`, `language` (a new `text` kind:
+  up to 16 letters, digits, `-` or `_`), `max_output_tokens`,
+  `timeout_secs`, `price_per_search_usd`, `max_searches_per_day`, and
+  `browser.enabled`. `[browser]` is still a whole guarded section;
+  `config_page::OPEN` lets only `browser.enabled` through
+  `guarded_change` (the Config page's editor and `config_restore` too).
+  `web_search.api_key_env` and `endpoint` stay guarded by name: they move
+  where a key goes. A managed bot without the browser refuses turning it
+  on (`locks.rs`).
+- **A provider switch doesn't take the old key along** (the security fix
+  after M56.3). `[web_search]`'s key is bound to the endpoint's host by
+  the loader, so switching `provider` alone would have sent provider A's
+  key to provider B's host (and the raw editor could do that before
+  M56.3). Now `config/set` on `web_search.provider` drops a custom
+  `endpoint` and names a key that goes to the new host already: a
+  `[secrets]` entry bound there, or the provider's own variable
+  (`TAVILY_API_KEY`) when it is saved and not in `[secrets]`; DuckDuckGo
+  and off drop `api_key_env`. Nothing fits: refused with the
+  `secret_request` to make (`config_page::search_key`). `guarded_change`
+  lets `api_key_env` change, and `endpoint` go, only together with
+  `provider`; `config_page::key_moved` then refuses any page or chat write
+  (the form, the editor, restore, undo, the chat's `config_restore`) that
+  would bind any key to a host it isn't bound to now, except a provider's
+  own variable on its own host. So a key's hosts never widen from here.
+  Details: [web-search.md](web-search.md).
+- **`mcp_add` was already an op outside owner mode** (M54 §6.2, with the
+  card): a key goes in only as `${NAME}` of a `[secrets]` entry, and a new
+  key through `secret_request`. Nothing new was needed.
+- **Low-risk changes without a card** (`self_service/quick.rs`): in a
+  turn that has read nothing from outside (`Hub::untrusted`, M54.5's
+  flag), `task_add`, `task_schedule`, `task_pause` and `task_delete` on
+  the owner's own tasks (answering in an owner's chat or the dashboard's,
+  no gate, not built in), and `model_default` and `model_here` to a model
+  that's connected and ready, run at once after the same checks
+  (resolve, managed locks, the card's own validation). The chat gets a
+  receipt, "Done without asking: …", with an **Undo** button
+  (`/undo_change <id>`, the owner only, once, for a day, in this
+  process): a resume for a pause, the old schedule, the old default or
+  pin, the deleted task added again (paused again if it was), the added
+  task deleted. Both are audited (`self_service.ran` with its `undo` id,
+  `self_service.undone`). The tool's description says so (appended, so
+  the text before it doesn't move). Everything else keeps its card;
+  owner mode is unchanged (no cards there anyway).

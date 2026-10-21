@@ -38,17 +38,20 @@ pub struct Message {
     /// everything else reads the neutral fields above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<NativeBlocks>,
-    /// Photos the sender attached (M47). History holds the files' paths,
-    /// never the bytes; the driver that serves a call reads and encodes
-    /// them, or writes a note in their place (see [`crate::vision`]).
+    /// Photos the sender attached (M47), or on a tool result the images
+    /// the tool returned (M60). History holds the files' paths, never the
+    /// bytes; the driver that serves a call reads and encodes them, or
+    /// writes a note in their place (see [`crate::vision`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageRef>,
 }
 
-/// A photo saved on disk that a user message carries.
+/// An image saved on disk that a user message (a photo) or a tool result
+/// (M60) carries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImageRef {
-    /// Where the file is (inside the workspace's inbox).
+    /// Where the file is (a photo: inside the workspace's inbox; a tool's
+    /// image: the absolute path it was read or saved at).
     pub path: String,
     /// `image/jpeg`, `image/png`, `image/webp` or `image/gif`.
     pub mime: String,
@@ -135,6 +138,12 @@ impl Message {
             images,
             ..Self::user(content)
         }
+    }
+
+    /// This message with images attached: a tool result's (M60).
+    pub fn with_images(mut self, images: Vec<ImageRef>) -> Self {
+        self.images = images;
+        self
     }
 
     /// This message with its native blocks attached.

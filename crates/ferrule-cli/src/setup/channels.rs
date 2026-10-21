@@ -47,12 +47,11 @@ fn summary(envs: Option<(&str, Option<&str>)>, users: usize) -> String {
 }
 
 fn set(env: &str) -> bool {
-    std::env::var(env).is_ok_and(|v| !v.is_empty())
+    crate::secrets::non_empty(env).is_some()
 }
 
 fn token(env: Option<&str>) -> Option<String> {
-    env.and_then(|e| std::env::var(e).ok())
-        .filter(|v| !v.is_empty())
+    env.and_then(crate::secrets::non_empty)
 }
 
 // ── Discord ────────────────────────────────────────────────────────────

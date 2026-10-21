@@ -250,6 +250,9 @@ The dashboard's Models list marks a model **sees photos**. If a provider
 answers an image with a 400 that names images, Ferrule retries that
 request once with notes in place of pixels.
 
+Tools return images the same way since M60 (`read_file` on an image, an
+MCP screenshot, `generate_image`'s result): [vision.md](vision.md).
+
 ## Which model runs
 
 Highest first:

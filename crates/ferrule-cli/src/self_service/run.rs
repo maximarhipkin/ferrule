@@ -28,7 +28,7 @@ fn clip(text: &str) -> String {
 }
 
 /// The page's POST for a change op, and the body it takes.
-fn route_of(op: &Op, here: &ChatRef) -> Option<(&'static str, Value)> {
+pub(super) fn route_of(op: &Op, here: &ChatRef) -> Option<(&'static str, Value)> {
     Some(match op {
         Op::ModelDefault { model } => ("models/default", json!({ "model": model })),
         Op::ModelHere { model: Some(model) } => (
@@ -88,7 +88,7 @@ fn route_of(op: &Op, here: &ChatRef) -> Option<(&'static str, Value)> {
 }
 
 /// What the page's handler answered, as a sentence or its error.
-fn said(answer: api::Answer) -> Result<String, String> {
+pub(super) fn said(answer: api::Answer) -> Result<String, String> {
     match answer {
         Some((200 | 202, v)) => Ok(v["said"]
             .as_str()

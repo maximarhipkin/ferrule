@@ -104,7 +104,13 @@ impl ResponsesProvider {
         let pixel_set = ferrule_core::vision::pixel_set(msgs);
         let mut input: Vec<Value> = Vec::new();
         let mut replayed = false;
+        // M60: the images of a run of tool results, sent after it in one
+        // user message marked as theirs.
+        let mut held: (Vec<String>, Vec<Value>) = (Vec::new(), Vec::new());
         for (i, m) in msgs.iter().enumerate().skip(lead) {
+            if m.role != Role::Tool {
+                release(&mut input, &mut held);
+            }
             match m.role {
                 Role::System => {
                     if let Some(t) = nonempty(&m.content) {
@@ -141,11 +147,23 @@ impl ResponsesProvider {
                         input.push(json!({"role": "user", "content": all}));
                     }
                 }
-                Role::Tool => input.push(json!({
-                    "type": "function_call_output",
-                    "call_id": m.tool_call_id.as_deref().unwrap_or(""),
-                    "output": m.content.as_deref().unwrap_or(""),
-                })),
+                Role::Tool => {
+                    let (text, pics) = vision::tool_parts(i, m, &pixel_set, sees);
+                    if !pics.is_empty() {
+                        held.0.push(m.tool_call_id.clone().unwrap_or_default());
+                        held.1.extend(pics.into_iter().map(|(mime, data)| {
+                            json!({
+                                "type": "input_image",
+                                "image_url": format!("data:{mime};base64,{data}"),
+                            })
+                        }));
+                    }
+                    input.push(json!({
+                        "type": "function_call_output",
+                        "call_id": m.tool_call_id.as_deref().unwrap_or(""),
+                        "output": text,
+                    }));
+                }
                 Role::Assistant => {
                     // Every turn, not just the loop in progress: GPT-5.6's
                     // default `reasoning.context = "all_turns"` renders
@@ -166,6 +184,8 @@ impl ResponsesProvider {
                 }
             }
         }
+
+        release(&mut input, &mut held);
 
         let mut body = json!({
             "model": self.model,
@@ -436,6 +456,19 @@ pub(crate) fn reasoning_rejected(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     (m.starts_with("http 400") || m.starts_with("http 404"))
         && (m.contains("reasoning") || m.contains("encrypted") || m.contains("rs_"))
+}
+
+/// M60: the user message with the images `held` from the function call
+/// outputs just sent, if any, after them.
+fn release(input: &mut Vec<Value>, held: &mut (Vec<String>, Vec<Value>)) {
+    if held.1.is_empty() {
+        return;
+    }
+    let (calls, pics) = std::mem::take(held);
+    let mut content =
+        vec![json!({ "type": "input_text", "text": vision::tool_images_lead(&calls) })];
+    content.extend(pics);
+    input.push(json!({ "role": "user", "content": content }));
 }
 
 /// A stored output item that can go back without `store`: a reasoning item

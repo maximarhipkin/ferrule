@@ -133,6 +133,7 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "console/parity" => super::console::parity(),
             "chat" => super::chat::view(ctx, req),
             "approvals" => super::chat::approvals(ctx),
+            "grants" => grants_view(),
             "config" => super::config_page::get(ctx),
             "config/versions" => super::config_page::versions_view(ctx),
             "config/version" => super::config_page::version_diff(ctx, req),
@@ -225,6 +226,7 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "tasks/preview" => task_preview(body),
         "tasks/add" => task_add(ctx, body).await,
         "approvals/answer" => super::chat::answer(ctx, body),
+        "grants/revoke" | "grants/widen" => grants_op(ctx, path, body),
         "config/check" => super::config_page::check(ctx, body),
         "config/save" => super::config_page::save(ctx, body),
         "config/set" => super::config_page::set(ctx, body),
@@ -267,6 +269,28 @@ pub fn health(ctx: &Ctx) -> Value {
     });
     if let Some(name) = crate::instance::current() {
         out["instance"] = json!(name);
+    }
+    // M54.6: red while the box is open; only owner mode, a choice the
+    // dashboard offers, closes for a day.
+    if let Some(cfg) = config(ctx) {
+        for open in crate::owner_mode::openings(&cfg) {
+            let fixes = if crate::managed::on() {
+                json!([])
+            } else {
+                json!([
+                    { "label": "Ask me first", "action": "sandbox/mode", "body": { "mode": "ask" } },
+                    { "label": "Open Settings", "section": "settings" },
+                ])
+            };
+            problems.push(json!({
+                "id": open.id,
+                "fixes": fixes,
+                "what": open.what,
+                "fix": open.close,
+                "section": "health",
+                "top": true,
+            }));
+        }
     }
     if let Some(live) = &ctx.live {
         let h = &live.health;
@@ -1197,6 +1221,10 @@ fn config_restore(ctx: &Ctx, body: &Value) -> Answer {
                     "`{field}` differs in the last good config, so only the owner can restore it, on the dashboard."
                 ),
             );
+        }
+        // M56.3: nor carry a key to a host it isn't sent to now.
+        if let Some(why) = crate::dashboard::config_page::key_moved(&old, &new) {
+            return bad(403, why);
         }
     }
     need!(confirmed(
@@ -2187,6 +2215,94 @@ fn settings(ctx: &Ctx) -> Option<crate::settings_admin::Settings> {
 /// The caps, MCP servers, skills and hooks (M24: each editable). Names,
 /// hosts and file names only: never a server's args, env, headers or URL
 /// path.
+/// M56.2: the standing grants ("Always here"), from the file the agent
+/// can't reach.
+fn grants_file() -> Option<ferrule_trust::Grants> {
+    crate::config::data_dir()
+        .ok()
+        .map(|d| ferrule_trust::Grants::in_data_dir(&d))
+}
+
+fn grants_view() -> Answer {
+    let Some(grants) = grants_file() else {
+        return missing("the data dir");
+    };
+    let rows: Vec<Value> = grants
+        .list()
+        .iter()
+        .map(|g| {
+            json!({
+                "id": g.id,
+                "what": g.describe(),
+                "kind": g.kind,
+                "created": g.created,
+                "at": chrono::DateTime::parse_from_rfc3339(&g.created).ok().map(|t| t.timestamp()),
+                // A send to one address can be widened to its domain.
+                "widen": g.to.as_deref().is_some_and(|t| !t.starts_with('@')),
+            })
+        })
+        .collect();
+    ok(json!({ "grants": rows }))
+}
+
+/// `POST grants/revoke {id}` and `grants/widen {id}`: the owner takes a
+/// standing grant back, or lets a send to one address reach its domain.
+fn grants_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
+    let Some(grants) = grants_file() else {
+        return missing("the data dir");
+    };
+    let id = need!(arg(body, "id"));
+    let Some(g) = grants.list().into_iter().find(|g| g.id == id) else {
+        return bad(404, "no such standing approval; it may be gone already");
+    };
+    let widen = path == "grants/widen";
+    need!(confirmed(
+        body,
+        if widen {
+            let domain =
+                g.to.as_deref()
+                    .and_then(|t| t.rsplit_once('@'))
+                    .map_or("", |(_, d)| d);
+            format!(
+                "Let {} reach every address at {domain} without asking?",
+                g.tool
+            )
+        } else {
+            format!("Stop allowing {} without asking?", g.describe())
+        }
+    ));
+    let done = if widen {
+        grants.widen(id)
+    } else {
+        grants.revoke(id)
+    };
+    match done {
+        Ok(Some(after)) => {
+            if let Some(hub) = &ctx.hub {
+                hub.audit().record(
+                    chrono::Utc::now(),
+                    if widen {
+                        "grant_widened"
+                    } else {
+                        "grant_revoked"
+                    },
+                    None,
+                    None,
+                    json!({ "id": id, "what": after.describe(), "by": by() }),
+                );
+            }
+            let said = if widen {
+                format!("Now allowed without asking: {}.", after.describe())
+            } else {
+                format!("Revoked: {} asks again.", g.describe())
+            };
+            ok(json!({ "ok": true, "said": said }))
+        }
+        Ok(None) => bad(409, "that one can't be widened"),
+        Err(e) => bad(500, e),
+    }
+}
+
 fn settings_view(ctx: &Ctx) -> Answer {
     let Some(s) = settings(ctx) else {
         return missing("the config");
@@ -3842,9 +3958,10 @@ command = "echo hi"
                 .1,
             NEW
         );
-        // In use from the next call: the running process's env has it.
-        assert_eq!(std::env::var("M52PROVIDERKEY").as_deref(), Ok(NEW));
-        std::env::remove_var("M52PROVIDERKEY");
+        // In use from the next call: the running process holds it (M54.2).
+        assert_eq!(crate::secrets::var("M52PROVIDERKEY").as_deref(), Some(NEW));
+        assert!(std::env::var_os("M52PROVIDERKEY").is_none());
+        ferrule_sandbox::secret_env::forget("M52PROVIDERKEY");
 
         // Hosts: only a page-shaped tool key, only real site names, asked first.
         let (s, v) = call(

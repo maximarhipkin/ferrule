@@ -298,7 +298,9 @@ others are silent, which doesn't mean the risk doesn't apply to them.
     ferrule's CA trusted in the keychain.
   - Whether Seatbelt stops a command from reading ferrule's environment
     (e.g. `ps eww`) is unverified, because the macOS backend hasn't been
-    run on a real Mac yet.
+    run on a real Mac yet. Since M54.2 the secrets file's keys aren't in
+    that environment (`docs/sandbox.md`, "Env"); only variables exported
+    before ferrule started are.
 - **Reflection** in another encoding (§3) passes through unscrubbed.
 - **A bound host that compresses anyway** (ignoring the stripped
   `Accept-Encoding`) gets 502 for every response with a body: ferrule

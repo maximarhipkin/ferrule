@@ -39,6 +39,53 @@ impl fmt::Display for Kind {
     }
 }
 
+impl Kind {
+    /// M54.5: reaches past this machine and can't be taken back: what an
+    /// injected page or email would steer the owner's keys toward.
+    pub fn leaves_the_box(self) -> bool {
+        matches!(
+            self,
+            Kind::ForcePush | Kind::HttpDelete | Kind::ConnectedWrite
+        )
+    }
+}
+
+/// M54.5: a call whose result is content from outside the owner's control,
+/// so the model may be reading someone else's instructions after it: a web
+/// page or search, the browser, a connected service's read (email,
+/// messages, documents), or a shell command that fetches (`curl`, `wget`,
+/// httpie, `xh`, `gh`). A connected service's change doesn't count: its
+/// answer is a status, and two sends in a row stay untapped.
+pub fn untrusted_source(tool: &str, args: &Value, changes: bool, connected: &[String]) -> bool {
+    match tool {
+        "web_fetch" | "web_search" => true,
+        "shell" => args
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(fetches),
+        _ => {
+            let Some((server, _)) = tool.strip_prefix("mcp__").and_then(|r| r.split_once("__"))
+            else {
+                return false;
+            };
+            server == "browser" || (!changes && connected.iter().any(|c| c == server))
+        }
+    }
+}
+
+/// Whether some simple command in `command` is an HTTP client.
+fn fetches(command: &str) -> bool {
+    segments(command).iter().any(|segment| {
+        let words = words(segment);
+        unwrap(&words).first().is_some_and(|w| {
+            matches!(
+                program(w).as_str(),
+                "curl" | "wget" | "http" | "https" | "xh" | "xhs" | "gh" | "lynx" | "w3m"
+            )
+        })
+    })
+}
+
 /// A gated command: what kind, and the part of the command that is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gated {
@@ -53,6 +100,60 @@ pub fn classify(tool: &str, args: &Value, bound_hosts: &[HostPattern]) -> Option
     }
     let command = args.get("command")?.as_str()?;
     classify_command(command, bound_hosts)
+}
+
+/// M56.2: the words a standing "Always here" grant binds a shell call to:
+/// `command` must be exactly the one simple command `g` gates, with
+/// nothing the shell would expand or chain (no `$`, backquote, glob,
+/// brace, `~` or escape), so the words are what runs. `None`: it can be
+/// approved once or for the run, never for good.
+pub fn grantable_command(command: &str, g: &Gated) -> Option<Vec<String>> {
+    let segments = segments(command);
+    let [only] = segments.as_slice() else {
+        return None;
+    };
+    let literal = !only.contains(['$', '`', '*', '?', '[', '{', '~', '\\']);
+    (literal && only.trim() == g.command).then(|| words(only))
+}
+
+/// M56.2: who a connected service's change goes to, lower-cased: the
+/// addresses in `to`, `recipient` or `recipients` (a comma-separated
+/// string or a list), plus `cc` and `bcc`. Empty when the call names no
+/// `to` of its own (a reply that goes to a thread's sender): then no
+/// standing grant can cover it.
+pub fn recipients(args: &Value) -> Vec<String> {
+    let field = |key: &str| -> Vec<String> {
+        let raw: Vec<String> = match args.get(key) {
+            Some(Value::String(s)) => s.split([',', ';']).map(str::to_string).collect(),
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
+        raw.iter()
+            .map(|a| {
+                let a = a.trim();
+                let inner = match (a.rfind('<'), a.rfind('>')) {
+                    (Some(l), Some(r)) if l < r => &a[l + 1..r],
+                    _ => a,
+                };
+                inner.trim().to_lowercase()
+            })
+            .filter(|a| !a.is_empty())
+            .collect()
+    };
+    let mut out: Vec<String> = ["to", "recipient", "recipients"]
+        .iter()
+        .flat_map(|k| field(k))
+        .collect();
+    if out.is_empty() {
+        return out;
+    }
+    out.extend(["cc", "bcc"].iter().flat_map(|k| field(k)));
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// M20: a tool of a connected service (`mcp__<name>__*`, `name` in

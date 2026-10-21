@@ -306,7 +306,7 @@ impl Host {
             let v = self.sandbox.child_env_var(name).ok_or_else(|| {
                 format!("http: secret `{name}` isn't set up (`ferrule secrets` binds it to hosts)")
             })?;
-            if std::env::var(name).is_ok_and(|real| real == v) {
+            if ferrule_sandbox::secret_env::var(name).is_some_and(|real| real == v) {
                 return Err(format!(
                     "http: secret `{name}` isn't bound in the credential proxy, so it would go out as its real value; bind it to this plugin's hosts first"
                 ));

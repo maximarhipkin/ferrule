@@ -202,6 +202,47 @@ Variables whose name looks secret (`*KEY*`, `*SECRET*`, `*TOKEN*`,
 `scrub_secret_env = false` keeps them all. With `[secrets]`, the command
 gets a same-shaped placeholder in their place.
 
+**The secrets file isn't in the environment (M54.2).** Ferrule loads
+`private/secrets.env` into its own memory (`ferrule_sandbox::secret_env`),
+not into the process environment. Another process of the same account
+can't read those keys from `/proc/<ferrule>/environ` or `ps eww`, and no
+child inherits them, whatever its sandbox. Ferrule reads a key from the
+real environment first, so an `export`ed variable still wins over the
+file, and a key saved from the dashboard wins over both until restart.
+A key from the file reaches a child only by name:
+
+- a sandboxed command (the shell, a stdio MCP server, a workspace hook)
+  gets it when it's in `env_passthrough`, or every one with
+  `scrub_secret_env = false`; with `[secrets]` it gets the placeholder
+  instead, as before;
+- an owner's hook gets the names in its `env` (`docs/m18-hooks.md` §2);
+- `${NAME}` in an MCP server's or telemetry's headers expands to what a
+  command would get.
+
+**Changed for helpers outside the sandbox.** Until M54.2 the owner's own
+spawns (hooks, scheduled tasks' gate scripts, a `[transcription]
+command`, the tunnel) inherited every key in the file, and a sandboxed
+command inherited the file's keys whose names don't look secret. Now
+they get the real environment only. If one of yours used a key from the
+file: list it in the hook's `env`; or in `env_passthrough` for a
+command; or set it in the environment ferrule starts with (the service
+file's `Environment=`, a launchd plist, your shell), which they inherit
+as before.
+
+**Tool results.** Whatever a command, an MCP server or any other tool
+prints, the agent loop takes the values of the keys ferrule holds out of
+the result before the transcript, the model, a hook or the trace sees it
+(M54.3; `ferrule-core` `scrub`, installed by `health::scrub_tool_results`).
+A `[secrets]` key becomes its placeholder, the text commands see anyway;
+a provider key, a channel token or anything else from the secrets file
+becomes `[redacted]`. Output that is cut or spilled to
+`.ferrule/spill/` (the shell, MCP, a background job's `tail`, an SSH
+workspace's spill) is scrubbed before the cut, so no part of a key is
+left. Values under 6 characters are skipped. `ferrule doctor`'s
+`history` line counts known key values still in `sessions/` and
+`learn/` (saved before this, or by an older version): names and counts,
+never values, with the files to delete after rotating those keys.
+
 ## Limits (Windows)
 
 ```toml
@@ -267,6 +308,12 @@ It is opt-in. The default stays `workspace-write`.
   the bot can't change (`ferrule_admin config_set` refuses it), and the
   dashboard's switch has no chat route. `config_restore` from the chat refuses a restore that
   would bring back a guarded field.
+- **You can't forget it's on** (M54.6). While owner mode runs,
+  `ferrule doctor` warns (`open`) and the dashboard's Home shows a red
+  notice saying what's open, with an "Ask me first" button; it can be
+  closed for a day and comes back while still true. `mode = "off"` and
+  `[trust] gates = false` get the same, except that their notices can't
+  be closed (`owner_mode::openings`).
 
 ### What commands can read and write
 
@@ -317,7 +364,17 @@ In your private chat or the dashboard chat, with no approval prompt,
 `ferrule_admin` runs every change op at once and logs it
 (`self_service.ran`, by `<channel> chat <id> (owner mode)`). Its answer
 starts "Done:" or "Not done:". The trust gates are off for your chats
-and for the sub-agents and tasks you start there. The new ops:
+and for the sub-agents and tasks you start there, except one (M54.5):
+once a run has read outside content (a web page or search, the browser,
+a connected service's mail or messages, a `curl` from the shell), a
+connected service's change (an email, a message), a force push or
+branch deletion, and a `DELETE` to a host with a bound key ask you
+first. The proxy hands your key to its own host whoever asked, so an
+injected email could otherwise send mail as you without ever seeing the
+key. A new message starts clean, a shell command offers "Allow for this
+run", and a scheduled task, which has nobody to ask, is refused.
+`[trust] untrusted_send_gate = false`, set on the machine, turns it off
+([m19-trust-cost.md](m19-trust-cost.md) §6b). The new ops:
 
 | Op | What it does |
 |---|---|
@@ -341,7 +398,10 @@ gateway restarts first, the session's queue is full, or you save a
 different name.
 
 **Transcripts and notes.** `sessions/` and `learn/` are readable to your
-chats' commands, read-only. They stay hidden from everyone else's.
+chats' commands, read-only. They stay hidden from everyone else's. Tool
+results lose known key values before they're saved (see [Env](#env));
+`ferrule doctor` fails its `history` line while an older file still
+holds one, since owner mode lets commands read it.
 
 **Hooks, gate scripts and helpers run in the sandbox.** Your `[hooks]`,
 scheduler gate scripts, sub-agent worktree git, signal-cli, the
@@ -483,7 +543,8 @@ session, or a workspace per guest, is the follow-up.
   `owner mode needs Linux; this is macOS` (or Windows).
 - **Existing limits:** file names inside a hidden directory stay
   listable, and a bind mount of a hidden path isn't covered.
-- **An owner hook that needs the keys** stops working here.
+- **An owner hook that needs the keys** gets only the names in its
+  `env` (M54.2), in the sandbox like the rest.
 - **The bot's `ferrule status` from its shell** may show less (the
   gateway's state dir is hidden); it uses `ferrule_admin status`.
 

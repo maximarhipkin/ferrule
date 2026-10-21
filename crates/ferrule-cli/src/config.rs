@@ -786,6 +786,10 @@ pub struct Config {
     /// provider is named.
     #[serde(default)]
     pub media: MediaConfig,
+    /// M61: screenshots and short recordings of the owner's own screen,
+    /// view only, off unless turned on (docs/m61-screen.md).
+    #[serde(default)]
+    pub screen: crate::screen::ScreenConfig,
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -1306,6 +1310,19 @@ impl WebSearchConfig {
             .map(|h| h.trim_start_matches('[').trim_end_matches(']').to_string())
     }
 
+    /// M56.3: the key's variable and host when the key is its provider's
+    /// own (`BRAVE_API_KEY` for Brave) going to that provider's own host:
+    /// the one binding a change from the chat or the Config page may make
+    /// that wasn't there before.
+    pub fn own_key(&self) -> Option<(String, String)> {
+        let p = self.provider().ok()??;
+        let var = p.key_env()?;
+        if self.api_key_env.as_deref() != Some(var) || self.endpoint.is_some() {
+            return None;
+        }
+        Some((var.to_string(), self.host(p)?))
+    }
+
     /// Everything the tool needs but the key's placeholder.
     pub fn settings(&self) -> Result<Option<SearchSettings>> {
         let Some(p) = self.provider()? else {
@@ -1346,7 +1363,12 @@ impl WebSearchConfig {
             bail!("[web_search] max_output_tokens must be at least 100");
         }
         let mut s = SearchSettings::new(p, endpoint);
-        s.key_env = self.api_key_env.clone().filter(|e| !e.is_empty());
+        // DuckDuckGo takes no key: one left named here isn't bound to its
+        // host (M56.3).
+        s.key_env = self
+            .api_key_env
+            .clone()
+            .filter(|e| !e.is_empty() && p != SearchProvider::Duckduckgo);
         s.max_results = self.max_results;
         s.safe_search = safe_search;
         s.region = self.region.clone().filter(|r| !r.is_empty());
@@ -1766,7 +1788,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 #                            # for build caches; relative = inside the workspace
 # tmp = true                 # /tmp and $TMPDIR stay writable
 # scrub_secret_env = true    # drop *KEY*/*TOKEN*/*SECRET*… and api_key_env vars
-# env_passthrough = []       # names to keep anyway, e.g. ["GITHUB_TOKEN"]
+# env_passthrough = []       # names to keep (or pass from the secrets file), e.g. ["GITHUB_TOKEN"]
 # deny_read = []             # extra paths commands and the file tools can't
 #                            # read, e.g. ["~/work/.env.production"]
 # deny_default_reads = true  # ~/.ssh, cloud credential dirs, browser profiles
@@ -2059,7 +2081,7 @@ impl Config {
             // A plan's credential is read per call from its own store.
             return Ok((name, cfg, String::new()));
         }
-        let key = std::env::var(&cfg.api_key_env).with_context(|| {
+        let key = crate::secrets::var(&cfg.api_key_env).with_context(|| {
             format!(
                 "env var `{}` not set (needed by provider `{name}`) — run `ferrule setup`, or export it",
                 cfg.api_key_env

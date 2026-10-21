@@ -54,7 +54,10 @@ append-only.
     on `main` as `6efe413`, then PR #50 (the owner's Telegram groups get
     owner mode) as `f70984e`. `autopilot` continues as **PR #49**: M58.1–
     M58.5, M53.2 onward and the M51/M52 follow-ups, with `main` merged in
-    after M53.2 (`6efe413`) and after M51.4 (`f70984e`).
+    after M53.2 (`6efe413`) and after M51.4 (`f70984e`). PR #49 merged
+    to `main` on 2026-10-21, then PR #51 (the security and approvals
+    group); `autopilot` continues as **PR #52** (open), M60 and M61
+    among its commits.
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
   green predicate (`AGENTS.md`). The last full run on `autopilot` before
   this rewrite: 1869 passed, 0 failed, 28 ignored across 71 test
@@ -128,10 +131,14 @@ append-only.
   - **M54, protected autonomous mode** is merged to `main` (`6efe413`).
     Its open edges (a live Linux run, macOS owner mode, per-session
     helpers for guests) are in its Session Log entry.
-  - **`autopilot` / PR #49:** M58.1–M58.5 (simplify, remove or make
-    opt-in), the M53 follow-ups (M53.2, M53.3, M53.4, M53.5, M53.7),
-    and the M51/M52 follow-ups (M51.4, M51.3, M52.2, M52.4, M52.6; M52.3
-    is M54's `secret_request`), one commit each.
+  - **`autopilot` / PR #49 (merged 2026-10-21):** M58.1–M58.5
+    (simplify, remove or make opt-in), the M53 follow-ups (M53.2,
+    M53.3, M53.4, M53.5, M53.7), and the M51/M52 follow-ups (M51.4,
+    M51.3, M52.2, M52.4, M52.6; M52.3 is M54's `secret_request`), one
+    commit each.
+  - **`autopilot` / PR #52 (open):** among its commits M60 and **M61
+    screen viewing (screenshots and recordings of the owner's own
+    screen, view only)**, `docs/m61-screen.md`.
   - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
     `docs/research-harness2-media.md`, `docs/m51-media.md`,
     `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
@@ -148,7 +155,10 @@ append-only.
     with numbered items (M52.1–M52.6, M54.1–M54.7); they keep their
     parent's number.
 - **Milestone numbers are claimed:** M51–M53 Kimi, M54 the autonomy
-  session, M55–M59 the gap analysis. The next free number is **M60**.
+  session, M55–M59 the gap analysis, M60 images in tool results
+  (2026-10-21, `autopilot`), M61 screen viewing (screenshots and
+  recordings of the owner's own screen, view only; 2026-10-21,
+  `autopilot`). The next free number is **M62**.
   The first claim wins, and a later collision shifts the unclaimed
   numbers, never a claimed one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -8080,3 +8090,484 @@ still reads global lessons when it reflects on a guest's episode, and a
 guest lesson repeated in an owner scope is promoted to global (guest to
 owner, the other direction). Guests' memory files aren't in `ferrule
 memory`, the dashboard or the memory merges. No live run.
+
+### 2026-10-21 — M54.3: known key values out of every tool result (Claude, Opus 5.5)
+
+**Why.** Nothing scrubbed tool results: the proxy's `scrub_text` ran only
+in telemetry. One prompt-injected `cat`, a misconfigured MCP server, or
+a run under the old `mode = "off"` stopgap put a key into a tool result,
+then the transcript and the model's provider; and M54 made `sessions/`
+readable to the owner's commands, relying on "the builder checks" that
+none is there.
+
+**What changed.**
+- `ferrule-core` `scrub`: a process-wide hook (`install`, `text`); with
+  none installed text passes unchanged. Applied in `agent.rs` `Ran::of`,
+  the one place a call becomes the result the transcript, model, hooks,
+  trace and stuck detector read, and at the start of
+  `ToolOutput::capped`, `spilled` and `spill_preview` (the spill file
+  gets the scrubbed text too). `ferrule-tools` `Job::tail` scrubs what
+  it read and drops the part line a mid-file read starts with;
+  `ferrule-ssh`'s remote shell scrubs before its remote spill.
+- `ferrule-cli`: `health::known_secrets` (`[secrets]`, channel tokens,
+  provider keys, and now every name the secrets file set);
+  `health::redactor` uses it; `health::scrub_tool_results` installs the
+  hook from `main.rs` `dispatch` for every command: `Broker::scrub_text`
+  (bound secrets → placeholders, through `started_broker`, which never
+  starts the proxy) then `Redactor::known` (values only, no token
+  shapes; new in `ferrule-gateway`).
+- `ferrule doctor`: a `history` line counts known values (and their
+  JSON-escaped form) in `sessions/` and `learn/`, by name, and lists up
+  to five files; warn, fail while owner mode is asked for.
+- Docs: `sandbox.md` ("Env", owner mode's "Transcripts and notes"),
+  `m54-autonomous.md` "Amendments after the build" (2), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** The claude engine's own tools (its Bash and Read) don't pass
+through the loop. Values under 6 characters are skipped, connection
+OAuth tokens aren't in the list, and the non-proxy values are read once
+per process. The doctor scan reads every file whole (slow on a very
+large `sessions/`). No live run.
+
+### 2026-10-21 — M54.6: a danger notice while the box is open (Claude, Opus 5.5)
+
+**Why.** Nothing said the box was open. The owner's own stopgap
+(`mode = "off"` plus `gates = false`) showed how a "temporary" setting
+outlives its reason, and owner mode, deliberately ungated, had no
+reminder either.
+
+**What changed.**
+- `owner_mode::openings(cfg)`: owner mode running (`on`, not after a
+  fallback), `[sandbox] mode = "off"`, `[trust] gates = false`; each
+  with an id, what it opens and how to close it.
+- `ferrule doctor`: `open_box_check`, a warning per opening (`open`),
+  the way to close it as the hint, right after the sandbox lines.
+- Dashboard Home (`api.rs` `health`): a red (`top`) notice per opening,
+  with "Ask me first" (`sandbox/mode {mode: "ask"}`, which drops
+  `gates = false` too) and "Open Settings"; none on a managed bot.
+  `notices::unclosable` keeps the sandbox-off and gates-off notices up;
+  owner mode's closes for a day and comes back while still true.
+- Docs: `sandbox.md` ("Turn it on and off"), `m19-trust-cost.md` §6,
+  `m37-control-room.md` (closable ids), `m54-autonomous.md`
+  "Amendments after the build" (3), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** The Home notice reads the config file, so an edit not yet
+applied by a restart shows early (owner mode itself follows this
+process's fallback). The notice text isn't translated. No live run.
+
+### 2026-10-21 — M54.5: one gate in owner mode, for sends after outside content (Claude, Opus 5.5)
+
+**Why.** Owner mode turned every gate off for the owner's chats. The
+proxy hands the real key to its own host whoever asked, so an injected
+email or web page could send mail as the owner, delete a remote branch
+or `DELETE` on a bound API without ever seeing a key: a confused deputy
+the placeholders don't prevent (Meta's Rule of Two).
+
+**What changed.**
+- `ferrule-trust`: `[trust] untrusted_send_gate` (default true; "gate"
+  in the name keeps it guarded from `config_set`, `config_restore` and
+  the Config page). `Kind::leaves_the_box` (`ConnectedWrite`,
+  `ForcePush`, `HttpDelete`). `classify::untrusted_source`: `web_fetch`,
+  `web_search`, `mcp__browser__*`, a connected service's read, a shell
+  command whose program is an HTTP client. `RunState::untrusted`,
+  `Hub::saw_untrusted` (first source, audited `untrusted_seen`) and
+  `Hub::untrusted`. `TrustGuard`: `untrusted_gate`, `guest_input`; the
+  ask flow moved into `ask(tool, g, after)`, whose question and refusal
+  name the outside content; with the gates off it asks only for a
+  leaving class after outside content.
+- `ferrule-cli` `trust::equip`: `untrusted_gate` while owner mode runs
+  and the setting is on; a guest's run in owner mode starts marked.
+  `owner_mode::openings`' owner-mode text says what still asks.
+- Docs: `m19-trust-cost.md` §6b (and the config block, the audit list),
+  `sandbox.md` owner mode, `m54-autonomous.md` §5 and amendment 4, the
+  roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** A connected service's change is asked about every time (no
+per-run grant: its subject is the tool's name). Scheduled tasks that
+read and then send are refused in owner mode. Not seen as outside
+content: a fetch through `python`, `git clone`, an `mcp_add` server's
+reads (and its writes aren't classified), a forwarded message. No live
+run.
+
+### 2026-10-21 — M54.2: the secrets file out of the process environment (Claude, Opus 5.5)
+
+**Why.** Startup put every key in `private/secrets.env` into the process
+environment with `set_var`. Any process of the same account could read
+them from `/proc/<pid>/environ` (on macOS, whether Seatbelt stops
+`ps eww` is unverified), every child inherited them, and the dashboard's
+rotate and delete called `set_var`/`remove_var` with threads running.
+One sandbox bypass meant every key.
+
+**What changed.**
+- `ferrule-sandbox` `secret_env`: a process-wide in-memory store
+  (`load`, `var`, `non_empty`, `held`, `names`, `pairs`, `set`,
+  `forget`). `var` is a value saved since start, else the real
+  environment's, else the file's: an exported variable still wins, as
+  before, and a dashboard save wins over both, as `set_var` did.
+- `ferrule-cli` `secrets::load` (was `load_into_env`) fills it;
+  `secrets::var`/`non_empty` wrap it; `source` and `loaded_names` read
+  it. Converted readers: provider keys (`config.rs` `resolve`,
+  `models.rs` `Entry::key`, whose `SAVED_KEYS` the store replaces;
+  `remember_key` now sets the store), the model catalog, the proxy's
+  bindings (`shared_broker`, `mcp_add`), the channel tokens,
+  `transcription.rs`, doctor, setup, the importer, `health::known_secrets`,
+  the sandbox self-check, the panel secret, and the dashboard's rotate
+  (`secret_env::set`) and delete (`forget`). Elsewhere:
+  `ferrule-gateway` `transcribe.rs`, `ferrule-connections` `seal.rs`,
+  `ferrule-plugins` `host.rs` (the "would go out as its real value"
+  check), `ferrule-plans` `exported_token`.
+- Children: `Sandbox::command` passes a held value only for an
+  `env_passthrough` name (all of them with `scrub_secret_env = false`);
+  `scrubbed_vars` lists held names too, and `child_env_var` returns what
+  a command would get. `ferrule-hooks`: an owner hook's `env = [...]`
+  names the keys it gets; a workspace hook's is ignored.
+  `instance::child_for` no longer strips names (nothing is there).
+- Kept reading the real environment on purpose: the dashboard's "set in
+  the environment ferrule was started with" notes, the claude plan's
+  "outranking" warning, `config_follow::secret_value` and
+  `connections_setup::Place::get` (they read the file directly), the
+  managed-mode and proxy variables.
+- Docs: `sandbox.md` "Env" (the behaviour change and its migration) and
+  owner mode's open list, `m18-hooks.md` §1–2 (`env`),
+  `m54-autonomous.md` amendment 5, `research-credential-gateway.md`'s
+  macOS note, the config template's `env_passthrough` line, the
+  roadmap.
+
+**Behaviour change.** The owner's spawns outside the sandbox (hooks,
+gate scripts, a `[transcription] command`, the tunnel) and sandboxed
+commands no longer inherit the file's keys (before, a sandboxed command
+got those whose names don't look secret). Migration in `sandbox.md`
+"Env": a hook's `env`, `env_passthrough`, or the service environment.
+
+**Tests changed, none added.** The dashboard's rotate test now checks
+the store, not the environment.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** The store is plain process memory (not `mlock`ed or
+encrypted), and the file isn't sealed under a keychain key (the
+report's optional half). Gate scripts and a transcription command have
+no `env` of their own. No live run (Linux `/proc/<pid>/environ`, macOS
+`ps eww`).
+
+### 2026-10-21 — M56.2: standing grants and deny-and-continue (Claude, Opus 5.5)
+
+**Why.** With owner mode off and the gates on, nothing lasted past a run:
+"Allow for this run" covered one shell command until the run ended, and
+a connected service's change asked every time, the same send to the
+owner's own address included. And a refusal only came back as the tool's
+result, so a model could keep trying variants, a card each, with no end.
+
+**What changed.**
+- `ferrule-trust` `grants`: `Grants` over `<data>/private/grants.json`
+  (0600, hidden from commands and the file tools in every mode, left out
+  of backups), read at each check; `Grant` (shell: argv and cwd; a
+  connected change: tool and an address or `@domain`), `Spec` (what
+  "Always here" would keep), `add`, `revoke`, `widen`.
+- `classify`: `grantable_command` (the command is exactly the one
+  simple command the gate found, with nothing the shell would expand or
+  chain) and `recipients` (`to`/`recipient(s)` plus `cc`/`bcc`; none
+  when the call names no `to`).
+- `approval`: `Answer::Remember`, `remember <code>`, `open_for_gate`;
+  a `remember` where it isn't offered reads as `always` or `yes`.
+- `hub`: the grants; `use_standing` (audited with route `standing`);
+  `ask_gate(…, remember)` adds the **Always here** button and its line,
+  and keeps the grant on that answer (`grant_added`); `denied`,
+  `let_through`, `escalated` with `DENIALS_IN_A_ROW` (3) and
+  `DENIALS_IN_A_RUN` (20), audited `denials_escalated`.
+- `guard`: `TrustGuard::workspace`; `standing` builds the spec, and
+  none for a call that leaves the box once the run read outside content
+  (M54.5's rule, in owner mode or not); `ask` tries the run grant, then a
+  standing one, refuses without a question once escalated, counts
+  refusals and appends the next step to the refusal;
+  `before_model_call` ends an escalated run with its answer.
+- `ferrule-cli`: `trust::equip` takes the workspace; the dashboard's
+  `GET grants`, `POST grants/revoke` and `grants/widen` (confirmed,
+  audited), and a **Standing approvals** card on Settings with Revoke
+  and Whole domain (Hebrew included). The email channel reads
+  `remember <code>` as an answer.
+- Docs: `m19-trust-cost.md` §6b, §7b, §7c and the audit list,
+  `m48-self-service.md` D9, the roadmap.
+
+**Tests changed, none added.** One refusal assertion now checks
+`contains` (the refusal has the next step after "It was not run.").
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** "Allow for this run" still covers a whole command when its
+first gated part was granted (`a; b` with `a` granted runs `b` too); the
+standing grant avoids that by taking only single commands. No CLI for
+grants (the dashboard only). The escalation thresholds aren't settings.
+A terminal run's question never offers Always here. No live run.
+
+### 2026-10-21 — M56.3: self-administration from the chat (Claude, Opus 5.5)
+
+**Why.** "Turn on web search" and "turn the browser on" had no chat op
+(`config_set` covered 19 fields, none of these), and every change,
+"remind me at 9" and "pause that reminder" included, needed a card tap.
+
+**What changed.**
+- `config_page.rs` `FORM`: `web_search.provider` (duckduckgo, brave,
+  tavily, exa, off), `max_results`, `safe_search`, `region`, `language`,
+  `max_output_tokens`, `timeout_secs`, `price_per_search_usd`,
+  `max_searches_per_day`, and `browser.enabled` (29 fields). A `text`
+  kind (up to 16 letters, digits, `-`, `_`) for region and language, on
+  the Config page too. `OPEN` lets `browser.enabled` through
+  `guarded_change` while `[browser]` stays a guarded section;
+  `web_search.api_key_env` and `endpoint` stay guarded. `locks.rs`: a
+  managed bot without the browser refuses turning it on.
+- `mcp_add` outside owner mode: already there since M54 §6.2 (with the
+  card, keys only as `${NAME}` of `[secrets]`, new ones through
+  `secret_request`); nothing added.
+- `self_service/quick.rs`: `tap_free` (no outside content in the turn,
+  `Hub::untrusted`; `task_add`, `task_schedule`, `task_pause`,
+  `task_delete` on the owner's own tasks; `model_default`, `model_here`
+  to a connected, ready model) and its `Undo`; `run` (the page's handler,
+  audited `self_service.ran` with the undo id; a receipt "Done without
+  asking: …" with an Undo button); `undo` for `/undo_change <id>` (the
+  owner, once, a day, this process; audited `self_service.undone`).
+  `tool.rs` `ask_and_run` takes that path after the card's checks, only
+  outside owner mode. `door.rs` handles `/undo_change`.
+  `TasksAdmin::get`; `Hub::tell_in_choices`. The tool description gets
+  one appended sentence.
+- Docs: `m48-self-service.md` ("After M48: M56.3"), `web-search.md`,
+  `browser.md`, the roadmap.
+
+**Tests changed, none added.** The self-service rig's turn now counts as
+having read outside content, so its card tests still see a card. The
+gateway test `the_owner_switches_the_default_model_from_telegram_with_one_tap`
+became `…_without_a_tap`: it checks the receipt's Undo button, the
+answer and the audit's "(no card: M56.3)" instead of a tapped card (its
+unused `tap` helper went).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** The Undo list lives in memory (gone after a restart). A
+deleted task comes back with a new id, in the primary owner chat. A
+question already waiting in the chat still blocks a tap-free op. The
+web search provider can be switched while `api_key_env` names another
+provider's key (the key then goes to the new provider's host, with the
+owner's tap). No live run.
+
+### 2026-10-21 — M56.3 fix: a search provider switch never takes the old key along (Claude, Opus 5.5)
+
+**Why.** M56.3 made `web_search.provider` settable from the chat and the
+Config form, and the raw Config editor could already change it. The
+loader binds `[web_search] api_key_env` to the endpoint's host
+(`Config::finish`), so switching Brave to Tavily would have bound
+`BRAVE_API_KEY` to `api.tavily.com`: provider A's key sent to provider
+B's host (M56.3's own entry listed it as open). And a `duckduckgo`
+provider with a leftover `api_key_env` bound that key to DuckDuckGo's
+host.
+
+**What changed.**
+- `config_page::set` on `web_search.provider` (`search_key`): every
+  switch drops a custom `endpoint`; DuckDuckGo and off drop
+  `api_key_env`; Brave, Tavily and Exa take a key that already goes to
+  the new host (a `[secrets]` entry bound there: the key in use, then the
+  provider's own name, then any other), else the provider's own variable
+  (`ferrule_tools::search::SearchProvider::key_env`: `BRAVE_API_KEY`,
+  `TAVILY_API_KEY`, `EXA_API_KEY`) when it is saved and not in
+  `[secrets]`, which binds it to that host alone. Nothing fits: a 409
+  naming the `secret_request` (name and host) to make, and nothing
+  changes. The answer says which key and host (`said`).
+- `config_page::key_moved`, run with `guarded_change` by `commit` (the
+  form, the editor, version restore, undo), by `check`, and by the chat's
+  `config_restore` (`api.rs`): refuses a write that would bind any key to
+  a host it isn't bound to now (comparing the bindings the old and new
+  file load to; a file that doesn't load counts as its `[secrets]`). The
+  one new binding let through is a provider's own variable on its own
+  host (`WebSearchConfig::own_key`). `guarded_change` lets
+  `web_search.api_key_env` change, and `endpoint` go, only together with
+  `provider`.
+- `WebSearchConfig::settings`: DuckDuckGo takes no key, so a leftover
+  `api_key_env` beside it isn't bound to its host.
+- Docs: `web-search.md` ("A new provider never inherits the old one's
+  key"), `m48-self-service.md` (After M48), the roadmap's M56.3 line.
+
+**Tests changed, none added** (the owner's standing rule). No existing
+test needed a change.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** A hand edit of the file isn't checked (whoever edits the file
+decides). A provider switch from the chat asks for the card before the
+key check, so a switch with no fitting key is refused after the tap. The
+key a switch leaves behind stays bound in the running proxy until a
+restart (`config_follow` doesn't unbind), to its old host only. No live
+run.
+
+### 2026-10-21 — M60: images in tool results reach the model (Claude, Opus 5.5)
+
+Claims **M60** (Current State updated: the next free number is M61).
+
+**Why.** A tool could save an image (an MCP screenshot under
+`.ferrule/mcp-content/`, `generate_image`'s file under `media/`) and name
+it in its text, but the model never saw the pixels: `ToolOutput::files`
+went nowhere, and `read_file` on a PNG failed on UTF-8. M47 already sent
+the photos people send as pixels, by path, to models that see images;
+tool results had no such path.
+
+**What changed.**
+- `ferrule-core`: `ToolOutput::images: Vec<ImageRef>` and `with_images`
+  (left out of the serialized form when empty); the agent carries them
+  through `Ran` onto the tool's result message (`Message::with_images`),
+  every place a result is pushed; compaction's dedupe clears a superseded
+  result's images. `vision.rs`: `MAX_IMAGE_BYTES` (3.5 MB) and `sniff`
+  moved here from `ferrule-providers` (re-exported there, same names);
+  `image_file(path)` (an image by its first bytes, under the cap, as an
+  `ImageRef` with the absolute path); `tool_note` and `note_for` (a tool
+  image's notes: text-only model, "[image omitted: …, an earlier tool
+  image]", gone).
+- `ferrule-providers`: `vision::tool_parts`. Anthropic puts a tool's
+  images inside its `tool_result` (text block, then `image` blocks). Chat
+  Completions keeps the `tool` message text-only and sends one `user`
+  message after the batch's last result with the `image_url` parts,
+  headed "[Tool output, not a message from the user: the images the tool
+  call(s) <ids> returned, in order.]". Responses (and the Codex backend,
+  same builder) does the same after the `function_call_output`s with
+  `input_image` parts. A result without images goes out byte for byte as
+  before. The newest four images (photos and tool images together) go as
+  pixels; `est_context_tokens` already counts them (1,600 each); the
+  400-names-images retry covers them.
+- Tools: `read_file` returns a PNG, JPEG, GIF or WebP as an image (text
+  `[image <path>: <mime>, <n> bytes]`), refuses one over 3.5 MB with a
+  clear error, and says so in its description. MCP results attach each
+  saved part that is an image (a line for one over the cap).
+  `generate_image` attaches the image it saved ("It isn't shown to you:
+  …" when over the cap). `ferrule-plugins`: the new field in its one
+  struct literal.
+- No image crate in the workspace, so no downscaling: a byte cap and a
+  refusal. Transcripts store the `ImageRef` (path, type, name), not
+  base64.
+- Docs: new `docs/vision.md`, linked from the README's Guides,
+  `models.md` and `browser.md`; the roadmap's M60 line.
+
+**Tests changed, none added** (the owner's standing rule). No existing
+test needed a change.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean. No dashboard JS changed.
+
+**Open.** No live run against Anthropic, OpenAI, a compatible server or
+the ChatGPT-plan backend: the wire shapes follow the code paths M47's
+photos already use, not a real call. Pixel dimensions aren't checked (a
+provider's 400 that names images falls back to notes for that provider
+from then on). An SSH workspace's `read_file` still reads text only. The
+dashboard's chat doesn't show a tool's images. When a fifth image
+arrives the oldest turns into a note, so the prompt cache misses from
+there (M47's trade). Responses could take images inside
+`function_call_output`; the follow-up user message was chosen because
+the same builder serves the Codex backend.
+
+### 2026-10-21 — M61: screen viewing, view only (Claude, Opus 5.5)
+
+Claims **M61**, in the `autopilot` worktree (PR #52). Current State
+updated: the claim, the next free number (M62), and PR #49 and #51
+merged with `autopilot` continuing as PR #52.
+
+**Why.** The owner wants to ask the bot from their chat what's on their
+Mac's screen, or for a short clip of it, without remote-desktop software.
+By the owner's explicit choice it is **view only**: no mouse, keyboard,
+app launching or other input, not even as stubs. M60 made a tool's
+images reach the model, which a screenshot needs.
+
+**What changed.**
+- `ferrule-cli/src/screen.rs` (new): `[screen]` (`enabled = false`,
+  `max_record_secs = 120`, `window_minutes = 30`); `desktop()` (macOS,
+  not started from SSH, `launchctl managername` says `Aqua`; asked once
+  per process); `Screen`, one per gateway: the owner's yes held in
+  memory for `window_minutes` across the owner's chats, asked through
+  `Hub::ask_in` with Allow / Refuse, one card at a time, in owner mode
+  too; a refusal goes back to the model and counts through
+  `Hub::denied` (M56.2). The `screenshot {display?}` and
+  `record_screen {seconds}` tools (deferrable, serial group `screen`,
+  `changes_files` false); `record_screen` isn't offered with
+  `max_record_secs = 0`. `test_capture` for doctor.
+- Captures: `/usr/sbin/screencapture` (`-x -t png` with `-m` or `-D n`;
+  `-x -v -V <secs>`), `/usr/bin/sips` (a JPEG copy at most 1600 px on
+  its long side when the PNG is over M60's 3.5 MB cap; the PNG stays
+  whole), and an `ffmpeg` from `PATH` or Homebrew's dirs (H.264 MP4 at
+  most 1920 px wide, no audio, the `.mov` deleted; without one the
+  `.mov` stays and the answer says why). All run in the shared sandbox
+  as a helper with desktop services (`for_helper(media/screen)
+  .with_desktop_services()`, the browser's loosening). Files go to
+  `<workspace>/media/screen/` with a `.gitignore` of `*`; a folder that
+  leads outside the workspace is refused. The model picks only checked
+  numbers; no text of its reaches a command line.
+- Every capture calls `Hub::saw_untrusted(session, tool)`, so M54.5's
+  gate applies for the rest of the run, and audits `screen_capture`
+  (`what`: "screenshot taken" or "recording N s", and the file name).
+- `main.rs` `gateway_factory`: `Screen::offered` once (the log says why
+  when `[screen]` is on and there's no desktop); a chat session gets the
+  tools and `prompts::CHAT_SCREEN` (new, constant) only when it's local,
+  the owner's (`owner_mode::owner_tree`) and `Screen` exists. The card
+  goes to the session's chat (`self_service::offered`), else the primary
+  owner chat.
+- `owner_mode::guest_hidden` now takes the workspace and adds
+  `<workspace>/media/screen`, so the commands, file tools and
+  `send_file` of every session that isn't the owner's can't read the
+  captures. Callers: `build_agent_from`, `session_hidden` (which takes
+  the workspace too) and `subscription/claude.rs`.
+- `dashboard/config_page.rs`: `screen` in `WHOLE`, so the editor,
+  restores and the chat's `config_restore` can't turn it on (it was
+  never a form field, so `config_set` couldn't).
+- `doctor.rs` `screen_check`: off is a note; on with no desktop here a
+  warning saying why; else one test capture in the tools' sandbox to a
+  temp file deleted at once (a failure fails, naming the Screen
+  Recording setting), and a note naming the service's binary to allow.
+- Docs: new `docs/m61-screen.md` (what it does, what it deliberately
+  doesn't, consent, outside content, privacy, permissions, limits),
+  linked from the README's Guides; the roadmap's M61 line; `vision.md`
+  (the screenshot as a tool image, the `sips` copy),
+  `m57-context-hygiene.md` (the deferrable list), `m19-trust-cost.md`
+  §6b (what marks a run), `m54-autonomous.md` (what `guest_hidden`
+  adds).
+
+**Others' surfaces, smallest changes:** `config_page::WHOLE` (M54's
+config guard lists, in M52's editor) gains `screen`;
+`owner_mode::guest_hidden` (M54 §7) gains the workspace parameter and
+one path. No `ferrule setup` prompt changed, so `tests_e2e/` is
+untouched.
+
+**Tests changed, none added** (the owner's standing rule). No existing
+test needed a change.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Permissions the owner grants.** macOS Screen Recording (System
+Settings → Privacy & Security → Screen Recording) for the program that
+starts the capture: the ferrule binary the service runs (`ferrule
+doctor` names it; `<data>/bin/ferrule` in owner mode), or Terminal for a
+gateway started there. Then `[screen] enabled = true` in the config
+file and a gateway restart.
+
+**Open.** No live run: no capture was taken while building this, so
+`screencapture` and `sips` under the Seatbelt profile with desktop
+services, how macOS attributes the permission for the LaunchAgent's
+captures, and the MP4 conversion are unverified; `ferrule doctor` on the
+Mac is the first check. The window can't be closed early except by a
+restart. A recording holds the turn for its length plus the conversion
+(not an M57.6 background job). macOS only; Linux and Windows don't offer
+the tools. A recording over Telegram's 50 MB bot limit can't be sent.
+Doctor's test checks the permission of the terminal it runs in, not the
+service's. Nothing prunes `media/screen/`.

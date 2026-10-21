@@ -1283,6 +1283,30 @@ all fail; and `make check` is green on Linux, macOS and Windows.
   `<data>/guest-memory/<chat>.db`, can't read `memory.db`, the other
   chats' memories or `learned-skills/`, and is taught only its own
   scope's lessons and skills (`docs/memory.md`, "Whose memory").
+- **M54.3, known key values out of every tool result**: one hook in the
+  loop (`Ran::of`) and in the caps and spills replaces a bound secret
+  with its placeholder and any other key ferrule holds with
+  `[redacted]` before the transcript or the model sees it; `ferrule
+  doctor`'s `history` line counts known values left in `sessions/` and
+  `learn/` (`docs/sandbox.md`, "Env").
+- **M54.6, a danger notice while the box is open**: owner mode, the
+  sandbox off and the gates off each get a `ferrule doctor` warning and
+  a red notice on the dashboard's Home that says what's open, with an
+  "Ask me first" button; only owner mode's closes, for a day
+  (`docs/sandbox.md`, "Turn it on and off").
+- **M54.5, one gate in owner mode**: once a run has read outside
+  content (the web, the browser, a connected service's read, a shell
+  `curl`, a guest's message), a connected service's change, a force push
+  or branch deletion and a `DELETE` to a bound host ask first, against
+  the confused deputy the proxy would otherwise be (`[trust]
+  untrusted_send_gate`, default on, guarded; `docs/m19-trust-cost.md`
+  §6b).
+- **M54.2, the secrets file out of the environment**: its keys are held
+  in ferrule's memory, not set into the process environment, so no
+  other process of the account reads them from ferrule and no child
+  inherits them; a child gets one only by name (`env_passthrough`, an
+  owner hook's `env`), and an exported variable still wins
+  (`docs/sandbox.md`, "Env").
 
 ## Other open tracks
 
@@ -1314,7 +1338,20 @@ Current State; numbers are claimed there before anything is built.
     audio sends, whole albums and video messages, Discord's file
     downloads (`docs/channels.md`, "Photos" and "Voice messages");
     M56.8, keyless DuckDuckGo search by default and as the fallback
-    (`docs/web-search.md`).
+    (`docs/web-search.md`); M56.2, standing grants ("Always here": one
+    exact command in one workspace, or a connected service's change to
+    the same address or domain; listed and revoked on Settings; never
+    after outside content for a send) and deny-and-continue (a refusal
+    goes back to the model; 3 in a row or 20 in a run stop the run and
+    tell the owner) (`docs/m19-trust-cost.md` §7b–7c); M56.3, the chat
+    sets web search and turns the browser on (`config_set`), and in a
+    turn with no outside content schedules, pauses or deletes the owner's
+    own tasks and switches among connected models without a card, with a
+    receipt and Undo (`docs/m48-self-service.md`, "After M48"); then a
+    fix to it: a search provider switch from the chat or the Config page
+    takes only a key already bound to the new provider's host (or that
+    provider's own saved variable), and no page or chat write may bind a
+    key to a host it isn't bound to now (`docs/web-search.md`).
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,
@@ -1375,6 +1412,24 @@ Current State; numbers are claimed there before anything is built.
     `docs/m52-dashboard-safe.md`, "M52.2", "M52.4" and "M52.6";
     `docs/channels.md`, "Keys pasted into a chat"); M52.3 is M54's
     `secret_request`.
+- **M60, images in tool results reach the model.** `ToolOutput::images`
+  (files on disk, never bytes in history): `read_file` on a PNG, JPEG,
+  GIF or WebP, MCP image content (the browser's screenshots) and
+  `generate_image`'s result. Anthropic gets them inside the
+  `tool_result`; Chat Completions and Responses in a user message right
+  after the batch's results, marked as tool output. A note for a model
+  that can't see, the newest four images as pixels, a 3.5 MB cap. Built
+  on `autopilot` (`docs/vision.md`).
+- **M61, screen viewing.** View only, by the owner's choice: in the
+  owner's own chats, `screenshot` (the model sees it) and
+  `record_screen` (an MP4 when ffmpeg is there, sent with `send_file`)
+  of the owner's Mac screen. Off unless `[screen] enabled`; macOS in the
+  logged-in desktop session only; a card asks first, and a yes holds
+  `window_minutes` (30) in memory, owner mode included. Every capture
+  marks the run as having read outside content (M54.5); the captures
+  are git-ignored and hidden from guests' sessions. No mouse, keyboard
+  or app control. Built on `autopilot`, not run live
+  (`docs/m61-screen.md`).
 
 **Still open from earlier tracks.**
 

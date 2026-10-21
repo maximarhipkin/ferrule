@@ -172,6 +172,7 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     let chat_on =
         telegram_on || discord_on || slack_on || m39_channels(&mut r, &cfg, offline).await;
     let backend = sandbox(&mut r, &cfg, &secrets_path);
+    open_box_check(&mut r, &cfg);
     managed_check(&mut r, &cfg);
     let confined = backend != Backend::None;
     mcp(&mut r, &cfg, backend);
@@ -179,6 +180,7 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     proxy(&mut r, &cfg);
     web_search_check(&mut r, &cfg, &http, offline).await;
     memory_check(&mut r, &cfg);
+    history_check(&mut r, &cfg);
     if chat_on {
         let (fine, line) = crate::transcription::doctor_line(&cfg);
         if fine {
@@ -210,7 +212,50 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     }
     binary(&mut r);
     browser_check(&mut r, Some(&cfg));
+    screen_check(&mut r, &cfg).await;
     Ok(r.finish())
+}
+
+/// M61: whether screen viewing can work here: on, a desktop to see, and a
+/// test capture in the tools' sandbox, to a temporary file deleted at once.
+/// Off is a note; on with no desktop here is a warning (the gateway may
+/// run where there is one); a capture that fails is a failure.
+async fn screen_check(r: &mut Report, cfg: &config::Config) {
+    if !cfg.screen.enabled {
+        r.note("screen", "screen viewing: off ([screen] enabled = false)");
+        return;
+    }
+    if let Err(why) = crate::screen::desktop() {
+        r.warn(
+            "screen",
+            format!("screen viewing is on, but there's no screen to see from here: {why}"),
+        );
+        r.hint("the gateway offers the screen tools only where it can see the screen, and its log says why when it can't");
+        return;
+    }
+    let sandbox = match Sandbox::new(crate::sandbox_policy(cfg)) {
+        Ok(sandbox) => sandbox,
+        Err(e) => {
+            r.fail("screen", format!("no sandbox to capture in: {e}"));
+            return;
+        }
+    };
+    if let Err(why) = crate::screen::test_capture(&sandbox).await {
+        r.fail("screen", why);
+        return;
+    }
+    r.ok(
+        "screen",
+        "screen viewing: on; a test capture from here worked (nothing kept)",
+    );
+    let exe = service::installed_exe().map_or_else(
+        || "the ferrule binary the service runs".to_string(),
+        |p| tilde(&p),
+    );
+    r.note(
+        "screen",
+        format!("the service is its own program to macOS: if its captures fail or show only the wallpaper, allow {exe} in System Settings → Privacy & Security → Screen Recording"),
+    );
 }
 
 /// M44: managed mode, the policy in force and what protects commands.
@@ -531,7 +576,7 @@ fn keys(r: &mut Report, path: &Path) {
 }
 
 fn key(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    secrets::non_empty(name)
 }
 
 async fn providers(
@@ -1245,6 +1290,15 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> Backend
     sandbox.backend()
 }
 
+/// M54.6: a warning per way the box is open (owner mode, the sandbox off,
+/// the gates off), with how to close it.
+fn open_box_check(r: &mut Report, cfg: &config::Config) {
+    for open in crate::owner_mode::openings(cfg) {
+        r.warn("open", open.what);
+        r.hint(open.close);
+    }
+}
+
 /// MCP servers that run outside the sandbox. Only the config is read: the
 /// servers themselves aren't started. `backend` is what confines commands.
 fn mcp(r: &mut Report, cfg: &config::Config, backend: Backend) {
@@ -1549,7 +1603,7 @@ fn proxy(r: &mut Report, cfg: &config::Config) {
     let set = cfg
         .secrets
         .keys()
-        .filter(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+        .filter(|name| secrets::non_empty(name).is_some())
         .count();
     if !cfg.secrets.is_empty() && set == 0 {
         let names: Vec<&str> = cfg.secrets.keys().map(String::as_str).collect();
@@ -1656,7 +1710,7 @@ fn telemetry_check(r: &mut Report, cfg: &config::Config) {
 fn set_secrets(cfg: &config::Config) -> bool {
     cfg.secrets
         .keys()
-        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+        .any(|name| secrets::non_empty(name).is_some())
 }
 
 /// M28: `[web_search]` without a paid call: the key is set and bound to the
@@ -1760,6 +1814,116 @@ fn memory_check(r: &mut Report, cfg: &config::Config) {
     );
     if c.live_embedded < c.live {
         r.hint("the rest are found by keyword until `ferrule memory reindex` (or recall catches up on its own)");
+    }
+}
+
+/// M54.3: known key values in the saved transcripts and learning notes.
+/// Tool results lose them as they're made; anything saved before that is
+/// found here. Names and counts only, never a value.
+fn history_check(r: &mut Report, cfg: &config::Config) {
+    let known: Vec<(String, Vec<String>)> = crate::health::known_secrets(cfg)
+        .into_iter()
+        .filter(|(_, v)| v.len() >= 6)
+        .map(|(name, value)| {
+            // A transcript is JSON lines: a value with a quote or a
+            // backslash is saved escaped.
+            let escaped = serde_json::to_string(&value)
+                .map(|q| q[1..q.len() - 1].to_string())
+                .unwrap_or_default();
+            let mut forms = vec![value];
+            if !escaped.is_empty() && escaped != forms[0] {
+                forms.push(escaped);
+            }
+            (name, forms)
+        })
+        .collect();
+    if known.is_empty() {
+        r.note("history", "no keys are set, so there's nothing to look for");
+        return;
+    }
+    let Ok(data) = config::data_dir() else {
+        return;
+    };
+    let mut files = Vec::new();
+    for dir in crate::owner_mode::history() {
+        list_files(&dir, &mut files);
+    }
+    let mut found: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut holding = Vec::new();
+    for file in &files {
+        let Ok(bytes) = std::fs::read(file) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let mut hit = false;
+        for (name, forms) in &known {
+            let n: usize = forms.iter().map(|f| text.matches(f.as_str()).count()).sum();
+            if n > 0 {
+                *found.entry(name.as_str()).or_default() += n;
+                hit = true;
+            }
+        }
+        if hit {
+            holding.push(file.strip_prefix(&data).unwrap_or(file).to_path_buf());
+        }
+    }
+    if holding.is_empty() {
+        r.ok(
+            "history",
+            format!(
+                "no known key in the {} saved transcript and learning file{}",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" }
+            ),
+        );
+        return;
+    }
+    let total: usize = found.values().sum();
+    let names: Vec<String> = found.iter().map(|(n, c)| format!("{n} ×{c}")).collect();
+    let text = format!(
+        "{total} known key value{} in {} saved transcript or learning file{}: {}",
+        if total == 1 { "" } else { "s" },
+        holding.len(),
+        if holding.len() == 1 { "" } else { "s" },
+        names.join(", ")
+    );
+    // Owner mode lets the bot's commands read these files.
+    if crate::owner_mode::wanted(cfg) {
+        r.fail("history", text);
+        r.hint("owner mode makes these files readable to the bot's commands");
+    } else {
+        r.warn("history", text);
+    }
+    r.hint("those keys reached the model's provider: rotate them (dashboard → Safe)");
+    let shown: Vec<String> = holding
+        .iter()
+        .take(5)
+        .map(|p| p.display().to_string())
+        .collect();
+    r.hint(format!(
+        "then delete the files that hold them: {}{}",
+        shown.join(", "),
+        match holding.len().saturating_sub(5) {
+            0 => String::new(),
+            more => format!(" and {more} more"),
+        }
+    ));
+}
+
+/// Every file under `dir`, not following links.
+fn list_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            list_files(&entry.path(), out);
+        } else if kind.is_file() {
+            out.push(entry.path());
+        }
     }
 }
 

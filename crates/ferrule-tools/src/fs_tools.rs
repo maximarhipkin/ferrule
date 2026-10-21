@@ -193,7 +193,8 @@ impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".into(),
-            description: "Read a UTF-8 text file inside the workspace. Returns file contents."
+            description: "Read a UTF-8 text file inside the workspace. Returns file contents. \
+                A PNG, JPEG, GIF or WebP image comes back as the image itself, for a model that can see images."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -208,6 +209,29 @@ impl Tool for ReadFileTool {
             &self.hidden,
             args["path"].as_str().unwrap_or(""),
         )?;
+        // M60: an image comes back as itself, for the driver to send as
+        // pixels (or a note to a model that can't see).
+        match ferrule_core::vision::image_file(&path) {
+            Some(Ok(image)) => {
+                let size = std::fs::metadata(&path).map_or(0, |m| m.len());
+                return Ok(ToolOutput::ok(format!(
+                    "[image {}: {}, {size} bytes]",
+                    path.display(),
+                    image.mime
+                ))
+                .with_images(vec![image]));
+            }
+            Some(Err(why)) => {
+                return Err(CoreError::ToolFailed {
+                    tool: "read_file".into(),
+                    message: format!(
+                        "{}: {why}, so it isn't shown; a smaller copy (resized with a shell command) can be read",
+                        path.display()
+                    ),
+                })
+            }
+            None => {}
+        }
         let text = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| CoreError::ToolFailed {

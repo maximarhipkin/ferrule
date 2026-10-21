@@ -171,8 +171,25 @@ impl AnthropicProvider {
                         "type": "tool_result",
                         "tool_use_id": sanitize_id(m.tool_call_id.as_deref().unwrap_or("")),
                     });
-                    if let Some(t) = nonempty(&m.content) {
-                        block["content"] = json!(t);
+                    // M60: a tool's images go inside its result, after its
+                    // words (and a note for each one not sent as pixels).
+                    let (text, pics) = vision::tool_parts(i, m, &pixel_set, sees);
+                    if pics.is_empty() {
+                        if !text.trim().is_empty() {
+                            block["content"] = json!(text);
+                        }
+                    } else {
+                        let mut content = Vec::new();
+                        if !text.trim().is_empty() {
+                            content.push(text_block(&text));
+                        }
+                        content.extend(pics.into_iter().map(|(mime, data)| {
+                            json!({
+                                "type": "image",
+                                "source": { "type": "base64", "media_type": mime, "data": data },
+                            })
+                        }));
+                        block["content"] = json!(content);
                     }
                     push(&mut wire, "user", vec![block]);
                 }

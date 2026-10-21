@@ -666,13 +666,17 @@ and a dated entry for every session.
 - Models: [`models.md`](docs/models.md) (several at once, `/model`,
   fallback) · [`routing.md`](docs/routing.md) (cheap-first escalation) ·
   [`speed.md`](docs/speed.md) (streaming, parallel reads, prompt-cache
-  discipline).
+  discipline) · [`vision.md`](docs/vision.md) (images the model sees:
+  photos, and the images tools return, such as `read_file` on a PNG or a
+  browser screenshot).
 - The agent's reach: [`skills.md`](docs/skills.md) (Agent Skills, keyword
   triggers) · [`plugins.md`](docs/plugins.md) (WASM, capability-gated) ·
   [`m17-mcp-add.md`](docs/m17-mcp-add.md) (add an MCP server without a
   restart) · [`m13-self-extension.md`](docs/m13-self-extension.md) (the
   agent installing vetted extensions itself) ·
   [`browser.md`](docs/browser.md) · [`web-search.md`](docs/web-search.md) ·
+  [`m61-screen.md`](docs/m61-screen.md) (screenshots and short
+  recordings of the owner's own Mac screen, view only) ·
   [`connections.md`](docs/connections.md) (Jira, Gmail, Google, Notion…:
   which way in, step by step) ·
   [`ssh.md`](docs/ssh.md) (workspaces on other machines).

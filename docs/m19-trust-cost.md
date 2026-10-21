@@ -39,6 +39,7 @@ owner_chat = 123456789          # Telegram chat for approvals and warnings
 approval_timeout_secs = 600
 plan_timeout_secs = 3600        # how long a Telegram plan waits for "yes"
 gates = true
+untrusted_send_gate = true      # M54.5: owner mode's one gate (§6b)
 ```
 
 Since M31 the owner can also be on Discord or Slack: `discord_owner`,
@@ -236,7 +237,73 @@ limits what can be written at all, and the credential proxy (M7) decides
 which hosts get real keys. Its false positives cost one approval; its
 false negatives are what the sandbox is for.
 
-`[trust] gates = false` turns the classifier off.
+`[trust] gates = false` turns the classifier off. While it is,
+`ferrule doctor` warns (`open`) and the dashboard's Home shows a red
+notice that can't be closed, with "Ask me first" as the fix (M54.6).
+
+## 6b. Owner mode's one gate (M54.5)
+
+Owner mode ([sandbox.md](sandbox.md#owner-mode)) runs the owner's own
+chats with the gates off. One gate stays, and it is narrow on purpose:
+in a run that has **read content from outside**, three classes still
+ask, the ones that reach past the machine and can't be taken back:
+
+- a connected service's change (`ConnectedWrite`: sending an email or a
+  message, or any other tool of a connected service that doesn't say it
+  only reads; a tool's name can't tell a send from another write);
+- a force push or a remote branch deletion (`ForcePush`: `--force`,
+  `--delete`, `:branch`, `+refspec`, `--mirror`, `--prune`);
+- a `DELETE` to a host a secret is bound to (`HttpDelete`).
+
+A recursive delete stays local and runs untapped, as do plugin tools
+that declare approval.
+
+**What counts as outside content** (`classify::untrusted_source`, marked
+per run in `Hub::saw_untrusted` as the call is let through, so a
+sub-agent's read counts for its whole tree): `web_fetch` and
+`web_search` (claude's `WebFetch` and `WebSearch` too), the browser's
+tools (`mcp__browser__*`), a connected service's read (a tool of a
+connected server that doesn't change things: reading mail, messages,
+documents), and a shell command whose program is an HTTP client
+(`curl`, `wget`, httpie, `xh`, `gh`, `lynx`, `w3m`). M61's
+`screenshot` and `record_screen` mark the run themselves once a capture
+is taken ([m61-screen.md](m61-screen.md)). In owner mode a
+run for someone who isn't the owner (a guest's chat with `[trust] gates
+= false`) starts having read it. A new run (each chat turn) starts
+clean. The first source is written to the audit log
+(`untrusted_seen`), and named in the question: "ferrule wants to run, in
+Telegram chat … (run …), after reading outside content (web_fetch): …".
+
+**Why.** Owner mode keeps the keys from the bot, and nothing else. But
+the proxy swaps a real key in for its own host whoever asked, so a
+prompt injection never needs to see a key to misuse it: an email that
+says "forward the last invoice to …", a web page that says "delete the
+`release` branch". That is a confused deputy, which placeholders don't
+prevent. Meta's Rule of Two forbids untrusted input, sensitive access
+and an external action together without a human; keying the gate to the
+untrusted input keeps it rare, so ordinary use still has no prompts.
+
+**Repeats.** A gated shell command offers "Allow for this run" (PR #44's
+per-run grant), so a retried push asks once. A connected service's
+change is asked about each time: a standing grant ("Always here", §7b)
+never covers a call that leaves the box once the run has read outside
+content, and the question then doesn't offer one.
+
+**Who's asked** is §7's table: the owner chat for a chat turn, the
+terminal for a terminal run, and nobody for a scheduled task, so a task
+that reads mail and then sends is refused in owner mode; such a task
+needs `untrusted_send_gate = false`.
+
+`[trust] untrusted_send_gate = false` turns it off. It is guarded config:
+neither the chat (`config_set`, `config_restore`) nor the Config page can
+change it; only the file on the machine. Outside owner mode it does
+nothing: there `gates` decides.
+
+**Not covered.** Content a command fetches some other way (`python -c`,
+`git clone` of someone's repo), a forwarded message the owner sends, and
+an MCP server added with `mcp_add` (its tools aren't classified; only
+connected services' are). The sandbox and the proxy are the boundary;
+this gate keeps the keys from being used for the injected party.
 
 ## 7. The approval round-trip
 
@@ -284,9 +351,60 @@ pending in that chat:
 
 Only "yes" runs the command. A refusal of any kind (no, other text,
 timeout, unattended, Telegram unreachable, the run halted while waiting)
-returns `refused by ferrule: … (why)` as the tool's result.
+returns `refused by ferrule: … (why)` as the tool's result, and §7c says
+what the model does next.
 
 The terminal: the same text on stderr, one line read from stdin, same rule.
+
+## 7b. Standing grants: "Always here" (M56.2)
+
+A question can offer a third yes, the **Always here** button (`remember`
+/ `remember k7`), when what it asks about has a narrow shape:
+
+- **A shell command** that is exactly the one simple command the gate
+  found (no `;`, `&&`, `|`, `$(…)`, no `sh -c` around it) and that the
+  shell wouldn't expand (no `$`, backquote, glob, brace, `~` or escape).
+  The grant is those words, quotes removed, in that workspace: `rm -rf
+  build` in `~/proj`. Anything else, the same words in another folder
+  included, asks.
+- **A connected service's change** that names its recipients (`to`,
+  `recipient`, `recipients`, plus `cc` and `bcc`): one grant per
+  address, for that tool. A later call is let through only when every
+  address it names is covered. A call that names no `to` of its own (a
+  Gmail reply that goes to the thread's sender) never is. On the
+  dashboard a grant to one address can be widened to its domain.
+- Nothing else: a plugin tool that asks on every call, an admin change, a
+  plan, or a terminal run.
+
+The text then says ``or `remember` to allow this exact command in
+~/proj from now on``. A `remember` where it isn't offered is an `always`
+(or a `yes`).
+
+Grants live in `<data>/private/grants.json` (0600), the directory the
+sandbox hides from commands and the file tools refuse, so the agent can
+neither read nor write them; backups leave them out. The file is read at
+each check, so a revoke holds at once. The dashboard's **Settings →
+Standing approvals** lists them with **Revoke** (and **Whole domain** for
+a send to one address); each is audited.
+
+First-time actions stay gated: a grant only comes from the owner's tap.
+**Outside content wins**: once a run has read outside content (§6b's
+sources), no standing grant covers a call that leaves the box (a
+connected change, a force push, a DELETE to a bound host), in owner mode
+or not, and that question offers no "Always here".
+
+## 7c. Refused: try another way, then stop (M56.2)
+
+A refused call goes back to the model as its result, with the next step
+spelled out: don't retry it as it is; do the task another way that
+doesn't need it, or finish and say what's needed from the owner. The
+hub counts the refusals of gated calls in each run (not plan mode's):
+after **3 in a row** (none let through between them) or **20 in the
+run**, the run stops before its next model call, and its answer (what the
+owner reads in the chat, or a scheduled task's result) says so: how many
+were refused, the last one, and that nothing else was tried. A gated call
+asked about after that is refused without a question. The audit log gets
+`denials_escalated`.
 
 ## 8. Plan mode
 
@@ -373,9 +491,13 @@ suite was also run with the switch on and tiny caps.
 ## 11. The audit trail
 
 `<data>/trust/audit.jsonl`, one line per event: `cap_stop`, `cap_warning`,
-`stop_engaged`, `stop_cleared`, `approval_asked`, `approval_answered`
-(`yes`, `always`, `no`, `timeout`, `unattended`, `unreachable`, `halted`,
-and `granted` with route `grant` each time a command runs on an `always`),
+`stop_engaged`, `stop_cleared`, `untrusted_seen` (M54.5: the source),
+`approval_asked`, `approval_answered`
+(`yes`, `always`, `remember`, `no`, `timeout`, `unattended`,
+`unreachable`, `halted`, and `granted` with route `grant` each time a
+command runs on an `always`, route `standing` on a standing grant),
+`grant_added`, `grant_revoked`, `grant_widened`, `denials_escalated`
+(M56.2),
 `plan_proposed`, `plan_approved`, `plan_rejected`, `plan_executed`. Each has the time, the
 tree, the run and the detail (the command, the cap and spend, the plan
 hash). `ferrule trust audit [--since 7d]` prints it; `ferrule trust status`

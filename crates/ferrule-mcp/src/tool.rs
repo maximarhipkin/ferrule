@@ -84,6 +84,19 @@ impl Tool for McpRemoteTool {
                 // workspace; the text names each file, and `files` carries
                 // the same fact as data.
                 let (text, saved) = result.text_saving_media(&ctx.workspace);
+                // M60: the saved images (a browser screenshot) go to the
+                // model too; one over the cap is said, not sent.
+                let mut over = Vec::new();
+                let images = saved
+                    .iter()
+                    .filter_map(|s| match ferrule_core::vision::image_file(&s.path)? {
+                        Ok(image) => Some(image),
+                        Err(why) => {
+                            over.push(format!("[{}: {why}, so it isn't shown]", s.path.display()));
+                            None
+                        }
+                    })
+                    .collect();
                 let files = saved
                     .into_iter()
                     .map(|s| ToolOutputFile {
@@ -98,7 +111,14 @@ impl Tool for McpRemoteTool {
                     .collect();
                 // Over the cap the whole text goes to a spill file, and
                 // the model gets its head, its tail and the file's path.
-                Ok(ToolOutput::spilled(text, None, cap, &ctx.workspace).with_files(files))
+                let mut out = ToolOutput::spilled(text, None, cap, &ctx.workspace)
+                    .with_files(files)
+                    .with_images(images);
+                for line in over {
+                    out.content.push('\n');
+                    out.content.push_str(&line);
+                }
+                Ok(out)
             }
             Err(e) => Err(CoreError::ToolFailed {
                 tool: self.full_name.clone(),

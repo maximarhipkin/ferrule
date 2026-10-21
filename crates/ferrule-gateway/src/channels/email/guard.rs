@@ -166,7 +166,7 @@ pub fn cut_quoted(text: &str) -> String {
 }
 
 /// The first line alone when it answers an approval (`yes`, `yes a1`,
-/// `always a1`, `no a1`), so a signature or anything under it doesn't turn the answer
+/// `always a1`, `remember a1`, `no a1`), so a signature or anything under it doesn't turn the answer
 /// into "something else" (which refuses every open question).
 pub fn approval_line(text: &str) -> Option<String> {
     let first = text.lines().map(str::trim).find(|l| !l.is_empty())?;
@@ -174,7 +174,7 @@ pub fn approval_line(text: &str) -> Option<String> {
     let mut words = t.split_whitespace();
     let word = words.next()?.to_ascii_lowercase();
     let code = words.next();
-    if words.next().is_some() || !matches!(word.as_str(), "yes" | "always" | "no") {
+    if words.next().is_some() || !matches!(word.as_str(), "yes" | "always" | "remember" | "no") {
         return None;
     }
     if code.is_some_and(|c| c.len() > 8 || !c.chars().all(|c| c.is_ascii_alphanumeric())) {

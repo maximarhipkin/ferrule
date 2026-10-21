@@ -3218,12 +3218,13 @@
           };
           return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), input);
         }
-        input = el("input", { type: "number", name: f.key, step: f.kind === "float" ? "any" : "1", placeholder: "default", "aria-label": f.key });
+        const text = f.kind === "text";
+        input = el("input", { type: text ? "text" : "number", name: f.key, step: text ? null : f.kind === "float" ? "any" : "1", placeholder: "default", "aria-label": f.key, dir: text ? "ltr" : null });
         input.value = shown;
         const save = el("button", { text: "Save" });
         save.onclick = () => {
           const v = input.value.trim();
-          set(f.key, v === "" ? null : Number(v), save);
+          set(f.key, v === "" ? null : text ? v : Number(v), save);
         };
         return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), el("div", { class: "row" }, input, save));
       };
@@ -3365,6 +3366,10 @@
       try {
         this.autonomy = (await api("/api/settings")).autonomy || null;
       } catch (e) { this.autonomy = null; }
+      // M56.2: what the owner said "Always here" to.
+      try {
+        this.grants = (await api("/api/grants")).grants || [];
+      } catch (e) { this.grants = null; }
       this.draw(r);
       // A backup runs in the background: look again until it is done.
       clearTimeout(this.poll);
@@ -3387,6 +3392,17 @@
           chips(tr("Autonomy"), [["owner", tr("Protected autonomous")], ["ask", tr("Ask me first")]], this.autonomy,
             async (v) => { if (v !== this.autonomy && await act("sandbox/mode", { mode: v })) this.load(); }))
         : null;
+      const gr = this.grants;
+      const stand = gr ? card({ title: tr("Standing approvals"), icon: "check" },
+        el("p", { class: "muted small mt0", text: tr("What you allowed with Always here. It runs without asking until you revoke it, except a send after the bot read something from outside.") }),
+        gr.length ? el("div", { class: "plain-list" }, gr.map((g) => el("div", { class: "item" },
+          el("div", { class: "grow" },
+            el("div", { class: "t mono", dir: "ltr", text: g.what }),
+            el("div", { class: "d", text: ago(g.at) })),
+          g.widen ? button(tr("Whole domain"), { kind: "ghost", onclick: async (e) => { if (await act("grants/widen", { id: g.id }, e.currentTarget)) this.load(); } }) : null,
+          button(tr("Revoke"), { icon: "trash", kind: "ghost", aria: tr("Revoke") + " " + g.what, onclick: async (e) => { if (await act("grants/revoke", { id: g.id }, e.currentTarget)) this.load(); } }))))
+          : el("p", { class: "muted small", text: tr("None yet. A question about a command in one folder, or a send to the same address, offers Always here.") }))
+        : null;
       const list = r && r.files && r.files.length
         ? el("div", { class: "plain-list" }, r.files.map((f) => el("div", { class: "item file" },
           el("div", { class: "grow" },
@@ -3408,7 +3424,7 @@
           button(tr("Show the setup checklist again"), { onclick: () => { home.show(); toast(tr("The checklist is back on Home.")); } }),
           button(tr("Keyboard shortcuts"), { onclick: () => shortcuts() }),
           button(tr("Sign out"), { icon: "power", onclick: () => document.getElementById("logout").click() })));
-      setKids(this.box, look, lang, auto, bak, more);
+      setKids(this.box, look, lang, auto, stand, bak, more);
     },
     async backup() {
       const r = await act("backup", {});

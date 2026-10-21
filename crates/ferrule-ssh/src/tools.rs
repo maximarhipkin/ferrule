@@ -455,9 +455,11 @@ impl Tool for RemoteShellTool {
                  Here the shell runs commands that finish (a build, a test run), within its timeout",
             ));
         }
-        let (code, mut text) = run_remote(&self.link, &cmd, self.timeout)
+        let (code, text) = run_remote(&self.link, &cmd, self.timeout)
             .await
             .map_err(|e| failed("shell", e))?;
+        // M54.3: the remote spill file gets the scrubbed text too.
+        let mut text = ferrule_core::scrub::text(text);
         let exit = format!("[exit code: {code}]");
         text.push('\n');
         text.push_str(&exit);

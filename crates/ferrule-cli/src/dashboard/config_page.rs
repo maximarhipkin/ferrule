@@ -36,7 +36,13 @@ const WHOLE: &[&str] = &[
     "browser",
     "plans",
     "plugins",
+    // M61: seeing the owner's screen is turned on in the file alone.
+    "screen",
 ];
+
+/// M56.3: fields inside a [`WHOLE`] section the page and the chat may
+/// change all the same: a switch that runs nothing new and moves no key.
+const OPEN: &[&str] = &["browser.enabled"];
 
 /// A field the page can't change, by its own name: it names a command,
 /// a path or an environment, loosens a gate, lets someone new in, or
@@ -199,13 +205,53 @@ pub(crate) fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<Str
     let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
     keys.sort();
     keys.dedup();
+    // M56.3: a new search provider takes its key's name along and drops a
+    // custom endpoint; `key_moved` decides whether that key may follow.
+    let provider = "web_search.provider";
+    let follows = |k: &str| {
+        a.get(provider) != b.get(provider)
+            && (k == "web_search.api_key_env" || (k == "web_search.endpoint" && !b.contains_key(k)))
+    };
     keys.into_iter()
         .filter(|k| a.get(*k) != b.get(*k))
         .find(|k| {
             let segs: Vec<&str> = k.split('.').collect();
-            WHOLE.contains(&segs[0]) || segs.iter().any(|s| guarded_key(s))
+            !OPEN.contains(&k.as_str())
+                && !follows(k)
+                && (WHOLE.contains(&segs[0]) || segs.iter().any(|s| guarded_key(s)))
         })
         .cloned()
+}
+
+/// M56.3: the first key `new` would send to a host `old` doesn't send it
+/// to, said as a refusal. `[secrets]` itself is guarded whole; this is
+/// for the keys the loader binds by itself (web search's to its
+/// endpoint's host, memory's, telemetry's), which a provider switch
+/// would otherwise carry to the new provider's host. The one new binding
+/// let through is web search's provider's own variable on that
+/// provider's own host ([`crate::config::WebSearchConfig::own_key`]).
+pub(crate) fn key_moved(old: &DocumentMut, new: &DocumentMut) -> Option<String> {
+    let load = |d: &DocumentMut| toml::from_str::<Config>(&d.to_string()).ok();
+    let written = load(new)?;
+    let now = written.clone().finish().ok()?;
+    // A file that doesn't load binds what its `[secrets]` say, and those
+    // can't change here.
+    let was = load(old).and_then(|c| c.finish().ok()).unwrap_or(written);
+    let own = now.web_search.own_key();
+    let hosts = |cfg: &Config, name: &str| {
+        cfg.secrets
+            .get(name)
+            .map_or_else(Vec::new, |s| ferrule_proxy::SecretRule::from(s).hosts)
+    };
+    now.secrets.keys().find_map(|name| {
+        let before = hosts(&was, name);
+        let host = hosts(&now, name).into_iter().find(|h| {
+            !before.contains(h) && own.as_ref() != Some(&(name.clone(), h.clone()))
+        })?;
+        Some(format!(
+            "That would send the key {name} to {host}, where it isn't sent now. Where a key goes is set on the dashboard's Keys panel or with `ferrule setup`; for another search provider, save its key with secret_request first."
+        ))
+    })
 }
 
 /// The text with its secret fields hidden.
@@ -509,6 +555,9 @@ fn commit(
                 }),
             ));
         }
+        if let Some(why) = key_moved(old, new) {
+            return bad(403, why);
+        }
     }
     let (sections, restart) = changed_sections(old, new);
     // M52.4: the file as it was (written here or elsewhere), then this.
@@ -661,6 +710,68 @@ const FORM: &[Field] = &[
         choices: &[],
         help: "Weakest match memory search returns",
     },
+    // M56.3: web search and the browser, from the chat too. The key's
+    // variable and the endpoint stay guarded: they move where a key goes.
+    Field {
+        key: "web_search.provider",
+        kind: "choice",
+        choices: &["duckduckgo", "brave", "tavily", "exa", "off"],
+        help: "Web search service (duckduckgo needs no key; off: no web search)",
+    },
+    Field {
+        key: "web_search.max_results",
+        kind: "int",
+        choices: &[],
+        help: "Results per search (1–20)",
+    },
+    Field {
+        key: "web_search.safe_search",
+        kind: "choice",
+        choices: &["off", "moderate", "strict"],
+        help: "Safe search",
+    },
+    Field {
+        key: "web_search.region",
+        kind: "text",
+        choices: &[],
+        help: "Search region, like us or de",
+    },
+    Field {
+        key: "web_search.language",
+        kind: "text",
+        choices: &[],
+        help: "Search language, like en or he",
+    },
+    Field {
+        key: "web_search.max_output_tokens",
+        kind: "int",
+        choices: &[],
+        help: "Most of a search's results the model reads",
+    },
+    Field {
+        key: "web_search.timeout_secs",
+        kind: "int",
+        choices: &[],
+        help: "How long a search may take",
+    },
+    Field {
+        key: "web_search.price_per_search_usd",
+        kind: "float",
+        choices: &[],
+        help: "What a search costs, toward the dollar caps",
+    },
+    Field {
+        key: "web_search.max_searches_per_day",
+        kind: "int",
+        choices: &[],
+        help: "Searches a day (0: no cap)",
+    },
+    Field {
+        key: "browser.enabled",
+        kind: "bool",
+        choices: &[],
+        help: "The browser tools",
+    },
 ];
 
 fn field_value(doc: &DocumentMut, key: &str) -> Value {
@@ -756,6 +867,9 @@ pub fn check(ctx: &Ctx, body: &Value) -> Answer {
         return ok(
             json!({ "ok": false, "field": field, "error": format!("`{field}` can't be changed from the page") }),
         );
+    }
+    if let Some(why) = key_moved(old, &new) {
+        return ok(json!({ "ok": false, "error": why }));
     }
     let (sections, restart) = changed_sections(old, &new);
     ok(json!({
@@ -878,6 +992,14 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
         ("choice", Value::String(s)) if field.choices.contains(&s.as_str()) => {
             Some(s.as_str().into())
         }
+        // A short code (a region, a language), nothing more.
+        ("text", Value::String(s))
+            if (1..=16).contains(&s.len())
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+        {
+            Some(s.as_str().into())
+        }
         _ => {
             return bad(
                 400,
@@ -887,6 +1009,7 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
                         "bool" => "on or off".to_string(),
                         "int" => "a whole number".to_string(),
                         "float" => "a number".to_string(),
+                        "text" => "a short code: letters, digits, - or _".to_string(),
                         _ => format!("one of {}", field.choices.join(", ")),
                     }
                 ),
@@ -911,7 +1034,108 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
             table.insert(name, Item::Value(v));
         }
     }
-    commit(ctx, &path, Some(&old), &new, "form", true)
+    let mut said = None;
+    if key == "web_search.provider" && field_value(&old, key) != field_value(&new, key) {
+        let (var, words) = match search_key(ctx, &old, field_value(&new, key).as_str()) {
+            Ok(found) => found,
+            Err(why) => return bad(409, why),
+        };
+        if let Some(t) = new.get_mut("web_search").and_then(Item::as_table_like_mut) {
+            t.remove("endpoint");
+            match var {
+                Some(var) => {
+                    t.insert("api_key_env", Item::Value(var.into()));
+                }
+                None => {
+                    t.remove("api_key_env");
+                }
+            }
+        }
+        said = Some(words);
+    }
+    let mut answer = commit(ctx, &path, Some(&old), &new, "form", true);
+    if let (Some(words), Some((200, v))) = (said, answer.as_mut()) {
+        v["said"] = json!(words);
+    }
+    answer
+}
+
+/// M56.3: the key a new search provider gets from the form or the chat,
+/// and what to say. Only a key that goes to that provider's host already:
+/// a `[secrets]` entry bound there (the key in use now, the provider's own
+/// variable, then any other), else the provider's own variable
+/// (`TAVILY_API_KEY`) when it's saved and `[secrets]` doesn't name it,
+/// which the loader binds to that host alone. Nothing fits: refused, with
+/// the `secret_request` that would make one. A provider without a key,
+/// and "off", drop the key's name; every switch drops a custom endpoint.
+fn search_key(
+    ctx: &Ctx,
+    old: &DocumentMut,
+    provider: Option<&str>,
+) -> Result<(Option<String>, String), String> {
+    use ferrule_tools::search::SearchProvider;
+    let p = match provider {
+        None => Some(SearchProvider::Duckduckgo),
+        Some(name) => SearchProvider::parse(name),
+    };
+    let (Some(p), Some(own)) = (p, p.and_then(SearchProvider::key_env)) else {
+        return Ok((
+            None,
+            match p {
+                Some(p) => format!("Web search uses {} now, with no key.", p.name()),
+                None => "Web search is off.".into(),
+            },
+        ));
+    };
+    let host = crate::config::WebSearchConfig::default()
+        .host(p)
+        .ok_or_else(|| format!("{} has no address to send its key to", p.name()))?;
+    let cfg = toml::from_str::<Config>(&old.to_string()).ok();
+    let secrets = cfg.as_ref().map(|c| &c.secrets);
+    let bound_here = |name: &str| {
+        let hosts = ferrule_proxy::SecretRule::from(secrets?.get(name)?).hosts;
+        hosts.contains(&host).then_some(hosts)
+    };
+    let current = cfg.as_ref().and_then(|c| c.web_search.api_key_env.clone());
+    let found = current
+        .iter()
+        .map(String::as_str)
+        .chain([own])
+        .chain(
+            secrets
+                .into_iter()
+                .flat_map(|s| s.keys().map(String::as_str)),
+        )
+        .find_map(|name| Some((name.to_string(), bound_here(name)?)));
+    if let Some((var, hosts)) = found {
+        let to = hosts.join(", ");
+        let words = format!(
+            "Web search uses {} now, with the key {var}, which goes only to {to}.",
+            p.name()
+        );
+        return Ok((Some(var), words));
+    }
+    if secrets.is_none_or(|s| !s.contains_key(own)) && saved(ctx, own) {
+        let words = format!(
+            "Web search uses {} now, with the key {own}, which goes only to {host}.",
+            p.name()
+        );
+        return Ok((Some(own.into()), words));
+    }
+    Err(format!(
+        "{} needs a key, and none saved here goes to {host}. Ask the owner for one with secret_request (name {own}, or another if that one is taken; host {host}), then set the provider again. Web search is unchanged.",
+        p.name()
+    ))
+}
+
+/// Whether the key `name` has a value: in this process, or in the secrets
+/// file the page writes.
+fn saved(ctx: &Ctx, name: &str) -> bool {
+    crate::secrets::non_empty(name).is_some()
+        || super::api::setup_place(ctx)
+            .ok()
+            .and_then(|p| crate::secrets::read(&p.secrets).ok())
+            .is_some_and(|kept| kept.iter().any(|(n, v)| n == name && !v.is_empty()))
 }
 
 /// Replaces the file with `from`'s text after checking it reads.

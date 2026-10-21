@@ -160,7 +160,7 @@ A fourth `Mode`. It is built on the existing hide-only sandbox
   Landlock ptrace scope). With `require` on and §4 in place, nothing the
   model can influence runs outside a sandbox. So owner mode doesn't move
   the keys out of the process environment; that stays a separate
-  hardening item.
+  hardening item. (Done since: amendment 5, M54.2.)
 - **Read-only cases map to `ReadOnly`**, as `WorkspaceWrite` does: a
   read-only sub-agent (`for_child`) and plan mode (`for_planning`).
 - **Other people's chats keep the stricter sandbox.** A session gets
@@ -314,7 +314,8 @@ workspace's hooks run in the session's sandbox in every mode.
   Every run is audited: `self_service.ran` with
   `by = "<channel> chat <id> (owner mode)"`.
 - **Trust gates are off**, the same as `[trust] gates = false`, whatever
-  the config says.
+  the config says, except one (amendment 4): a send, a force push or a
+  `DELETE` to a bound host after the run read outside content.
 - **What stays owner-only:**
   - `config_set` keeps refusing guarded fields (unchanged).
   - `config_restore` from the chat now also refuses a restore that
@@ -756,12 +757,87 @@ and a privacy hole found on review. Code paths are under `crates/`.
    `<data>/guest-memory/<chat>.db` (`owner_mode::guest_memory`, keyed by
    `chat_of`), `Sandbox::narrowed` in every mode (`guest_hidden` adds
    `memory.db` and its WAL files, `guest-memory/` and `learned-skills/`
-   to §7's two), and only its own scope's lessons and learned skills
+   to §7's two; M61 adds the workspace's `media/screen/`), and only its own scope's lessons and learned skills
    (`learn::prompt_section`/`skill_view` with `only`,
    `ferrule_learn::prompt_block_only`, `skills::Entry::kept_for`). A
    guest's `/plan`, `/goal` or `/graph` run learns in its chat's scope,
    not the shared workspace scope (`learn::scope_for`). User docs:
    `memory.md`, "Whose memory".
+2. **Known key values never reach a transcript (M54.3).** §7 made
+   `sessions/` readable and left "the builder checks that nothing in
+   them is a live credential" to inspection. Now it holds by
+   construction: `ferrule-core` `scrub` is one process-wide hook,
+   applied in `agent.rs` `Ran::of` (where a call becomes the result the
+   transcript, the model, hooks, the trace and the stuck detector read)
+   and at the start of `ToolOutput::capped`, `spilled` and
+   `spill_preview`, `jobs.rs` `Job::tail` and the SSH shell's remote
+   spill, so a cut never leaves part of a key. `ferrule-cli`
+   (`health::scrub_tool_results`, from `main.rs` `dispatch`) installs
+   it: the proxy's bound secrets become their placeholders
+   (`Broker::scrub_text`), then every other known value
+   (`health::known_secrets`: `[secrets]`, channel tokens, provider keys,
+   everything the secrets file set) becomes `[redacted]`
+   (`Redactor::known`, values only, no token shapes). `ferrule doctor`'s
+   `history` line scans `sessions/` and `learn/` for those values
+   (and their JSON-escaped form) and reports names, counts and files,
+   never a value; it fails in owner mode while any are there. Left open:
+   the claude engine's own tools (its Bash, Read) don't pass through the
+   loop, values under 6 characters are skipped, connection OAuth tokens
+   aren't in the list, and the values are read once at startup (a
+   `[secrets]` key bound later is covered by the proxy).
+3. **A danger notice while the box is open (M54.6).** §8 gave the owner
+   a switch but nothing that says the box is open, and the old stopgap
+   showed how a "temporary" setting outlives its reason.
+   `owner_mode::openings(cfg)` lists owner mode running (`on`, so not
+   after a fallback), `[sandbox] mode = "off"` and `[trust] gates =
+   false`, each with what it opens and how to close it. `ferrule doctor`
+   warns once per opening (`open`), with the way to close it as the hint.
+   The dashboard's Home (`api.rs` `health`) shows each as a red (`top`)
+   notice with "Ask me first" (`sandbox/mode {mode: "ask"}`, which also
+   drops `gates = false`) and "Open Settings"; a managed bot gets no
+   buttons. The sandbox-off and gates-off notices can't be closed
+   (`notices::unclosable`); owner mode's closes for a day, as it's a
+   choice the dashboard offers, and comes back while still true.
+4. **One gate stays in owner mode (M54.5).** §5 turned the gates off
+   ("not safety from the bot"). That left a confused deputy open: the
+   proxy swaps the real key in for its own host whoever asked, so an
+   injected email or page could send mail as the owner, delete a remote
+   branch or `DELETE` on a bound API without ever seeing a key. Now
+   `[trust] untrusted_send_gate` (default on, guarded by its name)
+   keeps `ConnectedWrite`, `ForcePush` and `HttpDelete`
+   (`Kind::leaves_the_box`) gated in a run that has read outside
+   content: `classify::untrusted_source` (`web_fetch`, `web_search`,
+   the browser, a connected service's read, a shell HTTP client) marks
+   the run (`Hub::saw_untrusted`, `RunState::untrusted`, audited as
+   `untrusted_seen`), and a guest's run in owner mode starts marked
+   (`TrustGuard::guest_input`). `TrustGuard::untrusted_gate` is set by
+   `trust::equip` only while owner mode runs. The question names the
+   source; a shell command keeps "Allow for this run"; a scheduled task
+   is refused. User docs: `m19-trust-cost.md` §6b.
+5. **The secrets file stays out of the environment (M54.2).** §3 left
+   the keys in the gateway's environment, relying on `require` and
+   Landlock's ptrace scope; on macOS whether Seatbelt stops `ps eww` is
+   unverified, and every child inherited the keys. Now
+   `secrets::load` puts the file into `ferrule_sandbox::secret_env`, an
+   in-memory store, instead of `set_var`. Every reader goes through
+   `secret_env::var` (`secrets::var` in `ferrule-cli`): a value saved
+   since start, else the real environment, else the file's, so an
+   exported variable still wins. The providers' keys
+   (`config.rs`, `models.rs` `Entry::key`, which replaces the old
+   `SAVED_KEYS`), the proxy's binding (`shared_broker`, `mcp_add`), the
+   channel tokens, transcription (`ferrule-gateway` `transcribe.rs`),
+   the sealing key (`ferrule-connections` `seal.rs`), the plugin host's
+   real-value check, the claude plan's exported token, doctor and setup
+   read it there; the dashboard's rotate and delete change the store,
+   no longer `set_var`/`remove_var` with threads running. No child
+   inherits a held value: `Sandbox::command` passes one only for an
+   `env_passthrough` name (or all with `scrub_secret_env = false`),
+   `child_env_var` agrees, and an owner's hook gets its `env` names
+   (`ferrule-hooks`). Left: the owner's other spawns (gate scripts, a
+   transcription command) get the real environment only, a behaviour
+   change documented in `sandbox.md` "Env"; the store is plain memory,
+   not locked or encrypted, and the file isn't sealed under a keychain
+   key. User docs: `sandbox.md` "Env", `m18-hooks.md` §1–2.
 
 ## Build plan
 

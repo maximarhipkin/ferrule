@@ -21,7 +21,7 @@ impl Sealer {
     /// `$FERRULE_CONNECTIONS_KEY` (base64url, 32 bytes) if set, else the
     /// key file, made (0600) if it's missing.
     pub fn load_or_create(path: &Path) -> Result<Self> {
-        if let Some(v) = std::env::var(KEY_ENV).ok().filter(|v| !v.is_empty()) {
+        if let Some(v) = ferrule_sandbox::secret_env::non_empty(KEY_ENV) {
             let bytes = unb64(v.trim()).with_context(|| format!("${KEY_ENV}"))?;
             return Self::from_bytes(&bytes).with_context(|| format!("${KEY_ENV}"));
         }
@@ -42,7 +42,7 @@ impl Sealer {
 
     /// The key file only, never made: for readers that must not create one.
     pub fn load(path: &Path) -> Result<Option<Self>> {
-        if std::env::var(KEY_ENV).is_ok_and(|v| !v.is_empty()) || path.exists() {
+        if ferrule_sandbox::secret_env::non_empty(KEY_ENV).is_some() || path.exists() {
             return Self::load_or_create(path).map(Some);
         }
         Ok(None)

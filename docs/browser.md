@@ -17,6 +17,11 @@ already installed**. ferrule looks for one and never downloads a browser.
    headless the way the agent would run it, and turns the browser on only
    if that worked.
 
+From the chat, once it's installed: "turn the browser on" is
+`ferrule_admin config_set browser.enabled true`, with the owner's tap
+(M56.3). It's the one `[browser]` field the chat and the Config page may
+change; a managed bot whose image has no browser refuses it.
+
 `ferrule doctor` shows what it found and why the browser can't run, if it
 can't. The agent's tools are `mcp__browser__agent_browser_*`: open, snapshot,
 click, fill, type, press, select, scroll, wait, get_text, get_url, get_title,
@@ -135,7 +140,9 @@ not have one. `doctor` recognises the failure and suggests, in this order:
   file, type and size, so the model can open it with `read_file`. Nothing
   prunes that dir yet; it's yours to clean. A part over 16 MiB (64 MiB over
   a whole result) or one that won't decode keeps a note saying it was left
-  out, so the model knows it's there.
+  out, so the model knows it's there. Since M60 a saved screenshot (a PNG,
+  JPEG, GIF or WebP up to 3.5 MB) also goes to a model that sees images,
+  with the result ([vision.md](vision.md)).
 - On Windows agent-browser 0.38's MCP server hangs on the first command
   that has to start its background daemon (the daemon inherits the pipe
   the server is reading). ferrule runs `agent-browser get url` with no

@@ -1,14 +1,22 @@
-//! Photos in a conversation (M47).
+//! Photos in a conversation (M47), and images tools return (M60).
 //!
-//! A user message carries [`ImageRef`]s: paths on disk, never bytes. The
-//! driver that serves a call decides what each becomes: pixels, when the
-//! model sees images and the photo is one of the newest few; a one-line
-//! note otherwise. This module is the part that doesn't depend on a
-//! driver: which photos are new enough, and what the notes say.
+//! A user message carries [`ImageRef`]s: paths on disk, never bytes. So
+//! does a tool result (M60: `read_file` on an image, an MCP screenshot, a
+//! generated image). The driver that serves a call decides what each
+//! becomes: pixels, when the model sees images and the image is one of the
+//! newest few; a one-line note otherwise. This module is the part that
+//! doesn't depend on a driver: which images are new enough, what the notes
+//! say, and which files a tool may hand over as images.
 
 use std::collections::HashSet;
+use std::path::Path;
 
-use crate::message::{ImageRef, Message};
+use crate::message::{ImageRef, Message, Role};
+
+/// The most an image may weigh on the wire. The dashboard shrinks photos
+/// to well under this; for a tool's image (M60) it's the cap, refused
+/// above it, since nothing here can shrink one.
+pub const MAX_IMAGE_BYTES: usize = 3_500_000;
 
 /// How many photos go as pixels in one request: the newest. A long chat
 /// doesn't resend every photo it ever saw.
@@ -49,22 +57,92 @@ pub fn text_with_notes(msg: &Message, why: NoteWhy) -> String {
         if !text.is_empty() {
             text.push('\n');
         }
-        text.push_str(&note(img, why));
+        text.push_str(&note_for(msg, img, why));
     }
     text
 }
 
-/// The sentence that stands in for a photo that isn't sent as pixels.
-pub fn note(img: &ImageRef, why: NoteWhy) -> String {
-    let name = img
-        .name
+/// The note for one of `msg`'s images: a photo someone sent, or (M60) an
+/// image a tool returned.
+pub fn note_for(msg: &Message, img: &ImageRef, why: NoteWhy) -> String {
+    if msg.role == Role::Tool {
+        tool_note(img, why)
+    } else {
+        note(img, why)
+    }
+}
+
+/// M60: the sentence that stands in for a tool's image not sent as pixels.
+pub fn tool_note(img: &ImageRef, why: NoteWhy) -> String {
+    let name = name_of(img);
+    match why {
+        NoteWhy::TextOnly => {
+            format!("[The tool returned an image, {name}, but this model can't see images.]")
+        }
+        NoteWhy::Older => format!("[image omitted: {name}, an earlier tool image]"),
+        NoteWhy::Missing => format!(
+            "[The tool's image {name} can't be sent any more: the file is gone, over the size cap, or not an image.]"
+        ),
+    }
+}
+
+/// M60: the file at `path` as an image a tool can hand the model. `None`
+/// when its first bytes aren't a PNG, JPEG, GIF or WebP; an `Err` saying
+/// why when it is one but over [`MAX_IMAGE_BYTES`]. The driver checks the
+/// bytes again when it sends them.
+pub fn image_file(path: &Path) -> Option<Result<ImageRef, String>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let mut head = Vec::new();
+    file.take(16).read_to_end(&mut head).ok()?;
+    let mime = sniff(&head)?;
+    if size > MAX_IMAGE_BYTES as u64 {
+        let mb = |n: u64| format!("{:.1} MB", n as f64 / 1e6);
+        return Some(Err(format!(
+            "an image ({mime}) of {}, over the {} cap on an image sent to the model",
+            mb(size),
+            mb(MAX_IMAGE_BYTES as u64)
+        )));
+    }
+    Some(Ok(ImageRef {
+        path: path.to_string_lossy().into_owned(),
+        mime: mime.to_string(),
+        name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+    }))
+}
+
+/// The type of an image by its first bytes: JPEG, PNG, GIF or WebP. SVG is
+/// text that can carry script, and no model needs it, so it is not here.
+pub fn sniff(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// What to call an image in a note: its name, else its file's name.
+fn name_of(img: &ImageRef) -> String {
+    img.name
         .clone()
         .or_else(|| {
             std::path::Path::new(&img.path)
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
         })
-        .unwrap_or_else(|| "a file".to_string());
+        .unwrap_or_else(|| "a file".to_string())
+}
+
+/// The sentence that stands in for a photo that isn't sent as pixels.
+pub fn note(img: &ImageRef, why: NoteWhy) -> String {
+    let name = name_of(img);
     match why {
         NoteWhy::TextOnly => format!(
             "[This model can't see images; the photo is saved as {name}. Open it with your tools if you need it.]"

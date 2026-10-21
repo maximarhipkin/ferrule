@@ -154,14 +154,12 @@ pub fn named_in(dir: &Path, keep: impl Fn(&Path) -> bool) -> Vec<String> {
 }
 
 /// A child `ferrule` for another instance: its name, and none of this
-/// process's config, data dir or the secrets it loaded into the
-/// environment, which belong to this instance (§9).
+/// process's config or data dir, which belong to this instance (§9). The
+/// secrets this one loaded are held in memory (M54.2), so no child
+/// inherits them.
 pub fn child_for(cmd: &mut std::process::Command, instance: Option<&str>) {
     cmd.env_remove("FERRULE_CONFIG")
         .env_remove("FERRULE_DATA_DIR");
-    for name in crate::secrets::loaded_names() {
-        cmd.env_remove(name);
-    }
     match instance {
         Some(name) => cmd.env(ENV, name),
         None => cmd.env_remove(ENV),

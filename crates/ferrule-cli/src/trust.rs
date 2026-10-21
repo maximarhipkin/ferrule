@@ -223,11 +223,14 @@ pub fn tree_of(
 /// What `build_agent_from` hands the agent: its ledger tag with the sink
 /// wrapped so every call is stamped with the tree, priced and charged to
 /// the hub (with no ledger, the hub is still charged), and its guard.
+/// `workspace` is where its commands run: a standing shell grant names it
+/// (M56.2).
 pub fn equip(
     cfg: &Config,
     tree: &str,
     child: bool,
     ledger: Option<LedgerTag>,
+    workspace: Option<&std::path::Path>,
 ) -> Result<(LedgerTag, Arc<TrustGuard>)> {
     let hub = hub(cfg)?;
     let (inner, shape, origin) = match ledger {
@@ -247,11 +250,17 @@ pub fn equip(
     };
     let sink = Arc::new(TrustSink::new(inner, hub.clone(), tree, Some(price)));
     // Owner mode runs the owner's own trees without approval questions;
-    // guests keep the hub's `gates` (docs/m54-autonomous.md §5).
-    let gates = !(crate::owner_mode::on(cfg) && crate::owner_mode::owner_tree(cfg, &hub, tree));
+    // guests keep the hub's `gates` (docs/m54-autonomous.md §5). M54.5: one
+    // gate stays there, for a send after outside content, and a guest's
+    // message is outside content.
+    let owner_mode = crate::owner_mode::on(cfg);
+    let owners = owner_mode && crate::owner_mode::owner_tree(cfg, &hub, tree);
     let root = TrustGuard::root(hub, tree, route_for(tree))
         .planning(is_planning(tree))
-        .gates(gates);
+        .gates(!owners)
+        .untrusted_gate(owner_mode && cfg.trust.untrusted_send_gate)
+        .guest_input(owner_mode && !owners)
+        .workspace(workspace);
     let guard = if child { root.child() } else { root };
     Ok((
         LedgerTag {
