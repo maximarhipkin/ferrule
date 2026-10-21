@@ -1553,6 +1553,20 @@ Current State; numbers are claimed there before anything is built.
     skills. The trust model (why curated, no public hub) is in the doc.
     Not run live.
 
+- **M64, a proactive agent** (one commit per task on `autopilot`;
+  `docs/m64-proactive.md`):
+  - **M64.0, the gate before the agent acts on its own**: a POST, PUT or
+    PATCH from the sandboxed shell (curl, wget, httpie, `xh`, `gh api`
+    and `gh`'s changing verbs) to a host with a bound `[secrets]` key, or
+    one the command line doesn't show, leaves the box (`Kind::HttpWrite`,
+    `classify_http_write`): asked about only once the run has read
+    outside content, in ordinary and owner mode alike, refused when
+    unattended, never under a standing grant. What a run read is taken
+    from before the call, so a fetch doesn't taint itself; a guest's
+    message counts as outside content in every mode. M63.1's Home
+    Assistant POSTs are behind it. `docs/m19-trust-cost.md` §6b. Not run
+    live.
+
 **Still open from earlier tracks.**
 
 - **M12 part 6**, named long-lived agents, waits on how a chat

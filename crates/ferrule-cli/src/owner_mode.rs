@@ -124,8 +124,8 @@ pub fn openings(cfg: &Config) -> Vec<Opening> {
     if on(cfg) {
         // M54.5: the one gate left, or that it's off too.
         let asks = if cfg.trust.untrusted_send_gate {
-            "only a send, a force-push or a DELETE after it has read outside content asks you \
-             first"
+            "only a send, a force-push, or a POST, PUT, PATCH or DELETE to a host with a bound key, \
+             after it has read outside content, asks you first"
         } else {
             "nothing asks you first, not even a send after it has read outside content ([trust] \
              untrusted_send_gate = false)"

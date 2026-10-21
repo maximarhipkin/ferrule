@@ -735,13 +735,15 @@ fn the_owner_approves_stops_and_resumes_from_telegram() {
 
     let audit = jsonl(&home.join("data/trust/audit.jsonl"));
     let events: Vec<&str> = audit.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    // M64.0: chat -100's turn is someone else's, so outside content.
     assert_eq!(
         events,
         [
             "approval_asked",
             "approval_answered",
             "stop_engaged",
-            "stop_cleared"
+            "stop_cleared",
+            "untrusted_seen"
         ],
         "{audit:#?}"
     );
@@ -788,14 +790,19 @@ fn slash_plan_explores_asks_the_owner_and_runs_only_on_yes() {
 
     let audit = jsonl(&home.join("data/trust/audit.jsonl"));
     let events: Vec<&str> = audit.iter().map(|e| e["event"].as_str().unwrap()).collect();
+    // M64.0: the group's plan runs (exploring, then executing) start
+    // having read outside content: the group isn't the owner's.
     assert_eq!(
         events,
         [
+            "untrusted_seen",
             "plan_proposed",
             "approval_asked",
             "approval_answered",
             "plan_approved",
+            "untrusted_seen",
             "plan_executed",
+            "untrusted_seen",
             "plan_proposed",
             "approval_asked",
             "approval_answered",

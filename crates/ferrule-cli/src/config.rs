@@ -1917,7 +1917,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 #                            # Discord, else Slack.
 # approval_timeout_secs = 600 # No answer refuses the command.
 # plan_timeout_secs = 3600
-# gates = true               # Ask before rm -rf, force pushes, DELETE to a bound host.
+# gates = true               # Ask before rm -rf, force pushes, DELETE to a bound host
+#                            # (and, after outside content, POST/PUT/PATCH there).
 #
 # [health]                   # M19b (docs/m19b-reliability.md): the gateway is
 #                            # never silently deaf. /status answers from any chat.

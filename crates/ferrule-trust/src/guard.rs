@@ -1,8 +1,8 @@
 //! `TrustGuard`: the hub, seen from one agent in a run tree.
 
 use crate::classify::{
-    classify, classify_connected, classify_declared, grantable_command, only_to, recipients,
-    untrusted_source, Gated, Kind,
+    classify, classify_connected, classify_declared, classify_http_write, grantable_command,
+    only_to, recipients, untrusted_source, Gated, Kind,
 };
 use crate::grants::Spec;
 use crate::hub::{Hub, Prompter};
@@ -87,8 +87,9 @@ impl TrustGuard {
     }
 
     /// M54.5: with the gates off (owner mode), a connected service's
-    /// change, a force push or branch deletion and a DELETE to a bound host
-    /// still ask once the run has read content from outside.
+    /// change, a force push or branch deletion and a DELETE (M64.0: or a
+    /// POST, PUT or PATCH) to a bound host still ask once the run has read
+    /// content from outside.
     pub fn untrusted_gate(mut self, on: bool) -> Self {
         self.untrusted_gate = on;
         self
@@ -126,10 +127,10 @@ impl TrustGuard {
     /// that is exactly its one gated command, in this workspace, or a
     /// connected service's change to the addresses it names. Nothing
     /// for anything else, and nothing for a call that leaves the box once
-    /// the run has read outside content: no standing grant covers that
-    /// (M54.5), and none is made from it.
-    fn standing(&self, call: GuardedCall<'_>, g: &Gated) -> Option<Spec> {
-        if g.kind.leaves_the_box() && self.hub.untrusted(&self.tree).is_some() {
+    /// the run has read outside content (`tainted`): no standing grant
+    /// covers that (M54.5), and none is made from it.
+    fn standing(&self, call: GuardedCall<'_>, g: &Gated, tainted: bool) -> Option<Spec> {
+        if g.kind.leaves_the_box() && tainted {
             return None;
         }
         match g.kind {
@@ -165,16 +166,23 @@ impl TrustGuard {
     }
 
     /// Asks whoever can say yes about `g`; `after` is the outside content
-    /// this run read first, when that is why it asks (M54.5). A refusal
-    /// goes back to the model to try another way, until too many stop the
-    /// run (M56.2, `Hub::denied`).
-    async fn ask(&self, call: GuardedCall<'_>, g: Gated, after: Option<&str>) -> Verdict {
+    /// this run read first, when that is why it asks (M54.5), and
+    /// `tainted` whether it had read any before this call. A refusal goes
+    /// back to the model to try another way, until too many stop the run
+    /// (M56.2, `Hub::denied`).
+    async fn ask(
+        &self,
+        call: GuardedCall<'_>,
+        g: Gated,
+        after: Option<&str>,
+        tainted: bool,
+    ) -> Verdict {
         let subject = format!("`{}` ({})", g.command, g.kind);
         if self.hub.use_grant(&self.tree, &subject) {
             self.hub.let_through(&self.tree);
             return Verdict::Allow;
         }
-        let standing = self.standing(call, &g);
+        let standing = self.standing(call, &g, tainted);
         if let Some(spec) = &standing {
             if self.hub.use_standing(&self.tree, spec, &subject) {
                 return Verdict::Allow;
@@ -256,6 +264,10 @@ impl Guard for TrustGuard {
     }
 
     async fn before_tool_call(&self, call: GuardedCall<'_>) -> Verdict {
+        // M64.0: what the run had read before this call. A fetch's own
+        // answer comes after it, so it can't have steered it: a first
+        // `curl -X POST` isn't asked about for being a `curl`.
+        let before = self.hub.untrusted(&self.tree);
         if untrusted_source(
             call.tool,
             call.args,
@@ -270,6 +282,14 @@ impl Guard for TrustGuard {
                     classify_connected(call.tool, call.changes_files, &self.hub.connected())
                 })
                 .or_else(|| classify_declared(call.tool, call.needs_approval))
+        };
+        // M64.0: a POST, PUT or PATCH to a bound host leaves the box like a
+        // DELETE, but asks only after outside content, so the owner's own
+        // API calls (a light turned on, an issue filed) stay untapped.
+        let http_write = || {
+            before
+                .as_ref()
+                .and_then(|_| classify_http_write(call.tool, call.args, self.hub.bound_hosts()))
         };
         if self.planning {
             if call.changes_files && call.tool != "shell" {
@@ -303,10 +323,13 @@ impl Guard for TrustGuard {
             if !self.untrusted_gate {
                 return Verdict::Allow;
             }
-            let Some(source) = self.hub.untrusted(&self.tree) else {
+            let Some(source) = before.clone() else {
                 return Verdict::Allow;
             };
-            return match gated().filter(|g| g.kind.leaves_the_box()) {
+            return match gated()
+                .filter(|g| g.kind.leaves_the_box())
+                .or_else(http_write)
+            {
                 // Wave A: the owner's own scheduled task (the gates are
                 // off only for the owner's trees, and nobody is there to
                 // tap) may send to the owner alone: a morning briefing that
@@ -322,13 +345,18 @@ impl Guard for TrustGuard {
                     self.hub.sent_to_owner(&self.tree, call.tool, &source);
                     Verdict::Allow
                 }
-                Some(g) => self.ask(call, g, Some(&source)).await,
+                Some(g) => self.ask(call, g, Some(&source), true).await,
                 None => Verdict::Allow,
             };
         }
+        let tainted = before.is_some();
         match gated() {
-            Some(g) => self.ask(call, g, None).await,
-            None => Verdict::Allow,
+            Some(g) => self.ask(call, g, None, tainted).await,
+            // `[trust] untrusted_send_gate = false` lets these through too.
+            None => match http_write().filter(|_| self.hub.config().untrusted_send_gate) {
+                Some(g) => self.ask(call, g, before.as_deref(), true).await,
+                None => Verdict::Allow,
+            },
         }
     }
 

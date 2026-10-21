@@ -160,6 +160,13 @@ below it is append-only.
   one-step add (`mcp_add` with `catalog`, the Extensions page's Add).
   Built, `make check` green, nothing run live. Design and status:
   `docs/m63-connections-wave-b.md`.
+- **M64, a proactive agent** (2026-10-21, night) on `autopilot`, after
+  wave B, one commit and one Session Log entry per task: M64.0 the HTTP
+  write gate (a POST to a bound host asks after outside content); the
+  design (`docs/m64-proactive.md`); commitments and open loops; pattern
+  suggestions; the heartbeat; feedback, the suppression list and the
+  Proactive page. Owner-only, off by default, every action through the
+  existing gates and caps.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -200,8 +207,9 @@ below it is append-only.
   numbered items (M54.1–M54.7) and M52's (M52.1–M52.6) keep their
   parent's number; so do wave A's tasks, which are follow-ups, not
   milestones. **M63 is claimed by wave B** (connections, skills and
-  the catalog; `autopilot`, 2026-10-21). **The next free number is
-  M64.** The first claim wins,
+  the catalog; `autopilot`, 2026-10-21). **M64 is claimed by the
+  proactive agent** (`autopilot`, 2026-10-21). **The next free number
+  is M65.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -9563,3 +9571,59 @@ Windows; `integrity` recorded, not enforced; a continuation lives in
 memory (a restart before the key is saved forgets the add); the
 dashboard's Add from a key-missing entry gives its outcome in the log,
 not on the page.
+
+### 2026-10-21 — M64 claimed; M64.0: a POST to a bound host leaves the box (Claude, Opus 5.5)
+
+Claims **M64**, the proactive agent, in the `autopilot` worktree (the
+next free number was M64; it is now M65). `git fetch origin main` found
+one commit `autopilot` lacked, PR #55's merge, whose tree is
+`d12441c`'s; merged (signed, `559b350`, no file changes) after `make
+check` passed. Current State updated in place (the claim, the in-flight
+line).
+
+M64's task 0, the gate fix the owner's brief asks for before the agent
+acts on its own. M63.1 found it: the Home Assistant skill switches
+devices with `curl -X POST`, and the classifier only stopped a DELETE.
+
+**What changed.**
+- `ferrule-trust` `classify.rs`: `Kind::HttpWrite` (leaves the box);
+  `classify_http_write`, a POST, PUT or PATCH (said, or implied by
+  curl's `-d`/`--json`/`-F`/`-T`, wget's `--post-data`, httpie's data
+  items, `gh api` fields, a `gh` verb that changes something) to a bound
+  host, or to a host the command line doesn't show. One request reader
+  (`request`, getopt-style `options` that skip flags' values) now serves
+  the DELETE check too; `scan` is the old `classify_depth` with a
+  matcher.
+- `guard.rs`: the run's outside content is taken from **before** the
+  call (a fetch doesn't taint itself, for every class and for standing
+  grants); an HTTP write asks only after outside content, in ordinary
+  mode (unless `[trust] untrusted_send_gate = false`) and in owner mode's
+  one gate, and is refused when unattended.
+- `ferrule-cli` `trust::equip`: a guest's run counts as outside content
+  in every mode (was owner mode only). Texts: `owner_mode::openings`,
+  the `gates:` status line, the config template's comment.
+- The Home Assistant skill's rule and `m63-connections-wave-b.md` say
+  what the gate now covers; `m19-trust-cost.md` §6's table and a new §6b
+  part; `sandbox.md`'s owner-mode paragraph; the roadmap's M64 entry.
+
+**Behaviour changes to know.** A first `curl -X DELETE` to a bound host
+in owner mode no longer asks (it marked the run itself before). In
+ordinary mode, a scheduled task that fetched something and then POSTs to
+a bound host is now refused; a guest's run now never uses a standing
+grant for a send, a force push or an HTTP write.
+
+**Tests changed, none added** (the owner's standing rule): two
+`ferrule-cli` trust tests (`slash_plan_explores…`,
+`the_owner_approves_stops…`) now expect the `untrusted_seen` line a
+group's turn writes.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean. One run before it failed
+`ferrule-memory`'s `without_a_vector_hybrid_is_exactly_bm25` (two
+recall scores a microsecond of decay apart; untouched here, passes
+alone and on the rerun): a flaky test, noted.
+
+**Open.** Not run live. A `gh` verb outside the list passes; a POST
+from `python` or a script isn't seen (as for DELETE). Every guest turn
+now writes one `untrusted_seen` audit line (pruned with the audit log).
+
