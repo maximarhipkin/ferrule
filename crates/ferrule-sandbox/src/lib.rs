@@ -382,16 +382,16 @@ impl Sandbox {
         self.policy.mode == Mode::Owner
     }
 
-    /// The same sandbox with owner mode narrowed to `workspace-write`, for
-    /// sessions that aren't the owner's, with `hide` hidden too: what owner
-    /// mode lets the owner's commands read but no one else's. Any other
-    /// mode is unchanged, and `hide` ignored.
+    /// The same sandbox for sessions that aren't the owner's, with `hide`
+    /// hidden too: what the owner's commands may read but no one else's
+    /// (the owner's memory and history). Owner mode is narrowed to
+    /// `workspace-write`; any other mode keeps its own.
     pub fn narrowed(&self, hide: &[PathBuf]) -> Sandbox {
         let mut s = self.clone();
         if s.is_owner() {
             s.policy.mode = Mode::WorkspaceWrite;
-            s.policy.hidden.extend(hide.iter().cloned());
         }
+        s.policy.hidden.extend(hide.iter().cloned());
         s
     }
 

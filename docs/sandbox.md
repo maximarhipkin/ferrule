@@ -46,7 +46,12 @@ so the model gets refused either way. The list has three parts:
    state, which can hold credentials and messages waiting to be sent),
    `<data>/learn`, and `<data>/sessions` (the transcripts, which hold
    whatever a tool ever printed). In [owner mode](#owner-mode) the last
-   two are readable to the owner's own chats.
+   two are readable to the owner's own chats. In every mode a session
+   that isn't the owner's (see [Other people's chats](#other-peoples-chats))
+   also can't read the owner's long-term memory (`<data>/memory.db` and
+   its `-wal` and `-shm` files), the other chats' memories
+   (`<data>/guest-memory`) or the learned skills
+   (`<data>/learned-skills`); see [memory.md](memory.md#whose-memory).
 2. **The usual credential dirs** (`deny_default_reads = true`, the
    default): `~/.ssh`, `~/.aws`, `~/.azure`, `~/.config/gcloud`,
    `~/.kube`, `~/.docker/config.json`, `~/.netrc`, `~/.git-credentials`,
@@ -420,9 +425,16 @@ Your private chat, your Telegram groups, the dashboard chat and what they
 start (a sub-agent, a task, a `/plan`, `/goal` or `/graph` run) get owner
 mode. Every other session (another allowed person, another channel's
 group, the HTTP API, a task made elsewhere) gets `workspace-write`, and
-can't read your `sessions/` or `learn/`; the claude engine is narrowed per
-session too. A run in the gateway that no chat traces to counts as someone
-else's.
+can't read your `sessions/`, `learn/`, `memory.db` or learned skills; the
+claude engine is narrowed per session too. A run in the gateway that no
+chat traces to counts as someone else's.
+
+The same line splits your long-term memory and the learning loop's
+lessons from everyone else's in **every** mode, owner mode or not: such a
+session keeps a memory of its own and is taught only its own scope's
+lessons ([memory.md](memory.md#whose-memory)). Outside owner mode a
+Telegram group counts as someone else's, since anyone allowed there may
+write in it.
 
 **A Telegram group is yours.** When the config asks for owner mode (held
 or fallen back), the bot admits only your own messages in an allowed

@@ -27,5 +27,8 @@ pub use episode::Episode;
 pub use files::{LearnDir, PassRecord, State};
 pub use gate::{Gate, GateRun, GateVerdict, ProbeOut, WorkspaceGate};
 pub use pass::{plan, revert, revert_change, run_pass, Env, Learned, OnKept, Options, Plan};
-pub use playbook::{prompt_block, prompt_block_for, Applied, Delta, Lesson, Playbook, PromptBlock};
+pub use playbook::{
+    prompt_block, prompt_block_for, prompt_block_only, Applied, Delta, Lesson, Playbook,
+    PromptBlock,
+};
 pub use skills::SkillDraft;

@@ -108,30 +108,107 @@ pub fn protected_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// What owner mode lets the owner's commands read but hides from everyone
-/// else's (§7): the session transcripts and the learning loop's notes.
-pub fn guest_hidden() -> Vec<PathBuf> {
+/// The session transcripts and the learning loop's notes: hidden from
+/// every command outside owner mode, and in owner mode from everyone's but
+/// the owner's (§7).
+pub fn history() -> Vec<PathBuf> {
     config::data_dir()
         .map(|data| vec![data.join("sessions"), data.join("learn")])
         .unwrap_or_default()
 }
 
-/// Whether the run tree `tree` gets owner mode (§1): the owner's private
-/// chat, a Telegram group, the dashboard chat or the gateway's own
-/// terminal; a scheduled task made there or with no chat; a plan, goal or
-/// graph run started there; and runs from the terminal. Every other chat,
-/// and whatever was started from one, gets `workspace-write`, and so does
-/// a run in the gateway that no chat traces to. A sub-agent's tree is its
-/// root's, so it follows the root.
-pub fn owner_tree(hub: &Hub, tree: &str) -> bool {
-    if owner_chat(hub, tree) {
+/// Where the sessions that aren't the owner's keep their long-term memory,
+/// one file per chat ([`guest_memory`]).
+const GUEST_MEMORY: &str = "guest-memory";
+
+/// What only the owner's sessions may read, hidden from everyone else's
+/// commands and file tools in every mode: [`history`], the owner's
+/// long-term memory (`memory.db` and SQLite's files beside it), the other
+/// chats' memories, and the learned skills (the pass keeps some for the
+/// owner's chats).
+pub fn guest_hidden() -> Vec<PathBuf> {
+    let Ok(data) = config::data_dir() else {
+        return Vec::new();
+    };
+    let mut hidden = history();
+    hidden.extend(
+        [
+            "memory.db",
+            "memory.db-wal",
+            "memory.db-shm",
+            GUEST_MEMORY,
+            "learned-skills",
+        ]
+        .map(|rel| data.join(rel)),
+    );
+    hidden
+}
+
+/// The long-term memory of a session that isn't the owner's: a file of its
+/// own per chat it traces to ([`chat_of`]), so no other chat's facts, the
+/// owner's profile above all, reach it, and nothing it stores reaches
+/// anyone else.
+pub fn guest_memory(tree: &str) -> anyhow::Result<PathBuf> {
+    let dir = config::data_dir()?.join(GUEST_MEMORY);
+    std::fs::create_dir_all(&dir)?;
+    let name: String = chat_of(tree)
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    Ok(dir.join(format!("{name}.db")))
+}
+
+/// The chat a run tree traces to, the way [`owner_tree`] traces it: a
+/// chat's own session, the chat a scheduled task was made in, the chat a
+/// plan, goal or graph run was started from; otherwise the tree itself.
+pub fn chat_of(tree: &str) -> String {
+    if crate::channels::of_session(tree).is_some() {
+        return tree.to_string();
+    }
+    if let Some(id) = tree.strip_prefix(&format!("{SCHEDULER_PSEUDO_CHANNEL}__")) {
+        return match task(id) {
+            Some(t) if !t.chat_id.is_empty() => {
+                ferrule_gateway::session::session_id(&t.channel, &t.chat_id)
+            }
+            _ => tree.to_string(),
+        };
+    }
+    ORIGINS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(tree)
+        .cloned()
+        .unwrap_or_else(|| tree.to_string())
+}
+
+/// Whether the run tree `tree` is the owner's (§1): the owner's private
+/// chat, a Telegram group while the config asks for owner mode, the
+/// dashboard chat or the gateway's own terminal; a scheduled task made
+/// there or with no chat; a plan, goal or graph run started there; and runs
+/// from the terminal. Every other chat, whatever was started from one, and
+/// a run in the gateway that no chat traces to are someone else's. A
+/// sub-agent's tree is its root's, so it follows the root.
+///
+/// In owner mode the owner's trees get it and everyone else's
+/// `workspace-write`. In every mode only the owner's see the owner's
+/// long-term memory, learned lessons and skills (docs/memory.md, "Whose
+/// memory").
+pub fn owner_tree(cfg: &Config, hub: &Hub, tree: &str) -> bool {
+    let groups = wanted(cfg);
+    if owner_chat(hub, tree, groups) {
         return true;
     }
     if crate::channels::of_session(tree).is_some() {
         return false;
     }
     if let Some(id) = tree.strip_prefix(&format!("{SCHEDULER_PSEUDO_CHANNEL}__")) {
-        return owner_task(hub, id);
+        return owner_task(hub, id, groups);
     }
     let origin = ORIGINS
         .lock()
@@ -139,25 +216,26 @@ pub fn owner_tree(hub: &Hub, tree: &str) -> bool {
         .get(tree)
         .cloned();
     if let Some(origin) = origin {
-        return owner_chat(hub, &origin);
+        return owner_chat(hub, &origin, groups);
     }
     // `ferrule run`, `chat` and the other runs from a terminal.
     GATEWAY.get().is_none()
 }
 
 /// The owner's private chat, the dashboard chat, the gateway's own terminal
-/// (`[gateway] local = true`), where whoever types started it, or a
-/// Telegram group (see [`owner_group`]).
-fn owner_chat(hub: &Hub, session: &str) -> bool {
+/// (`[gateway] local = true`), where whoever types started it, or with
+/// `groups` a Telegram group (see [`owner_group`]).
+fn owner_chat(hub: &Hub, session: &str, groups: bool) -> bool {
     crate::self_service::offered(hub, session).is_some()
         || session.starts_with("local__")
-        || owner_group(session).is_some()
+        || (groups && owner_group(session).is_some())
 }
 
 /// A Telegram group's session, as the chat its answers go to. Only the
 /// owner's messages reach it whenever the config asks for owner mode
-/// (`TelegramChannel::with_only_owner_in_groups`), and only owner mode
-/// asks this, so in owner mode a group is the owner's chat.
+/// (`TelegramChannel::with_only_owner_in_groups`), so then a group is the
+/// owner's chat. Otherwise anyone allowed there may write in it, and it is
+/// someone else's.
 pub fn owner_group(session: &str) -> Option<ChatRef> {
     let (info, chat) = crate::channels::of_session(session)?;
     (info.name == "telegram" && chat.parse::<i64>().ok()? < 0)
@@ -166,19 +244,24 @@ pub fn owner_group(session: &str) -> Option<ChatRef> {
 
 /// A scheduled task made in an owner chat, or with no chat. One that can't
 /// be looked up is someone else's.
-fn owner_task(hub: &Hub, id: &str) -> bool {
-    let task = config::data_dir()
-        .ok()
-        .and_then(|data| TaskStore::open(data.join("tasks.db")).ok())
-        .and_then(|store| store.get(id).ok().flatten());
-    match task {
+fn owner_task(hub: &Hub, id: &str, groups: bool) -> bool {
+    match task(id) {
         Some(t) if t.chat_id.is_empty() => true,
         Some(t) => owner_chat(
             hub,
             &ferrule_gateway::session::session_id(&t.channel, &t.chat_id),
+            groups,
         ),
         None => false,
     }
+}
+
+/// The scheduled task `id`, when it can be looked up.
+fn task(id: &str) -> Option<ferrule_gateway::Task> {
+    config::data_dir()
+        .ok()
+        .and_then(|data| TaskStore::open(data.join("tasks.db")).ok())
+        .and_then(|store| store.get(id).ok().flatten())
 }
 
 /// Why owner mode can't run here, in one sentence the owner reads, or

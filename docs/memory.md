@@ -34,6 +34,57 @@ prompt, so the cached prefix stays the same. To see or change what it
 keeps: `ferrule memory recent`, `ferrule memory search <words>`, or ask it
 to forget something.
 
+## Whose memory
+
+`memory.db` is yours. Only your own sessions read or change it: your
+private chat, the dashboard chat, the gateway's terminal, `ferrule run`
+and `chat`, what those start (sub-agents, scheduled tasks, `/plan`,
+`/goal` and `/graph` runs), and, while the config asks for owner mode,
+your Telegram groups (only your messages get in there then). This is
+the owner classification of [owner mode](sandbox.md#other-peoples-chats)
+(`owner_mode::owner_tree`), and it holds in **every** sandbox mode.
+
+Every other session is someone else's: another allowed person's chat, a
+group anyone allowed may write in (a Telegram group outside owner mode,
+a Discord, Slack, Matrix or Signal group), an HTTP API client that isn't
+yours, a task made there, and a run in the gateway that no chat traces
+to. Such a session:
+
+- **has a memory of its own**, one file per chat it traces to, in
+  `<data>/guest-memory/<chat>.db`. `remember`, `recall`, `update_memory`
+  and `forget`, the session-start block, the profile facts at its top
+  and the per-message recall all work on that file. It never sees a fact
+  from `memory.db` or from another chat, and nothing it stores reaches
+  you or anyone else.
+- **can't read your memory files** from its commands or its file tools
+  (`read_file`, `send_file`, the media tools' references): `memory.db`,
+  `memory.db-wal`, `memory.db-shm`, `guest-memory/` and
+  `learned-skills/` are hidden from it, on top of `sessions/` and
+  `learn/` (`owner_mode::guest_hidden`, through `Sandbox::narrowed`).
+  Your own commands can still read `memory.db` outside owner mode, as
+  before.
+- **is taught only its own lessons and skills.** The learning loop's
+  global lessons and learned skills may come from your chats (a lesson
+  learned in two of your chats becomes global, and lines you wrote in
+  the playbook are global), so someone else's session gets only the
+  lessons and learned skills kept for its own scope: its chat, or its
+  task. A `/plan`, `/goal` or `/graph` run from such a chat learns in
+  that chat's scope, never in the workspace scope your runs share
+  (`learn::scope_for`).
+
+`ferrule memory`, the dashboard's Memory page, `ferrule doctor` and the
+learning loop's memory merges see only `memory.db`. A chat's own file is
+deleted by deleting it.
+
+Known limits: the helpers every session shares (MCP servers, the
+browser, `[hooks]`) aren't narrowed per session, so a filesystem-type MCP
+server or the browser, steered by someone else's chat, can read what
+those helpers can: `memory.db` in every mode, and in owner mode
+`sessions/` and `learn/` too. On the Claude plan engine claude's own state dir is shared
+by every chat. A learned skill kept for someone else's chat loads there,
+but its scripts can't run from that chat's shell, since `learned-skills/`
+is hidden from it.
+
 ## Keyword recall and recall by meaning
 
 Out of the box, recall is keyword search (SQLite FTS5, BM25). It finds a

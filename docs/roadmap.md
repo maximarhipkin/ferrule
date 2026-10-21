@@ -1275,6 +1275,15 @@ restarts, and answers from yesterday's transcript; from its shell, reading
 `private/secrets.env` and writing the config, the binary or `daemon-reload`
 all fail; and `make check` is green on Linux, macOS and Windows.
 
+**Follow-ups on `autopilot`** (2026-10-21; each in
+`docs/m54-autonomous.md`, "Amendments after the build"):
+- **The owner's memory stays with the owner's chats**, in every mode: a
+  session that isn't the owner's (M54's `owner_tree`; a Telegram group
+  only while owner mode is asked for) keeps its own memory in
+  `<data>/guest-memory/<chat>.db`, can't read `memory.db`, the other
+  chats' memories or `learned-skills/`, and is taught only its own
+  scope's lessons and skills (`docs/memory.md`, "Whose memory").
+
 ## Other open tracks
 
 **In flight** (2026-10-21). Who owns which files is in `PLAN.md`'s

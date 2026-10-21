@@ -375,6 +375,12 @@ impl Entry {
     pub fn applies(&self, scope: Option<&str>) -> bool {
         self.scope.is_none() || self.scope.as_deref() == scope
     }
+
+    /// Whether it was kept for `scope` itself, not globally: what a
+    /// session that isn't the owner's is offered.
+    pub fn kept_for(&self, scope: &str) -> bool {
+        self.scope.as_deref() == Some(scope)
+    }
 }
 
 /// `learn/skills.json`: the learned skills the pass kept, by name.

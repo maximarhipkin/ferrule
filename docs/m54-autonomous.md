@@ -742,6 +742,27 @@ Smaller rulings:
   list `gateway/http/clients.json`, which holds the HTTP API clients'
   key hashes, so a backup the bot can ask for and read contains them.
 
+## Amendments after the build
+
+Made on `autopilot` (2026-10-21), from the gap analysis's M54.2–M54.6
+and a privacy hole found on review. Code paths are under `crates/`.
+
+1. **The owner's memory is the owner's sessions' only, in every mode.**
+   `memory.db` was shared by every chat, so a guest's chat got the
+   owner's profile block, per-message recall and `recall` results.
+   `owner_mode::owner_tree(cfg, hub, tree)` now decides it in every mode
+   (a Telegram group counts only while `wanted(cfg)`, when
+   `with_only_owner_in_groups` holds). A guest session gets its own
+   `<data>/guest-memory/<chat>.db` (`owner_mode::guest_memory`, keyed by
+   `chat_of`), `Sandbox::narrowed` in every mode (`guest_hidden` adds
+   `memory.db` and its WAL files, `guest-memory/` and `learned-skills/`
+   to §7's two), and only its own scope's lessons and learned skills
+   (`learn::prompt_section`/`skill_view` with `only`,
+   `ferrule_learn::prompt_block_only`, `skills::Entry::kept_for`). A
+   guest's `/plan`, `/goal` or `/graph` run learns in its chat's scope,
+   not the shared workspace scope (`learn::scope_for`). User docs:
+   `memory.md`, "Whose memory".
+
 ## Build plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use
