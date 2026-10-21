@@ -52,6 +52,8 @@ impl ToolOutput {
     /// context bloat. Keeps the head; output whose end matters (a shell
     /// command's) goes through [`spilled`](Self::spilled) instead.
     pub fn capped(content: String, max_chars: usize) -> Self {
+        // M54.3: before the cut, so it never leaves part of a key.
+        let content = crate::scrub::text(content);
         let total = content.chars().count();
         if total <= max_chars {
             return Self::ok(content);
@@ -77,6 +79,8 @@ impl ToolOutput {
         max_chars: usize,
         workspace: &Path,
     ) -> Self {
+        // M54.3: the spill file and the cut both get the scrubbed text.
+        let content = crate::scrub::text(content);
         if content.chars().count() <= max_chars {
             return Self::ok(content);
         }
@@ -98,6 +102,7 @@ impl ToolOutput {
         max_chars: usize,
         saved: Result<&str, &str>,
     ) -> Self {
+        let content = &crate::scrub::text(content.to_string());
         let total = content.chars().count();
         let budget = max_chars.min(SPILL_HEAD + SPILL_TAIL).min(total);
         let head = budget * SPILL_HEAD / (SPILL_HEAD + SPILL_TAIL);

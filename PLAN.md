@@ -8080,3 +8080,45 @@ still reads global lessons when it reflects on a guest's episode, and a
 guest lesson repeated in an owner scope is promoted to global (guest to
 owner, the other direction). Guests' memory files aren't in `ferrule
 memory`, the dashboard or the memory merges. No live run.
+
+### 2026-10-21 — M54.3: known key values out of every tool result (Claude, Opus 5.5)
+
+**Why.** Nothing scrubbed tool results: the proxy's `scrub_text` ran only
+in telemetry. One prompt-injected `cat`, a misconfigured MCP server, or
+a run under the old `mode = "off"` stopgap put a key into a tool result,
+then the transcript and the model's provider; and M54 made `sessions/`
+readable to the owner's commands, relying on "the builder checks" that
+none is there.
+
+**What changed.**
+- `ferrule-core` `scrub`: a process-wide hook (`install`, `text`); with
+  none installed text passes unchanged. Applied in `agent.rs` `Ran::of`,
+  the one place a call becomes the result the transcript, model, hooks,
+  trace and stuck detector read, and at the start of
+  `ToolOutput::capped`, `spilled` and `spill_preview` (the spill file
+  gets the scrubbed text too). `ferrule-tools` `Job::tail` scrubs what
+  it read and drops the part line a mid-file read starts with;
+  `ferrule-ssh`'s remote shell scrubs before its remote spill.
+- `ferrule-cli`: `health::known_secrets` (`[secrets]`, channel tokens,
+  provider keys, and now every name the secrets file set);
+  `health::redactor` uses it; `health::scrub_tool_results` installs the
+  hook from `main.rs` `dispatch` for every command: `Broker::scrub_text`
+  (bound secrets → placeholders, through `started_broker`, which never
+  starts the proxy) then `Redactor::known` (values only, no token
+  shapes; new in `ferrule-gateway`).
+- `ferrule doctor`: a `history` line counts known values (and their
+  JSON-escaped form) in `sessions/` and `learn/`, by name, and lists up
+  to five files; warn, fail while owner mode is asked for.
+- Docs: `sandbox.md` ("Env", owner mode's "Transcripts and notes"),
+  `m54-autonomous.md` "Amendments after the build" (2), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** The claude engine's own tools (its Bash and Read) don't pass
+through the loop. Values under 6 characters are skipped, connection
+OAuth tokens aren't in the list, and the non-proxy values are read once
+per process. The doctor scan reads every file whole (slow on a very
+large `sessions/`). No live run.

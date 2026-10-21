@@ -202,6 +202,20 @@ Variables whose name looks secret (`*KEY*`, `*SECRET*`, `*TOKEN*`,
 `scrub_secret_env = false` keeps them all. With `[secrets]`, the command
 gets a same-shaped placeholder in their place.
 
+**Tool results.** Whatever a command, an MCP server or any other tool
+prints, the agent loop takes the values of the keys ferrule holds out of
+the result before the transcript, the model, a hook or the trace sees it
+(M54.3; `ferrule-core` `scrub`, installed by `health::scrub_tool_results`).
+A `[secrets]` key becomes its placeholder, the text commands see anyway;
+a provider key, a channel token or anything else from the secrets file
+becomes `[redacted]`. Output that is cut or spilled to
+`.ferrule/spill/` (the shell, MCP, a background job's `tail`, an SSH
+workspace's spill) is scrubbed before the cut, so no part of a key is
+left. Values under 6 characters are skipped. `ferrule doctor`'s
+`history` line counts known key values still in `sessions/` and
+`learn/` (saved before this, or by an older version): names and counts,
+never values, with the files to delete after rotating those keys.
+
 ## Limits (Windows)
 
 ```toml
@@ -341,7 +355,10 @@ gateway restarts first, the session's queue is full, or you save a
 different name.
 
 **Transcripts and notes.** `sessions/` and `learn/` are readable to your
-chats' commands, read-only. They stay hidden from everyone else's.
+chats' commands, read-only. They stay hidden from everyone else's. Tool
+results lose known key values before they're saved (see [Env](#env));
+`ferrule doctor` fails its `history` line while an older file still
+holds one, since owner mode lets commands read it.
 
 **Hooks, gate scripts and helpers run in the sandbox.** Your `[hooks]`,
 scheduler gate scripts, sub-agent worktree git, signal-cli, the

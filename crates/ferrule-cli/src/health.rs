@@ -53,9 +53,10 @@ impl Visit for Fields {
     }
 }
 
-/// Hides the values of every secret the config names: `[secrets]`, the
-/// chat channels' tokens and the providers' API keys.
-pub fn redactor(cfg: &Config) -> Redactor {
+/// Every secret this process holds, by name, with its value: `[secrets]`,
+/// the chat channels' tokens, the providers' API keys and whatever else
+/// the secrets file set. Names without a value are left out.
+pub fn known_secrets(cfg: &Config) -> Vec<(String, String)> {
     let mut names: Vec<String> = cfg.secrets.keys().cloned().collect();
     names.extend(crate::channels::secret_envs(cfg));
     names.extend(
@@ -64,7 +65,36 @@ pub fn redactor(cfg: &Config) -> Redactor {
             .filter_map(|p| p.key_var())
             .map(String::from),
     );
-    Redactor::new(names.iter().filter_map(|n| std::env::var(n).ok()))
+    names.extend(crate::secrets::loaded_names().iter().cloned());
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .filter_map(|n| {
+            let value = std::env::var(&n).ok().filter(|v| !v.is_empty())?;
+            Some((n, value))
+        })
+        .collect()
+}
+
+/// Hides the values of every secret the process holds
+/// ([`known_secrets`]).
+pub fn redactor(cfg: &Config) -> Redactor {
+    Redactor::new(known_secrets(cfg).into_iter().map(|(_, v)| v))
+}
+
+/// M54.3: every tool result in this process loses the known secret
+/// values before the transcript or the model sees it. A secret bound in
+/// the credential proxy becomes its placeholder (the same text commands
+/// see), any other known value `[redacted]`. The values are read here,
+/// once; a `[secrets]` entry the config follower binds later is the
+/// proxy's, so it's covered too.
+pub fn scrub_tool_results(cfg: &Config) {
+    let redactor = redactor(cfg);
+    ferrule_core::scrub::install(Arc::new(move |text: &str| match crate::started_broker() {
+        Some(broker) => redactor.known(&broker.scrub_text(text)),
+        None => redactor.known(text),
+    }));
 }
 
 /// `<data>/gateway`: the status file and the running marker.

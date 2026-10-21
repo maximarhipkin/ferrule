@@ -762,6 +762,28 @@ and a privacy hole found on review. Code paths are under `crates/`.
    guest's `/plan`, `/goal` or `/graph` run learns in its chat's scope,
    not the shared workspace scope (`learn::scope_for`). User docs:
    `memory.md`, "Whose memory".
+2. **Known key values never reach a transcript (M54.3).** §7 made
+   `sessions/` readable and left "the builder checks that nothing in
+   them is a live credential" to inspection. Now it holds by
+   construction: `ferrule-core` `scrub` is one process-wide hook,
+   applied in `agent.rs` `Ran::of` (where a call becomes the result the
+   transcript, the model, hooks, the trace and the stuck detector read)
+   and at the start of `ToolOutput::capped`, `spilled` and
+   `spill_preview`, `jobs.rs` `Job::tail` and the SSH shell's remote
+   spill, so a cut never leaves part of a key. `ferrule-cli`
+   (`health::scrub_tool_results`, from `main.rs` `dispatch`) installs
+   it: the proxy's bound secrets become their placeholders
+   (`Broker::scrub_text`), then every other known value
+   (`health::known_secrets`: `[secrets]`, channel tokens, provider keys,
+   everything the secrets file set) becomes `[redacted]`
+   (`Redactor::known`, values only, no token shapes). `ferrule doctor`'s
+   `history` line scans `sessions/` and `learn/` for those values
+   (and their JSON-escaped form) and reports names, counts and files,
+   never a value; it fails in owner mode while any are there. Left open:
+   the claude engine's own tools (its Bash, Read) don't pass through the
+   loop, values under 6 characters are skipped, connection OAuth tokens
+   aren't in the list, and the values are read once at startup (a
+   `[secrets]` key bound later is covered by the proxy).
 
 ## Build plan
 

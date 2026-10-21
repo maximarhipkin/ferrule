@@ -251,7 +251,10 @@ impl Ran {
             Err(e) => (format!("error: {e}"), false),
         };
         Self {
-            raw,
+            // M54.3: the one place a call becomes its result, so no known
+            // secret value reaches the transcript, the model, a hook or
+            // the trace.
+            raw: crate::scrub::text(raw),
             ok,
             reached: true,
             elapsed,

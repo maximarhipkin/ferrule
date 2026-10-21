@@ -140,7 +140,15 @@ impl Job {
             f.seek(SeekFrom::Start(from))?;
             let mut bytes = Vec::new();
             f.read_to_end(&mut bytes)?;
-            Ok(String::from_utf8_lossy(&bytes).into_owned())
+            // A read from the middle starts mid-line, maybe mid-key: that
+            // part line goes, so what's scrubbed (M54.3) is whole.
+            let start = match from {
+                0 => 0,
+                _ => bytes.iter().position(|&b| b == b'\n').map_or(0, |i| i + 1),
+            };
+            Ok(ferrule_core::scrub::text(
+                String::from_utf8_lossy(&bytes[start..]).into_owned(),
+            ))
         };
         match read() {
             Ok(text) => {

@@ -20,6 +20,7 @@ pub mod profile;
 pub mod provider;
 pub mod repairs;
 pub mod routing;
+pub mod scrub;
 pub mod stamps;
 pub mod stuck;
 pub mod textcall;

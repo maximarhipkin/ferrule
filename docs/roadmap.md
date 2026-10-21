@@ -1283,6 +1283,12 @@ all fail; and `make check` is green on Linux, macOS and Windows.
   `<data>/guest-memory/<chat>.db`, can't read `memory.db`, the other
   chats' memories or `learned-skills/`, and is taught only its own
   scope's lessons and skills (`docs/memory.md`, "Whose memory").
+- **M54.3, known key values out of every tool result**: one hook in the
+  loop (`Ran::of`) and in the caps and spills replaces a bound secret
+  with its placeholder and any other key ferrule holds with
+  `[redacted]` before the transcript or the model sees it; `ferrule
+  doctor`'s `history` line counts known values left in `sessions/` and
+  `learn/` (`docs/sandbox.md`, "Env").
 
 ## Other open tracks
 

@@ -860,8 +860,10 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
                 ..
             }
     );
-    if arms {
-        if let Ok((cfg, _)) = config::Config::load() {
+    if let Ok((cfg, _)) = config::Config::load() {
+        // M54.3: before any agent runs, whatever the command.
+        health::scrub_tool_results(&cfg);
+        if arms {
             owner_mode::arm(&cfg, None);
         }
     }
@@ -2109,12 +2111,19 @@ pub(crate) fn tool_egress(broker: &Broker) -> Result<Egress> {
     })
 }
 
+static BROKER: OnceLock<Option<Broker>> = OnceLock::new();
+
+/// The credential proxy if this process has started it, without starting
+/// it (M54.3's scrubber).
+pub(crate) fn started_broker() -> Option<&'static Broker> {
+    BROKER.get().and_then(Option::as_ref)
+}
+
 /// The credential proxy, started once per process on the current runtime
 /// and kept for its lifetime. Since M33 it always runs, for `[egress]`'s
 /// sake as well as `[secrets]`'; a refusal is written to the ledger and the
 /// trust audit.
 pub(crate) fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Broker>> {
-    static BROKER: OnceLock<Option<Broker>> = OnceLock::new();
     if let Some(broker) = BROKER.get() {
         return Ok(broker.as_ref());
     }

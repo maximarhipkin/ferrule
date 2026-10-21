@@ -35,15 +35,21 @@ impl Redactor {
     }
 
     pub fn redact(&self, text: &str) -> String {
+        redact_meta_tokens(&redact_discord_tokens(&redact_slack_tokens(
+            &redact_bot_tokens(&self.known(text)),
+        )))
+    }
+
+    /// Only the known values, not the token shapes: for text that may
+    /// hold a look-alike on purpose (a tool result, M54.3).
+    pub fn known(&self, text: &str) -> String {
         let mut out = text.to_string();
         for s in &self.secrets {
             if out.contains(s.as_str()) {
                 out = out.replace(s.as_str(), "[redacted]");
             }
         }
-        redact_meta_tokens(&redact_discord_tokens(&redact_slack_tokens(
-            &redact_bot_tokens(&out),
-        )))
+        out
     }
 }
 

@@ -179,6 +179,7 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     proxy(&mut r, &cfg);
     web_search_check(&mut r, &cfg, &http, offline).await;
     memory_check(&mut r, &cfg);
+    history_check(&mut r, &cfg);
     if chat_on {
         let (fine, line) = crate::transcription::doctor_line(&cfg);
         if fine {
@@ -1760,6 +1761,116 @@ fn memory_check(r: &mut Report, cfg: &config::Config) {
     );
     if c.live_embedded < c.live {
         r.hint("the rest are found by keyword until `ferrule memory reindex` (or recall catches up on its own)");
+    }
+}
+
+/// M54.3: known key values in the saved transcripts and learning notes.
+/// Tool results lose them as they're made; anything saved before that is
+/// found here. Names and counts only, never a value.
+fn history_check(r: &mut Report, cfg: &config::Config) {
+    let known: Vec<(String, Vec<String>)> = crate::health::known_secrets(cfg)
+        .into_iter()
+        .filter(|(_, v)| v.len() >= 6)
+        .map(|(name, value)| {
+            // A transcript is JSON lines: a value with a quote or a
+            // backslash is saved escaped.
+            let escaped = serde_json::to_string(&value)
+                .map(|q| q[1..q.len() - 1].to_string())
+                .unwrap_or_default();
+            let mut forms = vec![value];
+            if !escaped.is_empty() && escaped != forms[0] {
+                forms.push(escaped);
+            }
+            (name, forms)
+        })
+        .collect();
+    if known.is_empty() {
+        r.note("history", "no keys are set, so there's nothing to look for");
+        return;
+    }
+    let Ok(data) = config::data_dir() else {
+        return;
+    };
+    let mut files = Vec::new();
+    for dir in crate::owner_mode::history() {
+        list_files(&dir, &mut files);
+    }
+    let mut found: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut holding = Vec::new();
+    for file in &files {
+        let Ok(bytes) = std::fs::read(file) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let mut hit = false;
+        for (name, forms) in &known {
+            let n: usize = forms.iter().map(|f| text.matches(f.as_str()).count()).sum();
+            if n > 0 {
+                *found.entry(name.as_str()).or_default() += n;
+                hit = true;
+            }
+        }
+        if hit {
+            holding.push(file.strip_prefix(&data).unwrap_or(file).to_path_buf());
+        }
+    }
+    if holding.is_empty() {
+        r.ok(
+            "history",
+            format!(
+                "no known key in the {} saved transcript and learning file{}",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" }
+            ),
+        );
+        return;
+    }
+    let total: usize = found.values().sum();
+    let names: Vec<String> = found.iter().map(|(n, c)| format!("{n} ×{c}")).collect();
+    let text = format!(
+        "{total} known key value{} in {} saved transcript or learning file{}: {}",
+        if total == 1 { "" } else { "s" },
+        holding.len(),
+        if holding.len() == 1 { "" } else { "s" },
+        names.join(", ")
+    );
+    // Owner mode lets the bot's commands read these files.
+    if crate::owner_mode::wanted(cfg) {
+        r.fail("history", text);
+        r.hint("owner mode makes these files readable to the bot's commands");
+    } else {
+        r.warn("history", text);
+    }
+    r.hint("those keys reached the model's provider: rotate them (dashboard → Safe)");
+    let shown: Vec<String> = holding
+        .iter()
+        .take(5)
+        .map(|p| p.display().to_string())
+        .collect();
+    r.hint(format!(
+        "then delete the files that hold them: {}{}",
+        shown.join(", "),
+        match holding.len().saturating_sub(5) {
+            0 => String::new(),
+            more => format!(" and {more} more"),
+        }
+    ));
+}
+
+/// Every file under `dir`, not following links.
+fn list_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            list_files(&entry.path(), out);
+        } else if kind.is_file() {
+            out.push(entry.path());
+        }
     }
 }
 
