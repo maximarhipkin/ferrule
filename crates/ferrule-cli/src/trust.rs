@@ -326,8 +326,9 @@ impl ferrule_trust::Notifier for ChannelNotifier {
 }
 
 /// The owner's commands in every chat channel, before any chat turn:
-/// `/stop`, `/resume`, `/plan`, `/undo` and the answers to open approvals.
-/// The console and scheduled turns pass straight through.
+/// `/stop`, `/resume`, `/plan`, `/undo`, `/unlearn` (M53.5: the Undo under
+/// a "Learned" line) and the answers to open approvals. The console and
+/// scheduled turns pass straight through.
 pub struct OwnerDoor {
     pub hub: Arc<Hub>,
     /// Runs `/plan <task>` for a chat; its reply is the acknowledgement.
@@ -339,7 +340,7 @@ pub struct OwnerDoor {
 impl OwnerDoor {
     /// The commands read here (the hub reads `/stop`, `/resume` and `/plan`).
     #[cfg(test)]
-    pub const HANDLES: &'static [&'static str] = &["stop", "resume", "plan", "undo"];
+    pub const HANDLES: &'static [&'static str] = &["stop", "resume", "plan", "undo", "unlearn"];
 }
 
 #[async_trait::async_trait]
@@ -347,6 +348,23 @@ impl ferrule_gateway::Interceptor for OwnerDoor {
     async fn intercept(&self, msg: &ferrule_gateway::InboundMessage) -> Option<String> {
         if !is_chat_channel(&msg.channel) && msg.channel != "dashboard" {
             return None;
+        }
+        let mut words = msg.text.split_whitespace();
+        let first = words.next().unwrap_or("");
+        // M53.5: the Undo under a "Learned" line, wherever the owner reads it.
+        if first
+            .split('@')
+            .next()
+            .unwrap_or("")
+            .eq_ignore_ascii_case("/unlearn")
+        {
+            if !by_owner(&self.hub, msg) {
+                return Some("Only the owner can undo what was learned.".into());
+            }
+            return Some(match (words.next(), words.next().map(str::parse::<usize>)) {
+                (Some(pass), Some(Ok(n))) => crate::learn::unlearn(pass, n),
+                _ => "Usage: /unlearn <pass> <change>. The Undo under a \"Learned\" line sends it; `ferrule learn diff <pass>` numbers the changes.".into(),
+            });
         }
         // The page's chat only has its answers read here: its commands are
         // its own.
@@ -358,7 +376,6 @@ impl ferrule_gateway::Interceptor for OwnerDoor {
             "telegram" => ChatRef::from(msg.chat_id.parse::<i64>().ok()?),
             _ => ChatRef::new(&msg.channel, &msg.chat_id),
         };
-        let first = msg.text.split_whitespace().next().unwrap_or("");
         if first
             .split('@')
             .next()

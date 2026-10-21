@@ -2,6 +2,11 @@
 //! `[learning]` config, `ferrule learn run|show|diff|revert`, the built-in
 //! `ferrule-learn` scheduler job, the `[Playbook]` prompt section, and the
 //! episodes only the CLI can see (scheduled-task runs in `tasks.db`).
+//! M53.5: the job tells the owner each change it kept, with an Undo
+//! (`/unlearn`), and [`thumbs`] keeps the owner's 👍/👎 on replies.
+
+mod thumbs;
+pub use thumbs::thumbs;
 
 use crate::config::{self, Config};
 use crate::ledger;
@@ -13,7 +18,10 @@ use ferrule_gateway::{
     TaskStore, BUILTIN_CHANNEL, SCHEDULER_PSEUDO_CHANNEL,
 };
 use ferrule_learn::files::{Change, DONE};
-use ferrule_learn::{Caps, Episode, LearnDir, Options, PassRecord, Spent, WorkspaceGate};
+use ferrule_learn::{
+    Caps, Episode, LearnDir, Learned, OnKept, Options, PassRecord, Spent, WorkspaceGate,
+};
+use ferrule_trust::Hub;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -104,10 +112,14 @@ pub enum LearnCmd {
     Show,
     /// A pass's playbook diff and memory merges (default: the latest that changed something)
     Diff { pass: Option<String> },
-    /// Undo a pass's playbook changes and memory merges
+    /// Undo a pass's playbook changes and memory merges, or one change
     Revert {
         /// A pass id, or `last`
         pass: String,
+        /// Only this change (numbered from 1, as `learn diff` lists them);
+        /// an add that retired a lesson to make room takes it back too
+        #[arg(long)]
+        change: Option<usize>,
     },
 }
 
@@ -217,12 +229,15 @@ fn spec(cfg: &LearningConfig) -> BuiltinSpec {
 /// Registers the built-in job on `scheduler`. With `ensure`, first makes
 /// `tasks.db` match `[learning]`: the task is added, moved or removed. A bad
 /// schedule is reported and learning stays off; the gateway still starts.
+/// M53.5: with `hub`, each lesson or skill the pass kept is one line in
+/// the owner's chat, with an Undo button.
 pub fn register(
     cfg: &Config,
     scheduler: Scheduler,
     workspace: &Path,
     provider: Option<String>,
     ensure: bool,
+    hub: Option<Arc<Hub>>,
 ) -> Scheduler {
     let learning = &cfg.learning;
     if ensure {
@@ -252,6 +267,7 @@ pub fn register(
         Arc::new(Job {
             workspace,
             provider: learning.provider.clone().or(provider),
+            hub,
         }),
     )
 }
@@ -259,15 +275,32 @@ pub fn register(
 struct Job {
     workspace: PathBuf,
     provider: Option<String>,
+    hub: Option<Arc<Hub>>,
+}
+
+/// The button under a "Learned" line: `/unlearn <pass> <change>`.
+pub fn undo_command(l: &Learned) -> String {
+    format!("/unlearn {} {}", l.pass, l.change)
 }
 
 #[async_trait::async_trait]
 impl BuiltinJob for Job {
     async fn run(&self, _task: &Task) -> Result<JobReport, String> {
         let (cfg, _) = Config::load().map_err(|e| format!("{e:#}"))?;
-        let p = pass(&cfg, &self.workspace, self.provider.clone(), "scheduled")
-            .await
-            .map_err(|e| format!("{e:#}"))?;
+        let told = self.hub.clone().map(|hub| -> OnKept {
+            Arc::new(move |l: &Learned| {
+                hub.tell_owner_choices(l.line.clone(), vec![("Undo".into(), undo_command(l))])
+            })
+        });
+        let p = pass(
+            &cfg,
+            &self.workspace,
+            self.provider.clone(),
+            "scheduled",
+            told,
+        )
+        .await
+        .map_err(|e| format!("{e:#}"))?;
         Ok(JobReport {
             summary: summary(&p),
             incomplete: (p.status != DONE).then(|| p.status.clone()),
@@ -355,6 +388,7 @@ fn env(cfg: &Config, workspace: &Path, provider: Option<String>) -> Result<ferru
         gate: Arc::new(gate),
         sessions_dir: Some(data.join("sessions")),
         task_episodes: task_episodes(&data, cursor)?,
+        on_kept: None,
     })
 }
 
@@ -411,14 +445,36 @@ async fn pass(
     workspace: &Path,
     provider: Option<String>,
     trigger: &str,
+    on_kept: Option<OnKept>,
 ) -> Result<PassRecord> {
     // M19: no pass while the owner's kill switch is on or a day cap is
     // spent; the pass's own caps (`[learning]`) still apply on top.
     if let Some(why) = crate::trust::hub(cfg)?.check("learn", None, false) {
         return Err(anyhow!("no learning pass: {why}"));
     }
-    let env = env(cfg, workspace, provider)?;
+    let mut env = env(cfg, workspace, provider)?;
+    env.on_kept = on_kept;
     ferrule_learn::run_pass(&options(cfg, workspace, trigger), &env).await
+}
+
+/// M53.5: `/unlearn <pass> <change>`, the Undo under a "Learned" line, in
+/// words for the chat.
+pub fn unlearn(pass: &str, change: usize) -> String {
+    let data = match config::data_dir() {
+        Ok(d) => d,
+        Err(e) => return format!("Nothing was undone: {e:#}"),
+    };
+    let dir = LearnDir::new(&data);
+    match ferrule_learn::revert_change(&dir, pass, change, Some(&data.join("memory.db"))) {
+        Err(e) => format!("Nothing was undone: {e:#}"),
+        Ok(r) if r.undone.is_empty() => {
+            format!("Nothing was undone: {}", r.not_undone.join("; "))
+        }
+        Ok(r) => format!(
+            "Done: {}. `ferrule learn diff {pass}` shows the pass.",
+            r.undone.join("; ")
+        ),
+    }
 }
 
 pub async fn cmd(op: LearnCmd) -> Result<()> {
@@ -440,10 +496,10 @@ pub async fn cmd(op: LearnCmd) -> Result<()> {
                 )?);
                 return Ok(());
             }
-            let p = pass(&cfg, &workspace, provider, "manual").await?;
+            let p = pass(&cfg, &workspace, provider, "manual", None).await?;
             println!("{}", summary(&p));
-            for c in &p.changes {
-                println!("  {}", change_line(c));
+            for (i, c) in p.changes.iter().enumerate() {
+                println!("  {}. {}", i + 1, change_line(c));
             }
             for r in &p.rejected {
                 println!("  rejected {}: {}", r.op, r.reason);
@@ -455,7 +511,23 @@ pub async fn cmd(op: LearnCmd) -> Result<()> {
         }
         LearnCmd::Show => show(&dir)?,
         LearnCmd::Diff { pass } => diff(&dir, pass)?,
-        LearnCmd::Revert { pass } => {
+        LearnCmd::Revert {
+            pass,
+            change: Some(n),
+        } => {
+            let r = ferrule_learn::revert_change(&dir, &pass, n, Some(&data.join("memory.db")))?;
+            println!("change {n} of pass {pass}");
+            for u in &r.undone {
+                println!("  undone: {u}");
+            }
+            for u in &r.not_undone {
+                println!("  not undone: {u}");
+            }
+            if r.undone.is_empty() {
+                return Err(anyhow!("nothing was undone"));
+            }
+        }
+        LearnCmd::Revert { pass, change: None } => {
             let p = ferrule_learn::revert(&dir, &pass, Some(&data.join("memory.db")))?;
             println!("reverted pass {}", p.id);
             if let Some(r) = &p.reverted {
@@ -552,7 +624,7 @@ fn show(dir: &LearnDir) -> Result<()> {
     let l = &cfg.learning;
     if l.enabled {
         println!(
-            "learning: on, `{}` ({}) as the `{TASK_NAME}` task",
+            "learning: on, `{}` ({}) as the `{TASK_NAME}` task; each change it keeps is told in the owner's chat with an Undo, and the owner's 👍/👎 on Telegram replies are read",
             l.schedule, l.timezone
         );
     } else {
@@ -611,6 +683,16 @@ fn show(dir: &LearnDir) -> Result<()> {
             println!("  {name}: {description}");
         }
     }
+    // M53.5: the owner's reactions the passes read.
+    let thumbs = dir.thumbs();
+    if !thumbs.is_empty() {
+        let down = thumbs.iter().filter(|t| !t.up).count();
+        println!(
+            "owner's reactions: {down} 👎, {} 👍 ({})",
+            thumbs.len() - down,
+            dir.reactions_path().display()
+        );
+    }
     let passes = dir.passes();
     if passes.is_empty() {
         println!("passes: none yet");
@@ -642,12 +724,13 @@ fn diff(dir: &LearnDir, pass: Option<String>) -> Result<()> {
     } else {
         print!("{d}");
     }
-    for c in p
-        .changes
-        .iter()
-        .filter(|c| matches!(c, Change::Memory { .. } | Change::Skill { .. }))
-    {
-        println!("{}", change_line(c));
+    // M53.5: numbered, as `learn revert --change N` names them.
+    if !p.changes.is_empty() {
+        println!("changes (`ferrule learn revert {id} --change N` undoes one):");
+        for (i, c) in p.changes.iter().enumerate() {
+            let undone = if p.is_undone(i + 1) { " (undone)" } else { "" };
+            println!("  {}. {}{undone}", i + 1, change_line(c));
+        }
     }
     Ok(())
 }

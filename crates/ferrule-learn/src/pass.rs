@@ -7,8 +7,8 @@ use crate::consolidate::{self, CLUSTER_JACCARD, CLUSTER_ROWS};
 use crate::diff::unified;
 use crate::episode::{render_tail, scan_sessions, Episode};
 use crate::files::{
-    Change, EpisodeNote, LearnDir, PassRecord, Rejected, RevertNote, State, DONE, REVERTED,
-    RUNNING, STOPPED_BUDGET, STOPPED_ERRORS,
+    Change, ChangeRevert, EpisodeNote, LearnDir, PassRecord, Rejected, RevertNote, State, DONE,
+    REVERTED, RUNNING, STOPPED_BUDGET, STOPPED_ERRORS,
 };
 use crate::gate::{Gate, GateRun, GateVerdict};
 use crate::playbook::{prompt_block_for, Delta, Playbook, TEMPLATE};
@@ -31,6 +31,30 @@ pub const MAX_ERRORS_IN_ROW: usize = 3;
 pub fn near_cap(max_bullets: usize) -> usize {
     (max_bullets * 9 / 10).max(1)
 }
+
+/// How the retire that made room for an add begins its reason.
+const MADE_ROOM: &str = "made room for ";
+
+/// The start of the reason of the retire that made room for `a`.
+fn made_room(a: &crate::playbook::Applied) -> String {
+    format!("{MADE_ROOM}{} pb-{} (", a.op, a.id)
+}
+
+/// M53.5: one change a pass kept, for the owner's "Learned" line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Learned {
+    pub pass: String,
+    /// The change's number in the pass, from 1 (`learn revert --change`).
+    pub change: usize,
+    /// "Learned: …", one line.
+    pub line: String,
+}
+
+/// Told each lesson or skill a pass kept, once the pass is over and its
+/// lock released (so an Undo can run at once). Memory merges and the
+/// retires that made room for an add aren't told: the add's Undo takes its
+/// retire back too.
+pub type OnKept = Arc<dyn Fn(&Learned) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -65,7 +89,10 @@ pub struct Env {
     /// Scanned for retried sessions.
     pub sessions_dir: Option<PathBuf>,
     /// Scheduled-task runs, collected by the caller from the task store.
+    /// The owner's 👎s (M53.5) the pass reads itself.
     pub task_episodes: Vec<Episode>,
+    /// M53.5: told what the pass kept.
+    pub on_kept: Option<OnKept>,
 }
 
 /// What `--dry-run` shows: the pass's input, nothing spent or written.
@@ -98,6 +125,7 @@ fn episodes(env: &Env, cursor: i64) -> Vec<Episode> {
     if let Some(dir) = &env.sessions_dir {
         all.extend(scan_sessions(dir, cursor));
     }
+    all.extend(crate::thumbs::episodes(&env.dir, cursor));
     all.sort_by(|a, b| a.at.cmp(&b.at).then(a.key.cmp(&b.key)));
     let mut seen = HashSet::new();
     all.retain(|e| seen.insert(e.key.clone()));
@@ -212,13 +240,18 @@ async fn judged(
             p.incomplete.as_deref().unwrap_or("unknown")
         )),
         Some(p) => {
+            let original = if ep.outcome == crate::thumbs::OUTCOME {
+                "the owner reacted 👎 to its last reply"
+            } else {
+                "failed or retried"
+            };
             let answer = ask(
                 env,
                 meter,
                 pass,
                 "judge",
                 crate::judge::SYSTEM,
-                crate::judge::user_message(&ep.goal, change, tail, &p.tail),
+                crate::judge::user_message(&ep.goal, change, original, tail, &p.tail),
             )
             .await;
             match answer {
@@ -240,7 +273,7 @@ async fn judged(
 pub async fn run_pass(opts: &Options, env: &Env) -> Result<PassRecord> {
     let dir = &env.dir;
     let id = dir.new_pass_id();
-    let _lock = dir.lock(&format!("pass {id}"))?;
+    let lock = dir.lock(&format!("pass {id}"))?;
     let recovered = dir.recover(&id);
     let state = dir.state()?;
     let before = dir.read_playbook()?;
@@ -264,6 +297,7 @@ pub async fn run_pass(opts: &Options, env: &Env) -> Result<PassRecord> {
         skipped: vec![],
         notes: vec![],
         reverted: None,
+        undone: vec![],
     };
     for r in &recovered {
         rec.notes
@@ -308,8 +342,88 @@ pub async fn run_pass(opts: &Options, env: &Env) -> Result<PassRecord> {
         json!({ "status": rec.status, "changes": rec.changes.len(),
                 "rejected": rec.rejected.len(), "spent": rec.spent }),
     );
+    drop(lock);
+    if let Some(told) = &env.on_kept {
+        for l in learned(&rec) {
+            told(&l);
+        }
+    }
     result?;
     Ok(rec)
+}
+
+/// The "Learned" lines for what `rec` kept: lessons and skills, each with
+/// the number its Undo names.
+pub fn learned(rec: &PassRecord) -> Vec<Learned> {
+    let clip = |s: &str| {
+        let s = s.trim();
+        if s.chars().count() <= 200 {
+            s.to_string()
+        } else {
+            format!("{}…", s.chars().take(200).collect::<String>())
+        }
+    };
+    let mut out = Vec::new();
+    for (i, c) in rec.changes.iter().enumerate() {
+        let line = match c {
+            Change::Playbook {
+                applied, reason, ..
+            } if applied.op == "retire" && reason.starts_with(MADE_ROOM) => continue,
+            Change::Playbook { applied, .. } => {
+                let text = clip(
+                    applied
+                        .new
+                        .as_deref()
+                        .or(applied.old.as_deref())
+                        .unwrap_or(""),
+                );
+                let mut line = match applied.op.as_str() {
+                    "add" => format!("Learned: {text}"),
+                    "edit" => format!("Learned: pb-{} now reads \"{text}\"", applied.id),
+                    "promote" => format!("Learned: \"{text}\" now applies everywhere"),
+                    "retire" => format!("Learned to drop: {text}"),
+                    other => format!("Learned ({other} pb-{}): {text}", applied.id),
+                };
+                if let (Some(scope), "add") = (&applied.scope, applied.op.as_str()) {
+                    line.push_str(&format!(" (only in {scope})"));
+                }
+                if let Some(Change::Playbook {
+                    applied: cut,
+                    reason,
+                    ..
+                }) = rec.changes.get(i + 1)
+                {
+                    if reason.starts_with(&made_room(applied)) {
+                        line.push_str(&format!(" (pb-{} retired to make room)", cut.id));
+                    }
+                }
+                line
+            }
+            Change::Skill {
+                name,
+                description,
+                op,
+                ..
+            } => match op.as_str() {
+                "promote" => format!(
+                    "Learned: the skill `{name}` now applies everywhere: {}",
+                    clip(description)
+                ),
+                "replace" => format!(
+                    "Learned a new version of the skill `{name}`: {}",
+                    clip(description)
+                ),
+                _ => format!("Learned a skill `{name}`: {}", clip(description)),
+            },
+            Change::Memory { .. } => continue,
+        };
+        out.push(Learned {
+            pass: rec.id.clone(),
+            change: i + 1,
+            line,
+        });
+    }
+    out
 }
 
 async fn body(
@@ -660,7 +774,7 @@ async fn body(
             );
             rec.changes.push(Change::Playbook {
                 applied: a,
-                reason: format!("made room for {made_room_for} (add one, cut one: {why})"),
+                reason: format!("{MADE_ROOM}{made_room_for} (add one, cut one: {why})"),
                 episode: ep.key.clone(),
                 gate: gate_reason,
                 evidence,
@@ -994,6 +1108,17 @@ pub fn changelog(p: &PassRecord, diff: &str) -> String {
     if !diff.is_empty() {
         s.push_str(&format!("\n## Playbook diff\n\n```diff\n{diff}```\n"));
     }
+    if !p.undone.is_empty() {
+        s.push_str("\n## Undone one by one\n\n");
+        for u in &p.undone {
+            s.push_str(&format!(
+                "- change {} at {}: {}\n",
+                u.change,
+                u.at,
+                u.undone.join("; ")
+            ));
+        }
+    }
     if let Some(r) = &p.reverted {
         s.push_str(&format!("\n## Reverted {}\n\n", r.at));
         for u in &r.undone {
@@ -1014,13 +1139,14 @@ pub fn resolve(dir: &LearnDir, id: &str) -> Result<String> {
     dir.passes()
         .into_iter()
         .rev()
-        .find(|p| !p.changes.is_empty() && p.status != REVERTED)
+        .find(|p| p.changes.len() > p.undone.len() && p.status != REVERTED)
         .map(|p| p.id)
         .ok_or_else(|| anyhow::anyhow!("no learning pass with changes to revert"))
 }
 
 /// Undoes a pass: its playbook changes (the whole file when nothing touched
 /// it since, else line by line) and its memory merges, newest first.
+/// M53.5: changes already undone on their own are left out.
 pub fn revert(dir: &LearnDir, id: &str, memory_db: Option<&std::path::Path>) -> Result<PassRecord> {
     let _lock = dir.lock("revert")?;
     let id = resolve(dir, id)?;
@@ -1032,8 +1158,14 @@ pub fn revert(dir: &LearnDir, id: &str, memory_db: Option<&std::path::Path>) -> 
         bail!("pass {id} is still running");
     }
     let (mut undone, mut not_undone) = (Vec::new(), Vec::new());
-    let applied: Vec<_> = p
+    let open: Vec<&Change> = p
         .changes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !p.is_undone(i + 1))
+        .map(|(_, c)| c)
+        .collect();
+    let applied: Vec<_> = open
         .iter()
         .filter_map(|c| match c {
             Change::Playbook { applied, .. } => Some(applied.clone()),
@@ -1045,7 +1177,7 @@ pub fn revert(dir: &LearnDir, id: &str, memory_db: Option<&std::path::Path>) -> 
         let after = dir.read_pass_file(&id, "playbook.after.md");
         let before = dir.read_pass_file(&id, "playbook.before.md");
         match (after, before) {
-            (Some(after), Some(before)) if after == current => {
+            (Some(after), Some(before)) if after == current && p.undone.is_empty() => {
                 dir.write_playbook(&before)?;
                 undone.push("playbook restored to playbook.before.md".into());
             }
@@ -1068,44 +1200,27 @@ pub fn revert(dir: &LearnDir, id: &str, memory_db: Option<&std::path::Path>) -> 
         }
     }
     // M53.3: learned skills, newest first.
-    for c in p.changes.iter().rev() {
-        if let Change::Skill {
-            name,
-            digest,
-            backup,
-            previous,
-            ..
-        } = c
-        {
-            match crate::skills::undo(dir, &id, name, digest, backup.as_deref(), previous.as_ref())
-            {
+    for c in open.iter().rev() {
+        if matches!(c, Change::Skill { .. }) {
+            match undo_one(dir, &id, c, None) {
                 Ok(done) => undone.push(done),
                 Err(e) => not_undone.push(e),
             }
         }
     }
-    let merges: Vec<_> = p
-        .changes
+    let merges: Vec<_> = open
         .iter()
-        .filter_map(|c| match c {
-            Change::Memory {
-                new_id,
-                created,
-                replaced,
-                ..
-            } => Some((*new_id, *created, replaced.clone())),
-            _ => None,
-        })
+        .filter(|c| matches!(c, Change::Memory { .. }))
         .collect();
     if !merges.is_empty() {
         match memory_db.map(MemoryStore::open) {
             None => not_undone.push("memory merges: no memory database".into()),
             Some(Err(e)) => not_undone.push(format!("memory merges: {e}")),
             Some(Ok(store)) => {
-                for (new_id, created, replaced) in merges.iter().rev() {
-                    match store.undo_update(*new_id, replaced, *created) {
-                        Ok(_) => undone.push(format!("memory merge into #{new_id} undone")),
-                        Err(e) => not_undone.push(format!("memory merge into #{new_id}: {e}")),
+                for c in merges.iter().rev() {
+                    match undo_one(dir, &id, c, Some(&store)) {
+                        Ok(done) => undone.push(done),
+                        Err(e) => not_undone.push(e),
                     }
                 }
             }
@@ -1122,6 +1237,150 @@ pub fn revert(dir: &LearnDir, id: &str, memory_db: Option<&std::path::Path>) -> 
     dir.write_pass_file(&id, "changelog.md", &changelog(&p, &diff))?;
     dir.log(&id, "revert", json!(p.reverted));
     Ok(p)
+}
+
+/// Undoes one change of pass `id`, if it still stands as the pass left it.
+/// A memory merge needs `store`.
+fn undo_one(
+    dir: &LearnDir,
+    id: &str,
+    c: &Change,
+    store: Option<&MemoryStore>,
+) -> Result<String, String> {
+    match c {
+        Change::Playbook { applied, .. } => {
+            undo_playbook(dir, &[applied]).map(|done| done.join("; "))
+        }
+        Change::Skill {
+            name,
+            digest,
+            backup,
+            previous,
+            ..
+        } => crate::skills::undo(dir, id, name, digest, backup.as_deref(), previous.as_ref()),
+        Change::Memory {
+            new_id,
+            created,
+            replaced,
+            ..
+        } => {
+            let store = store.ok_or("memory merges: no memory database")?;
+            store
+                .undo_update(*new_id, replaced, *created)
+                .map(|_| format!("memory merge into #{new_id} undone"))
+                .map_err(|e| format!("memory merge into #{new_id}: {e}"))
+        }
+    }
+}
+
+/// Inverts `applied`, in that order, and writes the playbook only when
+/// every one still applies.
+fn undo_playbook(
+    dir: &LearnDir,
+    applied: &[&crate::playbook::Applied],
+) -> Result<Vec<String>, String> {
+    let current = dir.read_playbook().map_err(|e| format!("{e:#}"))?;
+    let mut pb = Playbook::parse(&current);
+    let mut done = Vec::new();
+    for a in applied {
+        pb.invert(a)
+            .map_err(|e| format!("playbook {} pb-{}: {e}", a.op, a.id))?;
+        done.push(format!("playbook {} pb-{} undone", a.op, a.id));
+    }
+    dir.write_playbook(&pb.render())
+        .map_err(|e| format!("the playbook: {e:#}"))?;
+    Ok(done)
+}
+
+/// M53.5: undoes change `n` (from 1) of pass `id` on its own (`learn
+/// revert --change N`, the owner's Undo button): an add that retired a
+/// lesson to make room takes that retire back too, or neither is undone.
+/// The pass stays; a later pass revert skips what was undone here. What
+/// couldn't be undone is said in `not_undone` and left for another try.
+pub fn revert_change(
+    dir: &LearnDir,
+    id: &str,
+    n: usize,
+    memory_db: Option<&std::path::Path>,
+) -> Result<ChangeRevert> {
+    let _lock = dir.lock("revert")?;
+    let id = resolve(dir, id)?;
+    let mut p = dir.load_pass(&id)?;
+    if p.status == REVERTED {
+        bail!("pass {id} is already reverted");
+    }
+    if p.status == RUNNING {
+        bail!("pass {id} is still running");
+    }
+    let Some(c) = n.checked_sub(1).and_then(|i| p.changes.get(i)) else {
+        bail!("pass {id} has no change {n} (it has {})", p.changes.len());
+    };
+    if p.is_undone(n) {
+        bail!("change {n} of pass {id} is already undone");
+    }
+    let at = now();
+    let mut out = ChangeRevert {
+        change: n,
+        at: at.clone(),
+        undone: vec![],
+        not_undone: vec![],
+    };
+    let mut kept: Vec<usize> = Vec::new();
+    match c {
+        Change::Playbook { applied, .. } => {
+            // Newest first, as a pass revert goes: the retire, then the add.
+            let mut todo = vec![(n, applied)];
+            if let Some(Change::Playbook {
+                applied: cut,
+                reason,
+                ..
+            }) = p.changes.get(n)
+            {
+                if reason.starts_with(&made_room(applied)) && !p.is_undone(n + 1) {
+                    todo.insert(0, (n + 1, cut));
+                }
+            }
+            let list: Vec<_> = todo.iter().map(|(_, a)| *a).collect();
+            match undo_playbook(dir, &list) {
+                Ok(done) => {
+                    out.undone = done;
+                    kept = todo.iter().map(|(k, _)| *k).collect();
+                }
+                Err(e) => out.not_undone.push(e),
+            }
+        }
+        _ => {
+            let store = match (c, memory_db) {
+                (Change::Memory { .. }, Some(db)) => Some(MemoryStore::open(db)?),
+                _ => None,
+            };
+            match undo_one(dir, &id, c, store.as_ref()) {
+                Ok(done) => {
+                    out.undone.push(done);
+                    kept.push(n);
+                }
+                Err(e) => out.not_undone.push(e),
+            }
+        }
+    }
+    kept.sort_unstable();
+    for k in kept {
+        p.undone.push(ChangeRevert {
+            change: k,
+            at: at.clone(),
+            undone: if k == n {
+                out.undone.clone()
+            } else {
+                vec![format!("with change {n}")]
+            },
+            not_undone: vec![],
+        });
+    }
+    dir.save_pass(&p)?;
+    let diff = dir.read_pass_file(&id, "playbook.diff").unwrap_or_default();
+    dir.write_pass_file(&id, "changelog.md", &changelog(&p, &diff))?;
+    dir.log(&id, "revert_change", json!(out));
+    Ok(out)
 }
 
 mod skill;

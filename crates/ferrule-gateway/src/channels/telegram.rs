@@ -24,7 +24,7 @@ use crate::channel::{Button, ButtonAction, Channel, ChannelCapabilities};
 use crate::channels::files::{self, Inbox, Refused, Saved};
 use crate::error::GatewayError;
 use crate::health::human;
-use crate::message::{Attachment, InboundMessage, OutboundMessage};
+use crate::message::{Attachment, InboundMessage, OutboundMessage, Reaction, ReactionSink};
 use crate::stream::chunks;
 use crate::typing::Typing;
 use serde_json::{json, Value};
@@ -135,7 +135,16 @@ pub struct TelegramChannel {
     /// Where voice notes and audio files are saved (M41); `None` leaves
     /// them unread, as before.
     inbox: Option<Inbox>,
+    /// M53.5: where reactions in the allowed chats go. Only with one are
+    /// they asked for (`allowed_updates`).
+    reactions: Option<ReactionSink>,
 }
+
+/// `getUpdates`' `allowed_updates`, URL-encoded: messages and button taps,
+/// and (M53.5) reactions when something reads them.
+const UPDATES: &str = "%5B%22message%22%2C%22callback_query%22%5D";
+const UPDATES_WITH_REACTIONS: &str =
+    "%5B%22message%22%2C%22callback_query%22%2C%22message_reaction%22%5D";
 
 impl TelegramChannel {
     /// Real usage: talks to `https://api.telegram.org`.
@@ -173,7 +182,15 @@ impl TelegramChannel {
             ignored: Mutex::new(HashMap::new()),
             albums: Mutex::new(HashSet::new()),
             inbox: None,
+            reactions: None,
         }
+    }
+
+    /// M53.5: asks Telegram for reactions too, and hands those set in an
+    /// allowed chat to `sink` (the learning loop reads the owner's 👍/👎).
+    pub fn with_reactions(mut self, sink: Option<ReactionSink>) -> Self {
+        self.reactions = sink;
+        self
     }
 
     /// Saves the files people send here (voice notes and audio, which the
@@ -325,6 +342,17 @@ impl TelegramChannel {
     /// One update, admitted and its file taken: what to forward, if
     /// anything.
     async fn take_update(&self, update: &Value) -> Option<Parsed> {
+        if let Some(r) = update.get("message_reaction") {
+            if let (Some(sink), Some(r)) = (&self.reactions, Self::parse_reaction(r)) {
+                if r.chat_id
+                    .parse::<i64>()
+                    .is_ok_and(|c| self.allowed_chats.contains(&c))
+                {
+                    sink(r);
+                }
+            }
+            return None;
+        }
         if let Some(id) = update["callback_query"]["id"].as_str() {
             // Stops the button's spinner; the tap itself is handled
             // like typed text below.
@@ -349,8 +377,13 @@ impl TelegramChannel {
     /// offset advances past every update returned.
     async fn fetch_updates(&self, wait: u64) -> Result<Vec<Value>, PollError> {
         let offset = self.offset.load(Ordering::SeqCst);
+        let updates = if self.reactions.is_some() {
+            UPDATES_WITH_REACTIONS
+        } else {
+            UPDATES
+        };
         let url = format!(
-            "{}?timeout={wait}&offset={offset}&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D",
+            "{}?timeout={wait}&offset={offset}&allowed_updates={updates}",
             self.api_url("getUpdates")
         );
         let resp = self
@@ -1116,6 +1149,27 @@ impl TelegramChannel {
             attachments: vec![],
             reply_to: None,
             ts: message.get("date").and_then(|d| d.as_i64()).unwrap_or(0),
+        })
+    }
+
+    /// M53.5: a `message_reaction` update: who set what on which message.
+    /// One set anonymously (as a chat) has no person behind it and is left.
+    fn parse_reaction(r: &Value) -> Option<Reaction> {
+        let emoji = r
+            .get("new_reaction")?
+            .as_array()?
+            .iter()
+            .filter(|t| t.get("type").and_then(Value::as_str) == Some("emoji"))
+            .filter_map(|t| t.get("emoji").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect();
+        Some(Reaction {
+            channel: "telegram".into(),
+            chat_id: r.get("chat")?.get("id")?.as_i64()?.to_string(),
+            message_id: r.get("message_id")?.as_i64()?.to_string(),
+            user_id: r.get("user")?.get("id")?.as_i64()?.to_string(),
+            emoji,
+            at: r.get("date").and_then(Value::as_i64).unwrap_or(0),
         })
     }
 

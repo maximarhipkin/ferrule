@@ -2680,6 +2680,7 @@ fn with_owner(cfg: &config::Config, channel: &str, users: &[String]) -> Vec<Stri
 fn build_channels(
     cfg: &config::Config,
     workspace: Option<&Path>,
+    reactions: Option<ferrule_gateway::ReactionSink>,
 ) -> Result<HashMap<String, Arc<dyn Channel>>> {
     let mut named_channels: HashMap<String, Arc<dyn Channel>> = HashMap::new();
 
@@ -2705,7 +2706,9 @@ fn build_channels(
                         ws,
                         ferrule_gateway::channels::files::DEFAULT_MAX_MB,
                     )
-                })),
+                }))
+                // M53.5: the owner's 👍/👎, only while learning is on.
+                .with_reactions(reactions),
         );
         named_channels.insert(telegram.name().to_string(), telegram);
     }
@@ -2987,7 +2990,10 @@ async fn run_gateway(
     )
     .await?;
 
-    let mut named_channels = build_channels(&cfg, Some(&workspace))?;
+    // M53.5: the owner's 👍/👎 on replies, when `[learning]` is on.
+    let thumbs = learn::thumbs(&cfg, trust::hub(&cfg)?)?;
+    let mut named_channels =
+        build_channels(&cfg, Some(&workspace), thumbs.as_ref().map(|t| t.sink()))?;
     if let Some(policy) = managed::policy() {
         named_channels.retain(|name, _| {
             let keep = policy.allows_channel(name);
@@ -3062,7 +3068,8 @@ async fn run_gateway(
             .with_streaming(streaming_channels(&cfg), StreamPacing::default())
             .with_typing(cfg.gateway.typing())
             .with_while_busy(cfg.gateway.while_busy)
-            .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
+            .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?)
+            .with_replied(thumbs.as_ref().map(|t| t.replied_hook())),
     );
     files.bind(&router);
     if let Some(m) = &media {
@@ -3159,6 +3166,7 @@ async fn run_gateway(
         &workspace,
         provider.clone(),
         true,
+        Some(hub.clone()),
     ));
     let scheduler_handle = {
         let scheduler = scheduler.clone();
@@ -3542,7 +3550,7 @@ async fn tasks_run_now(
     )
     .await?;
 
-    let named_channels = build_channels(&cfg, None)?;
+    let named_channels = build_channels(&cfg, None, None)?;
     let router = Arc::new(Router::new(
         sessions_dir,
         agent_factory,
@@ -3565,7 +3573,7 @@ async fn tasks_run_now(
         Some(why) => scheduler.refuse_gates(why),
         None => scheduler,
     };
-    let scheduler = learn::register(&cfg, scheduler, &workspace, provider, false);
+    let scheduler = learn::register(&cfg, scheduler, &workspace, provider, false, None);
 
     let outcome = scheduler.execute(&task).await;
     // Nothing is left behind to run in a process that's about to exit.

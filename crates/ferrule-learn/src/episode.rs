@@ -44,7 +44,7 @@ pub struct Episode {
 }
 
 /// Transcript lines that are messages, as JSON; unreadable lines skipped.
-fn messages(path: &Path) -> Vec<Value> {
+pub(crate) fn messages(path: &Path) -> Vec<Value> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -69,11 +69,11 @@ pub fn meta(path: &Path, key: &str) -> Option<String> {
 /// The meta line a session's agent writes naming its scope (M53.4).
 pub const SCOPE_META: &str = "learn_scope";
 
-fn content(m: &Value) -> &str {
+pub(crate) fn content(m: &Value) -> &str {
     m.get("content").and_then(Value::as_str).unwrap_or("")
 }
 
-fn role(m: &Value) -> &str {
+pub(crate) fn role(m: &Value) -> &str {
     m.get("role").and_then(Value::as_str).unwrap_or("")
 }
 

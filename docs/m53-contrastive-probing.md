@@ -301,3 +301,89 @@ holds no pass lesson to retire.
 terminal run in the same workspace are different scopes. A gateway's
 workspace has no scope of its own, so a lesson from one chat never
 reaches the gateway's other chats until a second chat keeps it.
+
+## M53.5 — visible learning with Undo; the owner's thumbs as a check
+
+Built 2026-10-21 on `autopilot`, from the gap analysis's M53.5.
+
+**Why.** Learning happened in a file the owner had to go and read, and a
+chat bot had no check to learn from at all. OpenClaw shows a "Learned
+notice row with one-press Undo"
+([v2026.10.10-beta.1](https://github.com/openclaw/openclaw/releases/tag/v2026.10.10-beta.1));
+Hermes's top complaint is that it "always thinks it did a good job"
+([Kilo.ai](https://kilo.ai/openclaw/vs-hermes)). The gate answers that
+only if the owner can see it work, and veto it.
+
+**A line per kept change.** `ferrule_learn::Env.on_kept` hears each
+lesson or skill a pass kept (`Learned`: the pass, the change's number
+from 1, one line), after the pass has ended and released its lock, so an
+Undo can run at once. The gateway's scheduled job (`learn::register`
+with the hub) turns each into one owner-chat line through the new
+non-blocking `Hub::tell_owner_choices`, with an **Undo** button that
+sends `/unlearn <pass> <change>`:
+- `Learned: Run cargo fmt before the tests. (only in chat:telegram__42)`
+- `Learned: pb-3 now reads "…"`, `Learned: "…" now applies everywhere`,
+  `Learned to drop: …`
+- `Learned a skill <name>: <description>` (or "a new version of the
+  skill", or "now applies everywhere")
+
+An add that retired a lesson to make room (M53.4) says so, and its Undo
+takes the retire back too. Memory merges get no line. A pass run by hand
+(`ferrule learn run`) prints its numbered changes instead.
+
+**Undo one change.** `ferrule_learn::revert_change` undoes change N of a
+pass: a lesson by inverting it in the playbook (an add and the retire
+that made room for it both, or neither), a skill by `skills::undo`, a
+merge by `undo_update`. It takes the lock, refuses a running or reverted
+pass and a change already undone, and journals what it did in
+`pass.json` (`undone`), the changelog ("Undone one by one") and
+`log.jsonl` (`revert_change`). A change that no longer stands as the pass
+left it is reported, not forced, and not marked undone. A later pass
+revert skips what was undone here. The commands:
+- `ferrule learn revert <pass|last> --change N`; `learn diff` now numbers
+  a pass's changes and marks those undone.
+- `/unlearn <pass> <change>` in any owner chat, handled by the owner door
+  (`trust::OwnerDoor`), the owner only. It is read on the dashboard's
+  chat too, whose other commands the door leaves to the page.
+
+**The owner's 👍/👎.** With `[learning] enabled`, and only then:
+- The Telegram channel asks for `message_reaction` updates
+  (`allowed_updates`) and hands those from allowed chats to a sink
+  (`TelegramChannel::with_reactions`, `ferrule_gateway::Reaction`).
+- The router tells a hook (`Router::with_replied`) where each reply ended:
+  the session, the reply's id, the transcript's length then and its last
+  256 bytes (`thumbs::Mark`).
+- The sink (`learn::thumbs`) keeps a reaction only when it is the owner's
+  (`Hub::owner_on`), is 👍 or 👎 (both at once says nothing), and is on a
+  reply this gateway sent since it started (the last 500 are
+  remembered). It writes a line to `learn/reactions.jsonl`. A 👎 also
+  keeps the chat's transcript up to the reacted reply, in
+  `learn/reactions/`, once its last bytes show it is the same transcript
+  (`/new` replaces it); otherwise it is logged and dropped.
+- The next pass reads every 👎 after its cursor as an episode
+  (`thumbs::episodes`): the goal is the request the reply answered, the
+  outcome `thumbs-down`, the scope the chat's `learn_scope`. A 👍 on a
+  reply in the same chat after it marks it fixed.
+- The reflector is told a run may have "ended in a reply the owner
+  reacted 👎 to", and that the 👎 says that the reply fell short, not why:
+  its evidence is still a transcript moment. The judge is told the
+  original run's last reply got the owner's 👎; for such a run, "fewer
+  retries and errors" becomes "its final reply answers the same request
+  visibly better, with no more retries or errors".
+
+**On by default?** No. The gap analysis proposed it on under protected
+autonomy, but M54's code (merged) sets no learning default, and an
+unattended pass spends money. `[learning] enabled = false` stays the
+default everywhere; the owner turns it on, and with it the notices, the
+reactions and the nightly pass.
+
+**Not done.** Nothing here has run against a live Telegram bot: the
+reactions update, the button and the job's lines are untested end to end.
+The Bot API says a bot must be an administrator in the chat to receive
+`message_reaction` ([Update](https://core.telegram.org/bots/api#update));
+whether a private chat needs anything has not been tried here. Only
+Telegram's reactions are read. A reaction on a reply
+from before the gateway's last start, or on a piece of a reply split
+over several messages other than the last, isn't matched. The probe
+re-runs the reacted request alone, without the chat's earlier turns.
+`learn/reactions/` is never pruned.

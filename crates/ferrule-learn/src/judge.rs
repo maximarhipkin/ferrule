@@ -10,9 +10,12 @@ use serde_json::Value;
 
 pub const SYSTEM: &str = "You judge whether one run of a task is better than another. \
 You are shown the task, a lesson that was added to the agent's instructions for the second run, \
-the tail of the original run (which failed or needed retries), and the tail of the second run. \
+the tail of the original run (which failed, needed retries, or ended in a reply the owner reacted \
+👎 to), and the tail of the second run. \
 Judge the second run better only if all of these hold, in order: it finished; it needed fewer \
-retries and saw fewer errors; its final status is truthful, not a bare error or silence; it did \
+retries and saw fewer errors (when the owner reacted 👎 to the original's last reply: its own final \
+reply answers the same request visibly better, with no more retries or errors); its final status \
+is truthful, not a bare error or silence; it did \
 no new damage (no writes outside the task, no bigger diff than the task needs). \
 A tie, a different failure, or any doubt means not better. \
 Markers like \"[… clipped by the renderer]\" are where the view of a transcript was cut: they are the \
@@ -27,11 +30,18 @@ pub struct Verdict {
     pub why: String,
 }
 
-/// The judge's user message: task, lesson, both tails.
-pub fn user_message(goal: &str, lesson: &str, original_tail: &str, probe_tail: &str) -> String {
+/// The judge's user message: task, lesson, both tails. `original` says
+/// what went wrong with the first run (M53.5: the owner's 👎).
+pub fn user_message(
+    goal: &str,
+    lesson: &str,
+    original: &str,
+    original_tail: &str,
+    probe_tail: &str,
+) -> String {
     format!(
         "Task:\n{goal}\n\nLesson added for the second run:\n{lesson}\n\n\
-         Original run (failed or retried):\n{original_tail}\n\n\
+         Original run ({original}):\n{original_tail}\n\n\
          Second run (with the lesson):\n{probe_tail}\n"
     )
 }

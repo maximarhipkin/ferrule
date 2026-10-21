@@ -7656,3 +7656,58 @@ lesson instead of letting an old one go.
 the gateway's other chats until a second chat keeps it. "Unused" can
 only mean "not kept again": ferrule can't see whether a lesson was
 followed.
+
+### 2026-10-21 — M53.5: visible learning with Undo; the owner's thumbs as a check (Claude, Opus 5.5)
+
+**Why.** Learning happened in a file the owner had to go and read, so a
+bad lesson stayed until someone looked, and a chat bot had no check to
+learn from at all. OpenClaw shows a "Learned" row with one-press Undo;
+Hermes's top complaint is a bot that always thinks it did well. The gate
+answers that only if the owner sees it work and can veto it.
+
+**What changed.**
+- `ferrule-learn`:
+  - `pass.rs`: `Env.on_kept` (`OnKept`, `Learned`) hears each lesson or
+    skill a pass kept, numbered, after the pass releases its lock;
+    `learned` writes the lines. `revert_change` undoes one change (an add
+    and the retire that made room for it together, or neither) and
+    journals it; `revert` and `resolve` skip changes undone that way.
+    The judge is told when the original run got the owner's 👎.
+  - `thumbs.rs` (new): `learn/reactions.jsonl`, a 👎's transcript cut in
+    `learn/reactions/` (checked against `Mark`, the reply's end), and
+    `episodes`: each 👎 after the cursor is an episode (outcome
+    `thumbs-down`, goal the reacted request, fixed by a later 👍 in the
+    chat). The pass reads them itself.
+  - `files.rs`: `PassRecord.undone` (`ChangeRevert`); the changelog's
+    "Undone one by one".
+  - `judge.rs`, `reflect.rs`: the 👎 in both prompts; the judge's
+    "fewer retries" reads "a visibly better final reply" for such a run.
+- `ferrule-trust`: `Hub::tell_owner_choices`, `tell_owner` with buttons.
+- `ferrule-gateway`: `Reaction` and `ReactionSink`; Telegram asks for
+  `message_reaction` only with a sink and hands over those in allowed
+  chats; `Router::with_replied` hears each reply's id once it's sent.
+- `ferrule-cli`: `learn::thumbs` (the sink: the owner's 👍/👎 only, on a
+  reply sent since the gateway started), built only with `[learning]
+  enabled`; the scheduled job sends "Learned: …" with an Undo button
+  (`/unlearn <pass> <change>`), which `OwnerDoor` handles for the owner,
+  on the dashboard's chat too; `ferrule learn revert … --change N`;
+  `learn diff` numbers changes; `learn show` counts reactions.
+- Docs: `m53-contrastive-probing.md` ("M53.5"), `m16-learning-loop.md`
+  (§7, §8), the roadmap, the README's learning row.
+
+**Default.** Learning stays off everywhere: M54's merged code sets no
+learning default, and the gap analysis's "on under protected autonomy"
+would start an unattended spend. The owner turns it on.
+
+**Tests changed, none added.** The two `Env` literals in
+`pass/tests.rs` gained `on_kept: None`; `PassRecord` in `files.rs`'s
+tests gained `undone`.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** Not run against a live Telegram bot (the reaction update, the
+button, the lines). Only Telegram's reactions are read; a reaction on a
+reply from before the gateway's last start, or on an earlier piece of a
+split reply, is dropped. The probe re-runs the reacted request without
+the chat's earlier turns. `learn/reactions/` is never pruned.

@@ -646,6 +646,22 @@ impl Hub {
         });
     }
 
+    /// `tell_owner` with buttons, `(label, the reply it sends)`, where the
+    /// channel has them (M53.5: a "Learned" line's Undo). Doesn't wait.
+    pub fn tell_owner_choices(&self, text: String, choices: Vec<(String, String)>) {
+        let (Some(n), Some(chat)) = (self.notifier(), self.primary()) else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        rt.spawn(async move {
+            if let Err(e) = n.send_choices(&chat, &text, &choices).await {
+                tracing::warn!("trust: couldn't tell the owner ({e})");
+            }
+        });
+    }
+
     /// The kill switch on. `by`: who (`ferrule stop`, `telegram chat 42`,
     /// `discord chat 1234`).
     pub fn engage(&self, by: &str, reason: Option<String>) -> std::io::Result<StopInfo> {

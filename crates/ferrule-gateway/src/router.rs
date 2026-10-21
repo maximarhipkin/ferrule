@@ -86,7 +86,13 @@ pub struct Router {
     closing: AtomicBool,
     /// M56.1: what a person's message does while their chat is busy.
     while_busy: WhileBusy,
+    /// M53.5: told of each reply a turn sent.
+    replied: Option<Replied>,
 }
+
+/// M53.5: told `(session, channel, chat, reply id)` once a turn's reply is
+/// sent and its transcript written, when the channel gave the reply's id.
+pub type Replied = Arc<dyn Fn(&str, &str, &str, &str) + Send + Sync>;
 
 struct Lane {
     tx: mpsc::Sender<LaneJob>,
@@ -279,7 +285,15 @@ impl Router {
             typing: false,
             closing: AtomicBool::new(false),
             while_busy: WhileBusy::default(),
+            replied: None,
         }
+    }
+
+    /// M53.5: `hook` hears of every reply a turn sends (the learning
+    /// loop's map from a reply to where it ended in its transcript).
+    pub fn with_replied(mut self, hook: Option<Replied>) -> Self {
+        self.replied = hook;
+        self
     }
 
     /// M56.1: what a person's message does while their chat's turn runs
@@ -1010,6 +1024,7 @@ impl Router {
             typing: self.typing,
             steer: steer.clone(),
             marker,
+            replied: self.replied.clone(),
         };
         let task = tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
         Ok((tx, guard, task, steer))
@@ -1252,6 +1267,9 @@ async fn run_lane(
         } else {
             None
         };
+        if let (Some(hook), Some(id)) = (&watch.replied, &sent) {
+            hook(&session_id, &inbound.channel, &inbound.chat_id, id);
+        }
         watch.state.lock().unwrap().last_reply = sent;
         if let Some(ch) = &channel {
             for id in earlier
@@ -1319,6 +1337,8 @@ struct LaneWatch {
     steer: Arc<Steering>,
     /// M56.5: the running person's turn, on disk.
     marker: Arc<Marker>,
+    /// M53.5: told of each reply sent.
+    replied: Option<Replied>,
 }
 
 /// Sent when a run ends with no text at all.

@@ -8,7 +8,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const SYSTEM: &str = "You maintain a playbook of short lessons that is appended to an AI agent's system prompt. \
-You are shown one run that failed or needed retries, and the current playbook. Propose at most one change that \
+You are shown one run that failed, needed retries, or ended in a reply the owner reacted 👎 to, and the \
+current playbook. Propose at most one change that \
 would have prevented this failure on a similar task in future: add a lesson, edit one, or retire one that is wrong \
 or caused the failure. A lesson is one line, concrete and actionable (\"run X before Y\", \"file Z lives in W\"), \
 general enough to help the next similar task, and never specific to this run's data. Lessons marked read-only \
@@ -22,6 +23,8 @@ or result, briefly. If you cannot name the moment, the change is speculation: pr
 - A defect seen once in one run is noise. Propose a change only for a mistake the transcript shows more than \
 once (the same error twice, a retry that repeats it), not for a single slip.\n\
 - If the failure was an outage, a provider error or a one-off, propose nothing.\n\
+- The owner's 👎 says the run's last reply fell short, not why: the evidence is still the moment in the \
+transcript that shows it.\n\
 - Markers like \"[… clipped by the renderer]\" or \"[… earlier messages left out by the renderer]\" are where \
 this view of the transcript was cut. They are the renderer's, not the agent's behaviour: never base a change on \
 output that looks cut short there.\n\n\

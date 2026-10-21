@@ -387,7 +387,7 @@ Commands:
   learning is on.
 - `ferrule learn diff [PASS]`: that pass's `playbook.diff` plus its
   memory merges (default: the latest pass that changed something).
-- `ferrule learn revert PASS`: see §8.
+- `ferrule learn revert PASS [--change N]`: see §8.
 - `ferrule learn run [--dry-run] [--workspace DIR]`: see §1.
 
 ## 8. Revert
@@ -412,6 +412,15 @@ Commands:
    same line-wise rule.
 
 Revert takes the lock, so it can't interleave with a running pass.
+
+**One change** (M53.5): `ferrule learn revert <pass-id|last> --change N`,
+or `/unlearn <pass> <N>` from the owner's chat (the Undo under a "Learned"
+line), undoes change N alone (`learn diff` numbers them): the same
+inversion as above for that one lesson, skill or merge; an add that
+retired a lesson to make room takes the retire back too, or neither is
+undone. The pass is not marked `reverted`; its `undone` list, changelog
+and log say what was undone, and a later revert of the whole pass skips
+it (`docs/m53-contrastive-probing.md`, "M53.5").
 
 ## 9. Eval stays hermetic
 

@@ -1185,6 +1185,12 @@ each in `docs/m53-contrastive-probing.md`):
   prompt gets the global ones and its scope's; kept in a second scope,
   one is promoted to global; near the cap (90%), an add retires the
   reflector's pick or the lesson no pass kept for longest.
+- **M53.5**, visible learning: the nightly pass tells the owner's chat
+  each lesson or skill it kept, one "Learned" line with an Undo button
+  (`/unlearn`, `ferrule learn revert --change N`, one change at a time);
+  with learning on, the owner's 👎 on a Telegram reply becomes an episode
+  cut at that reply, judged knowing the owner reacted, and a later 👍 in
+  the chat marks it fixed. Learning stays off by default.
 
 ### M54 — protected autonomous mode
 

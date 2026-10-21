@@ -126,6 +126,7 @@ fn setup(answers: &[Option<&str>], passes: bool, eps: Vec<Episode>) -> Setup {
         gate: gate.clone(),
         sessions_dir: None,
         task_episodes: eps,
+        on_kept: None,
     };
     Setup {
         _d: d,
@@ -391,6 +392,7 @@ fn setup_with_gate(
         gate,
         sessions_dir: None,
         task_episodes: eps,
+        on_kept: None,
     };
     // The TempDir must outlive the pass: leak it into the Env's dir path.
     // (Tests drop everything at the end of the function scope instead.)

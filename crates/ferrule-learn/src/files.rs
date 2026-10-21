@@ -117,6 +117,16 @@ pub struct RevertNote {
     pub not_undone: Vec<String>,
 }
 
+/// M53.5: one change undone on its own (`learn revert --change N`, the
+/// owner's Undo button). `change` counts from 1, as `learn show` does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChangeRevert {
+    pub change: usize,
+    pub at: String,
+    pub undone: Vec<String>,
+    pub not_undone: Vec<String>,
+}
+
 /// A pass's journal, `passes/<id>/pass.json`; rewritten after every step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PassRecord {
@@ -147,6 +157,16 @@ pub struct PassRecord {
     pub notes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverted: Option<RevertNote>,
+    /// M53.5: changes undone one by one; a pass revert skips them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undone: Vec<ChangeRevert>,
+}
+
+impl PassRecord {
+    /// Whether change `n` (from 1) was undone on its own.
+    pub fn is_undone(&self, n: usize) -> bool {
+        self.undone.iter().any(|u| u.change == n)
+    }
 }
 
 /// Writes `path` whole or not at all: a temp file beside it, then rename.
@@ -412,6 +432,7 @@ mod tests {
             skipped: vec![],
             notes: vec![],
             reverted: None,
+            undone: vec![],
         }
     }
 
