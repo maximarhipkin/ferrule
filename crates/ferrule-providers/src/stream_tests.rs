@@ -124,6 +124,8 @@ async fn chat_streams_text_and_rebuilds_a_split_tool_call() {
     );
     assert_eq!(resp.message.content.as_deref(), Some("Let me read it."));
     assert_eq!(resp.message.reasoning.as_deref(), Some("look first"));
+    assert_eq!(resp.stop_reason.as_deref(), Some("tool_calls"));
+    assert!(!resp.cut_off());
     assert_eq!(resp.message.tool_calls.len(), 1);
     assert_eq!(resp.message.tool_calls[0].id, "call_1");
     assert_eq!(

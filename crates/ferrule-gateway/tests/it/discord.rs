@@ -687,6 +687,7 @@ impl Provider for Streamer {
         Ok(CompletionResponse {
             message: Message::assistant(Some(all), vec![], None),
             usage: Usage::default(),
+            stop_reason: None,
         })
     }
 }

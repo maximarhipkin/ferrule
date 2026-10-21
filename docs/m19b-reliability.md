@@ -1,7 +1,7 @@
 # M19b: reliability — never silently deaf (design)
 
-Status: built 2026-09-25 on branch `m19b-reliability` (parts 1–6, PR open,
-not merged). Follows M19 (trust & cost) and the Telegram hotfix (PR #8).
+Status: built 2026-09-25 on branch `m19b-reliability` (parts 1–6), merged
+to `main` (PR #12). Follows M19 (trust & cost) and the Telegram hotfix (PR #8).
 The design is below as written; **As built** at the end lists where the
 build departs from it or pins down what it left open.
 
@@ -105,6 +105,12 @@ handling: '<first 80 chars>'". The turn is **not** re-run: it may have
 been half-done, and re-running a tool call is worse than asking. A clean
 `systemctl restart` says nothing, or "back up" if `notify_on_start` is on
 (default off).
+
+M56.5 changed the last part for a person's turn: its lane's own marker
+keeps the request, and the next start runs it again when it had only read,
+or asks its chat (`/continue`) when it had done more. The notice then says
+"It isn't lost: its chat picks it up again, or asks there first"
+(`docs/channels.md`, "After a restart").
 
 ### 5a. systemd watchdog
 

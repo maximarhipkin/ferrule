@@ -378,7 +378,10 @@ after).
    chat gets the router's usual text, "Stopped from a bot restart: I ended
    this turn. Nothing after the last step was done; send a new message to
    continue." Then wait up to 5 s more for them to end and their replies
-   to go out.
+   to go out. (M56.5: a person's turn instead hears "…; when I'm back I'll
+   pick it up again, or ask you first if it had already changed
+   something", and the next start does so; `docs/channels.md`, "After a
+   restart".)
 4. Exit 0. A second SIGTERM or ctrl-c exits at once.
 
 Docker's default stop timeout is 10 s; [`docker.md`](docker.md) says to run

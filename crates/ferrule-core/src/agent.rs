@@ -1,4 +1,4 @@
-use crate::error::CoreError;
+use crate::error::{CoreError, FailureClass};
 use crate::event::AgentEvent;
 use crate::guard::{unless_halted, Guard, GuardedCall, Verdict as GuardVerdict};
 use crate::history::{result_ref, SEARCH_HISTORY};
@@ -11,7 +11,7 @@ use crate::message::{Message, ToolCall, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use crate::routing::Signal;
-use crate::stuck::{Step, Stuck};
+use crate::stuck::{EditCounts, Step, Stuck};
 use crate::textcall;
 use crate::tool::{Tool, ToolContext, ToolOutput, ToolRegistry};
 use crate::transcript::Transcript;
@@ -61,6 +61,10 @@ pub struct AgentConfig {
     /// (a goal loop's judge decides done-ness whether or not the run
     /// edited anything). Off, checks gate on file changes (M9).
     pub verify_without_changes: bool,
+    /// M57.2: raise reasoning effort to the profile's `max_effort` on a
+    /// run's first turn and on the turn after a failed check, where the
+    /// model has an effort set.
+    pub effort_boost: bool,
 }
 
 /// What the loop does when the context outgrows the profile's trigger.
@@ -90,6 +94,7 @@ impl Default for AgentConfig {
             shorten_tool_results_over: 4_000,
             parallel_tools: 4,
             verify_without_changes: false,
+            effort_boost: true,
         }
     }
 }
@@ -105,7 +110,9 @@ pub struct RetryPolicy {
     /// Cap on the computed backoff. A server's `Retry-After` is only held
     /// to the budget.
     pub max_delay: Duration,
-    /// No retry that would start later than this after the first try.
+    /// No retry once the waits between tries would add up to more than
+    /// this. The tries' own time doesn't count: a stream that stalls after
+    /// minutes of work (the stall limit is 5 minutes) still gets its retry.
     pub budget: Duration,
 }
 
@@ -122,8 +129,9 @@ impl Default for RetryPolicy {
 
 impl RetryPolicy {
     /// The wait before trying again after `attempt` (1-based) failed with
-    /// `err`, `elapsed` after the first try started; `None` to give up.
-    pub fn delay(&self, err: &CoreError, attempt: u32, elapsed: Duration) -> Option<Duration> {
+    /// `err`, `waited` already spent waiting between tries; `None` to give
+    /// up.
+    pub fn delay(&self, err: &CoreError, attempt: u32, waited: Duration) -> Option<Duration> {
         let CoreError::Transient { retry_after, .. } = err else {
             return None;
         };
@@ -138,7 +146,7 @@ impl RetryPolicy {
                     .min(self.max_delay),
             ),
         };
-        (elapsed + delay <= self.budget).then_some(delay)
+        (waited + delay <= self.budget).then_some(delay)
     }
 }
 
@@ -252,6 +260,27 @@ impl Ran {
     }
 }
 
+/// A native driver's count of the history through its answer (see
+/// [`Agent::measure`]).
+struct Measured {
+    /// The messages it covers, and [`conversation_est`] of them then.
+    len: usize,
+    est: usize,
+    /// How far the count was past the guess.
+    over: usize,
+}
+
+/// What a [`Measured`] count is checked against: the guess for every
+/// message but tool results, which shortening rewrites without touching
+/// the blocks the count is for.
+fn conversation_est(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|m| m.role != crate::message::Role::Tool)
+        .map(Message::est_tokens)
+        .sum()
+}
+
 /// What cut a tool segment short.
 enum Interrupt {
     Halted(String),
@@ -294,8 +323,11 @@ pub struct Agent {
     /// system prompt stays byte-stable for the cache). Compaction carries
     /// it forward verbatim, as it does the goal.
     memory: Option<String>,
-    /// The recalled block still has to go in after this run's goal.
-    memory_due: bool,
+    /// M56.4: what later person messages recalled on top, block by block;
+    /// carried through compaction too.
+    memory_more: Vec<String>,
+    /// A recalled block that still has to go in after this run's goal.
+    memory_due: Option<String>,
     /// Asked at the start of every run (M29: the repo map), and the last
     /// block it added.
     turn_context: Option<Arc<dyn TurnContext>>,
@@ -305,6 +337,8 @@ pub struct Agent {
     /// compaction, since it's what says when the work is done.
     goal: Option<String>,
     pub messages: Vec<Message>,
+    /// What the last turn's call counted, when a native driver served it.
+    measured: Option<Measured>,
     pub usage: Usage,
     /// Set when the last run stopped before finishing (the step limit, a
     /// loop, a check that kept failing): why. Its answer is then a status,
@@ -328,6 +362,19 @@ pub struct Agent {
     /// How compaction summarizes the folded head; None is the built-in
     /// pipeline on the agent's own model (M42 part 7).
     compactor: Option<Arc<dyn crate::compactor::Compactor>>,
+    /// The built-in pipeline's model when it isn't the agent's own.
+    compaction_provider: Option<Arc<dyn Provider>>,
+    /// M57.2: the effort every call asks for (a sub-agent's), instead of
+    /// its model's configured one; see [`Agent::set_effort`].
+    effort: Option<String>,
+    /// M57.2: this run's next turn is one the effort is raised for.
+    boost_now: bool,
+    /// M57.3: what the file tools last read or wrote; what the agent's own
+    /// hooks and checks change in them is adopted, so it isn't stale.
+    stamps: Option<crate::stamps::FileStamps>,
+    /// M57.4: the prompt-cache TTL every call asks for; see
+    /// [`Agent::set_cache_ttl`].
+    cache_ttl: Option<String>,
 }
 
 impl Agent {
@@ -358,12 +405,14 @@ impl Agent {
             session_recall: None,
             recalled: false,
             memory: None,
-            memory_due: false,
+            memory_more: Vec::new(),
+            memory_due: None,
             turn_context: None,
             turn_context_last: None,
             run_observers: Vec::new(),
             goal: None,
             messages: Vec::new(),
+            measured: None,
             usage: Usage::default(),
             incomplete: None,
             speed: Default::default(),
@@ -373,6 +422,11 @@ impl Agent {
             triggers: None,
             from_person: false,
             compactor: None,
+            compaction_provider: None,
+            effort: None,
+            boost_now: false,
+            stamps: None,
+            cache_ttl: None,
         }
     }
 
@@ -380,6 +434,15 @@ impl Agent {
     /// pipeline (e.g. the checklist template on a cheaper model).
     pub fn with_compactor(mut self, compactor: Arc<dyn crate::compactor::Compactor>) -> Self {
         self.compactor = Some(compactor);
+        self
+    }
+
+    /// Summarize compactions on `provider` (`[agent] compaction_model`)
+    /// instead of the agent's own model. The call is the agent's like any
+    /// other: retried, a ledger row, charged to the budget, under the kill
+    /// switch.
+    pub fn with_compaction_provider(mut self, provider: Arc<dyn Provider>) -> Self {
+        self.compaction_provider = Some(provider);
         self
     }
 
@@ -443,6 +506,15 @@ impl Agent {
     pub fn with_inbox(mut self, inbox: Arc<dyn Inbox>) -> Self {
         self.inbox = Some(inbox);
         self
+    }
+
+    /// Another inbox beside the one the agent has, asked after it (M56.1:
+    /// the gateway's person messages next to the supervisor's reports).
+    pub fn add_inbox(&mut self, inbox: Arc<dyn Inbox>) {
+        self.inbox = Some(match self.inbox.take() {
+            Some(first) => Arc::new(crate::hooks::Inboxes(vec![first, inbox])),
+            None => inbox,
+        });
     }
 
     /// Photos that ride on the next goal message. The channel saved them to
@@ -516,10 +588,39 @@ impl Agent {
         self
     }
 
+    /// M57.2: ask every call for `effort` (a `spawn_agent` effort, already
+    /// held to the profile's `max_effort`) instead of the model's own. It
+    /// replaces the run's raised turns too: an explicit level wins. Only
+    /// where the model has an effort set.
+    pub fn set_effort(&mut self, effort: Option<String>) {
+        self.effort = effort;
+    }
+
+    /// M57.3: the map this agent's file tools share for `edit_file`'s
+    /// stale-file guard. A file its hooks or checks change (a formatter in
+    /// the verify command) is taken as seen, not as changed underneath it.
+    pub fn with_file_stamps(mut self, stamps: crate::stamps::FileStamps) -> Self {
+        self.stamps = Some(stamps);
+        self
+    }
+
+    /// M57.4: ask the provider to keep each call's prompt cache this long
+    /// (`"1h"`, a gateway chat lane: the owner may answer after the 5
+    /// minutes Anthropic keeps it by default). `None`: the provider's
+    /// default. Compaction summaries never ask.
+    pub fn set_cache_ttl(&mut self, ttl: Option<String>) {
+        self.cache_ttl = ttl;
+    }
+
     /// Adds a tool after construction (tools bound to this agent's identity
     /// are made once its id is known).
     pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
         self.tools.register(tool);
+    }
+
+    /// The agent's tools (M56.5: which of them only read).
+    pub fn tools(&self) -> &ToolRegistry {
+        &self.tools
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
@@ -550,8 +651,52 @@ impl Agent {
     }
 
     fn est_context_tokens(&self) -> usize {
-        self.messages.iter().map(|m| m.est_tokens()).sum::<usize>()
+        // Every request carries the tool schemas too; an MCP server's can
+        // run to thousands of tokens.
+        let tools: usize = self
+            .tools
+            .definitions()
+            .iter()
+            .map(|t| (t.name.len() + t.description.len() + t.parameters.to_string().len()) / 4)
+            .sum();
+        let guess = self.messages.iter().map(|m| m.est_tokens()).sum::<usize>()
             + crate::vision::est_tokens(&self.messages)
+            + tools;
+        // Replayed native blocks (signed thinking, encrypted reasoning)
+        // can't be guessed from their bytes; the last call's count has
+        // them, for as long as the history it counted still stands.
+        let unseen = self
+            .measured
+            .as_ref()
+            .filter(|m| {
+                self.messages
+                    .get(..m.len)
+                    .is_some_and(|counted| conversation_est(counted) == m.est)
+            })
+            .map_or(0, |m| m.over);
+        guess + unseen
+    }
+
+    /// Notes a turn's call count: its prompt and its answer, which the
+    /// next prompt carries back. Anthropic and Responses replay their own
+    /// blocks there, and their usage is that one call's. ponytail: picked
+    /// by api name, so a new native driver is added here; the Claude Code
+    /// engine's (`claude-code`) usage is a whole `claude -p` run's, which
+    /// can take several calls.
+    fn measure(&mut self, answer: &Message, usage: &Usage) {
+        self.measured = None;
+        let native = answer
+            .native
+            .as_ref()
+            .is_some_and(|n| matches!(n.api.as_str(), "anthropic" | "responses"));
+        if native {
+            let counted = (usage.input_tokens + usage.output_tokens) as usize;
+            self.measured = Some(Measured {
+                len: self.messages.len(),
+                est: conversation_est(&self.messages),
+                over: counted.saturating_sub(self.est_context_tokens()),
+            });
+        }
     }
 
     /// The ledger, when its sink wants trace events this run.
@@ -614,7 +759,11 @@ impl Agent {
         if !self.hooks.has(event) {
             return Fired::default();
         }
-        let fired = self.hooks.fire(event, input, &self.tool_ctx).await;
+        let fire = self.hooks.fire(event, input, &self.tool_ctx);
+        let fired = match &self.stamps {
+            Some(stamps) => stamps.adopting(fire).await,
+            None => fire.await,
+        };
         for r in &fired.reports {
             if let Some(error) = &r.error {
                 warn!(event = %r.event, command = %r.command, "hook failed: {error}");
@@ -637,8 +786,16 @@ impl Agent {
     }
 
     /// Runs the built-in checks in order: the first that fails, with its
-    /// output. They keep the verify events of before hooks.
+    /// output. They keep the verify events of before hooks. What they
+    /// change in files the agent had current is adopted (M57.3).
     async fn run_checks(&self, tx: &mpsc::Sender<AgentEvent>) -> Option<(String, String)> {
+        match &self.stamps {
+            Some(stamps) => stamps.adopting(self.run_checks_now(tx)).await,
+            None => self.run_checks_now(tx).await,
+        }
+    }
+
+    async fn run_checks_now(&self, tx: &mpsc::Sender<AgentEvent>) -> Option<(String, String)> {
         let checks: Vec<Hook> = self
             .hooks
             .hooks()
@@ -683,6 +840,8 @@ impl Agent {
         let mut input = self.hook_input();
         input.reason = Some(reason.to_string());
         self.fire(tx, HookEvent::SessionEnd, input).await;
+        // M57.6: background jobs end with the session.
+        self.tools.session_ended();
     }
 
     /// Time a `provider.complete()` call and, if a ledger sink is attached,
@@ -699,7 +858,8 @@ impl Agent {
         iteration: usize,
         call_kind: &str,
     ) -> Result<CompletionResponse, CoreError> {
-        let mut first = Instant::now();
+        let provider = self.provider_for(call_kind);
+        let mut waited = Duration::ZERO;
         let mut attempt = 1;
         // A provider marks each failed model down, so this ends anyway;
         // the cap guards against one that doesn't.
@@ -714,20 +874,29 @@ impl Agent {
             let ctx = crate::provider::CallContext {
                 guard: self.guard.clone(),
                 workspace: Some(self.tool_ctx.workspace.clone()),
+                deferred_tools: if call_kind == "compaction" {
+                    Vec::new()
+                } else {
+                    self.tools.deferred_definitions()
+                },
+                effort: self.effort.clone().filter(|_| call_kind != "compaction"),
+                effort_floor: self.effort_floor(call_kind),
+                // A summary's request is flattened and never sent again.
+                cache_ttl: self.cache_ttl.clone().filter(|_| call_kind != "compaction"),
             };
             let (served, result) =
-                crate::provider::with_call_context(ctx, self.provider.complete_routed(req)).await;
+                crate::provider::with_call_context(ctx, provider.complete_routed(req)).await;
             let latency_ms = start.elapsed().as_millis() as u64;
             let retry_in = match &result {
-                Err(e) => self.config.retry.delay(e, attempt, first.elapsed()),
+                Err(e) => self.config.retry.delay(e, attempt, waited),
                 Ok(_) => None,
             };
             // M25: a failure a stronger model may not repeat moves the turn
             // up a tier, and the same request goes again there.
-            let route = self.provider.route_tag();
+            let route = provider.route_tag();
             let escalated = match (&result, retry_in) {
-                (Err(e), None) if self.provider.routes() => crate::routing::escalates_on(e)
-                    .and_then(|class| self.provider.escalate(&Signal::CallFailed(class))),
+                (Err(e), None) if provider.routes() => crate::routing::escalates_on(e)
+                    .and_then(|class| provider.escalate(&Signal::CallFailed(class))),
                 _ => None,
             };
             // Out of retries, and no tier up: the next model in the owner's
@@ -735,7 +904,7 @@ impl Agent {
             // M36 §6.2: any provider error, not only an outage.
             let fell_over = match (&result, retry_in, &escalated) {
                 (Err(e), None, None) if fallbacks < 8 && crate::failure::falls_back(e) => {
-                    self.provider.fail_over(served.as_ref(), e)
+                    provider.fail_over(served.as_ref(), e)
                 }
                 _ => None,
             };
@@ -762,14 +931,14 @@ impl Agent {
                     },
                 )
                 .await;
-                first = Instant::now();
+                waited = Duration::ZERO;
                 attempt = 1;
                 fallbacks += 1;
                 continue;
             }
             if let Some(up) = escalated {
                 self.emit_escalation(tx, up).await;
-                first = Instant::now();
+                waited = Duration::ZERO;
                 attempt = 1;
                 continue;
             }
@@ -792,7 +961,27 @@ impl Agent {
             )
             .await;
             tokio::time::sleep(delay).await;
+            waited += delay;
             attempt += 1;
+        }
+    }
+
+    /// M57.2: the effort a call of this kind is raised to: the profile's
+    /// highest on a raised turn, unless the agent has its own level.
+    fn effort_floor(&self, call_kind: &str) -> Option<String> {
+        let raised = self.boost_now && call_kind == "turn" && self.config.effort_boost;
+        self.profile
+            .max_effort
+            .clone()
+            .filter(|_| raised && self.effort.is_none())
+    }
+
+    /// The provider a call of this kind runs on: the compaction model's
+    /// for a summary, when one is set (`[agent] compaction_model`).
+    fn provider_for(&self, call_kind: &str) -> &dyn Provider {
+        match (&self.compaction_provider, call_kind) {
+            (Some(p), "compaction") => p.as_ref(),
+            _ => self.provider.as_ref(),
         }
     }
 
@@ -880,7 +1069,7 @@ impl Agent {
             origin: ledger.origin.clone(),
             provider: served
                 .map(|s| s.provider.clone())
-                .unwrap_or_else(|| self.provider.name().to_string()),
+                .unwrap_or_else(|| self.provider_for(call_kind).name().to_string()),
             model: served
                 .map(|s| s.model.clone())
                 .unwrap_or_else(|| ledger.model.clone()),
@@ -889,6 +1078,9 @@ impl Agent {
             input_tokens,
             cached_input_tokens,
             cache_write_input_tokens,
+            cache_write_1h_input_tokens: result
+                .as_ref()
+                .map_or(0, |r| r.usage.cache_write_1h_input_tokens),
             output_tokens,
             tool_calls,
             latency_ms,
@@ -1032,7 +1224,7 @@ impl Agent {
             },
         )
         .await;
-        self.recall_for(goal).await;
+        self.recall_for(goal, from_person).await;
         let session_note = if self.started {
             None
         } else {
@@ -1078,10 +1270,8 @@ impl Agent {
         self.incomplete = None;
         let images = std::mem::take(&mut self.pending_images);
         self.push(Message::user_with_images(goal, images));
-        if std::mem::take(&mut self.memory_due) {
-            if let Some(memory) = self.memory.clone() {
-                self.push(Message::user(memory));
-            }
+        if let Some(memory) = self.memory_due.take() {
+            self.push(Message::user(memory));
         }
         self.add_turn_context(goal).await;
         for (event, note) in [
@@ -1095,6 +1285,12 @@ impl Agent {
         if from_person {
             self.load_triggered(goal, &tx).await;
         }
+        // M57.1: a resumed session's deferred tools come back loaded.
+        self.tools.note_called(
+            self.messages
+                .iter()
+                .flat_map(|m| m.tool_calls.iter().map(|c| c.name.as_str())),
+        );
 
         let mut steps: Vec<Step> = Vec::new();
         let mut nudged = false;
@@ -1119,6 +1315,13 @@ impl Agent {
         let routes = self.provider.routes();
         let mut misfits = 0;
         let mut repeats: (Option<(String, String)>, u32) = (None, 0);
+        // M57.2: edits per file since the check last passed; the turns
+        // whose effort is raised (the first, and the one after a failed
+        // check); how low the steps and the token budget were last said
+        // to be.
+        let mut edits = EditCounts::default();
+        let mut boost = true;
+        let mut low_said = (0u8, 0u8);
 
         for iteration in 0..self.config.max_iterations {
             if self.stopped() {
@@ -1131,14 +1334,22 @@ impl Agent {
                 return self.wrap_up(&tx, iteration, StopReason::Budget(why)).await;
             }
             self.deliver_inbox();
-            self.maybe_compact(&tx, iteration).await?;
+            self.boost_now = std::mem::take(&mut boost);
             let guard = self.guard.clone();
-            let call = self.call_provider(&tx, self.request(), iteration, "turn");
+            // A compaction calls a model too: the kill switch reaches it.
+            let call = async {
+                self.maybe_compact(&tx, iteration).await?;
+                self.call_turn(&tx, iteration, "turn").await
+            };
             let resp = match unless_halted(guard.as_ref(), call).await {
                 Ok(resp) => resp?,
                 Err(why) => return Ok(self.halt(&tx, iteration, why).await),
             };
             self.add_usage(&tx, &resp.usage).await;
+            // The output cap (or the window) ended the reply mid-way.
+            let cut_off = resp
+                .cut_off()
+                .then(|| resp.stop_reason.clone().unwrap_or_default());
 
             let mut msg = resp.message;
             // A model without reliable native tool calling sometimes writes
@@ -1193,6 +1404,7 @@ impl Agent {
             }
 
             self.push(msg.clone());
+            self.measure(&msg, &resp.usage);
             if nudge {
                 warn!("a tool call arrived as text but wouldn't parse");
                 self.push(Message::user(textcall::NUDGE));
@@ -1221,9 +1433,11 @@ impl Agent {
                              it runs again when you do.\n\n{output}"
                         )));
                         self.signal(&tx, Signal::CheckFailed).await;
+                        boost = true;
                         continue;
                     }
                     needs_check = false;
+                    edits.checked();
                 }
                 let mut input = self.hook_input();
                 input.stop_hook_active = Some(sent_back);
@@ -1251,6 +1465,30 @@ impl Agent {
                     continue;
                 }
                 let answer = msg.content.unwrap_or_default();
+                // A finish that isn't one says so: the caller words the
+                // empty case for its own channel.
+                let short = match cut_off {
+                    Some(reason) => Some(format!(
+                        "the answer was cut off: the model reached its output limit (`{reason}`)"
+                    )),
+                    None if answer.trim().is_empty() => {
+                        Some("the model finished without writing an answer".to_string())
+                    }
+                    None => None,
+                };
+                if let Some(why) = short {
+                    warn!(%why, "the run's answer is incomplete");
+                    self.incomplete = Some(why.clone());
+                    self.emit(
+                        &tx,
+                        AgentEvent::RunIncomplete {
+                            reason: why,
+                            iterations: iteration + 1,
+                        },
+                    )
+                    .await;
+                    return Ok(answer);
+                }
                 self.emit(
                     &tx,
                     AgentEvent::RunFinished {
@@ -1267,11 +1505,16 @@ impl Agent {
             // order asked; every other call is a segment of its own, run as
             // before (docs/m27-speed.md §1).
             let calls = &msg.tool_calls;
+            // M57.1: a deferred tool called by name, without tool_search,
+            // is loaded too: its schema goes with the next request.
+            self.tools
+                .note_called(calls.iter().map(|c| c.name.as_str()));
             let batch_started = Instant::now();
             let mut batch = ToolBatch {
                 calls: calls.len(),
                 ..Default::default()
             };
+            let mut edit_notes: Vec<String> = Vec::new();
             let g = guard.as_ref();
             let mut at = 0;
             while at < calls.len() {
@@ -1429,6 +1672,9 @@ impl Agent {
                     .await;
 
                     steps.push(Step::new(&call.name, &call.arguments, &raw, ok));
+                    if ok && self.config.detect_stuck {
+                        edit_notes.extend(edits.record(&call.name, &call.arguments));
+                    }
                     self.push(Message::tool_result(&call.id, content));
                     if routes {
                         misfits = if self.tools.misfit(&call.name, &call.arguments) {
@@ -1461,6 +1707,15 @@ impl Agent {
                 self.speed.lock().unwrap().tool_batch = Some(batch);
             }
 
+            // M57.2: a file changed over and over is told once, after
+            // every result of this turn.
+            for note in edit_notes {
+                warn!(%note, "one file keeps being changed");
+                self.emit(&tx, AgentEvent::Stuck { note: note.clone() })
+                    .await;
+                self.push(Message::user(note));
+            }
+
             if let Some(stuck) = Stuck::detect(&steps).filter(|_| self.config.detect_stuck) {
                 if nudged {
                     return self
@@ -1478,10 +1733,52 @@ impl Agent {
                 self.push(Message::user(note));
                 self.signal(&tx, Signal::Stuck).await;
             }
+            if let Some(note) = self.budget_note(iteration + 1, &mut low_said) {
+                self.push(Message::user(note));
+            }
         }
         let limit = self.config.max_iterations;
         self.wrap_up(&tx, limit, StopReason::MaxIterations(limit))
             .await
+    }
+
+    /// M57.2: a tail note when the run's steps, or its token budget, are
+    /// down to a quarter and again to a tenth: after the turn's results,
+    /// never in the prefix. `said` is how low each was last said to be.
+    fn budget_note(&self, done: usize, said: &mut (u8, u8)) -> Option<String> {
+        fn low(left: u64, total: u64) -> u8 {
+            match left {
+                _ if left * 10 <= total => 2,
+                _ if left * 4 <= total => 1,
+                _ => 0,
+            }
+        }
+        let max = self.config.max_iterations as u64;
+        let steps_left = max.saturating_sub(done as u64);
+        // With none left the step limit's own status says so.
+        let steps = if steps_left == 0 {
+            0
+        } else {
+            low(steps_left, max)
+        };
+        let tokens = self
+            .budget
+            .as_ref()
+            .and_then(|b| b.left())
+            .filter(|(_, total)| *total > 0);
+        let spent = tokens.map_or(0, |(left, total)| low(left, total));
+        if steps <= said.0 && spent <= said.1 {
+            return None;
+        }
+        *said = (said.0.max(steps), said.1.max(spent));
+        let mut left = format!("{steps_left} of {max} steps left in this run");
+        if let Some((n, total)) = tokens {
+            left.push_str(&format!(", {n} of {total} tokens left in the token budget"));
+        }
+        Some(format!(
+            "[ferrule] Budget: {left}. Plan to finish within it; if you can't, stop and say where \
+             things stand."
+        ))
     }
 
     /// Ends a run that can't finish with one more call, for a status the
@@ -1504,20 +1801,22 @@ impl Agent {
              working for, in their language: say first that you stopped before finishing and why, then what \
              you got done, what is blocking, and the next step or the question they need to answer."
         )));
-        if let Err(e) = self.maybe_compact(tx, iterations).await {
-            warn!("compaction before the status answer failed: {e}");
-        }
-        // The tools stay declared: some APIs refuse a history that holds
-        // tool calls when the request has no tools.
-        let resp = match self
-            .call_provider(tx, self.request(), iterations, "status")
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => {
+        let guard = self.guard.clone();
+        let call = async {
+            if let Err(e) = self.maybe_compact(tx, iterations).await {
+                warn!("compaction before the status answer failed: {e}");
+            }
+            // The tools stay declared: some APIs refuse a history that holds
+            // tool calls when the request has no tools.
+            self.call_turn(tx, iterations, "status").await
+        };
+        let resp = match unless_halted(guard.as_ref(), call).await {
+            Ok(Ok(resp)) => resp,
+            Ok(Err(e)) => {
                 warn!("the status answer failed: {e}");
                 return Err(reason.into_error());
             }
+            Err(halt) => return Ok(self.halt(tx, iterations, halt).await),
         };
         self.add_usage(tx, &resp.usage).await;
         let mut msg = resp.message;
@@ -1765,12 +2064,17 @@ impl Agent {
     }
 
     /// Whatever reached the inbox since the last model call, as one user
-    /// message.
+    /// message, then its whole messages (M56.1) one by one.
     fn deliver_inbox(&mut self) {
-        let Some(inbox) = &self.inbox else { return };
+        let Some(inbox) = self.inbox.clone() else {
+            return;
+        };
         let items = inbox.take();
         if !items.is_empty() {
             self.push(Message::user(items.join("\n\n")));
+        }
+        for msg in inbox.take_messages() {
+            self.push(msg);
         }
     }
 
@@ -1805,15 +2109,34 @@ impl Agent {
     /// first user message (a resumed session's history already has one)
     /// plus this run's request. The block goes in a user message right
     /// after the goal, never into the system prompt, which stays the same
-    /// bytes for every session (M27: the cached prefix).
-    async fn recall_for(&mut self, goal: &str) {
+    /// bytes for every session (M27: the cached prefix). M56.4: each later
+    /// message a person sends asks [`SessionRecall::recall_more`] for what
+    /// it brings up that isn't in yet, appended the same way.
+    async fn recall_for(&mut self, goal: &str, from_person: bool) {
+        let Some(recall) = self.session_recall.clone() else {
+            self.recalled = true;
+            return;
+        };
         if self.recalled {
+            if !from_person || self.memory_due.is_some() {
+                return;
+            }
+            let mut shown = self.memory.clone().unwrap_or_default();
+            for more in &self.memory_more {
+                shown.push('\n');
+                shown.push_str(more);
+            }
+            if let Some(block) = recall
+                .recall_more(goal, &shown)
+                .await
+                .filter(|b| !b.trim().is_empty())
+            {
+                self.memory_more.push(block.clone());
+                self.memory_due = Some(block);
+            }
             return;
         }
         self.recalled = true;
-        let Some(recall) = self.session_recall.clone() else {
-            return;
-        };
         let first = self
             .messages
             .iter()
@@ -1824,7 +2147,7 @@ impl Agent {
             _ => goal.to_string(),
         };
         self.memory = recall.recall(&query).await.filter(|b| !b.trim().is_empty());
-        self.memory_due = self.memory.is_some();
+        self.memory_due = self.memory.clone();
     }
 
     /// The [`TurnContext`] block for this run, if it says something new:
@@ -1930,16 +2253,62 @@ impl Agent {
             .collect()
     }
 
-    /// Compaction: deterministic dedupe first (free), then structured LLM
-    /// summary of everything before the trailing verbatim window.
+    /// The turn's model call (or the status answer's). A provider that
+    /// says the context is too long (the estimate missed: replayed
+    /// reasoning, a window smaller than the profile's) gets one compaction,
+    /// whatever the estimate, and the call once more.
+    async fn call_turn(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iteration: usize,
+        call_kind: &str,
+    ) -> Result<CompletionResponse, CoreError> {
+        match self
+            .call_provider(tx, self.request(), iteration, call_kind)
+            .await
+        {
+            Err(e)
+                if e.class() == FailureClass::ContextTooLong
+                    && self.config.overflow == ContextOverflow::Compact =>
+            {
+                warn!("the provider says the context is too long; compacting, then once more: {e}");
+                match self.compact(tx, iteration, true).await {
+                    Ok(true) => {
+                        self.call_provider(tx, self.request(), iteration, call_kind)
+                            .await
+                    }
+                    Ok(false) => Err(e),
+                    Err(failed) => {
+                        warn!("that compaction failed: {failed}");
+                        Err(e)
+                    }
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Compaction once the context passes the trigger.
     async fn maybe_compact(
         &mut self,
         tx: &mpsc::Sender<AgentEvent>,
         iteration: usize,
     ) -> Result<(), CoreError> {
+        self.compact(tx, iteration, false).await.map(drop)
+    }
+
+    /// Compaction: deterministic dedupe first (free), then structured LLM
+    /// summary of everything before the trailing verbatim window. `force`
+    /// folds whatever the estimate says. Whether the history changed.
+    async fn compact(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iteration: usize,
+        force: bool,
+    ) -> Result<bool, CoreError> {
         let before = self.est_context_tokens();
         let trigger = self.profile.compaction_trigger_tokens();
-        if before <= trigger {
+        if before <= trigger && !force {
             self.emit(
                 tx,
                 AgentEvent::ContextReady {
@@ -1948,33 +2317,53 @@ impl Agent {
                 },
             )
             .await;
-            return Ok(());
+            return Ok(false);
         }
         if self.config.overflow == ContextOverflow::Truncate {
-            self.truncate_front(tx, before, trigger).await;
-            return Ok(());
+            return Ok(self.truncate_front(tx, before, trigger).await > 0);
         }
-        info!(before, trigger, "compacting context");
+        info!(before, trigger, force, "compacting context");
 
         self.dedupe_tool_results();
         // Shortening frees room without a provider call and without losing
         // anything (the full text stays fetchable); when it's enough, the
         // history stays verbatim and no summary is made.
-        if self.shorten_old_tool_results(tx).await > 0 && self.est_context_tokens() <= trigger {
-            return Ok(());
+        let shortened = self.shorten_old_tool_results(tx).await > 0;
+        if shortened && !force && self.est_context_tokens() <= trigger {
+            return Ok(true);
         }
 
         let keep = self.config.compaction_keep_last;
         if self.messages.len() <= keep + 1 {
-            return Ok(()); // nothing foldable
+            return Ok(shortened); // nothing foldable
         }
         let Some(split) = self.fold_point(self.messages.len() - keep) else {
-            return Ok(()); // nothing foldable
+            return Ok(shortened); // nothing foldable
         };
         // The tail that survives the fold, for the transcript's fold record.
         let kept_tail = self.messages.len() - split;
         let head = &self.messages[..split];
+        // A head that is mostly an earlier summary: the kept tail alone is
+        // over the trigger, and folding now would only summarize the
+        // summary again, on every turn. It waits until there's at least as
+        // much new to fold; a forced compaction folds anyway.
+        let (summarized, new) = head
+            .iter()
+            .filter(|m| m.role != crate::message::Role::System)
+            .fold((0, 0), |(s, n), m| match is_summary(m) {
+                true => (s + m.est_tokens(), n),
+                false => (s, n + m.est_tokens()),
+            });
+        if summarized >= new && !force {
+            info!(
+                summarized,
+                new, "not compacting: the head is mostly a summary"
+            );
+            return Ok(shortened);
+        }
         let folded_refs = shortened_refs(head);
+        // M57.4: the tools and files, counted rather than summarized.
+        let touched = Touched::of(head).render();
 
         // Skills activated in the folded part stay in force: their blocks
         // ride along verbatim (unless the verbatim tail already holds them)
@@ -1986,7 +2375,6 @@ impl Agent {
             .map(|(_, block)| block)
             .collect();
 
-        // Skip a second compaction if the head is already mostly a summary.
         let transcript_text = head
             .iter()
             .map(|m| {
@@ -2007,8 +2395,9 @@ impl Agent {
         self.fire(tx, HookEvent::PreCompact, input.clone()).await;
 
         let summary = match &self.compactor {
-            // A strategy (M42 part 7) owns its model and its errors; the
-            // fold record it produces is the same either way.
+            // A strategy (M42 part 7) owns its model and its errors (no
+            // retry, ledger row or budget charge of the agent's); the fold
+            // record it produces is the same either way.
             Some(compactor) => compactor.summarize(&transcript_text).await?,
             None => {
                 let summary_req = CompletionRequest {
@@ -2040,7 +2429,11 @@ impl Agent {
         {
             rebuilt.push(sys.clone());
         }
-        let mut summary_msg = format!("[Compaction summary of earlier session]\n{summary}");
+        let mut summary_msg = format!("{SUMMARY_HEADER}\n{summary}");
+        if let Some(touched) = touched {
+            summary_msg.push_str("\n\n");
+            summary_msg.push_str(&touched);
+        }
         if !carried.is_empty() {
             summary_msg.push_str(
                 "\n\n[Skill instructions activated earlier in this session — still in force]\n",
@@ -2067,7 +2460,12 @@ impl Agent {
         }
         // Recalled memory lived in the system prompt before M27, where no
         // compaction reached it; it stays as whole now.
-        if let Some(memory) = self.memory.as_deref().filter(|m| !goal_in_tail(m)) {
+        for memory in self
+            .memory
+            .iter()
+            .chain(&self.memory_more)
+            .filter(|m| !goal_in_tail(m))
+        {
             summary_msg.push_str("\n\n");
             summary_msg.push_str(memory);
         }
@@ -2106,7 +2504,7 @@ impl Agent {
         if let Some(note) = self.fire(tx, HookEvent::PostCompact, input).await.context {
             self.push(Message::user(format!("[hook: PostCompact]\n{note}")));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Where the summary ends and the verbatim tail starts, near `want`.
@@ -2145,7 +2543,7 @@ impl Agent {
         tx: &mpsc::Sender<AgentEvent>,
         before: usize,
         trigger: usize,
-    ) {
+    ) -> usize {
         let start = match self.messages.first() {
             Some(m) if m.role == crate::message::Role::System => 1,
             _ => 0,
@@ -2185,6 +2583,7 @@ impl Agent {
                 "truncated: {dropped} oldest messages dropped, {before} -> {after} est tokens"
             ));
         }
+        dropped
     }
 
     /// Shorten tool results outside the verbatim tail that are longer than
@@ -2326,6 +2725,17 @@ fn paired(messages: Vec<Message>) -> Vec<Message> {
     out
 }
 
+/// How a compaction summary starts.
+const SUMMARY_HEADER: &str = "[Compaction summary of earlier session]";
+
+/// A summary an earlier compaction left.
+fn is_summary(m: &Message) -> bool {
+    m.role == crate::message::Role::User
+        && m.content
+            .as_deref()
+            .is_some_and(|c| c.starts_with(SUMMARY_HEADER))
+}
+
 /// How a shortened tool result starts: `[ferrule: an older tool result (`
 /// + tool name, size, preview and the `search_history` reference.
 const SHORTENED_PREFIX: &str = "[ferrule: an older tool result (";
@@ -2360,6 +2770,149 @@ fn shortened_refs(messages: &[Message]) -> Vec<String> {
     }
     let skip = refs.len().saturating_sub(20);
     refs.split_off(skip)
+}
+
+/// M57.4: how a fold's own count of tools and files starts. The summary
+/// model never sees the calls, only their text, so this part isn't left
+/// to it.
+const TOUCHED_HEADER: &str = "[Tools and files so far, counted by ferrule]";
+/// Files listed per line; older ones become a count.
+const TOUCHED_FILES: usize = 50;
+
+/// The tools a session called and the files its file tools read or
+/// changed, across every fold so far.
+#[derive(Debug, Default)]
+struct Touched {
+    tools: std::collections::BTreeMap<String, u64>,
+    /// Oldest first; a file touched again moves to the end.
+    changed: Vec<String>,
+    changed_more: u64,
+    read: Vec<String>,
+    read_more: u64,
+}
+
+impl Touched {
+    /// What a fold's head did: an earlier summary's count, then each call
+    /// in it. A file counts as read or changed only when its call worked.
+    fn of(head: &[Message]) -> Touched {
+        use crate::message::Role;
+        let results: HashMap<&str, &str> = head
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .filter_map(|m| Some((m.tool_call_id.as_deref()?, m.content.as_deref()?)))
+            .collect();
+        let mut t = Touched::default();
+        for m in head {
+            if is_summary(m) {
+                t.add_listed(m.content.as_deref().unwrap_or(""));
+            }
+            for call in &m.tool_calls {
+                *t.tools.entry(call.name.clone()).or_default() += 1;
+                let Some(path) = call.arguments["path"].as_str().filter(|p| !p.is_empty()) else {
+                    continue;
+                };
+                if !results.get(call.id.as_str()).is_some_and(|r| worked(r)) {
+                    continue;
+                }
+                match call.name.as_str() {
+                    "read_file" => touch(&mut t.read, path),
+                    "write_file" | "edit_file" => touch(&mut t.changed, path),
+                    _ => {}
+                }
+            }
+        }
+        t
+    }
+
+    /// The block an earlier fold wrote ([`Touched::render`]).
+    fn add_listed(&mut self, summary: &str) {
+        let Some(at) = summary.find(TOUCHED_HEADER) else {
+            return;
+        };
+        let block = &summary[at + TOUCHED_HEADER.len()..];
+        for line in block.lines().skip(1).take_while(|l| !l.trim().is_empty()) {
+            if let Some(rest) = line.strip_prefix("Tools called: ") {
+                for item in rest.split(", ") {
+                    let Some((name, n)) = item.trim_start_matches('`').split_once("` ×") else {
+                        continue;
+                    };
+                    *self.tools.entry(name.to_string()).or_default() += n.parse().unwrap_or(0);
+                }
+            } else if let Some(rest) = line.strip_prefix("Files changed: ") {
+                self.changed_more += listed(rest, &mut self.changed);
+            } else if let Some(rest) = line.strip_prefix("Files read: ") {
+                self.read_more += listed(rest, &mut self.read);
+            }
+        }
+    }
+
+    /// The block, or `None` when nothing was called.
+    fn render(&self) -> Option<String> {
+        if self.tools.is_empty() {
+            return None;
+        }
+        let tools: Vec<String> = self
+            .tools
+            .iter()
+            .map(|(name, n)| format!("`{name}` ×{n}"))
+            .collect();
+        let mut out = format!("{TOUCHED_HEADER}\nTools called: {}", tools.join(", "));
+        for (label, files, more) in [
+            ("Files changed", &self.changed, self.changed_more),
+            ("Files read", &self.read, self.read_more),
+        ] {
+            let dropped = files.len().saturating_sub(TOUCHED_FILES);
+            let more = more + dropped as u64;
+            if files.is_empty() && more == 0 {
+                continue;
+            }
+            let shown: Vec<String> = files[dropped..].iter().map(|f| format!("`{f}`")).collect();
+            out.push_str(&format!("\n{label}: {}", shown.join(", ")));
+            if more > 0 {
+                out.push_str(&format!(" (and {more} more earlier)"));
+            }
+        }
+        Some(out)
+    }
+}
+
+/// `path` as the latest file in `files`.
+fn touch(files: &mut Vec<String>, path: &str) {
+    files.retain(|f| f != path);
+    files.push(path.to_string());
+}
+
+/// The files a rendered line lists (each in backticks) into `files`; the
+/// count of older ones it only counted.
+fn listed(line: &str, files: &mut Vec<String>) -> u64 {
+    let parts: Vec<&str> = line.split('`').collect();
+    for path in parts.iter().skip(1).step_by(2) {
+        touch(files, path);
+    }
+    parts
+        .last()
+        .and_then(|tail| tail.split_once("(and "))
+        .and_then(|(_, n)| n.split_once(' '))
+        .and_then(|(n, _)| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Whether a tool result says its call worked: not an error, a refusal,
+/// a call that never ran, or a result replaced by a later identical one.
+fn worked(result: &str) -> bool {
+    let text = match result.strip_prefix(SHORTENED_PREFIX) {
+        Some(rest) => rest.split_once("It began:\n").map_or(rest, |(_, r)| r),
+        None => result,
+    };
+    ![
+        "error: ",
+        "refused by ferrule",
+        "not run",
+        "[ferrule: no result",
+        "[superseded by identical",
+    ]
+    .iter()
+    .any(|p| text.starts_with(p))
 }
 
 /// Skill blocks arrive as tool results and, after a compaction, inside the
@@ -2480,8 +3033,10 @@ mod tests {
                     output_tokens: 5,
                     cached_input_tokens: 0,
                     cache_write_input_tokens: 0,
+                    cache_write_1h_input_tokens: 0,
                     notional_usd: None,
                 },
+                stop_reason: None,
             })
         }
     }
@@ -2600,6 +3155,7 @@ mod tests {
                 Ok(CompletionResponse {
                     message: self.script.lock().unwrap().remove(0),
                     usage: Usage::default(),
+                    stop_reason: None,
                 })
             }
         }
@@ -2819,7 +3375,11 @@ mod tests {
         }
         async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
             let (message, usage) = self.responses.lock().unwrap().remove(0);
-            Ok(CompletionResponse { message, usage })
+            Ok(CompletionResponse {
+                message,
+                usage,
+                stop_reason: None,
+            })
         }
     }
 
@@ -2841,6 +3401,7 @@ mod tests {
                     output_tokens: 10,
                     cached_input_tokens: 20,
                     cache_write_input_tokens: 0,
+                    cache_write_1h_input_tokens: 0,
                     notional_usd: None,
                 },
             ),
@@ -2851,6 +3412,7 @@ mod tests {
                     output_tokens: 8,
                     cached_input_tokens: 30,
                     cache_write_input_tokens: 40,
+                    cache_write_1h_input_tokens: 0,
                     notional_usd: None,
                 },
             ),
@@ -2924,6 +3486,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some("SUMMARY".into()), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -3043,6 +3606,346 @@ mod tests {
         assert!(!summary.contains(&block), "the tail already holds it");
     }
 
+    /// A profile and config under which four fillers compact.
+    fn compacting() -> (HarnessProfile, AgentConfig) {
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 1_000;
+        profile.output_reserve = 0;
+        profile.compaction_threshold = 0.1;
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            retry: fast_retry(3),
+            ..Default::default()
+        };
+        (profile, config)
+    }
+
+    fn fillers() -> impl Iterator<Item = Message> {
+        (0..4).map(|i| Message::user(format!("{}{i}", "filler ".repeat(50))))
+    }
+
+    /// The cheaper model: one 503, then a summary that cost 10 tokens.
+    struct Cheap(Mutex<u32>);
+
+    #[async_trait::async_trait]
+    impl Provider for Cheap {
+        fn name(&self) -> &str {
+            "cheap"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let mut left = self.0.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
+                return Err(CoreError::Transient {
+                    message: "HTTP 503".into(),
+                    retry_after: None,
+                });
+            }
+            Ok(CompletionResponse {
+                message: say("CHEAP SUMMARY"),
+                usage: Usage {
+                    input_tokens: 7,
+                    output_tokens: 3,
+                    ..Usage::default()
+                },
+                stop_reason: None,
+            })
+        }
+    }
+
+    /// `[agent] compaction_model`: the summary runs on its own model, as
+    /// the agent's own call: retried, a ledger row a try, charged to the
+    /// budget.
+    #[tokio::test]
+    async fn a_compaction_model_call_is_retried_recorded_and_charged() {
+        let sink = Arc::new(RecordingSink {
+            records: Mutex::new(Vec::new()),
+        });
+        let budget = Arc::new(CapBudget {
+            spent: Mutex::new(0),
+            cap: 1_000,
+        });
+        let own = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let (profile, config) = compacting();
+        let mut agent = Agent::new(
+            own.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_compaction_provider(Arc::new(Cheap(Mutex::new(1))))
+        .with_ledger(sink.clone(), "chat", None, "m")
+        .with_budget(budget.clone());
+        agent.messages.extend(fillers());
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+
+        assert!(own.prompts.lock().unwrap().is_empty(), "the agent's model");
+        assert!(agent.messages[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("CHEAP SUMMARY"));
+        let rows: Vec<(String, String, String)> = sink
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| (r.call_kind.clone(), r.outcome.clone(), r.provider.clone()))
+            .collect();
+        let row = |o: &str| ("compaction".to_string(), o.to_string(), "cheap".to_string());
+        assert_eq!(rows, [row("retried"), row("ok")]);
+        assert_eq!(*budget.spent.lock().unwrap(), 10);
+    }
+
+    /// The kill switch reaches a compaction in flight, as it does a turn.
+    #[tokio::test]
+    async fn a_halt_ends_a_compaction_in_flight() {
+        struct Hang;
+        #[async_trait::async_trait]
+        impl Provider for Hang {
+            fn name(&self) -> &str {
+                "hang"
+            }
+            async fn complete(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, CoreError> {
+                std::future::pending().await
+            }
+        }
+        let guard = Arc::new(TestGuard::new());
+        let (profile, config) = compacting();
+        let mut agent = Agent::new(
+            Arc::new(CapturingProvider {
+                prompts: Mutex::new(Vec::new()),
+            }),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_compaction_provider(Arc::new(Hang))
+        .with_guard(guard.clone());
+        agent.messages.extend(fillers());
+        let halt = guard.halt.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            halt.send_replace(Some("Stopped.".into()));
+        });
+        let (tx, _rx) = events();
+        let answer = tokio::time::timeout(Duration::from_secs(10), agent.run("go", tx))
+            .await
+            .expect("the halt ends the compaction")
+            .unwrap();
+        assert_eq!(answer, "Stopped.");
+    }
+
+    /// Answers from a script of replies, keeping every request's text.
+    struct Replies {
+        script: Mutex<Vec<Result<Message, CoreError>>>,
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl Replies {
+        fn new(script: Vec<Result<Message, CoreError>>) -> Arc<Self> {
+            Arc::new(Self {
+                script: Mutex::new(script),
+                seen: Mutex::default(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Replies {
+        fn name(&self) -> &str {
+            "replies"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let text = req
+                .messages
+                .iter()
+                .filter_map(|m| m.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.seen.lock().unwrap().push(text);
+            self.script
+                .lock()
+                .unwrap()
+                .remove(0)
+                .map(|message| CompletionResponse {
+                    message,
+                    usage: Usage::default(),
+                    stop_reason: None,
+                })
+        }
+    }
+
+    fn too_long() -> CoreError {
+        CoreError::Provider(
+            "HTTP 400 Bad Request: prompt is too long: 210000 tokens > 200000 maximum".into(),
+        )
+    }
+
+    /// The estimate said it fits; the provider said it doesn't. One
+    /// compaction, whatever the estimate, and the turn once more; a second
+    /// "too long" is the run's error, not a loop.
+    #[tokio::test]
+    async fn a_context_too_long_error_compacts_and_tries_once_more() {
+        let run = |script| async move {
+            let provider = Replies::new(script);
+            let config = AgentConfig {
+                compaction_keep_last: 2,
+                ..Default::default()
+            };
+            let mut agent = Agent::new(
+                provider.clone(),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                config,
+                ToolContext::default(),
+                None,
+            )
+            .with_system_prompt("sys");
+            agent.messages.extend([
+                Message::user("old request"),
+                say("old answer"),
+                Message::user("another"),
+                say("ok"),
+            ]);
+            let (tx, mut rx) = events();
+            let result = agent.run("now", tx).await;
+            let compacted = drain(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Compacted { .. }));
+            let seen = provider.seen.lock().unwrap().clone();
+            (result, compacted, seen)
+        };
+        let (answer, compacted, seen) =
+            run(vec![Err(too_long()), Ok(say("SUMMARY")), Ok(say("done"))]).await;
+        assert_eq!(answer.unwrap(), "done");
+        assert!(compacted);
+        assert_eq!(seen.len(), 3, "turn, summary, turn again");
+        assert!(seen[2].contains("[Compaction summary of earlier session]\nSUMMARY"));
+        assert!(!seen[2].contains("old request"), "{}", seen[2]);
+
+        let (err, _, seen) = run(vec![Err(too_long()), Ok(say("SUMMARY")), Err(too_long())]).await;
+        assert_eq!(err.unwrap_err().class(), FailureClass::ContextTooLong);
+        assert_eq!(seen.len(), 3, "once more, not again and again");
+    }
+
+    /// Answers a summary request with "SUMMARY", and turns from a script,
+    /// each with the input tokens the call counted.
+    struct Counting(Mutex<Vec<(Message, u64)>>);
+
+    #[async_trait::async_trait]
+    impl Provider for Counting {
+        fn name(&self) -> &str {
+            "counting"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let summary = req.messages[0]
+                .content
+                .as_deref()
+                .is_some_and(|c| c.starts_with(COMPACTION_TEMPLATE));
+            let (message, input_tokens) = match summary {
+                true => (say("SUMMARY"), 0),
+                false => self.0.lock().unwrap().remove(0),
+            };
+            Ok(CompletionResponse {
+                message,
+                usage: Usage {
+                    input_tokens,
+                    ..Usage::default()
+                },
+                stop_reason: None,
+            })
+        }
+    }
+
+    /// The guess sees a few dozen tokens; Responses counted 6,000 (the
+    /// reasoning it replays). The next turn compacts first instead of going
+    /// out over the trigger, and the count doesn't outlive the history it
+    /// covered. The Claude Code engine's count is a whole run's: no floor.
+    #[tokio::test]
+    async fn a_native_drivers_count_of_replayed_reasoning_moves_compaction_up() {
+        let run = |api: &'static str| async move {
+            let native = crate::message::NativeBlocks {
+                api: api.into(),
+                model: "m".into(),
+                items: vec![serde_json::json!({"type": "reasoning", "encrypted_content": "gAAA"})],
+            };
+            let provider = Arc::new(Counting(Mutex::new(vec![
+                (echo("hi").with_native(native), 6_000),
+                (say("done"), 0),
+            ])));
+            let mut profile = HarnessProfile::generic();
+            profile.context_window = 10_000;
+            profile.output_reserve = 0;
+            profile.compaction_threshold = 0.5;
+            let config = AgentConfig {
+                compaction_keep_last: 2,
+                ..Default::default()
+            };
+            let mut reg = ToolRegistry::new();
+            reg.register(Arc::new(EchoTool));
+            let mut agent =
+                Agent::new(provider, reg, profile, config, ToolContext::default(), None);
+            agent
+                .messages
+                .extend([Message::user("old request"), say("old answer")]);
+            let (tx, mut rx) = events();
+            assert_eq!(agent.run("now", tx).await.unwrap(), "done");
+            drain(&mut rx).into_iter().find_map(|e| match e {
+                AgentEvent::Compacted {
+                    est_tokens_before,
+                    est_tokens_after,
+                    ..
+                } => Some((est_tokens_before, est_tokens_after)),
+                _ => None,
+            })
+        };
+        let (before, after) = run("responses").await.expect("compacted");
+        assert!(before >= 6_000, "{before}");
+        assert!(after < 5_000, "{after}");
+        assert_eq!(run("claude-code").await, None);
+    }
+
+    /// A tool with a long schema.
+    struct Wordy;
+
+    #[async_trait::async_trait]
+    impl Tool for Wordy {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "wordy".into(),
+                description: "w".repeat(8_000),
+                parameters: serde_json::json!({"type": "object"}),
+            }
+        }
+        async fn call(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput, CoreError> {
+            Ok(ToolOutput::ok(String::new()))
+        }
+    }
+
+    /// The schemas go with every request, so they count toward the trigger.
+    #[test]
+    fn tool_schemas_count_toward_the_trigger() {
+        let mut agent = make_agent(vec![]);
+        let without = agent.est_context_tokens();
+        agent.register_tool(Arc::new(Wordy));
+        assert!(agent.est_context_tokens() >= without + 2_000);
+    }
+
     fn fast_retry(max_attempts: u32) -> RetryPolicy {
         RetryPolicy {
             max_attempts,
@@ -3074,6 +3977,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: say("ok"),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -3150,6 +4054,53 @@ mod tests {
         assert_eq!(outcomes, ["retried", "retried", "error"]);
     }
 
+    /// Takes longer than the whole retry budget, then stalls, once.
+    struct Stalls(Mutex<bool>);
+
+    #[async_trait::async_trait]
+    impl Provider for Stalls {
+        fn name(&self) -> &str {
+            "stalls"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            if std::mem::take(&mut *self.0.lock().unwrap()) {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                return Err(CoreError::Transient {
+                    message: "stream stalled after 9 events: nothing for 300s (timed out)".into(),
+                    retry_after: None,
+                });
+            }
+            Ok(CompletionResponse {
+                message: say("ok"),
+                usage: Usage::default(),
+                stop_reason: None,
+            })
+        }
+    }
+
+    /// The budget is for waiting between tries: a stall that comes after
+    /// minutes of streaming (here, past the whole budget) is still retried.
+    #[tokio::test]
+    async fn a_stall_that_comes_after_the_budget_is_still_retried() {
+        let config = AgentConfig {
+            retry: RetryPolicy {
+                budget: Duration::from_millis(20),
+                ..fast_retry(4)
+            },
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            Arc::new(Stalls(Mutex::new(true))),
+            ToolRegistry::new(),
+            HarnessProfile::generic(),
+            config,
+            ToolContext::default(),
+            None,
+        );
+        let (tx, _rx) = events();
+        assert_eq!(agent.run("hi", tx).await.unwrap(), "ok");
+    }
+
     /// Two models: `a/one` fails with `error` on every call until it's
     /// marked down, then `b/two` answers. `fail_over` switches once.
     struct Routing {
@@ -3181,6 +4132,7 @@ mod tests {
                 let ok = CompletionResponse {
                     message: say("from two"),
                     usage: Usage::default(),
+                    stop_reason: None,
                 };
                 return (Some(served("b", "two")), Ok(ok));
             }
@@ -3337,7 +4289,7 @@ mod tests {
         assert_eq!(
             policy.delay(&transient, 1, Duration::from_secs(119)),
             None,
-            "past the budget"
+            "the waits would pass the budget"
         );
         assert_eq!(
             policy.delay(&CoreError::Provider("401".into()), 1, Duration::ZERO),
@@ -3354,6 +4306,57 @@ mod tests {
             Some(Duration::from_secs(45))
         );
         assert_eq!(policy.delay(&told, 1, Duration::from_secs(80)), None);
+    }
+
+    /// Answers once with this text and stop reason.
+    struct Stops(&'static str, &'static str);
+
+    #[async_trait::async_trait]
+    impl Provider for Stops {
+        fn name(&self) -> &str {
+            "stops"
+        }
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            Ok(CompletionResponse {
+                message: say(self.0),
+                usage: Usage::default(),
+                stop_reason: Some(self.1.into()),
+            })
+        }
+    }
+
+    /// An answer cut off by the output cap, or no answer at all, isn't a
+    /// finished run.
+    #[tokio::test]
+    async fn an_empty_or_cut_off_answer_ends_the_run_incomplete() {
+        let run = |text: &'static str, stop: &'static str| async move {
+            let mut agent = Agent::new(
+                Arc::new(Stops(text, stop)),
+                ToolRegistry::new(),
+                HarnessProfile::generic(),
+                AgentConfig::default(),
+                ToolContext::default(),
+                None,
+            );
+            let (tx, mut rx) = events();
+            let answer = agent.run("write it", tx).await.unwrap();
+            let finished = drain(&mut rx)
+                .iter()
+                .any(|e| matches!(e, AgentEvent::RunFinished { .. }));
+            (answer, agent.incomplete, finished)
+        };
+        let (answer, why, finished) = run("The first half", "max_tokens").await;
+        assert_eq!(answer, "The first half", "the text so far still goes out");
+        assert!(why.unwrap().contains("cut off"));
+        assert!(!finished);
+        let (_, why, finished) = run(" \n", "end_turn").await;
+        assert_eq!(
+            why.as_deref(),
+            Some("the model finished without writing an answer")
+        );
+        assert!(!finished);
+        let (answer, why, finished) = run("All done.", "end_turn").await;
+        assert_eq!((answer.as_str(), why, finished), ("All done.", None, true));
     }
 
     #[tokio::test]
@@ -3723,6 +4726,41 @@ mod tests {
         assert!(!summary.contains(goal), "{summary}");
     }
 
+    /// The kept tail alone is over the trigger and the head is only the
+    /// last summary: it isn't summarized again, turn after turn, until
+    /// there's as much new to fold.
+    #[tokio::test]
+    async fn a_summary_is_not_summarized_again_until_there_is_more_to_fold() {
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let (profile, config) = compacting();
+        let mut agent = Agent::new(
+            provider.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_system_prompt("sys");
+        let big = |tag: &str| Message::user(format!("{tag} {}", "x".repeat(600)));
+        agent.messages.extend([
+            Message::user(format!("{SUMMARY_HEADER}\nwhat happened so far")),
+            big("A"),
+            big("B"),
+        ]);
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        agent.maybe_compact(&tx, 1).await.unwrap();
+        assert!(provider.prompts.lock().unwrap().is_empty());
+        assert_eq!(agent.messages.len(), 4);
+
+        agent.messages.extend([big("C"), big("D")]);
+        agent.maybe_compact(&tx, 2).await.unwrap();
+        assert_eq!(provider.prompts.lock().unwrap().len(), 1, "A and B fold");
+    }
+
     #[tokio::test]
     async fn compaction_drops_native_blocks_from_the_kept_tail() {
         let provider = Arc::new(CapturingProvider {
@@ -4051,6 +5089,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: self.responses.lock().unwrap().remove(0),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }

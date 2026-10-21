@@ -25,7 +25,7 @@ mod upstream;
 pub use ca::default_ca_bundle;
 pub use egress::{Denial, EgressPolicy, Source};
 pub use hosts::HostPattern;
-pub use placeholder::placeholder;
+pub use placeholder::{placeholder, KNOWN_PREFIXES};
 pub use server::EGRESS_HEADER;
 pub use upstream::Upstream;
 

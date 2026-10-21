@@ -36,6 +36,8 @@ ring = "0.17"
 base64 = "0.22"
 # M39 §5: email reuses M37's IMAP, SMTP and MIME (no mail crates).
 ferrule-connections = { path = "../ferrule-connections" }
+# M52.5: the paste guard knows keys by the credential proxy's prefixes.
+ferrule-proxy = { path = "../ferrule-proxy" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

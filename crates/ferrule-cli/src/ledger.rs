@@ -48,7 +48,14 @@ impl ProviderPricing {
             r.cached_input_tokens,
             r.cache_write_input_tokens,
             r.output_tokens,
-        )
+        ) + self.hour_writes(r.cache_write_1h_input_tokens)
+    }
+
+    /// M57.4: what `written` 1-hour cache writes (part of the writes
+    /// [`ProviderPricing::cost`] priced at the 5-minute rate) add on top:
+    /// Anthropic charges 2 × input for them.
+    pub fn hour_writes(&self, written: u64) -> f64 {
+        written as f64 * (2.0 * self.input - self.cache_write()).max(0.0) / 1_000_000.0
     }
 
     pub fn cost(&self, input: u64, cached: u64, written: u64, output: u64) -> f64 {
@@ -479,6 +486,7 @@ mod tests {
             input_tokens: input,
             cached_input_tokens: cached,
             cache_write_input_tokens: 0,
+            cache_write_1h_input_tokens: 0,
             output_tokens: output,
             tool_calls: 0,
             latency_ms,

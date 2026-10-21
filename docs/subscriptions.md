@@ -133,7 +133,7 @@ max_output_mb = 16
 | ferrule feature | on the Claude plan |
 |---|---|
 | tools and approvals | claude's own tools; each one ferrule's approvals would gate is asked of ferrule first (`rm -rf` needs the owner) |
-| memory, tasks, messaging, files to the chat, connections (Gmail…), MCP servers | yes: ferrule's tools, bridged into claude over MCP |
+| memory, skills, sub-agents, files to the chat, connections (Gmail…), MCP servers, extensions, `ferrule_admin` | yes: every ferrule tool claude has no equivalent of, bridged into claude over MCP |
 | compaction | claude's own |
 | repo map, per-edit lint | no: claude explores and edits by itself |
 | routing inside a turn | no. Fallback to another model between turns: yes |

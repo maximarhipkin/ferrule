@@ -535,12 +535,13 @@ impl Link {
             .arg("ControlPersist=no")
             .arg("-o")
             .arg(format!("ControlPath={}", sock.display()));
+        // The proxy's `-R` is asked for once the master is up (below), not
+        // here: ssh opens the control socket before the server answers a
+        // `-R` on its command line, so a refused port only showed as the
+        // master dying moments later, under a command already using it.
         match (forward, rport) {
-            (Some(f), Some(r)) => {
-                c.arg("-R")
-                    .arg(format!("127.0.0.1:{r}:127.0.0.1:{}", f.port))
-                    .arg("-o")
-                    .arg("ExitOnForwardFailure=yes");
+            (Some(_), Some(_)) => {
+                c.arg("-o").arg("ExitOnForwardFailure=yes");
             }
             _ => {
                 c.arg("-o").arg("ClearAllForwardings=yes");
@@ -559,12 +560,17 @@ impl Link {
         let deadline = Instant::now() + Duration::from_secs(40);
         loop {
             if sock.exists() {
-                return Ok(Master {
+                let master = Master {
                     child,
                     _lifeline: lifeline,
                     dir,
                     rport: forward.and(rport),
-                });
+                };
+                // Dropped on a refusal, and the master with it.
+                if let (Some(f), Some(r)) = (forward, rport) {
+                    self.request_forward(&master.socket(), f, r).await?;
+                }
+                return Ok(master);
             }
             if let Ok(Some(_)) = child.try_wait() {
                 let err = std::fs::read_to_string(&err_path).unwrap_or_default();
@@ -576,6 +582,44 @@ impl Link {
                 ));
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Asks the master at `sock` for the proxy's forward and waits for the
+    /// server's answer, so the remote port is listening before any command
+    /// is told it. A port already taken there is [`Failure::Forward`], and
+    /// [`ensure_master`](Self::ensure_master) picks another.
+    #[cfg(unix)]
+    async fn request_forward(
+        &self,
+        sock: &Path,
+        forward: &Forward,
+        rport: u16,
+    ) -> Result<(), Failure> {
+        let mut c = self.base_command();
+        c.arg("-o")
+            .arg("ControlMaster=no")
+            .arg("-o")
+            .arg(format!("ControlPath={}", sock.display()))
+            .arg("-O")
+            .arg("forward")
+            .arg("-R")
+            .arg(format!("127.0.0.1:{rport}:127.0.0.1:{}", forward.port))
+            .arg("--")
+            .arg(&self.target.host)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        match tokio::time::timeout(Duration::from_secs(40), c.output()).await {
+            Ok(Ok(out)) if out.status.success() => Ok(()),
+            Ok(Ok(out)) => Err(classify(&String::from_utf8_lossy(&out.stderr))),
+            Ok(Err(e)) => Err(Failure::Other(format!(
+                "can't run `{}`: {e}",
+                self.program().display()
+            ))),
+            Err(_) => Err(Failure::Unreachable(
+                "timed out setting up the credential proxy's forward".into(),
+            )),
         }
     }
 

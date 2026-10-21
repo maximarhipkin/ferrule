@@ -78,8 +78,10 @@ impl Provider for Model {
                 output_tokens: 0,
                 cached_input_tokens: 0,
                 cache_write_input_tokens: 0,
+                cache_write_1h_input_tokens: 0,
                 notional_usd: None,
             },
+            stop_reason: None,
         })
     }
 }
@@ -480,6 +482,7 @@ async fn the_day_cap_counts_every_process_survives_a_restart_and_resets_at_midni
         input_tokens: 3_000,
         cached_input_tokens: 0,
         cache_write_input_tokens: 0,
+        cache_write_1h_input_tokens: 0,
         output_tokens: 0,
         tool_calls: 0,
         latency_ms: 1,

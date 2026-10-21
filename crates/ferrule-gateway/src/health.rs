@@ -367,6 +367,10 @@ pub struct MarkedTurn {
     pub channel: String,
     pub chat_id: String,
     pub text: String,
+    /// M56.5: its chat takes it up again after a restart (a person's
+    /// turn; a scheduled task's isn't).
+    #[serde(default)]
+    pub resumable: bool,
 }
 
 /// A message the gateway sends on its own: to `settings.owner`, else to
@@ -753,6 +757,7 @@ impl Health {
                     channel: l.channel.clone(),
                     chat_id: l.chat_id.clone(),
                     text: clip(&self.redactor.redact(&l.text), 80),
+                    resumable: l.resumable,
                 })
                 .collect(),
         };
@@ -777,17 +782,35 @@ impl Health {
 }
 
 /// The owner's one message after an unclean exit. The interrupted turns
-/// are named, never run again.
+/// are named; a person's is taken up in its chat (M56.5), any other is
+/// never run again.
 pub fn restart_notice(marker: &RunningMarker, now: SystemTime) -> Notice {
     let at = stamp(now);
+    const TAKEN_UP: &str = "its chat picks it up again, or asks there first";
     let text = match marker.turns.as_slice() {
         [] => format!(
             "I restarted at {at} after an unclean exit (a crash or a kill); no turn was running."
+        ),
+        [t] if t.resumable => format!(
+            "I restarted at {at}; the turn for {} was interrupted while handling: '{}'. It isn't lost: {TAKEN_UP}.",
+            t.place, t.text
         ),
         [t] => format!(
             "I restarted at {at}; the turn for {} was interrupted while handling: '{}'. It won't be re-run — send it again if it's still needed.",
             t.place, t.text
         ),
+        turns if turns.iter().any(|t| t.resumable) => {
+            let mut text = format!("I restarted at {at}; these turns were interrupted:");
+            for t in turns {
+                let after = if t.resumable {
+                    TAKEN_UP
+                } else {
+                    "it won't be re-run; send it again if it's still needed"
+                };
+                text.push_str(&format!("\n- {}: '{}' ({after})", t.place, t.text));
+            }
+            text
+        }
         turns => {
             let mut text = format!(
                 "I restarted at {at}; these turns were interrupted and won't be re-run — send them again if they're still needed:"
@@ -907,6 +930,7 @@ mod tests {
             since_progress: Some(Duration::from_secs(1)),
             queued: 0,
             text: text.into(),
+            resumable: false,
         }
     }
 
@@ -995,6 +1019,7 @@ mod tests {
                 channel: "telegram".into(),
                 chat_id: "-100".into(),
                 text: "deploy the site".into(),
+                resumable: false,
             }],
         };
         std::fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
@@ -1034,6 +1059,7 @@ mod tests {
             channel: "telegram".into(),
             chat_id: chat.into(),
             text: text.into(),
+            resumable: false,
         };
         let mut marker = RunningMarker {
             pid: 1,

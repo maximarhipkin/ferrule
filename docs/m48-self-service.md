@@ -373,6 +373,11 @@ with the safe default and is repeated in the final report.
     page; that's a follow-up.
   - The brief bars it for update, restart, connect and secrets anyway.
   - **Solo:** none ships.
+  - **Since 2026-10-20 (PR #44)** a narrower grant exists outside M48:
+    "Allow for this run" lets one gated *shell* command run again
+    without asking until the run ends (`docs/m19-trust-cost.md` §7).
+    Admin questions never offer it, so D9 still holds for every
+    `ferrule_admin` op.
 - **D10 — Codes never run out.** After 1000 failed 2-character draws,
   `open_for` draws 3-character codes (letter, digit, letter: 4608 codes).
   Fixes bug 6.
@@ -425,7 +430,8 @@ with the safe default and is repeated in the final report.
     registration API and permissions.
 - **D16 — Claude-plan chats get the tool.** `ferrule_admin` is added to
   `BRIDGED_TOOLS`. The 7 names with no tool behind them are recorded in
-  the audit section above and left alone (a follow-up).
+  the audit section above and left alone (a follow-up; M55.4 replaced
+  the list with the agent's registry, less claude's own tools).
 - **D17 — The page's restart works without a service on unix.**
   - `restart::how(managed, supervised, unix)` picks:
     - `Reexec` for managed, and for unsupervised unix;
@@ -506,7 +512,7 @@ is to make Ferrule change itself without the owner meaning it.
   `telegram.rs:593` token hint, `connections.rs:388/557/598` and the
   `mcp/remove` confirm text. A follow-up.
 - A chat update of a binary that several instances share.
-- The 7 bridged tool names with no tool behind them.
+- The 7 bridged tool names with no tool behind them (fixed by M55.4).
 
 ## Verified during planning
 

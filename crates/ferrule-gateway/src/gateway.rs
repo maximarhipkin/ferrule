@@ -277,6 +277,11 @@ impl Gateway {
     /// One inbound message: `/status`, an interceptor's, or the receipt,
     /// the busy notice if its chat is mid-turn, and its lane.
     async fn handle(&self, msg: InboundMessage) {
+        // M52.5: a pasted key goes no further, not even to a door.
+        if crate::paste_guard::holds_a_key(&msg.text, &self.redactor) {
+            self.stop_pasted_key(&msg).await;
+            return;
+        }
         // M41: the chat's own escape hatch. Anyone the channel lets talk
         // here may use it, and it touches this chat's lane only.
         if is_command(&msg.text, "/new") || is_command(&msg.text, "/reset") {
@@ -294,6 +299,11 @@ impl Gateway {
         if is_command(&msg.text, "/help") {
             let text = self.help_text();
             self.reply_directly(&msg, text).await;
+            return;
+        }
+        // M56.5: the answer to "a restart interrupted your request".
+        if is_command(&msg.text, crate::resume::CONTINUE) {
+            self.take_up(&msg).await;
             return;
         }
         if let Some(health) = &self.health {
@@ -315,6 +325,8 @@ impl Gateway {
             }
         }
         self.acknowledge(&msg).await;
+        // M56.1: into the running turn, when the chat steers.
+        let steered = self.router.steer(&msg);
         let busy_notices = self.channel(&msg.channel).is_none_or(|c| c.busy_notices());
         if let Some(lane) = busy_notices
             .then(|| self.router.claim_busy_notice(&msg, self.busy_notice_after))
@@ -323,6 +335,7 @@ impl Gateway {
             let text = busy_text(
                 &self.redactor.redact(&lane.activity),
                 lane.busy_for.unwrap_or_default(),
+                steered,
             );
             if let Some(channel) = self.channel(&msg.channel) {
                 let out = OutboundMessage {
@@ -338,6 +351,9 @@ impl Gateway {
                     }
                 });
             }
+        }
+        if steered {
+            return;
         }
         let reply = msg.clone();
         match self.router.offer(msg) {
@@ -368,6 +384,41 @@ impl Gateway {
         }
     }
 
+    /// `/continue` runs this chat's interrupted turn again (M56.5);
+    /// `/continue drop` lets it go.
+    async fn take_up(&self, msg: &InboundMessage) {
+        let sid = crate::session::session_id(&msg.channel, &msg.chat_id);
+        let drop =
+            msg.text.split_whitespace().nth(1).is_some_and(|w| {
+                matches!(w.to_ascii_lowercase().as_str(), "drop" | "no" | "cancel")
+            });
+        let text = if drop {
+            if self.router.drop_interrupted(&sid) {
+                "Let go: that request won't be resumed."
+            } else {
+                "There's no interrupted request in this chat."
+            }
+            .to_string()
+        } else {
+            match self.router.resume(&sid) {
+                Ok(true) => {
+                    // Its reply answers the original message.
+                    self.acknowledge(msg).await;
+                    if let Some(channel) = self.channel(&msg.channel) {
+                        channel.answered(&msg.chat_id, &msg.message_id).await;
+                    }
+                    return;
+                }
+                Ok(false) => "There's no interrupted request to resume in this chat.".to_string(),
+                Err(e) => format!(
+                    "I couldn't resume it: {}",
+                    self.redactor.redact(&e.to_string())
+                ),
+            }
+        };
+        self.reply_directly(msg, text).await;
+    }
+
     /// Reacts 👀 to a message bound for a lane, before it's queued, so the
     /// sender knows it arrived even while the chat's turn runs. Channels
     /// without reactions skip it; a failure never holds the message up.
@@ -389,6 +440,43 @@ impl Gateway {
 
     fn channel(&self, name: &str) -> Option<Arc<dyn Channel>> {
         self.channels.iter().find(|c| c.name() == name).cloned()
+    }
+
+    /// M52.5: a message that looked like a key. It's deleted where the
+    /// channel allows, the chat is told why, and the log says only that it
+    /// happened: never the text, nor who sent it.
+    async fn stop_pasted_key(&self, msg: &InboundMessage) {
+        tracing::warn!(
+            channel = %msg.channel,
+            "a message that looked like an API key or token was stopped before the agent; it wasn't kept"
+        );
+        let Some(channel) = self.channel(&msg.channel) else {
+            return;
+        };
+        let deleted = if msg.message_id.is_empty() {
+            false
+        } else {
+            match channel.delete(&msg.chat_id, &msg.message_id).await {
+                Ok(()) => true,
+                Err(GatewayError::Unsupported(_)) => false,
+                Err(e) => {
+                    tracing::warn!(error = %e, "couldn't delete the message that looked like a key");
+                    false
+                }
+            }
+        };
+        let out = OutboundMessage {
+            channel: msg.channel.clone(),
+            chat_id: msg.chat_id.clone(),
+            text: crate::paste_guard::reply(deleted),
+            // A deleted message can't be replied to.
+            reply_to: (!deleted).then(|| msg.message_id.clone()),
+            attachments: vec![],
+        };
+        if let Err(e) = channel.send(out).await {
+            tracing::warn!(error = %e, "couldn't say why a message was stopped");
+        }
+        channel.answered(&msg.chat_id, &msg.message_id).await;
     }
 
     async fn reply_directly(&self, msg: &InboundMessage, text: String) {
@@ -550,14 +638,20 @@ async fn watchdog(
     }
 }
 
-/// The notice a message queued behind a busy turn gets.
-fn busy_text(activity: &str, busy_for: Duration) -> String {
+/// The notice a message that arrives during a busy turn gets: it's queued,
+/// or (M56.1) `steered` into that turn.
+fn busy_text(activity: &str, busy_for: Duration, steered: bool) -> String {
     let busy_for = human(busy_for);
+    let what = if steered {
+        "I passed your message to the running turn, which reads it at its next step — /stop to end that turn."
+    } else {
+        "your message is queued — /stop to cancel it."
+    };
     if activity.starts_with("waiting") {
         // The model is being retried (M19c): say what's waited for.
-        format!("Busy for {busy_for}, {activity}; your message is queued — /stop to cancel it.")
+        format!("Busy for {busy_for}, {activity}; {what}")
     } else {
-        format!("Busy with {activity} for {busy_for}; your message is queued — /stop to cancel it.")
+        format!("Busy with {activity} for {busy_for}; {what}")
     }
 }
 
@@ -590,6 +684,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -963,6 +1058,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {text}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1120,7 +1216,8 @@ mod tests {
         assert_eq!(
             busy_text(
                 "waiting out the model's rate limit, retry 2 in 25 s",
-                Duration::from_secs(40)
+                Duration::from_secs(40),
+                false
             ),
             "Busy for 40 s, waiting out the model's rate limit, retry 2 in 25 s; your message is queued — /stop to cancel it."
         );
@@ -1139,7 +1236,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        // All three are acknowledged and queued while "first" is held.
+        // All three are acknowledged while "first" is held; the two
+        // behind it go to its turn (M56.1), which is in its last model call.
         wait_for_log(&log, 5).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
@@ -1148,14 +1246,15 @@ mod tests {
                 "react 👀 to 1",
                 "turn: first",
                 "react 👀 to 2",
-                "send to 2: Busy with a model call for 0 s; your message is queued — /stop to cancel it.",
+                "send to 2: Busy with a model call for 0 s; I passed your message to the running turn, which reads it at its next step — /stop to end that turn.",
                 "react 👀 to 3",
             ]
         );
         release.add_permits(1);
         wait_for_log(&log, 8).await;
         let log = log.lock().unwrap();
-        // The two that waited are one turn, answering the latest.
+        // That call never read them, so they are the next turn, one turn
+        // answering the latest, as queued ones are.
         assert_eq!(
             log[5..8],
             [

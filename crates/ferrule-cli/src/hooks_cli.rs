@@ -1,8 +1,9 @@
 //! M18: lifecycle hooks in the CLI (docs/m18-hooks.md): which `[hooks]`
 //! count, an agent's hook set, and `ferrule hooks list|trust|untrust`.
 //!
-//! Hooks run as the owner, outside the sandbox, so nothing the model can
-//! write turns one on: `[hooks]` is read only from `--config` or the global
+//! The user's hooks run as the owner, outside the sandbox, and a
+//! workspace's run in it (they name scripts the model can edit), so nothing
+//! the model can write turns one on: `[hooks]` is read only from `--config` or the global
 //! config (like the extensions allow-list), a workspace's hooks file runs
 //! only once the owner trusted it as it is, the trust record is under
 //! `<data dir>/private/`, which the tools can't reach, and `trust` needs a
@@ -13,9 +14,10 @@ use anyhow::{anyhow, bail, Result};
 use clap::Subcommand;
 use ferrule_core::HookSet;
 use ferrule_hooks::HooksConfig;
+use ferrule_sandbox::Sandbox;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Once;
+use std::sync::{Arc, Once};
 
 #[derive(Subcommand)]
 pub enum HooksCmd {
@@ -67,12 +69,17 @@ pub fn settings(cfg: &config::Config, path: &Path) -> Result<HooksConfig> {
     Ok(HooksConfig::default())
 }
 
-/// The hooks for a top-level agent in `workspace`. Workspace hooks that
-/// won't run are said once per process. (A sub-agent gets its root's, from
-/// the supervisor.)
-pub fn for_agent(cfg: &config::Config, path: &Path, workspace: &Path) -> Result<HookSet> {
+/// The hooks for a top-level agent in `workspace`, the workspace's in
+/// `sandbox`. Workspace hooks that won't run are said once per process. (A
+/// sub-agent gets its root's, from the supervisor.)
+pub fn for_agent(
+    cfg: &config::Config,
+    path: &Path,
+    workspace: &Path,
+    sandbox: &Arc<Sandbox>,
+) -> Result<HookSet> {
     let settings = settings(cfg, path)?;
-    let loaded = ferrule_hooks::build(&settings, workspace, &config::data_dir()?);
+    let loaded = ferrule_hooks::build(&settings, workspace, &config::data_dir()?, sandbox);
     if let Some(notice) = loaded.notice {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| eprintln!("{notice}"));
@@ -117,7 +124,7 @@ pub fn run(op: HooksCmd) -> Result<()> {
                 }
             }
             print!(
-                "These run as you, outside the sandbox, whenever an agent works here. Trust them? [y/N] "
+                "These run in the sandbox, like the agent's commands, whenever an agent works here. Trust them? [y/N] "
             );
             std::io::stdout().flush()?;
             let mut line = String::new();

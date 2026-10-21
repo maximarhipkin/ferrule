@@ -11,6 +11,7 @@
 
 use crate::fs_tools::{resolve, write_atomic};
 use ferrule_core::error::CoreError;
+use ferrule_core::stamps::FileStamps;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -26,11 +27,22 @@ const REGION_LINES: usize = 40;
 #[derive(Default)]
 pub struct EditFileTool {
     hidden: Vec<PathBuf>,
+    stamps: Option<FileStamps>,
 }
 
 impl EditFileTool {
     pub fn hiding(hidden: Vec<PathBuf>) -> Self {
-        Self { hidden }
+        Self {
+            hidden,
+            stamps: None,
+        }
+    }
+
+    /// M57.3: refuse an edit to a file that changed on disk since the agent
+    /// last read or wrote it (the map `read_file` and `write_file` share).
+    pub fn tracking(mut self, stamps: FileStamps) -> Self {
+        self.stamps = Some(stamps);
+        self
     }
 }
 
@@ -76,6 +88,9 @@ impl Tool for EditFileTool {
                     "path": { "type": "string", "description": "Path relative to workspace (or absolute within it)" },
                     "edits": {
                         "type": "array",
+                        "description": "Example, one change with a line of context: \
+                            [{\"search\": \"def total(xs):\\n    return 0\", \"replace\": \"def total(xs):\\n    return sum(xs)\"}]. \
+                            To insert, repeat the line next to it: [{\"search\": \"import os\\n\", \"replace\": \"import os\\nimport sys\\n\"}]",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -102,7 +117,8 @@ impl Tool for EditFileTool {
         }
         let hunks = parse_hunks(&args).map_err(fail)?;
         let path = resolve(&ctx.workspace, &self.hidden, &shown)?;
-        let out = tokio::task::spawn_blocking(move || edit_path(&path, &shown, &hunks))
+        let stamps = self.stamps.clone();
+        let out = tokio::task::spawn_blocking(move || edit_path(&path, &shown, &hunks, stamps))
             .await
             .map_err(|e| fail(e.to_string()))?
             .map_err(fail)?;
@@ -140,7 +156,12 @@ pub fn parse_hunks(args: &Value) -> Result<Vec<Hunk>, String> {
 }
 
 /// Read, apply, write. The error text is what the model sees.
-fn edit_path(path: &Path, shown: &str, hunks: &[Hunk]) -> Result<String, String> {
+fn edit_path(
+    path: &Path,
+    shown: &str,
+    hunks: &[Hunk],
+    stamps: Option<FileStamps>,
+) -> Result<String, String> {
     if path.is_dir() {
         return Err(format!("`{shown}` is a directory"));
     }
@@ -149,10 +170,23 @@ fn edit_path(path: &Path, shown: &str, hunks: &[Hunk]) -> Result<String, String>
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(format!("can't read `{shown}`: {e}")),
     };
+    // M57.3: an edit planned against what the file held when it was read
+    // can't be checked against bytes that have changed since.
+    if let (Some(stamps), Some(bytes)) = (&stamps, &existing) {
+        if stamps.changed(path, bytes) {
+            return Err(format!(
+                "`{shown}` changed on disk since you last read it (a command, a hook, a sub-agent or another tool changed it). \
+                 Nothing was written. Re-read it with read_file, then make the edit against what it holds now."
+            ));
+        }
+    }
     match edit_bytes(existing.as_deref(), shown, hunks)? {
         Edited::Unchanged(message) => Ok(message),
         Edited::Write { bytes, summary } => {
             write_atomic(path, &bytes).map_err(|e| format!("can't write `{shown}`: {e}"))?;
+            if let Some(stamps) = &stamps {
+                stamps.record(path, &bytes);
+            }
             Ok(summary)
         }
     }

@@ -424,6 +424,16 @@ pub struct AgentSettings {
     /// cheaper eyes. Unset: the agent's model summarizes.
     #[serde(default)]
     pub compaction_model: Option<String>,
+    /// M57.1: MCP tools and rarely used built-ins go to the model as a name
+    /// and a line until `tool_search` loads one. `auto`: once more than
+    /// ten could; `always`; `off`: every schema with every request.
+    #[serde(default)]
+    pub defer_tools: ferrule_core::DeferTools,
+    /// M57.2: a run's first turn and the turn after a failed check ask for
+    /// the profile's higher reasoning effort, where the model has an
+    /// `effort` set. False keeps every turn at the configured one.
+    #[serde(default = "default_true")]
+    pub effort_boost: bool,
 }
 
 fn default_auto_commit_author() -> String {
@@ -457,6 +467,8 @@ impl Default for AgentSettings {
             auto_commit_branch: Default::default(),
             auto_commit_author: default_auto_commit_author(),
             compaction_model: None,
+            defer_tools: Default::default(),
+            effort_boost: true,
         }
     }
 }
@@ -493,6 +505,15 @@ pub struct GatewayConfig {
     /// your message is queued" (default 30).
     #[serde(default)]
     pub busy_notice_secs: Option<u64>,
+    /// M56.1: a message sent while its chat's turn runs reaches that turn
+    /// (`"steer"`, the default) or waits for the next (`"queue"`).
+    #[serde(default)]
+    pub while_busy: ferrule_gateway::WhileBusy,
+    /// M57.4: how long Anthropic keeps a chat's prompt cache between
+    /// messages: `"1h"` (the default; its writes cost 2 × input instead of
+    /// 1.25 ×) or `"5m"`, the provider's default.
+    #[serde(default)]
+    pub cache_ttl: CacheTtl,
     /// Enable the stdin/stdout local channel (mostly for smoke-testing the
     /// gateway itself without any external service).
     #[serde(default)]
@@ -560,6 +581,26 @@ pub struct GatewayConfig {
     /// M39: `[gateway.http]`, `POST /v1/messages` for your own programs.
     #[serde(default)]
     pub http: Option<crate::channels::settings::HttpApi>,
+}
+
+/// `[gateway] cache_ttl` (M57.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum CacheTtl {
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[default]
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+impl CacheTtl {
+    /// What a lane's calls ask for: `None` is the provider's default.
+    pub fn asked(self) -> Option<String> {
+        match self {
+            CacheTtl::FiveMinutes => None,
+            CacheTtl::OneHour => Some("1h".into()),
+        }
+    }
 }
 
 /// No `[gateway]` table reads like an empty one. A derived `Default` left
@@ -737,7 +778,8 @@ pub struct Config {
     /// M24: where `ferrule model eval` and the dashboard find the suite.
     #[serde(default)]
     pub eval: EvalConfig,
-    /// M28: the `web_search` tool, off unless a provider is set.
+    /// M28: the `web_search` tool; M56.8: keyless DuckDuckGo unless a
+    /// provider is set (or `provider = "off"`).
     #[serde(default)]
     pub web_search: WebSearchConfig,
     /// M51: image and video generation (docs/m51-media.md), off unless a
@@ -1157,7 +1199,8 @@ impl MemoryConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebSearchConfig {
-    /// `brave`, `tavily`, `searxng` or `exa`; unset: no `web_search` tool.
+    /// `brave`, `tavily`, `searxng`, `exa` or `duckduckgo`; unset: keyless
+    /// DuckDuckGo (M56.8); `"off"`: no `web_search` tool.
     pub provider: Option<String>,
     /// The env var holding the API key. Bound to the endpoint's host in
     /// `[secrets]` unless it's there already.
@@ -1223,13 +1266,17 @@ impl Default for MediaConfig {
 }
 
 impl WebSearchConfig {
-    /// The checked provider, or `None` when search is off.
+    /// The checked provider, or `None` when search is off. Unset is
+    /// DuckDuckGo, which needs no key (M56.8).
     pub fn provider(&self) -> Result<Option<SearchProvider>> {
         let Some(name) = self.provider.as_deref() else {
-            return Ok(None);
+            return Ok(Some(SearchProvider::Duckduckgo));
         };
+        if matches!(name, "off" | "none") {
+            return Ok(None);
+        }
         let p = SearchProvider::parse(name).ok_or_else(|| {
-            anyhow!("[web_search] provider = \"{name}\": expected brave, tavily, searxng or exa")
+            anyhow!("[web_search] provider = \"{name}\": expected brave, tavily, searxng, exa, duckduckgo or off")
         })?;
         Ok(Some(p))
     }
@@ -1403,6 +1450,9 @@ pub struct AgentsConfig {
     /// Tokens all of one tree's sub-agents may use per window.
     pub max_tokens: u64,
     pub budget_window_hours: u32,
+    /// M57.7: the most of a parent's conversation (estimated tokens) a
+    /// `spawn_agent {fork: true}` child starts with; 0 refuses forks.
+    pub fork_tokens: usize,
     /// Per role (`worker`, `planner`, `verifier`): a provider other than
     /// the one the root runs on.
     pub roles: HashMap<String, RoleConfig>,
@@ -1418,6 +1468,7 @@ impl Default for AgentsConfig {
             max_agents: l.max_agents,
             max_tokens: l.max_tokens,
             budget_window_hours: (l.budget_window_secs / 3600) as u32,
+            fork_tokens: l.fork_tokens,
             roles: HashMap::new(),
         }
     }
@@ -1431,6 +1482,7 @@ impl AgentsConfig {
             max_agents: self.max_agents,
             max_tokens: self.max_tokens,
             budget_window_secs: i64::from(self.budget_window_hours.max(1)) * 3600,
+            fork_tokens: self.fork_tokens,
         }
     }
 }
@@ -1537,6 +1589,10 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # edit_file = true                # offer edit_file (SEARCH/REPLACE); write_file stays either way
 # repo_map_tokens = 1024          # repo map budget in a code repo (tokens); 0 = no map
 # compaction_model = "fast"       # summarize compactions on this model instead of the agent's
+# defer_tools = "auto"            # MCP and rare tools sent by name until tool_search loads one:
+#                                 # "auto" past 10 of them, "always", or "off"
+# effort_boost = true             # first turn and the one after a failed check at "high"
+#                                 # effort, where the model has an `effort` set
 # lint = "auto"                   # after an edit, run the project's linter (rustfmt/ruff/gofmt/eslint/tsc) if installed and configured; "off"
 # lint_timeout_secs = 10
 # auto_commit = false            # commit each run's own files (never yours) to git; `ferrule undo` reverts
@@ -1547,6 +1603,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # typing = true                             # "typing…" in the chat while a turn runs
 # stop_grace_secs = 20                      # SIGTERM: running turns get this long, then they're stopped
 # busy_notice_secs = 30                     # a turn this old tells a queued message it's busy
+# while_busy = "steer"                      # a message sent mid-turn reaches that turn; "queue": the next
+# cache_ttl = "1h"                          # Anthropic keeps a chat's prompt cache an hour; "5m": its default
 # local = true                              # enable the stdin/stdout channel
 # telegram_token_env = "TELEGRAM_BOT_TOKEN"  # unset = Telegram disabled
 # telegram_allowed_chats = []               # chat ids the bot answers; empty =
@@ -1610,8 +1668,9 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # trigger_budget_tokens = 4000   # their combined size
 # project_triggers = false   # let the workspace's skills trigger too
 
-# [web_search]              # The web_search tool (docs/web-search.md). Off until a
-# provider = "brave"         # provider is set: brave, tavily, exa or searxng.
+# [web_search]              # The web_search tool (docs/web-search.md). With no
+# provider = "brave"         # provider: keyless DuckDuckGo (light use, rate-limited).
+#                            # Or brave, tavily, exa, searxng; "off" for none.
 # api_key_env = "BRAVE_API_KEY"  # Bound to the endpoint's host through the proxy;
 #                            # the model and the sandbox only ever see a placeholder.
 # endpoint = "https://api.search.brave.com"  # required for searxng
@@ -1731,6 +1790,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # max_agents = 12            # open (not closed) per tree
 # max_tokens = 2000000       # all of a tree's sub-agents together, per window;
 # budget_window_hours = 24   # the agent you talk to isn't counted
+# fork_tokens = 16000        # spawn_agent {fork}: most of the parent's
+#                            # conversation a child starts with; 0 = no forks
 # [agents.roles.verifier]   # a role on another provider, from [providers]
 # provider = "local"
 #
@@ -2192,10 +2253,15 @@ model = "gpt-5.5"
     }
 
     #[test]
-    fn web_search_is_off_by_default_and_checked_when_on() {
-        let off: Config = toml::from_str("").unwrap();
+    fn web_search_is_keyless_by_default_and_checked_when_on() {
+        // M56.8: no provider is DuckDuckGo, with no key to bind.
+        let keyless: Config = toml::from_str("").unwrap();
+        let s = keyless.web_search.settings().unwrap().unwrap();
+        assert_eq!(s.provider, SearchProvider::Duckduckgo);
+        assert!(s.key_env.is_none());
+        assert!(keyless.finish().unwrap().secrets.is_empty());
+        let off: Config = toml::from_str("[web_search]\nprovider = \"off\"").unwrap();
         assert!(off.web_search.settings().unwrap().is_none());
-        assert!(off.finish().unwrap().secrets.is_empty());
         let bad = |t: &str| {
             let c: Config = toml::from_str(t).unwrap();
             c.finish().unwrap_err().to_string()

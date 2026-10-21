@@ -94,6 +94,14 @@ pub trait Channel: Send + Sync {
         self.send(msg).await.map(|()| None)
     }
 
+    /// Exactly `send`, plus the id of the (last) message it made when the
+    /// channel says (M56.6: the reply `edit_message` edits). `post` may
+    /// give up sooner on a rate limit (a streamed preview waits it out
+    /// itself), so a reply goes through this instead.
+    async fn send_with_id(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
+        self.send(msg).await.map(|()| None)
+    }
+
     /// Optional: send with buttons, one per row. Use [`send_with_buttons`],
     /// which falls back to text.
     async fn send_buttons(
@@ -171,6 +179,13 @@ pub trait Channel: Send + Sync {
     /// a command's, or the error that stopped it. A channel that pairs
     /// requests with answers (the HTTP API) closes the request here.
     async fn answered(&self, _chat_id: &str, _message_id: &str) {}
+
+    /// Optional: delete an inbound message from the chat (M52.5: one that
+    /// looked like a pasted key). Default is "not supported", so the chat
+    /// can be asked to delete it instead.
+    async fn delete(&self, _chat_id: &str, _message_id: &str) -> Result<(), GatewayError> {
+        Err(GatewayError::Unsupported("deleting messages"))
+    }
 
     /// Optional: edit a previously sent message in place.
     async fn edit(

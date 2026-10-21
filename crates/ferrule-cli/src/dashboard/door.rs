@@ -36,6 +36,18 @@ pub fn link_text(dash: &Dashboard, link: &str, remote: bool) -> String {
     text
 }
 
+/// The message that carries a link through the tunnel, saying so when
+/// the tunnel hadn't answered yet.
+pub fn remote_text(dash: &Dashboard, link: &super::RemoteLink) -> String {
+    let mut text = link_text(dash, &link.url, true);
+    if !link.ready {
+        text.push_str(
+            "\nThe tunnel is still coming up: if the page doesn't load, give it a few more seconds and open the link again.",
+        );
+    }
+    text
+}
+
 #[async_trait::async_trait]
 impl ferrule_gateway::Interceptor for DashboardDoor {
     async fn intercept(&self, msg: &InboundMessage) -> Option<String> {
@@ -91,7 +103,7 @@ impl ferrule_gateway::Interceptor for DashboardDoor {
         }
         if in_owner_chat && self.dash.tunnel_open().await {
             return Some(match self.dash.remote_link().await {
-                Ok(link) => link_text(&self.dash, &link, true),
+                Ok(link) => remote_text(&self.dash, &link),
                 Err(e) => format!("No link: {e:#}"),
             });
         }
@@ -101,7 +113,7 @@ impl ferrule_gateway::Interceptor for DashboardDoor {
         let hub = self.hub.clone();
         tokio::spawn(async move {
             let text = match dash.remote_link().await {
-                Ok(link) => link_text(&dash, &link, true),
+                Ok(link) => remote_text(&dash, &link),
                 Err(e) => {
                     tracing::warn!("dashboard tunnel: {e:#}");
                     let mut t = format!("The tunnel didn't open: {e:#}.");

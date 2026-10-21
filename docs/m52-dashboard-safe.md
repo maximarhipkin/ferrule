@@ -33,6 +33,9 @@ M50 rule and adds exactly two write paths.
 
 ## Part 1 — rotate: `POST secrets/rotate {name, value}`
 
+The page seals `value` in the browser (M52.1's `asSecret`, merged with
+this on `autopilot`), so the handler gets it opened, as every key field.
+
 The missing half of M50. Add and remove refuse any name that's in use
 elsewhere, because moving or deleting an in-use name breaks the config.
 **Rotate has no such problem: it changes only the value**, so it is the

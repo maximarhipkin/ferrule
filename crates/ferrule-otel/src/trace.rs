@@ -526,6 +526,7 @@ mod tests {
             input_tokens: 100,
             cached_input_tokens: 40,
             cache_write_input_tokens: 0,
+            cache_write_1h_input_tokens: 0,
             output_tokens: 20,
             tool_calls: 1,
             latency_ms: 250,

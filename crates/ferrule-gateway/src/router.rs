@@ -1,8 +1,10 @@
-use crate::channel::Channel;
+use crate::channel::{send_with_buttons, Button, ButtonAction, Channel};
 use crate::error::GatewayError;
-use crate::message::{Attachment, InboundMessage, OutboundMessage};
+use crate::message::{InboundMessage, OutboundMessage};
+use crate::resume::{self, Marker};
 use crate::scheduler::SCHEDULER_PSEUDO_CHANNEL;
 use crate::session;
+use crate::steer::{is_audio, is_image, Steering, WhileBusy};
 use crate::stream::{StreamPacing, StreamingReply};
 use crate::transcribe::{heard_line, Audio, Transcription};
 use crate::typing::Typist;
@@ -10,7 +12,7 @@ use ferrule_core::failure::Kind;
 use ferrule_core::{
     Agent, AgentEvent, CoreError, Guard, GuardedCall, ImageRef, Role, Transcript, Verdict,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -40,6 +42,8 @@ struct LaneJob {
     /// A person typed it (a chat message), so its keywords may load skills
     /// (M28). Not a scheduled prompt, not a sub-agent's news.
     person: bool,
+    /// M56.5: a restart interrupted it; `msg` is the original request.
+    resumed: bool,
 }
 
 /// What an agent turn answered.
@@ -80,6 +84,8 @@ pub struct Router {
     typing: bool,
     /// M44: the bot is stopping. No new message is taken (`close`).
     closing: AtomicBool,
+    /// M56.1: what a person's message does while their chat is busy.
+    while_busy: WhileBusy,
 }
 
 struct Lane {
@@ -91,13 +97,16 @@ struct Lane {
     guard: Arc<TurnGuard>,
     /// The lane's task, so `/new` can wait for it to end (M41).
     task: tokio::task::JoinHandle<()>,
+    /// M56.1: the way into its running turn.
+    steer: Arc<Steering>,
 }
 
-/// A new lane's sender, its turn guard and its task.
+/// A new lane's sender, its turn guard, its task and its steering.
 type Spawned = (
     mpsc::Sender<LaneJob>,
     Arc<TurnGuard>,
     tokio::task::JoinHandle<()>,
+    Arc<Steering>,
 );
 
 /// What a lane is doing, for `/status`, the busy notice and the watchdog
@@ -127,6 +136,14 @@ struct LaneState {
     /// Retired while busy (a model change mid-turn): rebuilt at the first
     /// message that finds it idle, so two agents never share a transcript.
     stale: bool,
+    /// M56.5: the running turn answers a person, so its marker is kept.
+    person: bool,
+    /// M56.6: the message the current (or last) turn answers, which
+    /// `react` reacts to.
+    message_id: String,
+    /// M56.6: the bot's last reply in this chat, which `edit_message`
+    /// edits, when the channel gave its id.
+    last_reply: Option<String>,
 }
 
 /// What `/new` did (M41).
@@ -198,6 +215,8 @@ pub struct LaneSnapshot {
     pub queued: usize,
     /// The message the turn is handling (unredacted).
     pub text: String,
+    /// M56.5: a restart that cuts this turn short takes it up again.
+    pub resumable: bool,
 }
 
 impl LaneSnapshot {
@@ -226,6 +245,7 @@ impl LaneSnapshot {
             since_progress: st.last_progress.map(|at| now.saturating_duration_since(at)),
             queued: st.queued,
             text: st.text.clone(),
+            resumable: st.busy_since.is_some() && st.person,
         }
     }
 
@@ -258,7 +278,15 @@ impl Router {
             transcription: None,
             typing: false,
             closing: AtomicBool::new(false),
+            while_busy: WhileBusy::default(),
         }
+    }
+
+    /// M56.1: what a person's message does while their chat's turn runs
+    /// (`[gateway] while_busy`); see [`Router::steer`].
+    pub fn with_while_busy(mut self, mode: WhileBusy) -> Self {
+        self.while_busy = mode;
+        self
     }
 
     /// M41: shows "typing…" in the chat while a turn runs, on channels that
@@ -310,7 +338,10 @@ impl Router {
             for lane in lanes.values() {
                 let mut st = lane.state.lock().unwrap();
                 st.retired = true;
-                if st.queued > 0 {
+                // M56.1: a message the running turn hasn't read yet waits
+                // too, and is dropped with the rest.
+                let steered = lane.steer.drop_waiting();
+                if st.queued > 0 || steered > 0 {
                     st.queued = 0;
                     told.push((lane.channel.clone(), lane.chat_id.clone()));
                 }
@@ -390,7 +421,7 @@ impl Router {
         let notified = self.close(notice).await;
         self.wait_idle(grace).await;
         let stopped = if self.running() > 0 {
-            self.stop_all("a bot restart")
+            self.stop_for_restart()
         } else {
             0
         };
@@ -402,6 +433,135 @@ impl Router {
             stopped,
             left: self.running(),
         }
+    }
+
+    /// [`Router::stop_all`] for a restart (M56.5): a person's turn keeps
+    /// its marker, and its chat hears that it will be taken up again.
+    fn stop_for_restart(&self) -> usize {
+        let lanes = self.lanes.lock().unwrap();
+        let mut n = 0;
+        for lane in lanes.values() {
+            let person = {
+                let st = lane.state.lock().unwrap();
+                if st.busy_since.is_none() {
+                    continue;
+                }
+                st.person
+            };
+            lane.guard.stop_for_restart(person);
+            n += 1;
+        }
+        n
+    }
+
+    /// M56.5: the turns a restart cut short, from the markers their lanes
+    /// left, each renamed to wait for its chat. Call once at start, before
+    /// any message is taken: a lane's new turn writes the same file.
+    pub fn interrupted(&self) -> Vec<(String, resume::InFlight)> {
+        let Ok(entries) = std::fs::read_dir(&self.sessions_dir) else {
+            return Vec::new();
+        };
+        let mut sids: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.strip_suffix(".turn.json").map(str::to_string)
+            })
+            .collect();
+        sids.sort();
+        let mut out = Vec::new();
+        for sid in sids {
+            let from = resume::turn_path(&self.sessions_dir, &sid);
+            let Some(turn) = resume::read(&from) else {
+                continue;
+            };
+            match std::fs::rename(&from, resume::offer_path(&self.sessions_dir, &sid)) {
+                Ok(()) => out.push((sid, turn)),
+                Err(e) => {
+                    tracing::warn!(session = %sid, error = %e, "couldn't keep an interrupted turn")
+                }
+            }
+        }
+        out
+    }
+
+    /// M56.5: tells each [`Router::interrupted`] turn's chat. A turn that
+    /// had only read runs again at once; one that called anything else (or
+    /// was already a second try) waits for its chat's [`resume::CONTINUE`].
+    pub async fn take_up(&self, turns: Vec<(String, resume::InFlight)>) {
+        if !turns.is_empty() {
+            tracing::info!(count = turns.len(), "turns a restart interrupted");
+        }
+        for (sid, turn) in turns {
+            let Some(ch) = self.channels.get(&turn.msg.channel).cloned() else {
+                tracing::warn!(session = %sid, "an interrupted turn's channel isn't on; it waits for /continue");
+                continue;
+            };
+            let again = turn.runs_again();
+            let out = OutboundMessage {
+                channel: turn.msg.channel.clone(),
+                chat_id: turn.msg.chat_id.clone(),
+                text: resume::notice(&turn),
+                reply_to: (!turn.msg.message_id.is_empty()).then(|| turn.msg.message_id.clone()),
+                attachments: vec![],
+            };
+            let buttons = if again {
+                Vec::new()
+            } else {
+                vec![
+                    Button {
+                        text: "Resume".into(),
+                        action: ButtonAction::Command(resume::CONTINUE.into()),
+                    },
+                    Button {
+                        text: "Let it go".into(),
+                        action: ButtonAction::Command(format!("{} drop", resume::CONTINUE)),
+                    },
+                ]
+            };
+            if let Err(e) = send_with_buttons(ch.as_ref(), out, &buttons).await {
+                tracing::warn!(session = %sid, error = %e, "couldn't tell a chat its turn was interrupted");
+            }
+            if again {
+                if let Err(e) = self.resume(&sid) {
+                    tracing::warn!(session = %sid, error = %e, "couldn't take up an interrupted turn");
+                }
+            }
+        }
+    }
+
+    /// M56.5: runs `session_id`'s interrupted turn again, on its original
+    /// message. False when there is none.
+    pub fn resume(&self, session_id: &str) -> Result<bool, GatewayError> {
+        let path = resume::offer_path(&self.sessions_dir, session_id);
+        let Some(turn) = resume::read(&path) else {
+            return Ok(false);
+        };
+        let (tx, state) = self.lane_for(session_id, &turn.msg)?;
+        state.lock().unwrap().queued += 1;
+        let sent = tx.try_send(LaneJob {
+            msg: turn.msg,
+            reply: None,
+            person: true,
+            resumed: true,
+        });
+        if let Err(e) = sent {
+            state.lock().unwrap().queued -= 1;
+            return Err(match e {
+                mpsc::error::TrySendError::Full(_) => GatewayError::QueueFull(session_id.into()),
+                mpsc::error::TrySendError::Closed(_) => {
+                    GatewayError::SessionClosed(session_id.into())
+                }
+            });
+        }
+        let _ = std::fs::remove_file(&path);
+        Ok(true)
+    }
+
+    /// M56.5: lets `session_id`'s interrupted turn go. False when there
+    /// was none.
+    pub fn drop_interrupted(&self, session_id: &str) -> bool {
+        std::fs::remove_file(resume::offer_path(&self.sessions_dir, session_id)).is_ok()
     }
 
     async fn wait_idle(&self, limit: Duration) {
@@ -482,12 +642,50 @@ impl Router {
                 msg,
                 reply: None,
                 person: true,
+                resumed: false,
             })
             .await;
         if sent.is_err() {
             state.lock().unwrap().queued -= 1;
         }
         sent.map_err(|_| GatewayError::SessionClosed(sid))
+    }
+
+    /// M56.1: hands `msg` to its chat's running turn, which reads it after
+    /// its current tool calls, before its next model call. True only when
+    /// the chat steers ([`WhileBusy::Steer`]), the turn answers a person
+    /// and it's the same sender (a group's other members wait), and no
+    /// message waits in front of it (their order holds). A voice note
+    /// waits, to be heard first, and so does everything on a channel that
+    /// pairs each request with its answer (the HTTP API). False: queue it
+    /// with [`Router::offer`]. What reaches the turn too late for it (its
+    /// last model call was already running) starts the next turn.
+    pub fn steer(&self, msg: &InboundMessage) -> bool {
+        if self.while_busy != WhileBusy::Steer || self.closing() {
+            return false;
+        }
+        if self.transcription.is_some() && msg.attachments.iter().any(is_audio) {
+            return false;
+        }
+        if self
+            .channels
+            .get(&msg.channel)
+            .is_some_and(|c| !c.busy_notices())
+        {
+            return false;
+        }
+        let sid = session::session_id(&msg.channel, &msg.chat_id);
+        let lanes = self.lanes.lock().unwrap();
+        let Some(lane) = lanes.get(&sid) else {
+            return false;
+        };
+        {
+            let st = lane.state.lock().unwrap();
+            if st.queued > 0 || st.retired || st.stale {
+                return false;
+            }
+        }
+        lane.steer.offer(msg)
     }
 
     /// Like [`Router::dispatch`], but never waits: a lane whose queue is
@@ -501,6 +699,7 @@ impl Router {
             msg,
             reply: None,
             person: true,
+            resumed: false,
         });
         if sent.is_err() {
             state.lock().unwrap().queued -= 1;
@@ -528,6 +727,7 @@ impl Router {
                 msg,
                 reply: Some(reply_tx),
                 person: false,
+                resumed: false,
             })
             .await;
         if sent.is_err() {
@@ -559,7 +759,7 @@ impl Router {
             }
         }
         let state = Arc::new(Mutex::new(LaneState::default()));
-        let (tx, guard, task) = self.spawn_lane(session_id, &msg.channel, state.clone())?;
+        let (tx, guard, task, steer) = self.spawn_lane(session_id, &msg.channel, state.clone())?;
         lanes.insert(
             session_id.to_string(),
             Lane {
@@ -569,6 +769,7 @@ impl Router {
                 state: state.clone(),
                 guard,
                 task,
+                steer,
             },
         );
         Ok((tx, state))
@@ -609,7 +810,7 @@ impl Router {
             {
                 let mut st = lane.state.lock().unwrap();
                 st.retired = true;
-                out.dropped = st.queued;
+                out.dropped = st.queued + lane.steer.drop_waiting();
                 out.stopped = st.busy_since.is_some();
             }
             if out.stopped {
@@ -625,6 +826,9 @@ impl Router {
             }
             self.changed.notify_waiters();
         }
+        // M56.5: an interrupted turn belongs to the conversation put aside.
+        let _ = std::fs::remove_file(resume::turn_path(&self.sessions_dir, session_id));
+        let _ = std::fs::remove_file(resume::offer_path(&self.sessions_dir, session_id));
         let path = self.sessions_dir.join(format!("{session_id}.jsonl"));
         if path.exists() {
             out.messages = std::fs::read_to_string(&path)
@@ -676,6 +880,23 @@ impl Router {
             .unwrap()
             .get(session_id)
             .map(|l| (l.channel.clone(), l.chat_id.clone()))
+    }
+
+    /// M56.6: the message `session_id`'s turn answers (the latest, when
+    /// several were joined), as (channel, chat, message id).
+    pub fn turn_message(&self, session_id: &str) -> Option<(String, String, String)> {
+        let lanes = self.lanes.lock().unwrap();
+        let lane = lanes.get(session_id)?;
+        let id = lane.state.lock().unwrap().message_id.clone();
+        (!id.is_empty()).then(|| (lane.channel.clone(), lane.chat_id.clone(), id))
+    }
+
+    /// M56.6: the id of the bot's last reply in `session_id`'s chat.
+    pub fn last_reply(&self, session_id: &str) -> Option<String> {
+        let lanes = self.lanes.lock().unwrap();
+        let lane = lanes.get(session_id)?;
+        let id = lane.state.lock().unwrap().last_reply.clone();
+        id
     }
 
     /// The adapter called `name`.
@@ -737,6 +958,7 @@ impl Router {
                 msg,
                 reply: None,
                 person: false,
+                resumed: false,
             })
             .is_ok();
         if !sent {
@@ -765,6 +987,14 @@ impl Router {
         // (M19's), so it ends a turn the way `/stop` does.
         let guard = Arc::new(TurnGuard::new(agent.guard(), self.max_turn));
         agent.set_guard(guard.clone());
+        // M56.1: beside the inbox the factory gave it (the supervisor's).
+        let steer = Arc::new(Steering::default());
+        agent.add_inbox(steer.clone());
+        let marker = Arc::new(Marker::new(
+            &self.sessions_dir,
+            session_id,
+            agent.tools().clone(),
+        ));
         let channel = self.channels.get(channel_name).cloned();
         let (tx, rx) = mpsc::channel(self.lane_queue_capacity);
         let stream = channel
@@ -778,9 +1008,11 @@ impl Router {
             stream,
             transcription: self.transcription.clone(),
             typing: self.typing,
+            steer: steer.clone(),
+            marker,
         };
         let task = tokio::spawn(run_lane(agent, rx, channel, session_id.to_string(), watch));
-        Ok((tx, guard, task))
+        Ok((tx, guard, task, steer))
     }
 }
 
@@ -807,14 +1039,15 @@ async fn run_lane(
     // M47: this chat was told the model can't see photos.
     let mut told_no_vision = false;
     // Taken off the queue behind a person's messages but not one of them
-    // (a scheduled prompt, a sub-agent's news): the next turn's.
-    let mut held: Option<LaneJob> = None;
+    // (a scheduled prompt, a sub-agent's news), or sent too late for the
+    // turn it steered (M56.1): the next turns', in this order.
+    let mut held: VecDeque<LaneJob> = VecDeque::new();
     // ponytail: a channel without busy notices pairs each request with its
     // answer (the HTTP API), so its messages keep a turn each; a flag of
     // its own if those two ever differ.
     let merges = channel.as_ref().is_none_or(|c| c.busy_notices());
     loop {
-        let job = match held.take() {
+        let job = match held.pop_front() {
             Some(job) => job,
             None => match rx.recv().await {
                 Some(job) => job,
@@ -828,11 +1061,13 @@ async fn run_lane(
             msg: mut inbound,
             reply,
             person,
+            resumed,
         } = job;
         // Messages a person sent while the last turn ran are one turn with
-        // one reply, not a reply each.
+        // one reply, not a reply each. Not past a held job: order holds.
+        // A resumed request stays the request it was.
         let mut earlier = Vec::new();
-        if person && merges {
+        if person && merges && held.is_empty() && !resumed {
             loop {
                 match rx.try_recv() {
                     Ok(more) if more.person => {
@@ -844,14 +1079,23 @@ async fn run_lane(
                         inbound = join(inbound, more.msg);
                     }
                     Ok(other) => {
-                        held = Some(other);
+                        held.push_back(other);
                         break;
                     }
                     Err(_) => break,
                 }
             }
         }
-        watch.start(&inbound.text);
+        // M56.5: a person's turn is taken up after a restart, except on a
+        // channel that pairs each request with its answer (the HTTP API).
+        let resumable = person && merges;
+        watch.start(&inbound.text, resumable);
+        watch.state.lock().unwrap().message_id = inbound.message_id.clone();
+        // The request as it arrived, before its voice notes are heard, so
+        // a resumed one is heard again rather than twice.
+        if resumable {
+            watch.marker.begin(&inbound, resumed);
+        }
         // M41: armed before the voice notes are heard, so a `/stop` while
         // they are ends the typing too.
         watch.guard.arm();
@@ -884,6 +1128,7 @@ async fn run_lane(
             erx,
             watch.state.clone(),
             watch.changed.clone(),
+            watch.marker.clone(),
         ));
         let out = OutboundMessage {
             channel: inbound.channel.clone(),
@@ -938,11 +1183,25 @@ async fn run_lane(
             }
             agent.attach_images(photos);
         }
-        let run_result = if person {
-            agent.run_user(&inbound.text, etx).await
+        // M56.1: a person's turn hears what they send while it runs.
+        if person {
+            watch.steer.open(inbound.sender_id.clone());
+        }
+        let goal = if resumed {
+            resume::goal(&inbound.text)
         } else {
-            agent.run(&inbound.text, etx).await
+            inbound.text.clone()
         };
+        let run_result = if person {
+            agent.run_user(&goal, etx).await
+        } else {
+            agent.run(&goal, etx).await
+        };
+        let steered = watch.steer.close();
+        // M56.5: a turn a restart ended keeps its marker for the next start.
+        watch
+            .marker
+            .end(watch.guard.for_restart() && agent.incomplete.is_some());
         watch.guard.disarm();
         agent.set_reply_stream(None);
         // Whatever still holds a sender (a sub-agent) now finds it closed
@@ -975,19 +1234,31 @@ async fn run_lane(
         if let Some(typist) = typist {
             typist.stop().await;
         }
-        if let Some(streamer) = streamer {
-            streamer.finish(reply_text).await;
+        // M56.6: the reply's id, for `edit_message`.
+        let sent = if let Some(streamer) = streamer {
+            streamer.finish(reply_text).await
         } else if let Some(ch) = &channel {
             let out = OutboundMessage {
                 text: reply_text,
                 ..out
             };
-            if let Err(e) = ch.send(out).await {
-                tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
+            match ch.send_with_id(out).await {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!(session = %session_id, error = %e, "failed to deliver reply");
+                    None
+                }
             }
-        }
+        } else {
+            None
+        };
+        watch.state.lock().unwrap().last_reply = sent;
         if let Some(ch) = &channel {
-            for id in earlier.iter().chain([&inbound.message_id]) {
+            for id in earlier
+                .iter()
+                .chain(&steered.read)
+                .chain([&inbound.message_id])
+            {
                 if !id.is_empty() {
                     ch.answered(&inbound.chat_id, id).await;
                 }
@@ -1001,6 +1272,17 @@ async fn run_lane(
                 })
                 .map_err(|e| e.to_string());
             let _ = reply_tx.send(outcome); // receiver may have given up (e.g. caller timed out)
+        }
+        // M56.1: sent during the turn's last model call, after it last
+        // looked: the next turn's, before anything else waiting.
+        if let Some(msg) = steered.late.into_iter().reduce(join) {
+            watch.state.lock().unwrap().queued += 1;
+            held.push_front(LaneJob {
+                msg,
+                reply: None,
+                person: true,
+                resumed: false,
+            });
         }
         watch.finish();
     }
@@ -1033,6 +1315,10 @@ struct LaneWatch {
     stream: Option<StreamPacing>,
     transcription: Option<Transcription>,
     typing: bool,
+    /// M56.1: open while a person's turn runs.
+    steer: Arc<Steering>,
+    /// M56.5: the running person's turn, on disk.
+    marker: Arc<Marker>,
 }
 
 /// Sent when a run ends with no text at all.
@@ -1040,16 +1326,6 @@ const EMPTY_REPLY: &str = "(I finished without writing a reply. Ask again if you
 
 /// Said once per chat when a photo arrives and the model can't see it.
 const NO_VISION: &str = "I saved your photo, but the model I'm using can't see images, so I only get the file. Pick a model marked “sees photos” in the dashboard's Models to change that.";
-
-/// A photo an adapter saved (M39's inbox), not a link (M47).
-fn is_image(a: &Attachment) -> bool {
-    a.kind.starts_with("image/") && Path::new(&a.url).is_file()
-}
-
-/// An audio file an adapter saved (M39's inbox), not a link.
-fn is_audio(a: &Attachment) -> bool {
-    a.kind.starts_with("audio/") && Path::new(&a.url).is_file()
-}
 
 /// M41: `inbound` with a line per audio attachment in front of its text:
 /// the transcript, or why there isn't one. The file's own line (M39's)
@@ -1121,12 +1397,13 @@ async fn hear(
 }
 
 impl LaneWatch {
-    fn start(&self, text: &str) {
+    fn start(&self, text: &str, person: bool) {
         {
             let mut st = self.state.lock().unwrap();
             st.queued = st.queued.saturating_sub(1);
             st.busy_since = Some((Instant::now(), SystemTime::now()));
             st.text = text.to_string();
+            st.person = person;
             st.activity = "starting".into();
             st.last_progress = Some(Instant::now());
             st.stall_reported = false;
@@ -1153,8 +1430,12 @@ async fn drain_events(
     mut rx: mpsc::Receiver<AgentEvent>,
     state: Arc<Mutex<LaneState>>,
     changed: Arc<Notify>,
+    marker: Arc<Marker>,
 ) {
     while let Some(ev) = rx.recv().await {
+        if let AgentEvent::ToolCallStarted { name, .. } = &ev {
+            marker.called(name);
+        }
         let activity = match &ev {
             AgentEvent::RunStarted { .. }
             | AgentEvent::ToolCallFinished { .. }
@@ -1235,6 +1516,8 @@ struct TurnGuard {
     /// The final message, once the turn was asked to stop.
     stopped: Mutex<Option<String>>,
     stop_now: Notify,
+    /// M56.5: the stop was a restart's.
+    restart: AtomicBool,
 }
 
 impl TurnGuard {
@@ -1245,10 +1528,12 @@ impl TurnGuard {
             deadline: Mutex::new(None),
             stopped: Mutex::new(None),
             stop_now: Notify::new(),
+            restart: AtomicBool::new(false),
         }
     }
 
     fn arm(&self) {
+        self.restart.store(false, Ordering::SeqCst);
         *self.stopped.lock().unwrap() = None;
         *self.deadline.lock().unwrap() = self.limit.map(|l| tokio::time::Instant::now() + l);
     }
@@ -1262,6 +1547,23 @@ impl TurnGuard {
             "Stopped from {by}: I ended this turn. Nothing after the last step was done; send a new message to continue."
         ));
         self.stop_now.notify_waiters();
+    }
+
+    /// A restart's stop (M56.5). A person's turn is taken up again at the
+    /// next start, and its chat is told so.
+    fn stop_for_restart(&self, person: bool) {
+        if !person {
+            return self.stop("a bot restart");
+        }
+        self.restart.store(true, Ordering::SeqCst);
+        *self.stopped.lock().unwrap() = Some(
+            "Stopped from a bot restart: I ended this turn. Nothing after the last step was done; when I'm back I'll pick it up again, or ask you first if it had already changed something.".into(),
+        );
+        self.stop_now.notify_waiters();
+    }
+
+    fn for_restart(&self) -> bool {
+        self.restart.load(Ordering::SeqCst)
     }
 
     fn message(&self) -> String {
@@ -1388,6 +1690,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {last_user}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1406,6 +1709,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("count: {n}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1449,6 +1753,7 @@ mod tests {
             Ok(CompletionResponse {
                 message,
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1815,6 +2120,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {last}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }
@@ -1910,6 +2216,7 @@ mod tests {
             Ok(CompletionResponse {
                 message: Message::assistant(Some(format!("echo: {last}")), vec![], None),
                 usage: Usage::default(),
+                stop_reason: None,
             })
         }
     }

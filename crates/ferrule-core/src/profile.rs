@@ -24,6 +24,12 @@ pub struct HarnessProfile {
     pub retain_reasoning: bool,
     /// Extra system-prompt block tuned for this model family.
     pub system_directive: String,
+    /// M57.2: the highest reasoning effort the harness asks for on its
+    /// own: a run's first turn and the turn after a failed check are raised
+    /// to it, and a `spawn_agent` effort is held to it. Only where the
+    /// model has an `effort` set ([`crate::provider::CallContext::effort_for`]).
+    #[serde(default)]
+    pub max_effort: Option<String>,
 }
 
 impl HarnessProfile {
@@ -46,6 +52,7 @@ impl HarnessProfile {
                                use tools decisively, and keep going across many tool calls until \
                                the task is genuinely complete."
                 .into(),
+            max_effort: Some("high".into()),
         }
     }
 
@@ -63,6 +70,7 @@ impl HarnessProfile {
                                speculation, verify claims with evidence, and persist key \
                                facts instead of re-deriving them."
                 .into(),
+            max_effort: Some("high".into()),
         }
     }
 
@@ -78,6 +86,7 @@ impl HarnessProfile {
             system_directive: "You are Claude working inside an agent runtime. Use tools when \
                                they reduce uncertainty; be concise in final answers."
                 .into(),
+            max_effort: Some("high".into()),
         }
     }
 
@@ -90,6 +99,7 @@ impl HarnessProfile {
             compaction_threshold: 0.70,
             retain_reasoning: false,
             system_directive: String::new(),
+            max_effort: Some("high".into()),
         }
     }
 

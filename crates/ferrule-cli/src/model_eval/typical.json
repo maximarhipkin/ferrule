@@ -20,22 +20,22 @@
       "calls": 4
     },
     "release-notes": {
-      "input": 94358,
+      "input": 94223,
       "cached_input": 0,
-      "output": 398,
-      "calls": 10
+      "output": 367,
+      "calls": 9
     },
     "config-migration": {
-      "input": 99329,
+      "input": 94433,
       "cached_input": 0,
-      "output": 368,
-      "calls": 8
+      "output": 461,
+      "calls": 11
     },
     "incident-report": {
-      "input": 115186,
+      "input": 115022,
       "cached_input": 0,
-      "output": 487,
-      "calls": 12
+      "output": 456,
+      "calls": 11
     },
     "rename-api": {
       "input": 94664,

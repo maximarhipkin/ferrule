@@ -1,3 +1,4 @@
+use crate::jobs::{Jobs, ShellJobTool, MAX_RUNNING};
 use ferrule_core::error::CoreError;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use ferrule_core::Verifier;
@@ -16,6 +17,9 @@ pub struct ShellTool {
     pub timeout: Duration,
     pub deny_patterns: Vec<&'static str>,
     pub sandbox: Arc<Sandbox>,
+    /// M57.6: the commands it started in the background; shared with its
+    /// [`ShellJobTool`] ([`ShellTool::job_tool`]).
+    pub jobs: Arc<Jobs>,
 }
 
 impl Default for ShellTool {
@@ -37,6 +41,7 @@ impl Default for ShellTool {
                 "chmod -R 777 /",
             ],
             sandbox: Arc::new(Sandbox::off()),
+            jobs: Arc::default(),
         }
     }
 }
@@ -47,6 +52,50 @@ impl ShellTool {
             sandbox,
             ..Self::default()
         }
+    }
+
+    /// M57.6: `shell_job`, over this shell's background jobs.
+    pub fn job_tool(&self) -> ShellJobTool {
+        ShellJobTool {
+            jobs: self.jobs.clone(),
+        }
+    }
+
+    /// M57.6: starts `cmd` in the sandbox, in `workspace`, without waiting:
+    /// its stdout and stderr go to a new file under `.ferrule/spill/`.
+    fn start(&self, cmd: &str, workspace: &Path) -> Result<String, CoreError> {
+        if self.jobs.running() >= MAX_RUNNING {
+            return Err(Self::failed(format!(
+                "{MAX_RUNNING} background jobs are already running; stop one with shell_job {{\"id\": …, \"action\": \"kill\"}} first"
+            )));
+        }
+        let (file, log) = ferrule_core::tool::new_spill_file(workspace).map_err(Self::failed)?;
+        let path = workspace.join(&log);
+        let err = file
+            .try_clone()
+            .map_err(|e| Self::failed(format!("{log}: {e}")))?;
+        let shell = Shell::get();
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut std_cmd = self
+            .sandbox
+            .command(&shell.program, shell.args(cmd), workspace)
+            .map_err(|e| Self::failed(format!("sandbox setup failed: {e}")))?;
+        // Its own process group, so a kill takes everything it started.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut std_cmd, 0);
+        let mut command = tokio::process::Command::from(std_cmd);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(file))
+            .stderr(Stdio::from(err))
+            .kill_on_drop(true);
+        let child = command.spawn().map_err(|e| Self::failed(e.to_string()))?;
+        let id = self.jobs.add(cmd, log.clone(), path, child);
+        Ok(format!(
+            "Started job {id} in the background: `{cmd}`. Its output (stdout and stderr) goes to {log}. \
+             See how it's doing with shell_job {{\"id\": {id}, \"action\": \"status\"}} or \"tail\", \
+             stop it with \"kill\". It is stopped when this session ends."
+        ))
     }
 
     fn failed(message: impl Into<String>) -> CoreError {
@@ -137,10 +186,17 @@ impl Tool for ShellTool {
             description,
             parameters: json!({
                 "type": "object",
-                "properties": { "command": { "type": "string", "description": "Shell command to execute" } },
+                "properties": {
+                    "command": { "type": "string", "description": "Shell command to execute" },
+                    "background": { "type": "boolean", "description": "true: start it and return at once with a job id, for a dev server, a watcher or anything else that keeps running; its output goes to a file. Look at it or stop it with shell_job." }
+                },
                 "required": ["command"]
             }),
         }
+    }
+
+    fn session_ended(&self) {
+        self.jobs.stop_all();
     }
 
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {
@@ -153,10 +209,23 @@ impl Tool for ShellTool {
                 "command blocked by deny list: `{cmd}`"
             )));
         }
+        if args["background"].as_bool() == Some(true) {
+            return self.start(&cmd, &ctx.workspace).map(ToolOutput::ok);
+        }
 
         let (code, mut text) = self.run(&cmd, &ctx.workspace).await?;
-        text.push_str(&format!("\n[exit code: {code}]"));
-        Ok(ToolOutput::capped(text, ctx.max_output_chars))
+        // Over the cap, the whole output goes to a spill file and the
+        // model gets the exit code first, then the head and the tail:
+        // a failing build's errors come last.
+        let exit = format!("[exit code: {code}]");
+        text.push('\n');
+        text.push_str(&exit);
+        Ok(ToolOutput::spilled(
+            text,
+            Some(&exit),
+            ctx.max_output_chars,
+            &ctx.workspace,
+        ))
     }
 }
 

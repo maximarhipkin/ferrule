@@ -1,6 +1,7 @@
 # M12 — multi-agent: design
 
-Status: design, 2026-09-24. Scope is `docs/roadmap.md` → M12 (approved,
+Status: parts 1–5 merged to `main` (PR #1, 2026-09-24); part 6, named
+long-lived agents, is deferred. Written as the design on 2026-09-24. Scope is `docs/roadmap.md` → M12 (approved,
 msg 3090), with the deltas from `docs/research-number-one-harness-strategy.md`
 §5 folded in (the table at the end says which were adopted, changed or
 rejected, and why). Per-session workspaces were dropped (msg 3088): a child
@@ -119,7 +120,8 @@ do simple things yourself; one child for one separable job; two to four
 for a comparison or independent parts; more only for broad work that
 splits cleanly and is worth many times the tokens. Give each child a
 complete task — goal, what's already known, what to return — because it
-sees nothing of your conversation.
+sees nothing of your conversation (unless it is forked: M57.7,
+[m57-context-hygiene.md](m57-context-hygiene.md#fork-sub-agents-m577)).
 
 **Summary contract.** A child's system prompt says its final answer goes to
 another agent, not a person, and must be a distilled report of at most

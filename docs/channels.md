@@ -24,8 +24,9 @@ channels added in M39. The design, and the reasons behind it, are in
 [m39-channels.md](m39-channels.md). What works in every chat, whichever
 channel it's on, is at the end: [chat commands](#chat-commands),
 [voice messages](#voice-messages), [the typing
-indicator](#typing-indicator) and [messages sent while it
-works](#messages-sent-while-it-works).
+indicator](#typing-indicator), [messages sent while it
+works](#messages-sent-while-it-works) and [keys pasted into a
+chat](#keys-pasted-into-a-chat).
 
 ## Which channel to pick
 
@@ -985,6 +986,7 @@ sees them):
 | `/new` (or `/reset`) | Starts a fresh conversation in this chat. A running turn is stopped, and messages waiting behind it are dropped (the reply says how many). The old transcript stays on disk as `sessions/<chat>.<UTC time>.jsonl`. It's kept, not replayed. Memory, tasks and settings stay. |
 | `/status` | What ferrule is doing right now. |
 | `/help` | The commands this chat answers. |
+| `/continue`, `/continue drop` | Run again the request a restart interrupted in this chat, or let it go (see "After a restart"). |
 | `/stop`, `/resume` | Stop every run now; let runs start again. |
 | `/plan <task>`, `/undo` | Explore first, then ask; revert the agent's last commit. |
 | `/goal <what done looks like>`, `/graph <file>` | A loop that runs until the judge says so; run an agent graph, whose gates ask here. |
@@ -1030,9 +1032,19 @@ message's text. If the model can't see images, the chat is told so once, in
 a sentence, and the agent still gets the saved file's path.
 
 - **Telegram** sends the largest size Ferrule will take (at most 2000 px on
-  the long side and within the size cap). An album is read as its first
-  photo only; the bot says so once per album, and you send the others one
-  at a time.
+  the long side and within the size cap). An album (photos, videos or
+  files sent together) reaches the agent as **one** message with every
+  item and the caption (M56.7): Telegram sends each item on its own, and
+  the bot joins those that share an album id, polling once more for a
+  second when a batch ends mid-album.
+- **Discord** saves what's attached to a message the bot reads (a DM, or
+  a mention in an allowed channel) into the inbox, up to the size cap,
+  from Discord's CDN (M56.7); the agent gets each file's line and photos
+  as pictures. A message with only a file is read too.
+- **Slack** still doesn't download files: Slack's `url_private_download`
+  needs the bot token and the `files:read` scope, which the app manifest
+  ([slack.md](slack.md)) doesn't ask for. A file there gets "I can only
+  read text", or a note next to the text.
 - **The dashboard's Chat** has an attach button (also in the command
   palette). The page shrinks the photo to 1568 px and re-encodes it as
   JPEG in your browser, which also drops its EXIF and GPS data, before
@@ -1052,8 +1064,20 @@ sees it. The agent gets the text and the saved file's path:
 ```
 
 This works on every channel that saves files into the inbox: Telegram
-(voice notes and audio files), WhatsApp, Matrix, Mattermost, Signal, email
-and the HTTP API. Discord and Slack don't download files yet.
+(voice notes and audio files), Discord (an attached audio file, M56.7),
+WhatsApp, Matrix, Mattermost, Signal, email and the HTTP API. Slack
+doesn't download files yet (see Photos).
+
+A Telegram **video message** (the round one) is saved like a video since
+M56.7: the agent gets its file, not "I can only read text". Its sound
+isn't transcribed.
+
+Files the agent sends with `send_file` go to Telegram the way Telegram
+plays them (M56.7): a photo with `sendPhoto`, a video (MP4 and other
+`video/*`, up to 50 MB) with `sendVideo` so it plays inline, an Ogg/Opus
+voice note with `sendVoice`, an MP3 or M4A with `sendAudio`, anything
+else as a document. One Telegram refuses as that kind goes again as a
+document.
 
 The gateway makes the call itself, so the key never enters the sandbox. No
 language is assumed; the backend detects it unless you pin one.
@@ -1128,18 +1152,47 @@ typing = false
 
 ## Messages sent while it works
 
-A chat's messages are answered one turn at a time. What you send while a
-turn runs waits, and when that turn ends, everything that waited is
-answered as **one** turn: the messages in order, a paragraph apart, with
-all their files, and one reply to the latest. Three quick lines get one
-answer, not three. A message doesn't reach a turn that is already
-running; it waits for the next one. A scheduled task's prompt and a
-sub-agent's news stay turns of their own, and the HTTP API keeps a turn
-per request, since each request waits for its own answer.
+A chat's messages are answered one turn at a time, and what you send
+while a turn runs reaches **that turn** (M56.1, "steering"). The turn
+reads it after the tool calls it is running finish, before it next asks
+the model, so "no, the other file" lands while the work is still going.
+The model reads it as you speaking, starting `[sent while you were
+working]`, with its photos and files. Nothing already done is undone,
+and the turn's one reply answers your first message.
+
+A message that arrives while the turn is already writing its last answer
+comes too late for it: it isn't lost, it starts the next turn. So do
+these, which never steer a running turn:
+
+- a voice message, when transcription is set up (it's heard first, at
+  the start of its turn);
+- a message from someone else in a group chat, while the turn answers
+  another member;
+- any message while another one is already waiting, so their order
+  holds;
+- every message while the turn is a scheduled task's, a plan's or
+  `/goal`'s, or a sub-agent's news, which stay turns of their own;
+- the HTTP API's requests, since each waits for its own answer.
+
+Everything that waited is answered as **one** turn: the messages in
+order, a paragraph apart, with all their files, and one reply to the
+latest. Three quick lines get one answer, not three.
+
+To keep the old way, where every message waits for the next turn, set:
+
+```toml
+[gateway]
+while_busy = "queue"   # default "steer"
+```
+
+The setting covers every chat. `/new` while a turn runs drops a message
+the turn hasn't read yet, and says so, as it does for waiting ones; so
+does the bot stopping.
 
 A message that arrives when the turn in front has run for 30 s or more is
-told once that ferrule is busy, with what it's doing and `/stop`. A
-shorter turn is about to answer, so it says nothing. The wait, in seconds:
+told once that ferrule is busy, with what it's doing and `/stop`: that
+the message went to the running turn, or that it's queued. A shorter
+turn is about to answer, so it says nothing. The wait, in seconds:
 
 ```toml
 [gateway]
@@ -1151,3 +1204,94 @@ text: `[location: 52.52, 13.405]`, `[venue: <name>, <address> (52.52,
 13.405)]`, `[contact: <name>, <phone>]`. A live location is read once, at
 its first position. The bot's own messages never show link previews, so
 the dashboard's sign-in link is a link, not a card.
+
+## Asking with buttons, reacting, editing
+
+In a chat, the agent has three tools beside `send_file` (M56.6,
+`ferrule-gateway/src/tools/chat.rs`). Each acts on its own chat only.
+
+- **`ask_user`**: a question with 2 to 4 answers as buttons. The agent
+  waits for the tap, and the answer is the tool's result, so it goes on in
+  the same turn. You can also type a choice's number or its label, or
+  write any other answer: while the question waits, the next message from
+  that chat (that isn't a `/command`) is the answer, in your own words. It
+  waits 5 minutes by default (the agent can ask for up to 9, under the
+  watchdog's 10); then it tells the agent nobody answered and the
+  question is withdrawn, and a late tap is told so. `/stop` withdraws it
+  too. On a channel without buttons the choices come as lines to send
+  (`/answer qk7 2`). In a group, anyone in the chat may answer.
+- **`react`**: one emoji on the message the turn answers (it replaces the
+  👀 receipt). Telegram takes only its standard reaction emoji, and a
+  channel without reactions (email, the HTTP API) says "not
+  supported here".
+- **`edit_message`**: replaces the text of the bot's previous reply in
+  this chat (the last answer before this turn). The gateway remembers that
+  reply's id when the channel gives one: Telegram, Discord and Slack, for
+  streamed and plain replies alike. Elsewhere, or for a reply from before
+  the gateway started, the tool says it doesn't know the message. A long
+  reply that went out in several parts is edited at its last part.
+
+On the Claude plan engine the three are bridged like every other Ferrule
+tool ([m35-subscriptions.md](m35-subscriptions.md) §7.4).
+
+## After a restart
+
+A restart, an update or a crash in the middle of a turn doesn't lose the
+request (M56.5). While a turn answers a person, its chat's lane keeps
+`<data>/sessions/<chat>.turn.json`: the message word for word, with its
+files, and the tools the turn called that do more than read. A turn that
+ends removes it. One that a restart stops (the drain after
+`stop_grace_secs`) or a crash kills leaves it, and the next start tells
+that chat:
+
+- **It had only read so far** (no tool but the ones marked read-only:
+  `read_file`, `list_dir`, `web_search`, `web_fetch`, `recall`,
+  `code_search`…): "A restart interrupted your request
+  '…'. It had only read so far, so I'm picking it up again." It runs
+  again at once, on the original message, as a new turn that sees the
+  conversation so far and is told to check what was done before going on.
+- **It had called anything else** (a shell command, a file write, a todo
+  list, an MCP tool, a send): the message names those tools, says resuming could repeat
+  a step, and asks, with **Resume** and **Let it go** buttons (on a channel
+  without buttons, the commands as text). `/continue` resumes it,
+  `/continue drop` lets it go. The question waits until answered or
+  `/new`.
+- **It was already a second try**: it asks the same way, so a request that
+  crashes the process can't loop.
+
+The owner's restart notice after a crash says the turn isn't lost. A
+scheduled task, a plan's or `/goal`'s turn, a sub-agent's news and the
+HTTP API's requests aren't taken up this way: their callers retry them.
+A turn that `/stop`, `/new` or `max_turn_minutes` ended is not resumed.
+
+## Keys pasted into a chat
+
+A message that looks like it holds an API key or a token stops at the
+gateway (M52.5, `ferrule-gateway/src/paste_guard.rs`), on every channel,
+the HTTP API and the dashboard's own chat included. It never reaches a
+lane: no transcript keeps it, no model sees it, and no command or
+approval reads it. The chat is told why, and pointed to the dashboard's
+Connect page (`/dashboard`) or `ferrule setup` for the key. The log says
+only that a message was stopped and on which channel, never its text or
+its sender.
+
+Where the channel lets the bot, the message is deleted too: Telegram
+(`deleteMessage`, which a bot may use on what it receives in a private
+chat, and in a group where it's an admin, within 48 hours) and the
+dashboard's chat, where it shows as taken out. Everywhere else the reply
+asks you to delete it yourself. Either way it has already been through
+the chat app's servers, so a real key that was pasted should be replaced.
+
+What counts as a key, so ordinary text isn't stopped:
+
+- one of this machine's own secret values (a provider key, a channel
+  token, a `[secrets]` value);
+- a Telegram or Discord bot token, a Slack token or a Meta access token,
+  by shape (the same shapes `/status` hides; a JWT has the Discord
+  shape);
+- a known prefix at the start of a word, the credential proxy's own list
+  (`ghp_`, `github_pat_`, `glpat-`, `sk-`, `sk-ant-`, `sk-proj-`,
+  `xoxb-`, `xapp-`, `hf_`, `sk_live_`, …) and Google's `AIza`, followed
+  by 20 or more letters, digits, `-` or `_` that switch between letters
+  and digits at least 3 times, as a random key does and a word, a
+  version or a `snake_case` name doesn't.

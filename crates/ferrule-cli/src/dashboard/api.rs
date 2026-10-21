@@ -2214,7 +2214,7 @@ async fn settings_op(ctx: &Ctx, path: &str, body: &Value) -> Answer {
             let sha = need!(arg(body, "sha"));
             need!(confirmed(
                 body,
-                "These hooks run as you, outside the sandbox, whenever an agent works here. \
+                "These hooks run in the sandbox, like the agent's commands, whenever an agent works here. \
                  Trust the file with exactly this hash?"
                     .to_string()
             ));

@@ -139,6 +139,46 @@ grant "new children of `~` except `.ssh`". If a server has to create
 something at the top of `~`, create it once yourself; from then on it's an
 existing entry and stays writable.
 
+## Ferrule's own git
+
+Some git calls are ferrule's, not the model's, and run as you outside the
+sandbox: a sub-agent's worktree and the commit when it's closed, the
+verifier's snapshot (`ferrule-agents/src/worktree.rs`), and the eval
+fixture's first commit (`ferrule-eval/src/fixture.rs`). They act on a repo
+a sandboxed command can write to, and git runs commands its config names.
+All of them go through one helper, `ferrule_sandbox::host_git`, which:
+
+- pins `core.hooksPath=/dev/null` (no hook can live there; the old
+  `$TMPDIR/ferrule-no-git-hooks` was writable by sandboxed commands),
+  `core.fsmonitor=false` and `commit.gpgsign`/`tag.gpgsign=false` (so
+  `gpg.program` never runs);
+- lists the config with `git config --list --show-scope` and empties
+  `clean`, `smudge` and `process` of every filter driver that `.git/config`,
+  a worktree's `config.worktree`, or a file they include defines. Drivers
+  in your global or system config still run, so **git-lfs keeps working**
+  when it was installed the usual way (`git lfs install` writes
+  `filter.lfs.*` to `~/.gitconfig`). A repo-level LFS install
+  (`git lfs install --local`) is turned off for these calls: a worktree
+  then holds pointer files;
+- pins the work tree with `--work-tree` to the directory holding the
+  `.git` git found, whenever the repo's config sets `core.worktree`. A
+  worker may write its repo's git dir (so it can commit), so it could give
+  its worktree a `core.worktree` (`extensions.worktreeConfig` plus `git
+  config --worktree`) naming any directory, and closing it would have
+  committed that directory's files, read as you, to a branch the parent
+  can read. `-c core.worktree=…` doesn't override the repo's value;
+  `--work-tree` does. A submodule's own `core.worktree` (`../../../sub`)
+  names that same directory, so submodules keep working;
+- kills a call that runs past 5 minutes (a FIFO planted as `.git/HEAD`
+  blocks git's read forever).
+
+The snapshot's diff passes `--no-ext-diff --no-textconv`, so diff drivers
+don't run either. It needs git 2.26 or newer (`--show-scope`); with an
+older git the calls fail and a child shares its parent's workspace.
+Auto-commit (`[agent] auto_commit`) is different: it runs git *inside*
+the sandbox, where the repo's own hooks and drivers have no more power
+than the command that wrote them.
+
 ## Env
 
 Variables whose name looks secret (`*KEY*`, `*SECRET*`, `*TOKEN*`,

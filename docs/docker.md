@@ -270,7 +270,8 @@ Every failure is a 401 with the same words; the log has the reason.
 - **`docker stop`** sends SIGTERM. The bot stops its channels and the
   scheduler, tells any chat with a queued message to send it again, lets
   running turns finish for `[gateway] stop_grace_secs` (default 20), stops
-  the ones still running (their chat is told), waits up to 5 s for that, and
+  the ones still running (their chat is told, and the next start takes a
+  person's request up again or asks), waits up to 5 s for that, and
   exits 0. A second signal exits at once. **`--stop-timeout 30`** covers the
   20 s and the 5 s.
 

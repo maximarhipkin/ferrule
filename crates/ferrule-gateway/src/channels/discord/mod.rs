@@ -19,8 +19,9 @@ pub mod ratelimit;
 
 use crate::channel::{Button, ButtonAction, Channel, ChannelCapabilities};
 use crate::channels::access::{self, Access, Dm};
+use crate::channels::files::{self, Inbox, Refused, Saved};
 use crate::error::GatewayError;
-use crate::message::{InboundMessage, OutboundMessage};
+use crate::message::{Attachment, InboundMessage, OutboundMessage};
 use crate::stream::chunks;
 use crate::typing::Typing;
 use ratelimit::Limits;
@@ -70,6 +71,8 @@ pub const SLASH_COMMANDS: [(&str, &str); 13] = [
 pub const INVITE_PERMISSIONS: u64 = 274_877_975_552;
 
 const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+/// M56.7: an attachment up to the inbox's cap gets longer than a request.
+const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(300);
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 /// How long a deferred slash command waits for its answer.
 const SLASH_WINDOW: Duration = Duration::from_secs(15 * 60);
@@ -139,6 +142,9 @@ pub struct DiscordChannel {
     /// The socket's trouble, and the lost intent (which outlasts it).
     problem: Mutex<Option<String>>,
     intent_note: Mutex<Option<String>>,
+    /// M56.7: where attached files are saved; `None` leaves them unread,
+    /// as before.
+    inbox: Option<Inbox>,
 }
 
 impl DiscordChannel {
@@ -170,7 +176,78 @@ impl DiscordChannel {
             last_frame: Mutex::new(None),
             problem: Mutex::new(None),
             intent_note: Mutex::new(None),
+            inbox: None,
         }
+    }
+
+    /// M56.7: saves what people attach to `<workspace>/inbox/discord/`,
+    /// as Telegram does, and the agent reads each file's line.
+    pub fn with_inbox(mut self, inbox: Option<Inbox>) -> Self {
+        self.inbox = inbox;
+        self
+    }
+
+    /// Every attachment of message `id`, downloaded from Discord's CDN
+    /// (signed URLs: no token goes with them) within the inbox's cap.
+    async fn take_files(
+        &self,
+        inbox: &Inbox,
+        id: &str,
+        list: &[Value],
+    ) -> (Vec<Saved>, Vec<Refused>) {
+        let (mut saved, mut refused) = (Vec::new(), Vec::new());
+        for a in list {
+            let name = a["filename"].as_str().unwrap_or("file").to_string();
+            let refuse = |why: String| Refused {
+                name: name.clone(),
+                why,
+            };
+            if let Some(n) = a["size"].as_u64().filter(|n| *n > inbox.max_bytes()) {
+                refused.push(inbox.too_big(&name, n));
+                continue;
+            }
+            let Some(url) = a["url"].as_str().filter(|u| self.cdn(u)) else {
+                refused.push(refuse("Discord gave no address for it".into()));
+                continue;
+            };
+            let got = match self.client.get(url).timeout(DOWNLOAD_DEADLINE).send().await {
+                Ok(r) if r.status().is_success() => files::read_capped(r, inbox.max_bytes())
+                    .await
+                    .map_err(refuse),
+                Ok(r) => Err(refuse(format!("the download failed (HTTP {})", r.status()))),
+                Err(e) => Err(refuse(format!("the download failed: {}", e.without_url()))),
+            };
+            let file_id = a["id"].as_str().unwrap_or(id);
+            match got.and_then(|bytes| {
+                inbox
+                    .save(
+                        "discord",
+                        file_id,
+                        &name,
+                        a["content_type"].as_str(),
+                        &bytes,
+                    )
+                    .map_err(|e| refuse(format!("it couldn't be saved: {e}")))
+            }) {
+                Ok(s) => saved.push(s),
+                Err(r) => refused.push(r),
+            }
+        }
+        (saved, refused)
+    }
+
+    /// An attachment URL on Discord's CDN, or on the API's own host (a
+    /// local mock in tests): nothing else is fetched.
+    fn cdn(&self, url: &str) -> bool {
+        let Ok(u) = reqwest::Url::parse(url) else {
+            return false;
+        };
+        let host = u.host_str().unwrap_or("");
+        let api_host = reqwest::Url::parse(&self.api)
+            .ok()
+            .and_then(|a| a.host_str().map(str::to_string));
+        (u.scheme() == "https" && ["cdn.discordapp.com", "media.discordapp.net"].contains(&host))
+            || api_host.as_deref() == Some(host)
     }
 
     /// Who may talk to the bot: users in DMs, channels (and their
@@ -488,7 +565,7 @@ impl DiscordChannel {
         let channel = d["channel_id"].as_str()?.to_string();
         let message_id = d["id"].as_str()?.to_string();
         let mut text = d["content"].as_str().unwrap_or("").to_string();
-        let unread = unread_kind(d);
+        let mut unread = unread_kind(d);
         let chat_id = if d["guild_id"].is_string() {
             let bot = self.bot_id()?;
             let mentioned = d["mentions"]
@@ -516,6 +593,26 @@ impl DiscordChannel {
             }
             user.clone()
         };
+        // M56.7: files are taken once the sender is let in, never before.
+        let mut attachments = Vec::new();
+        let list = d["attachments"].as_array().filter(|a| !a.is_empty());
+        if let (Some(inbox), Some(list)) = (&self.inbox, list) {
+            let (saved, refused) = self.take_files(inbox, &message_id, list).await;
+            text = files::with_notes(&text, &saved, &refused);
+            attachments = saved
+                .iter()
+                .map(|s| Attachment {
+                    kind: s.mime.clone(),
+                    url: s.path.to_string_lossy().into_owned(),
+                    name: Some(s.rel.clone()),
+                })
+                .collect();
+            // Only a sticker is left unread.
+            unread = d["sticker_items"]
+                .as_array()
+                .is_some_and(|s| !s.is_empty())
+                .then_some("sticker");
+        }
         if text.trim().is_empty() {
             if let Some(kind) = unread {
                 tracing::info!(chat = %chat_id, "discord: got a {kind} with no text; ferrule reads only text");
@@ -538,7 +635,7 @@ impl DiscordChannel {
             sender_id: Some(user),
             message_id,
             text,
-            attachments: vec![],
+            attachments,
             reply_to: None,
             ts,
         })
@@ -746,6 +843,10 @@ impl Channel for DiscordChannel {
     }
 
     async fn post(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
+        self.deliver(&msg, None).await
+    }
+
+    async fn send_with_id(&self, msg: OutboundMessage) -> Result<Option<String>, GatewayError> {
         self.deliver(&msg, None).await
     }
 

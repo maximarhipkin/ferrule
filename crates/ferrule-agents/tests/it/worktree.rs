@@ -68,6 +68,8 @@ fn spawn_as(sup: &Supervisor, caller: &str, role: Role, worktree: bool) -> Spawn
             role,
             worktree,
             model: None,
+            effort: None,
+            fork: false,
         },
     )
     .unwrap()
@@ -252,4 +254,116 @@ async fn without_a_repo_of_its_own_a_child_shares_the_parent_workspace() {
         s.notes
     );
     assert_eq!(git(&main, &["worktree", "list"]).lines().count(), 1);
+}
+
+/// What a sandboxed command can write to get a command run by ferrule's own
+/// git calls, outside the sandbox: filter and textconv drivers in
+/// `.git/config` that `.git/info/attributes` assigns, and a hook in the
+/// shared temp dir the old code pointed `core.hooksPath` at. Each appends
+/// its name to `ran` if it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn drivers_and_hooks_planted_in_the_repo_never_run_outside_the_sandbox() {
+    let (rig, gate) = gated();
+    let main = repo(&rig);
+    let ran = rig.dir.path().join("ran");
+    let say = |what: &str| {
+        let ran = ran.display().to_string().replace('\\', "/");
+        format!("echo {what} >> '{ran}'; cat")
+    };
+    git(&main, &["config", "filter.evil.clean", &say("clean")]);
+    git(&main, &["config", "filter.evil.smudge", &say("smudge")]);
+    git(&main, &["config", "diff.evil.textconv", &say("textconv")]);
+    std::fs::create_dir_all(main.join(".git/info")).unwrap();
+    std::fs::write(
+        main.join(".git/info/attributes"),
+        "* filter=evil diff=evil\n",
+    )
+    .unwrap();
+    let hooks = std::env::temp_dir().join("ferrule-no-git-hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("post-checkout");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\necho hook >> '{}'\n",
+            ran.display().to_string().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // An uncommitted change, so the snapshot diffs and applies it.
+    std::fs::write(main.join("lib.rs"), "fn a() { changed() }\n").unwrap();
+    idle_root_in(&rig, "r", &main);
+
+    // A snapshot (worktree add, diff, apply) and a worker whose
+    // uncommitted work close commits (status, add, commit).
+    let v = spawn_as(&rig.sup, "r", Role::Verifier, true);
+    assert_eq!(
+        std::fs::read_to_string(v.workspace.join("lib.rs")).unwrap(),
+        "fn a() { changed() }\n"
+    );
+    let w = spawn_as(&rig.sup, "r", Role::Worker, true);
+    std::fs::write(w.workspace.join("new.rs"), "fn b() {}\n").unwrap();
+    gate.add_permits(10);
+    for id in [&v.id, &w.id] {
+        rig.sup
+            .wait("r", std::slice::from_ref(id), Some(10))
+            .await
+            .unwrap();
+    }
+    let closed = rig.sup.close("r", &w.id).await.unwrap();
+    rig.sup.close("r", &v.id).await.unwrap();
+    let _ = std::fs::remove_file(&hook);
+
+    assert!(closed.contains("Kept branch"), "{closed}");
+    assert_eq!(
+        std::fs::read_to_string(&ran).unwrap_or_default(),
+        "",
+        "planted commands ran"
+    );
+}
+
+/// A worker can write its repo's git dir (so it can commit), and with
+/// `extensions.worktreeConfig` give its worktree a `core.worktree`
+/// anywhere. Close must still commit the worktree's own files, not that
+/// directory's, read as the owner onto a branch the parent can read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_work_tree_moved_by_the_repos_config_doesnt_move_what_close_commits() {
+    let (rig, gate) = gated();
+    let main = repo(&rig);
+    let elsewhere = rig.dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("creds"), "hunter2\n").unwrap();
+    idle_root_in(&rig, "r", &main);
+    let w = spawn_as(&rig.sup, "r", Role::Worker, true);
+    git(
+        &w.workspace,
+        &["config", "extensions.worktreeConfig", "true"],
+    );
+    git(
+        &w.workspace,
+        &[
+            "config",
+            "--worktree",
+            "core.worktree",
+            &elsewhere.to_string_lossy(),
+        ],
+    );
+    std::fs::write(w.workspace.join("new.rs"), "fn b() {}\n").unwrap();
+
+    gate.add_permits(1);
+    rig.sup
+        .wait("r", std::slice::from_ref(&w.id), Some(10))
+        .await
+        .unwrap();
+    rig.sup.close("r", &w.id).await.unwrap();
+    let files = git(
+        &main,
+        &["ls-tree", "--name-only", &format!("ferrule/{}", w.id)],
+    );
+    assert_eq!(files.lines().collect::<Vec<_>>(), ["lib.rs", "new.rs"]);
 }

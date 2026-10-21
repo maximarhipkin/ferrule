@@ -86,6 +86,7 @@ impl Provider for Caller {
         Ok(CompletionResponse {
             message,
             usage: Usage::default(),
+            stop_reason: None,
         })
     }
 }
@@ -228,7 +229,10 @@ async fn an_image_is_saved_sent_and_counted() {
     let with_file: Vec<_> = sent.iter().filter(|m| !m.attachments.is_empty()).collect();
     assert_eq!(with_file.len(), 1, "{sent:?}");
     assert!(
-        with_file[0].attachments[0].url.replace('\\', "/").contains("media/"),
+        with_file[0].attachments[0]
+            .url
+            .replace('\\', "/")
+            .contains("media/"),
         "{}",
         with_file[0].attachments[0].url
     );

@@ -1,7 +1,7 @@
 # M28: web search, keyword-triggered skills, two fixes (design)
 
-Status: design, 2026-09-26, branch `m28-search-skills`. Written before the
-code. Where the build departs from it: **As built** at the end.
+Status: merged to `main` (PR #22, 2026-09-26). Written as the design on
+2026-09-26, branch `m28-search-skills`, before the code. Where the build departs from it: **As built** at the end.
 
 M28 takes items 9 and 10 of
 [research-number-one-harness-strategy.md](research-number-one-harness-strategy.md)

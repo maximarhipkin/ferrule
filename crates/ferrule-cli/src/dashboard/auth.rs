@@ -51,10 +51,16 @@ pub struct Links {
     path: PathBuf,
 }
 
-/// What a used link was good for.
+/// What presenting a token got (see [`Links::consume`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Used {
-    pub host: Option<String>,
+pub enum Consumed {
+    /// A good link for this host, now used up.
+    Used,
+    /// A live link made for another host (`made_for`): refused, and left
+    /// unused, so a tap on the right host still works.
+    WrongHost { made_for: String },
+    /// Unknown, used, expired or revoked.
+    Invalid,
 }
 
 impl Links {
@@ -107,24 +113,29 @@ impl Links {
         Ok(token)
     }
 
-    /// Uses `token` up: `Some` once, for an unexpired link, and never again.
-    pub fn consume(&self, token: &str) -> Result<Option<Used>> {
+    /// Uses `token` up, presented on `host`: [`Consumed::Used`] once, for
+    /// an unexpired link made for `host` (or for any host), and never
+    /// again. The host is checked under the same lock, before anything is
+    /// removed, so a link opened on the wrong host isn't burnt.
+    pub fn consume(&self, token: &str, host: &str) -> Result<Consumed> {
         if token.is_empty() || token.len() > 128 {
-            return Ok(None);
+            return Ok(Consumed::Invalid);
         }
         let _lock = Lock::take(&self.path)?;
         let mut file = self.load()?;
         let now = now_secs();
         let hash = seal::sha256_b64(token.as_bytes());
         let before = file.links.len();
-        let mut found = None;
+        let mut found = Consumed::Invalid;
         file.links.retain(|l| {
-            if l.hash == hash {
-                if l.expires > now {
-                    found = Some(Used {
-                        host: l.host.clone(),
-                    });
+            if l.hash == hash && l.expires > now {
+                if let Some(h) = l.host.as_deref().filter(|h| *h != host) {
+                    found = Consumed::WrongHost {
+                        made_for: h.to_string(),
+                    };
+                    return true;
                 }
+                found = Consumed::Used;
                 return false;
             }
             l.expires > now
@@ -498,12 +509,13 @@ mod tests {
         assert_eq!(l.pending(), 1);
         assert_eq!(l.hosts(), vec!["a.trycloudflare.com".to_string()]);
         assert_eq!(
-            l.consume(&t).unwrap(),
-            Some(Used {
-                host: Some("a.trycloudflare.com".into())
-            })
+            l.consume(&t, "a.trycloudflare.com").unwrap(),
+            Consumed::Used
         );
-        assert_eq!(l.consume(&t).unwrap(), None);
+        assert_eq!(
+            l.consume(&t, "a.trycloudflare.com").unwrap(),
+            Consumed::Invalid
+        );
         assert_eq!(l.pending(), 0);
         // The file holds hashes only.
         let text = std::fs::read_to_string(l.path()).unwrap();
@@ -517,10 +529,10 @@ mod tests {
         let mut bad = t.clone();
         bad.pop();
         bad.push(if t.ends_with('A') { 'B' } else { 'A' });
-        assert_eq!(l.consume(&bad).unwrap(), None);
-        assert_eq!(l.consume("").unwrap(), None);
+        assert_eq!(l.consume(&bad, "h").unwrap(), Consumed::Invalid);
+        assert_eq!(l.consume("", "h").unwrap(), Consumed::Invalid);
         l.revoke().unwrap();
-        assert_eq!(l.consume(&t).unwrap(), None);
+        assert_eq!(l.consume(&t, "h").unwrap(), Consumed::Invalid);
         assert!(l.revoked_ms() > 0);
 
         // An expired one: rewrite its expiry into the past.
@@ -528,7 +540,7 @@ mod tests {
         let mut f = l.load().unwrap();
         f.links[0].expires = now_secs() - 1;
         l.save(&f).unwrap();
-        assert_eq!(l.consume(&t).unwrap(), None);
+        assert_eq!(l.consume(&t, "h").unwrap(), Consumed::Invalid);
     }
 
     #[cfg(unix)]
@@ -595,7 +607,10 @@ mod tests {
         let links = Links::at(dir.path().join("private/dashboard/links.json"));
         let before = Sessions::beside(&links, Duration::from_secs(60), Duration::from_secs(600));
         let token = links.mint(None, Duration::from_secs(60)).unwrap();
-        assert!(links.consume(&token).unwrap().is_some());
+        assert_eq!(
+            links.consume(&token, "127.0.0.1:9").unwrap(),
+            Consumed::Used
+        );
         let (cookie, csrf) = before
             .open("127.0.0.1:9", links.revoked_ms(), None)
             .unwrap();
@@ -618,8 +633,8 @@ mod tests {
             "logged out stays out"
         );
         assert_eq!(
-            links.consume(&token).unwrap(),
-            None,
+            links.consume(&token, "127.0.0.1:9").unwrap(),
+            Consumed::Invalid,
             "a used link stays used"
         );
         // The file has hashes only: neither the cookie nor its CSRF token.

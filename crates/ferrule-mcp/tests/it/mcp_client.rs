@@ -334,28 +334,50 @@ async fn enabled_tools_hide_the_rest_and_output_caps_truncate() {
         .iter()
         .find(|t| t.definition().name == "mcp__test__echo")
         .unwrap();
-    let ctx = ToolContext::default();
+    // Over the cap, a head and a tail stay and the whole text is spilled.
+    let ws = tempfile::tempdir().unwrap();
+    let ctx = ToolContext {
+        workspace: ws.path().to_path_buf(),
+        ..ToolContext::default()
+    };
     let out = echo
         .call(json!({"text": "0123456789"}), &ctx)
         .await
         .expect("call ok");
     assert!(out.truncated);
     assert!(
-        out.content.starts_with("01234\n…[truncated"),
+        out.content
+            .starts_with("0\n…[5 characters cut here]…\n6789\n[10 characters in all"),
         "{}",
         out.content
+    );
+    let spill = out
+        .content
+        .split("is in ")
+        .nth(1)
+        .and_then(|s| s.split(':').next())
+        .unwrap();
+    assert!(spill.starts_with(".ferrule/spill/"), "{spill}");
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join(spill)).unwrap(),
+        "0123456789"
     );
 
     // The session's cap still wins when it is the smaller one.
     let tight = ToolContext {
         max_output_chars: 3,
-        ..ToolContext::default()
+        ..ctx
     };
     let out = echo
         .call(json!({"text": "0123456789"}), &tight)
         .await
         .unwrap();
-    assert!(out.content.starts_with("012\n"), "{}", out.content);
+    assert!(
+        out.content
+            .starts_with("\n…[7 characters cut here]…\n789\n"),
+        "{}",
+        out.content
+    );
 }
 
 #[tokio::test]

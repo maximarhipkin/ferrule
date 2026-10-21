@@ -270,24 +270,7 @@ async fn apply_unit(
         others.iter().map(|o| (o.name.clone(), o.auto)).collect();
     let held = held_by(&autos);
     let ferrule = match &request {
-        // The owner pressed "update" on one instance: it restarts the
-        // others, so one that said auto = false holds it.
-        Some(r) if r.ferrule && held.is_some() => {
-            let who = held.unwrap_or_default();
-            if let Some(found) = apply.check(&Want::default()).await? {
-                apply::record_failure(
-                    &state_dir,
-                    &apply.current.to_string(),
-                    &found.version.to_string(),
-                    &format!(
-                        "the instance `{who}` runs this binary too and has [update] auto = false; \
-                         `ferrule update` in a terminal installs it for both, after asking"
-                    ),
-                );
-            }
-            println!("not installed: the instance `{who}` has [update] auto = false");
-            false
-        }
+        Some(r) if r.ferrule => return requested(&apply, held).await,
         Some(r) => r.ferrule,
         None => {
             let mut st = state::State::load(&state_dir);
@@ -322,6 +305,63 @@ async fn apply_unit(
             }
         }
     }
+    Ok(())
+}
+
+/// The ferrule half of a run the owner asked for: a chat's /update, or
+/// Allow on the install question. They wait to hear how it ended (an
+/// event, `promise::claim_for`), so a run that recorded none (up to date,
+/// busy, a failed check, another update holding the lock) records why.
+async fn requested(apply: &Apply<'_>, held: Option<&str>) -> Result<()> {
+    let dir = &apply.state_dir;
+    let before = state::State::load(dir).events.last().map_or(0, |e| e.id);
+    let ran = async {
+        // Pressed on one instance, it restarts the others too, so one that
+        // said auto = false holds it.
+        if let Some(who) = held {
+            let why = format!(
+                "the instance `{who}` runs this binary too and has [update] auto = false; \
+                 `ferrule update` in a terminal installs it for both, after asking"
+            );
+            if let Some(found) = apply.check(&Want::default()).await? {
+                let (from, to) = (apply.current.to_string(), found.version.to_string());
+                apply::record_failure(dir, &from, &to, &why);
+            }
+            return Ok(why);
+        }
+        Ok::<_, anyhow::Error>(match apply.run(&Want::default()).await? {
+            Outcome::UpToDate => format!("{} is the newest release", apply.current),
+            Outcome::Busy => format!(
+                "turns were still running after {} of waiting; ask again later",
+                ferrule_gateway::health::human(apply.idle_for)
+            ),
+            Outcome::Updated { from, to, .. } => format!("updated {from} → {to}"),
+            Outcome::RolledBack { from, to } => {
+                format!("{to} didn't come up; rolled back to {from} and pinned {to}")
+            }
+        })
+    }
+    .await;
+    let mut st = state::State::load(dir);
+    if !st
+        .events
+        .iter()
+        .any(|e| e.id > before && e.kind.ends_update())
+    {
+        let why = match &ran {
+            Ok(why) => why.clone(),
+            Err(e) => format!("{e:#}"),
+        };
+        // No `to`: an answer, not a release that failed.
+        st.push(
+            state::EventKind::Failed,
+            &apply.current.to_string(),
+            "",
+            &why,
+        );
+        st.save(dir)?;
+    }
+    println!("{}", ran?);
     Ok(())
 }
 
@@ -491,12 +531,14 @@ pub fn report(data: &Path, auto: Option<bool>, units: bool) -> Vec<(Tone, String
         }
         _ => {}
     }
-    if let Some(e) = state.events.iter().rev().find(|e| {
-        matches!(
-            e.kind,
-            state::EventKind::Updated | state::EventKind::RolledBack | state::EventKind::Failed
-        )
-    }) {
+    // The answer to a request that installed nothing (no `to`) isn't a
+    // standing failure.
+    if let Some(e) = state
+        .events
+        .iter()
+        .rev()
+        .find(|e| e.kind.ends_update() && !e.to.is_empty())
+    {
         lines.push(match e.kind {
             state::EventKind::Updated => (
                 Tone::Ok,

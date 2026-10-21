@@ -41,6 +41,11 @@ impl Tool for McpRemoteTool {
             .then(|| format!("mcp:{}", self.client.name()))
     }
 
+    /// M57.1: a server's tools are what inflates every request.
+    fn deferrable(&self) -> bool {
+        true
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.full_name.clone(),
@@ -91,7 +96,9 @@ impl Tool for McpRemoteTool {
                         size_bytes: s.size_bytes,
                     })
                     .collect();
-                Ok(ToolOutput::capped(text, cap).with_files(files))
+                // Over the cap the whole text goes to a spill file, and
+                // the model gets its head, its tail and the file's path.
+                Ok(ToolOutput::spilled(text, None, cap, &ctx.workspace).with_files(files))
             }
             Err(e) => Err(CoreError::ToolFailed {
                 tool: self.full_name.clone(),

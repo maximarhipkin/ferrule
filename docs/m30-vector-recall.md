@@ -1,7 +1,7 @@
 # M30: vector recall — local embeddings merged with BM25 (design)
 
-Status: design, 2026-09-26, branch `m30-vector-recall`. Written before the
-code. Where the build departs from it: **As built** at the end.
+Status: merged to `main` (PR #24, 2026-09-26). Written as the design on
+2026-09-26, branch `m30-vector-recall`, before the code. Where the build departs from it: **As built** at the end.
 
 M15 gave memory BM25 keyword recall with time decay, supersede chains and
 `forget`. It misses what keyword search always misses: a paraphrase ("where
@@ -193,7 +193,8 @@ Two merges, both implemented, one chosen by the benchmark (§3):
 
 Then, unchanged from M15:
 
-- **time decay**: the merged score × `0.5^(age / 7 days)`;
+- **time decay**: the merged score × `0.5^(age / 7 days)`, except a fact
+  tagged `profile` or `preference`, which keeps its score (M56.4);
 - **supersede**: each hit maps to the live head of its chain, and a chain
   keeps its best score. A query close to a replaced fact's wording returns
   the correction, as with BM25;

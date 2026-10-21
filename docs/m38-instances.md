@@ -1,6 +1,7 @@
 # M38 — Named instances (design)
 
-Status: built, 2026-09-28, branch `m38-instances`. Written before the
+Status: built, 2026-09-28, branch `m38-instances`; merged to `main`
+(PR #33). Written before the
 code; where the build departs from it, see **As built** at the end. User
 guide: [instances.md](instances.md).
 

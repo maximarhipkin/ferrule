@@ -3,7 +3,7 @@
 //! runs, and a flag that stops it. Multi-agent (`ferrule-agents`) is the
 //! user; the loop itself stays agnostic.
 
-use crate::message::Usage;
+use crate::message::{Message, Usage};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -14,6 +14,11 @@ pub trait Budget: Send + Sync {
     fn charge(&self, usage: &Usage);
     /// `Some(why)` once nothing more may be spent.
     fn exhausted(&self) -> Option<String>;
+    /// M57.2: tokens left and the whole budget, when it counts tokens; the
+    /// loop tells the model once it runs low. `None`: not said.
+    fn left(&self) -> Option<(u64, u64)> {
+        None
+    }
 }
 
 /// Messages that reach an agent while it works. Drained before every model
@@ -23,7 +28,32 @@ pub trait Budget: Send + Sync {
 pub trait Inbox: Send + Sync {
     fn begin(&self) {}
     fn take(&self) -> Vec<String>;
+    /// Whole messages, each added as it is after `take`'s (M56.1: what the
+    /// person sent while the agent worked, photos and all). Drained at the
+    /// same point, so a tool call and its results are never split.
+    fn take_messages(&self) -> Vec<Message> {
+        Vec::new()
+    }
     fn end(&self) {}
+}
+
+/// Several inboxes as one, asked in order (M56.1: a chat's root hears its
+/// sub-agents and its person).
+pub struct Inboxes(pub Vec<Arc<dyn Inbox>>);
+
+impl Inbox for Inboxes {
+    fn begin(&self) {
+        self.0.iter().for_each(|i| i.begin());
+    }
+    fn take(&self) -> Vec<String> {
+        self.0.iter().flat_map(|i| i.take()).collect()
+    }
+    fn take_messages(&self) -> Vec<Message> {
+        self.0.iter().flat_map(|i| i.take_messages()).collect()
+    }
+    fn end(&self) {
+        self.0.iter().for_each(|i| i.end());
+    }
 }
 
 /// A cooperative stop: once set, the agent stops before its next model call
@@ -55,6 +85,16 @@ impl StopFlag {
 #[async_trait::async_trait]
 pub trait SessionRecall: Send + Sync {
     async fn recall(&self, goal: &str) -> Option<String>;
+
+    /// M56.4: memory for a later message a person sent in the same
+    /// session, leaving out what `shown` (every block this session added)
+    /// already holds; it goes in as a user message after that message,
+    /// like the first block. Asked on each such message, so it should be
+    /// cheap. `None` (the default) adds nothing.
+    async fn recall_more(&self, message: &str, shown: &str) -> Option<String> {
+        let _ = (message, shown);
+        None
+    }
 }
 
 /// Context that is asked for at the start of every run (M29: the repo map).

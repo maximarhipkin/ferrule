@@ -20,6 +20,7 @@ pub mod profile;
 pub mod provider;
 pub mod repairs;
 pub mod routing;
+pub mod stamps;
 pub mod stuck;
 pub mod textcall;
 pub mod tool;
@@ -35,7 +36,9 @@ pub use error::{CoreError, FailureClass};
 pub use event::AgentEvent;
 pub use guard::{Guard, GuardedCall, Verdict};
 pub use history::{result_ref, SearchHistoryTool, SEARCH_HISTORY};
-pub use hooks::{Budget, Inbox, RunEnd, RunObserver, SessionRecall, StopFlag, TurnContext};
+pub use hooks::{
+    Budget, Inbox, Inboxes, RunEnd, RunObserver, SessionRecall, StopFlag, TurnContext,
+};
 pub use ledger::{
     EvalTag, LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch, TraceEvent, TraceLevel,
 };
@@ -46,7 +49,11 @@ pub use provider::{
     CompletionRequest, CompletionResponse, Delta, DeltaSink, FailOver, Provider, Served,
 };
 pub use routing::{Escalation, Ladder, Policy, RouteTag, Signal, Tier, Tiered};
-pub use tool::{Tool, ToolContext, ToolOutput, ToolOutputFile, ToolRegistry, ToolSource};
+pub use stamps::FileStamps;
+pub use tool::{
+    DeferTools, Tool, ToolContext, ToolOutput, ToolOutputFile, ToolRegistry, ToolSource,
+    TOOL_SEARCH,
+};
 pub use transcript::{fnv64, HarnessStamp, Transcript};
 pub use triggers::{PromptTriggers, TriggerLoad, Triggered};
 pub use verify::Verifier;

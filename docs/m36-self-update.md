@@ -1,6 +1,7 @@
 # M36 — Self-update and self-repair (design)
 
-Status: built, 2026-09-27, branch `m36-self-update`. Written before
+Status: built, 2026-09-27, branch `m36-self-update`; merged to `main`
+(PR #31). Written before
 the code; where the build departs from it, see **As built** at the end.
 User guide: [updates.md](updates.md).
 
@@ -261,7 +262,11 @@ never sees a half-written one. Before that the old binary is hard-linked
 running exe can't be replaced but can be renamed, so the running
 `ferrule.exe` is renamed to `ferrule.exe.<8 hex>.old` (the name
 `install.ps1` uses) and the new one takes its place; old `.old` files are
-deleted at the next start.
+deleted at the next start. Both renames are retried for up to 5 s while
+Windows says the file is in use by another process (sharing violation,
+error 32), the usual holder being an antivirus scanning an exe that was
+just written or started. Moving the exe aside failed that way once on CI
+(run 39488885531, `a_running_exe_steps_aside_on_windows`; M55.1).
 
 ### 3.4 Health and rollback
 
@@ -559,8 +564,10 @@ open:
   config. Running on the copy also applies to every later
   `Config::load()` in that process, not just the gateway's first read,
   since 38 call sites (self-extension, the dashboard, tools) reload it. A
-  file that reads again makes a **supervised** gateway (systemd's
-  `INVOCATION_ID`, launchd's `XPC_SERVICE_NAME`) exit 0 so its manager
+  file that reads again makes a **supervised** gateway (launchd's
+  `XPC_SERVICE_NAME` names this instance's own job, or its systemd unit's
+  `MainPID` is this process; an inherited variable alone, as in VS Code's
+  terminal, doesn't count) exit 0 so its manager
   restarts it onto the fixed file; an unsupervised one tells the owner to
   restart it.
 - **Self-check (§7)**: its first round tells the problems already present

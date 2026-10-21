@@ -62,6 +62,7 @@ impl Provider for Model {
                 output_tokens: 5,
                 ..Usage::default()
             },
+            stop_reason: None,
         })
     }
 }

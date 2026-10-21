@@ -1,6 +1,6 @@
 # M47 — the dashboard, redesigned
 
-Status: **built** (parts 1–7), PR to `main` open, not merged. The plan below
+Status: **built** (parts 1–7) and merged to `main` (PR #39, 2026-09-30). The plan below
 was written first; "Corrections made while building" lists where the code
 corrected it, and "Verified, and how" says what was actually run.
 
@@ -324,7 +324,8 @@ abilities get lost quietly.
 - Charts beyond one 7-day bar chart on Usage.
 - Vision for the Claude Code plan engine.
 - More than the first photo of a Telegram album (the rest get one line:
-  "I only looked at the first photo of that album").
+  "I only looked at the first photo of that album"). M56.7 reads the
+  whole album as one message.
 
 ## Audit
 

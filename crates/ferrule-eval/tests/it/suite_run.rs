@@ -100,6 +100,7 @@ impl Provider for Scripted {
         Ok(CompletionResponse {
             message,
             usage: self.usage.clone(),
+            stop_reason: None,
         })
     }
 }
@@ -166,6 +167,7 @@ fn usage(input: u64, output: u64) -> Usage {
         output_tokens: output,
         cached_input_tokens: 0,
         cache_write_input_tokens: 0,
+        cache_write_1h_input_tokens: 0,
         notional_usd: None,
     }
 }
@@ -439,6 +441,7 @@ impl Provider for Judging {
         Ok(CompletionResponse {
             message: Message::assistant(Some(reply), vec![], None),
             usage: usage(500, 40),
+            stop_reason: None,
         })
     }
 }

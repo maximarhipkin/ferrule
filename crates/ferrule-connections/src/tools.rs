@@ -77,6 +77,11 @@ impl Tool for RequestTool {
     fn changes_files(&self) -> bool {
         false
     }
+
+    /// M57.1: asked once per service, if ever.
+    fn deferrable(&self) -> bool {
+        true
+    }
 }
 
 pub struct ListTool {

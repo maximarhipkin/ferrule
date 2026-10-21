@@ -30,6 +30,15 @@ pub enum EventKind {
     ClaudeFailed,
 }
 
+impl EventKind {
+    /// How a ferrule update ended: what an owner who asked for one waits
+    /// to hear. A `Failed` with no `to` answers a request that installed
+    /// nothing (up to date, busy, a failed check).
+    pub fn ends_update(self) -> bool {
+        matches!(self, Self::Updated | Self::RolledBack | Self::Failed)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub id: u64,
