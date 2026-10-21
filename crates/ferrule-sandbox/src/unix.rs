@@ -77,6 +77,12 @@ pub struct UnixSockets {
     /// socket there is allowed when the command's own processes listen on
     /// it — [`Verdict::IfOwn`].
     pub own_dirs: Vec<PathBuf>,
+    /// M54.4: every Unix socket goes (`unix_sockets = ["*"]`); the
+    /// supervisor runs for [`UnixSockets::proxy_port`] alone. Linux.
+    pub any: bool,
+    /// M54.4, `[egress] enforce`: IP connects only to loopback on this
+    /// port (the credential proxy). Linux; Seatbelt has its own rule.
+    pub proxy_port: Option<u16>,
 }
 
 /// What [`UnixSockets::check_path`] says about one socket.

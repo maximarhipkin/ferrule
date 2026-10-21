@@ -231,6 +231,10 @@ pub struct Sandbox {
     hide_only: bool,
     /// Set in managed mode when commands mustn't run here: every spawn fails with it.
     refusal: Option<String>,
+    /// M54.4, `[egress] enforce`: the credential proxy's port on loopback,
+    /// the only place commands' IP connections may go (see
+    /// [`Sandbox::with_proxy_only`]).
+    proxy_only: Option<u16>,
 }
 
 /// The credential proxy as seen by an HTTP client inside ferrule
@@ -258,6 +262,7 @@ impl Sandbox {
             desktop: false,
             hide_only: false,
             refusal: None,
+            proxy_only: None,
         }
     }
 
@@ -415,6 +420,38 @@ impl Sandbox {
         self.egress.as_ref()
     }
 
+    /// M54.4, `[egress] enforce`: commands' IP connections may reach only
+    /// `127.0.0.1:<port>` (the credential proxy), Unix sockets the
+    /// allowlist's. On macOS a Seatbelt rule; on Linux the connect
+    /// supervisor checks every `connect(2)` and the seccomp filter refuses
+    /// UDP, raw sockets and TCP Fast Open. Where that can't be done, every
+    /// command is refused rather than run unbound. `None`: not bound.
+    pub fn with_proxy_only(mut self, port: Option<u16>) -> Self {
+        self.proxy_only = port;
+        self
+    }
+
+    /// The port this sandbox binds commands to (M54.4): with the network
+    /// on, not for a hide-only helper (its config opted it out) nor the
+    /// browser (Chrome and agent-browser talk over a local debugging port;
+    /// Chrome itself is pointed at the proxy).
+    pub fn proxy_port(&self) -> Option<u16> {
+        self.proxy_only
+            .filter(|_| self.policy.network && !self.hide_only && !self.desktop)
+    }
+
+    /// Whether commands can be bound to the proxy here, or why not.
+    pub fn proxy_enforcement(&self) -> Result<(), String> {
+        match self.backend {
+            Backend::Seatbelt => Ok(()),
+            #[cfg(target_os = "linux")]
+            Backend::Landlock { abi } => supervisor::probe(abi)
+                .map_err(|why| format!("the connect supervisor can't run here ({why})")),
+            Backend::Windows => Err("Windows' sandbox can't limit connections to one port".into()),
+            _ => Err("commands run unsandboxed here".into()),
+        }
+    }
+
     /// For a long-lived helper process that ferrule starts from its own
     /// config (an MCP server), rather than a command the model wrote: the
     /// same scrubbing and credential env, `state_dir` and `extra` writable
@@ -497,6 +534,7 @@ impl Sandbox {
             desktop: false,
             hide_only: self.backend != Backend::None,
             refusal: self.refusal.clone(),
+            proxy_only: self.proxy_only,
         }
     }
 
@@ -541,6 +579,19 @@ impl Sandbox {
         if let Some(why) = &self.refusal {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, why.clone()));
         }
+        // M54.4: never run unbound when the owner asked for binding.
+        if self.proxy_port().is_some() {
+            if let Err(why) = self.proxy_enforcement() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "[egress] enforce is on, but commands can't be bound to the proxy here: {why}. \
+                         No command runs until it can; turn `enforce` off in [egress] to run them \
+                         unbound (docs/egress.md)"
+                    ),
+                ));
+            }
+        }
         // Hide-only: all of `/` writable, carved around the denies.
         let roots = match self.hide_only {
             true if cfg!(target_os = "linux") => vec![PathBuf::from("/")],
@@ -554,13 +605,17 @@ impl Sandbox {
                     seatbelt::open_profile(&hidden)
                 } else {
                     let unix = self.unix_sockets(workspace);
-                    seatbelt::profile(
+                    let profile = seatbelt::profile(
                         self.policy.network,
                         self.desktop,
                         &roots,
                         &hidden,
                         unix.as_ref(),
-                    )
+                    );
+                    match self.proxy_port() {
+                        Some(port) => seatbelt::bind_to_proxy(profile, port),
+                        None => profile,
+                    }
                 };
                 seatbelt::command(profile, program, args)
             }
@@ -601,10 +656,21 @@ impl Sandbox {
         cmd.envs(self.extra_env.iter().map(|(k, v)| (k, v)));
         #[cfg(target_os = "linux")]
         if let Backend::Landlock { abi } = self.backend {
-            let unix = match self.unix_enforcement() {
-                Ok(()) => self.unix_sockets(workspace).map(std::sync::Arc::new),
+            let mut unix = match self.unix_enforcement() {
+                Ok(()) => self.unix_sockets(workspace),
                 Err(_) => None,
             };
+            // M54.4: the supervisor checks IP connects too, and lets every
+            // Unix socket through when there's no allowlist of its own.
+            let port = self.proxy_port();
+            if let Some(port) = port {
+                let u = unix.get_or_insert_with(|| UnixSockets {
+                    any: true,
+                    ..UnixSockets::default()
+                });
+                u.proxy_port = Some(port);
+            }
+            let unix = unix.map(std::sync::Arc::new);
             // Hide-only enforces the read denies alone.
             let protected = match self.hide_only {
                 true => Vec::new(),
@@ -619,6 +685,7 @@ impl Sandbox {
                 &protected,
                 self.is_owner(),
                 unix,
+                port.is_some(),
             )?;
         }
         Ok(cmd)
@@ -852,6 +919,11 @@ impl Sandbox {
             return None;
         }
         let net = match (self.policy.network, self.backend) {
+            // M54.4: constant for the config (the port isn't in it).
+            (true, _) if self.proxy_port().is_some() => {
+                "Network access goes only through the proxy in HTTPS_PROXY; direct connections \
+                 (ssh, raw TCP, UDP, DNS) are refused."
+            }
             (true, _) => "Network access is allowed.",
             // Not enforced there (doctor says so); the model is still told.
             (false, Backend::Windows) => "Don't use the network.",

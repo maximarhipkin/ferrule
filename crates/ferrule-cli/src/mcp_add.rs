@@ -374,9 +374,7 @@ fn probe_sandbox(
             .or_else(|| secrets::var(name))
     })?;
     if let Some(broker) = &broker {
-        sandbox = sandbox
-            .with_env(broker.child_env())
-            .with_egress(Some(crate::tool_egress(broker)?));
+        sandbox = crate::proxied(sandbox, broker)?;
     }
     Ok((Arc::new(crate::managed::guard(sandbox)), broker))
 }

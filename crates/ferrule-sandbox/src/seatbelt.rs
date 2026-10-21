@@ -127,6 +127,23 @@ fn unix_rules(unix: &UnixSockets, sections: &mut Vec<String>) -> Vec<(String, Pa
     params
 }
 
+/// M54.4, `[egress] enforce`: IP connections only to the credential proxy
+/// on loopback. Appended last, so it overrides the profile's blanket
+/// `network-outbound`; `remote ip` filters match IP sockets only, so the
+/// Unix-socket rules (and mDNSResponder, for name lookups) are untouched.
+/// Listening and inbound connections stay as they were.
+pub fn bind_to_proxy(
+    (mut policy, params): (String, Vec<(String, PathBuf)>),
+    port: u16,
+) -> (String, Vec<(String, PathBuf)>) {
+    policy.push_str(&format!(
+        "\n; ferrule: [egress] enforce, IP connections only to the proxy\n\
+         (deny network-outbound (remote ip \"*:*\"))\n\
+         (allow network-outbound (remote ip \"localhost:{port}\"))"
+    ));
+    (policy, params)
+}
+
 /// A profile that allows everything but `hidden`: for a helper its config
 /// opted out of the sandbox, which still mustn't read ferrule's secrets.
 pub fn open_profile(hidden: &[PathBuf]) -> (String, Vec<(String, PathBuf)>) {
@@ -287,6 +304,8 @@ mod tests {
             dirs: vec![PathBuf::from("/Users/me/.gnupg")],
             own_dirs: vec![PathBuf::from("/Users/me/work")],
             abstract_names: Vec::new(),
+            any: false,
+            proxy_port: None,
         };
         let (p, params) = profile(true, false, &[], &[], Some(&unix));
         let deny = p.find("(deny network-outbound (subpath \"/\"))").unwrap();

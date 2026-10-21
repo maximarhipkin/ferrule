@@ -684,7 +684,12 @@ fn network_summary(cfg: &config::Config) -> String {
     } else {
         "private ranges blocked"
     };
-    format!("{open} · {private}")
+    let bound = if e.enforce {
+        " · commands bound to the proxy"
+    } else {
+        ""
+    };
+    format!("{open} · {private}{bound}")
 }
 
 fn browser_summary(cfg: &config::Config) -> String {

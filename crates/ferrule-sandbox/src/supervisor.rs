@@ -281,9 +281,24 @@ fn connect_for(
     let addr = &addr[..len];
 
     let family = addr.get(..2).map(|f| u16::from_ne_bytes([f[0], f[1]]));
-    if domain(&sock) != Some(libc::AF_UNIX) || family != Some(libc::AF_UNIX as u16) || len <= 2 {
-        // Not a Unix socket (its family was fixed at socket()), or an
-        // address the kernel will refuse on its own.
+    if domain(&sock) != Some(libc::AF_UNIX) {
+        // M54.4: under `[egress] enforce`, an IP connect only to the
+        // proxy; the address checked is the one connected.
+        if let Some(port) = allow.proxy_port {
+            if !to_proxy(addr, port) {
+                tracing::warn!(
+                    "sandbox: refused a connect to {} ([egress] enforce: commands reach only the proxy, docs/egress.md)",
+                    ip_of(addr)
+                );
+                return Err(libc::EACCES);
+            }
+        }
+        // Not a Unix socket: its family was fixed at socket().
+        return connect_raw(&sock, addr);
+    }
+    if allow.any || family != Some(libc::AF_UNIX as u16) || len <= 2 {
+        // Every Unix socket goes, or an address the kernel will refuse on
+        // its own.
         return connect_raw(&sock, addr);
     }
     let path = &addr[2..];
@@ -315,6 +330,53 @@ fn connect_for(
         return Err(libc::EACCES);
     }
     connect_path(&sock, &target.0)
+}
+
+/// M54.4: whether the sockaddr `addr` is loopback on `port`
+/// (`127.0.0.0/8`, `::1`, `::ffff:127.x.x.x`). `AF_UNSPEC`, which only
+/// dissolves a connection, passes.
+fn to_proxy(addr: &[u8], port: u16) -> bool {
+    let Some(family) = addr.get(..2).map(|f| u16::from_ne_bytes([f[0], f[1]])) else {
+        return false;
+    };
+    let port_ok = addr
+        .get(2..4)
+        .is_some_and(|p| u16::from_be_bytes([p[0], p[1]]) == port);
+    match i32::from(family) {
+        libc::AF_UNSPEC => true,
+        libc::AF_INET => port_ok && addr.len() >= 8 && addr[4] == 127,
+        libc::AF_INET6 => {
+            let Some(ip) = addr.get(8..24) else {
+                return false;
+            };
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(ip);
+            let ip = std::net::Ipv6Addr::from(octets);
+            port_ok && (ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()))
+        }
+        _ => false,
+    }
+}
+
+/// An IP sockaddr in words, for the log.
+fn ip_of(addr: &[u8]) -> String {
+    let family = addr.get(..2).map(|f| u16::from_ne_bytes([f[0], f[1]]));
+    let port = addr
+        .get(2..4)
+        .map(|p| u16::from_be_bytes([p[0], p[1]]))
+        .unwrap_or(0);
+    match family.map(i32::from) {
+        Some(libc::AF_INET) if addr.len() >= 8 => {
+            format!("{}.{}.{}.{}:{port}", addr[4], addr[5], addr[6], addr[7])
+        }
+        Some(libc::AF_INET6) if addr.len() >= 24 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&addr[8..24]);
+            format!("[{}]:{port}", std::net::Ipv6Addr::from(octets))
+        }
+        Some(f) => format!("an address of family {f}"),
+        None => "an empty address".into(),
+    }
 }
 
 /// The thread group of thread `tid`, from `/proc/<tid>/status`.
@@ -550,6 +612,7 @@ fn run_probe(abi: u32) -> Result<(), String> {
             &[],
             false,
             Some(Arc::new(allow)),
+            false,
         )
         .map_err(|e| e.to_string())?;
         // SAFETY: raw syscalls on addresses built above.

@@ -282,6 +282,7 @@ pub const PARITY: &[Leaf] = &[
         "console",
         "`--set` needs `--yes` and confirms",
     ),
+    leaf("egress log", Read, "console", ""),
     leaf(
         "login",
         Refused("sign in from the Models page (Sign in)"),

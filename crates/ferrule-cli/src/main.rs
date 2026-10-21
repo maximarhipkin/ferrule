@@ -396,6 +396,11 @@ enum Cmd {
         #[command(subcommand)]
         op: trust::TrustCmd,
     },
+    /// Where requests through the credential proxy went (docs/egress.md)
+    Egress {
+        #[command(subcommand)]
+        op: egress::EgressCmd,
+    },
     /// Sign in to a subscription: the ChatGPT plan here, the Claude plan
     /// through the `claude` binary (docs/subscriptions.md)
     Login {
@@ -1167,6 +1172,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             status,
         } => trust::stop_cmd(reason, clear, status)?,
         Cmd::Trust { op } => trust::cmd(op)?,
+        Cmd::Egress { op } => egress::cmd(op)?,
         Cmd::Plan { op } => plan::cmd(op).await?,
         Cmd::Login {
             which,
@@ -2074,9 +2080,7 @@ pub(crate) fn shared_sandbox(cfg: &config::Config) -> Result<Arc<Sandbox>> {
         eprintln!("ferrule: {w}");
     }
     if let Some(broker) = broker {
-        sandbox = sandbox
-            .with_env(broker.child_env())
-            .with_egress(Some(tool_egress(broker)?));
+        sandbox = proxied(sandbox, broker)?;
     }
     let sandbox = managed::guard(sandbox);
     Ok(SANDBOX.get_or_init(|| Arc::new(sandbox)).clone())
@@ -2101,11 +2105,19 @@ pub(crate) fn engine_sandbox(cfg: &config::Config, config_dir: &Path) -> Result<
     });
     let mut sandbox = Sandbox::new(policy).map_err(|e| anyhow!(e))?;
     if let Some(broker) = shared_broker(cfg)? {
-        sandbox = sandbox
-            .with_env(broker.child_env())
-            .with_egress(Some(tool_egress(broker)?));
+        sandbox = proxied(sandbox, broker)?;
     }
     Ok(SANDBOX.get_or_init(|| sandbox).clone())
+}
+
+/// `sandbox` pointed at the credential proxy: its settings in commands'
+/// environment, ferrule's own clients through it, and under `[egress]
+/// enforce` commands bound to its port (M54.4).
+pub(crate) fn proxied(sandbox: Sandbox, broker: &Broker) -> Result<Sandbox> {
+    Ok(sandbox
+        .with_env(broker.child_env())
+        .with_egress(Some(tool_egress(broker)?))
+        .with_proxy_only(broker.enforced_port()))
 }
 
 /// What ferrule's own clients acting for the model (`web_fetch`, search,
@@ -2139,6 +2151,8 @@ pub(crate) fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Brok
     let broker = Broker::start(broker_config(cfg)?, secrets::var)?;
     if let Some(b) = &broker {
         egress::report_denials(b, ledger::build_sink(cfg));
+        // M54.4: where requests went, to the audit log.
+        egress::report_destinations(b);
         // M52.2: the Safe's "last used" (name and host, never a value).
         b.on_use(|u| secret_meta::used(&u.name, &u.host));
     }
@@ -3866,7 +3880,9 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         .map(|cfg| secrets_warnings(cfg, &sandbox, broker))
         .unwrap_or_default();
     if let Some(broker) = broker {
-        sandbox = sandbox.with_env(broker.child_env());
+        sandbox = sandbox
+            .with_env(broker.child_env())
+            .with_proxy_only(broker.enforced_port());
     }
     let policy = sandbox.policy();
     let roots = sandbox.writable_roots(&workspace);
@@ -3892,6 +3908,17 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
             if policy.network { "allowed" } else { "blocked" }
         );
         println!("sockets   {}", sandbox.unix_status(&workspace));
+        // M54.4.
+        if let Some(port) = sandbox.proxy_port() {
+            match sandbox.proxy_enforcement() {
+                Ok(()) => {
+                    println!("egress    bound: IP connections only to the proxy (127.0.0.1:{port})")
+                }
+                Err(why) => println!(
+                    "egress    enforce is on but can't be applied, so commands are refused: {why}"
+                ),
+            }
+        }
         println!(
             "writable  {}",
             if roots.is_empty() {

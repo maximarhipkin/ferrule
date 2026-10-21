@@ -106,6 +106,117 @@ pub fn report_denials(broker: &Broker, sink: Option<Arc<dyn LedgerSink>>) {
     });
 }
 
+/// M54.4: every destination the proxy lets a request go to, as a trust
+/// audit event `egress` (who asked, the method, host and port; never a
+/// path, a header or a body). The proxy hands each (source, host, port)
+/// over at most once a minute.
+pub fn report_destinations(broker: &Broker) {
+    let Some(audit) = config::data_dir()
+        .ok()
+        .map(|d| Audit::new(d.join("trust").join("audit.jsonl")))
+    else {
+        return;
+    };
+    broker.on_destination(move |d| {
+        audit.record(
+            chrono::Utc::now(),
+            "egress",
+            None,
+            None,
+            json!({
+                "source": d.source.to_string(),
+                "method": d.method,
+                "host": d.host,
+                "port": d.port,
+            }),
+        );
+    });
+}
+
+#[derive(clap::Subcommand)]
+pub enum EgressCmd {
+    /// Each destination the proxy logged or refused, by host and port
+    Log {
+        /// `7d`, `12h`, `30m`, or an RFC 3339 instant (default: 24 h)
+        #[arg(long)]
+        since: Option<String>,
+    },
+}
+
+pub fn cmd(op: EgressCmd) -> Result<()> {
+    match op {
+        EgressCmd::Log { since } => log_cmd(since),
+    }
+}
+
+/// `ferrule egress log`: where requests through the proxy went, and what
+/// it refused, from the trust audit log, by host.
+pub fn log_cmd(since: Option<String>) -> Result<()> {
+    let now = chrono::Utc::now();
+    let since = match since {
+        Some(s) => crate::ledger::parse_since(&s, now)?,
+        None => now - chrono::Duration::hours(24),
+    };
+    let audit = Audit::new(config::data_dir()?.join("trust").join("audit.jsonl"));
+    let events = audit.read(Some(since))?;
+    // (host:port) → (sources, went, refused, last seen)
+    let mut by: std::collections::BTreeMap<String, (Vec<String>, usize, usize, String)> =
+        Default::default();
+    for e in &events {
+        let refused = match e.event.as_str() {
+            "egress" => false,
+            "egress_denied" => true,
+            _ => continue,
+        };
+        let d = &e.detail;
+        let host = d["host"].as_str().unwrap_or("?");
+        let key = match d["port"].as_u64() {
+            Some(p) if host.contains(':') => format!("[{host}]:{p}"),
+            Some(p) => format!("{host}:{p}"),
+            None => host.to_string(),
+        };
+        let row = by.entry(key).or_default();
+        if let Some(src) = d["source"].as_str() {
+            if !row.0.iter().any(|s| s == src) {
+                row.0.push(src.to_string());
+            }
+        }
+        if refused {
+            row.2 += 1;
+        } else {
+            row.1 += 1;
+        }
+        row.3 = e.at.clone();
+    }
+    println!(
+        "egress since {} ({})",
+        since.to_rfc3339(),
+        audit.path().display()
+    );
+    if by.is_empty() {
+        println!("nothing went through the proxy in that time");
+        return Ok(());
+    }
+    let mut rows: Vec<_> = by.into_iter().collect();
+    rows.sort_by(|a, b| b.1 .3.cmp(&a.1 .3));
+    for (dest, (sources, went, refused, last)) in rows {
+        let mut what = Vec::new();
+        if went > 0 {
+            what.push(format!("{went} logged"));
+        }
+        if refused > 0 {
+            what.push(format!("{refused} refused"));
+        }
+        println!(
+            "{last}  {dest}  {} · {}",
+            sources.join(", "),
+            what.join(", ")
+        );
+    }
+    println!("A destination is logged at most once a minute per source; requests between are not counted.");
+    Ok(())
+}
+
 /// One refusal's ledger row: host and port only, never a path or query
 /// (they can carry data).
 pub fn denial_record(d: &Denial) -> LedgerRecord {

@@ -361,6 +361,17 @@ impl Denial {
     }
 }
 
+/// M54.4: a destination the policy let a request go to, for the audit
+/// log: who asked and where, never a path, a body or a header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
+    pub source: Source,
+    /// `"CONNECT"` or the plain-HTTP method.
+    pub method: String,
+    pub host: String,
+    pub port: u16,
+}
+
 /// Where the proxy may send a request once it's vetted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -386,6 +397,10 @@ pub struct EgressPolicy {
     /// collector): through the private guard and `default = "deny"`, but
     /// not through `deny`.
     implicit: Vec<Rule>,
+    /// M54.4, `[egress] enforce`: sandboxed commands are bound to the
+    /// proxy (the sandbox lets their IP connections reach only its port),
+    /// so they always get the proxy's settings.
+    pub enforce: bool,
 }
 
 impl EgressPolicy {
@@ -416,6 +431,7 @@ impl EgressPolicy {
             block_private,
             private_allow: parse("private_allow", private_allow)?,
             implicit: Vec::new(),
+            enforce: false,
         })
     }
 
@@ -426,6 +442,12 @@ impl EgressPolicy {
             self.implicit.push(rule);
         }
         Ok(())
+    }
+
+    /// M54.4: binds sandboxed commands to the proxy (`[egress] enforce`).
+    pub fn enforced(mut self, on: bool) -> Self {
+        self.enforce = on;
+        self
     }
 
     /// Whether this policy says anything beyond the default: shell commands
@@ -605,6 +627,9 @@ impl EgressPolicy {
         }
         if !self.implicit.is_empty() {
             lines.push(format!("configured endpoints: {}", list(&self.implicit)));
+        }
+        if self.enforce {
+            lines.push("enforce: commands reach only the proxy".to_string());
         }
         lines
     }

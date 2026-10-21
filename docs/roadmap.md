@@ -1307,6 +1307,17 @@ all fail; and `make check` is green on Linux, macOS and Windows.
   inherits them; a child gets one only by name (`env_passthrough`, an
   owner hook's `env`), and an exported variable still wins
   (`docs/sandbox.md`, "Env").
+- **M54.4, network through the proxy, logged, opt-in**: `[egress] enforce
+  = true` binds sandboxed commands to the credential proxy (their IP
+  connections reach only its loopback port: a Seatbelt rule on macOS; on
+  Linux the Unix-socket connect supervisor checks IP connects too and the
+  seccomp filter refuses UDP, raw sockets and TCP Fast Open; refused on
+  Windows; commands refused where it can't hold). The policy stays
+  allow-by-default. In every mode each destination the proxy lets through
+  goes to the trust audit log (source, method, host, port; never a path or
+  body), shown by `ferrule egress log` (`docs/egress.md`, "Binding
+  commands to the proxy" and "Where requests went"). Not run on a real
+  machine yet; the Linux part is CI-compiled only.
 
 ## Other open tracks
 

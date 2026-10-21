@@ -1638,7 +1638,9 @@ fn egress_check(r: &mut Report, cfg: &config::Config) {
             return;
         }
     };
-    let commands = if policy.has_rules() || set_secrets(cfg) {
+    let commands = if policy.enforce {
+        "web_fetch, web_search, MCP and shell commands (bound to the proxy)"
+    } else if policy.has_rules() || set_secrets(cfg) {
         "web_fetch, web_search, MCP and shell commands"
     } else {
         "web_fetch, web_search and MCP (commands: no rules, left direct)"
@@ -1647,6 +1649,55 @@ fn egress_check(r: &mut Report, cfg: &config::Config) {
         "egress",
         format!("{} · applies to {commands}", policy.describe().join(" · ")),
     );
+    // M54.4: whether the binding holds here.
+    if policy.enforce {
+        if !cfg.sandbox.network {
+            r.note(
+                "egress",
+                "enforce is on, and [sandbox] network = false refuses every IP connection anyway",
+            );
+        } else {
+            match Sandbox::new(crate::sandbox_policy(cfg)) {
+                Ok(s) => match s.with_proxy_only(Some(0)).proxy_enforcement() {
+                    Ok(()) => r.ok(
+                        "egress",
+                        "enforce: sandboxed commands reach only the proxy's port and the allowed Unix sockets; ssh, UDP and clients that ignore HTTPS_PROXY can't connect",
+                    ),
+                    Err(why) => {
+                        r.fail(
+                            "egress",
+                            format!("enforce is on but can't be applied here, so every command is refused: {why}"),
+                        );
+                        r.hint("turn `enforce` off in [egress], or fix the sandbox (docs/egress.md, \"Binding commands to the proxy\")");
+                    }
+                },
+                Err(e) => r.fail("egress", format!("enforce needs the sandbox: {e}")),
+            }
+        }
+    }
+    let since_audit = chrono::Utc::now() - chrono::Duration::hours(24);
+    if let Ok(dir) = config::data_dir() {
+        let audit = ferrule_trust::audit::Audit::new(dir.join("trust").join("audit.jsonl"));
+        let mut hosts: Vec<String> = audit
+            .read(Some(since_audit))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.event == "egress")
+            .filter_map(|e| e.detail["host"].as_str().map(str::to_string))
+            .collect();
+        hosts.sort();
+        hosts.dedup();
+        if !hosts.is_empty() {
+            r.note(
+                "egress",
+                format!(
+                    "{} host{} reached through the proxy in 24 h; `ferrule egress log` lists them",
+                    hosts.len(),
+                    if hosts.len() == 1 { "" } else { "s" }
+                ),
+            );
+        }
+    }
     let since = chrono::Utc::now() - chrono::Duration::hours(24);
     let records = crate::ledger::ledger_path()
         .ok()
