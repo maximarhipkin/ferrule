@@ -4096,11 +4096,33 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
 
     let probe_name = format!(".ferrule-sandbox-probe-{}", std::process::id());
     let inside = workspace.join(&probe_name);
-    let wrote = write_to(&inside)?.status.success();
+    let probe = write_to(&inside)?;
+    let wrote = probe.status.success();
     let _ = std::fs::remove_file(&inside);
     match policy.mode {
         Mode::ReadOnly => report("workspace write is refused (read-only)", !wrote),
-        _ => report("workspace write works", wrote),
+        _ => {
+            report("workspace write works", wrote);
+            // Why, so a failure that comes and goes (once on CI's Windows
+            // runner, run 39632001271) says whether the launcher or the
+            // write failed.
+            if !wrote {
+                let why = String::from_utf8_lossy(&probe.stderr);
+                let why: Vec<&str> = why.lines().filter(|l| !l.trim().is_empty()).collect();
+                println!(
+                    "        exit {}: {}",
+                    probe
+                        .status
+                        .code()
+                        .map_or_else(|| "none".to_string(), |c| c.to_string()),
+                    if why.is_empty() {
+                        "nothing on stderr".to_string()
+                    } else {
+                        why.join(" | ")
+                    }
+                );
+            }
+        }
     }
     if let Some(data) =
         data_in_workspace(&sandbox, &workspace).filter(|_| !wrote && policy.mode != Mode::ReadOnly)

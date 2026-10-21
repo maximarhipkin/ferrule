@@ -1499,6 +1499,12 @@ Current State; numbers are claimed there before anything is built.
     again for 2 minutes, and the first refusal in a keyless session says
     how to ask the owner for a Brave key with `secret_request`
     (`docs/web-search.md`, "Keyless search").
+  - **CI hygiene**: `ferrule sandbox` prints the probe's exit code and
+    stderr when "workspace write works" fails, since the one Windows
+    failure (run 39632001271) left no reason; PLAN.md's Current State
+    refreshed (PRs #44–#54 merged, the claims, the next free number
+    M63, the open follow-ups). Requiring green CI on `main` (M55.7) is
+    the owner's repository setting, still off.
 
 **Still open from earlier tracks.**
 

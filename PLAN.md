@@ -12,8 +12,11 @@ that convention yet — ask before introducing one).
 
 Rewritten in place on 2026-10-21 (M55.6) from `git log`, the code and
 `docs/roadmap.md`; the version it replaced stopped at M49 and is in git
-history. Keep this section true **in place**. Everything below it is
-append-only.
+history. Refreshed in place the same evening (wave A, task 7) from `gh
+pr list`, `git log` and the re-audit
+(`research_notes/Ferrule agent gap analysis/reaudit_2026-10-21.md`, in
+the main checkout). Keep this section true **in place**. Everything
+below it is append-only.
 
 - **What it is.** Ferrule is a self-hosted agent runtime for one owner,
   in Rust. The repo is `maximarhipkin/ferrule` (public), the binary is
@@ -26,44 +29,49 @@ append-only.
   `install.ps1`) followed by `ferrule setup`; `ferrule doctor` checks the
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
-- **Releases and branches** (checked 2026-10-21):
-  - The latest release is **v0.13.1** (tagged 2026-10-20). It has
-    everything through M49 plus the 2026-10-19 review-pass fixes. Every
-    crate is at 0.13.1 except `ferrule-plugin-sdk`, which keeps 0.1.0.
-  - **`main` is `2ffa669`.** It is v0.13.1 plus M50 (PR #43), three
-    merges from 2026-10-20: #44 ("Allow for this run", a per-run grant
-    for one gated shell command), #45 (`send_file`, the connection tools
-    and MCP tools bridged into the Claude-plan engine) and #46 (Telegram
-    follow-ups merged into one turn, a quieter busy notice, locations,
-    venues and contacts, no link previews), and **PR #48 (Kimi's M51–M53,
-    merged 2026-10-21)**: media generation (`generate_image`,
-    `generate_video` and its poller, the new `ferrule-media` crate), the
-    dashboard Safe (rotate a kept key, move a tool key's sites) and
-    contrastive probing in the learning loop. None of this is released.
-    CI on `dadf357` was red on two flaky tests (fixed by M55.1 on
-    `autopilot`).
-  - **`autopilot` (PR #47, open)** stacks the gap analysis's work on
-    `dadf357`, one commit per item, each with a 2026-10-21 Session Log
-    entry: M55.2 (the four stranded branch stacks: the core-loop and
-    Responses-reasoning stack, four host-side sandbox escapes, the
-    update/restore defects, a test race), M55.3, M55.4, M55.5, M55.1,
-    this rewrite, and the items after it. `main` (`2ffa669`, PR #48) was
-    merged into it on 2026-10-21, after M56.6.
-  - Since then (2026-10-21): PR #47 merged to `main` as `2c74bdb`, then
-    **M54** (protected autonomous mode, `docs/m54-autonomous.md`) landed
-    on `main` as `6efe413`, then PR #50 (the owner's Telegram groups get
-    owner mode) as `f70984e`. `autopilot` continues as **PR #49**: M58.1–
-    M58.5, M53.2 onward and the M51/M52 follow-ups, with `main` merged in
-    after M53.2 (`6efe413`) and after M51.4 (`f70984e`). PR #49 merged
-    to `main` on 2026-10-21, then PR #51 (the security and approvals
-    group); `autopilot` continues as **PR #52** (open), M60 and M61
-    among its commits.
+- **Releases and branches** (checked 2026-10-21, evening):
+  - The latest release is **v0.13.1** (tagged 2026-10-20): everything
+    through M49 plus the 2026-10-19 review-pass fixes. Every crate is at
+    0.13.1 except `ferrule-plugin-sdk`, which keeps 0.1.0. Nothing since
+    is released.
+  - **`main` is `ebc9e26`** (PR #54). PRs **#44–#54 are all merged**:
+    #44 "Allow for this run", #45 the Claude plan engine's bridged tools,
+    #46 Telegram follow-ups (all 2026-10-20); #48 Kimi's M51–M53; #47,
+    #49, #51, #52 and #53 the `autopilot` stacks (the gap analysis's
+    M55–M58, the M51–M53 follow-ups, security and approvals, M60, M61,
+    M54.2, M56.2, M56.3, then M59 and M54.4); #50 owner mode for the
+    owner's Telegram groups; #54 M62, compaction's summary input (a
+    Cursor session on `cursor/compaction-summary-m62-a6a4`). CI was
+    green on all three OSes for #53's and #54's merges.
+  - **`autopilot`** carries **improvement wave A** (below), one commit
+    per task on top of `main` (`ebc9e26` merged in as `544c608`). It has
+    no open PR yet; the coordinator pushes and opens it.
+- **What landed on 2026-10-21:** M51–M53's follow-ups (media's poller,
+  the media role and voice; the Safe's inventory, rotate, edit-hosts and
+  config editing; learning's evidence clipping, learned skills, scopes,
+  thumbs and the blind select node), M54 (protected autonomous mode,
+  with M54.2 secrets out of the environment, M54.3 scrubbed tool
+  results, M54.4 egress bound through the proxy, M54.5 one gate after
+  outside content), M55 (green main, spilled long output, the stranded
+  stacks), M56 (steering, standing grants, chat self-admin, proactive
+  memory, restart-safe turns, chat primitives, channel media, keyless
+  search), M57 (deferred tool schemas, per-file loops, the stale-file
+  guard, cache economics, background jobs, forks), M58 (simplify; eval
+  as the gate, built but never run), M59 (personal WhatsApp and
+  iMessage through bridges), M60 (images in tool results reach the
+  model), M61 (screen viewing, view only), M62 (compaction sees the
+  tools), and wave A's seven tasks (below). Almost none of it has run
+  live; each Session Log entry's **Open** says what wasn't.
 - **Checks.** `make check` (fmt, clippy, the workspace tests) is the
-  green predicate (`AGENTS.md`). The last full run on `autopilot` before
-  this rewrite: 1869 passed, 0 failed, 28 ignored across 71 test
-  binaries (macOS, 2026-10-21). CI runs on Linux, macOS and Windows;
-  `release.yml` builds and signs five targets on a `v*` tag. Rust stable
-  through rustup, edition 2021.
+  green predicate (`AGENTS.md`). The last full run on `autopilot`
+  (wave A, task 7): 1891 passed, 0 failed, 28 ignored across 73 test
+  binaries (macOS, 2026-10-21). CI runs on Linux, macOS and
+  Windows; `release.yml` builds and signs five targets on a `v*` tag.
+  Rust stable through rustup, edition 2021. **Branch protection is
+  off:** `gh api repos/maximarhipkin/ferrule/branches/main/protection`
+  answers 404 "Branch not protected", and the one ruleset (`nomaster`)
+  is disabled. Requiring the three CI jobs before a merge (M55.7) is a
+  repository setting only the owner can turn on.
 - **The 25 crates** (each one's `description` in its `Cargo.toml` says
   the same):
 
@@ -126,57 +134,66 @@ append-only.
     dashboard redesign; self-service from chat and dashboard; visual
     polish; connect everything from the dashboard (M50, merged after
     v0.13.1). The numbers M45 and M46 were never used.
-  - After M50, on `main` only: PRs #44, #45 and #46 (above).
-- **In flight** (2026-10-21):
-  - **M54, protected autonomous mode** is merged to `main` (`6efe413`).
-    Its open edges (a live Linux run, macOS owner mode, per-session
-    helpers for guests) are in its Session Log entry.
-  - **`autopilot` / PR #49 (merged 2026-10-21):** M58.1–M58.5
-    (simplify, remove or make opt-in), the M53 follow-ups (M53.2,
-    M53.3, M53.4, M53.5, M53.7), and the M51/M52 follow-ups (M51.4,
-    M51.3, M52.2, M52.4, M52.6; M52.3 is M54's `secret_request`), one
-    commit each.
-  - **`autopilot` / PR #52 (open):** among its commits M60 and **M61
-    screen viewing (screenshots and recordings of the owner's own
-    screen, view only)**, `docs/m61-screen.md`; then **M59** (personal
-    WhatsApp through WAHA, iMessage through BlueBubbles,
-    `docs/m59-channels.md`) and **M54.4** (`[egress] enforce`: commands
-    bound to the proxy, opt-in; every destination in the audit log,
-    `ferrule egress log`).
-  - **M62, compaction's summary input** (this session,
-    `cursor/compaction-summary-m62-a6a4`): the summarizer sees tool
-    names, arguments and a gist of each result, not the system prompt;
-    the summary request is cut to the context window; a failed summary
-    call folds an extract instead of ending the run
-    (`docs/m62-compaction.md`).
-  - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
-    `docs/research-harness2-media.md`, `docs/m51-media.md`,
-    `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
-    Their named follow-ups are built on `autopilot` (above) except a
-    per-run approval card for media spend and a Cloudflare Access JWT
-    check at the dashboard's origin (M52.6, documented).
-  - **M55–M59, from `reports/Ferrule agent gap analysis.md`** (2026-10-20,
-    in the main checkout and git-excluded, so `docs/roadmap.md`'s "Other
-    open tracks" lists its items): M55 make main green and land the
-    written fixes; M56 the running turn hears the owner and remembers
-    what matters; M57 the coding leaders' context and loop hygiene; M58
-    simplify, remove or make opt-in; M59 channels not worth chasing yet
-    (personal WhatsApp, iMessage). The report also amends M52 and M54
-    with numbered items (M52.1–M52.6, M54.1–M54.7); they keep their
-    parent's number.
+  - **M51–M62**, all merged by PR #54 (one line each in
+    `docs/roadmap.md`; designs in `docs/m51-media.md`,
+    `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`,
+    `docs/m54-autonomous.md`, `docs/m57-context-hygiene.md`,
+    `docs/m59-channels.md`, `docs/vision.md` (M60),
+    `docs/m61-screen.md`, `docs/m62-compaction.md`). The gap analysis's
+    M55–M58 items are in the roadmap's "Other open tracks" list.
+- **In flight** (2026-10-21, evening): **wave A** on `autopilot`, the
+  re-audit's follow-ups, one commit and one Session Log entry per task:
+  1. test-phase fixes (content back after compaction, doctor's Ollama
+     tag, LM Studio, the Chrome check's kill);
+  2. media spend in dollars against the `[trust]` caps;
+  3. the owner's scheduled briefings in owner mode;
+  4. a housekeeping job that prunes what an always-on bot makes;
+  5. the scrubbing gaps (connections' tokens);
+  6. the paste guard's link to the Safe, and keyless search that says
+     when DuckDuckGo refuses;
+  7. CI hygiene: this refresh, the Windows self-test flake (below).
+- **Open follow-ups that matter most** (the re-audit's ranking, minus
+  what wave A closed: media dollars, scheduled read-then-send,
+  housekeeping, connection tokens in the scrub, M52.5's link, a refusal
+  answered with a key offer):
+  1. **Nothing has run live**: above all M54 owner mode on Linux and
+     M54.4's binding (CI-compiled only), M56.1 steering, M56.5 resume,
+     M56.6 buttons, M56.7 Telegram media, M51.4 voice, M53.5 reactions,
+     and all of wave A. The owner's go-ahead is needed (the global "don't
+     run" rule).
+  2. **The eval gate has never gated** (M58.5): M56.4's prompt line,
+     M58.3's tool cut, M57.5's examples and M57.1's threshold sit in the
+     prompt prefix unmeasured; no nightly job.
+  3. **Connections**: a curated catalog v2 with one-step add, a bundled
+     skills pack (weather, RSS, HN, maps, Home Assistant REST),
+     any-provider IMAP/SMTP mail, CalDAV/ICS calendars (re-audit Part 3
+     #3–#6).
+  4. **M53.1's evidence**: no control run without the lesson, unblinded
+     labels; fix before offering learning in owner mode.
+  5. **CIMD and pre-registered OAuth clients; MCP 2026-07-28**
+     (`server/discover`, stateless): Home Assistant's official MCP,
+     Slack, Asana and Dropbox wait on them.
+  6. **Small polish**: M56.1's queue and interrupt, steered voice notes;
+     M56.3's Undo and M56.5's pending offers lost on restart; Slack
+     inbound files; `/bg`; keys without a prefix (Brave's, Tavily's)
+     pass the paste guard, and only Telegram and the dashboard delete.
+  7. **DuckDuckGo's parser** has never seen the live page, and keyless
+     search has no second fallback.
+  8. **CI hygiene**: branch protection (above); the Windows "workspace
+     write works" flake (run 39632001271) is unexplained, and the
+     self-test now prints the probe's exit code and stderr when it fails
+     (wave A, task 7's entry).
 - **Milestone numbers are claimed:** M51–M53 Kimi, M54 the autonomy
-  session, M55–M59 the gap analysis, M60 images in tool results
-  (2026-10-21, `autopilot`), M61 screen viewing (screenshots and
-  recordings of the owner's own screen, view only; 2026-10-21,
-  `autopilot`). **M59 is claimed and built** (2026-10-21, `autopilot`
-  worktree, PR #52): personal WhatsApp and iMessage through bridges the
-  owner runs. So is M54's numbered item **M54.4** (binding egress through
-  the proxy, logged). **M62** (2026-10-21, compaction's summary input:
-  tool calls visible, the system prompt left out, the request bounded
-  so a too-long summary cannot kill the run) is claimed by this session.
-  The next free number is **M63**.
-  The first claim wins, and a later collision shifts the unclaimed
-  numbers, never a claimed one.
+  session, M55–M58 the gap analysis, **M59 channels** (personal
+  WhatsApp and iMessage through bridges the owner runs; built and
+  merged, PR #53), **M60 images in tool results** and **M61 screen
+  viewing** (screenshots and recordings of the owner's own screen, view
+  only; both PR #52), **M62 compaction's summary input** (PR #54). M54's
+  numbered items (M54.1–M54.7) and M52's (M52.1–M52.6) keep their
+  parent's number; so do wave A's tasks, which are follow-ups, not
+  milestones. **The next free number is M63.** The first claim wins,
+  and a later collision shifts the unclaimed numbers, never a claimed
+  one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
   "Staying synchronized" section and `AGENTS.md`):
   - **Claim before building.** When a session starts, it appends a dated
@@ -191,15 +208,20 @@ append-only.
     media module and the Telegram send branches. Anyone who must touch
     another's surface makes the smallest change and says so in their
     entry.
+  - **Start from `main`.** `git fetch origin main` first; if `main` has
+    commits the branch lacks, merge it (signed) and run `make check`
+    before building. On 2026-10-21 PR #54 claimed M62 on `main` while
+    wave A's brief still named M62 as the next free number; fetching
+    first is how a session notices.
   - **Push early.** Push the branch at its first commit; a worktree
     branch with no upstream is invisible to the other sessions and to
-    CI.
+    CI. (Wave A's sessions leave the push to their coordinator.)
   - **PLAN.md is append-only** except this section, which is edited in
     place.
   - **Merge on green.** A change lands on `main` only when `make check`
     and the three CI jobs pass. Requiring that in GitHub's branch
     protection (M55.7) is a repository setting only the owner can turn
-    on.
+    on; as of 2026-10-21 it is off (see Checks).
 - **Branding.** `docs/branding/logo.png` and `docs/branding/hero.png`,
   drawn with Pillow (a metal band around a rod bundle; steel and copper
   on near-black). Keep that motif if they're ever redrawn.
@@ -9197,3 +9219,65 @@ the hint again, and several chats each make one request to a
 DuckDuckGo that is refusing. Keys with no prefix (Brave's, Tavily's,
 passwords) still pass the guard (M52.5's known gap). Only Telegram and
 the dashboard delete the pasted message.
+
+### 2026-10-21 — Wave A, task 7: CI hygiene (Claude, Opus 5.5)
+
+The re-audit's item 11 and Part 3 #15, in the `autopilot` worktree.
+Touches `ferrule-cli`'s `sandbox` command (its self-test), PLAN.md's
+Current State and the roadmap.
+
+**The Windows flake.** Run 39632001271 (`main` after PR #52, `521e0e8`)
+failed on `windows-latest` in "Sandbox self-test": `FAIL workspace write
+works`, every other check `ok`; the #53 and #54 merges passed, and it
+is the only failure of that step in the last 40 runs (the other red
+runs failed in "Test", "Dashboard browser check" or the Linux end-to-end
+step). What the log shows: the workspace is `$RUNNER_TEMP/ws`, made by
+`mkdir -p` just before; the probe is `cmd /d /c echo probe> <ws>\.ferrule-sandbox-probe-<pid>`
+through the launcher; it took about 40 ms, like the checks around it.
+What it doesn't: why. `write_to(..).status.success()` threw the
+probe's output away, so a launcher that failed (exit 125 and a reason
+on stderr) can't be told from a write the token refused. The other
+checks can't help: "secret env vars are not visible" and the two
+refusal checks also pass when the launcher fails, since they test for
+an absence; only "workspace write works" and the two later probes
+(process memory, sockets) need the launcher to run, and those passed.
+So the first launch or two may have failed and only the write probe
+could show it. One reading that fits, not shown: the launcher saves its
+capability SIDs to `%LOCALAPPDATA%\ferrule-sandbox\windows-caps.json`
+by write-then-rename (`windows.rs` `capability_sids`), and a rename on
+Windows fails while another process (an antivirus scan, a process left
+from the "Test" step) has the target open; `launch` then fails before
+the program starts, and the next launch, with nothing left to save,
+works. That's a guess, so nothing in the launcher was changed for it.
+
+**What changed.**
+- `ferrule sandbox`: when "workspace write works" fails, the next line
+  is the probe's exit code and its stderr (`exit 125: ferrule sandbox
+  launcher: …` for a launcher failure, `exit 1: Access is denied.` for
+  a refused write). The next occurrence says which.
+- PLAN.md's Current State, in place: `main` at `ebc9e26` with PRs
+  #44–#54 merged; what landed on 2026-10-21 (M51–M62 and wave A); the
+  milestone claims (M59 channels, M60 images in tool results, M61
+  screen viewing, M62 compaction's summary input) and **the next free
+  number, M63**: PR #54 took M62 on `main` while this wave's brief still
+  had it free; the sync protocol (now: fetch and merge `main` first);
+  branch protection; the open follow-ups that matter most, from the
+  re-audit minus what wave A closed.
+- **Branch protection** is off (`gh api …/branches/main/protection`:
+  404 "Branch not protected"; the ruleset `nomaster` is disabled).
+  Turning on required checks for `main` (M55.7) is a repository setting
+  only the owner can make; noted in Current State and the sync
+  protocol.
+- The roadmap's Wave A list.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean. The self-test change wasn't run on
+Windows (it prints only on a failure).
+
+**Open.** The flake's cause. If it recurs, the new line says whether
+the launcher failed; if it's the state file, the fix is to retry the
+rename (as `update/swap.rs`'s `rename_retrying` does) or to go on with
+the new SIDs when the save fails (the cost is one more ACE per root next
+time). Branch protection waits on the owner.
