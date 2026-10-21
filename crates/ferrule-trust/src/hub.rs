@@ -141,6 +141,9 @@ pub struct Hub {
     bound: Vec<HostPattern>,
     /// M20: the connected services, whose changing tools are gated.
     connected: RwLock<Vec<String>>,
+    /// The mail accounts the connected services send from, lower-cased:
+    /// the owner's own addresses besides the owner's chats (wave A).
+    accounts: RwLock<Vec<String>>,
     /// M56.2: the owner's standing grants.
     grants: Grants,
 }
@@ -176,6 +179,7 @@ impl Hub {
             poll: Duration::from_secs(1),
             bound,
             connected: RwLock::new(Vec::new()),
+            accounts: RwLock::new(Vec::new()),
             grants: Grants::in_data_dir(data),
         };
         // A restart doesn't warn twice for today's windows.
@@ -237,6 +241,48 @@ impl Hub {
 
     pub fn connected(&self) -> Vec<String> {
         self.connected.read().unwrap().clone()
+    }
+
+    /// The accounts the connected services send mail from (a native Gmail
+    /// connection's address), read from the connection store, never from
+    /// a tool call.
+    pub fn set_own_accounts(&self, addresses: Vec<String>) {
+        *self.accounts.write().unwrap() = addresses
+            .into_iter()
+            .map(|a| a.trim().to_lowercase())
+            .filter(|a| !a.is_empty())
+            .collect();
+    }
+
+    /// Wave A (M54.5): where a send reaches the owner alone, lower-cased:
+    /// the owner's chats (`[trust]` and each channel's owner: a Telegram
+    /// chat id, the email channel's address, …) and the connected
+    /// services' own mail accounts. All of it from the config and the
+    /// connection store.
+    pub fn own_recipients(&self) -> Vec<String> {
+        let mut own: Vec<String> = self
+            .owners()
+            .into_iter()
+            .map(|c| c.chat.trim().to_lowercase())
+            .filter(|c| !c.is_empty())
+            .collect();
+        own.extend(self.accounts.read().unwrap().iter().cloned());
+        own.sort();
+        own.dedup();
+        own
+    }
+
+    /// Wave A (M54.5): an owner's scheduled task sent to the owner alone
+    /// after reading outside content, let through without a tap; audited.
+    pub fn sent_to_owner(&self, tree: &str, tool: &str, source: &str) {
+        let run = self.run_id(tree);
+        self.audit.record(
+            self.clock.now(),
+            "own_send",
+            Some(tree),
+            run.as_deref(),
+            json!({"tool": tool, "after": source}),
+        );
     }
 
     pub fn audit(&self) -> &Audit {

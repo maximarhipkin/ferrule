@@ -77,7 +77,9 @@ fn make(cfg: &config::Config) -> Result<Arc<Connections>> {
 }
 
 /// M19's gate: a connected service's tools that change something wait for
-/// the owner's yes, unless `[connections] gate_writes = false`.
+/// the owner's yes, unless `[connections] gate_writes = false`. And the
+/// accounts they send mail from, which an owner's scheduled task may send
+/// to without a tap after reading outside content (wave A, M54.5).
 fn set_gate(cfg: &config::Config, conns: &Connections) {
     let Ok(hub) = trust::hub(cfg) else { return };
     let names = if conns.config().gate_writes {
@@ -86,6 +88,7 @@ fn set_gate(cfg: &config::Config, conns: &Connections) {
         Vec::new()
     };
     hub.set_connected(names);
+    hub.set_own_accounts(conns.own_addresses());
 }
 
 /// The gateway's way to the owner and back into a chat.

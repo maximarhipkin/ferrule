@@ -8914,3 +8914,53 @@ that may refuse a clip that would have fit). Speech on the default
 Gemini TTS is still counted only. The settling rows can be negative,
 which `ferrule ledger` shows as they are. No per-image dollar cap; no
 per-run approval card (M51's "As built").
+
+### 2026-10-21 — Wave A, task 3: the owner's own scheduled briefings in owner mode (Claude, Opus 5.5)
+
+M54.5's follow-up, in the `autopilot` worktree. Touches M54's
+`ferrule-trust` `guard.rs` and `classify.rs` (the smallest change: one
+match arm and one function) and `ferrule-connections`' service with one
+read (`own_addresses`).
+
+**Why.** In owner mode a scheduled task that read outside content and
+then sent was refused by the M54.5 gate, since nobody is there to tap
+(PLAN's M54.5 entry, re-audit Part 3 #10). That broke the obvious
+owner-mode task: a morning briefing that reads the web or mail and
+emails or posts it to the owner.
+
+**What changed.**
+- `ferrule-trust` `classify::only_to(args, own)`: a call that names its
+  addressees (`to`, `recipient(s)`, `cc`, `bcc`, or `chat_id`), each
+  exactly one of `own`; every address in its other arguments but the
+  message's text (`body`, `subject`, …) one of `own` too; no
+  `reply_all`. A reply naming no `to` doesn't qualify.
+- `Hub`: `set_own_accounts` (lower-cased), `own_recipients` (the owner
+  chats' ids, the same list approvals go to, plus those accounts),
+  `sent_to_owner` (audit event `own_send`, with the tool and the
+  outside source).
+- `TrustGuard::before_tool_call`, the untrusted-gate branch: a
+  `ConnectedWrite` in an unattended run with a task (the gates are off
+  only on the owner's trees in owner mode, so this is an owner's
+  scheduled task or its sub-agent) passes when `only_to` holds against
+  `own_recipients`; anything else asks as before (and is refused
+  unattended). Force pushes and `DELETE`s aren't covered.
+- `ferrule-connections` `Connections::own_addresses`: a connected native
+  Gmail connection's `email` field, from the sealed store.
+  `ferrule-cli` `connections::set_gate` sets them on the hub whenever
+  the connections load or change.
+- Docs: `m19-trust-cost.md` §6b ("The owner's own scheduled briefings",
+  the conditions and why it's safe) and §11 (`own_send`),
+  `m54-autonomous.md` amendment 4, `sandbox.md`'s owner-mode paragraph,
+  the roadmap.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Only native Gmail connections give an account address; a
+Google OAuth (preview Gmail MCP) connection's account isn't known, so a
+send through it to the owner's address matches only when that address
+is also an owner chat (the email channel's owner). A chat send through
+a connected chat service matches only by `chat_id` equal to an owner
+chat's id. Not run live.

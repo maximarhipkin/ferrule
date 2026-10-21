@@ -813,7 +813,11 @@ and a privacy hole found on review. Code paths are under `crates/`.
    (`TrustGuard::guest_input`). `TrustGuard::untrusted_gate` is set by
    `trust::equip` only while owner mode runs. The question names the
    source; a shell command keeps "Allow for this run"; a scheduled task
-   is refused. User docs: `m19-trust-cost.md` §6b.
+   is refused, except (wave A, 2026-10-21) an owner's scheduled task
+   sending a connected service's message to the owner alone, every
+   addressee exactly one of the owner's chats or the connections' own
+   mail accounts (`classify::only_to`, audited `own_send`). User docs:
+   `m19-trust-cost.md` §6b.
 5. **The secrets file stays out of the environment (M54.2).** §3 left
    the keys in the gateway's environment, relying on `require` and
    Landlock's ptrace scope; on macOS whether Seatbelt stops `ps eww` is

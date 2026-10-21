@@ -387,7 +387,9 @@ branch deletion, and a `DELETE` to a host with a bound key ask you
 first. The proxy hands your key to its own host whoever asked, so an
 injected email could otherwise send mail as you without ever seeing the
 key. A new message starts clean, a shell command offers "Allow for this
-run", and a scheduled task, which has nobody to ask, is refused.
+run", and a scheduled task, which has nobody to ask, is refused, unless
+it sends to you alone (every addressee one of your own chats or the
+connections' own mail accounts, so a morning briefing can email you).
 `[trust] untrusted_send_gate = false`, set on the machine, turns it off
 ([m19-trust-cost.md](m19-trust-cost.md) §6b). The new ops:
 

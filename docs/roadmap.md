@@ -1467,6 +1467,12 @@ Current State; numbers are claimed there before anything is built.
     max_usd_per_video` ($1) or the dollars left; models come only from
     `image_models` / `video_models`; the default video model is
     `google/veo-3.1-lite`, 3 videos a day (`docs/m51-media.md`, "Wave A").
+  - **The owner's scheduled briefings in owner mode** (M54.5 follow-up):
+    an owner's scheduled task may send a connected service's message
+    after reading outside content when every addressee is exactly one of
+    the owner's chats or the connections' own mail accounts (from the
+    config and the connection store, never the call); audited `own_send`
+    (`docs/m19-trust-cost.md` §6b).
 
 **Still open from earlier tracks.**
 
