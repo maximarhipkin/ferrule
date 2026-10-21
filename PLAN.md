@@ -8964,3 +8964,48 @@ send through it to the owner's address matches only when that address
 is also an owner chat (the email channel's owner). A chat send through
 a connected chat service matches only by `chat_id` equal to an owner
 chat's id. Not run live.
+
+### 2026-10-21 — Wave A, task 4: a housekeeping job (Claude, Opus 5.5)
+
+In the `autopilot` worktree. No milestone number (the re-audit's Part 3
+#8). Touches `ferrule-trust`'s `audit.rs` (a lock file and `prune`).
+
+**Why.** On an always-on box these grew forever (re-audit Part 1, M55.3,
+M57.6, M60, M61, M53.5, M54.4): `.ferrule/spill/` with background-job
+logs, `.ferrule/mcp-content/`, `media/screen/`, `learn/reactions/`, and
+the trust audit log's `egress` lines (one per destination a minute).
+
+**What changed.**
+- `ferrule-cli` `housekeeping.rs` (new): `[housekeeping] enabled = true,
+  keep_days = 14, audit_keep_days = 90, max_mb = 500`. `targets` lists
+  the four directories (and nothing else); a place is pruned only when
+  every part of its path is a real directory (no link); inside, files
+  older than `keep_days` go, then the oldest past `max_mb`; links are
+  neither followed nor removed; empty subdirectories go. The audit log
+  keeps `egress`/`egress_denied` lines `keep_days` and other events
+  `audit_keep_days`. The built-in task `ferrule-housekeeping` (daily,
+  04:20 UTC) registered in `run_gateway` like the media poller, reading
+  the settings each run; `ferrule housekeeping run [--workspace]
+  [--dry-run]`; doctor's `housekeeping` note with each place's size and
+  the rules. Config template block.
+- `ferrule-trust` `Audit`: every append holds `trust/audit.lock` shared;
+  `prune(keep)` holds it alone and rewrites through a temp file and a
+  rename, so no line is lost (several `Audit`s write the same file).
+  Uses std's `File::lock` (Rust 1.89+).
+- `dashboard/console.rs`: `housekeeping run` in `PARITY` (destructive,
+  `--dry-run` only reads); `m37-control-room.md` §4.1's row.
+- Docs: `housekeeping.md` (new: exactly what is and isn't pruned, the
+  settings, how it deletes), the README's Documentation list, and the
+  lines that said nothing prunes these (`m53-contrastive-probing.md`,
+  `vision.md`, `m61-screen.md`, `egress.md`, `m57-context-hygiene.md`),
+  the roadmap.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Only the gateway's own workspace is pruned (and the one named
+to `housekeeping run`); a guest workspace elsewhere isn't. A running
+job's removed log frees its space only when the job ends. Not run on a
+real box.

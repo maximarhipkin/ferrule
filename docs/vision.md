@@ -119,8 +119,8 @@ image with a 400 whose message names images, the retry above applies.
 - A transcript line holds the image's path, type and name: a few hundred
   bytes, not the megabytes of base64 a request carries. The file has to
   still be there for a later request, or a resumed session, to send it;
-  if it isn't, the note says so. Nothing prunes `.ferrule/mcp-content/`
-  yet ([browser.md](browser.md)).
+  if it isn't, the note says so. `.ferrule/mcp-content/` is pruned by
+  age and size ([housekeeping.md](housekeeping.md)).
 
 ## Not covered
 

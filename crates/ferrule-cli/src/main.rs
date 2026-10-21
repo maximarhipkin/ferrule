@@ -19,6 +19,7 @@ mod graph;
 mod graph_door;
 mod health;
 mod hooks_cli;
+mod housekeeping;
 mod import;
 mod instance;
 mod instances;
@@ -400,6 +401,12 @@ enum Cmd {
     Egress {
         #[command(subcommand)]
         op: egress::EgressCmd,
+    },
+    /// Prune the files and audit lines an always-on bot keeps making
+    /// (docs/housekeeping.md)
+    Housekeeping {
+        #[command(subcommand)]
+        op: housekeeping::HousekeepingCmd,
     },
     /// Sign in to a subscription: the ChatGPT plan here, the Claude plan
     /// through the `claude` binary (docs/subscriptions.md)
@@ -1173,6 +1180,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         } => trust::stop_cmd(reason, clear, status)?,
         Cmd::Trust { op } => trust::cmd(op)?,
         Cmd::Egress { op } => egress::cmd(op)?,
+        Cmd::Housekeeping { op } => housekeeping::cmd(op)?,
         Cmd::Plan { op } => plan::cmd(op).await?,
         Cmd::Login {
             which,
@@ -3301,6 +3309,7 @@ async fn run_gateway(
     }
     let scheduler = scheduler.with_hold(trust::scheduler_hold(hub.clone()));
     let scheduler = media::register_poller(&cfg, scheduler, media.clone(), true);
+    let scheduler = housekeeping::register(&cfg, scheduler, &workspace, true);
     let scheduler = Arc::new(learn::register(
         &cfg,
         scheduler,

@@ -796,6 +796,10 @@ pub struct Config {
     /// view only, off unless turned on (docs/m61-screen.md).
     #[serde(default)]
     pub screen: crate::screen::ScreenConfig,
+    /// Wave A: how long the files and audit lines an always-on bot keeps
+    /// making are kept (docs/housekeeping.md).
+    #[serde(default)]
+    pub housekeeping: crate::housekeeping::HousekeepingConfig,
     /// M30: how recall finds facts; keyword only unless an embedder is set.
     #[serde(default)]
     pub memory: MemoryConfig,
@@ -1787,6 +1791,14 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # max_videos_per_day = 3     # video submits, within max_per_day; 0 = no own cap
 # max_usd_per_video = 1.0    # estimated from the price list before a submit;
 #                            # 0 = no cap. Media dollars count toward [trust]'s caps.
+
+# [housekeeping]            # The daily pass that prunes what grows (docs/housekeeping.md):
+# enabled = true             # spill files and background-job logs, MCP output files,
+# keep_days = 14             # screen captures, 👎 transcript cuts and the egress lines
+#                            # of the audit log, by age; 0 = keep them all.
+# audit_keep_days = 90       # the audit log's other events; 0 = keep them all
+# max_mb = 500               # per directory, after the age rule, oldest first; 0 = none
+#                            # Never transcripts, memory, the ledger, config or keys.
 
 # [telemetry]               # OpenTelemetry traces of the agent's work over OTLP/HTTP
 # endpoint = "http://127.0.0.1:4318"  # (docs/otel.md). Off until set; /v1/traces

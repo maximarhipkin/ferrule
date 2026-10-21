@@ -319,6 +319,8 @@ deny list, the same approval gate (the guard sees the same `shell` call),
 the same sandbox and workspace, stdin closed, its own process group. Its
 stdout and stderr go straight to a new file under `.ferrule/spill/` (the
 M55.3 spill directory, git-ignored), written by the command as it runs.
+The daily housekeeping pass prunes that directory by age and size
+([housekeeping.md](housekeeping.md)).
 
 **Looking at it, stopping it** (`shell_job`):
 

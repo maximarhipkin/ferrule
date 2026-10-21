@@ -1473,6 +1473,12 @@ Current State; numbers are claimed there before anything is built.
     the owner's chats or the connections' own mail accounts (from the
     config and the connection store, never the call); audited `own_send`
     (`docs/m19-trust-cost.md` §6b).
+  - **Housekeeping**: a daily built-in task and `ferrule housekeeping
+    run` prune `.ferrule/spill/` (with background-job logs),
+    `.ferrule/mcp-content/`, `media/screen/` and `learn/reactions/` by age
+    (`keep_days`, 14) and size (`max_mb`), and the audit log's egress
+    lines (14 days) and other events (90); never transcripts, memory, the
+    ledger, config or keys; doctor shows the sizes (`docs/housekeeping.md`).
 
 **Still open from earlier tracks.**
 

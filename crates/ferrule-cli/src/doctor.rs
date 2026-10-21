@@ -207,6 +207,13 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     repairs_check(&mut r);
     health_check(&mut r, &cfg, chat_on);
     r.note("backup", crate::backup::doctor_line());
+    if let Ok(data) = config::data_dir() {
+        let workspace = std::env::current_dir().unwrap_or_else(|_| data.clone());
+        r.note(
+            "housekeeping",
+            crate::housekeeping::doctor_line(&cfg.housekeeping, &workspace, &data),
+        );
+    }
     connections_check(&mut r, &cfg);
     editing_check(&mut r, &cfg);
     if !managed {

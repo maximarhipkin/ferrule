@@ -40,6 +40,57 @@ impl Audit {
         &self.path
     }
 
+    /// `audit.lock` beside the log: every writer holds it shared while it
+    /// appends (several `Audit`s write the same file: the hub's, the
+    /// proxy's egress lines), and [`Self::prune`] holds it alone while it
+    /// rewrites, so no line is lost in the swap. `None` when it can't be
+    /// made: writing goes on unlocked.
+    fn lock_file(&self) -> Option<std::fs::File> {
+        let dir = self.path.parent()?;
+        std::fs::create_dir_all(dir).ok()?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.path.with_extension("lock"))
+            .ok()
+    }
+
+    /// Keeps the events `keep` says yes to (and any line that doesn't
+    /// parse), drops the rest: `ferrule housekeeping`'s retention. The
+    /// file is rewritten through a temporary one and a rename, under the
+    /// lock every writer takes. Returns (kept, dropped).
+    pub fn prune(&self, keep: impl Fn(&AuditEvent) -> bool) -> std::io::Result<(usize, usize)> {
+        let _held = self.lock.lock().unwrap();
+        let lock = self.lock_file();
+        if let Some(l) = &lock {
+            l.lock()?;
+        }
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+            Err(e) => return Err(e),
+        };
+        let (mut kept, mut dropped) = (0, 0);
+        let mut out = String::with_capacity(text.len());
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            match serde_json::from_str::<AuditEvent>(line) {
+                Ok(e) if !keep(&e) => dropped += 1,
+                _ => {
+                    kept += 1;
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        if dropped > 0 {
+            let tmp = self.path.with_extension("jsonl.tmp");
+            std::fs::write(&tmp, out)?;
+            std::fs::rename(&tmp, &self.path)?;
+        }
+        Ok((kept, dropped))
+    }
+
     /// Appends one event. A write that fails is logged, never raised: the
     /// guard's decision stands without its record.
     pub fn record(
@@ -58,6 +109,10 @@ impl Audit {
             detail,
         };
         let _held = self.lock.lock().unwrap();
+        let lock = self.lock_file();
+        if let Some(l) = &lock {
+            let _ = l.lock_shared();
+        }
         let result = (|| -> std::io::Result<()> {
             if let Some(dir) = self.path.parent() {
                 std::fs::create_dir_all(dir)?;

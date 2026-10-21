@@ -232,6 +232,8 @@ ferrule's own clients acting for the model), the method (`CONNECT`, or the
 plain-HTTP method), the host and the port. **Never** a path, a query, a
 header or a body, and never a key. A destination is written at most once a
 minute per source, host and port, so a busy client doesn't flood the log.
+The daily housekeeping pass drops `egress` and `egress_denied` lines older
+than `[housekeeping] keep_days` (14) ([housekeeping.md](housekeeping.md)).
 
 ```bash
 ferrule egress log                # the last 24 h, by host

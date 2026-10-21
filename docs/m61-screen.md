@@ -127,7 +127,8 @@ chat isn't gated.
 - **Where the files are.** `<workspace>/media/screen/`, with a
   `.gitignore` of `*` written there, so git and auto-commit leave every
   capture out. The folder is refused if it leads outside the workspace.
-  Nothing prunes it: delete captures yourself.
+  The daily housekeeping pass removes captures older than
+  `[housekeeping] keep_days` (14) ([housekeeping.md](housekeeping.md)).
 - **Hidden from everyone else.** The folder is in
   `owner_mode::guest_hidden`, so the commands and file tools (including
   `send_file`) of every session that isn't the owner's can't read it, in
