@@ -62,6 +62,14 @@ the default and "Turn it off" writes `provider = "off"`. No test search is
 made: with the three paid APIs that would cost a search. `ferrule doctor`
 checks the rest.
 
+From the chat (M56.3), `ferrule_admin config_set` changes `provider`
+(duckduckgo, brave, tavily, exa or off), `max_results`, `safe_search`,
+`region`, `language`, `max_output_tokens`, `timeout_secs`,
+`price_per_search_usd` and `max_searches_per_day`, each with the owner's
+tap; so does the dashboard's Config form. `api_key_env` and `endpoint`
+stay off limits there: they decide where a key goes, so they're set here
+or in `ferrule setup`, and a new key comes through `secret_request`.
+
 Or by hand:
 
 ```toml

@@ -81,6 +81,15 @@ impl TasksAdmin {
         store.get(id)?.ok_or_else(|| anyhow!("no task {id}"))
     }
 
+    /// One task as the store has it (M56.3: whose it is, and what an Undo
+    /// puts back). `None`: no such task.
+    pub fn get(&self, id: &str) -> Result<Option<Task>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        Ok(self.store()?.get(id)?)
+    }
+
     /// Every task with its last `runs` runs.
     pub fn view(&self, runs: usize) -> Result<Vec<TaskRow>> {
         if !self.path.exists() {

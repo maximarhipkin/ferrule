@@ -770,6 +770,26 @@ impl Hub {
         });
     }
 
+    /// `tell_in` with buttons (M56.3: a receipt's Undo); the primary
+    /// owner chat when `chat` isn't an owner's. Doesn't wait.
+    pub fn tell_in_choices(&self, chat: &ChatRef, text: String, choices: Vec<(String, String)>) {
+        if !self.owners().contains(chat) {
+            return self.tell_owner_choices(text, choices);
+        }
+        let Some(n) = self.notifier() else {
+            return;
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let chat = chat.clone();
+        rt.spawn(async move {
+            if let Err(e) = n.send_choices(&chat, &text, &choices).await {
+                tracing::warn!("trust: couldn't tell the owner ({e})");
+            }
+        });
+    }
+
     /// Sends the owner a message and doesn't wait; a failure is logged.
     pub fn tell_owner(&self, text: String) {
         let (Some(n), Some(chat)) = (self.notifier(), self.primary()) else {

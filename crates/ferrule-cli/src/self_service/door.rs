@@ -1,6 +1,7 @@
 //! `/update`, `/restart` and `/doctor` in the owner's chat (M48): the same
 //! ops as the tool, so a person who types the command gets the same card,
-//! or in owner mode the same run without one (M54 §5).
+//! or in owner mode the same run without one (M54 §5). And `/undo_change`,
+//! the Undo under a change made without a card (M56.3).
 
 use super::tool::ask_and_run;
 use super::{doctor, offered, run, update, Admin, Op};
@@ -19,7 +20,8 @@ const ELSEWHERE_AUTONOMOUS: &str =
     "Ask me in our private chat: that's the only place I change Ferrule from.";
 
 impl SelfServiceDoor {
-    pub const HANDLES: &'static [&'static str] = &["update", "restart", "doctor"];
+    pub const HANDLES: &'static [&'static str] =
+        &["update", "restart", "doctor", super::quick::COMMAND];
 
     pub fn new(admin: Arc<Admin>) -> Self {
         Self { admin }
@@ -105,6 +107,7 @@ impl ferrule_gateway::Interceptor for SelfServiceDoor {
         let verb = match cmd {
             "update" => "update",
             "restart" => "restart",
+            super::quick::COMMAND => "undo changes to",
             _ => "check",
         };
         if !crate::trust::by_owner(&self.admin.hub, msg) {
@@ -121,6 +124,10 @@ impl ferrule_gateway::Interceptor for SelfServiceDoor {
                 .into(),
             );
         };
+        if cmd == super::quick::COMMAND {
+            let id = msg.text.split_whitespace().nth(1).unwrap_or("");
+            return Some(super::quick::undo(&self.admin, &here, id).await);
+        }
         let admin = self.admin.clone();
         let (reply, work): (
             &str,

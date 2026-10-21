@@ -17,6 +17,11 @@ already installed**. ferrule looks for one and never downloads a browser.
    headless the way the agent would run it, and turns the browser on only
    if that worked.
 
+From the chat, once it's installed: "turn the browser on" is
+`ferrule_admin config_set browser.enabled true`, with the owner's tap
+(M56.3). It's the one `[browser]` field the chat and the Config page may
+change; a managed bot whose image has no browser refuses it.
+
 `ferrule doctor` shows what it found and why the browser can't run, if it
 can't. The agent's tools are `mcp__browser__agent_browser_*`: open, snapshot,
 click, fill, type, press, select, scroll, wait, get_text, get_url, get_title,

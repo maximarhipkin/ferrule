@@ -8305,3 +8305,53 @@ first gated part was granted (`a; b` with `a` granted runs `b` too); the
 standing grant avoids that by taking only single commands. No CLI for
 grants (the dashboard only). The escalation thresholds aren't settings.
 A terminal run's question never offers Always here. No live run.
+
+### 2026-10-21 — M56.3: self-administration from the chat (Claude, Opus 5.5)
+
+**Why.** "Turn on web search" and "turn the browser on" had no chat op
+(`config_set` covered 19 fields, none of these), and every change,
+"remind me at 9" and "pause that reminder" included, needed a card tap.
+
+**What changed.**
+- `config_page.rs` `FORM`: `web_search.provider` (duckduckgo, brave,
+  tavily, exa, off), `max_results`, `safe_search`, `region`, `language`,
+  `max_output_tokens`, `timeout_secs`, `price_per_search_usd`,
+  `max_searches_per_day`, and `browser.enabled` (29 fields). A `text`
+  kind (up to 16 letters, digits, `-`, `_`) for region and language, on
+  the Config page too. `OPEN` lets `browser.enabled` through
+  `guarded_change` while `[browser]` stays a guarded section;
+  `web_search.api_key_env` and `endpoint` stay guarded. `locks.rs`: a
+  managed bot without the browser refuses turning it on.
+- `mcp_add` outside owner mode: already there since M54 §6.2 (with the
+  card, keys only as `${NAME}` of `[secrets]`, new ones through
+  `secret_request`); nothing added.
+- `self_service/quick.rs`: `tap_free` (no outside content in the turn,
+  `Hub::untrusted`; `task_add`, `task_schedule`, `task_pause`,
+  `task_delete` on the owner's own tasks; `model_default`, `model_here`
+  to a connected, ready model) and its `Undo`; `run` (the page's handler,
+  audited `self_service.ran` with the undo id; a receipt "Done without
+  asking: …" with an Undo button); `undo` for `/undo_change <id>` (the
+  owner, once, a day, this process; audited `self_service.undone`).
+  `tool.rs` `ask_and_run` takes that path after the card's checks, only
+  outside owner mode. `door.rs` handles `/undo_change`.
+  `TasksAdmin::get`; `Hub::tell_in_choices`. The tool description gets
+  one appended sentence.
+- Docs: `m48-self-service.md` ("After M48: M56.3"), `web-search.md`,
+  `browser.md`, the roadmap.
+
+**Tests changed, none added.** The self-service rig's turn now counts as
+having read outside content, so its card tests still see a card. The
+gateway test `the_owner_switches_the_default_model_from_telegram_with_one_tap`
+became `…_without_a_tap`: it checks the receipt's Undo button, the
+answer and the audit's "(no card: M56.3)" instead of a tapped card (its
+unused `tap` helper went).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** The Undo list lives in memory (gone after a restart). A
+deleted task comes back with a new id, in the primary owner chat. A
+question already waiting in the chat still blocks a tap-free op. The
+web search provider can be switched while `api_key_env` names another
+provider's key (the key then goes to the new provider's host, with the
+owner's tap). No live run.

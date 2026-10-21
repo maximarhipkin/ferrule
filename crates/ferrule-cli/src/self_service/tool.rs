@@ -219,6 +219,15 @@ pub(super) async fn ask_and_run(
             .await
             .map_err(|e| format!("{lead}: {e}"))?,
     };
+    // M56.3: a change the owner can take back at once, in a turn that read
+    // nothing from outside, runs without the card and leaves a receipt.
+    if !auto {
+        if let Some(undo) = super::quick::tap_free(admin, ctx, here, session, &op) {
+            return super::quick::run(admin, ctx, here, &op, undo)
+                .await
+                .or_else(|why| Ok(format!("{why}{}", stop(&why))));
+        }
+    }
     let by = if auto {
         format!("{} chat {} (owner mode)", here.channel, here.chat)
     } else {

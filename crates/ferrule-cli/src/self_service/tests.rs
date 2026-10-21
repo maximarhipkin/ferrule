@@ -59,6 +59,9 @@ impl Rig {
             .unwrap(),
         );
         hub.set_owner(Some(42));
+        // M56.3: a turn that read outside content, so every change keeps
+        // its card here, the low-risk ones included.
+        hub.saw_untrusted("telegram__42", "web_fetch");
         let told = Arc::new(Told::default());
         hub.set_notifier(Some(told.clone()));
         let config = dir.path().join("ferrule.toml");

@@ -38,6 +38,10 @@ const WHOLE: &[&str] = &[
     "plugins",
 ];
 
+/// M56.3: fields inside a [`WHOLE`] section the page and the chat may
+/// change all the same: a switch that runs nothing new and moves no key.
+const OPEN: &[&str] = &["browser.enabled"];
+
 /// A field the page can't change, by its own name: it names a command,
 /// a path or an environment, loosens a gate, lets someone new in, or
 /// moves where a secret is sent.
@@ -203,7 +207,8 @@ pub(crate) fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<Str
         .filter(|k| a.get(*k) != b.get(*k))
         .find(|k| {
             let segs: Vec<&str> = k.split('.').collect();
-            WHOLE.contains(&segs[0]) || segs.iter().any(|s| guarded_key(s))
+            !OPEN.contains(&k.as_str())
+                && (WHOLE.contains(&segs[0]) || segs.iter().any(|s| guarded_key(s)))
         })
         .cloned()
 }
@@ -661,6 +666,68 @@ const FORM: &[Field] = &[
         choices: &[],
         help: "Weakest match memory search returns",
     },
+    // M56.3: web search and the browser, from the chat too. The key's
+    // variable and the endpoint stay guarded: they move where a key goes.
+    Field {
+        key: "web_search.provider",
+        kind: "choice",
+        choices: &["duckduckgo", "brave", "tavily", "exa", "off"],
+        help: "Web search service (duckduckgo needs no key; off: no web search)",
+    },
+    Field {
+        key: "web_search.max_results",
+        kind: "int",
+        choices: &[],
+        help: "Results per search (1–20)",
+    },
+    Field {
+        key: "web_search.safe_search",
+        kind: "choice",
+        choices: &["off", "moderate", "strict"],
+        help: "Safe search",
+    },
+    Field {
+        key: "web_search.region",
+        kind: "text",
+        choices: &[],
+        help: "Search region, like us or de",
+    },
+    Field {
+        key: "web_search.language",
+        kind: "text",
+        choices: &[],
+        help: "Search language, like en or he",
+    },
+    Field {
+        key: "web_search.max_output_tokens",
+        kind: "int",
+        choices: &[],
+        help: "Most of a search's results the model reads",
+    },
+    Field {
+        key: "web_search.timeout_secs",
+        kind: "int",
+        choices: &[],
+        help: "How long a search may take",
+    },
+    Field {
+        key: "web_search.price_per_search_usd",
+        kind: "float",
+        choices: &[],
+        help: "What a search costs, toward the dollar caps",
+    },
+    Field {
+        key: "web_search.max_searches_per_day",
+        kind: "int",
+        choices: &[],
+        help: "Searches a day (0: no cap)",
+    },
+    Field {
+        key: "browser.enabled",
+        kind: "bool",
+        choices: &[],
+        help: "The browser tools",
+    },
 ];
 
 fn field_value(doc: &DocumentMut, key: &str) -> Value {
@@ -878,6 +945,14 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
         ("choice", Value::String(s)) if field.choices.contains(&s.as_str()) => {
             Some(s.as_str().into())
         }
+        // A short code (a region, a language), nothing more.
+        ("text", Value::String(s))
+            if (1..=16).contains(&s.len())
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+        {
+            Some(s.as_str().into())
+        }
         _ => {
             return bad(
                 400,
@@ -887,6 +962,7 @@ pub fn set(ctx: &Ctx, body: &Value) -> Answer {
                         "bool" => "on or off".to_string(),
                         "int" => "a whole number".to_string(),
                         "float" => "a number".to_string(),
+                        "text" => "a short code: letters, digits, - or _".to_string(),
                         _ => format!("one of {}", field.choices.join(", ")),
                     }
                 ),

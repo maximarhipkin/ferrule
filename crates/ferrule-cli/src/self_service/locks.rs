@@ -23,6 +23,12 @@ impl Op {
             Op::ConfigSet { key, .. } if key.starts_with("update.") => {
                 Some(managed::refused("Updating", UPDATE_WHY).to_string())
             }
+            // M56.3: the browser is a managed bot's image's to give.
+            Op::ConfigSet { key, value }
+                if key == "browser.enabled" && value.as_bool() == Some(true) && !p.browser =>
+            {
+                Some(format!("the browser is off on a managed bot: {}", p.why()))
+            }
             Op::HooksTrust { .. } => managed::hooks_off_under(p),
             Op::Caps { caps } => caps
                 .iter()

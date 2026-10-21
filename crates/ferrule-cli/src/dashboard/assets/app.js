@@ -3218,12 +3218,13 @@
           };
           return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), input);
         }
-        input = el("input", { type: "number", name: f.key, step: f.kind === "float" ? "any" : "1", placeholder: "default", "aria-label": f.key });
+        const text = f.kind === "text";
+        input = el("input", { type: text ? "text" : "number", name: f.key, step: text ? null : f.kind === "float" ? "any" : "1", placeholder: "default", "aria-label": f.key, dir: text ? "ltr" : null });
         input.value = shown;
         const save = el("button", { text: "Save" });
         save.onclick = () => {
           const v = input.value.trim();
-          set(f.key, v === "" ? null : Number(v), save);
+          set(f.key, v === "" ? null : text ? v : Number(v), save);
         };
         return el("div", { class: "check" }, el("div", { class: "body" }, el("div", { class: "t" }, el("code", { text: f.key })), f.help ? el("div", { class: "d", text: f.help }) : null), el("div", { class: "row" }, input, save));
       };

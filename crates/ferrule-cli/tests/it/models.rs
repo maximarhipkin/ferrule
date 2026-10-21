@@ -363,25 +363,6 @@ impl FakeTelegram {
         self.say_from(chat, chat, text)
     }
 
-    /// `from` taps the first button of `card`, a recorded `sendMessage`.
-    fn tap(&self, from: i64, card: &Value) {
-        let mut next = self.next.lock().unwrap();
-        *next += 1;
-        let chat: i64 = card["chat_id"].as_str().unwrap().parse().unwrap();
-        self.queue.lock().unwrap().push_back(json!({
-            "update_id": *next,
-            "callback_query": {
-                "id": format!("cb{}", *next),
-                "from": {"id": from, "username": "owner"},
-                "message": {
-                    "message_id": 1, "chat": {"id": chat}, "date": 1700000000,
-                    "text": card["text"], "reply_markup": card["reply_markup"],
-                },
-                "data": card["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
-            },
-        }));
-    }
-
     /// A message to `chat` with a non-empty inline keyboard, once there is
     /// one after the first `from` messages.
     fn wait_for_card(&self, chat: i64, from: usize) -> Value {
@@ -523,8 +504,10 @@ fn telegram(tg: &FakeTelegram) -> String {
     )
 }
 
+/// M56.3: a connected model, in a turn that read nothing from outside, is
+/// switched without a card; the chat gets a receipt with Undo.
 #[test]
-fn the_owner_switches_the_default_model_from_telegram_with_one_tap() {
+fn the_owner_switches_the_default_model_from_telegram_without_a_tap() {
     let (a, b) = (Server::start("A"), Server::start("B"));
     a.fail_with(503);
     let tg = FakeTelegram::start();
@@ -537,15 +520,14 @@ fn the_owner_switches_the_default_model_from_telegram_with_one_tap() {
     let _gw = gateway(home);
 
     tg.say(42, "the model is down, SWITCH_DEFAULT");
-    let card = tg.wait_for_card(42, 0);
+    let receipt = tg.wait_for_card(42, 0);
     assert!(
-        card["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
+        receipt["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
             .as_str()
-            .is_some_and(|d| d.starts_with("yes ")),
-        "{card}"
+            .is_some_and(|d| d.starts_with("/undo_change ")),
+        "{receipt}"
     );
-    tg.tap(42, &card);
-    tg.wait_for(42, "ADMIN_DONE Approved and done:", 0);
+    tg.wait_for(42, "ADMIN_DONE Done, without a card", 0);
 
     let sent = tg.sent.lock().unwrap().clone();
     let cards = sent
@@ -557,7 +539,7 @@ fn the_owner_switches_the_default_model_from_telegram_with_one_tap() {
                     .is_some_and(|rows| !rows.is_empty())
         })
         .count();
-    assert_eq!(cards, 1, "one approval: {sent:#?}");
+    assert_eq!(cards, 1, "one receipt: {sent:#?}");
     for m in &sent {
         let text = m["text"].as_str().unwrap_or_default();
         for pasted in ["`ferrule ", "terminal", "next message exactly"] {
@@ -567,11 +549,14 @@ fn the_owner_switches_the_default_model_from_telegram_with_one_tap() {
     let config = std::fs::read_to_string(home.join("ferrule.toml")).unwrap();
     assert!(config.contains(r#"default = "b/b-large""#), "{config}");
     let audit = std::fs::read_to_string(home.join("data/trust/audit.jsonl")).unwrap();
-    assert!(audit.contains("telegram chat 42 (approved "), "{audit}");
+    assert!(
+        audit.contains("telegram chat 42 (no card: M56.3)"),
+        "{audit}"
+    );
     assert!(audit.contains("model.default"), "{audit}");
     assert!(
-        audit.contains("\"op\":\"model_default:"),
-        "approval_asked carries the op: {audit}"
+        audit.contains("\"op\":\"model_default\""),
+        "self_service.ran names the op: {audit}"
     );
 
     // The new default answers, and the model that was down isn't asked.

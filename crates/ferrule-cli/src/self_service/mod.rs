@@ -18,6 +18,7 @@ mod locks;
 pub mod menu;
 mod packages;
 pub mod promise;
+mod quick;
 pub(crate) mod restart;
 mod run;
 mod tool;

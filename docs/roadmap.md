@@ -1343,7 +1343,11 @@ Current State; numbers are claimed there before anything is built.
     the same address or domain; listed and revoked on Settings; never
     after outside content for a send) and deny-and-continue (a refusal
     goes back to the model; 3 in a row or 20 in a run stop the run and
-    tell the owner) (`docs/m19-trust-cost.md` §7b–7c).
+    tell the owner) (`docs/m19-trust-cost.md` §7b–7c); M56.3, the chat
+    sets web search and turns the browser on (`config_set`), and in a
+    turn with no outside content schedules, pauses or deletes the owner's
+    own tasks and switches among connected models without a card, with a
+    receipt and Undo (`docs/m48-self-service.md`, "After M48").
   - **M57** the coding leaders' context and loop hygiene: deferred MCP
     schemas with `tool_search`, per-file loop detection, a stale-file
     guard, cache economics, tool-use examples, background processes,
