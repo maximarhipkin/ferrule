@@ -1351,6 +1351,30 @@ Connect page (`/dashboard`) or `ferrule setup` for the key. The log says
 only that a message was stopped and on which channel, never its text or
 its sender.
 
+In the owner's private chat on a chat app (not a group, a guest's chat,
+the HTTP API or the dashboard's own chat), the reply comes with a
+one-time dashboard link to the Safe, as M54's `secret_request` sends
+(`docs/m54-autonomous.md` §6.3), in a second message sent after the
+reply. The gateway asks a hook the CLI implements
+(`paste_guard::PastedKeyHook`, `self_service/keys.rs` `PasteLink`) and
+tells it only where the key was pasted and what its prefix says, never
+the text. When the prefix names one provider, the page opens with its
+usual name and hosts filled in: `sk-ant-` is `ANTHROPIC_API_KEY` for
+`api.anthropic.com`, `sk-or-` `OPENROUTER_API_KEY`, `sk-proj-`
+`OPENAI_API_KEY`, `AIza` `GEMINI_API_KEY`, `ghp_` and `github_pat_`
+`GITHUB_TOKEN`, `glpat-` `GITLAB_TOKEN`, `hf_` `HF_TOKEN`, `xoxb-`
+`SLACK_BOT_TOKEN`, and Stripe's `sk_live_`, `sk_test_` and `rk_live_`
+`STRIPE_API_KEY` (`paste_guard::GUESSES`; names and hosts as `ferrule
+setup` gives them). A bare `sk-` names no one provider. The page's own
+checks for a new key decide (`tool_keys::check_new`). A name the secrets
+file keeps already can't be added again, so the link opens the Safe at
+that name's Rotate instead (`?rotate=NAME`). Anything else, no prefix
+that names a provider or a name in use that the Safe doesn't keep, opens
+the Safe with nothing filled in (`?safe=1`), with the page's reason in
+the message. No link goes out when the dashboard is off or keys are
+locked (managed mode); the reply is then the plain one. The session
+isn't woken when the key is saved: the bot never saw the message.
+
 Where the channel lets the bot, the message is deleted too: Telegram
 (`deleteMessage`, which a bot may use on what it receives in a private
 chat, and in a group where it's an admin, within 48 hours) and the

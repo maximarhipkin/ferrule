@@ -1490,6 +1490,15 @@ Current State; numbers are claimed there before anything is built.
     when it changes; doctor names a key too short (under 6 characters)
     to scrub; the Claude plan's own tools, which ferrule can't scrub, are
     a documented limit (`docs/sandbox.md`, "Env"; `docs/subscriptions.md`).
+  - **Pasted keys and keyless search, to the paste link** (M52.5 and
+    M56.8 follow-ups): a key pasted in the owner's private chat is
+    answered with a one-time link to the Safe, the name and hosts its
+    prefix names filled in, or the Safe's Rotate for a name kept already;
+    guests get the plain reply (`docs/channels.md`, "Keys pasted into a
+    chat"). A DuckDuckGo refusal is said as one, DuckDuckGo isn't asked
+    again for 2 minutes, and the first refusal in a keyless session says
+    how to ask the owner for a Brave key with `secret_request`
+    (`docs/web-search.md`, "Keyless search").
 
 **Still open from earlier tracks.**
 

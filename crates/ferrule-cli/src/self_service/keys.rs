@@ -3,17 +3,19 @@
 //! Keys panel with the name and hosts filled in, and remembers which
 //! session asked. When the page saves that name, the session is woken, so
 //! the bot carries on by itself. The key never passes through here: the
-//! owner pastes it on the page, never in a chat.
+//! owner pastes it on the page, never in a chat. And `PasteLink`: the
+//! same link, offered when the owner pastes a key in their chat (M52.5).
 
 use super::Admin;
 use crate::dashboard::{door, tool_keys, Ctx};
 use ferrule_extensions::manager::SYNC_EVERY;
 use ferrule_gateway::health::clip;
+use ferrule_gateway::paste_guard::{KeyGuess, LinkOffer, PastedKeyHook};
 use ferrule_gateway::{Redactor, Router};
 use ferrule_trust::ChatRef;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 /// The most of the bot's reason the owner is shown, in characters.
@@ -119,6 +121,103 @@ pub(super) async fn request(
     Ok(format!(
         "Sending the owner a link to paste {name}; you're woken when it's saved."
     ))
+}
+
+/// M52.5 with M54 §6.3: a key the owner pasted in their private chat was
+/// stopped by the gateway; the reply comes with a one-time link to the
+/// Safe. What the key's prefix says (its usual name and hosts) is filled
+/// in, the page's own checks permitting; a name kept already opens its
+/// Rotate instead, since a new key can't take a name in use. Anywhere
+/// else, and with the page off or keys locked: no link, the plain reply.
+/// The gateway passes where the key was pasted and the prefix's guess,
+/// never the text; the session isn't woken, since the bot never saw it.
+pub struct PasteLink {
+    admin: Arc<Admin>,
+}
+
+impl PasteLink {
+    pub fn new(admin: Arc<Admin>) -> Self {
+        Self { admin }
+    }
+}
+
+impl PastedKeyHook for PasteLink {
+    fn offer(&self, channel: &str, chat_id: &str, guess: Option<KeyGuess>) -> Option<LinkOffer> {
+        if !crate::trust::is_chat_channel(channel) {
+            return None;
+        }
+        let session = ferrule_gateway::session::session_id(channel, chat_id);
+        let here = super::offered(&self.admin.hub, &session)?;
+        let dash = self.admin.page()?.clone();
+        if tool_keys::locked().is_some() {
+            return None;
+        }
+        let (suffix, said, lead) = paste_link(&dash.ctx, guess);
+        let hub = self.admin.hub.clone();
+        let send = Box::pin(async move {
+            if let Err(e) = door::send_link_with(&dash, &hub, &here, &suffix, &lead).await {
+                hub.tell_in(&here, format!("No link to the Safe: {e}"));
+            }
+        });
+        Some(LinkOffer { said, send })
+    }
+}
+
+/// The link's query, the reply's words about it, and the first paragraph
+/// of the message that carries it.
+fn paste_link(ctx: &Ctx, guess: Option<KeyGuess>) -> (String, String, String) {
+    let query = |pairs: &[(&str, &str)]| {
+        let mut q = url::form_urlencoded::Serializer::new(String::new());
+        for (k, v) in pairs {
+            q.append_pair(k, v);
+        }
+        format!("?{}", q.finish())
+    };
+    let plain = |why: Option<String>| {
+        let why = why.map(|w| format!("{w} ")).unwrap_or_default();
+        (
+            query(&[("safe", "1")]),
+            "The next message is a one-time link to the dashboard's Safe: paste the key there."
+                .to_string(),
+            format!(
+                "For the key you pasted: {why}This link opens the dashboard's Safe. Paste it there, \
+                 with the name its tool's docs use and the sites it may be sent to; never in a chat."
+            ),
+        )
+    };
+    let Some(g) = guess else {
+        return plain(None);
+    };
+    if tool_keys::kept(ctx, g.name) {
+        return (
+            query(&[("rotate", g.name)]),
+            format!(
+                "{} is in use already, so the next message is a one-time link to the dashboard's Safe at it, where Rotate replaces its value.",
+                g.name
+            ),
+            format!(
+                "For the key you pasted: {} is in use already, so this link opens the Safe at its Rotate. Paste the new key there, never in a chat.",
+                g.name
+            ),
+        );
+    }
+    match tool_keys::check_new(ctx, g.name, &g.hosts.join(",")) {
+        Ok(hosts) => (
+            query(&[("key", g.name), ("hosts", &hosts.join(","))]),
+            format!(
+                "The next message is a one-time link to the dashboard's Safe with {} and where it may be sent filled in: paste the key there.",
+                g.name
+            ),
+            format!(
+                "For the key you pasted: the page this link opens has {} filled in, sent only to {}; you can change both there. Paste the key there, never in a chat.",
+                g.name,
+                hosts.join(", ")
+            ),
+        ),
+        // In use but not kept here (set in the environment, or a name the
+        // config uses with no value): the Safe, unfilled.
+        Err((_, why)) => plain(Some(why)),
+    }
 }
 
 /// The bot's reason as the owner reads it, right above the real link. It

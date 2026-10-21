@@ -2722,7 +2722,8 @@
     // value, move a tool key's sites, Delete any kind, add a tool key, and
     // the history of key, config and approval changes by name. One confirm
     // card per change. `pre`: the name and sites the bot asked for (M54
-    // §6.3), filled in on the first draw, with the key's field focused.
+    // §6.3), filled in on the first draw, with the key's field focused; or
+    // a kept name whose Rotate opens (a key pasted in a chat, M52.5).
     toolKeyPanel(pre) {
       const box = el("div", { class: "stack" });
       const when = (t) => (t === null || t === undefined ? tr("not recorded") : ago(t));
@@ -2732,7 +2733,7 @@
         const name = el("input", { name: "name", placeholder: "WEATHER_API_KEY", autocomplete: "off", spellcheck: "false", "aria-label": "Its name" });
         const value = el("input", { type: "password", name: "value", placeholder: "the key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The key" });
         const sites = el("input", { name: "hosts", placeholder: "api.weather.example", autocomplete: "off", spellcheck: "false", "aria-label": "Sites it may be sent to" });
-        if (pre) { name.value = pre.name; sites.value = pre.hosts; }
+        if (pre && !pre.rotate) { name.value = pre.name; sites.value = pre.hosts; }
         const save = el("button", { class: "primary", text: "Save" });
         save.disabled = !r.here || !!r.locked;
         save.onclick = async () => {
@@ -2743,18 +2744,23 @@
           if (done) { await draw(); sayFor(box.querySelector(".card button.primary"), done.said); }
         };
         // Rotate and Sites open a field under the row; both redraw after.
-        const rotateBtn = (keyName, slot) => button("Rotate", { onclick: () => {
-          const v = el("input", { type: "password", name: "new", placeholder: "the new key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The new key" });
-          const go = el("button", { class: "primary", text: "Replace" });
-          go.onclick = async () => {
-            const val = v.value.trim();
-            const done = await act("secrets/rotate", { name: keyName, value: val && asSecret(val) }, go);
-            wipeSecrets(box);
-            if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
+        const rotators = {};
+        const rotateBtn = (keyName, slot) => {
+          const open = () => {
+            const v = el("input", { type: "password", name: "new", placeholder: "the new key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The new key" });
+            const go = el("button", { class: "primary", text: "Replace" });
+            go.onclick = async () => {
+              const val = v.value.trim();
+              const done = await act("secrets/rotate", { name: keyName, value: val && asSecret(val) }, go);
+              wipeSecrets(box);
+              if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
+            };
+            setKids(slot, el("div", { class: "row" }, v, go));
+            v.focus();
           };
-          setKids(slot, el("div", { class: "row" }, v, go));
-          v.focus();
-        } });
+          rotators[keyName] = open;
+          return button("Rotate", { onclick: open });
+        };
         const sitesBtn = (keyName, hosts, slot) => button("Sites", { onclick: () => {
           const h = el("input", { name: "hosts", value: hosts.join(", "), autocomplete: "off", spellcheck: "false", "aria-label": "Sites it may be sent to" });
           const go = el("button", { class: "primary", text: "Save sites" });
@@ -2833,7 +2839,12 @@
             el("div", { class: "row" }, save),
             el("p", { class: "muted small m0", text: "A key is never shown again after it's saved — Rotate replaces one without showing the old, Delete forgets it." })),
           hist);
-        if (pre) { pre = null; value.focus(); }
+        if (pre) {
+          const p = pre;
+          pre = null;
+          if (p.rotate && rotators[p.name]) rotators[p.name]();
+          else (p.name && !p.rotate ? value : name).focus();
+        }
       };
       draw();
       connectPanel({ title: "Safe", intro: "Every credential the bot holds: the brain's, the chat apps', connected services', tools' and its own. Rotate a leaked one, move where a tool key may be sent, delete any of them. Values never come back to this page, and the model never sees them.",
@@ -3811,11 +3822,16 @@
   // M54 §6.3: the key the bot asked the owner for rides its login link's
   // query (`?key=NAME&hosts=a,b`), read before the address bar is wiped.
   // A name the page wouldn't take, or sites with odd characters, are
-  // ignored.
+  // ignored. M52.5: a key pasted in a chat brings `?rotate=NAME` (a kept
+  // name: its Rotate opens) or `?safe=1` (the Safe, nothing filled in).
   function keyAsked() {
     const q = new URLSearchParams(location.search);
+    const fits = (n) => /^[A-Z][A-Z0-9_]{1,63}$/.test(n);
+    const rotate = (q.get("rotate") || "").trim();
+    if (fits(rotate)) return { name: rotate, hosts: "", rotate: true };
+    if (q.get("safe") === "1") return { name: "", hosts: "" };
     const name = (q.get("key") || "").trim();
-    if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(name)) return null;
+    if (!fits(name)) return null;
     const hosts = (q.get("hosts") || "").trim();
     return { name, hosts: /^[a-z0-9.*, -]*$/i.test(hosts) ? hosts.split(",").map((h) => h.trim()).filter(Boolean).join(", ") : "" };
   }

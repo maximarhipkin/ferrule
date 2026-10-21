@@ -3404,6 +3404,8 @@ async fn run_gateway(
         .with_restarts(restarts)
         .with_health(health.clone())
         .with_redactor(Arc::new(health::redactor(&cfg)))
+        // M52.5: a key pasted in the owner's chat gets a link to the Safe.
+        .with_paste_hook(Arc::new(self_service::keys::PasteLink::new(admin.clone())))
         // M56.6: an answer to `ask_user` goes to it, before any door.
         .with_interceptor(files.questions());
     if let Some(dash) = &dash {

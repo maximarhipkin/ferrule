@@ -31,6 +31,8 @@ pub struct Gateway {
     restarts: Arc<ChannelRestarts>,
     /// The commands `/help` lists (M48); also Telegram's menu.
     menu: Vec<crate::menu::Command>,
+    /// Offers the owner a link to the Safe for a pasted key (M52.5).
+    paste_hook: Option<Arc<dyn crate::paste_guard::PastedKeyHook>>,
 }
 
 /// M37: a channel's inbound loop, started again from the dashboard. The
@@ -135,6 +137,7 @@ impl Gateway {
             health: None,
             restarts: Arc::default(),
             menu: crate::menu::BUILT_IN.to_vec(),
+            paste_hook: None,
         }
     }
 
@@ -174,6 +177,13 @@ impl Gateway {
     /// gets the busy notice.
     pub fn with_busy_notice_after(mut self, after: Duration) -> Self {
         self.busy_notice_after = after;
+        self
+    }
+
+    /// A pasted key's reply in the owner's private chat comes with a link
+    /// to the dashboard's Safe, from `hook` (M52.5, M54 §6.3).
+    pub fn with_paste_hook(mut self, hook: Arc<dyn crate::paste_guard::PastedKeyHook>) -> Self {
+        self.paste_hook = Some(hook);
         self
     }
 
@@ -444,7 +454,8 @@ impl Gateway {
 
     /// M52.5: a message that looked like a key. It's deleted where the
     /// channel allows, the chat is told why, and the log says only that it
-    /// happened: never the text, nor who sent it.
+    /// happened: never the text, nor who sent it. In the owner's private
+    /// chat a link to the Safe follows the reply (the hook's).
     async fn stop_pasted_key(&self, msg: &InboundMessage) {
         tracing::warn!(
             channel = %msg.channel,
@@ -465,10 +476,17 @@ impl Gateway {
                 }
             }
         };
+        // The hook hears where it was pasted and what the prefix says,
+        // never the text.
+        let guess = crate::paste_guard::guess(&msg.text);
+        let offer = self
+            .paste_hook
+            .as_ref()
+            .and_then(|h| h.offer(&msg.channel, &msg.chat_id, guess));
         let out = OutboundMessage {
             channel: msg.channel.clone(),
             chat_id: msg.chat_id.clone(),
-            text: crate::paste_guard::reply(deleted),
+            text: crate::paste_guard::reply(deleted, offer.as_ref().map(|o| o.said.as_str())),
             // A deleted message can't be replied to.
             reply_to: (!deleted).then(|| msg.message_id.clone()),
             attachments: vec![],
@@ -477,6 +495,9 @@ impl Gateway {
             tracing::warn!(error = %e, "couldn't say why a message was stopped");
         }
         channel.answered(&msg.chat_id, &msg.message_id).await;
+        if let Some(offer) = offer {
+            tokio::spawn(offer.send);
+        }
     }
 
     async fn reply_directly(&self, msg: &InboundMessage, text: String) {

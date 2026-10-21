@@ -9130,3 +9130,70 @@ window, so a much smaller `[agent] compaction_model` pays for one
 rejected call before the pieces shrink. The extract is the rendered
 head, cut down, not the checklist. The last few files' contents are
 not re-attached after a fold; `Touched` already lists the paths.
+
+### 2026-10-21 — Wave A, task 6: the paste guard offers the Safe's link, keyless search says when it's refused (Claude, Opus 5.5)
+
+The M52.5 and M56.8 follow-ups, in the `autopilot` worktree, after
+`main` (`ebc9e26`, PR #54, M62) was merged in (`544c608`; the PLAN.md
+log and the roadmap's milestone list conflicted, both sides kept).
+Touches M54's `self_service/keys.rs` (a new hook beside
+`secret_request`) and M52's Safe panel (two link parameters), each the
+smallest change.
+
+**Why.** The re-audit (Part 1 M52.5 and M56.8; Part 3 #13 and #15): the
+paste guard's reply still said "/dashboard … Connect page" when the
+`secret_request` link flow exists, and a DuckDuckGo refusal was a bare
+error with "try again later", which a model meets by searching again.
+A 403 from DuckDuckGo was also reported as "the key is missing, wrong
+or not allowed; check the key", though there is no key.
+
+**What changed.**
+- `ferrule-gateway` `paste_guard`: `guess` names a key by the longest
+  known prefix that starts it (`GUESSES`: `sk-ant-`, `sk-or-` (added to
+  the prefixes, for OpenRouter), `sk-proj-`, `AIza`, `ghp_`,
+  `github_pat_`, `glpat-`, `hf_`, `xoxb-`, Stripe's three), with the
+  name and hosts `ferrule setup` gives them; a bare `sk-` names none.
+  A `PastedKeyHook` trait (`Gateway::with_paste_hook`) is told where the
+  key was pasted and the guess, never the text, and may return a
+  `LinkOffer`: the reply's words and a send future. The reply goes
+  first, then the link, so they arrive in that order. `reply` takes the
+  hook's words in place of the /dashboard advice.
+- `ferrule-cli` `self_service::keys::PasteLink`: only the owner's
+  private chat on a chat app (`offered`), only with the page on and
+  keys not locked. A name the secrets file keeps opens the Safe at its
+  Rotate (`?rotate=NAME`), since `check_new` refuses a name in use; a
+  name `check_new` accepts opens the add form filled in (`?key=…&hosts=…`,
+  as `secret_request` sends); anything else opens the Safe unfilled
+  (`?safe=1`) with the page's reason. A failed link says so in the
+  owner's chat ("No link to the Safe: …"). The session isn't woken.
+  `tool_keys::kept` is new; `locked` is `pub(crate)`.
+- `app.js`: `keyAsked` reads `rotate` and `safe`; the Safe opens the
+  named key's Rotate field, or focuses the name field when nothing is
+  filled in.
+- `ferrule-tools` `search`: DuckDuckGo's 403 and 429 are said as
+  refusals, and its results-less page as "most likely refused". After a
+  refusal, DuckDuckGo isn't asked again for 2 minutes (`DDG_PAUSE`, my
+  figure; DuckDuckGo publishes none): a search in that time fails at
+  once with "not sent", without the gate or a ledger row, as a provider
+  and as the fallback. With DuckDuckGo as the provider, the first
+  refusal in a session says how to end it (`KEY_HINT`): Brave's Search
+  API, `secret_request` for `BRAVE_API_KEY` on `api.search.brave.com`,
+  then `config_set web_search.provider = "brave"` (M56.3 picks the key
+  up). Brave's offer, read on brave.com/search/api today: $5 of free
+  credits a month at $5 per 1,000 searches, a card asked for. That's
+  monthly credits rather than a free plan, and the hint says so.
+- Docs: `channels.md` ("Keys pasted into a chat"), `web-search.md`
+  ("Keyless search"), the roadmap's Wave A list.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** Not run live: no real paste in Telegram, no real DuckDuckGo
+refusal. The pause and the once are per tool instance, i.e. per
+session's agent, in memory, so a lane rebuilt after it's retired hears
+the hint again, and several chats each make one request to a
+DuckDuckGo that is refusing. Keys with no prefix (Brave's, Tavily's,
+passwords) still pass the guard (M52.5's known gap). Only Telegram and
+the dashboard delete the pasted message.
