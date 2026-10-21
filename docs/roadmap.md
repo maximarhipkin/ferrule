@@ -1459,6 +1459,14 @@ Current State; numbers are claimed there before anything is built.
     mock isn't; the Chrome launch check is killed on timeout or drop, on
     Linux as a process group that dies with ferrule (`docs/browser.md`);
     `docs/eval.md`'s sample report is marked illustrative.
+  - **Media spend in dollars** (M51 follow-up): media ledger rows carry
+    OpenRouter's `usage.cost` (images, finished videos), a video's
+    list-price estimate at submit settled at delivery, and an input-priced
+    speech model's estimate; they're charged to the `[trust]` run, day and
+    task caps. A video is refused before submit over `[media]
+    max_usd_per_video` ($1) or the dollars left; models come only from
+    `image_models` / `video_models`; the default video model is
+    `google/veo-3.1-lite`, 3 videos a day (`docs/m51-media.md`, "Wave A").
 
 **Still open from earlier tracks.**
 

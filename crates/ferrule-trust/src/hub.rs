@@ -499,6 +499,34 @@ impl Hub {
             .unwrap_or_default()
     }
 
+    /// The dollars `tree` may still spend before its run, day or task
+    /// cap, the smallest of those set (never below zero); `None` when no
+    /// dollar cap is set. A ledger that can't be read while a day or task
+    /// dollar cap is set is an error: the caller refuses (M51's media
+    /// spend checks this before a paid call).
+    pub fn usd_left(&self, tree: &str, task: Option<&str>) -> Result<Option<f64>, String> {
+        let c = self.config();
+        let mut left: Option<f64> = None;
+        let mut take = |cap: f64, spent: f64| {
+            if cap > 0.0 {
+                let l = (cap - spent).max(0.0);
+                left = Some(left.map_or(l, |x: f64| x.min(l)));
+            }
+        };
+        take(c.max_usd_per_run, self.run_spend(tree).usd);
+        let task_cap = if task.is_some() {
+            c.max_usd_per_task
+        } else {
+            0.0
+        };
+        if c.max_usd_per_day > 0.0 || task_cap > 0.0 {
+            let (day, t) = self.today(task)?;
+            take(c.max_usd_per_day, day.usd);
+            take(task_cap, t.usd);
+        }
+        Ok(left)
+    }
+
     /// Today's spend and `task`'s, from the ledger.
     pub fn today(&self, task: Option<&str>) -> Result<(Spend, Spend), String> {
         self.meter.read(self.clock.now(), task)

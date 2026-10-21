@@ -6,13 +6,17 @@
 //! client from `ferrule_tools::egress::client_builder`, never a real key.
 
 use crate::{
-    AudioOut, ImageOut, ImageReq, MediaBackend, MediaError, SpeechReq, VideoJob, VideoReq,
-    VideoState,
+    AudioOut, ImageOut, ImageReq, MediaBackend, MediaError, SpeechReq, VideoJob, VideoPrice,
+    VideoReq, VideoState,
 };
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// How long a fetched price list is used before it's read again.
+const PRICES_FOR: Duration = Duration::from_secs(6 * 3600);
 
 #[derive(Debug, Clone)]
 pub struct MediaSettings {
@@ -33,6 +37,9 @@ pub struct OpenRouterMedia {
     settings: MediaSettings,
     client: reqwest::Client,
     host: String,
+    /// The price lists, by path (`/videos/models`, `/models?…`), with
+    /// when each was read.
+    prices: Mutex<Vec<(String, Instant, Value)>>,
 }
 
 impl OpenRouterMedia {
@@ -45,7 +52,38 @@ impl OpenRouterMedia {
             settings,
             client,
             host,
+            prices: Mutex::new(Vec::new()),
         }
+    }
+
+    /// A price list's `data` array: from the cache while it's fresh, else
+    /// read again (with the proxy's placeholder, though the lists are
+    /// public).
+    async fn price_list(&self, path: &str) -> Result<Value, MediaError> {
+        if let Some((_, _, list)) = self
+            .prices
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(p, at, _)| p == path && at.elapsed() < PRICES_FOR)
+        {
+            return Ok(list.clone());
+        }
+        let mut req = self
+            .client
+            .get(self.url(path))
+            .timeout(self.settings.timeout);
+        if let Some(key) = &self.settings.key {
+            req = req.bearer_auth(key);
+        }
+        let list = self.checked(req).await?["data"].clone();
+        if !list.is_array() {
+            return Err(MediaError::BadAnswer(format!("{path} has no data list")));
+        }
+        let mut cache = self.prices.lock().unwrap();
+        cache.retain(|(p, _, _)| p != path);
+        cache.push((path.to_string(), Instant::now(), list.clone()));
+        Ok(list)
     }
 
     fn url(&self, path: &str) -> String {
@@ -173,6 +211,7 @@ impl MediaBackend for OpenRouterMedia {
             return Ok(ImageOut {
                 bytes,
                 format: "png".into(),
+                cost_usd: cost(&answer),
             });
         }
         if let Some(url) = first["url"].as_str() {
@@ -183,7 +222,11 @@ impl MediaBackend for OpenRouterMedia {
                 .map_err(|e| MediaError::BadAnswer(format!("the downloaded image: {e}")))?;
             let _ = std::fs::remove_file(&tmp);
             let format = sniff(&bytes).unwrap_or("png").to_string();
-            return Ok(ImageOut { bytes, format });
+            return Ok(ImageOut {
+                bytes,
+                format,
+                cost_usd: cost(&answer),
+            });
         }
         Err(MediaError::BadAnswer(
             "the answer has neither b64_json nor a url".into(),
@@ -238,6 +281,7 @@ impl MediaBackend for OpenRouterMedia {
                     })?;
                 Ok(VideoState::Done {
                     url: url.to_string(),
+                    cost_usd: cost(&answer),
                 })
             }
             "failed" | "error" | "cancelled" => Ok(VideoState::Failed {
@@ -303,6 +347,38 @@ impl MediaBackend for OpenRouterMedia {
             format: "mp3".into(),
         })
     }
+
+    async fn video_price(&self, model: &str) -> Result<Option<VideoPrice>, MediaError> {
+        let list = self.price_list("/videos/models").await?;
+        Ok(list
+            .as_array()
+            .and_then(|l| l.iter().find(|m| m["id"] == model))
+            .and_then(VideoPrice::of))
+    }
+
+    async fn speech_price(&self, model: &str) -> Result<Option<f64>, MediaError> {
+        let list = self.price_list("/models?output_modalities=speech").await?;
+        let price = |v: &Value| {
+            v.as_str()
+                .and_then(|s| s.trim().parse::<f64>().ok())
+                .filter(|p| p.is_finite() && *p >= 0.0)
+        };
+        Ok(list
+            .as_array()
+            .and_then(|l| l.iter().find(|m| m["id"] == model))
+            // Only a model priced on its input alone: the audio it makes
+            // isn't known before the call.
+            .filter(|m| price(&m["pricing"]["completion"]) == Some(0.0))
+            .and_then(|m| price(&m["pricing"]["prompt"])))
+    }
+}
+
+/// OpenRouter's `usage.cost` (dollars), a number or a numeric string.
+fn cost(answer: &Value) -> Option<f64> {
+    let c = &answer["usage"]["cost"];
+    c.as_f64()
+        .or_else(|| c.as_str().and_then(|s| s.trim().parse().ok()))
+        .filter(|c: &f64| c.is_finite() && *c >= 0.0)
 }
 
 /// The format by the file's first bytes, never by its name.

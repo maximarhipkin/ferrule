@@ -138,8 +138,9 @@ A check (`before_model_call`) reads the new ledger lines, then compares
 this run, today and this task's today against their caps. The first cap at
 or over its limit stops the run. Caps are checked before a call, so one
 call can overshoot: by at most one call per agent running at that moment.
-Nothing spends between model calls, so there's nothing to check there,
-except that sub-agents spend while their parent waits in `wait_agent`:
+Apart from the media tools, which check for themselves (below), nothing
+spends between model calls, so there's nothing to check there, except
+that sub-agents spend while their parent waits in `wait_agent`:
 every charge wakes `halted()`, which checks again, and a cap crossed by a
 child stops the parent mid-tool-call too.
 
@@ -153,6 +154,20 @@ That is checked when the pass starts: a pass already running finishes
 under its own caps, and the switch doesn't halt it mid-pass (its calls
 don't go through the guard). M16's rolling window stays as it is. Changing it would change a shipped
 behavior for no gain: the pass runs once a night.
+
+### Media spend (wave A, 2026-10-21)
+
+Images, videos and voice replies (M51) spend between model calls, so
+they check for themselves before a paid call: `Hub::usd_left(tree,
+task)` is the smallest of the run, day and task dollar caps that are
+set, minus what's spent (a ledger that can't be read refuses). An image
+or a voice reply is refused at nothing left; a video is estimated from
+the price list first and refused when the estimate is over what's left
+or over `[media] max_usd_per_video`. Their ledger rows carry `cost_usd`
+(the provider's `usage.cost`, or a video's estimate settled at
+delivery) and are charged to the run with `Hub::charge`, like a model
+call's; the day and task caps read them from the ledger like any row
+(`docs/m51-media.md`, "Wave A").
 
 ## 3. The stop message
 

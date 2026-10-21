@@ -7,5 +7,8 @@ pub mod media;
 pub mod send_file;
 
 pub use chat::{chat_tools, AskUserTool, EditMessageTool, Questions, ReactTool};
-pub use media::{GenerateImageTool, GenerateVideoTool, MediaPoller, MediaShared, SpeakTool};
+pub use media::{
+    GenerateImageTool, GenerateVideoTool, MediaLimits, MediaPoller, MediaShared, MediaSpend,
+    SpeakTool,
+};
 pub use send_file::{FileOut, SendFileTool};

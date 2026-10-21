@@ -210,9 +210,14 @@ endpoint speaks OpenRouter's media API (`/images/generations`,
   message. `[media] speech_model = ""` turns it off.
 
 `[media] image_model` / `video_model` / `speech_model` (and `voice`) set
-the defaults a call can override; `max_per_day` caps generations per
-UTC day, voice replies included (fail-closed); every call and delivery
-is a ledger row with `call_kind = "media"`.
+the defaults. A call may name another model only from `image_models` /
+`video_models`, never free text. `max_per_day` caps generations per UTC
+day, voice replies included, and `max_videos_per_day` (3) video submits
+(both fail-closed). Every call and delivery is a ledger row with
+`call_kind = "media"` and its dollars when they're known, charged to the
+`[trust]` run, day and task caps; a video is estimated from the price
+list before it's submitted and refused over `max_usd_per_video` ($1) or
+the dollars left (`docs/m51-media.md`, "Wave A").
 Sub-agents get the tools only in the `media` role (M51.3,
 `docs/agents.md`): they save the files in the parent's workspace and
 the parent sends them.

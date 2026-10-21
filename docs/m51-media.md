@@ -209,8 +209,8 @@ From the 2026-10-20 gap analysis (M51.4). Built on `autopilot`.
 
 **Not verified live.** No call to OpenRouter's speech or transcription
 endpoint has been made with a real key, and no voice note has been sent
-to a real Telegram chat. The speech call has no cost in its ledger row
-(the trust caps don't see it; the daily count does). Sub-agents get the
+to a real Telegram chat. The speech call had no cost in its ledger row
+(the trust caps didn't see it; the daily count did) until wave A, below. Sub-agents get the
 tool only with M51.3, the media role.
 
 ## M51.3 — a `media` role for sub-agents (2026-10-21)
@@ -248,3 +248,66 @@ From the 2026-10-20 gap analysis (M51.3). Built on `autopilot`.
 video a child starts is saved, not sent: the parent learns it's there
 only by looking (the poller logs it), so a parent that wants the clip
 in the chat sends it itself later.
+
+## Wave A — media spend in dollars (2026-10-21)
+
+From the 2026-10-21 re-audit (M51.1/M51.2/M51.4 follow-ups): media rows
+had `cost_usd` empty, so `[trust]`'s dollar caps never saw media spend;
+`model` was free text; the default video model was the dear
+`google/veo-3.1` with 20 a day.
+
+- **Dollars in the ledger.** An image's row carries what OpenRouter says
+  it charged (`usage.cost` in the answer, when the answer has it). A
+  video's submit row carries its estimate (below); the delivery row
+  carries the difference to the finished job's `usage.cost`, so the
+  ledger's sum is the bill (negative when the estimate was high). A
+  failed render's row takes the estimate back (OpenRouter's "Zero
+  Completion Insurance": a failed run isn't billed); a render that
+  finished but couldn't be downloaded is billed and settled the same
+  way. A `speak` reply's row carries an estimate only for a model priced
+  on its input alone (`pricing.completion` is `"0"` in OpenRouter's
+  `/models?output_modalities=speech` list): the list price per unit
+  times the characters, an upper bound, since a unit is a character or
+  a token. Any other speech model (the default Gemini TTS, priced on the
+  audio it makes too) is counted only.
+- **Charged to the run, the day and the task.** A tool call's row is
+  charged to its run tree through the trust hub (`MediaSpend`, the
+  same `Hub::charge` a model call's row goes through) and written to the
+  ledger, which the day and task caps read; a row carries its tree, so a
+  scheduled task's media spend counts toward that task. A media `role`
+  child's spend goes to its root's run. The poller's settling rows go to
+  the ledger only.
+- **Before a paid call.** An image or a voice reply is refused once the
+  run, the day or the task has no dollars left under the `[trust]` caps
+  (`Hub::usd_left`; what it costs isn't known before). A video is
+  estimated first: the model's per-second list price from OpenRouter's
+  `/videos/models` (`pricing_skus`; the dearest per-second price that
+  names no resolution, so with audio at the default size; a `cents_…`
+  key is in cents) times the asked length, or the model's longest
+  `supported_durations` when none is asked (an upper bound). It's
+  refused, nothing submitted, when the estimate is over `[media]
+  max_usd_per_video` (default $1.00) or over what the run, day or task
+  has left, and when there's no estimate (a model priced per token, a
+  price list that can't be read) while either limit is set. The list is
+  read through the proxy and kept for 6 hours. The answer says the
+  estimate: "Making it — job … (about $0.64 for 8 s at list price)".
+- **Models from the config.** `[media] image_models` and `video_models`
+  list the other models a call may name; the defaults are always
+  allowed. The tools' `model` parameter exists only when there is a
+  choice, as an `enum` of the allowed ones, and any other name is
+  refused (M21: no model enters through a tool call).
+- **Cheaper defaults.** `video_model = "google/veo-3.1-lite"` ($0.08/s
+  with audio on OpenRouter's list on 2026-10-21; Veo 3.1 is $0.40/s), and
+  `max_videos_per_day = 3` within `max_per_day` (still 20 for all media).
+- Files: `ferrule-media` (`ImageOut::cost_usd`, `VideoState::Done`'s
+  `cost_usd`, `VideoPrice`, the `video_price`/`speech_price` backend
+  calls, the `tree` and `estimate_usd` job columns, added to an older
+  table at open), `ferrule-gateway/src/tools/media.rs`, `ferrule-trust`
+  `Hub::usd_left`, `ferrule-cli` `config.rs` and `media.rs`.
+
+**Not verified live.** No paid call was made: whether
+`/images/generations` (the OpenAI-compatible path ferrule uses, not
+`/images`) returns `usage.cost`, and whether a finished video's poll
+answer does, are read from OpenRouter's docs, not seen. Without them a
+row keeps the estimate (video) or no cost (image), and the counts still
+hold.

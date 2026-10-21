@@ -8845,3 +8845,72 @@ binaries (macOS), clippy clean.
 - (d) On macOS and Windows a Chrome that hangs can still outlive a
   ferrule killed by a signal it can't handle; Linux's
   `die_with_parent` is CI-compiled only (this Mac doesn't build it).
+
+### 2026-10-21 — Wave A, task 2: media spend in dollars (Claude, Opus 5.5)
+
+M51's follow-up (M51.1, M51.2, M51.4), in the `autopilot` worktree.
+Touches `ferrule-trust`'s `hub.rs` with one read-only method
+(`usd_left`); M51's media module is M51's own surface.
+
+**Why.** The re-audit (Part 1 M51.1/M51.2, Part 3 #2): media ledger rows
+had `cost_usd: None` and nothing charged the hub, so `[trust]`'s dollar
+caps never saw media spend; only `max_per_day = 20` (a count) held. The
+`model` argument was free text, against M21. The default video model
+was `google/veo-3.1` ($0.40/s with audio, $3.20 for 8 s) with 20 a day.
+
+**What changed.**
+- `ferrule-media`: `ImageOut::cost_usd` and `VideoState::Done { cost_usd
+  }` from OpenRouter's `usage.cost` (a number or numeric string);
+  `VideoPrice::of` reads a `/videos/models` entry's `pricing_skus` (the
+  dearest per-second price naming no resolution, else the dearest
+  per-second one; `cents_…` keys divided by 100) and
+  `supported_durations`; `MediaBackend::video_price` and `speech_price`
+  (default `None`; OpenRouter reads `/videos/models` and
+  `/models?output_modalities=speech` through the proxy and keeps each
+  list 6 h; a speech price only for a model whose `completion` price is
+  0). `media_jobs` gains `tree` and `estimate_usd` (added to an older
+  table at open); `count_kind_since`. `Eq` dropped where an `f64` came in.
+- `ferrule-gateway` `tools/media.rs`: `MediaSpend` (the caps: `usd_left`,
+  `charge`) and `MediaLimits` (`image_models`, `video_models`,
+  `max_videos_per_day`, `max_usd_per_video`), set once on `MediaShared`.
+  `pick`: a call's model is the default or one on the allow-list, else
+  refused with the allowed list; the `model` parameter is offered only
+  when there's a choice, as an `enum`. Rows (`Row`) carry `cost_usd` and
+  the tree, and a tool call's row is charged to its run. Images and
+  `speak` are refused once no dollars are left; `generate_video` checks
+  the video count, then estimates (list price × asked seconds, or the
+  model's longest) and refuses, nothing submitted, over
+  `max_usd_per_video`, over what's left, or without an estimate while
+  either limit is set; its answer says the estimate. The submit row
+  charges the estimate; the poller's delivery row settles it to the
+  bill, a failed render's row takes it back, a finished render that
+  couldn't be downloaded is settled as billed. `in_tree` on the three
+  tools: a `media` child's spend goes to its root's run.
+- `ferrule-trust`: `Hub::usd_left(tree, task)`, the smallest of the run,
+  day and task dollar caps set, minus spend; an unreadable ledger with a
+  day or task dollar cap is an error.
+- `ferrule-cli`: `[media] image_models`, `video_models` (default empty),
+  `max_videos_per_day = 3`, `max_usd_per_video = 1.0`, `video_model =
+  "google/veo-3.1-lite"` (OpenRouter's list on 2026-10-21: $0.08/s with
+  audio, $0.05 without); the config template. `media::shared` sets the
+  limits and `HubSpend` (the hub; a tree's task from its
+  `scheduler__` prefix). `child_builder` passes `spec.tree`.
+- Docs: `m51-media.md` "Wave A — media spend in dollars", `models.md`
+  "Making media", `m19-trust-cost.md` "Media spend", the roadmap.
+
+**Tests changed, none added** (the owner's standing rule): none needed
+changing (the fake backend has no prices and the gateway tests set no
+limits, so they run as before).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** No paid call was made: whether `/images/generations` (the
+OpenAI-compatible path ferrule uses) and a finished video's poll answer
+carry `usage.cost` is from OpenRouter's docs, not seen; the price lists'
+shapes were read from the public endpoints on 2026-10-21. A request
+without a length is priced at the model's longest clip (an upper bound
+that may refuse a clip that would have fit). Speech on the default
+Gemini TTS is still counted only. The settling rows can be negative,
+which `ferrule ledger` shows as they are. No per-image dollar cap; no
+per-run approval card (M51's "As built").

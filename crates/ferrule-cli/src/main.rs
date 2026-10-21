@@ -1324,20 +1324,27 @@ pub(crate) fn child_builder(
             // No chat: the tools save into the parent's workspace and say
             // so; the parent sends the files. References resolve with every
             // hidden path a guest's would (the strictest list).
-            agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
-                media.clone(),
-                &spec.id,
-                session_hidden(false, false, &spec.workspace),
-            )));
-            agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
-                media.clone(),
-                &spec.id,
-                session_hidden(false, false, &spec.workspace),
-            )));
+            // Their spend is charged to the root's run.
+            agent.register_tool(Arc::new(
+                ferrule_gateway::tools::GenerateImageTool::new(
+                    media.clone(),
+                    &spec.id,
+                    session_hidden(false, false, &spec.workspace),
+                )
+                .in_tree(&spec.tree),
+            ));
+            agent.register_tool(Arc::new(
+                ferrule_gateway::tools::GenerateVideoTool::new(
+                    media.clone(),
+                    &spec.id,
+                    session_hidden(false, false, &spec.workspace),
+                )
+                .in_tree(&spec.tree),
+            ));
             if media.speaks() {
-                agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
-                    media, &spec.id,
-                )));
+                agent.register_tool(Arc::new(
+                    ferrule_gateway::tools::SpeakTool::new(media, &spec.id).in_tree(&spec.tree),
+                ));
             }
         }
         Ok(agent)

@@ -27,7 +27,7 @@ impl JobKind {
 }
 
 /// One row. `state`: `pending` | `done` | `failed`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MediaJob {
     pub id: String,
     pub kind: String,
@@ -41,7 +41,16 @@ pub struct MediaJob {
     pub chat_id: Option<String>,
     pub state: String,
     pub error: Option<String>,
+    /// The run tree that asked for it, so a video's delivery row counts
+    /// toward the right scheduled task's cap.
+    pub tree: Option<String>,
+    /// A video's cost as estimated at submit (dollars), which its submit
+    /// row charged; the delivery row settles it to the provider's bill.
+    pub estimate_usd: Option<f64>,
 }
+
+const COLUMNS: &str =
+    "id, kind, created_at, model, prompt, out_path, channel, chat_id, state, error, tree, estimate_usd";
 
 pub struct JobStore {
     conn: Mutex<Connection>,
@@ -70,6 +79,17 @@ impl JobStore {
             );",
         )
         .map_err(|e| MediaError::Store(e.to_string()))?;
+        // Columns added after M51: a table from before gets them empty.
+        for (column, ty) in [("tree", "TEXT"), ("estimate_usd", "REAL")] {
+            let has = conn
+                .prepare("SELECT name FROM pragma_table_info('media_jobs') WHERE name = ?1")
+                .and_then(|mut st| st.exists(params![column]))
+                .map_err(|e| MediaError::Store(e.to_string()))?;
+            if !has {
+                conn.execute_batch(&format!("ALTER TABLE media_jobs ADD COLUMN {column} {ty};"))
+                    .map_err(|e| MediaError::Store(e.to_string()))?;
+            }
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -82,8 +102,10 @@ impl JobStore {
             .lock()
             .unwrap()
             .execute(
-                "INSERT INTO media_jobs (id, kind, created_at, model, prompt, out_path, channel, chat_id, state, error)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                &format!(
+                    "INSERT INTO media_jobs ({COLUMNS})
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+                ),
                 params![
                     job.id,
                     job.kind,
@@ -94,7 +116,9 @@ impl JobStore {
                     job.channel,
                     job.chat_id,
                     job.state,
-                    job.error
+                    job.error,
+                    job.tree,
+                    job.estimate_usd
                 ],
             )
             .map_err(|e| MediaError::Store(e.to_string()))?;
@@ -116,13 +140,28 @@ impl JobStore {
             .map_err(|e| MediaError::Store(e.to_string()))
     }
 
+    /// `kind`'s generations since `since_unix` (the daily video cap).
+    /// Fail-closed like [`Self::count_since`].
+    pub fn count_kind_since(&self, kind: JobKind, since_unix: i64) -> Result<u64, MediaError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM media_jobs WHERE kind = ?1 AND created_at >= ?2",
+                params![kind.as_str(), since_unix],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n as u64)
+            .map_err(|e| MediaError::Store(e.to_string()))
+    }
+
     pub fn pending_videos(&self) -> Result<Vec<MediaJob>, MediaError> {
         let conn = self.conn.lock().unwrap();
         let mut st = conn
-            .prepare(
-                "SELECT id, kind, created_at, model, prompt, out_path, channel, chat_id, state, error
-                 FROM media_jobs WHERE kind = 'video' AND state = 'pending' ORDER BY created_at",
-            )
+            .prepare(&format!(
+                "SELECT {COLUMNS}
+                 FROM media_jobs WHERE kind = 'video' AND state = 'pending' ORDER BY created_at"
+            ))
             .map_err(|e| MediaError::Store(e.to_string()))?;
         let rows = st
             .query_map([], |r| {
@@ -137,6 +176,8 @@ impl JobStore {
                     chat_id: r.get(7)?,
                     state: r.get(8)?,
                     error: r.get(9)?,
+                    tree: r.get(10)?,
+                    estimate_usd: r.get(11)?,
                 })
             })
             .map_err(|e| MediaError::Store(e.to_string()))?;
@@ -168,6 +209,8 @@ impl JobStore {
             chat_id: None,
             state: "pending".into(),
             error: None,
+            tree: None,
+            estimate_usd: None,
         }
     }
 

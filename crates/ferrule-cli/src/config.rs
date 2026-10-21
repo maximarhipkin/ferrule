@@ -1274,6 +1274,11 @@ pub struct MediaConfig {
     /// Defaults when a tool call doesn't name one.
     pub image_model: String,
     pub video_model: String,
+    /// Other image models a call may name; nothing else ever reaches the
+    /// provider through a tool call (M21). Empty: only `image_model`.
+    pub image_models: Vec<String>,
+    /// Other video models a call may name. Empty: only `video_model`.
+    pub video_models: Vec<String>,
     /// M51.4: `speak`'s model; empty turns `speak` off.
     pub speech_model: String,
     /// `speak`'s voice (the model's own names); unset, the model's default.
@@ -1282,6 +1287,13 @@ pub struct MediaConfig {
     /// together); 0 = no cap. Fail-closed: a store that can't be counted
     /// refuses.
     pub max_per_day: u64,
+    /// Video submits per day, within `max_per_day`; 0 = no cap of its own.
+    pub max_videos_per_day: u64,
+    /// The most one video may cost, estimated from the provider's price
+    /// list before it's submitted (dollars); 0 = no per-video cap. A model
+    /// with no per-second price can't be estimated, so it's refused while
+    /// this or a `[trust]` dollar cap is set.
+    pub max_usd_per_video: f64,
 }
 
 impl Default for MediaConfig {
@@ -1289,11 +1301,17 @@ impl Default for MediaConfig {
         Self {
             provider: None,
             image_model: "google/gemini-2.5-flash-image".into(),
-            video_model: "google/veo-3.1".into(),
+            // OpenRouter's video list, 2026-10-21: Veo 3.1 Lite is $0.08/s
+            // with audio ($0.64 for 8 s), Veo 3.1 $0.40/s ($3.20).
+            video_model: "google/veo-3.1-lite".into(),
+            image_models: Vec::new(),
+            video_models: Vec::new(),
             // OpenRouter's speech list, 2026-10-21: cheap, multilingual.
             speech_model: "google/gemini-3.8-flash-tts".into(),
             voice: None,
             max_per_day: 20,
+            max_videos_per_day: 3,
+            max_usd_per_video: 1.0,
         }
     }
 }
@@ -1759,11 +1777,16 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # [media]                   # Image and video generation (docs/m51-media.md),
 # provider = "openrouter"   # through a connected [providers.X]. Off until set.
 # image_model = "google/gemini-2.5-flash-image"
-# video_model = "google/veo-3.1"
+# video_model = "google/veo-3.1-lite"   # $0.08/s with audio on 2026-10-21
+# image_models = []         # other models a call may name; only these, never
+# video_models = []         # free text (e.g. ["google/veo-3.1-fast"])
 # speech_model = "google/gemini-3.8-flash-tts"  # `speak`, voice replies; "" = off
 # voice = "Kore"            # the speech model's own voice names; unset = its default
 # max_per_day = 20          # images, video submits and voice replies; 0 = no cap.
 #                            # Refuses fail-closed; every call is a ledger row.
+# max_videos_per_day = 3     # video submits, within max_per_day; 0 = no own cap
+# max_usd_per_video = 1.0    # estimated from the price list before a submit;
+#                            # 0 = no cap. Media dollars count toward [trust]'s caps.
 
 # [telemetry]               # OpenTelemetry traces of the agent's work over OTLP/HTTP
 # endpoint = "http://127.0.0.1:4318"  # (docs/otel.md). Off until set; /v1/traces
