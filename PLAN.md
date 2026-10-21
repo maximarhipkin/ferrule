@@ -6968,3 +6968,44 @@ what each field is, never how a good call looks.
 
 **Open.** Not run through `ferrule eval` (the gap analysis's M58.5
 gate). `ferrule_admin`'s examples wait for M54.
+
+### 2026-10-21 — M57.6: background processes (Claude, Opus 5.5)
+
+**Why.** The shell waited for every command up to its 120-second
+timeout, so a dev server or a watcher hung the turn and was then killed.
+
+**What changed.**
+- `ferrule-tools/src/jobs.rs` (new): `Jobs`, one table per `ShellTool`
+  (`ShellTool::jobs`), and `ShellJobTool` (`shell_job {id, action:
+  status|tail|kill, lines}`). A job's watcher task records its exit code
+  or the kill; `kill` takes the process group (Unix) and the process
+  (`start_kill`; on Windows the sandbox's job object takes the tree). At
+  most 4 running (`MAX_RUNNING`), 16 finished ones remembered.
+  `Jobs::stop_all` runs from `Tool::session_ended` and from `Drop`.
+- `shell.rs`: `background: true` (schema and call) starts the command in
+  the same sandbox, workspace and process-group setup as a foreground
+  one, stdout and stderr into a new file from
+  `ferrule_core::tool::new_spill_file` (split out of `save_spill`, same
+  checks), and returns the job id and file at once.
+- `ferrule-core`: `Tool::session_ended` (default no-op) and
+  `ToolRegistry::session_ended`, called by `Agent::end_session` after
+  SessionEnd. A dropped agent (a gateway lane, a sub-agent) stops its
+  jobs through `Jobs`' `Drop`.
+- Registered with the shell in `standard_registry`, `build_agent_from`
+  and the eval's variants; removed wherever the shell is, and in an SSH
+  workspace, whose shell refuses `background: true` ("nothing was
+  started"). `shell_job` is deferrable (M57.1).
+- Docs: `m57-context-hygiene.md` (new section, and the deferrable
+  list), README (the Tools row), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS). No new test covers a job; nothing was run by hand
+(the owner's rule): starting, tailing and killing a job are exercised by
+no test yet.
+
+**Open.** A job's output file isn't capped. Lines aren't streamed back;
+the model asks with `tail`. Processes a job's command leaves behind after
+it exits aren't tracked on Unix. A finished sub-agent's jobs run until
+it's closed.

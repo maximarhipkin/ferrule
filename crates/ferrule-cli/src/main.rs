@@ -1402,7 +1402,12 @@ fn build_agent_from(
     let (read_only, reading_mcp) = agents::narrows(child);
     let broker = shared_broker(&cfg)?;
     match managed::user_commands_off(&sandbox) {
-        None => registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone()))),
+        None => {
+            // M57.6: `shell_job` shares the shell's background jobs.
+            let shell = ShellTool::sandboxed(sandbox.clone());
+            registry.register(Arc::new(shell.job_tool()));
+            registry.register(Arc::new(shell));
+        }
         Some(why) => {
             // The standard registry's shell has no sandbox at all: it goes
             // too, or "off" would leave an unconfined shell behind.
@@ -1444,6 +1449,11 @@ fn build_agent_from(
         if planning || read_only || sandbox.policy().mode == Mode::ReadOnly {
             registry.remove("shell");
         }
+    }
+    // M57.6: background jobs are the local shell's; without it (or with a
+    // remote one, which refuses `background`) there are none to look at.
+    if remote.is_some() || !registry.contains("shell") {
+        registry.remove("shell_job");
     }
     // M29: `code_search` and the repo map, only in something that looks
     // like a code repo (a home dir gets neither schema nor map), and not

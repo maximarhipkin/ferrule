@@ -156,7 +156,9 @@ pub fn build(b: Build<'_>) -> Agent {
         max_output_chars: 30_000,
     };
     let mut registry = standard_registry();
-    registry.register(Arc::new(ShellTool::sandboxed(b.sandbox.clone())));
+    let shell = ShellTool::sandboxed(b.sandbox.clone());
+    registry.register(Arc::new(shell.job_tool()));
+    registry.register(Arc::new(shell));
     registry.register(Arc::new(WebFetchTool::with_egress(
         b.sandbox.egress().cloned(),
     )));

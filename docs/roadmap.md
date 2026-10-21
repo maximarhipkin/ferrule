@@ -1208,7 +1208,9 @@ Current State; numbers are claimed there before anything is built.
     ledger), counted tools and files in every compaction summary, and no
     idle pre-compaction (the summary call isn't cached); M57.5, short
     input examples in `edit_file`'s `edits` and four agent tools'
-    descriptions (`ferrule_admin` waits for M54).
+    descriptions (`ferrule_admin` waits for M54); M57.6,
+    `shell {background: true}` and `shell_job` (status, tail, kill), at
+    most 4 jobs, killed when the session or lane ends, local shell only.
   - **M58** simplify, remove or make opt-in: the loop's overlapping
     seams, per-turn routing, fewer agent tools, the graph runner out of
     the core, eval as the gate.

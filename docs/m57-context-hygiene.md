@@ -28,9 +28,10 @@ model that guesses right loses nothing.
 **Which tools are deferrable** (`Tool::deferrable`, in
 `crates/ferrule-core/src/tool.rs`): every MCP tool (`mcp__<server>__*`,
 the browser's and connections' included), the self-extension tools
-(`mcp_add`, `skill_install` and the rest), `connection_request`, and
-`generate_image` and `generate_video`. Everything else (the file tools,
-the shell, memory, sub-agents, the chat tools) is always sent whole.
+(`mcp_add`, `skill_install` and the rest), `connection_request`,
+`generate_image` and `generate_video`, and `shell_job` (M57.6). Everything
+else (the file tools, the shell, memory, sub-agents, the chat tools) is
+always sent whole.
 
 **When** (`[agent] defer_tools`):
 
@@ -301,3 +302,58 @@ so its examples wait for that to land.
 **Open.** The gap analysis gates this on an eval (M58.5) because it adds
 to the prefix; ferrule's own suite (`ferrule eval`) hasn't been run on
 it, so the gain is Anthropic's measurement, not ferrule's.
+
+## Background processes (M57.6)
+
+The shell waited for every command, up to its 120-second timeout, so a
+dev server, a file watcher or a long build in watch mode either hung the
+turn until the timeout killed it or couldn't be used at all. Claude Code
+runs such a command in the background and streams its lines back
+([tools reference](https://code.claude.com/docs/en/tools-reference)).
+
+**Starting one.** `shell {"command": "npm run dev", "background": true}`
+starts the command and returns at once with a job id and the file its
+output goes to. It runs exactly as a foreground command would: the same
+deny list, the same approval gate (the guard sees the same `shell` call),
+the same sandbox and workspace, stdin closed, its own process group. Its
+stdout and stderr go straight to a new file under `.ferrule/spill/` (the
+M55.3 spill directory, git-ignored), written by the command as it runs.
+
+**Looking at it, stopping it** (`shell_job`):
+
+| Call | Answer |
+|---|---|
+| `{"action": "status"}` | one line per job: running for how long, or the exit code (or "killed") and how long it ran, and the bytes of output so far |
+| `{"id": 2, "action": "status"}` | that job's line |
+| `{"id": 2, "action": "tail", "lines": 80}` | its line and the last lines of its output (40 by default, 400 at most; the end is kept when that's over the output cap) |
+| `{"id": 2, "action": "kill"}` | kills its process group, so what it started goes too |
+
+The whole output stays in its file for `read_file` or the shell (`grep`).
+
+**Limits and lifetime** (`crates/ferrule-tools/src/jobs.rs`). Each agent
+has its own jobs (they belong to its `shell`). At most 4 run at once; a
+fifth is refused until one ends or is killed. The 16 most recent finished
+jobs are kept for `status` and `tail`. Every job still running is killed
+when the session ends: `ferrule run` finishing, `ferrule chat` exiting or
+starting a new conversation (`Tool::session_ended`, from
+`Agent::end_session`), and whenever the agent itself is dropped (a
+gateway lane's on `/new` or when the gateway stops, a sub-agent's),
+through the table's `Drop`. A job is
+not stopped at the end of a turn: a chat's dev server keeps running for
+its next message.
+
+**Where.** The local shell, on every platform: on Unix a kill takes the
+process group; on Windows it ends the top process, and the sandbox's job
+object ends the tree with it (without the sandbox, only the top process
+goes). An SSH workspace's shell (M34) refuses `background: true`, saying
+nothing was started, and has no `shell_job`. Where the shell is off
+(managed mode's commands off, plan mode without a sandbox), so is
+`shell_job`.
+
+**Open.** A job's output file isn't capped while it runs; a chatty
+server fills it until the job ends. Nothing streams the job's lines back
+on its own: the model asks with `tail`. A job whose command exits stops
+being tracked, even if it left processes of its own running (`cmd &`):
+on Unix ferrule doesn't stop those (on Windows the sandbox's job object
+ends them when the command does). A finished sub-agent's jobs run until
+its agent is closed.

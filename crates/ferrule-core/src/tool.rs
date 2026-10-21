@@ -162,6 +162,16 @@ pub fn spill_file_name() -> String {
 /// Write `content` to a new file under `<workspace>/.ferrule/spill/`, and
 /// return its workspace-relative path.
 fn save_spill(workspace: &Path, content: &str) -> Result<String, String> {
+    let (mut file, shown) = new_spill_file(workspace)?;
+    std::io::Write::write_all(&mut file, content.as_bytes())
+        .map_err(|e| format!("could not write {shown}: {e}"))?;
+    Ok(shown)
+}
+
+/// A new, empty file under `<workspace>/.ferrule/spill/`, open for
+/// writing, and its workspace-relative path: where a spilled output goes,
+/// and a background job's (M57.6) as it runs.
+pub fn new_spill_file(workspace: &Path) -> Result<(std::fs::File, String), String> {
     let dir = workspace.join(SPILL_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {SPILL_DIR}: {e}"))?;
     // This runs in ferrule's own process, not the sandbox, and a sandboxed
@@ -181,13 +191,12 @@ fn save_spill(workspace: &Path, content: &str) -> Result<String, String> {
         .open(dir.join(".gitignore"))
         .and_then(|mut f| std::io::Write::write_all(&mut f, b"*\n"));
     let name = spill_file_name();
-    std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(dir.join(&name))
-        .and_then(|mut f| std::io::Write::write_all(&mut f, content.as_bytes()))
         .map_err(|e| format!("could not write {SPILL_DIR}/{name}: {e}"))?;
-    Ok(format!("{SPILL_DIR}/{name}"))
+    Ok((file, format!("{SPILL_DIR}/{name}")))
 }
 
 /// Shared, immutable context handed to every tool call.
@@ -247,6 +256,11 @@ pub trait Tool: Send + Sync {
     fn deferrable(&self) -> bool {
         false
     }
+    /// M57.6: the session this tool's agent serves ended (`ferrule run`
+    /// finished, `ferrule chat` exited or began anew): let go of what the
+    /// tool still holds, such as background jobs. A tool whose agent is
+    /// dropped without this (a gateway lane closing) does it on drop.
+    fn session_ended(&self) {}
 }
 
 /// M57.1: the tool that loads deferred tools' schemas. The registry
@@ -466,6 +480,13 @@ impl ToolRegistry {
     }
     pub fn remove(&mut self, name: &str) -> bool {
         self.tools.remove(name).is_some()
+    }
+    /// M57.6: tell every registered tool its session ended
+    /// ([`Tool::session_ended`]).
+    pub fn session_ended(&self) {
+        for tool in self.tools.values() {
+            tool.session_ended();
+        }
     }
     /// Add a dynamic layer. A registered tool shadows a source's tool of the
     /// same name, so nothing dynamic can replace `shell` or `write_file`.

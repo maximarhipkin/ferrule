@@ -840,6 +840,8 @@ impl Agent {
         let mut input = self.hook_input();
         input.reason = Some(reason.to_string());
         self.fire(tx, HookEvent::SessionEnd, input).await;
+        // M57.6: background jobs end with the session.
+        self.tools.session_ended();
     }
 
     /// Time a `provider.complete()` call and, if a ledger sink is attached,

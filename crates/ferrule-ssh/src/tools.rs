@@ -447,6 +447,14 @@ impl Tool for RemoteShellTool {
                 format!("command blocked by deny list: `{cmd}`"),
             ));
         }
+        // M57.6: background jobs are kept by the local shell only.
+        if args["background"].as_bool() == Some(true) {
+            return Err(failed(
+                "shell",
+                "background jobs run only in a local workspace, and this one is remote: nothing was started. \
+                 Here the shell runs commands that finish (a build, a test run), within its timeout",
+            ));
+        }
         let (code, mut text) = run_remote(&self.link, &cmd, self.timeout)
             .await
             .map_err(|e| failed("shell", e))?;
