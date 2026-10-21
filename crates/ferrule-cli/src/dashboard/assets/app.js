@@ -2685,14 +2685,16 @@
             el("div", { class: "row" }, el("label", { class: "cb" }, w2, "allow changes (send, edit)"), go2),
             el("p", { class: "muted small m0", text: "Tried once against the app before it's saved. A server that runs a program on this machine is added there, with ferrule mcp add." }))) });
     },
-    // The Safe (M52, was M50 C's tool-key panel): every key the bot
-    // holds — names, where each goes and what uses it, never a value.
-    // Add a new tool key, rotate any kept value, move a tool key's
-    // sites, remove a page-made one. One confirm card per change.
-    // `pre`: the name and sites the bot asked for (M54 §6.3), filled in on
-    // the first draw, with the key's field focused.
+    // The Safe (M52, was M50 C's tool-key panel): every credential the bot
+    // holds, grouped (M52.2) — where it's stored, where it may go, when it
+    // was saved, changed and last used — never a value. Rotate a kept
+    // value, move a tool key's sites, Delete any kind, add a tool key, and
+    // the history of key, config and approval changes by name. One confirm
+    // card per change. `pre`: the name and sites the bot asked for (M54
+    // §6.3), filled in on the first draw, with the key's field focused.
     toolKeyPanel(pre) {
       const box = el("div", { class: "stack" });
+      const when = (t) => (t === null || t === undefined ? tr("not recorded") : ago(t));
       const draw = async () => {
         let r;
         try { r = await api("/api/secrets"); } catch (e) { return sectionError(box, e); }
@@ -2709,54 +2711,101 @@
           const done = await act("secrets/add", body, save);
           if (done) { await draw(); sayFor(box.querySelector(".card button.primary"), done.said); }
         };
+        // Rotate and Sites open a field under the row; both redraw after.
+        const rotateBtn = (keyName, slot) => button("Rotate", { onclick: () => {
+          const v = el("input", { type: "password", name: "new", placeholder: "the new key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The new key" });
+          const go = el("button", { class: "primary", text: "Replace" });
+          go.onclick = async () => {
+            const val = v.value.trim();
+            const done = await act("secrets/rotate", { name: keyName, value: val && asSecret(val) }, go);
+            wipeSecrets(box);
+            if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
+          };
+          setKids(slot, el("div", { class: "row" }, v, go));
+          v.focus();
+        } });
+        const sitesBtn = (keyName, hosts, slot) => button("Sites", { onclick: () => {
+          const h = el("input", { name: "hosts", value: hosts.join(", "), autocomplete: "off", spellcheck: "false", "aria-label": "Sites it may be sent to" });
+          const go = el("button", { class: "primary", text: "Save sites" });
+          go.onclick = async () => {
+            const done = await act("secrets/hosts", { name: keyName, hosts: h.value.trim() }, go);
+            if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
+          };
+          setKids(slot, el("div", { class: "row" }, h, go));
+          h.focus();
+        } });
+        // One credential of the inventory (M52.2).
+        const item = (x) => {
+          const slot = el("div");
+          const env = x.id.startsWith("env:") ? x.id.slice(4) : null;
+          const del = x.deletable ? button("Delete", { kind: "danger", onclick: async (e) => {
+            const done = await act("secrets/delete", { id: x.id }, e.currentTarget);
+            if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
+          } }) : null;
+          const sent = x.hosts.length ? "sent only to " + x.hosts.join(", ") : "";
+          const last = x.last_used ? fill("last used %s", ago(x.last_used)) + (x.last_host ? " · " + x.last_host : "") : tr("last used: not recorded");
+          return el("div", { class: "item column" },
+            el("div", { class: "row" },
+              el("div", { class: "grow" },
+                el("div", { class: "t" }, el("span", { class: env ? "mono" : null, text: x.name }), el("span", { class: "muted small", dir: "auto", text: " · " + x.what })),
+                el("div", { class: "d", dir: "auto", text: [sent, x.hosts_note, "used by " + x.used_by.join(", ")].filter(Boolean).join(" · ") }),
+                el("div", { class: "d muted small", dir: "auto", text: "kept in " + x.stored }),
+                el("div", { class: "d muted small", dir: "auto", text: fill("saved %s", when(x.created)) + " · " + fill("changed %s", x.rotated ? ago(x.rotated) : tr("never")) + " · " + last + (x.last_note ? " (" + x.last_note + ")" : "") })),
+              env && x.rotatable ? rotateBtn(env, slot) : null,
+              env && x.hosts_editable ? sitesBtn(env, x.hosts, slot) : null,
+              del),
+            x.deletable ? null : el("div", { class: "muted small", dir: "auto", text: x.delete_note }),
+            slot);
+        };
+        // Without the config in this process: M52's flat list of kept keys.
         const row = (x) => {
           const slot = el("div");
-          const rotate = x.rotatable ? button("Rotate", { onclick: () => {
-            const v = el("input", { type: "password", name: "new", placeholder: "the new key", autocomplete: "new-password", "data-secret": "1", "aria-label": "The new key" });
-            const go = el("button", { class: "primary", text: "Replace" });
-            go.onclick = async () => {
-              const val = v.value.trim();
-              const done = await act("secrets/rotate", { name: x.name, value: val && asSecret(val) }, go);
-              wipeSecrets(box);
-              if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
-            };
-            setKids(slot, el("div", { class: "row" }, v, go));
-            v.focus();
-          } }) : null;
-          const move = x.hosts_editable ? button("Sites", { onclick: () => {
-            const h = el("input", { name: "hosts", value: x.hosts.join(", "), autocomplete: "off", spellcheck: "false", "aria-label": "Sites it may be sent to" });
-            const go = el("button", { class: "primary", text: "Save sites" });
-            go.onclick = async () => {
-              const done = await act("secrets/hosts", { name: x.name, hosts: h.value.trim() }, go);
-              if (done) { await draw(); sayFor(box.querySelector(".plain-list button"), done.said); }
-            };
-            setKids(slot, el("div", { class: "row" }, h, go));
-            h.focus();
-          } }) : null;
           return el("div", { class: "item column" },
             el("div", { class: "row" },
               el("div", { class: "grow" },
                 el("div", { class: "t mono", text: x.name }),
                 el("div", { class: "d", text: (x.hosts.length ? "sent only to " + x.hosts.join(", ") + " · " : "") + "used by " + x.used_by.join(", ") })),
-              rotate, move,
+              x.rotatable ? rotateBtn(x.name, slot) : null, x.hosts_editable ? sitesBtn(x.name, x.hosts, slot) : null,
               x.removable ? button("Remove", { kind: "danger", onclick: async (e) => { if (await act("secrets/remove", { name: x.name }, e.currentTarget)) draw(); } }) : (!x.rotatable ? tag("set on the machine") : null)),
             slot);
         };
+        const history = el("div", { class: "stack" });
+        const showHistory = async () => {
+          let h;
+          try { h = await api("/api/secrets/audit"); } catch (e) { return sectionError(history, e); }
+          setKids(history, h.events.length ? el("div", { class: "logwrap" }, h.events.map((x) =>
+            el("div", { class: "logline" },
+              el("span", { class: "when", text: String(x.at).replace("T", " ").slice(5, 19) }),
+              el("span", { class: "lvl audit", text: x.event }),
+              el("span", { class: "txt mono", dir: "auto", text: x.what + (x.by ? "  · " + x.by : "") }))))
+            : el("p", { class: "muted", text: h.available ? "No key, config or approval changes in the last 90 days." : "The history isn't available in this process." }));
+        };
+        const groups = r.groups ? r.groups.filter((g) => g.items.length).map((g) =>
+          el("section", { class: "stack" },
+            el("h3", { class: "m0", text: g.title }),
+            el("p", { class: "muted small m0", text: g.intro }),
+            el("div", { class: "plain-list" }, g.items.map(item)))) : null;
+        const hist = disc("safe-history", null, frag("History", el("span", { class: "muted small", text: " · key, config and approval changes, by name only" })),
+          el("div", { class: "details-body stack" }, history));
+        hist.addEventListener("toggle", () => { if (hist.open) showHistory(); });
+        if (hist.open) showHistory();
         setKids(box,
-          r.keys.length ? el("div", { class: "plain-list" }, r.keys.map(row)) : el("p", { class: "muted", text: "No keys yet — add the first one below. It's never shown again after you save it." }),
+          groups ? frag(...groups) : (r.keys.length ? el("div", { class: "plain-list" }, r.keys.map(row)) : el("p", { class: "muted", text: "No keys yet — add the first one below. It's never shown again after you save it." })),
           el("div", { class: "card stack" },
+            el("h3", { class: "m0", text: "Add a key for a tool" }),
             r.locked ? el("div", { class: "said bad msg", dir: "auto", text: r.locked }) : null,
-            !r.here ? el("div", { class: "said bad", text: "Open this page from your running bot (send it /dashboard) to add one: only the bot can tell whether a name is free." }) : null,
+            !r.here ? el("div", { class: "said bad", text: "Open this page from your running bot (send it /dashboard) to change keys: only the bot can tell whether a name is free." }) : null,
             el("label", { class: "field" }, el("span", { text: "Its name, as the tool's docs spell it" }), name),
             el("label", { class: "field" }, el("span", { text: "The key" }), value),
             el("label", { class: "field" }, el("span", { text: "Sites it may be sent to" }), sites,
               el("span", { class: "hint", text: "comma-separated: api.example.com, or *.example.com for all of its addresses" })),
             el("div", { class: "row" }, save),
-            el("p", { class: "muted small m0", text: "A key is never shown again after it's saved — Rotate replaces one without showing the old, Remove forgets it." })));
+            el("p", { class: "muted small m0", text: "A key is never shown again after it's saved — Rotate replaces one without showing the old, Delete forgets it." })),
+          hist);
         if (pre) { pre = null; value.focus(); }
       };
       draw();
-      connectPanel({ title: "Safe", intro: "Every key the bot holds: the brain's, the chat apps', tools'. Rotate a leaked one, move where one may be sent, or add a key for a command. Values never come back to this page, and the model never sees them.",
+      connectPanel({ title: "Safe", intro: "Every credential the bot holds: the brain's, the chat apps', connected services', tools' and its own. Rotate a leaked one, move where a tool key may be sent, delete any of them. Values never come back to this page, and the model never sees them.",
         body: box });
     },
     channelPanel(x) {

@@ -7887,3 +7887,60 @@ the media tools.
 
 **Open.** No media child has run against OpenRouter. A video a child
 starts is saved, not delivered; nothing tells the parent when it lands.
+
+### 2026-10-21 — M52.2: the Safe's inventory, last used, Delete for every kind, history (Claude, Opus 5.5)
+
+**Why.** Kimi's Safe could rotate a kept key and move a tool key's
+sites, but it listed only names in the secrets file and `[secrets]`,
+said nothing of connections, plan sign-ins or ferrule's own keys, had
+no dates or last use, and could remove only a page-made tool key.
+
+**Where keys live (traced first).** Provider keys and channel tokens
+are values in `private/secrets.env` under the config's `*_env` names
+(`models_page::provider_save`, `channels::card::save`); connections and
+plan sign-ins are sealed files under `private/`; a name may also come
+from the environment. The page says which, per entry.
+
+**What changed.**
+- `ferrule-proxy`: `server::Secret.name`; `Broker::on_use` gets a
+  `SecretUse {name, host}` for each bound secret a request carries where
+  it's swapped (credential headers, `Basic` included, allowed URLs), on
+  both the intercepted HTTPS and the plain-HTTP paths;
+  `Broker::unbind`.
+- `ferrule-cli`:
+  - `secret_meta.rs` (new): `secrets.meta.json` beside the secrets file,
+    names and times only: created, rotated, last used and host (written
+    at most once a minute per name). `secrets::set`/`remove` stamp it.
+    `shared_broker` registers the use hook.
+  - `dashboard/safe.rs` (new): `GET secrets` gains `groups` (model
+    providers with the ledger's last call per provider, the ChatGPT
+    sign-in, the Claude token; channels; connections; `[secrets]`;
+    system: unclaimed kept names, the relay key, the sealing key, the
+    proxy CA, the page's sign-ins); `POST secrets/delete {id}` for every
+    kind (a value from the file, the process env and the proxy; a
+    connection disconnected; a plan sign-in's file deleted; every page
+    session ended), refusing env-set names and the sealing key and CA
+    with the reason; `GET secrets/audit`, the by-name history.
+  - `tool_keys.rs`: rotate rebinds a `[secrets]` key in the proxy;
+    `used_by`, `named_in`, `locked` shared with `safe.rs`.
+  - `app.js`: the Safe panel draws the groups with saved, changed and
+    last-used lines, Delete or its reason, and a History fold;
+    `lang-he.js` has the five new words.
+- Docs: `m52-dashboard-safe.md` ("M52.2", with M52.3 noted as M54's
+  `secret_request`), `dashboard.md` (Safe), the roadmap.
+
+**Smallest change on another surface.** `secrets.rs` (M54's): two calls
+to `secret_meta` after a successful write or removal.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean; `node --check` on `app.js`.
+
+**Open.** Not opened from a real browser; the use hook not watched on a
+real proxied request. Keys saved before M52.2 have no dates until their
+next write. Channel and connection tokens have no last use (ferrule's own
+clients send them). Deleting the ChatGPT sign-in from the page doesn't
+revoke it at OpenAI (`ferrule logout chatgpt` does). The old value isn't
+kept encrypted for N days after a rotation (the report's grace period):
+rotation still replaces it outright.

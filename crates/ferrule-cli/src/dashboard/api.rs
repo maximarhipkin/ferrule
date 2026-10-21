@@ -111,7 +111,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "setup" => super::setup::view(ctx),
             "connections" => connections(ctx).await,
             "connections/checklist" => connections_checklist(ctx).await,
-            "secrets" => super::tool_keys::list(ctx),
+            "secrets" => super::safe::list(ctx),
+            "secrets/audit" => super::safe::audit_view(ctx),
             "models" => models(ctx),
             "models/choices" => super::models_page::choices(ctx),
             "models/provider/list" => super::models_page::provider_list(ctx, req).await,
@@ -196,6 +197,7 @@ async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
         "secrets/remove" => super::tool_keys::remove(ctx, body),
         "secrets/rotate" => super::tool_keys::rotate(ctx, body),
         "secrets/hosts" => super::tool_keys::hosts_edit(ctx, body),
+        "secrets/delete" => super::safe::delete(ctx, body).await,
         "connections/key" | "connections/test" | "connections/cancel" | "connections/address" => {
             connection_key_op(ctx, path, body).await
         }

@@ -39,6 +39,7 @@ mod plan;
 mod plugins_cli;
 mod probe;
 mod remote;
+mod secret_meta;
 mod secrets;
 mod self_extend;
 mod self_service;
@@ -2098,6 +2099,8 @@ pub(crate) fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Brok
     let broker = Broker::start(broker_config(cfg)?, |name| std::env::var(name).ok())?;
     if let Some(b) = &broker {
         egress::report_denials(b, ledger::build_sink(cfg));
+        // M52.2: the Safe's "last used" (name and host, never a value).
+        b.on_use(|u| secret_meta::used(&u.name, &u.host));
     }
     // A racing caller's broker is dropped (and stopped) here; both get the winner.
     Ok(BROKER.get_or_init(|| broker).as_ref())

@@ -22,6 +22,7 @@ mod page_tests;
 pub mod panel;
 mod public;
 pub mod runs;
+mod safe;
 mod sealed;
 pub mod setup;
 mod telegram;

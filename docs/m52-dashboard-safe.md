@@ -123,3 +123,73 @@ Reading values back (never), per-key spend caps (the ledger's job), a
 system-keychain backend (the secrets file stays the one store),
 rotating the dashboard's own sign-in from the page (Settings already
 has sign-out; a sign-in change stays a `ferrule setup` act).
+
+## M52.2 — the whole inventory, last used, Delete, history (2026-10-21)
+
+From the 2026-10-20 gap analysis (M52.2). Built on `autopilot`. Kimi's
+rotate and edit-hosts (parts 1 and 2 above) were already in; this adds
+the rest of the Safe page. M52.3 (`secret_request`) is M54's
+`secret_request` op, which opens this panel with the name and sites
+filled in (`docs/m54-autonomous.md` §6.3); nothing was rebuilt for it.
+
+**Where each kind is stored, traced in the code** (the gap analysis's
+open question). A provider's key and a channel's tokens are values in
+`private/secrets.env` under the names the config gives them:
+`models_page::provider_save` calls `secrets::set(&place.secrets,
+&w.key_env, k)` and writes only `api_key_env` (the name) into
+`[providers.X]`; `channels::card::save` sets each typed secret in the
+same file and writes `*_env` names into `[gateway…]`. A `[secrets]`
+tool key is a value in that file plus its hosts in the config.
+Connections are sealed (AES-256-GCM) in
+`private/connections/connections.json`, plan sign-ins in
+`private/plans/chatgpt.json` and `claude-code.json`, all under
+`private/connections.key` (or `$FERRULE_CONNECTIONS_KEY`). A name can
+also come from the environment ferrule was started with; the page shows
+that and can't change it.
+
+- **Inventory** (`dashboard/safe.rs`, `GET secrets` gains `groups`;
+  `keys` stays as it was for the chat's `secrets` op): Model providers,
+  Channels, Connected services, Tool keys, System. Each entry: where it
+  is kept, the hosts it goes to (a tool key's proxy list; a provider's
+  address, which ferrule calls itself; a channel's API host), what uses
+  it, saved and changed dates, last use, and Delete or why not. No
+  value, no reveal, in the answer or the page.
+- **Dates.** `secret_meta.rs` keeps `secrets.meta.json` beside the
+  secrets file (in the private dir the sandbox hides): per name, when it
+  was first written, when its value last changed, and its last use and
+  host. `secrets::set` and `remove` stamp it (two lines in M54's
+  `secrets.rs`). A key saved before M52.2 shows "not recorded" until its
+  next write; connections and plan sign-ins have their own dates.
+- **Last used.** `ferrule-proxy` hands `Broker::on_use` a
+  `SecretUse {name, host}` whenever a request carries a bound secret's
+  placeholder where it's swapped (a credential header, `Basic`
+  credentials included, or an allowed URL). The process writes it at
+  most once a minute per name. A provider's key goes from ferrule's own
+  process, not the proxy, so its last use is also read from the ledger's
+  last 512 KB (the provider's newest row); channel tokens and connection
+  tokens are said to be untracked.
+- **Delete for every kind** (`POST secrets/delete {id}`, one confirm
+  card naming what stops working, audited as
+  `dashboard.secret.delete` by name): a kept value leaves the secrets
+  file, this process's environment and the proxy (`Broker::unbind`),
+  and a page-shaped `[secrets]` entry goes with it; a connection is
+  disconnected (its grant revoked where the service allows); the
+  ChatGPT sign-in's file and the Claude setup-token are deleted; the
+  page's sign-ins all end. A name set in the environment can't be
+  deleted from the page, and says so. The sealing key and the proxy's CA
+  have no Delete: the first would orphan every sealed connection and
+  sign-in, and the second holds no key of the owner's and every running
+  command trusts it.
+- **Rotate goes live in the proxy too**: rotating a `[secrets]` key now
+  rebinds it (`Broker::bind`), so commands get the new value at once
+  instead of after a restart.
+- **History** (`GET secrets/audit`): `dashboard.secret.*`,
+  `self_service.secret*`, `config_*`, `approval_*`, `channel.*` and the
+  sandbox switch from the last 90 days, newest first, 200 at most, each
+  as its time, event, the name it concerns (a key's name, config
+  sections, an approval's op) and who.
+
+**Not verified live.** Not opened from a real phone; the use hook has
+not been watched on a real proxied request. A ChatGPT sign-out from the
+page deletes the local sign-in without asking OpenAI to revoke it
+(`ferrule logout chatgpt` does both).

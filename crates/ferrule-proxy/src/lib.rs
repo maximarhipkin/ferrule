@@ -91,6 +91,13 @@ pub struct BrokerConfig {
     pub egress: Option<EgressPolicy>,
 }
 
+/// M52.2: `secret.used {name, host}`, what [`Broker::on_use`] hears.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretUse {
+    pub name: String,
+    pub host: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SecretInfo {
     pub name: String,
@@ -149,12 +156,13 @@ impl Broker {
         for (name, hosts, real, in_url) in active {
             let placeholder = placeholder::placeholder(&seed, &name, &real);
             infos.push(SecretInfo {
-                name,
+                name: name.clone(),
                 hosts: hosts.clone(),
                 placeholder: placeholder.clone(),
                 in_url,
             });
             secrets.push(server::Secret {
+                name,
                 hosts,
                 placeholder,
                 real,
@@ -204,6 +212,7 @@ impl Broker {
             tool_auth: format!("{}:{token}", Source::Tool.user()).into_bytes(),
             egress: cfg.egress,
             deny_hook: RwLock::new(None),
+            use_hook: RwLock::new(None),
             denials: Default::default(),
             reported: Default::default(),
             ca,
@@ -266,6 +275,7 @@ impl Broker {
                     s.in_url = rule.in_url;
                 }
                 None => live.push(server::Secret {
+                    name: name.to_string(),
                     hosts,
                     placeholder,
                     real: real.to_string(),
@@ -282,6 +292,21 @@ impl Broker {
             tracing::warn!("{w}");
         }
         Ok(warnings)
+    }
+
+    /// M52.2: stop swapping `name` in (every value it was bound with), for
+    /// a key deleted while running. Commands that hold its placeholder
+    /// send a useless string from now on. Whether it was bound.
+    pub fn unbind(&self, name: &str) -> bool {
+        self.shared
+            .secrets
+            .write()
+            .unwrap()
+            .retain(|s| s.name != name);
+        let mut infos = self.secrets.write().unwrap();
+        let before = infos.len();
+        infos.retain(|s| s.name != name);
+        infos.len() != before
     }
 
     pub fn warnings(&self) -> &[String] {
@@ -338,6 +363,13 @@ impl Broker {
     /// egress policy refuses a request: the ledger row and audit event.
     pub fn on_deny(&self, hook: impl Fn(&Denial) + Send + Sync + 'static) {
         *self.shared.deny_hook.write().unwrap() = Some(Arc::new(hook));
+    }
+
+    /// M52.2: called when a request carries a bound secret's placeholder
+    /// to one of its hosts, the swap about to happen: the secret's name
+    /// and the host, never a value. Per request; the hook throttles.
+    pub fn on_use(&self, hook: impl Fn(&SecretUse) + Send + Sync + 'static) {
+        *self.shared.use_hook.write().unwrap() = Some(Arc::new(hook));
     }
 
     /// Requests refused since start.

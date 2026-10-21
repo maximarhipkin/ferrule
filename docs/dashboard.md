@@ -228,6 +228,21 @@ decisions are in [m50-connect.md](m50-connect.md).
   covers it); **Remove** forgets a page-made one. Rotate needs the page
   opened from the running bot (`/dashboard`) and asks once with a card
   that says what breaks if the new key is wrong. Values never come back.
+  Since M52.2 the Safe is the whole inventory, in five groups: **Model
+  providers** (each provider's key, the ChatGPT sign-in, the Claude
+  setup-token), **Channels** (each channel's tokens), **Connected
+  services** (each connection's sealed sign-in or key), **Tool keys**
+  (`[secrets]`) and **System** (kept keys no setting claims, the relay's
+  key, the sealing key, the proxy's CA, the page's own sign-ins). Each
+  says where it's kept (the secrets file, the environment ferrule started
+  with, or a sealed file), the sites it goes to, when it was saved and
+  changed, and when it was last used: the proxy's last swap
+  (`secret.used`), or for a provider key its last model call in the
+  ledger. **Delete** works for every kind (a connection is disconnected,
+  a plan signed out, the page's sign-ins all ended); the two it doesn't
+  offer, the sealing key and the proxy's CA, say why. **History** lists
+  key, config and approval changes of the last 90 days by name only.
+  Details: [m52-dashboard-safe.md](m52-dashboard-safe.md), "M52.2".
 - **Discord and Slack** have cards like the other channels: token(s),
   allowed users and channels, **Test** (Discord's gives the link that
   invites the bot to your server), **Save and turn on**. The page doesn't

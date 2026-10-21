@@ -1156,6 +1156,15 @@ priced in the ledger, capped per day, and surviving a gateway restart.
 paste, the bot answers on the new key without a restart, and the audit
 log shows the act by name only.
 
+**Follow-ups from the gap analysis, on `autopilot`** (2026-10-21):
+- **M52.3** (`secret_request`) is done by M54's `secret_request` op,
+  which opens the Safe prefilled (`docs/m54-autonomous.md` §6.3).
+- **M52.2**: the Safe is the whole inventory (model providers,
+  channels, connected services, tool keys, system) with where each is
+  kept, its sites, saved and changed dates, last use (the proxy's
+  `secret.used`, the ledger for provider keys), Delete for every kind and
+  a by-name history (`docs/m52-dashboard-safe.md`, "M52.2").
+
 ### M53 — contrastive probing
 
 **Status.** Built (`docs/m53-contrastive-probing.md`; the probe gate is
@@ -1342,9 +1351,10 @@ Current State; numbers are claimed there before anything is built.
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
     key fields in the dashboard, the Safe page, `secret_request`, safe
     config editing, a chat paste guard, step-up auth) and to M54
-    (M54.1–M54.7). M52.1 and M52.5 are built on `autopilot`
-    (`docs/m22-dashboard.md`, "Threat model"; `docs/channels.md`, "Keys
-    pasted into a chat").
+    (M54.1–M54.7). M52.1, M52.2 and M52.5 are built on `autopilot`
+    (`docs/m22-dashboard.md`, "Threat model"; `docs/m52-dashboard-safe.md`,
+    "M52.2"; `docs/channels.md`, "Keys pasted into a chat"); M52.3 is
+    M54's `secret_request`.
 
 **Still open from earlier tracks.**
 
