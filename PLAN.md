@@ -7184,3 +7184,39 @@ assertions were updated where a signature or a count changed
   English-only message matching; `mcp_add` card pre-checks and the
   duplicated `${...}` scanner; `keys::bind`'s router order against Admin;
   `Command::new` outside tests re-grepped for a spawn the table misses.
+
+### 2026-10-21 — M54 follow-up: the owner's Telegram groups get owner mode (Claude, Opus 5.5)
+
+**Why.** The owner talks to the bot from their private chat and from
+several Telegram groups, with no one else. M54 treated every group as
+someone else's chat (`workspace-write`, approvals, no `ferrule_admin`, no
+transcripts), so the groups never got owner mode.
+
+**What changed.**
+- `TelegramChannel::with_only_owner_in_groups` (`ferrule-gateway`
+  `channels/telegram.rs` `admits`): in an allowed group, only a message
+  whose sender id is the owner's private chat id gets in. That includes
+  button taps; an anonymous admin or anyone else is ignored (debug log).
+  With no owner chat, no group message gets in. `main.rs` turns it on
+  whenever `owner_mode::wanted(cfg)`.
+- `owner_mode::owner_chat` counts a Telegram group (`owner_group`, a
+  negative chat id) as the owner's. `owner_tree` is only asked in owner
+  mode, where the sender check holds.
+- `gateway_factory` gives a group `ferrule_admin` when owner mode is on
+  (`Admin::autonomous`). No cards are shown there; login and key links
+  still go to the private chat (`send_link`).
+- `docs/sandbox.md` "Other people's chats" says so.
+
+**Dropped.** A guest-isolation design (separate folders, memory and
+claude state per guest; no MCP for guests; per-tree hooks) was written
+and approved, then shelved when the owner said no one else will use the
+bot. It is in the session notes, not the repo. Its findings matter only
+if someone else is allowed in. Guests would share the owner's
+`memory.db` through the in-process memory tools, and on the Claude plan
+engine a guest's claude can read running owner turns' bridge tokens in
+the shared config dir. Also, the supervisor keeps one hook set per
+process, which is the last root attached.
+
+**Checked.** `make check` passed on macOS (1881 passed, 0 failed, 28
+ignored). No test was added (not asked). No live run on the Linux
+server yet.
