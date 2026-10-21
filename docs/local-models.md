@@ -48,7 +48,7 @@ for servers on the usual ports, in parallel, 0.7 s each:
 |---|---|---|
 | Ollama | `OLLAMA_HOST`, else `127.0.0.1:11434` | `/api/version` |
 | llama.cpp | `127.0.0.1:8080` | `/props` |
-| LM Studio | `127.0.0.1:1234` | `/api/v1/models` (0.4), `/api/v0/models` (0.3) |
+| LM Studio | `127.0.0.1:1234` | `/api/v1/models` (0.4), `/api/v0/models` (0.3) whose entries carry a `state` |
 | vLLM | `127.0.0.1:8000` | `/v1/models` with `owned_by: "vllm"` |
 
 Each one it finds is offered first ("Ollama 0.34.4 at 127.0.0.1:11434 ·

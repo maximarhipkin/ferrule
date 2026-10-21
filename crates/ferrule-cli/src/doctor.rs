@@ -669,7 +669,11 @@ async fn providers(
         }
         free_model(r, &label, &p.model);
         match probe::models(http, &p.base_url, &value, p.profile == "anthropic").await {
-            Ok(models) if models.is_empty() || models.contains(&p.model) => {
+            // Ollama lists `qwen3-coder:latest` for a config's `qwen3-coder`.
+            Ok(models)
+                if models.is_empty()
+                    || models.iter().any(|m| crate::local::same_model(m, &p.model)) =>
+            {
                 r.ok("provider", format!("{label} · {from} works"));
             }
             Ok(_) => {

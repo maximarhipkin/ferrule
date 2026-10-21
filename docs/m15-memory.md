@@ -223,8 +223,12 @@ the summary, as before M15):
    [ferrule: an older tool result (read_file, 48213 chars) was shortened to save context. It began:
    <first 600 chars>
    …
-   The full text is still in this session's history: search_history {"ref": "r9f3a1c2e4b5d6a7b"}]
+   The full text is still in this session's history: search_history {"ref": "r9f3a1c2e4b5d6a7b"} returns it, or call read_file again. Not recall: that searches long-term memory, not this conversation.]
    ```
+
+   The last sentence was added on 2026-10-21: after a compaction a local
+   model (qwen3-coder 30B) called `recall` for this session's data and
+   lost it (see stage 3's note below);
 
    The ref is `r` + 16 hex digits of the FNV-1a-64 hash of the original
    text. It's content-addressed, so it doesn't depend on message positions,
@@ -236,7 +240,13 @@ the summary, as before M15):
    stage 2 was enough, which saves a provider call and keeps more of the
    history verbatim. When it does run, the summary message also lists the
    refs of the shortened results it folded (up to 20), so the pointer
-   survives the fold.
+   survives the fold. When the agent has `search_history`, the summary
+   also ends with a `[Getting earlier detail back]` note: an exact detail
+   comes back from `search_history {"query": …}` or by running the tool
+   again, and `recall` is long-term memory, not this conversation
+   (2026-10-21; `RECOVER_NOTE` in `ferrule-core/src/agent.rs`). The
+   `recall` and `search_history` tool descriptions say the same about
+   each other.
 
 Shortening only happens when the agent can fetch the result back: when it
 has a transcript and a `search_history` tool. An ephemeral agent (no

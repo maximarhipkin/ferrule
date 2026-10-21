@@ -1141,6 +1141,33 @@ pub fn kill_process_group(pgid: u32) {
 #[cfg(not(unix))]
 pub fn kill_process_group(_pgid: u32) {}
 
+/// Linux: `cmd`'s process gets SIGKILL from the kernel when the thread
+/// that started it ends, ferrule exiting or killed among the ways, so a
+/// one-shot check's child can't outlive it (`PR_SET_PDEATHSIG`). Other
+/// systems have no such setting: a no-op there.
+#[cfg(target_os = "linux")]
+pub fn die_with_parent(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: prctl, getppid and _exit only, which a post-fork child may
+    // call.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The parent went before the line above took effect.
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn die_with_parent(_cmd: &mut std::process::Command) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1448,6 +1448,17 @@ Current State; numbers are claimed there before anything is built.
   are git-ignored and hidden from guests' sessions. No mouse, keyboard
   or app control. Built on `autopilot`, not run live
   (`docs/m61-screen.md`).
+- **Wave A, after the 2026-10-21 test phase** (one commit per task on
+  `autopilot`; the re-audit's follow-ups):
+  - **Test-phase fixes**: shortened results and compaction summaries say
+    how to get content back (`search_history`, or run the tool again)
+    and that `recall` is long-term memory, not this conversation, and the
+    two tools' descriptions say the same (`docs/m15-memory.md` §6; needs
+    an eval A/B on a real model); doctor treats Ollama's `:latest` as
+    implied; LM Studio is recognised by its `state` field, so the eval's
+    mock isn't; the Chrome launch check is killed on timeout or drop, on
+    Linux as a process group that dies with ferrule (`docs/browser.md`);
+    `docs/eval.md`'s sample report is marked illustrative.
 
 **Still open from earlier tracks.**
 

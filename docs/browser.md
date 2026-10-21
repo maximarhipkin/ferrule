@@ -23,7 +23,15 @@ From the chat, once it's installed: "turn the browser on" is
 change; a managed bot whose image has no browser refuses it.
 
 `ferrule doctor` shows what it found and why the browser can't run, if it
-can't. The agent's tools are `mcp__browser__agent_browser_*`: open, snapshot,
+can't. That launch check (setup's and doctor's) gives Chrome 20 seconds
+to print `about:blank` and kills it when it's done, times out or the
+check is abandoned (`launch_test` in `ferrule-mcp/src/browser.rs`). On
+Linux Chrome runs in its own process group, so the kill reaches its
+helpers too, and the kernel kills it if ferrule itself goes away
+mid-check (`PR_SET_PDEATHSIG`). macOS and Windows have no such signal:
+there Chrome stays in ferrule's process group, so a Ctrl-C at the
+terminal reaches both, but a Chrome that hangs can outlive a ferrule
+killed some other way. The agent's tools are `mcp__browser__agent_browser_*`: open, snapshot,
 click, fill, type, press, select, scroll, wait, get_text, get_url, get_title,
 eval, screenshot, back/forward/reload and tabs.
 

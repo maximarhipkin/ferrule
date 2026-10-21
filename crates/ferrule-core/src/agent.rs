@@ -2486,6 +2486,13 @@ impl Agent {
             summary_msg.push_str("\n\n");
             summary_msg.push_str(memory);
         }
+        // How to get an exact detail back. Without it a model reached for
+        // `recall` (long-term memory) after a fold and lost the data
+        // (qwen3-coder 30B, evals/starter release-notes, 2026-10-21).
+        if self.transcript.is_some() && self.tools.contains(SEARCH_HISTORY) {
+            summary_msg.push_str("\n\n");
+            summary_msg.push_str(RECOVER_NOTE);
+        }
         summary_msg.push_str("\n\nContinue from here.");
         let summary_message = Message::user(summary_msg);
         rebuilt.push(summary_message.clone());
@@ -2648,7 +2655,8 @@ impl Agent {
             let replacement = format!(
                 "{SHORTENED_PREFIX}{tool}, {} chars) was shortened to save context. It began:\n\
                  {preview}\n…\nThe full text is still in this session's history: \
-                 search_history {{\"ref\": \"{}\"}}]",
+                 search_history {{\"ref\": \"{}\"}} returns it, or call {tool} again. \
+                 Not recall: that searches long-term memory, not this conversation.]",
                 text.chars().count(),
                 result_ref(text)
             );
@@ -2754,6 +2762,15 @@ fn is_summary(m: &Message) -> bool {
             .as_deref()
             .is_some_and(|c| c.starts_with(SUMMARY_HEADER))
 }
+
+/// What a summary ends with when the history can be searched: how to get
+/// an exact detail back, and that `recall` is the wrong place to look.
+const RECOVER_NOTE: &str = "[Getting earlier detail back] The summary above replaced \
+earlier messages; their full text, tool results included, is still in this session's \
+history. For an exact detail (a number, a line, a file's text): search_history \
+{\"query\": \"<words>\"} searches this conversation, or run the tool again (read the \
+file again, repeat the command). recall searches long-term memory saved across \
+sessions, not this conversation, so it won't have what was read here.";
 
 /// How a shortened tool result starts: `[ferrule: an older tool result (`
 /// + tool name, size, preview and the `search_history` reference.

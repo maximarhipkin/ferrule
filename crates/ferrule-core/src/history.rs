@@ -260,10 +260,12 @@ impl Tool for SearchHistoryTool {
         ToolDefinition {
             name: SEARCH_HISTORY.into(),
             description:
-                "Search this session's full history, including the parts that were \
-                compacted out of your context. {\"query\": words} finds the messages containing \
-                them (user, assistant and tool results), newest first. {\"ref\": \"r…\"} \
-                returns a shortened tool result in full; add \"offset\" to page through a long one."
+                "Search this session's full history (this conversation), including the parts \
+                that were compacted or shortened out of your context. {\"query\": words} finds the \
+                messages containing them (user, assistant and tool results), newest first. \
+                {\"ref\": \"r…\"} returns a shortened tool result in full; add \"offset\" to page \
+                through a long one. For something read or said earlier in this conversation, use \
+                this, not recall (long-term memory)."
                     .into(),
             parameters: json!({
                 "type": "object",

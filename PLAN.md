@@ -8762,3 +8762,86 @@ servers, ssh and TCP database clients stop working under it (documented,
 with the tunnel). The audit log grows by one line per destination a
 minute; nothing prunes it. `ferrule trust audit` now lists `egress`
 events among the rest.
+
+### 2026-10-21 — Wave A, task 1: fixes from the test phase (Claude, Opus 5.5)
+
+Starts improvement wave A in the `autopilot` worktree, after `main`
+(`d8d2547`, PR #53) was merged in (a fast-forward). The wave's tasks
+come from the evening re-audit (`research_notes/Ferrule agent gap
+analysis/reaudit_2026-10-21.md`, Part 1 follow-ups and Part 3) and
+today's test phase. No milestone number: each task is a follow-up of
+the milestone it names. Touches `ferrule-sandbox` (M54's surface) with
+one helper, `die_with_parent`, for (d).
+
+**Why.** The test phase passed everything, with five findings:
+- (a) On a real model (qwen3-coder 30B through Ollama), after a
+  compaction and "shortened: N old tool results", the model called
+  `recall` (long-term memory) for this session's data instead of
+  `search_history` or reading the files again, and failed evals/starter
+  release-notes.
+- (b) `ferrule doctor` warned that the provider doesn't list
+  `qwen3-coder` while Ollama listed `qwen3-coder:latest` (an exact
+  `contains`).
+- (c) Doctor labelled the eval's mock model "LM Studio": any
+  `/api/v0/models` answer counted, and the mock answers every
+  `…/models` path.
+- (d) The Chrome launch check could leave a headless Chrome behind
+  when ferrule went away mid-check.
+- (e) `docs/eval.md`'s sample report no longer matched a run
+  (release-notes showed `2×compact` and about 98k tokens).
+
+**What changed.**
+- (a) `ferrule-core` `agent.rs`: a shortened tool result now ends "…
+  search_history {"ref": …} returns it, or call <tool> again. Not
+  recall: that searches long-term memory, not this conversation." A
+  compaction summary, when the agent has a transcript and
+  `search_history`, ends (before "Continue from here.") with
+  `RECOVER_NOTE`: the full text is in this session's history, an exact
+  detail comes back from `search_history {"query": …}` or by running
+  the tool again, and `recall` is long-term memory, not this
+  conversation. `search_history`'s description says it is this
+  conversation and to use it, not `recall`; `recall`'s (both variants)
+  says it holds facts saved with `remember` across sessions, not this
+  conversation. Only placeholder, summary and tool-description text
+  changed: nothing earlier in a running session's prefix is rewritten
+  (the placeholder is written where shortening already rewrote the
+  message). The `search_history {"ref": "` marker the fold's ref list
+  and the history test parse is unchanged.
+- (b) `local::same_model` is public; doctor's provider check accepts a
+  listed model equal to the configured one once Ollama's `:latest` is
+  taken off, as `local::Server::model` already did.
+- (c) `local::identify` takes an `/api/v0/models` answer as LM Studio
+  only when every entry has LM Studio's `state` field; the mock (and
+  any other OpenAI-shaped list there) falls through to "isn't Ollama,
+  llama.cpp, LM Studio or vLLM".
+- (d) `ferrule-mcp` `browser::run_headless`: the child is wrapped in
+  `Reaped`, whose drop kills and reaps it, so the timeout, an error, a
+  panic or an abandoned check all end it; after a normal exit it's
+  dropped before the pipe reads are joined. On Linux it runs in its own
+  process group (the kill reaches its helpers) and gets
+  `PR_SET_PDEATHSIG` (`ferrule_sandbox::die_with_parent`, new, a no-op
+  elsewhere) so the kernel kills it if ferrule goes away. On macOS and
+  Windows it stays in ferrule's group, where a terminal Ctrl-C reaches
+  both. The 20 s bound (`LAUNCH_TIMEOUT`) was already there.
+- (e) `docs/eval.md`: the sample report is marked illustrative (a
+  2026-09-24 mock run) with today's release-notes numbers as the
+  example of drift.
+- Docs: `m15-memory.md` §6 (the placeholder and the summary's note),
+  `local-models.md` (LM Studio recognised by `state`), `browser.md`
+  (what the launch check cleans up, per OS), `eval.md`, the roadmap.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.**
+- (a) needs an eval A/B on a real model before it counts as a fix:
+  `ferrule --config eval-ollama.toml eval run evals/starter --tag
+  context --repeat 3` on qwen3-coder 30B through Ollama (`docs/eval.md`),
+  before and after this commit. The `recall` and `search_history`
+  descriptions are in every request's tool list, so the eval's token
+  counts shift a little.
+- (d) On macOS and Windows a Chrome that hangs can still outlive a
+  ferrule killed by a signal it can't handle; Linux's
+  `die_with_parent` is CI-compiled only (this Mac doesn't build it).

@@ -214,8 +214,13 @@ stopped run still compares like with like.
 
 ### What the report looks like
 
-This is the smoke A/B against the mock model, from the real binary. Progress
-lines go to stderr; the report goes to stdout.
+This is the smoke A/B against the mock model, from the real binary, on
+2026-09-24. Progress lines go to stderr; the report goes to stdout. **The
+numbers are illustrative**: every change to the prompt, the tool
+descriptions or compaction moves them, so read the layout, not the figures.
+In the 2026-10-21 test phase, for example, release-notes showed
+`2×compact` and about 98k tokens (PLAN.md, that day's "Fixes from the test
+phase" entry).
 
 ```
 ▶ fix-median--engineered
