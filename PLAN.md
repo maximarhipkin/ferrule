@@ -7096,9 +7096,12 @@ Its findings are folded in:
 The macOS (Seatbelt) side wasn't checked in that pass.
 
 **Status.** Design approved by the owner (2026-10-20). Built 2026-10-21 in
-ten tasks, none committed (the owner's rules: no commit unless asked).
-The code (tasks 1 to 9) is staged; task 10's docs are working-tree
-changes, not yet staged. Design, with the rulings made while building:
+ten tasks and, at the owner's choice, merged into local `main` (not
+pushed) after merging main's PR #48 and PR #47 into the branch; `make
+check` there: 1881 passed, 0 failed, 28 ignored. The merge with autopilot
+also closed two leaks it brought: `shell_job tail` and its status line
+read a job's log in ferrule's own process, so a log swapped for a link
+to a hidden file gave away its content or size. Design, with the rulings made while building:
 `docs/m54-autonomous.md`; user docs: `docs/sandbox.md`, "Owner mode".
 
 **Built, by task.**

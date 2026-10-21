@@ -1,12 +1,11 @@
 # M54 — protected autonomous mode
 
-Status: **built 2026-10-21; code staged, not committed.** Design approved by the owner
+Status: **built 2026-10-21, merged into local `main` (not pushed).** Design approved by the owner
 (2026-10-20). All ten tasks of the build plan below are done. No test was added (the owner's rule).
-`make check` passed on macOS (1844 passed, 0 failed, 28 ignored) with one environment override: the
-eval starter-suite test needs commit signing off, because the owner's global git config signs
-through 1Password (M54 doesn't touch that). The Linux-only owner-mode code (`ferrule-sandbox`
-`linux.rs`, `supervisor.rs`, the `cfg(linux)` apply call) has **not been compiled yet**: a Linux
-`cargo check` or a CI run is needed before merge, and no live run has happened. The design below has been corrected where the build changed it; every correction
+After merging main's M51–M53 (PR #48) and autopilot (PR #47), `make check` passes on macOS:
+1881 passed, 0 failed, 28 ignored. The Linux-only owner-mode code (`ferrule-sandbox` `linux.rs`,
+`supervisor.rs`, the `cfg(linux)` apply call) has **not been compiled yet**: a Linux `cargo check`
+or a CI run is needed before it ships, and no live run has happened. The design below has been corrected where the build changed it; every correction
 is listed in "Corrections made while building". The code locations in the design are from `main`
 at `dadf357`. The user guide is the "Owner mode" section of [sandbox.md](sandbox.md).
 
