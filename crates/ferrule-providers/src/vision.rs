@@ -1,5 +1,7 @@
 //! Photos on the wire (M47): which models see them, and how a driver turns
-//! a photo's path into pixels or a note.
+//! a photo's path into pixels or a note. M60: a tool result's images go the
+//! same way, inside the result where the API allows it (Anthropic), else in
+//! a user message right after the results, marked as tool output.
 //!
 //! History holds paths. The driver that serves a call loads each photo that
 //! is one of the newest few ([`ferrule_core::vision::pixel_set`]), checks it
@@ -9,12 +11,13 @@
 use base64::Engine;
 use ferrule_core::error::{CoreError, FailureClass};
 use ferrule_core::message::{ImageRef, Message};
-use ferrule_core::vision::{note, NoteWhy};
+pub use ferrule_core::vision::sniff;
+use ferrule_core::vision::{note_for, NoteWhy};
 use std::collections::HashSet;
 
 /// The most a photo may weigh on the wire. The page shrinks photos to well
 /// under this before they get here; it's the backstop.
-pub const MAX_BYTES: usize = 3_500_000;
+pub const MAX_BYTES: usize = ferrule_core::vision::MAX_IMAGE_BYTES;
 
 /// One photo, as a driver will send it.
 #[derive(Debug, PartialEq)]
@@ -36,17 +39,51 @@ pub(crate) fn parts(
         .enumerate()
         .map(|(j, img)| {
             if !sees {
-                Part::Note(note(img, NoteWhy::TextOnly))
+                Part::Note(note_for(msg, img, NoteWhy::TextOnly))
             } else if !pixels.contains(&(idx, j)) {
-                Part::Note(note(img, NoteWhy::Older))
+                Part::Note(note_for(msg, img, NoteWhy::Older))
             } else {
                 match load(img) {
                     Ok((mime, data)) => Part::Pixels { mime, data },
-                    Err(why) => Part::Note(note(img, why)),
+                    Err(why) => Part::Note(note_for(msg, img, why)),
                 }
             }
         })
         .collect()
+}
+
+/// M60: a tool result's words with a note for each of its images that
+/// isn't going as pixels, and the (mime, base64) of those that are.
+pub(crate) fn tool_parts(
+    idx: usize,
+    msg: &Message,
+    pixels: &HashSet<(usize, usize)>,
+    sees: bool,
+) -> (String, Vec<(String, String)>) {
+    let mut text = msg.content.clone().unwrap_or_default();
+    let mut pics = Vec::new();
+    for part in parts(idx, msg, pixels, sees) {
+        match part {
+            Part::Pixels { mime, data } => pics.push((mime, data)),
+            Part::Note(n) => {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&n);
+            }
+        }
+    }
+    (text, pics)
+}
+
+/// M60: what heads the user message that carries tool results' images to
+/// an API whose tool results take only text (Chat Completions,
+/// Responses): it says they are the tools' output, not the person's words.
+pub(crate) fn tool_images_lead(calls: &[String]) -> String {
+    format!(
+        "[Tool output, not a message from the user: the images the tool call(s) {} returned, in order.]",
+        calls.join(", ")
+    )
 }
 
 /// Whether a request would carry any photo as pixels (a file that has gone
@@ -71,22 +108,6 @@ pub(crate) fn load(img: &ImageRef) -> Result<(String, String), NoteWhy> {
     let mime = sniff(&bytes).ok_or(NoteWhy::Missing)?;
     let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok((mime.to_string(), data))
-}
-
-/// The type of an image by its first bytes: JPEG, PNG, GIF or WebP. SVG is
-/// text that can carry script, and no model needs it, so it is not here.
-pub fn sniff(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        Some("image/png")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else {
-        None
-    }
 }
 
 /// A 400 whose message is about the photo: a server that lists `image_url`

@@ -1412,6 +1412,14 @@ Current State; numbers are claimed there before anything is built.
     `docs/m52-dashboard-safe.md`, "M52.2", "M52.4" and "M52.6";
     `docs/channels.md`, "Keys pasted into a chat"); M52.3 is M54's
     `secret_request`.
+- **M60, images in tool results reach the model.** `ToolOutput::images`
+  (files on disk, never bytes in history): `read_file` on a PNG, JPEG,
+  GIF or WebP, MCP image content (the browser's screenshots) and
+  `generate_image`'s result. Anthropic gets them inside the
+  `tool_result`; Chat Completions and Responses in a user message right
+  after the batch's results, marked as tool output. A note for a model
+  that can't see, the newest four images as pixels, a 3.5 MB cap. Built
+  on `autopilot` (`docs/vision.md`).
 
 **Still open from earlier tracks.**
 

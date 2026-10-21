@@ -1,4 +1,5 @@
 use crate::error::CoreError;
+use crate::message::ImageRef;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,6 +39,12 @@ pub struct ToolOutput {
     /// exact old shape.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<ToolOutputFile>,
+    /// M60: images for the model to see, as files on disk (`read_file` on
+    /// a PNG, an MCP screenshot, a generated image). They ride on the
+    /// tool's result message: pixels to a model that sees images, the
+    /// newest few only, a note otherwise ([`crate::vision`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageRef>,
 }
 
 impl ToolOutput {
@@ -46,6 +53,7 @@ impl ToolOutput {
             content: content.into(),
             truncated: false,
             files: Vec::new(),
+            images: Vec::new(),
         }
     }
     /// Enforce a hard size cap — verbose tool output is the #1 source of
@@ -64,6 +72,7 @@ impl ToolOutput {
             content: cut,
             truncated: true,
             files: Vec::new(),
+            images: Vec::new(),
         }
     }
     /// Like [`capped`](Self::capped), but nothing is lost. Output over
@@ -135,11 +144,17 @@ impl ToolOutput {
             content: out,
             truncated: true,
             files: Vec::new(),
+            images: Vec::new(),
         }
     }
     /// Attach saved-file references (see [`ToolOutputFile`]).
     pub fn with_files(mut self, files: Vec<ToolOutputFile>) -> Self {
         self.files = files;
+        self
+    }
+    /// M60: attach images for the model (see [`ToolOutput::images`]).
+    pub fn with_images(mut self, images: Vec<ImageRef>) -> Self {
+        self.images = images;
         self
     }
 }

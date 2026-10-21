@@ -7,7 +7,7 @@ use crate::ledger::{
     LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch, TraceEvent, TraceLevel,
 };
 use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
-use crate::message::{Message, ToolCall, Usage};
+use crate::message::{ImageRef, Message, ToolCall, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use crate::routing::Signal;
@@ -232,6 +232,8 @@ struct Ran {
     elapsed: Duration,
     /// When it finished, for the trace (M33).
     finished: SystemTime,
+    /// M60: the images the tool returned, for its result message.
+    images: Vec<ImageRef>,
 }
 
 impl Ran {
@@ -242,13 +244,14 @@ impl Ran {
             reached: false,
             elapsed: Duration::ZERO,
             finished: SystemTime::now(),
+            images: Vec::new(),
         }
     }
 
     fn of(result: Result<ToolOutput, CoreError>, elapsed: Duration) -> Self {
-        let (raw, ok) = match result {
-            Ok(out) => (out.content, true),
-            Err(e) => (format!("error: {e}"), false),
+        let (raw, ok, images) = match result {
+            Ok(out) => (out.content, true, out.images),
+            Err(e) => (format!("error: {e}"), false, Vec::new()),
         };
         Self {
             // M54.3: the one place a call becomes its result, so no known
@@ -259,6 +262,7 @@ impl Ran {
             reached: true,
             elapsed,
             finished: SystemTime::now(),
+            images,
         }
     }
 }
@@ -1584,9 +1588,13 @@ impl Agent {
                     // result, the rest is marked not run.
                     let note = interrupt.note();
                     for ((call, passed), done) in seg.iter().zip(&gated).zip(&ran) {
-                        let (content, ok) = match done {
-                            Some(done) => (with_pre_note(&done.raw, &passed.pre), done.ok),
-                            None => (note.to_string(), false),
+                        let (content, ok, images) = match done {
+                            Some(done) => (
+                                with_pre_note(&done.raw, &passed.pre),
+                                done.ok,
+                                done.images.clone(),
+                            ),
+                            None => (note.to_string(), false, Vec::new()),
                         };
                         self.emit(
                             &tx,
@@ -1598,7 +1606,7 @@ impl Agent {
                             },
                         )
                         .await;
-                        self.push(Message::tool_result(&call.id, content));
+                        self.push(Message::tool_result(&call.id, content).with_images(images));
                     }
                     return self
                         .abandon_rest(&tx, &[], &calls[end..], interrupt, iteration + 1)
@@ -1614,6 +1622,7 @@ impl Agent {
                         reached,
                         elapsed,
                         finished,
+                        images,
                     } = done.expect("every call has a result when not interrupted");
                     self.trace_tool(call, ok, elapsed, finished, &raw);
                     let Gated { mut input, pre, .. } = passed;
@@ -1643,7 +1652,9 @@ impl Agent {
                                     },
                                 )
                                 .await;
-                                self.push(Message::tool_result(&call.id, content));
+                                self.push(
+                                    Message::tool_result(&call.id, content).with_images(images),
+                                );
                                 // The rest of the segment ran, but its
                                 // PostToolUse hooks didn't: not run, as a
                                 // halt mid-call is.
@@ -1673,7 +1684,7 @@ impl Agent {
                     if ok && self.config.detect_stuck {
                         edit_notes.extend(edits.record(&call.name, &call.arguments));
                     }
-                    self.push(Message::tool_result(&call.id, content));
+                    self.push(Message::tool_result(&call.id, content).with_images(images));
                     if routes {
                         let misfit = self.tools.misfit(&call.name, &call.arguments);
                         let step = steps.last().expect("pushed above");
@@ -2018,6 +2029,7 @@ impl Agent {
                         reached: true,
                         elapsed: Duration::ZERO,
                         finished: SystemTime::now(),
+                        images: Vec::new(),
                     });
                 }
             };
@@ -2684,6 +2696,8 @@ impl Agent {
                 && seen.contains_key(m.content.as_ref().unwrap())
             {
                 m.content = Some("[superseded by identical later tool result]".into());
+                // M60: its images are the later one's too.
+                m.images.clear();
             }
         }
     }

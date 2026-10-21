@@ -140,7 +140,9 @@ not have one. `doctor` recognises the failure and suggests, in this order:
   file, type and size, so the model can open it with `read_file`. Nothing
   prunes that dir yet; it's yours to clean. A part over 16 MiB (64 MiB over
   a whole result) or one that won't decode keeps a note saying it was left
-  out, so the model knows it's there.
+  out, so the model knows it's there. Since M60 a saved screenshot (a PNG,
+  JPEG, GIF or WebP up to 3.5 MB) also goes to a model that sees images,
+  with the result ([vision.md](vision.md)).
 - On Windows agent-browser 0.38's MCP server hangs on the first command
   that has to start its background daemon (the daemon inherits the pipe
   the server is reading). ferrule runs `agent-browser get url` with no

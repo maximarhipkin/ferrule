@@ -148,7 +148,8 @@ append-only.
     with numbered items (M52.1–M52.6, M54.1–M54.7); they keep their
     parent's number.
 - **Milestone numbers are claimed:** M51–M53 Kimi, M54 the autonomy
-  session, M55–M59 the gap analysis. The next free number is **M60**.
+  session, M55–M59 the gap analysis, M60 images in tool results
+  (2026-10-21, `autopilot`). The next free number is **M61**.
   The first claim wins, and a later collision shifts the unclaimed
   numbers, never a claimed one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -8404,3 +8405,66 @@ key check, so a switch with no fitting key is refused after the tap. The
 key a switch leaves behind stays bound in the running proxy until a
 restart (`config_follow` doesn't unbind), to its old host only. No live
 run.
+
+### 2026-10-21 — M60: images in tool results reach the model (Claude, Opus 5.5)
+
+Claims **M60** (Current State updated: the next free number is M61).
+
+**Why.** A tool could save an image (an MCP screenshot under
+`.ferrule/mcp-content/`, `generate_image`'s file under `media/`) and name
+it in its text, but the model never saw the pixels: `ToolOutput::files`
+went nowhere, and `read_file` on a PNG failed on UTF-8. M47 already sent
+the photos people send as pixels, by path, to models that see images;
+tool results had no such path.
+
+**What changed.**
+- `ferrule-core`: `ToolOutput::images: Vec<ImageRef>` and `with_images`
+  (left out of the serialized form when empty); the agent carries them
+  through `Ran` onto the tool's result message (`Message::with_images`),
+  every place a result is pushed; compaction's dedupe clears a superseded
+  result's images. `vision.rs`: `MAX_IMAGE_BYTES` (3.5 MB) and `sniff`
+  moved here from `ferrule-providers` (re-exported there, same names);
+  `image_file(path)` (an image by its first bytes, under the cap, as an
+  `ImageRef` with the absolute path); `tool_note` and `note_for` (a tool
+  image's notes: text-only model, "[image omitted: …, an earlier tool
+  image]", gone).
+- `ferrule-providers`: `vision::tool_parts`. Anthropic puts a tool's
+  images inside its `tool_result` (text block, then `image` blocks). Chat
+  Completions keeps the `tool` message text-only and sends one `user`
+  message after the batch's last result with the `image_url` parts,
+  headed "[Tool output, not a message from the user: the images the tool
+  call(s) <ids> returned, in order.]". Responses (and the Codex backend,
+  same builder) does the same after the `function_call_output`s with
+  `input_image` parts. A result without images goes out byte for byte as
+  before. The newest four images (photos and tool images together) go as
+  pixels; `est_context_tokens` already counts them (1,600 each); the
+  400-names-images retry covers them.
+- Tools: `read_file` returns a PNG, JPEG, GIF or WebP as an image (text
+  `[image <path>: <mime>, <n> bytes]`), refuses one over 3.5 MB with a
+  clear error, and says so in its description. MCP results attach each
+  saved part that is an image (a line for one over the cap).
+  `generate_image` attaches the image it saved ("It isn't shown to you:
+  …" when over the cap). `ferrule-plugins`: the new field in its one
+  struct literal.
+- No image crate in the workspace, so no downscaling: a byte cap and a
+  refusal. Transcripts store the `ImageRef` (path, type, name), not
+  base64.
+- Docs: new `docs/vision.md`, linked from the README's Guides,
+  `models.md` and `browser.md`; the roadmap's M60 line.
+
+**Tests changed, none added** (the owner's standing rule). No existing
+test needed a change.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean. No dashboard JS changed.
+
+**Open.** No live run against Anthropic, OpenAI, a compatible server or
+the ChatGPT-plan backend: the wire shapes follow the code paths M47's
+photos already use, not a real call. Pixel dimensions aren't checked (a
+provider's 400 that names images falls back to notes for that provider
+from then on). An SSH workspace's `read_file` still reads text only. The
+dashboard's chat doesn't show a tool's images. When a fifth image
+arrives the oldest turns into a note, so the prompt cache misses from
+there (M47's trade). Responses could take images inside
+`function_call_output`; the follow-up user message was chosen because
+the same builder serves the Codex backend.

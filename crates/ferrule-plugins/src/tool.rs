@@ -134,6 +134,7 @@ impl Tool for PluginTool {
             ),
             truncated: inner.truncated,
             files: Vec::new(),
+            images: Vec::new(),
         })
     }
 

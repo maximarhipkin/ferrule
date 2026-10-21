@@ -283,19 +283,28 @@ impl Tool for GenerateImageTool {
             started.elapsed().as_millis() as u64,
             None,
         );
+        // M60: the model sees what it made (a note if it can't see images).
+        let (shown, unshown) = match ferrule_core::vision::image_file(&path) {
+            Some(Ok(image)) => (vec![image], String::new()),
+            Some(Err(why)) => (Vec::new(), format!(" It isn't shown to you: {why}.")),
+            None => (Vec::new(), String::new()),
+        };
         if let Some((channel_name, chat_id)) = chat {
             if let Err(e) = deliver(&self.shared, &channel_name, &chat_id, &path, &prompt).await {
                 return Ok(ToolOutput::ok(format!(
-                    "Saved {rel}, but sending it to the chat failed: {e}. The file is there."
-                )));
+                    "Saved {rel}, but sending it to the chat failed: {e}. The file is there.{unshown}"
+                ))
+                .with_images(shown));
             }
-            return Ok(ToolOutput::ok(format!(
-                "Saved {rel} and sent it to this chat."
-            )));
+            return Ok(
+                ToolOutput::ok(format!("Saved {rel} and sent it to this chat.{unshown}"))
+                    .with_images(shown),
+            );
         }
         Ok(ToolOutput::ok(format!(
-            "Saved {rel}. This session has no chat to send it to; send_file can deliver it where needed."
-        )))
+            "Saved {rel}. This session has no chat to send it to; send_file can deliver it where needed.{unshown}"
+        ))
+        .with_images(shown))
     }
 }
 
