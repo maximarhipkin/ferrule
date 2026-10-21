@@ -1757,6 +1757,8 @@ impl Connections {
             }
         }
         fields.retain(|_, v| !v.trim().is_empty());
+        // M63.2: what the catalog fixes wins over anything typed.
+        fields.extend(service.preset.iter().map(|(k, v)| (k.clone(), v.clone())));
         let key_expires = match fields.remove("expires") {
             Some(day) => Some(parse_day(&day)?),
             None => None,
@@ -2139,7 +2141,8 @@ impl Connections {
     /// An MCP server per working connection. One that needs reconnecting
     /// is left out: its tools are suspended.
     /// The mail accounts connected services send from, lower-cased: a
-    /// native Gmail connection's address, read from its sealed fields.
+    /// native Gmail or mailbox (M63.2) connection's address, read from its
+    /// sealed fields.
     /// The trust gate takes them as the owner's own addresses (wave A).
     pub fn own_addresses(&self) -> Vec<String> {
         let Ok(records) = self.store.load() else {
@@ -2148,7 +2151,10 @@ impl Connections {
         records
             .iter()
             .filter(|r| r.state == State::Connected)
-            .filter(|r| r.service.native.as_deref() == Some("gmail") && r.oauth.is_none())
+            .filter(|r| {
+                matches!(r.service.native.as_deref(), Some("gmail") | Some("mail"))
+                    && r.oauth.is_none()
+            })
             .filter_map(|r| self.store.open(r).ok())
             .filter_map(|secret| secret.fields.get("email").cloned())
             .map(|email| email.trim().to_lowercase())

@@ -20,6 +20,8 @@
 #              sits on, its option's name, what it covers, the steps
 #   fixed_callback  M37: sign-in only through the relay's fixed address
 #   preview    M37: a vendor preview, offered last
+#   preset     M63.2: field values the catalog fixes (a mail provider's
+#              servers); never asked for, never taken from the form
 
 # ── Atlassian: three ways in, simplest first (M37 §3.5). ──
 
@@ -159,6 +161,156 @@ label = "App password"
 secret = true
 kind = "password"
 placeholder = "abcd efgh ijkl mnop"
+
+# ── Mail from any provider, over IMAP and SMTP (M63.2). Checked on
+# 2026-10-21 against each provider's own settings page (`docs`). Outlook.com
+# and Hotmail aren't here: Microsoft lists OAuth2 (Modern Auth) as the only
+# sign-in for their IMAP and SMTP, so an app password can't connect.
+
+[[service]]
+name = "icloud_mail"
+title = "iCloud Mail (app-specific password)"
+url = "https://www.icloud.com/mail"
+auth = "api_key"
+native = "mail"
+read_only = "tools"
+tile = "mail"
+option = "iCloud Mail"
+covers = "iCloud Mail (icloud.com, me.com, mac.com): search and read any folder; send (a write, which asks you first)."
+key_url = "https://account.apple.com"
+docs = "https://support.apple.com/en-us/102525"
+revoke_note = "Revoke the app-specific password at https://account.apple.com (Sign-In and Security → App-Specific Passwords) to cut it off at Apple too."
+guide = [
+  "The Apple Account needs two-factor authentication.",
+  "Open https://account.apple.com → Sign-In and Security → App-Specific Passwords, and generate one named ferrule.",
+  "Paste it below with your iCloud Mail address. ferrule signs in over IMAP to test it before saving.",
+]
+preset = { imap_host = "imap.mail.me.com", imap_port = "993", imap_tls = "tls", imap_user = "{local}", smtp_host = "smtp.mail.me.com", smtp_port = "587", smtp_tls = "starttls" }
+[[service.fields]]
+name = "email"
+label = "iCloud Mail address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App-specific password"
+secret = true
+kind = "password"
+placeholder = "abcd-efgh-ijkl-mnop"
+
+[[service]]
+name = "fastmail_mail"
+title = "Fastmail (app password)"
+url = "https://app.fastmail.com"
+auth = "api_key"
+native = "mail"
+read_only = "tools"
+tile = "mail"
+option = "Fastmail"
+covers = "Fastmail mail: search and read any folder; send (a write, which asks you first). Needs a plan with IMAP (not Basic)."
+key_url = "https://www.fastmail.help/hc/en-us/articles/360058752854"
+docs = "https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports"
+revoke_note = "Delete the app password in Fastmail (Settings → Privacy & Security → Manage app passwords and access) to cut it off at Fastmail too."
+guide = [
+  "In Fastmail: Settings → Privacy & Security → Connected apps & API tokens → Manage app passwords and access → New app password (mail access is enough).",
+  "Paste it below with your full Fastmail address. Your normal password won't work here.",
+]
+preset = { imap_host = "imap.fastmail.com", imap_port = "993", imap_tls = "tls", smtp_host = "smtp.fastmail.com", smtp_port = "465", smtp_tls = "tls" }
+[[service.fields]]
+name = "email"
+label = "Fastmail address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+
+[[service]]
+name = "yahoo_mail"
+title = "Yahoo Mail (app password)"
+url = "https://mail.yahoo.com"
+auth = "api_key"
+native = "mail"
+read_only = "tools"
+tile = "mail"
+option = "Yahoo Mail"
+covers = "Yahoo Mail: search and read any folder; send (a write, which asks you first)."
+key_url = "https://help.yahoo.com/kb/generate-password-sln15241.html"
+docs = "https://help.yahoo.com/kb/SLN4075.html"
+revoke_note = "Remove the app password on Yahoo's Account Security page to cut it off at Yahoo too."
+guide = [
+  "Sign in to Yahoo and open the Account Security page (how: https://help.yahoo.com/kb/generate-password-sln15241.html).",
+  "Under External connections, press Create app password, name it ferrule, and press Generate password.",
+  "Paste it below with your full Yahoo address.",
+]
+preset = { imap_host = "imap.mail.yahoo.com", imap_port = "993", imap_tls = "tls", smtp_host = "smtp.mail.yahoo.com", smtp_port = "465", smtp_tls = "tls" }
+[[service.fields]]
+name = "email"
+label = "Yahoo address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+
+[[service]]
+name = "mail"
+title = "Any mailbox (IMAP and SMTP)"
+url = "https://www.rfc-editor.org/rfc/rfc3501"
+auth = "api_key"
+native = "mail"
+read_only = "tools"
+tile = "mail"
+option = "Any other mailbox"
+covers = "Any provider that speaks IMAP and SMTP over TLS: search and read any folder; send (a write, which asks you first)."
+guide = [
+  "Find your provider's IMAP and SMTP servers (its help pages call them incoming and outgoing mail settings).",
+  "Make an app password if your provider has them (most do once two-factor sign-in is on); a normal password often won't work.",
+  "Fill in the servers below. Ports default to 993 (IMAP) and 465 (SMTP); 143 and 587 use STARTTLS. Nothing goes unencrypted.",
+]
+[[service.fields]]
+name = "email"
+label = "Email address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "Password (an app password if your provider has them)"
+secret = true
+kind = "password"
+[[service.fields]]
+name = "imap_host"
+label = "IMAP server"
+placeholder = "imap.example.com"
+[[service.fields]]
+name = "imap_port"
+label = "IMAP port"
+optional = true
+placeholder = "993"
+[[service.fields]]
+name = "imap_tls"
+label = "IMAP security"
+optional = true
+hint = "tls (from the first byte) or starttls; empty: starttls on 143, tls otherwise"
+[[service.fields]]
+name = "smtp_host"
+label = "SMTP server"
+placeholder = "smtp.example.com"
+[[service.fields]]
+name = "smtp_port"
+label = "SMTP port"
+optional = true
+placeholder = "465"
+[[service.fields]]
+name = "smtp_tls"
+label = "SMTP security"
+optional = true
+hint = "tls (from the first byte) or starttls; empty: starttls on 587, tls otherwise"
+[[service.fields]]
+name = "username"
+label = "User name"
+optional = true
+hint = "Only if it isn't the email address."
 
 [[service]]
 name = "google"

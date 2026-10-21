@@ -103,6 +103,11 @@ pub struct Service {
     /// takes a key (Atlassian's API token, next to its sign-in).
     #[serde(default)]
     pub fields: Vec<Field>,
+    /// M63.2: field values the catalog fixes, never asked for and never
+    /// taken from the form (a mail preset's servers): what a native
+    /// connection's credential may be sent to comes from here.
+    #[serde(default)]
+    pub preset: BTreeMap<String, String>,
     /// M37: the Connections page's tile this is an option of (default: its
     /// name), the option's label, and what it covers.
     #[serde(default)]
@@ -316,6 +321,7 @@ impl Service {
             revoke_note: None,
             native: None,
             fields: Vec::new(),
+            preset: BTreeMap::new(),
             tile: None,
             option: None,
             covers: None,
@@ -380,6 +386,9 @@ impl Service {
             if !seen.insert(f.name.as_str()) {
                 bail!("{}: the field `{}` is there twice", self.name, f.name);
             }
+        }
+        if let Some(k) = self.preset.keys().find(|k| seen.contains(k.as_str())) {
+            bail!("{}: `{k}` is both a preset and a field", self.name);
         }
         match self.auth {
             AuthKind::ApiKey if self.native.is_some() => {}
@@ -520,6 +529,10 @@ mod tests {
                 "atlassian",
                 "attio",
                 "gmail",
+                "icloud_mail",
+                "fastmail_mail",
+                "yahoo_mail",
+                "mail",
                 "google",
                 "google_oauth",
                 "gmail_mcp",

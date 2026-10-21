@@ -9,7 +9,7 @@ Google as its only calendar and sixteen catalog entries. Wave B closes
 those four gaps, one commit per task:
 
 1. [A bundled first-party skills pack](#1-the-bundled-skills-pack) (M63.1).
-2. Email from any provider over IMAP and SMTP (M63.2).
+2. [Email from any provider over IMAP and SMTP](#2-mail-from-any-provider) (M63.2).
 3. Calendars over CalDAV, and read-only ICS (M63.3).
 4. Catalog v2 and one-step add (M63.4).
 
@@ -197,3 +197,104 @@ triggers, nothing scans a bundled skill, and the text was written to
 stay clear of the scan's patterns, by reading them, not by running it. The
 `curl` commands were checked against the services by hand once, not from
 ferrule's sandbox or through its proxy, and not on Windows.
+
+## 2. Mail from any provider
+
+Gmail with an app password (M37) was ferrule's only mailbox. The
+connection is now general: `native = "mail"` is any IMAP and SMTP
+server, and Gmail is that connection with Gmail's habits.
+
+### What changed
+
+- **One mailbox, two flavours** (`crates/ferrule-connections/src/native/mail.rs`).
+  `Mail` holds the address, the user names, the password and the two
+  servers, and opens a session per call. `Flavor::Gmail` searches with
+  Gmail's own syntax (`X-GM-RAW`) over All Mail on Google's servers and
+  keeps its tool names (`gmail_search`, `gmail_read`, `gmail_send`) and
+  Google's wording when the password is refused; `gmail.rs` is now only
+  that constructor. `Flavor::Imap` searches with RFC 3501's criteria
+  (`FROM`, `TO`, `SUBJECT`, `TEXT`, `SINCE`, `BEFORE`, `UNSEEN`; UTF-8
+  when a value isn't ASCII) in the mailbox it names, and has `mail_search`,
+  `mail_read`, `mail_folders` and, on a write connection, `mail_send`.
+- **IMAP** (`imap.rs`): `search_criteria` and `mailboxes` (`LIST`, the
+  ones that can be opened) beside Gmail's search; `Part` is `Copy`.
+- **Fields and TLS** (`native::normalize_mail`): an address, a password
+  (an app password's display spaces taken out when it is 16 letters and
+  digits), and per side a host name, a port and `tls` or `starttls`. A
+  side with no port takes 993 or 465 (143 or 587 with `starttls`); with no
+  security given, 143, 587 and 25 are STARTTLS and every other port TLS
+  from the first byte. There is no unencrypted choice, and an address
+  isn't accepted as a host (only a test's `127.0.0.1`).
+- **Presets** (`catalog.toml`, a new `preset` table on a service): field
+  values the catalog fixes, merged in after the form's fields so a typed
+  value can't replace them. iCloud Mail, Fastmail and Yahoo Mail are
+  presets on a new **Mail** tile; "Any other mailbox" asks for the
+  servers. iCloud's IMAP user is the address's local part
+  (`imap_user = "{local}"`), as Apple's settings page says; an optional
+  `username` field overrides both sides.
+- **Bound to the two servers.** `native::hosts("mail")` is the IMAP and
+  SMTP hosts, kept on the record; the password is sealed in the connection
+  store and the native code connects to nothing else. The connection's
+  address joins the owner's own addresses (`own_addresses`), so the wave A
+  rule for the owner's scheduled briefings covers it as it covers Gmail.
+- **Untrusted reads, gated sends.** A connection's server name is in the
+  trust hub's `connected` list, so its reads mark the run as having read
+  outside content (M54.5) and its `mail_send` (no `readOnlyHint`) is a
+  connected write behind the gates and standing grants (M19, M56.2). That
+  list is filled only while `[connections] gate_writes` is on (the
+  default), as for every connection.
+
+### Where the password goes in
+
+On the dashboard's Connections page (the Mail tile's form, write-only,
+tested by an IMAP login before it's saved), or `ferrule connections
+setup mail` at a terminal; in a chat, `connection_request` sends the owner
+a button whose reply points there. Not `secret_request`: that saves a
+`[secrets]` key, which reaches commands as a placeholder for the proxy to
+swap. This password is never handed to a command; ferrule's own code
+speaks IMAP and SMTP with it, so it lives in the sealed connection store
+like Gmail's, and is bound to its hosts there (the record's `hosts`).
+
+### The providers, checked on 2026-10-21
+
+- **iCloud Mail**: `imap.mail.me.com` 993 SSL, user name the address
+  without the domain ("if that fails, use the full address");
+  `smtp.mail.me.com` 587, user name the full address; an app-specific
+  password: <https://support.apple.com/en-us/102525>. App-specific
+  passwords at account.apple.com → Sign-In and Security, with two-factor
+  authentication: <https://support.apple.com/en-us/102654>. Apple says
+  "SSL" for 587 and "TLS or STARTTLS" if that errors; port 587 is
+  STARTTLS by convention and the preset uses it. **Not verified live.**
+- **Fastmail**: `imap.fastmail.com` 993 and `smtp.fastmail.com` 465, TLS
+  from the first byte (587 with STARTTLS), the full address as user name,
+  an app password required:
+  <https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports>;
+  making one: <https://www.fastmail.help/hc/en-us/articles/360058752854>
+  (read through a search result, not the page itself). Not on the Basic
+  plan, per third-party guides (unverified).
+- **Yahoo Mail**: `imap.mail.yahoo.com` 993, `smtp.mail.yahoo.com` 465 or
+  587, the full address, an app password:
+  <https://help.yahoo.com/kb/SLN4075.html>; Account Security → Create app
+  password: <https://help.yahoo.com/kb/generate-password-sln15241.html>.
+- **Gmail** (unchanged): Google recommends "Sign in with Google" and calls
+  app passwords a fallback that needs 2-Step Verification; IMAP has been
+  always on for personal accounts since January 2025:
+  <https://support.google.com/mail/answer/7126229>.
+- **Outlook.com and Hotmail: not offered.** Microsoft's settings page
+  lists OAuth2/Modern Auth as the authentication for IMAP, POP and SMTP:
+  <https://support.microsoft.com/en-us/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040>.
+  Microsoft's earlier article said Basic authentication would be removed
+  from Outlook.com:
+  <https://support.microsoft.com/office/outlook-and-other-apps-are-unable-to-connect-to-outlook-com-f4202ebf-89c6-4a8a-bec3-3d60cf7deaef>.
+  The date, 16 September 2024, is from coverage of Microsoft's Outlook
+  blog post ([heise](https://heise.de/-9767989)), not the post itself.
+  Outlook.com is left to Microsoft 365's catalog entry (M63.4).
+
+### Not verified
+
+Nothing was run against a real provider: the presets' logins, iCloud's
+local-part user name, Yahoo's and Fastmail's app passwords and the
+STARTTLS path are untested live. The existing Gmail test (mock IMAP and
+SMTP) passes unchanged through the new code; the generic flavour has no
+test of its own (the owner's rule: no new tests). The email channel's
+`use_connection` still takes a Gmail connection only.

@@ -1,6 +1,6 @@
-//! Just enough IMAP4rev1 for Gmail: log in, find All Mail, search with
-//! Gmail's own syntax (`X-GM-RAW`), fetch. Generic over the stream so the
-//! tests talk to a plain-TCP mock.
+//! Just enough IMAP4rev1 for a mailbox: log in, list mailboxes, search
+//! (Gmail's own syntax with `X-GM-RAW`, or RFC 3501's criteria anywhere),
+//! fetch. Generic over the stream so the tests talk to a plain-TCP mock.
 
 use super::net::{Stream, TIMEOUT};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -190,13 +190,48 @@ impl Imap {
         parts.push(Part::Atom("X-GM-RAW"));
         parts.push(Part::Str(query));
         let lines = self.command(&parts).await?;
-        let mut uids: Vec<u32> = lines
+        Ok(search_uids(&lines))
+    }
+
+    /// M63.2: UIDs matching RFC 3501 search criteria (`FROM`, `SINCE`,
+    /// `UNSEEN`, …; `ALL` when there are none), oldest first. A string
+    /// that isn't ASCII sends the search as UTF-8.
+    pub async fn search_criteria(&mut self, criteria: &[Part<'_>]) -> Result<Vec<u32>, Error> {
+        let mut parts = vec![Part::Atom("UID SEARCH")];
+        if criteria
             .iter()
-            .filter_map(|l| l.text.strip_prefix("* SEARCH"))
-            .flat_map(|r| r.split_whitespace().filter_map(|n| n.parse().ok()))
-            .collect();
-        uids.sort_unstable();
-        Ok(uids)
+            .any(|p| matches!(p, Part::Str(s) if !s.is_ascii()))
+        {
+            parts.push(Part::Atom("CHARSET UTF-8"));
+        }
+        if criteria.is_empty() {
+            parts.push(Part::Atom("ALL"));
+        }
+        parts.extend(criteria.iter().copied());
+        let lines = self.command(&parts).await?;
+        Ok(search_uids(&lines))
+    }
+
+    /// M63.2: the mailboxes that can be opened, by name (decoded).
+    pub async fn mailboxes(&mut self) -> Result<Vec<String>, Error> {
+        let lines = self
+            .command(&[Part::Atom("LIST"), Part::Str(""), Part::Str("*")])
+            .await?;
+        let mut out = Vec::new();
+        for l in &lines {
+            if !l.text.starts_with("* LIST") || l.text.contains("\\Noselect") {
+                continue;
+            }
+            let name = match l.literals.first() {
+                Some(lit) => String::from_utf8_lossy(lit).to_string(),
+                None => match last_string(&l.text) {
+                    Some(n) => n,
+                    None => continue,
+                },
+            };
+            out.push(from_utf7_imap(&name));
+        }
+        Ok(out)
     }
 
     /// `(uid, the literal)` for each of `uids`, fetching `what`
@@ -367,9 +402,21 @@ impl Imap {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum Part<'a> {
     Atom(&'a str),
     Str(&'a str),
+}
+
+/// The UIDs of `* SEARCH` lines, sorted.
+fn search_uids(lines: &[Line]) -> Vec<u32> {
+    let mut uids: Vec<u32> = lines
+        .iter()
+        .filter_map(|l| l.text.strip_prefix("* SEARCH"))
+        .flat_map(|r| r.split_whitespace().filter_map(|n| n.parse().ok()))
+        .collect();
+    uids.sort_unstable();
+    uids
 }
 
 fn literal_len(line: &str) -> Option<usize> {

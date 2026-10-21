@@ -1,6 +1,7 @@
 //! M37: connections whose tools run inside ferrule. Jira and Confluence
-//! over Atlassian's REST API with an email and API token, Gmail over IMAP
-//! and SMTP with an app password, and Drive/Sheets/Docs/Calendar over
+//! over Atlassian's REST API with an email and API token, Gmail (and since
+//! M63.2 any mailbox) over IMAP and SMTP with an app password, and
+//! Drive/Sheets/Docs/Calendar over
 //! Google's REST APIs with a service account's key (or an OAuth grant).
 //! Each is a [`LocalServer`]: the MCP client lists and calls its tools like
 //! any server's, gated and read-only-hinted the same way, and the
@@ -11,6 +12,7 @@ pub mod google;
 pub mod imap;
 pub mod jira;
 pub mod jwt;
+pub mod mail;
 pub mod mime;
 pub mod net;
 pub mod smtp;
@@ -23,7 +25,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// `native = "…"` in the catalog.
-pub const KINDS: &[&str] = &["jira", "gmail", "google"];
+pub const KINDS: &[&str] = &["jira", "gmail", "google", "mail"];
 
 /// Where the native connections go. Tests point them at local mocks.
 #[derive(Debug, Clone)]
@@ -115,8 +117,91 @@ pub fn normalize(
             fields.insert("client_email".into(), key.email);
             Ok(())
         }
+        "mail" => normalize_mail(fields, ep),
         other => Err(format!("`{other}` isn't a native connection")),
     }
+}
+
+/// M63.2: a mailbox's fields, checked and filled in: an address, a
+/// password (an app password's display spaces taken out), and for IMAP and
+/// SMTP a host name, a port and `tls` or `starttls`. A side with no port
+/// takes 993 or 465 (143 or 587 with `starttls`); with no `tls`, ports 143,
+/// 587 and 25 are STARTTLS and every other is TLS from the first byte.
+/// There is no unencrypted choice.
+fn normalize_mail(fields: &mut BTreeMap<String, String>, ep: &Endpoints) -> Result<(), String> {
+    let email = field(fields, "email")?.to_string();
+    if !email.contains('@') || email.contains(char::is_whitespace) {
+        return Err("the email should be the mailbox's address, like you@example.com".into());
+    }
+    let typed = field(fields, "app_password")?.to_string();
+    let joined: String = typed.chars().filter(|c| !c.is_whitespace()).collect();
+    let password = if joined.len() == 16 && joined.chars().all(|c| c.is_ascii_alphanumeric()) {
+        joined
+    } else {
+        typed
+    };
+    fields.insert("app_password".into(), password);
+    for (side, tls_port, starttls_port) in [("imap", 993u16, 143u16), ("smtp", 465, 587)] {
+        let label = side.to_ascii_uppercase();
+        let host = field(fields, &format!("{side}_host"))
+            .map_err(|_| format!("the {label} server is missing (like {side}.example.com)"))?
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        if !host_name(&host) && !(ep.loopback && host == "127.0.0.1") {
+            return Err(format!(
+                "the {label} server should be a host name, like {side}.example.com"
+            ));
+        }
+        let tls = match fields
+            .get(&format!("{side}_tls"))
+            .map(|t| t.to_ascii_lowercase())
+            .filter(|t| !t.is_empty())
+            .as_deref()
+        {
+            None => None,
+            Some("tls" | "ssl") => Some("tls"),
+            Some("starttls") => Some("starttls"),
+            Some(_) => {
+                return Err(format!(
+                    "the {label} security is `tls` (from the first byte) or `starttls`"
+                ))
+            }
+        };
+        let port: u16 =
+            match fields
+                .get(&format!("{side}_port"))
+                .filter(|p| !p.is_empty())
+            {
+                Some(p) => p.parse().ok().filter(|p| *p > 0).ok_or_else(|| {
+                    format!("the {label} port should be a number like {tls_port}")
+                })?,
+                None if tls == Some("starttls") => starttls_port,
+                None => tls_port,
+            };
+        let tls = tls.unwrap_or(if matches!(port, 143 | 587 | 25) {
+            "starttls"
+        } else {
+            "tls"
+        });
+        fields.insert(format!("{side}_host"), host);
+        fields.insert(format!("{side}_port"), port.to_string());
+        fields.insert(format!("{side}_tls"), tls.to_string());
+    }
+    Ok(())
+}
+
+/// A DNS name with two labels or more, not an address.
+fn host_name(host: &str) -> bool {
+    let labels: Vec<&str> = host.split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+        })
+        && !labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The hosts a native connection's credential is ever sent to.
@@ -128,6 +213,14 @@ pub fn hosts(kind: &str, fields: &BTreeMap<String, String>, ep: &Endpoints) -> V
             .unwrap_or_default(),
         "gmail" => vec![ep.imap.host.clone(), ep.smtp.host.clone()],
         "google" => google::hosts(ep),
+        "mail" => {
+            let mut hosts: Vec<String> = ["imap_host", "smtp_host"]
+                .iter()
+                .filter_map(|k| fields.get(*k).cloned())
+                .collect();
+            hosts.dedup();
+            hosts
+        }
         _ => Vec::new(),
     }
 }
@@ -147,10 +240,26 @@ pub async fn probe(
             .whoami()
             .await
             .map(|name| format!("signed in to Jira as {name}")),
-        "gmail" => gmail::Gmail::new("probe", fields, false, ep.clone())?
+        "gmail" => gmail::new("probe", fields, false, ep)?
             .check()
             .await
             .map(|email| format!("signed in to Gmail as {email}")),
+        "mail" => mail::new(
+            "probe",
+            mail::Flavor::Imap,
+            fields,
+            false,
+            ep,
+            service.key_url.as_deref(),
+        )?
+        .check()
+        .await
+        .map(|email| {
+            format!(
+                "signed in to {} as {email}",
+                fields.get("imap_host").map_or("the mail server", |h| h)
+            )
+        }),
         "google" => {
             let g = google::Google::new(
                 "probe",
@@ -194,7 +303,15 @@ pub fn server(
             write,
             http.clone(),
         )?),
-        ("gmail", Some(f)) => Arc::new(gmail::Gmail::new(id, f, write, ep.clone())?),
+        ("gmail", Some(f)) => Arc::new(gmail::new(id, f, write, ep)?),
+        ("mail", Some(f)) => Arc::new(mail::new(
+            id,
+            mail::Flavor::Imap,
+            f,
+            write,
+            ep,
+            service.key_url.as_deref(),
+        )?),
         ("google", _) => Arc::new(google::Google::new(
             id,
             service.clone(),

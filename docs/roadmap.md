@@ -1519,6 +1519,14 @@ Current State; numbers are claimed there before anything is built.
     all (`[skills] bundled = false`); tagged in `ferrule skills` and on
     the dashboard; no triggers; network only through the sandboxed shell
     and the proxy. Not run live.
+  - **M63.2, mail from any provider**: the Gmail app-password connection
+    generalised into `native = "mail"` (IMAP search by RFC 3501 criteria
+    in any mailbox, `mail_read`, `mail_folders`, `mail_send` on a write
+    connection; TLS or STARTTLS, never in the clear), Gmail now its
+    flavour with its own syntax and tool names; catalog presets (a new
+    `preset` table) for iCloud Mail, Fastmail and Yahoo Mail on a Mail
+    tile, plus "any other mailbox"; Outlook.com left out (OAuth2 only).
+    Reads are untrusted, sends connected writes. Not run live.
 
 **Still open from earlier tracks.**
 

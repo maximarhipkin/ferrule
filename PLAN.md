@@ -9363,3 +9363,58 @@ the scan's patterns. The catalog grows by about 400 tokens a request
 while skills are on (a one-time prefix change at the upgrade), unmeasured
 by the eval gate. `ferrule skills` (`discover_skills`) still leaves out
 the agent-installed skills the gateway's set has, as before.
+
+### 2026-10-21 — M63.2: mail from any provider over IMAP and SMTP (Claude, Opus 5.5)
+
+Wave B, task 2, in the `autopilot` worktree. The re-audit's Part 2 §2c #2
+and Part 3 #5: Gmail was the only mailbox.
+
+**What changed.**
+- `ferrule-connections` `native/mail.rs` (new): `Mail`, a mailbox over
+  IMAP and SMTP with an app password, in two flavours. `Gmail` keeps
+  M37's behaviour exactly (X-GM-RAW over All Mail, Google's servers, the
+  `gmail_*` tool names, Google's wording); `gmail.rs` is now its
+  constructor. `Imap` searches by RFC 3501 criteria in a named mailbox
+  and lists `mail_search`, `mail_read`, `mail_folders` and, on a write
+  connection, `mail_send`; STARTTLS on 143 and 587, TLS otherwise, never
+  in the clear.
+- `native/imap.rs`: `search_criteria` and `mailboxes`; `Part` is `Copy`.
+- `native/mod.rs`: kind `mail` (`normalize_mail` checks and fills the
+  fields: host names only, ports, `tls`/`starttls`; `hosts` is the two
+  servers; `probe` logs in; `server` builds it).
+- `catalog.rs`: a service's `preset` (fixed field values, merged after the
+  form's so a typed value can't replace them; a name that is both a preset
+  and a field is refused). `service.rs` merges them in `connect_key_to`;
+  `own_addresses` counts a mail connection's address too (wave A's owner
+  briefings).
+- `catalog.toml`: a Mail tile with iCloud Mail, Fastmail and Yahoo Mail
+  presets and "Any other mailbox". Outlook.com and Hotmail aren't there:
+  Microsoft's settings page lists only OAuth2 for their IMAP and SMTP.
+- Docs: `connections.md` ("Mail from any provider", the option table),
+  `m63-connections-wave-b.md` §2 (the design, the providers' settings with
+  their URLs, why the password goes through the connection form rather
+  than `secret_request`), the roadmap's M63.2 line.
+
+**A deviation from the brief, on purpose.** The brief said the app
+password comes "via `secret_request` or the Safe". `secret_request` saves
+a `[secrets]` key that commands get as a placeholder for the proxy; this
+password never reaches a command, only ferrule's own IMAP/SMTP code. So it
+stays in the sealed connection store, entered on the dashboard's
+write-only Connections form (or `ferrule connections setup mail`), tested
+before it's saved and bound to the record's two hosts, as Gmail's always
+was. From a chat, `connection_request` asks the owner with a button.
+
+**Tests changed, none added** (the owner's standing rule):
+`the_built_in_catalog_parses_and_checks` lists the four new names. The
+Gmail end-to-end test (mock IMAP and SMTP) passes through the new code
+unchanged.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Not run against any real provider (iCloud's local-part login,
+the STARTTLS path, Yahoo's and Fastmail's passwords). The generic flavour
+has no test. The email channel's `use_connection` still takes a Gmail
+connection only. A connection's reads count as untrusted only while
+`[connections] gate_writes` is on (the default), as for every
+connection: that switch also empties the hub's `connected` list.

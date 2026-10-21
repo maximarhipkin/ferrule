@@ -32,6 +32,8 @@ A few rules hold for every connection:
 | Atlassian's own MCP tools (incl. Compass) | Atlassian → Rovo MCP with an API token | the admin to allow API tokens for Rovo MCP | no |
 | the same, signed in in the browser | Atlassian → Rovo MCP with Atlassian sign-in | the relay, plus the admin to list its domain | **yes** |
 | Gmail: search, read, send | **Google → Gmail with an app password** | 2-Step Verification on the account | no |
+| iCloud, Fastmail or Yahoo mail: search, read, send | **Mail → the provider's tile option** | an app password from the provider | no |
+| any other mailbox over IMAP and SMTP | Mail → Any other mailbox | its servers, and an app password if it has them | no |
 | Drive, Sheets, Docs, Calendar (what you share) | **Google → service account** | a Google Cloud project and a JSON key | no |
 | Drive, Sheets, Docs, Calendar as you (everything you see) | Google → Advanced: your own OAuth app | the relay, plus an OAuth client in Google Cloud | **yes** |
 | Google's own Gmail/Drive MCP servers | Google → Preview | the above, plus preview enrolment | **yes** |
@@ -182,6 +184,36 @@ These are the errors people hit, and what the page tells you for each:
 - "API has not been used": turn the API on.
 - "Your administrator has blocked this app": a Workspace admin must trust
   it, or use a service account.
+
+## Mail from any provider (M63.2)
+
+The **Mail** tile connects a mailbox over IMAP (search, read) and SMTP
+(send, a write that asks you first), the same way as Gmail's app
+password, for any provider:
+
+| option | servers (fixed by the catalog) | the password |
+|---|---|---|
+| iCloud Mail | `imap.mail.me.com:993` (TLS), `smtp.mail.me.com:587` (STARTTLS) | an app-specific password: <https://account.apple.com> → Sign-In and Security → App-Specific Passwords (needs two-factor authentication) |
+| Fastmail | `imap.fastmail.com:993`, `smtp.fastmail.com:465` (TLS) | an app password: Settings → Privacy & Security → Manage app passwords and access (not on the Basic plan) |
+| Yahoo Mail | `imap.mail.yahoo.com:993`, `smtp.mail.yahoo.com:465` (TLS) | an app password: Account Security → Create app password |
+| Any other mailbox | the IMAP and SMTP servers you type, ports 993 and 465 unless you say otherwise | an app password if the provider has them |
+
+- **Encrypted, always.** Ports 143 and 587 use STARTTLS, every other
+  port TLS from the first byte; there is no unencrypted choice. A server
+  that doesn't offer STARTTLS on 143 or 587 is refused with that reason.
+- **Bound to its two servers.** The password is tested by an IMAP login
+  before it's saved, sealed in the connection store like every key on
+  this page, and only ever sent to the IMAP and SMTP hosts it was saved
+  with (a preset's come from the catalog, not from the form).
+- **The tools.** `mail_search` (from, to, subject, text, since, before,
+  unseen, in a mailbox, INBOX by default), `mail_read`, `mail_folders`,
+  and on a connection with "allow changes" `mail_send`. What they read is
+  outside content: a write after it asks you first, even in owner mode
+  (M54.5). Gmail keeps its own tools and Gmail's search syntax.
+- **Outlook.com and Hotmail aren't offered.** Microsoft lists only OAuth2
+  ("Modern Auth") for their IMAP and SMTP, so an app password can't sign
+  in ([Microsoft's settings
+  page](https://support.microsoft.com/en-us/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040)).
 
 ## Any MCP server with a key
 
