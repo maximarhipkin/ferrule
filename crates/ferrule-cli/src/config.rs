@@ -1239,7 +1239,8 @@ impl Default for WebSearchConfig {
 }
 
 /// M51: `[media]` — image and video generation through a connected
-/// provider (OpenRouter's `/images` and `/videos`).
+/// provider (OpenRouter's `/images` and `/videos`), and M51.4's spoken
+/// replies (`/audio/speech`).
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct MediaConfig {
@@ -1249,8 +1250,13 @@ pub struct MediaConfig {
     /// Defaults when a tool call doesn't name one.
     pub image_model: String,
     pub video_model: String,
-    /// Generations per day (images and video submits together); 0 = no
-    /// cap. Fail-closed: a store that can't be counted refuses.
+    /// M51.4: `speak`'s model; empty turns `speak` off.
+    pub speech_model: String,
+    /// `speak`'s voice (the model's own names); unset, the model's default.
+    pub voice: Option<String>,
+    /// Generations per day (images, video submits and spoken replies
+    /// together); 0 = no cap. Fail-closed: a store that can't be counted
+    /// refuses.
     pub max_per_day: u64,
 }
 
@@ -1260,6 +1266,9 @@ impl Default for MediaConfig {
             provider: None,
             image_model: "google/gemini-2.5-flash-image".into(),
             video_model: "google/veo-3.1".into(),
+            // OpenRouter's speech list, 2026-10-21: cheap, multilingual.
+            speech_model: "google/gemini-3.8-flash-tts".into(),
+            voice: None,
             max_per_day: 20,
         }
     }
@@ -1701,7 +1710,9 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # provider = "openrouter"   # through a connected [providers.X]. Off until set.
 # image_model = "google/gemini-2.5-flash-image"
 # video_model = "google/veo-3.1"
-# max_per_day = 20          # images and video submits together; 0 = no cap.
+# speech_model = "google/gemini-3.8-flash-tts"  # `speak`, voice replies; "" = off
+# voice = "Kore"            # the speech model's own voice names; unset = its default
+# max_per_day = 20          # images, video submits and voice replies; 0 = no cap.
 #                            # Refuses fail-closed; every call is a ledger row.
 
 # [telemetry]               # OpenTelemetry traces of the agent's work over OTLP/HTTP

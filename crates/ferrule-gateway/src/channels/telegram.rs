@@ -1305,8 +1305,10 @@ impl TelegramChannel {
     /// `sendPhoto` for a photo, `sendVideo` for a video (it plays inline),
     /// `sendVoice` for an Ogg/Opus voice note, `sendAudio` for an MP3 or
     /// M4A (M56.7), else `sendDocument`, which keeps the bytes and name as
-    /// they are. One Telegram refuses as that kind (a 400: its size,
-    /// dimensions or format) goes again as a document. The message's id.
+    /// they are. An attachment of kind `voice` (M51.4's `speak`) that's an
+    /// MP3 or M4A goes with `sendVoice` too, which takes those formats. One
+    /// Telegram refuses as that kind (a 400: its size, dimensions or
+    /// format) goes again as a document. The message's id.
     async fn send_file(
         &self,
         chat: &str,
@@ -1314,6 +1316,7 @@ impl TelegramChannel {
         caption: Option<&str>,
     ) -> Result<Option<String>, GatewayError> {
         let (name, mime, bytes) = files::read_outgoing(att)?;
+        let voice = att.kind == "voice";
         let mime = if att.kind.contains('/') {
             att.kind.as_str()
         } else {
@@ -1354,6 +1357,9 @@ impl TelegramChannel {
             }
             m if m.starts_with("video/") => ("sendVideo", "video"),
             "audio/ogg" | "audio/opus" => ("sendVoice", "voice"),
+            "audio/mpeg" | "audio/mp3" | "audio/mp4" | "audio/x-m4a" | "audio/m4a" if voice => {
+                ("sendVoice", "voice")
+            }
             "audio/mpeg" | "audio/mp3" | "audio/mp4" | "audio/x-m4a" | "audio/m4a" => {
                 ("sendAudio", "audio")
             }

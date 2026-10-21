@@ -7749,3 +7749,51 @@ into, nothing more.
 files. k must fit `[agents] max_children` (4 by default) beside the
 graph's other running agents. Nothing measures how often the verifier
 picks the best one.
+
+### 2026-10-21 — M51.4: voice replies, OpenRouter transcription, an ffmpeg line (Claude, Opus 5.5)
+
+**Why.** The bot hears voice notes but can only answer in text, its
+transcription knew OpenAI, Groq and local servers but not the
+OpenRouter key most owners already connected, and nothing said whether
+the shell could cut or convert media (ferrule ships no ffmpeg).
+
+**What changed.**
+- `ferrule-media`: `SpeechReq`, `AudioOut` and `MediaBackend::speak`.
+  OpenRouter's `POST /audio/speech` (through the proxy's placeholder and
+  the egress client, like images) asks for `mp3`, the only compressed
+  format its spec offers (`mp3` or `pcm`), and refuses an answer that
+  isn't MP3 (`sniff` knows MP3 now). `answer` is the status handling
+  `checked` used, returning bytes. `JobKind::Speech` and
+  `JobStore::speech`, so `max_per_day` counts voice replies.
+  `FakeMedia::speak`.
+- `ferrule-gateway`: `SpeakTool` (`speak {text, voice?}`, at most 4,000
+  characters, deferrable): cap check, the call, `media/<unix>-<n>.mp3`,
+  a jobs row, a ledger row (`call_kind = "media"`), then the file to the
+  session's chat as an attachment of kind `voice`. `MediaShared::
+  set_speech` turns it on. Telegram's `send_file` sends an MP3 or M4A of
+  kind `voice` with `sendVoice` (the Bot API takes OGG/Opus, MP3 or
+  M4A there), so no ffmpeg is needed. `OpenAiTranscriber` reads
+  OpenRouter's `usage.seconds` and `usage.cost`; a reported cost wins
+  over `price_per_minute` in the ledger row.
+- `ferrule-cli`: `[media] speech_model` (default
+  `google/gemini-3.8-flash-tts`, from OpenRouter's speech list of
+  2026-10-21; `""` turns `speak` off) and `voice` (unset: the model's
+  own); the chat agent gets `speak` and `CHAT_VOICE` when it's on.
+  `[transcription]`'s `model_for`: on an `openrouter.ai` base URL a
+  model name without `/` becomes `openai/<name>`. `ferrule doctor`'s
+  `media` line: ffmpeg's version and whether it has the `subtitles`
+  filter (a libass build), as a note.
+- `ferrule-agents`: `prompts::CHAT_VOICE`.
+- Docs: `m51-media.md` ("M51.4"), `channels.md` ("Voice messages":
+  OpenRouter, answering in voice, the doctor line), `models.md`
+  ("Making media"), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** No live call to OpenRouter's speech or transcription endpoint
+and no voice note sent to a real chat. The speech answer carries no
+cost, so its ledger row has none and the trust caps don't count it (the
+daily count does). Sub-agents get `speak` with M51.3.

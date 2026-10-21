@@ -1129,6 +1129,13 @@ Not tried against a real OpenRouter key or a real render yet.
 5-second clip of it" answers now and delivers the MP4 minutes later —
 priced in the ledger, capped per day, and surviving a gateway restart.
 
+**Follow-ups from the gap analysis, on `autopilot`** (2026-10-21):
+- **M51.4**: `speak {text, voice?}` over OpenRouter's `/audio/speech`
+  (MP3, sent to Telegram with `sendVoice`, no ffmpeg), `[transcription]`
+  on OpenRouter with its reported cost in the ledger, and `ferrule
+  doctor`'s `media` line (ffmpeg, libass) (`docs/m51-media.md`,
+  "M51.4"). Not run against a live key.
+
 ### M52 — the dashboard Safe
 
 **Status.** Built (`docs/m52-dashboard-safe.md`; user docs

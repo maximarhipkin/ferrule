@@ -1,7 +1,10 @@
 //! A deterministic backend for tests: fixed image bytes, a video job whose
 //! polls count down before completing, every call remembered.
 
-use crate::{ImageOut, ImageReq, MediaBackend, MediaError, VideoJob, VideoReq, VideoState};
+use crate::{
+    AudioOut, ImageOut, ImageReq, MediaBackend, MediaError, SpeechReq, VideoJob, VideoReq,
+    VideoState,
+};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -14,6 +17,7 @@ pub struct FakeMedia {
     pub fail: Option<String>,
     pub images: Mutex<Vec<ImageReq>>,
     pub videos: Mutex<Vec<VideoReq>>,
+    pub speeches: Mutex<Vec<SpeechReq>>,
     next_id: Mutex<u32>,
 }
 
@@ -37,6 +41,7 @@ impl Default for FakeMedia {
             fail: None,
             images: Mutex::default(),
             videos: Mutex::default(),
+            speeches: Mutex::default(),
             next_id: Mutex::new(0),
         }
     }
@@ -98,6 +103,15 @@ impl MediaBackend for FakeMedia {
         }
         std::fs::write(dest, bytes)
             .map_err(|e| MediaError::BadAnswer(format!("{}: {e}", dest.display())))
+    }
+
+    async fn speak(&self, req: SpeechReq) -> Result<AudioOut, MediaError> {
+        self.speeches.lock().unwrap().push(req);
+        // An ID3 header, so the sniff check passes.
+        Ok(AudioOut {
+            bytes: b"ID3\x04\x00\x00\x00\x00\x00\x00\xff\xfb\x90\x00".to_vec(),
+            format: "mp3".into(),
+        })
     }
 }
 

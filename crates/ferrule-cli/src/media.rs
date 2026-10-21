@@ -1,6 +1,6 @@
 //! M51: what `[media]` becomes at gateway start (`docs/m51-media.md`) —
 //! the shared backend + jobs table behind `generate_image`,
-//! `generate_video` and the video poller. Off unless `[media] provider`
+//! `generate_video`, M51.4's `speak` and the video poller. Off unless `[media] provider`
 //! names a connected provider with an OpenRouter-compatible media
 //! endpoint.
 
@@ -62,6 +62,7 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<MediaShared>> {
             base_url: p.base_url.clone(),
             image_model: cfg.media.image_model.clone(),
             video_model: cfg.media.video_model.clone(),
+            speech_model: cfg.media.speech_model.clone(),
             key,
             key_env,
             // A render submit is quick; an image can take a couple of
@@ -81,14 +82,28 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<MediaShared>> {
             return None;
         }
     };
-    Some(MediaShared::new(
+    let shared = MediaShared::new(
         backend,
         store,
         cfg.media.image_model.clone(),
         cfg.media.video_model.clone(),
         cfg.media.max_per_day,
         ledger::build_sink(cfg),
-    ))
+    );
+    // M51.4: `speak` unless the speech model is set to "".
+    let speech = cfg.media.speech_model.trim();
+    if !speech.is_empty() {
+        shared.set_speech(
+            speech.to_string(),
+            cfg.media
+                .voice
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string),
+        );
+    }
+    Some(shared)
 }
 
 /// The egress client media calls go through (the credential proxy when it

@@ -191,11 +191,12 @@ last ran on.
 A gateway started with `--provider` stays on it until it restarts without
 that flag. `/model` says so.
 
-## Making media: image and video generation
+## Making media: images, video and voice replies
 
 With `[media] provider = "<id>"` naming a connected provider whose
 endpoint speaks OpenRouter's media API (`/images/generations`,
-`/videos`), chat sessions get two tools (M51, `docs/m51-media.md`):
+`/videos`, `/audio/speech`), chat sessions get three tools (M51,
+`docs/m51-media.md`):
 
 - **`generate_image`** makes (or, with `reference` paths, edits) an
   image, saves it under `media/` in the workspace and sends it to the
@@ -204,10 +205,14 @@ endpoint speaks OpenRouter's media API (`/images/generations`,
   job id, and the built-in `ferrule-media` task (every minute on the
   scheduler) delivers the MP4 when it's done — a restart loses nothing,
   and a failure is said in the chat.
+- **`speak`** (M51.4) turns text into speech (MP3), saves it under
+  `media/` and sends it to the chat; Telegram shows it as a voice
+  message. `[media] speech_model = ""` turns it off.
 
-`[media] image_model` / `video_model` set the defaults a call can
-override; `max_per_day` caps generations per UTC day (fail-closed);
-every call and delivery is a ledger row with `call_kind = "media"`.
+`[media] image_model` / `video_model` / `speech_model` (and `voice`) set
+the defaults a call can override; `max_per_day` caps generations per
+UTC day, voice replies included (fail-closed); every call and delivery
+is a ledger row with `call_kind = "media"`.
 Sub-agents don't get the tools: their answers go through the parent.
 
 ## Photos: which models see them

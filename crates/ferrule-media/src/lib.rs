@@ -1,4 +1,5 @@
-//! ferrule-media: image and video generation (M51, `docs/m51-media.md`).
+//! ferrule-media: image, video and speech generation (M51,
+//! `docs/m51-media.md`).
 //!
 //! One trait, [`MediaBackend`]; an OpenRouter implementation
 //! ([`openrouter::OpenRouterMedia`]) reached through ferrule's credential
@@ -42,6 +43,24 @@ pub struct VideoReq {
     pub aspect: Option<String>,
     /// First frame: image-to-video.
     pub first_frame: Option<std::path::PathBuf>,
+}
+
+/// M51.4: text to speak, for a voice reply.
+#[derive(Debug, Clone, Default)]
+pub struct SpeechReq {
+    pub text: String,
+    /// `None` = the config's default speech model.
+    pub model: Option<String>,
+    /// A voice the model knows; `None` = the model's own default.
+    pub voice: Option<String>,
+}
+
+/// Spoken audio.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioOut {
+    pub bytes: Vec<u8>,
+    /// `mp3`: the one compressed format the speech API returns.
+    pub format: String,
 }
 
 /// A submitted video job.
@@ -106,4 +125,6 @@ pub trait MediaBackend: Send + Sync {
     async fn poll_video(&self, job: &str) -> Result<VideoState, MediaError>;
     /// Download a finished job's file to `dest` (confined by the caller).
     async fn download(&self, url: &str, dest: &Path) -> Result<(), MediaError>;
+    /// M51.4: text to speech, sync (seconds, like an image).
+    async fn speak(&self, req: SpeechReq) -> Result<AudioOut, MediaError>;
 }

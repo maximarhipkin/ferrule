@@ -2897,6 +2897,14 @@ async fn gateway_factory(
                     session_id,
                     hidden_paths(owners),
                 )));
+                // M51.4: a voice reply.
+                if media.speaks() {
+                    agent.append_system_prompt(ferrule_agents::prompts::CHAT_VOICE);
+                    agent.register_tool(Arc::new(ferrule_gateway::tools::SpeakTool::new(
+                        media.clone(),
+                        session_id,
+                    )));
+                }
             }
         }
         // M56.6: ask with buttons, react, edit its last reply; its own chat only.

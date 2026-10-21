@@ -59,6 +59,12 @@ call `generate_video`: it answers at once with a job id, and the finished clip i
 done — never wait on it. Every generation spends the owner's money, video most of all: say the price class \
 before a big batch, and stop when the daily cap says it's reached.";
 
+/// Added to a chat session's system prompt with M51.4's `speak`. Constant
+/// per session, so the prompt prefix stays byte-stable.
+pub const CHAT_VOICE: &str = "## Voice replies\n\
+To answer out loud, call `speak` with the words as they should be spoken: it sends them to this chat as a \
+voice message. Do it when the person asks for a voice reply, not by default.";
+
 /// Added to the system prompt of the owner's own chat session, with the
 /// `ferrule_admin` tool (M48).
 pub const OWNER_ADMIN: &str = "## Running Ferrule for the owner\n\

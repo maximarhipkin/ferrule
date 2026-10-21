@@ -1100,6 +1100,22 @@ model = "whisper-large-v3"               # default: whisper-1
 # timeout_secs = 120
 ```
 
+**OpenRouter** (M51.4) has a speech-to-text endpoint too. Borrow the
+OpenRouter provider you already connected:
+
+```toml
+[transcription]
+backend = "openai"
+provider = "openrouter"                  # its base_url and key
+model = "openai/whisper-large-v3-turbo"  # any of OpenRouter's transcription models
+```
+
+A model name without a `/` (the default `whisper-1`) becomes
+`openai/<name>` there, OpenRouter's name for OpenAI's model. OpenRouter
+reports each call's cost (`usage.cost`), and that is what the ledger row
+holds instead of `price_per_minute`. This path follows OpenRouter's API
+reference; it hasn't been run against a live key yet.
+
 Or a program on this machine, such as whisper.cpp. `{file}` is the audio
 file's path. There's no shell, `~` is expanded, stdout is the transcript,
 and the program is killed at `timeout_secs`:
@@ -1125,8 +1141,20 @@ runs with a note saying why:
   gets the reason in one line.
 
 Each transcription is a ledger row (`call_kind = "transcription"`), costed
-at `price_per_minute` when the length is known. `ferrule doctor` has a
-`voice` line: which backend is active and why, or how to turn it on.
+at `price_per_minute` when the length is known (or at the cost the service
+reported, on OpenRouter). `ferrule doctor` has a `voice` line: which
+backend is active and why, or how to turn it on, and a `media` line:
+whether ffmpeg is on the PATH and was built with libass (M51.4). Ferrule
+needs neither; the agent can use them through the shell to trim or
+convert audio and video, and to burn subtitles.
+
+**Answering in voice** (M51.4). With `[media]` on, a chat's agent has
+`speak {text, voice?}`: OpenRouter's `/audio/speech` turns the text into
+an MP3, saved under `media/` in the workspace, and the chat gets it as a
+voice message (Telegram's `sendVoice`, which takes MP3; other channels
+send it as an audio file). The speech API returns MP3 or raw PCM, not
+Ogg/Opus, and none is converted. The agent uses it when asked for a voice
+reply, not by default. See `docs/models.md`, "Making media".
 
 ## Typing indicator
 
