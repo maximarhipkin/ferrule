@@ -380,13 +380,18 @@ fn a_failure_then_a_fix_keeps_a_gated_lesson_that_reaches_the_next_prompt_and_re
     assert!(out.contains(": done, 1 change(s), 0 rejected"), "{out}");
     let pb = home.read_playbook();
     assert!(pb.starts_with(OWNER), "the owner's lines stay: {pb}");
-    assert!(pb.contains(&format!("- [pb-1] {LESSON}")), "{pb}");
+    // M53.4: what a scheduled task's run teaches is keyed to that task.
+    assert!(
+        pb.contains(&format!("- [pb-1 @task:{task}] {LESSON}")),
+        "{pb}"
+    );
     // The gate agent ran in a scratch copy, not the workspace.
     assert!(!home.work().join("result.txt").exists());
     let rows = home.learn_rows();
     assert!(rows.len() >= 2, "a reflector call and gate calls: {rows:?}");
 
-    // The next session's system prompt carries it.
+    // The next terminal session's prompt has the owner's (global) lines,
+    // not the task's lesson (M53.4).
     home.ok(&["run", "NEXT: say hi"]);
     let next = |seen: &Mutex<Vec<Value>>| {
         let seen = seen.lock().unwrap();
@@ -400,7 +405,7 @@ fn a_failure_then_a_fix_keeps_a_gated_lesson_that_reaches_the_next_prompt_and_re
     };
     let prompt = next(&seen);
     assert!(prompt.contains("[Playbook]"), "{prompt}");
-    assert!(prompt.contains(LESSON), "{prompt}");
+    assert!(!prompt.contains(LESSON), "{prompt}");
     assert!(prompt.contains("Ask before deleting anything."), "{prompt}");
     // And so does the next run of the task that failed, on its resumed
     // session.
@@ -417,7 +422,10 @@ fn a_failure_then_a_fix_keeps_a_gated_lesson_that_reaches_the_next_prompt_and_re
     assert!(rerun.contains(LESSON), "{rerun}");
 
     let out = home.ok(&["learn", "diff"]);
-    assert!(out.contains(&format!("+- [pb-1] {LESSON}")), "{out}");
+    assert!(
+        out.contains(&format!("+- [pb-1 @task:{task}] {LESSON}")),
+        "{out}"
+    );
     let out = home.ok(&["learn", "show"]);
     assert!(
         out.contains(LESSON) && out.contains("learning: off"),

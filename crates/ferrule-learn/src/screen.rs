@@ -110,6 +110,14 @@ pub fn ferrule_data(text: &str) -> Option<&'static str> {
         .map(|(_, what)| *what)
 }
 
+/// Whether two lessons say the same thing: equal but for case, or a
+/// word-set Jaccard of at least [`DUPLICATE_JACCARD`] (M53.4: the same
+/// lesson kept in another scope is promoted).
+pub fn same(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
+        || jaccard(&word_set(a), &word_set(b)) >= DUPLICATE_JACCARD
+}
+
 pub fn word_set(s: &str) -> HashSet<String> {
     s.split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.chars().count() >= 2 || w.chars().any(|c| c.is_numeric()))
@@ -134,10 +142,12 @@ mod tests {
             Lesson {
                 id: Some(1),
                 text: "Run cargo fmt before finishing a Rust change.".into(),
+                scope: None,
             },
             Lesson {
                 id: None,
                 text: "Answer in Hebrew in the support groups.".into(),
+                scope: None,
             },
         ]
     }

@@ -16,6 +16,7 @@ pub mod judge;
 pub mod pass;
 pub mod playbook;
 pub mod reflect;
+pub mod scope;
 pub mod screen;
 pub mod skills;
 
@@ -24,5 +25,5 @@ pub use episode::Episode;
 pub use files::{LearnDir, PassRecord, State};
 pub use gate::{Gate, GateRun, GateVerdict, ProbeOut, WorkspaceGate};
 pub use pass::{plan, revert, run_pass, Env, Options, Plan};
-pub use playbook::{prompt_block, Applied, Delta, Lesson, Playbook, PromptBlock};
+pub use playbook::{prompt_block, prompt_block_for, Applied, Delta, Lesson, Playbook, PromptBlock};
 pub use skills::SkillDraft;

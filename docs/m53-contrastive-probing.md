@@ -243,3 +243,61 @@ a learned skill by hand makes it stop loading (its digest changed); the
 fix is to move it to their own skills folder. The gate re-runs the
 episode with the skill offered, but nothing checks that the agent
 activated it.
+
+## M53.4 — scoped lessons and skills; add one, cut one
+
+Built 2026-10-21 on `autopilot`, from the gap analysis's M53.4.
+
+**Why.** Scoping was worth 2.9 and 3.7 points in Harness²'s ablation
+([arXiv Table 3](https://arxiv.org/html/2610.14224)), and its domain
+prompt says "Never store this matter's facts as durable memory"
+([prompts.py](https://github.com/google-research/harness2/blob/1cfe254e8d25b15f37048c3730134686abe60335/harness2/core/prompts.py#L372-L408)).
+Every lesson went into every agent's prompt, so a lesson from one
+project or one chat could mislead another. And a full playbook refused
+every new lesson instead of letting an old one go.
+
+**Scopes** (`ferrule-learn/src/scope.rs`, `learn::scope_for`):
+- `task:<id>` for a scheduled task's runs (`scheduler__<id>`);
+- `chat:<channel>__<chat>` for a gateway chat;
+- `workspace:<path>` for everything else (a terminal run or chat).
+
+A sub-agent shares its root's. `build_agent_from` writes the scope as a
+`learn_scope` meta line in the session's transcript. The pass reads it
+for a session episode; a task episode gets the task's. An episode with
+neither (a transcript from before M53.4) gets the pass's workspace.
+
+**Lessons.** A lesson the pass adds is written `- [pb-N @scope] text`.
+A prompt gets the global lessons (no scope: the owner's lines and
+promoted ones) and its own scope's (`prompt_block_for`,
+`learn::prompt_section`). The reflector sees the same view, and an edit
+or retire must name a lesson in it. `ferrule eval`'s opt-in owner
+playbook gets the global lessons only.
+
+**Skills.** `learn/skills.json` records each learned skill's scope.
+Each agent's view (`learn::skill_view`) offers a learned skill only when
+it is global or of the agent's scope, and the reflector lists only
+those.
+
+**Promotion.** A lesson the reflector proposes that repeats (word-set
+Jaccard ≥ 0.9) a pass lesson of another scope becomes a `promote` of
+that lesson: its scope tag goes, and it is global. A skill kept under a
+name another scope already has is a `promote` too: the new draft
+replaces it, global. Both are gated first, like any add, with the
+promoted lesson or skill in the gate run's prompt. Both are revertible:
+`learn revert` puts the scope back, or the old skill.
+
+**Add one, cut one.** Once the view reaches 90% of `max_bullets` (36 of
+40), an add or a promotion must retire a lesson of the view as well.
+The reflector is told and may name it (`"retire":"pb-N"`). Without a
+valid pick, the pass retires the `[pb-N]` lesson no pass has kept
+(added, edited or promoted) for longest; `learn/state.json`'s `touched`
+holds those times. Ferrule can't see whether an agent followed a
+lesson, so "unused" can only mean "not kept again". The retire is gated
+with the add, as one candidate, and journaled as its own change ("made
+room for add pb-N"). An add is refused only when the view is full and
+holds no pass lesson to retire.
+
+**Not done.** No real pass has run with scopes. A gateway chat and a
+terminal run in the same workspace are different scopes. A gateway's
+workspace has no scope of its own, so a lesson from one chat never
+reaches the gateway's other chats until a second chat keeps it.

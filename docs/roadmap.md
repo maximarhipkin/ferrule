@@ -1180,6 +1180,11 @@ each in `docs/m53-contrastive-probing.md`):
   shipped, scripts that parse in the sandbox) and M13's inspect-and-scan
   path, gated like a lesson, locked by digest in `learn/skills.json`,
   loaded as origin `learned`, revertible.
+- **M53.4**, scoped learning: lessons (`[pb-N @scope]`) and learned
+  skills keyed to a workspace, a gateway chat or a scheduled task; a
+  prompt gets the global ones and its scope's; kept in a second scope,
+  one is promoted to global; near the cap (90%), an add retires the
+  reflector's pick or the lesson no pass kept for longest.
 
 ### M54 — protected autonomous mode
 

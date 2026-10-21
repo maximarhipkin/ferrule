@@ -112,21 +112,37 @@ pub enum LearnCmd {
 }
 
 /// The `[Playbook]` section for a system prompt, if there are lessons and
-/// `[learning] playbook` is on.
-pub fn prompt_section(cfg: &LearningConfig) -> Option<String> {
+/// `[learning] playbook` is on: the global lessons, and (M53.4) those of
+/// `scope`.
+pub fn prompt_section(cfg: &LearningConfig, scope: Option<&str>) -> Option<String> {
     if !cfg.playbook {
         return None;
     }
     let dir = LearnDir::new(&config::data_dir().ok()?);
     let text = dir.read_playbook().ok()?;
-    ferrule_learn::prompt_block(&text, cfg.max_bullets, PROMPT_CHARS).text
+    ferrule_learn::prompt_block_for(&text, scope, cfg.max_bullets, PROMPT_CHARS).text
+}
+
+/// M53.4: the scope an agent of run tree `tree` learns and is taught in:
+/// a scheduled task's (`scheduler__<task>`), a gateway chat's
+/// (`<channel>__<chat>`), else its workspace's.
+pub fn scope_for(tree: &str, workspace: &Path) -> String {
+    let scheduler = format!("{SCHEDULER_PSEUDO_CHANNEL}__");
+    if let Some(task) = tree.strip_prefix(&scheduler) {
+        return ferrule_learn::scope::task(task);
+    }
+    if crate::channels::of_session(tree).is_some() {
+        return ferrule_learn::scope::chat(tree);
+    }
+    ferrule_learn::scope::workspace(workspace)
 }
 
 /// M53.3: an agent's view of the learned skills. One loads only while its
 /// SKILL.md is the one the pass kept (`learn/skills.json`, which no agent
-/// can read or write: the lock of M13's path) and it still scans clean.
-/// Every other skill passes. Checked on use, cached by modification time.
-pub fn skill_view() -> ferrule_skills::Keep {
+/// can read or write: the lock of M13's path) and it still scans clean;
+/// M53.4: and only when it was kept for `scope` or is global. Every other
+/// skill passes. Checked on use, cached by modification time.
+pub fn skill_view(scope: Option<String>) -> ferrule_skills::Keep {
     let data = config::data_dir().ok();
     let cache = Mutex::new(ViewCache::default());
     Arc::new(move |s: &ferrule_skills::Skill| {
@@ -134,7 +150,7 @@ pub fn skill_view() -> ferrule_skills::Keep {
             return true;
         }
         match &data {
-            Some(data) => cache.lock().unwrap().allows(data, s),
+            Some(data) => cache.lock().unwrap().allows(data, s, scope.as_deref()),
             None => false,
         }
     })
@@ -153,7 +169,7 @@ struct ViewCache {
 }
 
 impl ViewCache {
-    fn allows(&mut self, data: &Path, s: &ferrule_skills::Skill) -> bool {
+    fn allows(&mut self, data: &Path, s: &ferrule_skills::Skill, scope: Option<&str>) -> bool {
         let dir = LearnDir::new(data);
         let at = modified(&dir.root().join("skills.json"));
         if self.index.as_ref().is_none_or(|(m, _)| *m != at) {
@@ -163,6 +179,7 @@ impl ViewCache {
             .index
             .as_ref()
             .and_then(|(_, i)| i.skills.get(&s.name))
+            .filter(|e| e.applies(scope))
             .map(|e| e.digest.clone())
         else {
             return false;
@@ -382,6 +399,8 @@ pub fn task_episodes(data: &Path, cursor: i64) -> Result<Vec<Episode>> {
             fixed: runs[..i].iter().any(|r| r.status == RunStatus::Succeeded),
             transcript: transcript.exists().then_some(transcript),
             at: at(run),
+            // M53.4: what a task's run teaches applies to that task.
+            scope: Some(scope_for(&session, data)),
         });
     }
     Ok(out)
@@ -546,8 +565,8 @@ fn show(dir: &LearnDir) -> Result<()> {
     } else {
         let block = ferrule_learn::prompt_block(&text, l.max_bullets, PROMPT_CHARS);
         match &block.text {
-            Some(t) => println!("in prompts:\n{t}"),
-            None => println!("in prompts: nothing yet (no lessons)"),
+            Some(t) => println!("in prompts (every scope):\n{t}"),
+            None => println!("in prompts (every scope): nothing yet (no lessons)"),
         }
         if block.omitted > 0 {
             println!(
@@ -555,8 +574,35 @@ fn show(dir: &LearnDir) -> Result<()> {
                 block.omitted, l.max_bullets
             );
         }
+        // M53.4: the lessons one workspace, chat or task sees on top.
+        let scoped: Vec<_> = ferrule_learn::Playbook::parse(&text)
+            .lessons()
+            .into_iter()
+            .filter(|l| l.scope.is_some())
+            .collect();
+        if !scoped.is_empty() {
+            println!("only in their own scope:");
+            for lesson in scoped {
+                println!(
+                    "  {}: {}",
+                    lesson.scope.as_deref().unwrap_or_default(),
+                    lesson.text
+                );
+            }
+        }
     }
-    let skills = dir.learned_skills();
+    let index = dir.skills_index();
+    let mut skills = dir.learned_skills(None);
+    for (name, entry) in &index.skills {
+        if let Some(scope) = &entry.scope {
+            skills.extend(
+                dir.learned_skills(Some(scope))
+                    .into_iter()
+                    .filter(|(n, _)| n == name)
+                    .map(|(n, d)| (format!("{n} ({scope} only)"), d)),
+            );
+        }
+    }
     if skills.is_empty() {
         println!("learned skills: none yet");
     } else {

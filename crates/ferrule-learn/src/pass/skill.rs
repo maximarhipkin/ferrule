@@ -34,6 +34,8 @@ pub(super) struct Ctx<'a> {
     pub tail: &'a str,
     /// The playbook as it stands, for the gate run's prompt.
     pub playbook_block: Option<&'a str>,
+    /// M53.4: the episode's scope, where the skill applies.
+    pub scope: Option<&'a str>,
 }
 
 const OP: &str = "skill";
@@ -138,8 +140,17 @@ async fn drafted(
             None => Flow::Next,
         });
     }
-    let kept = skills::keep(&env.dir, &rec.id, rec.changes.len(), &dir, &draft.name)?;
-    let op = if kept.backup.is_some() || kept.previous.is_some() {
+    let kept = skills::keep(
+        &env.dir,
+        &rec.id,
+        rec.changes.len(),
+        &dir,
+        &draft.name,
+        cx.scope,
+    )?;
+    let op = if kept.promoted {
+        "promote"
+    } else if kept.backup.is_some() || kept.previous.is_some() {
         "replace"
     } else {
         "add"
@@ -155,6 +166,7 @@ async fn drafted(
         description: draft.description.trim().to_string(),
         op: op.into(),
         digest: kept.digest,
+        scope: kept.scope,
         backup: kept.backup,
         previous: kept.previous,
         scripts: draft.scripts.keys().cloned().collect(),

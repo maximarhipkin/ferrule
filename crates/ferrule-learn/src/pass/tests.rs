@@ -76,6 +76,7 @@ fn ep(n: i64) -> Episode {
         fixed: true,
         transcript: None,
         at: n * 100,
+        scope: None,
     }
 }
 

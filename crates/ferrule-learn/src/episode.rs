@@ -37,6 +37,10 @@ pub struct Episode {
     pub transcript: Option<PathBuf>,
     /// Unix seconds; the review cursor moves over it.
     pub at: i64,
+    /// M53.4: where what it teaches applies (`crate::scope`): the task's,
+    /// or the session's `learn_scope` meta line. `None`: the pass's
+    /// workspace.
+    pub scope: Option<String>,
 }
 
 /// Transcript lines that are messages, as JSON; unreadable lines skipped.
@@ -50,6 +54,20 @@ fn messages(path: &Path) -> Vec<Value> {
         .map(|v| v["message"].clone())
         .collect()
 }
+
+/// The last value of a transcript's `key` meta line.
+pub fn meta(path: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    text.lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("meta"))
+        .filter(|v| v.get("key").and_then(Value::as_str) == Some(key))
+        .find_map(|v| v.get("value").and_then(Value::as_str).map(str::to_string))
+}
+
+/// The meta line a session's agent writes naming its scope (M53.4).
+pub const SCOPE_META: &str = "learn_scope";
 
 fn content(m: &Value) -> &str {
     m.get("content").and_then(Value::as_str).unwrap_or("")
@@ -154,6 +172,7 @@ fn session_episode(id: &str, path: &Path, at: i64) -> Option<Episode> {
         fixed: !stopped,
         transcript: Some(path.to_path_buf()),
         at,
+        scope: meta(path, SCOPE_META),
     })
 }
 

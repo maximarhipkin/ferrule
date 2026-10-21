@@ -7608,3 +7608,51 @@ the learned-skills list.
 **Open.** No real pass has proposed a skill. Hand-editing a learned skill
 stops it loading (its digest changed). Nothing checks that the gate run
 activated the skill it was offered.
+
+### 2026-10-21 — M53.4: scoped lessons and skills; add one, cut one (Claude, Opus 5.5)
+
+**Why.** Every lesson reached every agent, so one project's or one
+chat's lesson could mislead another (scoping was worth 2.9 and 3.7
+points in Harness²'s ablation). A full playbook refused every new
+lesson instead of letting an old one go.
+
+**What changed.**
+- `ferrule-learn`:
+  - `scope.rs` (new): `workspace:<path>`, `chat:<session>`, `task:<id>`.
+  - `playbook.rs`: `[pb-N @scope]` lines (`Lesson.scope`), `lessons_for`,
+    `apply_in` (an add keyed to a scope), `Delta::Promote` (the pass's
+    only), `Applied.scope` so retire and promote invert, and
+    `prompt_block_for` (`prompt_block` is the global lessons only).
+  - `episode.rs`: `Episode.scope`, read from the session's
+    `learn_scope` meta line (`meta`, `SCOPE_META`).
+  - `pass.rs`: the reflector and the guards see the episode's view
+    (global and its scope); a repeat of another scope's lesson becomes a
+    `promote`; at 90% of `max_bullets` (`near_cap`) an add or promote
+    also retires the reflector's `"retire"` pick or the lesson no pass
+    kept for longest (`State.touched`), gated together and journaled as
+    two changes.
+  - `skills.rs`: `Entry.scope` and `applies`; `keep` promotes a skill
+    kept in a second scope; `learned_skills(scope)`.
+  - `reflect.rs`: `Proposal.retire`, the nearly-full note.
+- `ferrule-cli`: `learn::scope_for` (task, chat or workspace);
+  `build_agent_from` logs it as `learn_scope` and passes it to
+  `prompt_section` and `skill_view`; task episodes carry the task's
+  scope; `ferrule learn show` lists scoped lessons and skills; eval's
+  opt-in owner playbook gets the global lessons.
+- Docs: `m53-contrastive-probing.md` ("M53.4"), `m16-learning-loop.md`
+  (§3's line format and cap rule), the roadmap.
+
+**Tests changed, none added.** The struct literals that gained a field
+(`Lesson` in `screen.rs` and `reflect.rs`, `Episode` in `reflect.rs` and
+`pass/tests.rs`, `State` in `files.rs`). The CLI's learning story
+(`tests/it/learn.rs`): the task's lesson is now written
+`[pb-1 @task:<id>]`, reaches the task's next run but not a terminal
+`run` (it did before), and `learn diff` shows the tagged line.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** No real pass has run with scopes. A chat's lesson never reaches
+the gateway's other chats until a second chat keeps it. "Unused" can
+only mean "not kept again": ferrule can't see whether a lesson was
+followed.

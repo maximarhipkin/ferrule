@@ -365,6 +365,16 @@ pub struct Entry {
     /// The pass that kept it.
     pub pass: String,
     pub at: String,
+    /// M53.4: the one scope it is offered in; `None` is everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+impl Entry {
+    /// Whether an agent in `scope` is offered it (M53.4).
+    pub fn applies(&self, scope: Option<&str>) -> bool {
+        self.scope.is_none() || self.scope.as_deref() == scope
+    }
 }
 
 /// `learn/skills.json`: the learned skills the pass kept, by name.
@@ -397,9 +407,10 @@ impl LearnDir {
         )
     }
 
-    /// The learned skills as the reflector sees them: name and
-    /// description, those the index holds.
-    pub fn learned_skills(&self) -> Vec<(String, String)> {
+    /// The learned skills as the reflector sees them in `scope`: name and
+    /// description, those the index holds there (M53.4: global or that
+    /// scope's).
+    pub fn learned_skills(&self, scope: Option<&str>) -> Vec<(String, String)> {
         let index = self.skills_index();
         let set = ferrule_skills::discover(
             &[SkillRoot {
@@ -410,7 +421,7 @@ impl LearnDir {
         );
         set.skills
             .into_iter()
-            .filter(|s| index.skills.contains_key(&s.name))
+            .filter(|s| index.skills.get(&s.name).is_some_and(|e| e.applies(scope)))
             .map(|s| (s.name, s.description))
             .collect()
     }
@@ -420,6 +431,10 @@ impl LearnDir {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Kept {
     pub digest: String,
+    /// Where it applies now.
+    pub scope: Option<String>,
+    /// M53.4: it was kept in another scope before, so it is global now.
+    pub promoted: bool,
     /// The learned skill it replaced, under the pass dir.
     pub backup: Option<String>,
     pub previous: Option<Entry>,
@@ -433,14 +448,16 @@ pub fn digest(dir: &Path) -> Option<String> {
 }
 
 /// Copies the validated draft into `learned-skills/<name>/` and records
-/// it. A learned skill of that name is moved into the pass dir first
-/// (`skills/<n>-<name>`), so an undo can put it back.
+/// it for `scope`. A learned skill of that name is moved into the pass dir
+/// first (`skills/<n>-<name>`), so an undo can put it back. M53.4: one
+/// already kept in another scope makes this one global.
 pub fn keep(
     dir: &LearnDir,
     pass: &str,
     n: usize,
     draft: &Path,
     name: &str,
+    scope: Option<&str>,
 ) -> Result<Kept, String> {
     let dest = dir.skills_root().join(name);
     let mut backup = None;
@@ -463,18 +480,29 @@ pub fn keep(
     }
     let digest = digest(&dest).ok_or("the kept SKILL.md can't be read")?;
     let mut index = dir.skills_index();
+    let (new_scope, promoted) = match index.skills.get(name).map(|e| e.scope.as_deref()) {
+        None => (scope.map(str::to_string), false),
+        // Global stays global.
+        Some(None) => (None, false),
+        Some(Some(was)) if Some(was) == scope => (scope.map(str::to_string), false),
+        // Kept in a second scope: everywhere from now on.
+        Some(Some(_)) => (None, true),
+    };
     let previous = index.skills.insert(
         name.to_string(),
         Entry {
             digest: digest.clone(),
             pass: pass.to_string(),
             at: chrono::Utc::now().to_rfc3339(),
+            scope: new_scope.clone(),
         },
     );
     dir.save_skills_index(&index)
         .map_err(|e| format!("couldn't record the skill: {e:#}"))?;
     Ok(Kept {
         digest,
+        scope: new_scope,
+        promoted,
         backup,
         previous,
     })

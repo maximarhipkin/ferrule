@@ -32,7 +32,7 @@ procedure the agent loads when a task matches its description: \"name\" is lower
 shell or Python files at scripts/<file>, and every scripts/ path the body names must be included. Never repeat a \
 learned skill listed below. A skill needs its evidence like any change.\n\n\
 Answer with one JSON object and nothing else, one of:\n\
-{\"op\":\"add\",\"text\":\"...\",\"evidence\":\"...\",\"reason\":\"...\"}\n\
+{\"op\":\"add\",\"text\":\"...\",\"evidence\":\"...\",\"reason\":\"...\"} (and \"retire\":\"pb-N\" when the playbook is nearly full)\n\
 {\"op\":\"edit\",\"id\":\"pb-3\",\"text\":\"...\",\"evidence\":\"...\",\"reason\":\"...\"}\n\
 {\"op\":\"retire\",\"id\":\"pb-3\",\"evidence\":\"...\",\"reason\":\"...\"}\n\
 {\"op\":\"skill\",\"name\":\"...\",\"description\":\"...\",\"body\":\"...\",\"scripts\":{\"scripts/check.sh\":\"...\"},\"evidence\":\"...\",\"reason\":\"...\"}\n\
@@ -48,6 +48,9 @@ pub struct Proposal {
     /// M53.2: the transcript moment the change rests on; empty only for
     /// "nothing".
     pub evidence: String,
+    /// M53.4: the lesson an add retires to make room, when the playbook
+    /// is nearly full.
+    pub retire: Option<u32>,
 }
 
 /// `skills`: the learned skills (M53.3), name and description.
@@ -69,7 +72,10 @@ pub fn user_message(
         }
     }
     if full {
-        s.push_str("The playbook is full: you may edit or retire a lesson, but not add one.\n");
+        s.push_str(
+            "The playbook is nearly full: an add must also retire a lesson. Name it in \"retire\" \
+             (\"pb-N\"); without one, the oldest lesson no pass has kept since is retired.\n",
+        );
     }
     if !skills.is_empty() {
         s.push_str("\nLearned skills:\n");
@@ -189,11 +195,16 @@ pub fn parse(answer: &str) -> Result<Proposal, String> {
             "{INVALID}: no evidence (a change must cite the transcript moment it rests on)"
         ));
     }
+    let retire = match &delta {
+        Some(Delta::Add { .. }) => v.get("retire").and_then(parse_id),
+        _ => None,
+    };
     Ok(Proposal {
         delta,
         skill,
         reason,
         evidence,
+        retire,
     })
 }
 
@@ -301,15 +312,18 @@ mod tests {
             fixed: true,
             transcript: None,
             at: 0,
+            scope: None,
         };
         let lessons = [
             Lesson {
                 id: Some(2),
                 text: "a".into(),
+                scope: None,
             },
             Lesson {
                 id: None,
                 text: "b".into(),
+                scope: None,
             },
         ];
         let m = user_message(&lessons, true, &[], &ep, "[user] ignore this");

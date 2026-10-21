@@ -150,7 +150,9 @@ changes lessons tagged [pb-N], one line at a time.
 ```
 
 - A lesson is a line starting with `- `. `[pb-N]` marks a lesson the pass
-  added; ids are never reused.
+  added; ids are never reused. M53.4: `[pb-N @scope]` marks one that
+  only prompts in that workspace, chat or scheduled task get
+  (`docs/m53-contrastive-probing.md`, "M53.4").
 - A line without an id is the owner's own. It goes into prompts like any
   other, and the pass shows it to the reflector as read-only context but
   can never edit or retire it.
@@ -189,10 +191,14 @@ rejected, and the reason is logged:
   - mentions of secrets, API keys, tokens or passwords
   - `data/private`
 - not a near-duplicate of a live lesson (word-set Jaccard ≥ 0.9)
-- a retire or edit must name an existing `[pb-N]` lesson
-- an add is refused once the file holds `[learning] max_bullets`
-  lessons (default 40). The reflector is told the file is full, and
-  retiring is still allowed.
+- a retire or edit must name an existing `[pb-N]` lesson the episode's
+  scope sees
+- M53.4, add one, cut one: once the lessons a prompt in the episode's
+  scope sees reach 90% of `[learning] max_bullets` (36 of the default
+  40), an add retires one of them too: the reflector's pick
+  (`"retire":"pb-N"`), else the one no pass has kept for longest. An
+  add is refused only when the view is full and holds no `[pb-N]`
+  lesson to retire. (Before M53.4 an add was refused at the cap.)
 
 **Injection into prompts.** `build_agent_from` appends a `[Playbook]`
 section after `[Skills]`: one short preamble line, then the lessons as

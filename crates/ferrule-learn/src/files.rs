@@ -31,6 +31,10 @@ pub struct State {
     /// The largest `[pb-N]` ever handed out; ids are never reused.
     #[serde(default)]
     pub last_id: u32,
+    /// M53.4: when a pass last kept each `[pb-N]` (added, edited or
+    /// promoted it), Unix seconds. The oldest is the first to make room.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub touched: std::collections::BTreeMap<u32, i64>,
 }
 
 /// One change a pass made.
@@ -58,10 +62,14 @@ pub enum Change {
     Skill {
         name: String,
         description: String,
-        /// `add`, or `replace` when a learned skill of that name was there.
+        /// `add`; `replace` when a learned skill of that name was there;
+        /// `promote` (M53.4) when that one was kept in another scope.
         op: String,
         /// SHA-256 of the SKILL.md kept.
         digest: String,
+        /// M53.4: where it applies; `None` is everywhere (a `promote`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
         /// The skill it replaced, under the pass dir's `skills/`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         backup: Option<String>,
@@ -449,6 +457,7 @@ mod tests {
         dir.save_state(&State {
             cursor: 42,
             last_id: 1,
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(dir.read_playbook().unwrap(), "- [pb-1] x\n");

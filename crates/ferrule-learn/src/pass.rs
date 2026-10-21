@@ -11,7 +11,7 @@ use crate::files::{
     RUNNING, STOPPED_BUDGET, STOPPED_ERRORS,
 };
 use crate::gate::{Gate, GateRun, GateVerdict};
-use crate::playbook::{prompt_block, Delta, Playbook, TEMPLATE};
+use crate::playbook::{prompt_block_for, Delta, Playbook, TEMPLATE};
 use crate::reflect::{self, Proposal};
 use crate::screen;
 use anyhow::{bail, Result};
@@ -25,6 +25,12 @@ use std::time::Instant;
 
 /// Model calls that fail in a row before the pass gives up.
 pub const MAX_ERRORS_IN_ROW: usize = 3;
+
+/// M53.4: from this many lessons in a prompt's view (90% of
+/// `max_bullets`), an add must retire one: add one, cut one.
+pub fn near_cap(max_bullets: usize) -> usize {
+    (max_bullets * 9 / 10).max(1)
+}
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -350,15 +356,21 @@ async fn body(
             .as_deref()
             .map(render_tail)
             .unwrap_or_default();
-        let lessons = pb.lessons();
-        let full = lessons.len() >= opts.max_bullets;
+        // M53.4: the episode's scope, and what a prompt there sees.
+        let scope = ep
+            .scope
+            .clone()
+            .or_else(|| opts.workspace.as_deref().map(crate::scope::workspace));
+        let scope = scope.as_deref();
+        let lessons = pb.lessons_for(scope);
+        let full = lessons.len() >= near_cap(opts.max_bullets);
         let answer = ask(
             env,
             meter,
             &id,
             "reflect",
             reflect::SYSTEM,
-            reflect::user_message(&lessons, full, &dir.learned_skills(), ep, &tail),
+            reflect::user_message(&lessons, full, &dir.learned_skills(scope), ep, &tail),
         )
         .await;
         let text = match answer {
@@ -396,10 +408,12 @@ async fn body(
             skill: proposed_skill,
             reason,
             evidence,
+            retire: pick,
         } = proposal;
         // M53.3: a skill goes through its own validators, then the same gate.
         if let Some(draft) = proposed_skill {
-            let block = prompt_block(&pb.render(), opts.max_bullets, opts.max_prompt_chars);
+            let block =
+                prompt_block_for(&pb.render(), scope, opts.max_bullets, opts.max_prompt_chars);
             let flow = skill::delta(
                 skill::Ctx {
                     env,
@@ -409,6 +423,7 @@ async fn body(
                     episode: ep,
                     tail: &tail,
                     playbook_block: block.text.as_deref(),
+                    scope,
                 },
                 rec,
                 draft,
@@ -435,7 +450,7 @@ async fn body(
                 }
             }
         }
-        let Some(delta) = delta else {
+        let Some(mut delta) = delta else {
             note(rec, ep, format!("no change: {reason}"));
             cursor = cursor.max(ep.at);
             dir.save_pass(rec)?;
@@ -445,26 +460,19 @@ async fn body(
             delta.op(),
             match &delta {
                 Delta::Add { .. } => None,
-                Delta::Edit { id, .. } | Delta::Retire { id } => Some(*id),
+                Delta::Edit { id, .. } | Delta::Retire { id } | Delta::Promote { id } => Some(*id),
             },
             delta.text().map(str::to_string),
         );
+        let visible = |n: u32| lessons.iter().any(|l| l.id == Some(n));
         // Guards on the proposal itself.
         let guard = match &delta {
-            Delta::Add { text } if full => Err(format!(
-                "the playbook is full ({} lessons, max_bullets {}); {text:?} not added",
-                lessons.len(),
-                opts.max_bullets
-            )),
             Delta::Add { text } => screen::check(text, &lessons, None),
-            Delta::Edit { id: n, text } => match pb.get(*n) {
-                None => Err(format!("there is no lesson pb-{n} to edit")),
-                Some(_) => screen::check(text, &lessons, Some(*n)),
-            },
-            Delta::Retire { id: n } => match pb.get(*n) {
-                None => Err(format!("there is no lesson pb-{n} to retire")),
-                Some(_) => Ok(()),
-            },
+            Delta::Edit { id: n, text } if visible(*n) => screen::check(text, &lessons, Some(*n)),
+            Delta::Edit { id: n, .. } => Err(format!("there is no lesson pb-{n} to edit here")),
+            Delta::Retire { id: n } if visible(*n) => Ok(()),
+            Delta::Retire { id: n } => Err(format!("there is no lesson pb-{n} to retire here")),
+            Delta::Promote { .. } => Err("the reflector can't promote".into()),
         };
         if let Err(why) = guard {
             reject(rec, dir, &ep.key, op, did, dtext, why);
@@ -472,6 +480,54 @@ async fn body(
             cursor = cursor.max(ep.at);
             dir.save_pass(rec)?;
             continue;
+        }
+        // M53.4: the same lesson kept in another scope before: this second
+        // scope promotes it to global instead of adding a copy.
+        if let Delta::Add { text } = &delta {
+            let elsewhere = pb.lessons().into_iter().find(|l| {
+                l.id.is_some()
+                    && l.scope.is_some()
+                    && l.scope.as_deref() != scope
+                    && screen::same(text, &l.text)
+            });
+            if let Some(l) = elsewhere.and_then(|l| l.id) {
+                delta = Delta::Promote { id: l };
+            }
+        }
+        let (op, did) = (
+            delta.op(),
+            match &delta {
+                Delta::Promote { id } => Some(*id),
+                _ => did,
+            },
+        );
+        // M53.4: add one, cut one. Near the cap, an add (or a promotion,
+        // which shows here too) retires a lesson this scope sees: the
+        // reflector's pick, else the oldest no pass has kept since.
+        let mut cut = None;
+        if full && matches!(delta, Delta::Add { .. } | Delta::Promote { .. }) {
+            let mine = |n: u32| lessons.iter().any(|l| l.id == Some(n)) && Some(n) != did;
+            cut = match pick.filter(|n| mine(*n)) {
+                Some(n) => Some((n, "the reflector's pick")),
+                None => lessons
+                    .iter()
+                    .filter_map(|l| l.id)
+                    .filter(|n| mine(*n))
+                    .min_by_key(|n| (state.touched.get(n).copied().unwrap_or(0), *n))
+                    .map(|n| (n, "the oldest lesson no pass kept since")),
+            };
+            if cut.is_none() && lessons.len() >= opts.max_bullets {
+                let why = format!(
+                    "the playbook is full ({} lessons here, max_bullets {}) and holds no lesson the pass may retire",
+                    lessons.len(),
+                    opts.max_bullets
+                );
+                reject(rec, dir, &ep.key, op, did, dtext, why);
+                note(rec, ep, format!("rejected {op}"));
+                cursor = cursor.max(ep.at);
+                dir.save_pass(rec)?;
+                continue;
+            }
         }
         let new_id = last_id + 1;
         let mut gate_reason = String::from("retire is not gated");
@@ -483,12 +539,23 @@ async fn body(
                 break;
             }
             let mut candidate = pb.clone();
-            if let Err(e) = candidate.apply(&delta, new_id) {
+            let tried = candidate
+                .apply_in(&delta, new_id, scope)
+                .and_then(|_| match cut {
+                    Some((n, _)) => candidate.apply(&Delta::Retire { id: n }, 0).map(|_| ()),
+                    None => Ok(()),
+                });
+            if let Err(e) = tried {
                 reject(rec, dir, &ep.key, op, did, dtext, e);
                 cursor = cursor.max(ep.at);
                 continue;
             }
-            let block = prompt_block(&candidate.render(), opts.max_bullets, opts.max_prompt_chars);
+            let block = prompt_block_for(
+                &candidate.render(),
+                scope,
+                opts.max_bullets,
+                opts.max_prompt_chars,
+            );
             gate_n += 1;
             let sink = LearnSink::new(
                 env.ledger.clone(),
@@ -513,8 +580,11 @@ async fn body(
             let verdict = if !probed {
                 env.gate.run(run).await
             } else {
-                let lesson = dtext.as_deref().unwrap_or("");
-                judged(env, meter, &id, ep, &tail, lesson, run).await
+                let lesson = match &delta {
+                    Delta::Promote { id } => pb.get(*id).unwrap_or("").to_string(),
+                    _ => dtext.clone().unwrap_or_default(),
+                };
+                judged(env, meter, &id, ep, &tail, &lesson, run).await
             };
             if !verdict.passed {
                 let budget = meter.exceeded();
@@ -539,7 +609,7 @@ async fn body(
             }
             gate_reason = verdict.reason;
         }
-        let applied = match pb.apply(&delta, new_id) {
+        let applied = match pb.apply_in(&delta, new_id, scope) {
             Ok(a) => a,
             Err(e) => {
                 reject(rec, dir, &ep.key, op, did, dtext, e);
@@ -547,8 +617,22 @@ async fn body(
                 continue;
             }
         };
+        let cut_applied = match cut {
+            Some((n, why)) => pb.apply(&Delta::Retire { id: n }, 0).ok().map(|a| (a, why)),
+            None => None,
+        };
         if matches!(delta, Delta::Add { .. }) {
             last_id = new_id;
+        }
+        if matches!(delta, Delta::Retire { .. }) {
+            state.touched.remove(&applied.id);
+        } else {
+            state
+                .touched
+                .insert(applied.id, chrono::Utc::now().timestamp());
+        }
+        if let Some((a, _)) = &cut_applied {
+            state.touched.remove(&a.id);
         }
         dir.write_playbook(&pb.render())?;
         // Ids are never reused, even if the pass dies right here.
@@ -560,13 +644,28 @@ async fn body(
             json!({ "episode": ep.key, "applied": applied, "reason": reason,
                     "evidence": evidence }),
         );
+        let made_room_for = format!("{} pb-{}", applied.op, applied.id);
         rec.changes.push(Change::Playbook {
             applied,
             reason,
             episode: ep.key.clone(),
-            gate: gate_reason,
-            evidence,
+            gate: gate_reason.clone(),
+            evidence: evidence.clone(),
         });
+        if let Some((a, why)) = cut_applied {
+            dir.log(
+                &id,
+                "change",
+                json!({ "episode": ep.key, "applied": a, "reason": "add one, cut one" }),
+            );
+            rec.changes.push(Change::Playbook {
+                applied: a,
+                reason: format!("made room for {made_room_for} (add one, cut one: {why})"),
+                episode: ep.key.clone(),
+                gate: gate_reason,
+                evidence,
+            });
+        }
         note(rec, ep, format!("{op} kept"));
         cursor = cursor.max(ep.at);
         rec.spent = meter.spent();

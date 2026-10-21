@@ -1669,8 +1669,12 @@ fn build_agent_from(
     // M53: the harness stamp, one append-only transcript meta line naming
     // what produced this session — hashes, never contents.
     let mut stamp = ferrule_core::HarnessStamp::default();
+    // M53.4: the scope this tree learns and is taught in (its chat, its
+    // scheduled task or its workspace); a sub-agent shares its root's.
+    let learn_scope = learn::scope_for(&tree, &tool_ctx.workspace);
     if cfg.skills.enabled && !planning {
-        let (skills, tools) = mcp_tools.skill_tools(Some(learn::skill_view()));
+        let (skills, tools) =
+            mcp_tools.skill_tools(Some(learn::skill_view(Some(learn_scope.clone()))));
         let set = skills.get();
         stamp.skills = set
             .skills
@@ -1693,7 +1697,7 @@ fn build_agent_from(
 
     // M16: the playbook's lessons, read per agent so a pass's changes show
     // up in the next session. The file itself is hidden from the agent.
-    if let Some(block) = learn::prompt_section(&cfg.learning) {
+    if let Some(block) = learn::prompt_section(&cfg.learning, Some(&learn_scope)) {
         stamp.playbook = Some(ferrule_core::fnv64(block.as_bytes()));
         system.push_str(&format!("\n\n{block}"));
     }
@@ -1702,6 +1706,9 @@ fn build_agent_from(
         .map(|b| ferrule_core::fnv64(&b));
     if let Some(t) = &transcript {
         let _ = t.log_harness(&stamp);
+        // M53.4: the learning pass reads it to key what this session
+        // teaches.
+        let _ = t.log_meta(ferrule_learn::episode::SCOPE_META, &learn_scope);
     }
 
     if planning {

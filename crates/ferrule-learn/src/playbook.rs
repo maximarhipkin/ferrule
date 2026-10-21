@@ -3,6 +3,10 @@
 //! marks the ones the learning pass wrote, and only those can it edit or
 //! retire, one line at a time (ACE's delta updates, never a rewrite).
 //! Everything else in the file is the owner's and is kept byte for byte.
+//!
+//! M53.4: `[pb-N @scope]` keys a lesson to one workspace, chat or
+//! scheduled task (`crate::scope`); a prompt gets the global lessons and
+//! its own scope's. A lesson kept in a second scope is promoted to global.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +27,8 @@ enum Line {
     Lesson {
         id: Option<u32>,
         text: String,
+        /// M53.4: where it applies; `None` is everywhere.
+        scope: Option<String>,
         /// The line as read; `None` once the pass changed it.
         raw: Option<String>,
     },
@@ -33,6 +39,12 @@ impl Line {
     fn render(&self) -> String {
         match self {
             Line::Lesson { raw: Some(r), .. } => r.clone(),
+            Line::Lesson {
+                id: Some(id),
+                text,
+                scope: Some(scope),
+                ..
+            } => format!("- [pb-{id} @{scope}] {text}"),
             Line::Lesson {
                 id: Some(id), text, ..
             } => format!("- [pb-{id}] {text}"),
@@ -48,14 +60,28 @@ pub struct Lesson {
     /// `None` for the owner's own lessons, which the pass never changes.
     pub id: Option<u32>,
     pub text: String,
+    /// M53.4: the one scope it applies in; `None` is everywhere.
+    pub scope: Option<String>,
 }
 
 /// A change the reflector proposes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Delta {
-    Add { text: String },
-    Edit { id: u32, text: String },
-    Retire { id: u32 },
+    Add {
+        text: String,
+    },
+    Edit {
+        id: u32,
+        text: String,
+    },
+    Retire {
+        id: u32,
+    },
+    /// M53.4: a scoped lesson made global; the pass's, never the
+    /// reflector's.
+    Promote {
+        id: u32,
+    },
 }
 
 impl Delta {
@@ -64,13 +90,14 @@ impl Delta {
             Delta::Add { .. } => "add",
             Delta::Edit { .. } => "edit",
             Delta::Retire { .. } => "retire",
+            Delta::Promote { .. } => "promote",
         }
     }
 
     pub fn text(&self) -> Option<&str> {
         match self {
             Delta::Add { text } | Delta::Edit { text, .. } => Some(text),
-            Delta::Retire { .. } => None,
+            Delta::Retire { .. } | Delta::Promote { .. } => None,
         }
     }
 }
@@ -86,6 +113,10 @@ pub struct Applied {
     pub new: Option<String>,
     /// Index of the line in the file when it was applied.
     pub line: usize,
+    /// M53.4: the line's scope: where an add went, where a retired line
+    /// was, where a promoted one came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,17 +133,24 @@ fn parse_line(line: &str) -> Line {
     if rest.is_empty() {
         return Line::Other(line.to_string());
     }
-    let (id, text) = match rest
+    let tagged = rest
         .strip_prefix("[pb-")
         .and_then(|r| r.split_once(']'))
-        .and_then(|(n, t)| n.parse::<u32>().ok().map(|n| (n, t.trim())))
-    {
-        Some((n, t)) if !t.is_empty() => (Some(n), t.to_string()),
-        _ => (None, rest.to_string()),
+        .and_then(|(inside, t)| {
+            let (n, scope) = match inside.split_once(" @") {
+                Some((n, s)) => (n, Some(s.trim().to_string()).filter(|s| !s.is_empty())),
+                None => (inside, None),
+            };
+            n.trim().parse::<u32>().ok().map(|n| (n, scope, t.trim()))
+        });
+    let (id, scope, text) = match tagged {
+        Some((n, scope, t)) if !t.is_empty() => (Some(n), scope, t.to_string()),
+        _ => (None, None, rest.to_string()),
     };
     Line::Lesson {
         id,
         text,
+        scope,
         raw: Some(line.to_string()),
     }
 }
@@ -151,13 +189,34 @@ impl Playbook {
         self.lines
             .iter()
             .filter_map(|l| match l {
-                Line::Lesson { id, text, .. } => Some(Lesson {
+                Line::Lesson {
+                    id, text, scope, ..
+                } => Some(Lesson {
                     id: *id,
                     text: text.clone(),
+                    scope: scope.clone(),
                 }),
                 Line::Other(_) => None,
             })
             .collect()
+    }
+
+    /// M53.4: what a prompt in `scope` sees: the global lessons and that
+    /// scope's (`None`: the global ones only).
+    pub fn lessons_for(&self, scope: Option<&str>) -> Vec<Lesson> {
+        self.lessons()
+            .into_iter()
+            .filter(|l| l.scope.is_none() || l.scope.as_deref() == scope)
+            .collect()
+    }
+
+    fn scope_of(&self, id: u32) -> Option<Option<String>> {
+        self.lines.iter().find_map(|l| match l {
+            Line::Lesson {
+                id: Some(i), scope, ..
+            } if *i == id => Some(scope.clone()),
+            _ => None,
+        })
     }
 
     pub fn get(&self, id: u32) -> Option<&str> {
@@ -185,8 +244,19 @@ impl Playbook {
     }
 
     /// Applies `delta`; an add gets `new_id`. Only `[pb-N]` lessons can be
-    /// edited or retired.
+    /// edited or retired. An add is global.
     pub fn apply(&mut self, delta: &Delta, new_id: u32) -> Result<Applied, String> {
+        self.apply_in(delta, new_id, None)
+    }
+
+    /// [`Playbook::apply`], an add keyed to `scope` (M53.4). An edit keeps
+    /// the line's scope.
+    pub fn apply_in(
+        &mut self,
+        delta: &Delta,
+        new_id: u32,
+        scope: Option<&str>,
+    ) -> Result<Applied, String> {
         match delta {
             Delta::Add { text } => {
                 let at = match self
@@ -213,6 +283,7 @@ impl Playbook {
                     Line::Lesson {
                         id: Some(new_id),
                         text: text.clone(),
+                        scope: scope.map(str::to_string),
                         raw: None,
                     },
                 );
@@ -223,6 +294,7 @@ impl Playbook {
                     old: None,
                     new: Some(text.clone()),
                     line: at,
+                    scope: scope.map(str::to_string),
                 })
             }
             Delta::Edit { id, text } => {
@@ -230,9 +302,11 @@ impl Playbook {
                     .index_of(*id)
                     .ok_or_else(|| format!("there is no lesson pb-{id}"))?;
                 let old = self.get(*id).unwrap_or_default().to_string();
+                let scope = self.scope_of(*id).flatten();
                 self.lines[i] = Line::Lesson {
                     id: Some(*id),
                     text: text.clone(),
+                    scope: scope.clone(),
                     raw: None,
                 };
                 Ok(Applied {
@@ -241,6 +315,7 @@ impl Playbook {
                     old: Some(old),
                     new: Some(text.clone()),
                     line: i,
+                    scope,
                 })
             }
             Delta::Retire { id } => {
@@ -248,6 +323,7 @@ impl Playbook {
                     .index_of(*id)
                     .ok_or_else(|| format!("there is no lesson pb-{id}"))?;
                 let old = self.get(*id).unwrap_or_default().to_string();
+                let scope = self.scope_of(*id).flatten();
                 self.lines.remove(i);
                 Ok(Applied {
                     op: "retire".into(),
@@ -255,6 +331,30 @@ impl Playbook {
                     old: Some(old),
                     new: None,
                     line: i,
+                    scope,
+                })
+            }
+            Delta::Promote { id } => {
+                let i = self
+                    .index_of(*id)
+                    .ok_or_else(|| format!("there is no lesson pb-{id}"))?;
+                let Some(from) = self.scope_of(*id).flatten() else {
+                    return Err(format!("pb-{id} is global already"));
+                };
+                let text = self.get(*id).unwrap_or_default().to_string();
+                self.lines[i] = Line::Lesson {
+                    id: Some(*id),
+                    text: text.clone(),
+                    scope: None,
+                    raw: None,
+                };
+                Ok(Applied {
+                    op: "promote".into(),
+                    id: *id,
+                    old: None,
+                    new: Some(text),
+                    line: i,
+                    scope: Some(from),
                 })
             }
         }
@@ -277,6 +377,7 @@ impl Playbook {
                     self.lines[i] = Line::Lesson {
                         id: Some(id),
                         text: applied.old.clone().unwrap_or_default(),
+                        scope: self.scope_of(id).flatten(),
                         raw: None,
                     };
                     Ok(())
@@ -294,12 +395,26 @@ impl Playbook {
                     Line::Lesson {
                         id: Some(id),
                         text: applied.old.clone().unwrap_or_default(),
+                        scope: applied.scope.clone(),
                         raw: None,
                     },
                 );
                 self.trailing_newline = true;
                 Ok(())
             }
+            "promote" => match (self.index_of(id), self.get(id), self.scope_of(id)) {
+                (Some(i), Some(t), Some(None)) if Some(t) == applied.new.as_deref() => {
+                    self.lines[i] = Line::Lesson {
+                        id: Some(id),
+                        text: t.to_string(),
+                        scope: applied.scope.clone(),
+                        raw: None,
+                    };
+                    Ok(())
+                }
+                (None, _, _) => Err(format!("pb-{id} is gone")),
+                _ => Err(format!("pb-{id} was changed since; left as it is")),
+            },
             other => Err(format!("unknown change `{other}`")),
         }
     }
@@ -314,9 +429,20 @@ pub struct PromptBlock {
 
 /// The `[Playbook]` section for a system prompt: at most `max_lessons`
 /// lessons and `max_chars` characters, in file order, ids stripped. `None`
-/// when the file has no lessons.
+/// when the file has no lessons. The global lessons only (M53.4).
 pub fn prompt_block(playbook: &str, max_lessons: usize, max_chars: usize) -> PromptBlock {
-    let lessons = Playbook::parse(playbook).lessons();
+    prompt_block_for(playbook, None, max_lessons, max_chars)
+}
+
+/// [`prompt_block`] for a prompt in `scope`: the global lessons and that
+/// scope's (M53.4).
+pub fn prompt_block_for(
+    playbook: &str,
+    scope: Option<&str>,
+    max_lessons: usize,
+    max_chars: usize,
+) -> PromptBlock {
+    let lessons = Playbook::parse(playbook).lessons_for(scope);
     let mut out = String::from(PROMPT_INTRO);
     let mut used = 0;
     let mut kept = 0;
