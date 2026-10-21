@@ -110,6 +110,12 @@ effort = "low"                         # "none", "low", "medium", "high"
 `thinking`, `effort` and `max_tokens` can also be set on one model under
 `[providers.<name>.models."<id>"]`. `api` belongs to the provider only.
 
+With an `effort` set, a run's first turn and the turn after a failed
+check ask for at least "high", and a sub-agent can be started at its own
+level (`[agent] effort_boost`,
+[m57-context-hygiene.md](m57-context-hygiene.md#loops-per-file-a-visible-budget-and-raised-effort-m572)).
+Without one, no effort is ever sent.
+
 If a fallback moves a conversation to a model on another driver, the new
 model gets the plain conversation: text, tool calls and tool results. The
 old model's thinking or reasoning stays behind.

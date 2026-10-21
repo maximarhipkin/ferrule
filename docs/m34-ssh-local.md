@@ -1,7 +1,7 @@
 # M34 — SSH workspaces and local-model first run (design)
 
-Status: design, 2026-09-26, branch `m34-ssh-local`. Written before the
-code; where the build departs from it, see **As built** at the end.
+Status: merged to `main` (PR #28, 2026-09-26). Written as the design on
+2026-09-26, branch `m34-ssh-local`, before the code; where the build departs from it, see **As built** at the end.
 User guides: [ssh.md](ssh.md), [local-models.md](local-models.md).
 
 Two items from the strategy doc (§4):
@@ -236,7 +236,11 @@ travel on stdin, so they don't show up in the remote `ps`.
 
 - The timeout is the local one (120 s default). It fires the same drop.
 - Output is capped at the same `max_output_chars`, formatted as stdout,
-  `\n[stderr]\n` + stderr, `\n[exit code: N]`.
+  `\n[stderr]\n` + stderr, `\n[exit code: N]`. Over the cap (M55.3), the
+  whole output is written to `.ferrule/spill/<id>.log` in the *remote*
+  workspace, where the remote file tools can open it, and the result is
+  the exit-code line, the first ~2k and last ~8k characters, and that
+  path, as the local shell does.
 - The same deny patterns (`sudo `, `rm -rf /`, …) are checked before
   anything is sent.
 - The local shell does not stream (it waits for the output), so the remote
@@ -588,6 +592,15 @@ from the design above:
   ferrule's end of a pipe, not `-N`: however ferrule dies, the pipe
   closes and the master goes with it. On Windows each command is its own
   connection and carries its own `-R`.
+- **The forward is asked for through the master** (`ssh -O forward -R …`
+  once its control socket is up), not on the master's own command line
+  (M55.1). ssh opens the control socket before the server answers a
+  command-line `-R`, so a port already taken on the remote showed only
+  as the master exiting moments later: the "another port, up to 3 tries"
+  above never ran, commands fell back to plain connections without the
+  forward, and a remote `curl` through it got "couldn't connect". `-O
+  forward` waits for the answer and exits non-zero on a refusal, which
+  is `Failure::Forward`, so the next master tries another port.
 - **`ssh_config`** is passed as `ssh -F`, which *replaces*
   `~/.ssh/config` rather than adding to it. The config comment and
   [ssh.md](ssh.md) say so.

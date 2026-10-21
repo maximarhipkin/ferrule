@@ -6,7 +6,7 @@
 //! truth; this driver's own content blocks ride along in `Message::native`
 //! and go back only inside the loop that made them (design §2).
 
-use crate::common::{self, last_user, replayable};
+use crate::common::{self, replayable};
 use crate::vision::{self, Part};
 use crate::{DriverOptions, Thinking};
 use ferrule_core::error::CoreError;
@@ -107,7 +107,7 @@ impl AnthropicProvider {
             .map(text_block)
             .collect();
 
-        let latest_user = last_user(msgs);
+        let latest_user = loop_start(msgs);
         let sees = self.sees();
         let pixel_set = ferrule_core::vision::pixel_set(msgs);
         let mut wire: Vec<WireMessage> = Vec::new();
@@ -212,6 +212,10 @@ impl AnthropicProvider {
         }
 
         let mut tools = tools_to_wire(&req.tools);
+        // M57.4: a chat lane asks for the 1-hour TTL; every breakpoint gets
+        // the same one (a longer TTL may not follow a shorter one).
+        let ttl = ferrule_core::provider::call_context().cache_ttl;
+        let ephemeral = || cache_control(ttl.as_deref());
         // Breakpoint 1: tools and system render first, so one breakpoint on
         // the last of them covers both.
         if let Some(last) = system.last_mut() {
@@ -258,7 +262,11 @@ impl AnthropicProvider {
         if loop_tool_use && !loop_native {
             thinking = None;
         }
-        let effort = self.options.effort.as_deref().filter(|_| !plain);
+        // M57.2: the run may ask for another level (a sub-agent's) or a
+        // floor (a raised turn), only where an effort is configured.
+        let effort = ferrule_core::provider::call_context()
+            .effort_for(self.options.effort.as_deref())
+            .filter(|_| !plain);
         match thinking {
             Some(Thinking::Adaptive) => body["thinking"] = json!({"type": "adaptive"}),
             Some(Thinking::Disabled) => body["thinking"] = json!({"type": "disabled"}),
@@ -267,7 +275,7 @@ impl AnthropicProvider {
             }
             None => {}
         }
-        if let Some(e) = effort {
+        if let Some(e) = &effort {
             body["output_config"] = json!({ "effort": e });
         }
 
@@ -366,6 +374,11 @@ impl AnthropicProvider {
             n("cache_creation_input_tokens"),
             n("cache_read_input_tokens"),
         );
+        // M57.4: the writes made with the 1-hour TTL, priced higher.
+        let write_1h = usage["cache_creation"]["ephemeral_1h_input_tokens"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(write);
 
         let content = (!text.is_empty()).then_some(text);
         let reasoning = (!thinking.is_empty()).then(|| thinking.join("\n\n"));
@@ -385,8 +398,13 @@ impl AnthropicProvider {
                 output_tokens: n("output_tokens"),
                 cached_input_tokens: read,
                 cache_write_input_tokens: write,
+                cache_write_1h_input_tokens: write_1h,
                 notional_usd: None,
             },
+            stop_reason: body
+                .get("stop_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         })
     }
 }
@@ -525,6 +543,29 @@ fn append(block: &mut Value, key: &str, piece: &str) {
     block[key] = json!(format!("{now}{piece}"));
 }
 
+/// Where the tool loop in progress starts: the last user message that
+/// isn't sent with tool results. Text the loop adds mid-way (an inbox
+/// message, a nudge, a hook's note, the wrap-up) follows results and goes
+/// in their wire message, so to the API the turn goes on ("A tool-use
+/// loop is one assistant turn"), and within it thinking blocks must go
+/// back (platform.claude.com/docs/en/build-with-claude/thinking, "Thinking
+/// with tool use"). Taken for a new turn, that text dropped them: manual
+/// mode enforces that the final assistant turn begins with a thinking
+/// block, and otherwise the API may turn thinking off for the request.
+fn loop_start(msgs: &[Message]) -> Option<usize> {
+    let mut start = None;
+    let mut after_results = false;
+    for (i, m) in msgs.iter().enumerate() {
+        match m.role {
+            Role::Tool => after_results = true,
+            Role::Assistant => after_results = false,
+            Role::User if !after_results => start = Some(i),
+            Role::User | Role::System => {}
+        }
+    }
+    start
+}
+
 fn thinking_rejected(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     m.starts_with("http 400") && (m.contains("thinking") || m.contains("signature"))
@@ -534,8 +575,13 @@ fn text_block(t: &str) -> Value {
     json!({"type": "text", "text": t})
 }
 
-fn ephemeral() -> Value {
-    json!({"type": "ephemeral"})
+/// A breakpoint: the default 5-minute TTL as before (the same bytes), or
+/// `ttl` (`"1h"`) when the run asks for one.
+fn cache_control(ttl: Option<&str>) -> Value {
+    match ttl {
+        Some(ttl) if ttl != "5m" => json!({"type": "ephemeral", "ttl": ttl}),
+        _ => json!({"type": "ephemeral"}),
+    }
 }
 
 fn nonempty(content: &Option<String>) -> Option<&str> {

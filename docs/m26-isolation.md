@@ -1,7 +1,7 @@
 # M26: isolation (design)
 
-Status: built, 2026-09-25, branch `m26-isolation` (PR to main, not
-merged). Three gaps close here:
+Status: built, 2026-09-25, branch `m26-isolation` (merged to `main`,
+PR #20). Three gaps close here:
 
 1. Native Windows had no sandbox at all.
 2. Reads were open everywhere. A command could `cat ~/.ssh/id_ed25519`.

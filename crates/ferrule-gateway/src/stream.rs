@@ -55,7 +55,7 @@ enum Cmd {
 /// [`StreamingReply::finish`] delivers the answer.
 pub(crate) struct StreamingReply {
     tx: mpsc::UnboundedSender<Cmd>,
-    task: JoinHandle<()>,
+    task: JoinHandle<Option<String>>,
 }
 
 impl StreamingReply {
@@ -101,10 +101,11 @@ impl StreamingReply {
     }
 
     /// Delivers `text` as the reply: by the normal `send` when nothing was
-    /// shown yet, else by editing what was.
-    pub(crate) async fn finish(self, text: String) {
+    /// shown yet, else by editing what was. The id of the reply's last
+    /// message, when the channel gave one (M56.6).
+    pub(crate) async fn finish(self, text: String) -> Option<String> {
         let _ = self.tx.send(Cmd::Final(text));
-        let _ = self.task.await;
+        self.task.await.ok().flatten()
     }
 }
 
@@ -126,7 +127,11 @@ struct Editor {
 }
 
 impl Editor {
-    async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Cmd>, progress: impl Fn()) {
+    async fn run(
+        mut self,
+        mut rx: mpsc::UnboundedReceiver<Cmd>,
+        progress: impl Fn(),
+    ) -> Option<String> {
         loop {
             let due = self.next_due();
             let cmd = match due {
@@ -150,7 +155,7 @@ impl Editor {
                 }
                 Some(Cmd::Final(text)) => return self.finish(text).await,
                 // The lane went away without an answer.
-                None => return,
+                None => return None,
             }
         }
     }
@@ -244,50 +249,66 @@ impl Editor {
     /// The final text: today's `send` when nothing was shown, else an edit
     /// per shown message and a send per extra chunk. Leftover messages
     /// become "…". If an edit fails for anything but a 429, the whole
-    /// answer goes out as new messages, so it's never lost.
-    async fn finish(self, text: String) {
+    /// answer goes out as new messages, so it's never lost. Returns the id
+    /// of the last message that holds the answer, when known.
+    async fn finish(self, text: String) -> Option<String> {
         if self.shown.is_empty() {
             self.wait().await;
-            if let Err(e) = self.channel.send(self.message(&text, true)).await {
-                tracing::error!(error = %e, "failed to deliver reply");
-            }
-            return;
+            return match self.channel.send_with_id(self.message(&text, true)).await {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to deliver reply");
+                    None
+                }
+            };
         }
         let want = chunks(&text, self.pacing.limit);
         let n = want.len().max(self.shown.len());
+        let mut last = None;
         for i in 0..n {
             let wanted = want.get(i).map(String::as_str).unwrap_or(LEFTOVER);
             let done = match self.shown.get(i) {
-                Some((_, s)) if s == wanted => Ok(()),
+                Some((id, s)) if s == wanted => Ok(Some(id.clone())),
                 Some((id, _)) => self.retrying(Some(id), wanted).await,
                 None => self.retrying(None, wanted).await,
             };
-            if let Err(e) = done {
-                tracing::warn!(error = %e, "streamed reply: the final edit failed; sending the answer anew");
-                for (j, chunk) in want.iter().enumerate() {
-                    if let Err(e) = self.channel.send(self.message(chunk, j == 0)).await {
-                        tracing::error!(error = %e, "failed to deliver reply");
-                        return;
+            match done {
+                // Past the answer, "…" fills a leftover message.
+                Ok(id) if i < want.len() => last = id.or(last),
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "streamed reply: the final edit failed; sending the answer anew");
+                    let mut id = None;
+                    for (j, chunk) in want.iter().enumerate() {
+                        match self.channel.send_with_id(self.message(chunk, j == 0)).await {
+                            Ok(sent) => id = sent,
+                            Err(e) => {
+                                tracing::error!(error = %e, "failed to deliver reply");
+                                return None;
+                            }
+                        }
                     }
+                    return id;
                 }
-                return;
             }
         }
+        last
     }
 
     /// Edits message `id` (or posts a new one) to `text`, waiting out a
-    /// 429 before the call and after each one it gets, a few times.
-    async fn retrying(&self, id: Option<&String>, text: &str) -> Result<(), GatewayError> {
+    /// 429 before the call and after each one it gets, a few times. The
+    /// message's id.
+    async fn retrying(
+        &self,
+        id: Option<&String>,
+        text: &str,
+    ) -> Result<Option<String>, GatewayError> {
         self.wait().await;
         let mut tries = 1;
         loop {
             let result = match id {
-                Some(id) => self.edit(id, text).await,
-                None => self
-                    .channel
-                    .post(self.message(text, false))
-                    .await
-                    .map(|_| ()),
+                Some(id) => self.edit(id, text).await.map(|()| Some(id.clone())),
+                None => self.channel.post(self.message(text, false)).await,
             };
             match result {
                 Err(GatewayError::RateLimited { retry_after }) if tries < FINAL_TRIES => {

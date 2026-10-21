@@ -4,6 +4,7 @@
 //! logs once and waits for the file to read again.
 
 use crate::config::{self, Config};
+use crate::service::{Scope, Svc};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -127,10 +128,41 @@ pub fn owner_line(path: &Path, why: &str) -> String {
 
 /// Under a service manager that restarts on exit.
 pub fn supervised() -> bool {
-    // M44: a managed bot starts itself again (`lifecycle::reexec`).
-    crate::managed::on()
-        || std::env::var_os("INVOCATION_ID").is_some()
-        || std::env::var("XPC_SERVICE_NAME").is_ok_and(|v| !v.is_empty() && v != "0")
+    supervised_by(
+        // M44: a managed bot starts itself again (`lifecycle::reexec`).
+        crate::managed::on(),
+        std::env::var("XPC_SERVICE_NAME").ok().as_deref(),
+        std::env::var_os("INVOCATION_ID").is_some(),
+        crate::instance::current().as_deref(),
+        own_unit,
+    )
+}
+
+/// Only this instance's own job counts: `XPC_SERVICE_NAME` and
+/// `INVOCATION_ID` are passed on to whatever a job starts (VS Code's
+/// terminal, a desktop session's), and an exit there would end a gateway
+/// run by hand for good. launchd names the job it started; under systemd
+/// the unit's main process must be this one.
+fn supervised_by(
+    managed: bool,
+    xpc_service: Option<&str>,
+    invocation: bool,
+    instance: Option<&str>,
+    own_unit: impl FnOnce(Option<&str>) -> bool,
+) -> bool {
+    let label = Svc::new(instance, Scope::User).launchd_label();
+    managed || xpc_service == Some(label.as_str()) || (invocation && own_unit(instance))
+}
+
+/// The instance's systemd unit, the user's or the system's, runs this
+/// process. A system service's gateway runs as its own user, not root, so
+/// both are asked.
+fn own_unit(instance: Option<&str>) -> bool {
+    let me = std::process::id();
+    cfg!(target_os = "linux")
+        && [Scope::User, Scope::System]
+            .into_iter()
+            .any(|scope| Svc::new(instance, scope).main_pid() == Some(me))
 }
 
 /// While on the copy: once the file reads again, a supervised gateway
@@ -167,6 +199,42 @@ pub fn watch(file: PathBuf, tell: impl Fn(String) + Send + 'static) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_instances_own_job_or_unit_counts_as_supervised() {
+        let none = |_: Option<&str>| false;
+        // What a terminal passes on: VS Code's XPC name, a desktop
+        // session's INVOCATION_ID, Terminal's `0`.
+        let vscode = Some("application.com.microsoft.VSCode.81665391.81665397");
+        assert!(!supervised_by(false, vscode, false, None, none));
+        assert!(!supervised_by(false, Some("0"), true, None, none));
+        // launchd names the job it started.
+        assert!(supervised_by(
+            false,
+            Some("ai.ferrule.gateway"),
+            false,
+            None,
+            none
+        ));
+        assert!(supervised_by(
+            false,
+            Some("ai.ferrule.gateway.work"),
+            false,
+            Some("work"),
+            none
+        ));
+        assert!(!supervised_by(
+            false,
+            Some("ai.ferrule.gateway"),
+            false,
+            Some("work"),
+            none
+        ));
+        // systemd: the unit's main process is this one.
+        assert!(supervised_by(false, None, true, Some("work"), |i| i == Some("work")));
+        // A managed bot always.
+        assert!(supervised_by(true, None, false, None, none));
+    }
 
     const GOOD: &str = "default_provider = \"a\"\n\n[providers.a]\nbase_url = \"http://127.0.0.1:9\"\napi_key_env = \"K\"\nmodel = \"m\"\n";
 

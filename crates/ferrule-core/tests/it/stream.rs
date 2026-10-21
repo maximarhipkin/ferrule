@@ -72,6 +72,7 @@ impl Provider for Streamer {
                 output_tokens: 2,
                 ..Usage::default()
             },
+            stop_reason: None,
         })
     }
 }

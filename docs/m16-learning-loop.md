@@ -1,6 +1,9 @@
 # M16: the learning loop (design)
 
-Status: design, 2026-09-24. Builds on the roadmap's M16 section and on
+Status: built and merged to `main` (PR #6, 2026-09-25): the
+`ferrule-learn` crate and `ferrule learn`, off until `[learning] enabled`;
+the user-facing summary is the roadmap's M16 section. Written as the design
+on 2026-09-24. Builds on the roadmap's M16 section and on
 §4.1 of `docs/research-number-one-harness-strategy.md`. Where this
 document departs from either, it says so and why.
 

@@ -238,12 +238,12 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Subscriptions** | Sign in with the plan you already pay for instead of an API key. **ChatGPT plan:** `ferrule login chatgpt` (device code, browser or a pasted URL, also `/login chatgpt` in your own Telegram chat); the token is sealed and refreshed, and the model runs in Ferrule's own loop with every tool, gate and the sandbox. **Claude plan:** each turn runs the unmodified `claude` CLI, as Anthropic's terms require, signed in through Claude's own flow or a `claude setup-token`; Ferrule's memory, tasks and messaging are bridged in over MCP and its approvals still apply. Plan turns cost $0 in the ledger, with the notional price beside them, and a usage limit falls back to your next model ([`docs/subscriptions.md`](docs/subscriptions.md)). |
 | **Local models** | `ferrule setup` finds Ollama, llama.cpp, LM Studio and vLLM on this machine, compares the context window the server really gives with what the harness needs, and says how to fix a small one (on Ollama it can make a larger-window copy of the model, on a yes). A probe tells "this model can't call tools" apart from "its template is broken", and doctor and `/status` keep checking after setup ([`docs/local-models.md`](docs/local-models.md)). |
 | **Connections** | The agent connects Jira and Confluence, Gmail, Drive, Notion, Linear, Attio and GitHub by itself. It asks, you tap one Telegram button, and the OAuth code (always PKCE) comes back through your own small Cloudflare Worker relay, a `cloudflared` quick tunnel or a pasted URL, so no inbound port. Tokens are sealed on disk, refreshed per request and never shown to the model. Where OAuth can't work there's a key: Jira/Confluence by email + API token (no Atlassian admin needed), Gmail by app password, Google Drive/Sheets/Calendar by service account. Read-only by default; writes ask you first ([`docs/connections.md`](docs/connections.md), which option to pick and each service's steps; design in [`docs/m20-connections.md`](docs/m20-connections.md)). |
-| **Tools** | File read, write and list (workspace-scoped), `shell`, `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. `web_search` through Brave, Tavily, Exa or your own SearXNG: the key never leaves the proxy, and every search is a ledger row with a daily cap. Off until `ferrule setup` → Web search ([`docs/web-search.md`](docs/web-search.md)). |
+| **Tools** | File read, write and list (workspace-scoped), `shell` (output past the cap is saved whole to `.ferrule/spill/`, and the model sees the exit code, the head and the tail; `background: true` runs a dev server or a watcher as a job that `shell_job` checks on and stops), `web_fetch`, `write_todos` and `log_diary`, `remember` and `recall`. `web_search` through Brave, Tavily, Exa or your own SearXNG: the key never leaves the proxy, and every search is a ledger row with a daily cap. With no provider it searches DuckDuckGo's results page with no key (light use; a failing provider falls back to it); `ferrule setup` → Web search picks an API ([`docs/web-search.md`](docs/web-search.md)). |
 | **Editing** | `edit_file`: SEARCH/REPLACE edits, all or nothing, never fuzzy on content, keeping line endings and encoding. In a code repo, a tree-sitter repo map (Rust, Python, TS/JS, Go, Java) and `code_search` for definitions and references. Per-edit lint with your project's own rustfmt, ruff, gofmt, eslint or tsc. Optional auto-commit of the agent's own changes on a `ferrule/auto-*` branch, never pushed; `ferrule undo` or `/undo` takes it back ([`docs/editing.md`](docs/editing.md)). |
-| **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. `ferrule mcp add` tests and scans a server, then adds it to the running daemon without a restart. |
+| **MCP** | stdio and Streamable HTTP MCP servers. stdio servers run inside the OS sandbox; remote servers' HTTPS goes through the credential proxy. Tools register as `mcp__<server>__<tool>`. `ferrule mcp add` tests and scans a server, then adds it to the running daemon without a restart. Once more than ten tools could wait (MCP tools and a few rare built-ins), they go to the model as a name and a line, and `tool_search` loads a schema when it wants one ([`docs/m57-context-hygiene.md`](docs/m57-context-hygiene.md)). |
 | **Browser** | agent-browser's MCP server on your installed Chrome, in the sandbox and behind the proxy ([`docs/browser.md`](docs/browser.md)). |
 | **SSH workspaces** | Point the agent at a directory on another machine: `--workspace ssh://user@host/srv/app`. Shell and file tools run there over your own OpenSSH, with strict host keys (first contact only after you confirm the fingerprint, a changed key stops everything), keys never read by ferrule, and the credential proxy carried through, so placeholders work remotely and the real key never lands on the host. Approvals, caps, `/stop` and hooks apply unchanged; the remote account is the boundary ([`docs/ssh.md`](docs/ssh.md)). |
-| **Sub-agents** | `spawn_agent` / `wait` / `resume` / `close`: planner, worker and verifier roles with isolated contexts, a worktree per child, roles on their own providers, tree limits and a shared budget ([`docs/agents.md`](docs/agents.md)). Or draw the whole job as a graph: `ferrule graph run graph.toml` — or `/graph graph.toml` from a chat — walks agent, check and approval nodes over pass/fail edges — parallel fan-out, joins, rollback on failure, a human gate that asks in your chat — with deterministic routing, not prompting ([`docs/m42-harness-engineering.md`](docs/m42-harness-engineering.md)). |
+| **Sub-agents** | `spawn_agent` / `wait` / `resume` / `close`: planner, worker and verifier roles with isolated contexts (or forked from the end of the parent's conversation), a worktree per child, roles on their own providers, tree limits and a shared budget ([`docs/agents.md`](docs/agents.md)). Or draw the whole job as a graph: `ferrule graph run graph.toml` — or `/graph graph.toml` from a chat — walks agent, check and approval nodes over pass/fail edges — parallel fan-out, joins, rollback on failure, a human gate that asks in your chat — with deterministic routing, not prompting ([`docs/m42-harness-engineering.md`](docs/m42-harness-engineering.md)). |
 | **Self-extension** | The agent installs vetted skills and MCP servers for itself: a poisoning scan, version pinning and an allow-list ([`docs/m13-self-extension.md`](docs/m13-self-extension.md)). |
 | **Plugins** | WASM tool plugins: small sandboxed tools, the same sandbox on every OS, nothing to install. A plugin reaches only what it was granted — workspace directories, HTTPS to its declared domains through the credential proxy, secrets as placeholders only — and you approve its capabilities at install; widening them asks again. `ferrule plugins add / list / remove`, a Rust SDK in `crates/ferrule-plugin-sdk` and examples in `examples/plugins/` ([`docs/plugins.md`](docs/plugins.md)). |
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. Add `triggers: [ship it, release]` and the skill loads when your message says so, Hebrew included; only what a person types counts, never a web page or tool output ([`docs/skills.md`](docs/skills.md)). |
@@ -596,28 +596,36 @@ are in [`docs/research-credential-gateway.md`](docs/research-credential-gateway.
 
 ```
 crates/
-  ferrule-core       agent loop, provider trait, harness profiles, compaction, transcripts
-  ferrule-providers  OpenAI-compatible driver
-  ferrule-tools      fs / shell / web_fetch / diary / memory tools, proxied egress
-  ferrule-memory     SQLite + FTS5 memory with time decay
-  ferrule-embed      embedders: local model2vec, OpenAI-compatible /v1/embeddings
-  ferrule-gateway    daemon: channels (Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, HTTP API, local), session router, scheduler
-  ferrule-mcp        MCP client: sandboxed stdio servers, Streamable HTTP servers
-  ferrule-skills     Agent Skills discovery and loading
-  ferrule-plugins    WASM tool plugins: wasmi runtime, capabilities, limits
-  ferrule-plugin-sdk the Rust SDK for writing a plugin
-  ferrule-codemap    tree-sitter repo map and code search
-  ferrule-sandbox    OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt)
-  ferrule-ssh        SSH workspaces: remote shell and file tools over OpenSSH
-  ferrule-proxy      credential gateway: placeholders, TLS-intercepting proxy, scrubbing, egress policy
-  ferrule-otel       OpenTelemetry export: OTLP/HTTP JSON spans
-  ferrule-cli        the `ferrule` binary
+  ferrule-core        agent loop, provider and tool traits, harness profiles, compaction, transcripts
+  ferrule-providers   drivers: OpenAI-compatible chat, Anthropic Messages, OpenAI Responses (and the ChatGPT plan)
+  ferrule-tools       fs / edit_file / shell / web_fetch / web_search / diary tools, proxied egress
+  ferrule-memory      SQLite + FTS5 memory with time decay, merged with vector recall
+  ferrule-embed       embedders: local model2vec, OpenAI-compatible /v1/embeddings
+  ferrule-gateway     daemon: channels (Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, HTTP API, local), session router, scheduler
+  ferrule-mcp         MCP client: sandboxed stdio servers, Streamable HTTP servers, the browser
+  ferrule-skills      Agent Skills discovery, loading and keyword triggers
+  ferrule-agents      sub-agents: spawn/wait/resume/close, a board, a task list, worktrees, limits
+  ferrule-extensions  self-extension: allow-listed MCP servers and skills, pinned, scanned, hot-loaded
+  ferrule-eval        `ferrule eval`: suites, fixtures, graders, the A/B and its reports
+  ferrule-hooks       lifecycle hooks, workspace trust, the hooks audit log
+  ferrule-learn       the learning loop: gated playbook, memory consolidation
+  ferrule-trust       caps from the ledger, the kill switch, approval gates, plan mode, the audit log
+  ferrule-connections connections: OAuth (PKCE, DCR), the relay, encrypted key form, sealed tokens
+  ferrule-plans       subscription plans: ChatGPT sign-in, the Claude Code engine
+  ferrule-plugins     WASM tool plugins: wasmi runtime, capabilities, limits
+  ferrule-plugin-sdk  the Rust SDK for writing a plugin
+  ferrule-codemap     tree-sitter repo map and code search
+  ferrule-sandbox     OS sandbox for shell commands and MCP servers (Landlock + seccomp / Seatbelt / a restricted token on Windows)
+  ferrule-ssh         SSH workspaces: remote shell and file tools over OpenSSH
+  ferrule-proxy       credential gateway: placeholders, TLS-intercepting proxy, scrubbing, egress policy
+  ferrule-otel        OpenTelemetry export: OTLP/HTTP JSON spans
+  ferrule-cli         the `ferrule` binary and all wiring: setup, doctor, dashboard, service, update
 ```
 
 ## Development
 
 ```bash
-cargo test --workspace                     # 1628 tests; a few platform-only ones are cfg'd out per OS
+cargo test --workspace                     # 1869 tests (macOS, 2026-10-21); a few platform-only ones are cfg'd out per OS
 cargo test -p ferrule-proxy -- --ignored   # + a live end-to-end run through the real network
 cargo clippy --workspace --all-targets
 python3 tests_e2e/setup_wizard.py          # the wizard in a real terminal (Linux, needs pexpect)
@@ -673,7 +681,10 @@ and a dated entry for every session.
   [`memory.md`](docs/memory.md) · [`agents.md`](docs/agents.md)
   (sub-agents) · [`eval.md`](docs/eval.md) (benchmark harness changes
   yourself) · [`m16-learning-loop.md`](docs/m16-learning-loop.md) (failed
-  runs become playbook lessons).
+  runs become playbook lessons) ·
+  [`m57-context-hygiene.md`](docs/m57-context-hygiene.md) (deferred tool
+  schemas and `tool_search`, per-file loop notes, budget notes, raised
+  effort).
 - Running it day to day: [`dashboard.md`](docs/dashboard.md)
   ([`m50-connect.md`](docs/m50-connect.md): connecting everything from
   the page) ·

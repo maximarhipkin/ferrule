@@ -374,6 +374,41 @@ async fn thinking_goes_back_verbatim_inside_the_loop_and_nowhere_else() {
     assert!(!b.to_string().contains("signature"), "{b}");
 }
 
+/// Text pushed mid-loop (an inbox message, a nudge, a hook's note) rides
+/// with the tool results, so to the API the tool-use turn goes on: its
+/// thinking still goes back, and thinking stays on.
+#[test]
+fn text_pushed_mid_loop_keeps_the_loops_thinking() {
+    let p = with(DriverOptions {
+        thinking: Some(Thinking::Adaptive),
+        ..Default::default()
+    });
+    let first = p
+        .parse_response(&serde_json::from_str(THINKING_TOOL).unwrap())
+        .unwrap();
+    let history = vec![
+        Message::system("sys"),
+        Message::user("read a.rs"),
+        first.message,
+        Message::tool_result("toolu_02", "fn main() {}"),
+        Message::user("[the owner, mid-run] and b.rs too"),
+    ];
+    let sent = p.payload(&req(history), false);
+    let expected = serde_json::from_str::<Value>(THINKING_TOOL).unwrap()["content"].clone();
+    assert_eq!(sent.body["messages"][1]["content"], expected);
+    assert_eq!(
+        unmarked(&sent.body["messages"][2]),
+        json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_02", "content": "fn main() {}"},
+            {"type": "text", "text": "[the owner, mid-run] and b.rs too"}]})
+    );
+    assert_eq!(sent.body["thinking"], json!({"type": "adaptive"}));
+    assert!(
+        sent.loop_extras,
+        "a thinking 400 still gets its plain retry"
+    );
+}
+
 #[test]
 fn thinking_and_effort_go_out_only_when_set_and_only_on_our_own_loop() {
     let adaptive = DriverOptions {
@@ -591,6 +626,38 @@ async fn max_tokens_returns_the_text_so_far() {
         .unwrap();
     assert_eq!(resp.message.content.as_deref(), Some("The first half"));
     assert_eq!(resp.usage.input_tokens, 10);
+    // Kept, so the loop can tell the run it was cut off.
+    assert_eq!(resp.stop_reason.as_deref(), Some("max_tokens"));
+    assert!(resp.cut_off());
+}
+
+/// The client's limit is on one read, not the whole call: a stream that
+/// runs past it, a piece at a time, arrives whole.
+#[tokio::test]
+async fn a_long_stream_that_keeps_sending_is_not_cut() {
+    let e = |data: Value| mock::event(data["type"].as_str().unwrap(), &data);
+    let frame = json!({"id": "m", "type": "message", "role": "assistant", "model": MODEL,
+        "content": [], "usage": {"input_tokens": 1}});
+    let mut pieces = vec![
+        e(json!({"type": "message_start", "message": frame})),
+        e(json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}})),
+    ];
+    for word in ["slow ", "but ", "steady"] {
+        pieces.push(e(json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": word}})));
+    }
+    pieces.push(e(json!({"type": "message_stop"})));
+    let mut reply = mock::sse(&pieces.iter().map(String::as_str).collect::<Vec<_>>());
+    reply.pause = Duration::from_millis(150);
+    let (url, _seen) = serve(vec![reply]);
+    let mut p = provider(&url);
+    // Six pieces 150 ms apart: 900 ms in all, past the 400 ms limit.
+    p.client = common::client_idle(Duration::from_millis(400));
+    let mut r = req(vec![Message::user("hi")]);
+    r.stream = Some(DeltaSink::new(|_| {}));
+    let resp = p.complete(r).await.unwrap();
+    assert_eq!(resp.message.content.as_deref(), Some("slow but steady"));
 }
 
 #[test]

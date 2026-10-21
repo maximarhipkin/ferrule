@@ -14,10 +14,13 @@ pub mod gateway;
 pub mod health;
 pub mod menu;
 pub mod message;
+pub mod paste_guard;
+pub mod resume;
 pub mod router;
 pub mod scheduler;
 pub mod sdnotify;
 pub mod session;
+pub mod steer;
 pub mod stream;
 pub mod tools;
 pub mod transcribe;
@@ -45,6 +48,7 @@ pub use scheduler::{
     initial_next_run_at, NewTask, Run, RunOutcome, RunStatus, Scheduler, SchedulerError, Task,
     TaskKind, TaskStore, SCHEDULER_PSEUDO_CHANNEL,
 };
+pub use steer::WhileBusy;
 pub use stream::StreamPacing;
 pub use transcribe::{Transcriber, Transcription};
 pub use typing::Typing;

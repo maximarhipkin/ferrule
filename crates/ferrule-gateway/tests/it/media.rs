@@ -86,6 +86,7 @@ impl Provider for Caller {
         Ok(CompletionResponse {
             message,
             usage: Usage::default(),
+            stop_reason: None,
         })
     }
 }

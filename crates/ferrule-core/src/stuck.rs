@@ -127,6 +127,52 @@ impl Stuck {
     }
 }
 
+/// M57.2: how many times one file may be changed in a run, with no passing
+/// check between, before the model is told to step back.
+pub const EDITS_PER_FILE: usize = 6;
+
+/// M57.2: a run's successful edits per file, after LangChain's per-file
+/// loop detection. [`Stuck`] catches the same call repeated; this catches
+/// a file fixed over and over, a different edit each time, which is how
+/// a wrong approach usually looks.
+#[derive(Debug, Default)]
+pub struct EditCounts {
+    counts: std::collections::HashMap<String, usize>,
+    warned: std::collections::HashSet<String>,
+}
+
+impl EditCounts {
+    /// A call to `tool` that worked. When it changed a file (`edit_file`,
+    /// `write_file`), it's counted, and the note to add comes back the
+    /// first time that file reaches [`EDITS_PER_FILE`].
+    pub fn record(&mut self, tool: &str, arguments: &serde_json::Value) -> Option<String> {
+        if !matches!(tool, "edit_file" | "write_file") {
+            return None;
+        }
+        let path = arguments["path"].as_str()?.trim();
+        let path = path.strip_prefix("./").unwrap_or(path);
+        if path.is_empty() {
+            return None;
+        }
+        let n = self.counts.entry(path.to_string()).or_default();
+        *n += 1;
+        let n = *n;
+        (n >= EDITS_PER_FILE && self.warned.insert(path.to_string())).then(|| {
+            format!(
+                "[ferrule] You have changed `{path}` {n} times in this run with no passing check in between. \
+                 Before you edit it again, step back: re-read the file and the last error, and ask whether \
+                 the approach is right. Many small fixes to one file usually mean the plan is off."
+            )
+        })
+    }
+
+    /// A check passed: the counts start again.
+    pub fn checked(&mut self) {
+        self.counts.clear();
+        self.warned.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

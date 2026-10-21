@@ -21,10 +21,11 @@ pub trait Compactor: Send + Sync {
 }
 
 /// The built-in pipeline as a strategy: the checklist template on
-/// whatever provider it's given — the agent's own model by default, a
-/// cheaper one when `[agent] compaction_model` names it. One call;
-/// retries and routing belong to the provider it's handed (the CLI hands
-/// it a routed one).
+/// whatever provider it's given. One call; retries and routing belong to
+/// the provider it's handed, and the agent's ledger, budget and kill
+/// switch don't see it. `[agent] compaction_model` doesn't come through
+/// here: the agent runs its own pipeline on that model
+/// (`Agent::with_compaction_provider`).
 pub struct TemplateCompactor {
     provider: Arc<dyn Provider>,
     max_output_tokens: Option<u32>,

@@ -535,6 +535,7 @@ pub(crate) fn mark(data: &Path, version: &str, busy: bool, up_for: u64) {
                 channel: "telegram".into(),
                 chat_id: "1".into(),
                 text: "working".into(),
+                resumable: false,
             }]
         } else {
             Vec::new()
@@ -732,6 +733,76 @@ async fn without_a_service_the_binary_is_swapped_and_a_restart_is_owed() {
             }
         ),
         "{out:?}"
+    );
+}
+
+/// A service whose nth restart does what its closure says.
+struct Scripted<F>(F, Mutex<u32>);
+
+impl<F: Fn(u32) -> Result<()> + Send + Sync> Service for Scripted<F> {
+    fn restart(&self) -> Result<()> {
+        let mut n = self.1.lock().unwrap();
+        *n += 1;
+        (self.0)(*n)
+    }
+}
+
+#[tokio::test]
+async fn a_restart_that_cant_run_rolls_back_without_pinning() {
+    let s = setup().await;
+    // A booted-out launchd job: kickstart can't find it.
+    let service = Scripted(
+        |_| anyhow::bail!("launchctl kickstart failed: Could not find service"),
+        Mutex::new(0),
+    );
+    let e = apply(&s, Some(&service))
+        .run(&Want::default())
+        .await
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("the restart failed"), "{e:#}");
+    assert_eq!(std::fs::read(&s.exe).unwrap(), b"old");
+    let state = State::load(&s.state_dir);
+    assert!(!state.is_pinned("v0.6.0"), "0.6.0 never ran: not its fault");
+    let last = state.events.last().unwrap();
+    assert_eq!((last.kind, last.to.as_str()), (EventKind::Failed, "0.6.0"));
+    assert!(last.notes.contains("Could not find service"), "{last:?}");
+    // The next run tries it again.
+    let fine = fake(&s.data, "0.6.0");
+    assert!(matches!(
+        apply(&s, Some(&fine)).run(&Want::default()).await.unwrap(),
+        Outcome::Updated { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_rollback_that_fails_is_recorded_and_the_service_restarted() {
+    let s = setup().await;
+    // The new one never reports healthy, and `ferrule.previous` is gone
+    // by the time it would be put back.
+    let previous = swap::previous_path(&s.exe);
+    let service = Scripted(
+        |_| {
+            let _ = std::fs::remove_file(&previous);
+            Ok(())
+        },
+        Mutex::new(0),
+    );
+    let e = apply(&s, Some(&service))
+        .run(&Want::default())
+        .await
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("restoring"), "{e:#}");
+    assert_eq!(
+        *service.1.lock().unwrap(),
+        2,
+        "restarted after the failed rollback"
+    );
+    let last = State::load(&s.state_dir).events.last().cloned().unwrap();
+    assert_eq!((last.kind, last.to.as_str()), (EventKind::Failed, "0.6.0"));
+    assert!(last.notes.contains("putting 0.5.1 back failed"), "{last:?}");
+    assert!(
+        last.notes.contains(&previous.display().to_string()),
+        "{last:?}"
     );
 }
 
@@ -1635,6 +1706,73 @@ fn a_sibling_with_auto_off_holds_the_units_runs() {
     assert_eq!(
         super::held_by(&[on("a", None), on("b", Some(false))]),
         Some("b")
+    );
+}
+
+/// A chat's /update with the units: the promise, the unit's run with `a`,
+/// then what the gateway's watch tells that chat.
+async fn answered(s: &Setup, a: &Apply<'_>, held: Option<&str>) -> String {
+    use crate::self_service::promise::{self, Kind};
+    let chat = ferrule_trust::ChatRef::new("telegram", "42");
+    let after = State::load(&s.state_dir).events.last().map_or(0, |e| e.id);
+    let from = "0.5.1".to_string();
+    promise::make(&s.data, &chat, Kind::Update { from, after }).unwrap();
+    let _ = super::requested(a, held).await;
+    let fake = Arc::new(FakeOwner::default());
+    let owner: Arc<dyn Owner> = fake.clone();
+    watch(&s.data, true, None, Source::new("http://127.0.0.1:9"))
+        .tick(&owner)
+        .await
+        .unwrap();
+    let said: Vec<String> = fake
+        .told_in
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, t)| t.clone())
+        .collect();
+    assert!(!promise::exists(&s.data), "unanswered: {said:?}");
+    assert!(told(&fake).is_empty(), "{:?}", told(&fake));
+    said.join("\n")
+}
+
+#[tokio::test]
+async fn an_update_asked_for_that_installs_nothing_still_answers_the_chat() {
+    let s = setup().await;
+    let service = fake(&s.data, "0.6.0");
+    // The gateway stayed busy.
+    mark(&s.data, "0.5.1", true, 600);
+    let said = answered(&s, &apply(&s, Some(&service)), None).await;
+    assert!(
+        said.starts_with("Ferrule wasn't updated: turns were still running"),
+        "{said}"
+    );
+    std::fs::remove_file(s.data.join("gateway").join(RUNNING_FILE)).unwrap();
+    // Another update holds the lock.
+    let lock = Lock::take(&s.state_dir).unwrap();
+    let said = answered(&s, &apply(&s, Some(&service)), None).await;
+    assert!(said.contains("another update is running"), "{said}");
+    drop(lock);
+    // The check fails.
+    let offline = Apply {
+        source: Source::new("http://127.0.0.1:9"),
+        ..apply(&s, Some(&service))
+    };
+    let said = answered(&s, &offline, None).await;
+    assert!(said.starts_with("Ferrule wasn't updated: "), "{said}");
+    // Nothing newer; then the same, held by a sibling: answered each time.
+    let mut newest = apply(&s, Some(&service));
+    newest.current = v("0.6.0");
+    let said = answered(&s, &newest, None).await;
+    assert_eq!(said, "Ferrule wasn't updated: 0.6.0 is the newest release");
+    let said = answered(&s, &newest, Some("work")).await;
+    assert!(said.contains("`work`"), "{said}");
+    assert_eq!(*service.restarts.lock().unwrap(), 0);
+    // Answers, not standing failures: /status doesn't show them.
+    let report = super::report(&s.data, None, true);
+    assert!(
+        report.iter().all(|(_, l)| !l.contains("wasn't installed")),
+        "{report:?}"
     );
 }
 

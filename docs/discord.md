@@ -3,9 +3,10 @@
 Ferrule can answer you on Discord as well as, or instead of, Telegram. It
 connects out to Discord's Gateway over a WebSocket, so there is no public
 URL, no webhook and no port to open. The same daemon runs every channel
-that has a token. It's text only: an attachment without text gets "I can
-only read text". The design, and the reasons behind it, are in
-[m31-channels.md](m31-channels.md).
+that has a token. Files attached to a message it reads are saved to the
+workspace's inbox and the agent reads them (M56.7, [channels.md](channels.md#photos));
+a sticker still gets "I can only read text". The design, and the reasons
+behind it, are in [m31-channels.md](m31-channels.md).
 
 ## Setup
 

@@ -394,7 +394,7 @@ impl Models {
                 u.cached_input_tokens,
                 u.cache_write_input_tokens,
                 u.output_tokens,
-            );
+            ) + p.hour_writes(u.cache_write_1h_input_tokens);
         }
     }
 
@@ -615,6 +615,7 @@ model = "n-top"
                     input_tokens: 100_000,
                     ..Usage::default()
                 },
+                stop_reason: None,
             })
         }
     }

@@ -2,8 +2,9 @@
 //!
 //! Design follows the 2026 consensus for agent runtimes: one file you can
 //! read, back up, and `git diff`; FTS5 (BM25) keyword recall built in;
-//! time-decay scoring so recent memories outrank stale ones; a token budget
-//! on recall so memory never eats the context window.
+//! time-decay scoring so recent memories outrank stale ones, except the
+//! owner's profile and preferences ([`DURABLE_TAGS`], M56.4); a token
+//! budget on recall so memory never eats the context window.
 //!
 //! Vector recall (M30) lives in the same table: `embedding` holds a
 //! normalised f32 vector and `embedding_model` the id of the model that made
@@ -35,6 +36,19 @@ pub enum MemoryError {
 /// The schema this build writes, kept in `PRAGMA user_version`.
 /// 0: before M15. 1: M15 — `superseded_by` / `superseded_at`.
 pub const SCHEMA_VERSION: i64 = 1;
+
+/// Tags of facts that never fade (M56.4): who the owner is and how they
+/// want things done. Every other fact's score halves every 7 days.
+pub const DURABLE_TAGS: &[&str] = &["profile", "preference"];
+
+/// The most profile facts the session-start block carries, whatever the
+/// goal.
+const PROFILE_FACTS: usize = 10;
+
+/// Whether a fact with these tags (comma-joined, as stored) never fades.
+fn durable(tags: &str) -> bool {
+    tags.split(',').any(|t| DURABLE_TAGS.contains(&t.trim()))
+}
 
 /// Token-set Jaccard at or above which a new fact is the same fact (NOOP).
 const DUPLICATE_JACCARD: f64 = 0.9;
@@ -353,7 +367,8 @@ impl MemoryStore {
     }
 
     /// BM25 keyword search with time-decay scoring: score = bm25 * decay,
-    /// where decay halves every 7 days (ZeroClaw's proven half-life).
+    /// where decay halves every 7 days (ZeroClaw's proven half-life), and
+    /// is 1 for a [`DURABLE_TAGS`] fact.
     /// Every row is searched, but each hit is reported as the live head of
     /// its chain: a query matching only a replaced fact's wording returns
     /// the correction, never the stale fact.
@@ -364,7 +379,7 @@ impl MemoryStore {
         let scored = self
             .bm25_candidates(query, limit * 5 + 20)?
             .into_iter()
-            .map(|c| (c.id, c.created_at, c.superseded_by, -c.rank))
+            .map(|c| (c.id, c.created_at, c.superseded_by, -c.rank, c.durable))
             .collect();
         self.rank_heads(scored, limit)
     }
@@ -377,7 +392,7 @@ impl MemoryStore {
             return Ok(Vec::new());
         }
         let mut stmt = self.conn.prepare(
-            "SELECT m.id, m.created_at, m.superseded_by, bm25(memories_fts) AS rank
+            "SELECT m.id, m.created_at, m.superseded_by, bm25(memories_fts) AS rank, m.tags
              FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid
              WHERE memories_fts MATCH ?1
              ORDER BY rank LIMIT ?2",
@@ -388,26 +403,27 @@ impl MemoryStore {
                 created_at: row.get(1)?,
                 superseded_by: row.get(2)?,
                 rank: row.get(3)?,
+                durable: durable(&row.get::<_, String>(4)?),
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// Time decay (the score halves every 7 days), then each row reported
-    /// as the live head of its chain, a chain keeping its best score, then
-    /// the top `limit`. `scored` is `(id, created_at, superseded_by,
-    /// score before decay)`.
-    fn rank_heads(
-        &self,
-        scored: Vec<(i64, i64, Option<i64>, f64)>,
-        limit: usize,
-    ) -> Result<Vec<Memory>, MemoryError> {
+    /// Time decay (the score halves every 7 days, a durable fact's never),
+    /// then each row reported as the live head of its chain, a chain
+    /// keeping its best score, then the top `limit`. `scored` is `(id,
+    /// created_at, superseded_by, score before decay, durable)`.
+    fn rank_heads(&self, scored: Vec<Scored>, limit: usize) -> Result<Vec<Memory>, MemoryError> {
         let now = now_secs() as f64;
         let half_life_secs = 7.0 * 24.0 * 3600.0;
         let mut best: Vec<(i64, f64)> = Vec::new();
-        for (id, created_at, superseded_by, raw) in scored {
+        for (id, created_at, superseded_by, raw, durable) in scored {
             let age_secs = (now - created_at as f64).max(0.0);
-            let decay = 0.5f64.powf(age_secs / half_life_secs);
+            let decay = if durable {
+                1.0
+            } else {
+                0.5f64.powf(age_secs / half_life_secs)
+            };
             let score = raw * decay;
             let head = match superseded_by {
                 None => id,
@@ -473,10 +489,33 @@ impl MemoryStore {
         Ok(parts.join("\n"))
     }
 
-    /// The session-start memory block for a goal: facts matching the goal
-    /// first (top 10), then the newest live facts (up to 5) to fill the
-    /// budget. Each line is `- #id fact`, so the model can correct a fact
-    /// by id in one call.
+    /// Live facts tagged `profile` or `preference` ([`DURABLE_TAGS`]),
+    /// newest first: the owner's profile (M56.4).
+    pub fn profile(&self, limit: usize) -> Result<Vec<Memory>, MemoryError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, tags, created_at, superseded_by FROM memories
+             WHERE superseded_by IS NULL AND (instr(tags, 'profile') > 0 OR instr(tags, 'preference') > 0)
+             ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_memory)?;
+        let mut out = Vec::new();
+        for m in rows {
+            let m = m?;
+            if m.tags.iter().any(|t| DURABLE_TAGS.contains(&t.as_str())) {
+                out.push(m);
+                if out.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The session-start memory block for a goal: the owner's profile
+    /// (up to 10 durable facts, whatever the goal; M56.4), then facts
+    /// matching the goal (top 10), then the newest live facts (up to 5)
+    /// to fill the budget. Each line is `- #id fact`, so the model can
+    /// correct a fact by id in one call.
     pub fn assemble_for_goal(&self, goal: &str, char_budget: usize) -> Result<String, MemoryError> {
         self.assemble_for_goal_hybrid(goal, None, char_budget, &Hybrid::default())
     }
@@ -501,6 +540,9 @@ impl MemoryStore {
                 parts.push(line);
             }
         };
+        for m in self.profile(PROFILE_FACTS)? {
+            push(&m);
+        }
         let query = goal_query(goal);
         if !query.is_empty() || vector.is_some() {
             for m in self.recall_hybrid(&query, vector, 10, hybrid)? {
@@ -736,7 +778,12 @@ struct Candidate {
     superseded_by: Option<i64>,
     /// bm25 for a keyword match, cosine for a vector match.
     rank: f64,
+    /// Tagged with a [`DURABLE_TAGS`] tag: no time decay.
+    durable: bool,
 }
+
+/// `(id, created_at, superseded_by, score before decay, durable)`.
+type Scored = (i64, i64, Option<i64>, f64, bool);
 
 impl MemoryStore {
     /// Stores `vector` as `id`'s embedding by `model`, if the row still
@@ -814,7 +861,7 @@ impl MemoryStore {
         n: usize,
     ) -> Result<Vec<Candidate>, MemoryError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, superseded_by, embedding FROM memories
+            "SELECT id, created_at, superseded_by, embedding, tags FROM memories
              WHERE embedding_model = ?1 AND embedding IS NOT NULL",
         )?;
         let mut rows = stmt.query(params![query.model])?;
@@ -830,6 +877,7 @@ impl MemoryStore {
                     created_at: row.get(1)?,
                     superseded_by: row.get(2)?,
                     rank: f64::from(cos),
+                    durable: durable(&row.get::<_, String>(4)?),
                 });
             }
         }
@@ -867,11 +915,11 @@ impl MemoryStore {
         let lexical = self.bm25_candidates(query, n)?;
         let semantic = self.vector_candidates(qv, hybrid.min_similarity, n)?;
 
-        // id → (created_at, superseded_by, keyword part, vector part)
-        let mut merged: Vec<(i64, i64, Option<i64>, f64)> = Vec::new();
+        // id → (created_at, superseded_by, keyword part + vector part, durable)
+        let mut merged: Vec<Scored> = Vec::new();
         let mut add = |c: &Candidate, part: f64| match merged.iter_mut().find(|m| m.0 == c.id) {
             Some(m) => m.3 += part,
-            None => merged.push((c.id, c.created_at, c.superseded_by, part)),
+            None => merged.push((c.id, c.created_at, c.superseded_by, part, c.durable)),
         };
         match hybrid.merge {
             Merge::Weighted { vector_weight } => {

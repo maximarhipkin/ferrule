@@ -2,11 +2,12 @@
 //!
 //! Stateless on purpose (design §6): every call sends the full input with
 //! `store: false`, never `previous_response_id`, and asks for encrypted
-//! reasoning so a reasoning model's chain survives a tool loop without the
-//! server keeping anything. That one path serves api.openai.com and
-//! stateless-only hosts such as OpenRouter alike.
+//! reasoning so a reasoning model's chain survives a tool loop, and on
+//! GPT-5.6 later turns too, without the server keeping anything. That one
+//! path serves api.openai.com and stateless-only hosts such as OpenRouter
+//! alike.
 
-use crate::common::{self, last_user, replayable};
+use crate::common::{self, replayable};
 use crate::vision::{self, Part};
 use crate::DriverOptions;
 use ferrule_core::error::CoreError;
@@ -99,13 +100,11 @@ impl ResponsesProvider {
             .filter_map(|m| nonempty(&m.content))
             .collect();
 
-        let latest_user = last_user(msgs);
         let sees = self.sees();
         let pixel_set = ferrule_core::vision::pixel_set(msgs);
         let mut input: Vec<Value> = Vec::new();
         let mut replayed = false;
         for (i, m) in msgs.iter().enumerate().skip(lead) {
-            let in_loop = latest_user.is_none_or(|u| i > u);
             match m.role {
                 Role::System => {
                     if let Some(t) = nonempty(&m.content) {
@@ -148,10 +147,14 @@ impl ResponsesProvider {
                     "output": m.content.as_deref().unwrap_or(""),
                 })),
                 Role::Assistant => {
+                    // Every turn, not just the loop in progress: GPT-5.6's
+                    // default `reasoning.context = "all_turns"` renders
+                    // earlier turns' reasoning, and earlier models drop it
+                    // unread. Either way the prefix stays byte-stable.
                     let own = if plain {
                         None
                     } else {
-                        replayable(m, API, &self.model, in_loop)
+                        replayable(m, API, &self.model, true)
                     };
                     match own {
                         Some(items) => {
@@ -180,7 +183,10 @@ impl ResponsesProvider {
                 body["tool_choice"] = json!("auto");
             }
         }
-        if let Some(e) = &self.options.effort {
+        // M57.2: the run's level or floor, where an effort is configured.
+        let effort =
+            ferrule_core::provider::call_context().effort_for(self.options.effort.as_deref());
+        if let Some(e) = &effort {
             body["reasoning"] = json!({ "effort": e });
         }
         if self.codex {
@@ -188,7 +194,7 @@ impl ResponsesProvider {
             return Payload { body, replayed };
         }
         if let Some(mut cap) = req.max_output_tokens.or(self.options.max_tokens) {
-            if self.options.effort.as_deref() != Some("none") {
+            if effort.as_deref() != Some("none") {
                 cap = cap.max(MAX_TOKENS_FLOOR);
             }
             body["max_output_tokens"] = json!(cap);
@@ -276,6 +282,11 @@ impl ResponsesProvider {
             }
         }
 
+        // `completed`, or why it's incomplete.
+        let mut stop_reason = body
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         match body.get("status").and_then(Value::as_str) {
             Some("failed") => {
                 let err = body.get("error").cloned().unwrap_or(json!({}));
@@ -295,6 +306,7 @@ impl ResponsesProvider {
                         "response incomplete: {reason}"
                     )));
                 }
+                stop_reason = Some(reason.to_string());
             }
             _ => {}
         }
@@ -320,8 +332,10 @@ impl ResponsesProvider {
                 output_tokens: n("/output_tokens"),
                 cached_input_tokens: n("/input_tokens_details/cached_tokens"),
                 cache_write_input_tokens: 0,
+                cache_write_1h_input_tokens: 0,
                 notional_usd: None,
             },
+            stop_reason,
         })
     }
 }

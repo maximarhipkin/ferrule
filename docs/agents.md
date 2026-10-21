@@ -23,9 +23,12 @@ them. Measured on the tool definitions ferrule sends:
 
 | Agent | Tools | Size of their definitions plus the prompt addition |
 |---|---|---|
-| The root, or any agent that can still spawn | 11 | ~5,100 characters, about 1.3k tokens |
-| An agent at `max_depth` (no spawn/wait/resume/close) | 6 | ~2,600 characters, about 0.7k tokens |
+| The root, or any agent that can still spawn | 11 | ~5,100 characters, about 1.3k tokens (M57.2's `effort` argument adds ~230 characters, M57.5's examples ~500, M57.7's `fork` ~320) |
+| An agent at `max_depth` (no spawn/wait/resume/close) | 6 | ~2,600 characters, about 0.7k tokens (M57.5's examples add ~200) |
 | A child, in addition | | ~450 characters for "you are agent …, report to …" |
+
+A forked child (below) also reads its copy of the parent's conversation,
+up to `fork_tokens`, on every call it makes.
 
 The limits below stop a tree that runs away.
 
@@ -55,6 +58,7 @@ max_children = 4           # running at once, per parent
 max_agents = 12            # open (not closed) agents per tree
 max_tokens = 2000000       # all of a tree's sub-agents together, per window;
 budget_window_hours = 24   # the agent you talk to isn't counted
+fork_tokens = 16000        # the most of its parent's conversation a fork starts with
 
 [agents.roles.verifier]    # a role on another provider, from [providers]
 provider = "cheap"
@@ -73,6 +77,16 @@ provider = "cheap"
   ferrule at start, and `ferrule doctor` says which one.
 - A child can't change any of this. The tools take no arguments for it,
   and a child's children count against the same tree.
+- **Effort** (M57.2): `spawn_agent`'s `effort` (`low`, `medium`, `high`)
+  runs every turn of the child at that reasoning effort, held to its
+  profile's highest and only where its model has an `effort` set
+  ([m57-context-hygiene.md](m57-context-hygiene.md#loops-per-file-a-visible-budget-and-raised-effort-m572)).
+  A child also hears when its tree's `max_tokens` is down to a quarter,
+  and to a tenth.
+- **`fork_tokens`** (M57.7): the most of its parent's conversation, in
+  estimated tokens, a child started with `fork` gets (below). `0` turns
+  forking off: `spawn_agent` with `fork` refuses and says to put what the
+  child needs in `task`.
 
 `enabled = false` removes the agent tools everywhere.
 
@@ -92,6 +106,27 @@ provider = "cheap"
   the task's tree before it exits. Under the gateway, a child still running
   when the task's run ends goes on running, and its report reaches the
   task's next run.
+
+## Forked children
+
+A child sees only its task, unless its parent forks it:
+`spawn_agent {"task": …, "fork": true}` (M57.7) starts it from a copy of
+the end of the parent's conversation, then the task. The details are in
+[m57-context-hygiene.md](m57-context-hygiene.md#fork-sub-agents-m577).
+
+- The copy comes from the parent's transcript as its model sees it (after
+  any compaction), without the parent's system prompt: the child has its
+  own, as any child does.
+- It ends before the parent's turn that calls `spawn_agent`, and never
+  opens with a tool result whose call was left out, so a call and its
+  results are never split.
+- It is at most `fork_tokens` (16,000 estimated tokens by default). One
+  message's text is cut at a quarter of that, so a single big read
+  doesn't push out everything before it.
+- A header first says whose conversation it is and that the task comes
+  after it. Header and copy go into the child's own transcript, so
+  `resume_agent` replays them.
+- The spawn result says how many of the parent's messages the child got.
 
 ## Worktrees
 

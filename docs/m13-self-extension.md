@@ -1,6 +1,7 @@
 # M13 — self-extension: design
 
-Status: design for the build on branch `m13-self-extension`. Written before the code, kept
+Status: merged to `main` (PR #2, 2026-09-24). Written as the design for
+the build on branch `m13-self-extension`. Written before the code, kept
 true as the parts land. Sources: `docs/roadmap.md` §M13, `docs/research-autonomy-and-self-extension.md`
 §4, `docs/research-number-one-harness-strategy.md` §4.5/§4.8/§6.2, and Max's msg 3074
 ("an allow-list of approved sources installs without asking; anything else needs the owner").

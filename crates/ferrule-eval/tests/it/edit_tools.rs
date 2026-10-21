@@ -24,6 +24,7 @@ impl Provider for Recording {
         Ok(CompletionResponse {
             message: Message::assistant(Some("done".into()), vec![], None),
             usage: Usage::default(),
+            stop_reason: None,
         })
     }
 }

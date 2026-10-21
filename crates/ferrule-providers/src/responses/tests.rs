@@ -151,7 +151,7 @@ async fn a_multi_call_turn_and_its_reasoning_go_back_within_the_loop() {
     history.push(resp.message);
     history.push(Message::tool_result("call_A", "fn a() {}"));
     history.push(Message::tool_result("call_B", "a.rs"));
-    p.complete(req(history.clone())).await.unwrap();
+    p.complete(req(history)).await.unwrap();
 
     let second = body(&seen.join().unwrap()[1]);
     let output: Value = serde_json::from_str::<Value>(TWO_CALLS).unwrap()["output"].clone();
@@ -161,18 +161,49 @@ async fn a_multi_call_turn_and_its_reasoning_go_back_within_the_loop() {
         .push(json!({"type": "function_call_output", "call_id": "call_A", "output": "fn a() {}"}));
     expected.push(json!({"type": "function_call_output", "call_id": "call_B", "output": "a.rs"}));
     assert_eq!(second["input"], json!(expected));
+}
 
-    // After the next user message: neutral items, no reasoning, no ids.
-    history.push(Message::assistant(Some("done".into()), vec![], None));
-    history.push(Message::user("and b.rs?"));
-    let later = with(DriverOptions::default()).payload(&req(history), false);
-    assert!(!later.replayed);
+#[test]
+fn earlier_turns_reasoning_goes_back_to_the_same_model_only() {
+    let p = with(DriverOptions::default());
+    let first = p
+        .parse_response(&serde_json::from_str(TWO_CALLS).unwrap())
+        .unwrap();
+    let history = vec![
+        Message::user("look around"),
+        first.message,
+        Message::tool_result("call_A", "fn a() {}"),
+        Message::tool_result("call_B", "a.rs"),
+        Message::assistant(Some("done".into()), vec![], None),
+        Message::user("and b.rs?"),
+    ];
+
+    // After the next user message the turn still goes back as it came:
+    // GPT-5.6 renders it (`all_turns`), earlier models drop it unread.
+    let same = p.payload(&req(history.clone()), false);
+    assert!(same.replayed);
+    let output = serde_json::from_str::<Value>(TWO_CALLS).unwrap()["output"].clone();
     assert_eq!(
-        later.body["input"][1],
+        same.body["input"].as_array().unwrap()[1..4],
+        output.as_array().unwrap()[..]
+    );
+
+    // Another model gets neutral items: no reasoning, no ids.
+    let other = ResponsesProvider::new(
+        "openai",
+        "http://unused/v1",
+        "k",
+        "gpt-5.6",
+        DriverOptions::default(),
+    )
+    .payload(&req(history), false);
+    assert!(!other.replayed);
+    assert_eq!(
+        other.body["input"][1],
         json!({"type": "function_call", "call_id": "call_A", "name": "read_file",
                "arguments": "{\"path\":\"a.rs\"}"})
     );
-    assert!(!later.body.to_string().contains("ENCRYPTED"));
+    assert!(!other.body.to_string().contains("ENCRYPTED"));
 }
 
 #[test]
@@ -284,6 +315,7 @@ async fn incomplete_returns_the_text_so_far_or_says_why() {
         .await
         .unwrap();
     assert_eq!(resp.message.content.as_deref(), Some("The first half"));
+    assert!(resp.cut_off(), "{:?}", resp.stop_reason);
 
     let e = error_for(ok(r#"{
       "status": "incomplete", "incomplete_details": {"reason": "content_filter"},

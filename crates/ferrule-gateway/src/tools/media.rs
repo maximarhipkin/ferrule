@@ -103,6 +103,7 @@ impl MediaShared {
                 input_tokens: 0,
                 cached_input_tokens: 0,
                 cache_write_input_tokens: 0,
+                cache_write_1h_input_tokens: 0,
                 output_tokens: 0,
                 tool_calls: 0,
                 latency_ms,
@@ -182,6 +183,11 @@ impl Tool for GenerateImageTool {
     }
 
     fn changes_files(&self) -> bool {
+        true
+    }
+
+    /// M57.1: rare, and loaded when wanted.
+    fn deferrable(&self) -> bool {
         true
     }
 
@@ -320,6 +326,11 @@ impl Tool for GenerateVideoTool {
 
     fn changes_files(&self) -> bool {
         false
+    }
+
+    /// M57.1: rare, and loaded when wanted.
+    fn deferrable(&self) -> bool {
+        true
     }
 
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, CoreError> {

@@ -1,7 +1,7 @@
 # M24: the dashboard's leftovers (design)
 
-Status: in progress, 2026-09-25, branch `m24-dashboard-2` (PR to main, not
-merged). Follows M22 ([m22-dashboard.md](m22-dashboard.md)), which left
+Status: built, 2026-09-25, branch `m24-dashboard-2` (merged to `main`,
+PR #18). Follows M22 ([m22-dashboard.md](m22-dashboard.md)), which left
 four things out: a login that survives a restart, evaluating a candidate
 model, editing settings from the page, and a smoke script the owner runs
 on their own machine. The user guide is [dashboard.md](dashboard.md).

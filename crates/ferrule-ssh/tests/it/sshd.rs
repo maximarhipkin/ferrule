@@ -582,12 +582,23 @@ async fn timeouts_and_output_caps_match_the_local_shell() {
     )
     .await
     .unwrap();
+    // Over the cap: the exit code first, a head and a tail, and the whole
+    // output in a spill file on the remote.
+    assert!(out.starts_with("[exit code: 0]\naaa"), "{}", &out[..80]);
     assert!(
-        out.contains("[truncated, 200015 chars total]"),
+        out.contains("aaa\n[exit code: 0]\n[200015 characters in all; the whole output is in .ferrule/spill/"),
         "{}",
-        &out[out.len() - 80..]
+        &out[out.len() - 160..]
     );
-    assert!(out.len() < 30_100);
+    assert!(out.len() < 10_300);
+    let spill = out
+        .split("is in ")
+        .nth(1)
+        .and_then(|s| s.split(':').next())
+        .unwrap();
+    let saved = std::fs::read_to_string(sshd.path("ws").join(spill)).unwrap();
+    assert_eq!(saved.len(), 200_015);
+    assert!(saved.ends_with("a\n[exit code: 0]"));
 }
 
 /// A stand-in for ferrule's proxy: answers any request with a fixed body.

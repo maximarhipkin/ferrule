@@ -1381,8 +1381,10 @@ headers = {{ Authorization = "Bearer MCP-HEADER-SECRET" }}
     let _gw = gateway(home, &[("FERRULE_TEST_KEY", SECRET)]);
     let (_, page) = sign_in(&tg, 0);
 
-    // A running turn whose message carries the key.
+    // A message that carries the key never makes a turn (M52.5's paste
+    // guard stops it); the running turn is the second message's.
     tg.say(42, &format!("HANG with {SECRET}"));
+    tg.say(42, "HANG with an ordinary message");
     page.until("health", |h| {
         h["turns"]
             .as_array()

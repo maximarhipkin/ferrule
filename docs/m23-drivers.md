@@ -1,6 +1,7 @@
 # M23: native Anthropic and OpenAI Responses drivers (design)
 
-Status: design, 2026-09-25, branch `m23-drivers` (cut from `main` at the
+Status: merged to `main` (PR #17, 2026-09-25). Written as the design on
+2026-09-25, branch `m23-drivers` (cut from `main` at the
 v0.3.0 release). The user guide is `docs/models.md`.
 
 ## Why
@@ -119,7 +120,8 @@ message only if all of these hold:
 1. `native.api` is this driver's api;
 2. `native.model` is this request's model;
 3. the message comes **after the last user message**, i.e. it belongs to
-   the tool loop in progress.
+   the tool loop in progress. Anthropic only since 2026-10-20: the
+   Responses driver replays every turn (below).
 
 Every other assistant message is rebuilt from the neutral fields: text
 plus tool calls, with no reasoning.
@@ -157,6 +159,28 @@ native block and every `thinking` or `output_config` field the driver
 added, and is logged as a warning. A still-failing call is a normal
 `BadRequest`.
 
+**Responses, from 2026-10-20: every turn.** OpenAI's
+`reasoning.context` (developers.openai.com/api/docs/guides/reasoning,
+"Preserve reasoning across calls") is `all_turns` by default on the
+GPT-5.6 family, which renders earlier turns' compatible reasoning, and
+`current_turn` on earlier models, which drop it (the cookbook's
+`reasoning_items` example, "Caching": including it "is harmless"). So the
+Responses driver drops rule 3 and sends nothing for `reasoning.context`:
+GPT-5.6 keeps its reasoning at every user message, and the previous loop
+no longer changes bytes. The price on GPT-5.6 is context. The ~4
+chars/token guess can't count encrypted items, so the estimate
+(`est_context_tokens`) adds what the last turn's call counted past the
+guess: `input_tokens + output_tokens`, its prompt plus the answer the
+next prompt carries back. That holds only while the history it counted
+is unchanged (compaction or truncation ends it; shortened tool results
+don't), and only for an `anthropic` or `responses` answer: the Claude
+Code engine's usage covers a whole `claude -p` run. When the estimate
+still misses (the first turn, or right after a fold), the provider's
+"too long" compacts. OpenAI documents no binding of
+encrypted reasoning to its prefix; if one appears, the net is the
+driver's own: a 400 or 404 naming reasoning, `encrypted` or `rs_` is
+retried once without reasoning items (`reasoning_rejected`).
+
 ### Lossy conversions, defined
 
 | from → to | kept | dropped |
@@ -184,7 +208,9 @@ ids and their results.
 - `model`, `max_tokens`, `messages`, `system`, `tools` and `tool_choice`
   (`auto`, only when tools exist; forced choice is a 400 on Opus 5.5 and
   Fable 5.1).
-- `thinking` and `output_config.effort`, only when configured (§4).
+- `thinking` and `output_config.effort`, only when configured (§4). M57.2
+  may raise a configured effort for one turn, or set a sub-agent's level
+  in its place (`CallContext::effort_for`).
 - `temperature` is **never sent**. It is a 400 on Opus 4.7+, Sonnet 5 and
   Fable. Ferrule's only non-default uses are 0.0 for compaction, the eval
   judge and the learning pass, and 0.0 never guaranteed determinism anyway.
@@ -355,7 +381,9 @@ When `write = 0` this is the pre-M23 formula, so every existing number
 Price config gets `price_cache_write_per_mtok` on the provider and on each
 model. When it's unset:
 - on an anthropic-api provider it is **1.25 × input**, Anthropic's 5-minute
-  write price, which is the only TTL Ferrule uses;
+  write price (a write made with the 1-hour TTL, which a gateway chat
+  lane asks for since M57.4, is priced at 2 × input on top of this; see
+  [m57-context-hygiene.md](m57-context-hygiene.md#cache-economics-for-chats-m574));
 - otherwise it equals input.
 
 The catalog reads OpenRouter's `input_cache_write` when it's present.
@@ -386,9 +414,10 @@ The cost is re-sending input, which OpenAI's automatic prompt caching
 mostly discounts (`cached_tokens` in usage).
 
 **Encrypted reasoning.** It is requested (above), kept verbatim in
-`native` as part of the `output` array, and replayed only inside the
-current loop for the same model (§2). That's what keeps a reasoning model's
-chain intact across tool calls without `store`.
+`native` as part of the `output` array, and replayed for the same model
+(§2), every turn since 2026-10-20. That's what keeps a reasoning model's
+chain intact across tool calls, and on GPT-5.6 across turns, without
+`store`.
 
 **Request.**
 - `model`, `store`, `include`.
@@ -397,7 +426,9 @@ chain intact across tool calls without `store`.
   `parallel_tool_calls: true`.
 - `reasoning: {effort}` only when `effort` is configured. Accepted values
   (model-dependent): none, minimal, low, medium, high, xhigh, max. The
-  model's default otherwise.
+  model's default otherwise. As with Anthropic, M57.2 may raise a
+  configured effort for one turn or put a sub-agent's level in its place;
+  `none` is never changed.
 - `temperature` is never sent. Reasoning models reject it, and the Chat
   driver remains for models that want it.
 
@@ -579,7 +610,7 @@ OPENAI_API_KEY=…    cargo test -p ferrule-providers --test it live::openai_res
 |---|---|
 | Thinking config the model rejects | 400 in plain words, from `model test` too. No retry |
 | A 5-series model thinks and uses up `max_tokens` | the 16 000 floor. Otherwise the text so far comes back, as with `length` today |
-| Prefix changed under a replayed block | compaction clears `native`, and blocks are never replayed across user turns. A thinking 400 retries once without blocks |
+| Prefix changed under a replayed block | compaction clears `native`, and Anthropic blocks are never replayed across user turns (Responses items are, since 2026-10-20). A thinking 400, or a Responses reasoning 400/404, retries once without them |
 | Tool id with characters Anthropic rejects | sanitized, deterministically, both sides |
 | A Responses host that ignores `include` | no `encrypted_content`, so the reasoning item is replayed without it. If the host rejects that, the call fails as a 400, and it shows up in `model test` |
 | Refusal | not retried, not fallen back, surfaced |
@@ -590,7 +621,7 @@ OPENAI_API_KEY=…    cargo test -p ferrule-providers --test it live::openai_res
 - Streaming, as today.
 - PDFs and citations: there's no document input above the driver yet.
 - Strict tools: MCP schemas would need validating first.
-- The 1-hour cache TTL.
+- The 1-hour cache TTL (built in M57.4, for gateway chat lanes).
 - Replaying reasoning across user turns (Opus 5.5's "preserved thinking"),
   opt-in once Ferrule's prompt prefix is stable (the roadmap's "stable
   prompt prefix for caching").

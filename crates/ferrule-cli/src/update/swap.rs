@@ -67,15 +67,38 @@ fn rename_over(staged: &Path, exe: &Path) -> Result<()> {
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     ));
     if exe.exists() {
-        std::fs::rename(exe, &aside).with_context(|| format!("moving {} aside", exe.display()))?;
+        rename_retrying(exe, &aside).with_context(|| format!("moving {} aside", exe.display()))?;
     }
-    if let Err(e) = std::fs::rename(staged, exe) {
-        let _ = std::fs::rename(&aside, exe);
+    if let Err(e) = rename_retrying(staged, exe) {
+        let _ = rename_retrying(&aside, exe);
         return Err(e).with_context(|| format!("replacing {}", exe.display()));
     }
     // Deleted now if nothing runs it, else at the next start.
     let _ = std::fs::remove_file(&aside);
     Ok(())
+}
+
+/// `fs::rename`, tried again for up to 5 s while another process has the
+/// file open without delete sharing (`ERROR_SHARING_VIOLATION`): an
+/// antivirus scanning an exe that was just written or started, or the
+/// loader still starting it. Any other error is returned at once.
+#[cfg(windows)]
+fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut pause = std::time::Duration::from_millis(50);
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e)
+                if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(std::time::Duration::from_millis(500));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// Delete the `.old` files a Windows swap left beside `exe`.

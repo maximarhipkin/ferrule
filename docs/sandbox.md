@@ -146,6 +146,49 @@ grant "new children of `~` except `.ssh`". If a server has to create
 something at the top of `~`, create it once yourself; from then on it's an
 existing entry and stays writable.
 
+## Ferrule's own git
+
+Some git calls are ferrule's, not the model's, and run as you outside the
+sandbox: a sub-agent's worktree and the commit when it's closed, the
+verifier's snapshot (`ferrule-agents/src/worktree.rs`), and the eval
+fixture's first commit (`ferrule-eval/src/fixture.rs`). The worktree
+calls run inside the sandbox instead, with the same pins, in the gateway
+when it has a sandbox and in any process whose config asks for owner mode
+(see Owner mode). They act on a repo
+a sandboxed command can write to, and git runs commands its config names.
+All of them go through one helper, `ferrule_sandbox::host_git`, which:
+
+- pins `core.hooksPath=/dev/null` (no hook can live there; the old
+  `$TMPDIR/ferrule-no-git-hooks` was writable by sandboxed commands),
+  `core.fsmonitor=false` and `commit.gpgsign`/`tag.gpgsign=false` (so
+  `gpg.program` never runs);
+- lists the config with `git config --list --show-scope` and empties
+  `clean`, `smudge` and `process` of every filter driver that `.git/config`,
+  a worktree's `config.worktree`, or a file they include defines. Drivers
+  in your global or system config still run, so **git-lfs keeps working**
+  when it was installed the usual way (`git lfs install` writes
+  `filter.lfs.*` to `~/.gitconfig`). A repo-level LFS install
+  (`git lfs install --local`) is turned off for these calls: a worktree
+  then holds pointer files;
+- pins the work tree with `--work-tree` to the directory holding the
+  `.git` git found, whenever the repo's config sets `core.worktree`. A
+  worker may write its repo's git dir (so it can commit), so it could give
+  its worktree a `core.worktree` (`extensions.worktreeConfig` plus `git
+  config --worktree`) naming any directory, and closing it would have
+  committed that directory's files, read as you, to a branch the parent
+  can read. `-c core.worktree=…` doesn't override the repo's value;
+  `--work-tree` does. A submodule's own `core.worktree` (`../../../sub`)
+  names that same directory, so submodules keep working;
+- kills a call that runs past 5 minutes (a FIFO planted as `.git/HEAD`
+  blocks git's read forever).
+
+The snapshot's diff passes `--no-ext-diff --no-textconv`, so diff drivers
+don't run either. It needs git 2.26 or newer (`--show-scope`); with an
+older git the calls fail and a child shares its parent's workspace.
+Auto-commit (`[agent] auto_commit`) is different: it runs git *inside*
+the sandbox, where the repo's own hooks and drivers have no more power
+than the command that wrote them.
+
 ## Env
 
 Variables whose name looks secret (`*KEY*`, `*SECRET*`, `*TOKEN*`,
@@ -295,7 +338,7 @@ different name.
 **Transcripts and notes.** `sessions/` and `learn/` are readable to your
 chats' commands, read-only. They stay hidden from everyone else's.
 
-**Hooks, gate scripts and helpers run in the sandbox.** Command hooks,
+**Hooks, gate scripts and helpers run in the sandbox.** Your `[hooks]`,
 scheduler gate scripts, sub-agent worktree git, signal-cli, the
 dashboard's tunnel, the transcription command, `agent-browser --version`
 and claude's version check and updater go through the owner sandbox. A
@@ -303,7 +346,8 @@ hook or gate that needs the keys or a protected path stops working in
 owner mode. What still runs outside it is root-owned programs found in
 the system dirs (`git`, `ssh`, `systemctl`, `loginctl`, `ps`, never
 looked up on `PATH`, where the bot may have put its own), `sudo` and
-`apt-get` by absolute path, and ferrule's own binary.
+`apt-get` by absolute path, and ferrule's own binary. A workspace's hooks
+run in the session's own sandbox, in every mode.
 
 **Installing system packages.** `package_install` runs
 `sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y
@@ -379,7 +423,7 @@ task made elsewhere) gets `workspace-write`, and can't read your
 `sessions/` or `learn/`; the claude engine is narrowed per session too. A
 run in the gateway that no chat traces to counts as someone else's.
 
-**Known limit: guests share the helpers.** MCP servers, hooks, the
+**Known limit: guests share the helpers.** MCP servers, your `[hooks]`, the
 browser, graph check commands and the host launcher are process-wide, and
 the workspace is shared. A guest's chat that uses them reaches what the
 owner sandbox reaches: never the keys or ferrule's protected files, but a

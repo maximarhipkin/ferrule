@@ -2,16 +2,18 @@
 //! verifier's throwaway snapshot. Plain `git` calls; when one fails the
 //! child shares its parent's workspace and a note says why.
 //!
-//! These calls run on a repo a child could write to, so every one turns off
-//! the two things git would otherwise run from it: hooks and an fsmonitor.
-//! They run in ferrule's own process, outside any sandbox, unless the host
-//! sets a launcher ([`set_git`]): then git runs through that, so the
-//! commands the repo's config defines (filters, the pager, ssh) are
+//! These calls run on a repo a child could write to, so every one goes
+//! through [`ferrule_sandbox::host_git`], which turns off what git would
+//! otherwise run from it: hooks, an fsmonitor, and the repo's own filter
+//! drivers. They run in ferrule's own process, outside any sandbox, unless
+//! the host sets a launcher ([`set_git`]): then git runs through that, so
+//! the commands the repo's config defines (filters, the pager, ssh) are
 //! confined too.
 
+use ferrule_sandbox::host_git;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output};
 use std::sync::{Arc, OnceLock};
 
 /// Builds a `git` command that runs in the given directory, sandboxed.
@@ -25,17 +27,10 @@ pub fn set_git(f: GitCommand) {
     let _ = LAUNCHER.set(f);
 }
 
-/// `git` for `dir`, before its options: the launcher's command (which runs
-/// in `dir`), else `git -C dir`.
-fn base(dir: &Path) -> Result<Command, String> {
-    match LAUNCHER.get() {
-        Some(launch) => launch(dir).map_err(|e| format!("git couldn't run: {e}")),
-        None => {
-            let mut cmd = Command::new("git");
-            cmd.arg("-C").arg(dir);
-            Ok(cmd)
-        }
-    }
+/// `git -C dir args…` through [`host_git`], started by the launcher when
+/// one is set.
+fn run_git(dir: &Path, args: &[&str]) -> io::Result<Output> {
+    host_git::git_with(LAUNCHER.get().map(|l| l.as_ref()), dir, args)
 }
 
 /// A child's own copy of the repo.
@@ -57,21 +52,7 @@ pub(crate) struct Made {
 pub(crate) type Shared = Option<String>;
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = base(dir)?
-        .args(["-c", "core.fsmonitor=false", "-c"])
-        .arg(format!("core.hooksPath={}", no_hooks().display()))
-        // ferrule's own commits (worktree snapshots, close-out) are never
-        // signed: the owner's global gpgsign would otherwise kick off a
-        // 1Password/gpg prompt for a commit that isn't theirs.
-        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
-        .args(args)
-        .stdin(Stdio::null())
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .map_err(|e| format!("git couldn't run: {e}"))?;
+    let out = run_git(dir, args).map_err(|e| format!("git couldn't run: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {
@@ -79,17 +60,6 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         let err = err.trim();
         let last = err.lines().last().unwrap_or(err);
         Err(format!("git {} failed: {last}", args[0]))
-    }
-}
-
-/// A directory that holds no hooks. On Unix `/dev/null` isn't a directory,
-/// so git finds none and nothing a command can write is trusted; Windows
-/// has no such path and keeps an (empty) temp dir.
-fn no_hooks() -> PathBuf {
-    if cfg!(unix) {
-        PathBuf::from("/dev/null")
-    } else {
-        std::env::temp_dir().join("ferrule-no-git-hooks")
     }
 }
 
@@ -234,12 +204,18 @@ pub(crate) fn snapshot(parent_workspace: &Path, root: &Path, id: &str) -> Result
 
 fn copy_changes(repo: &Repo, to: &Path, root: &Path, id: &str) -> Result<(), String> {
     let patch = root.join(format!("{id}.patch"));
-    let diff = base(&repo.top)?
-        .args(["-c", "core.fsmonitor=false"])
-        .args(["diff", "HEAD", "--binary", "--no-ext-diff", "--no-color"])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| e.to_string())?;
+    let diff = run_git(
+        &repo.top,
+        &[
+            "diff",
+            "HEAD",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     if !diff.status.success() {
         return Err("git diff failed".into());
     }

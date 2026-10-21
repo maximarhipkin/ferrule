@@ -1770,7 +1770,7 @@ async fn web_search_check(
 ) {
     // `Config::load` already refused a `[web_search]` that doesn't validate.
     let Ok(Some(s)) = cfg.web_search.settings() else {
-        r.note("search", "off (no [web_search] provider)");
+        r.note("search", "off ([web_search] provider = \"off\")");
         return;
     };
     let name = s.provider.name();
@@ -1787,6 +1787,15 @@ async fn web_search_check(
     } else {
         format!(" · {}", limits.join(", "))
     };
+    // M56.8: nothing to check without a key, and a probe would spend one
+    // of the searches DuckDuckGo tolerates.
+    if s.provider == SearchProvider::Duckduckgo {
+        r.ok(
+            "search",
+            format!("{name} · keyless, for light use (it limits automated searches; `ferrule setup` → Web search sets an API), not checked{limits}"),
+        );
+        return;
+    }
     if let Some(var) = &s.key_env {
         if key(var).is_none() {
             r.fail("search", format!("{name}: no key (${var} isn't set)"));

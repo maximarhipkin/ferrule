@@ -40,6 +40,10 @@ previous hunks left. The file is written only if every hunk applied. That
 is the same contract as Claude Code's MultiEdit, and it lets a later hunk
 edit text an earlier hunk inserted.
 
+The `edits` property's description carries two short examples (M57.5): a
+change with a line of context, and an insert that repeats the line next
+to it ([m57-context-hygiene.md](m57-context-hygiene.md#tool-use-examples-m575)).
+
 ### Matching: one ladder, never fuzzy on content
 
 For each hunk, the rungs are tried in order. The first rung that finds
@@ -93,6 +97,9 @@ and gives the next step:
   and the fix: to prepend or append, SEARCH the first or last lines.
 - The file is missing and SEARCH is non-empty: the error says to create the
   file with an empty SEARCH or with `write_file`.
+- The file changed on disk since the agent last read or wrote it (M57.3,
+  [m57-context-hygiene.md](m57-context-hygiene.md#a-stale-file-guard-on-edit_file-m573)):
+  the error says to re-read it with `read_file` and edit what it holds now.
 
 ### Files: line endings, encodings, BOM
 

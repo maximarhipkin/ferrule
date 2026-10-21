@@ -34,6 +34,18 @@ impl KeyForm {
 
     /// The key typed into the form, from its envelope `{v, epk, iv, ct}`.
     pub fn open(self, slot_id: &str, envelope: &Value) -> Result<String> {
+        let text = self.open_text(slot_id, envelope)?;
+        let text = text.trim().to_string();
+        if text.is_empty() || text.len() > 4096 || text.chars().any(char::is_control) {
+            bail!("that doesn't look like an API key");
+        }
+        Ok(text)
+    }
+
+    /// The envelope's text exactly as it was sealed, with no check of its
+    /// shape: the dashboard's forms (M52.1) seal any field, and its
+    /// handlers check their own.
+    pub fn open_text(self, slot_id: &str, envelope: &Value) -> Result<String> {
         if envelope["v"] != 1 {
             bail!("an envelope of another version");
         }
@@ -56,12 +68,7 @@ impl KeyForm {
         let plain = LessSafeKey::new(key)
             .open_in_place(nonce, Aad::from(slot_id.as_bytes()), &mut ct)
             .map_err(|_| anyhow!("the envelope doesn't open (edited, or for another slot)"))?;
-        let text = String::from_utf8(plain.to_vec()).context("the key isn't text")?;
-        let text = text.trim().to_string();
-        if text.is_empty() || text.len() > 4096 || text.chars().any(char::is_control) {
-            bail!("that doesn't look like an API key");
-        }
-        Ok(text)
+        String::from_utf8(plain.to_vec()).context("the key isn't text")
     }
 }
 

@@ -270,9 +270,9 @@ Everything else it starts goes through the owner sandbox
 
 | Spawn | Today | In owner mode |
 |---|---|---|
-| command hooks (`ferrule-hooks/src/command.rs`) | unsandboxed by design: "runs as the owner" | sandboxed |
+| command hooks (`ferrule-hooks/src/command.rs`) | the owner's `[hooks]`: unsandboxed by design, "runs as the owner" (a workspace's hooks run in the session's sandbox in every mode, since "Workspace hooks run in the sandbox") | sandboxed |
 | scheduler gate scripts (`ferrule-gateway/src/scheduler/gate.rs`) | unsandboxed | sandboxed |
-| sub-agent worktree git (`ferrule-agents/src/worktree.rs`) | unsandboxed; `core.hooksPath` points into temp, which commands can write | sandboxed, with `<data>/worktrees` granted. Sandboxing it also covers commands that `.git/config` or `~/.gitconfig` define (filters, the pager, ssh). |
+| sub-agent worktree git (`ferrule-agents/src/worktree.rs`) | unsandboxed; `core.hooksPath` points into temp, which commands can write | sandboxed, with `<data>/worktrees` granted. Sandboxing it also covers commands that `.git/config` or `~/.gitconfig` define (filters, the pager, ssh). It still goes through `ferrule_sandbox::host_git` (`git_with`, the launcher starting each git), which also pins the repo's own filter drivers off and its work tree in place. |
 | claude's `--version` and claude's updater (`update/claude.rs`, `ferrule-plans/src/claude/update.rs`) | unsandboxed | the engine sandbox (`engine_sandbox`), which leaves claude's own login readable. An updater that needs another user (`as_owner`, a root-installed npm) can't switch users under `no_new_privs`; it fails and says so. |
 | the connections' key-form `node` and cloudflared's version check (`ferrule-connections/src/keyform.rs`, `cloudflared.rs`) | listed here in error | both spawns are inside `#[cfg(test)]` code; nothing to route |
 | `agent-browser --version` (`ferrule-mcp/src/browser.rs`) | unsandboxed | sandboxed |
@@ -299,8 +299,9 @@ Two consequences:
 
 **Other modes.** The worktree `hooksPath`-in-temp hole is real in
 `workspace-write` too. There, worktree git moves into the sandbox as
-well, so the fix ships for every mode. Hooks and gates keep their
-current unsandboxed behaviour outside owner mode.
+well, so the fix ships for every mode. The owner's `[hooks]` and gates
+keep their current unsandboxed behaviour outside owner mode; a
+workspace's hooks run in the session's sandbox in every mode.
 
 ### 5. No approvals
 
@@ -719,9 +720,12 @@ Smaller rulings:
   `core.fsmonitor=false` and `commit.gpgsign=false`
   (`autocommit.rs`): a guest can write `.git` in the shared workspace.
   Repo hooks don't run on owner-mode auto-commits.
-- Worktree git uses `core.hooksPath=/dev/null` on Unix in every mode
-  (Windows keeps its empty temp dir), so the temp-dir hole is closed
-  outside owner mode too (`ferrule-agents/src/worktree.rs`).
+- Worktree git uses `core.hooksPath=/dev/null` in every mode, so the
+  temp-dir hole is closed outside owner mode too. Since the merge with
+  "Ferrule's own git calls no longer run the repo's filters or a planted
+  hook" that pin is `ferrule_sandbox::host_git`'s, on every platform
+  (`ferrule-agents/src/worktree.rs` `run_git`). Without a launcher, in
+  owner mode that helper's `git` is `host::system_program("git")`.
 - `send_link` refuses an owner chat on the HTTP channel, and
   `dashboard_link` and `secret_request` are audited (`self_service.link`,
   `self_service.secret_request`, with `by`). Their answers say "Sending…",

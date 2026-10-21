@@ -36,6 +36,18 @@ pub fn link_text(dash: &Dashboard, link: &str, remote: bool) -> String {
     text
 }
 
+/// The message that carries a link through the tunnel, saying so when
+/// the tunnel hadn't answered yet.
+pub fn remote_text(dash: &Dashboard, link: &super::RemoteLink) -> String {
+    let mut text = link_text(dash, &link.url, true);
+    if !link.ready {
+        text.push_str(
+            "\nThe tunnel is still coming up: if the page doesn't load, give it a few more seconds and open the link again.",
+        );
+    }
+    text
+}
+
 /// Whether a link goes through the quick tunnel (else it's the loopback or
 /// the public address).
 fn remote(dash: &Dashboard) -> bool {
@@ -64,7 +76,13 @@ async fn link_message(dash: &Dashboard, suffix: &str) -> Result<String, String> 
         return local();
     }
     match dash.remote_link().await {
-        Ok(link) => Ok(link_text(dash, &with_suffix(&link, suffix), true)),
+        Ok(link) => Ok(remote_text(
+            dash,
+            &super::RemoteLink {
+                url: with_suffix(&link.url, suffix),
+                ready: link.ready,
+            },
+        )),
         Err(e) => {
             tracing::warn!("dashboard tunnel: {e:#}");
             let why = format!("The tunnel didn't open: {e:#}.");

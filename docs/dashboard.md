@@ -15,7 +15,9 @@ down, with the kill switch on or a cap hit.
 
 - By default (`[dashboard] remote = "tunnel"`), the reply is "Opening the
   dashboard's tunnel, the link follows in a moment", then an
-  `https://….trycloudflare.com/login#…` link. Tap it.
+  `https://….trycloudflare.com/login#…` link once the tunnel answers. Tap
+  it. If the tunnel hasn't answered within 20 s the link comes anyway,
+  saying the page may take a few more seconds.
 - The tunnel needs `cloudflared`. Ferrule looks for it on `PATH`, then in
   the usual install dirs (`/usr/local/bin`, `/usr/bin`, `/opt/homebrew/bin`,
   `~/.local/bin`, …), then in `<data>/bin`. When it finds none, the first
@@ -477,8 +479,12 @@ public_url = "https://bots.example.com/b/b_4f2a/"   # FERRULE_PUBLIC_URL
 ## Security in three lines
 
 - The page listens on 127.0.0.1 only. The phone reaches it through a
-  quick tunnel you open and close, and Cloudflare sees the (already
-  redacted) traffic.
+  quick tunnel you open and close, and Cloudflare sees the traffic. What
+  the page shows is redacted, and a key you type is sealed in your
+  browser to a one-time key before it's sent, so Cloudflare sees only
+  the envelope. Someone who can *rewrite* the tunnel's traffic could
+  still serve a page that takes the key; for that, type keys on the
+  local page over `ssh -L` or a tailnet.
 - The only way in is a one-use, 10-minute link sent to the owner's chat.
   It travels in the URL fragment, so no server logs it, and only its hash
   is stored.

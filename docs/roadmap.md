@@ -52,6 +52,19 @@ six-investigation synthesis at v0.9.0; its predecessor,
 | **M36** | Self-update (signed releases with rollback) and self-repair (failure classification, fallbacks, a last-good config) (`docs/updates.md`). |
 | **M37** | The control room: closable notices with fix buttons, model pickers, connections that work, terminal parity, a phone UI (`docs/dashboard.md`, `docs/connections.md`). |
 | **M38** | Named instances: several agents on one machine, each with its own config, data, bot, service and dashboard, with coordinated updates (`docs/instances.md`). |
+| **M39** | Six more channels: WhatsApp (the Cloud API, through the relay's mailbox), Matrix, email, Signal, Mattermost and an HTTP API, each with a setup step, a dashboard card and doctor lines (`docs/channels.md`). |
+| **M40** | Build diet: line-table debug info and one integration-test binary per crate; a fresh test build went from 10.66 GB to 2.62 GB (`docs/m40-build-diet.md`). |
+| **M41** | Daily use: `/new` in every chat, voice messages transcribed, a typing indicator, and `ferrule backup`/`restore` (`docs/channels.md`, `docs/backup.md`). |
+| **M42** | Harness engineering on ourselves: `AGENTS.md` and `make check`, layered context and verification, goal loops, agent graphs, pluggable compaction and a session tree (`docs/m42-harness-engineering.md`). |
+| **M43** | `/goal` and `/graph` from any chat; a graph's approval nodes ask the owner's chat (`docs/m43-channels-drive-loops.md`). |
+| **M44** | Managed mode: a Dockerfile, a policy file that closes the risky surfaces, a panel sign-in per bot, a bounded SIGTERM drain (`docs/docker.md`). |
+| **M47** | The dashboard redesigned: navigation and a visual system, a Home checklist, English and Hebrew, photos for vision models (`docs/dashboard.md`). |
+| **M48** | Self-service: `ferrule_admin` in the owner's chats behind one-tap cards, `/update`, `/restart` and `/doctor` from a chat, an Approvals inbox (`docs/m48-self-service.md`). |
+| **M49** | Dashboard polish: fonts, palette, controls and icons, with contrast tested (`docs/m49-dashboard-polish.md`). |
+| **M50** | Connect everything from the dashboard: one Connect page and panel, MCP servers by address, keys for tools, Discord and Slack cards (`docs/m50-connect.md`). |
+
+M45 and M46 were never used. The latest release, v0.13.1 (2026-10-20),
+has everything through M49; M50 is on `main` only.
 
 ## Milestones
 
@@ -171,8 +184,8 @@ picks up after a restart.
 
 ### M13 — self-extension
 
-**Status.** Built 2026-09-24 on branch `m13-self-extension` (PR open, not yet
-merged; the macOS/Windows parts are unverified until the batch CI pass). Design:
+**Status.** Built 2026-09-24 on branch `m13-self-extension` (merged to `main`, PR
+#2; the macOS/Windows parts are unverified until the batch CI pass). Design:
 `docs/m13-self-extension.md`. With M12: sub-agents never get the install tools —
 only the top-level agent installs; children use what's installed, narrowed by role.
 
@@ -261,7 +274,7 @@ matter, with mock-LLM tests proving the machinery in CI.
 
 ### M15 — memory update pipeline + reversible compaction
 
-**Status.** Built (`docs/m15-memory.md`; PR open). `remember` recognises a
+**Status.** Built (`docs/m15-memory.md`; merged, PR #4). `remember` recognises a
 fact it already has and shows similar ones; `update_memory` supersedes a fact
 (`superseded_by`) and recall returns the correction even for the old wording;
 `forget` deletes a chain for good. The session-start memory block comes from
@@ -287,7 +300,7 @@ only in the dropped history.
 
 ### M16 — the learning loop
 
-**Status.** Built (`docs/m16-learning-loop.md`; PR open). `ferrule learn
+**Status.** Built (`docs/m16-learning-loop.md`; merged, PR #6). `ferrule learn
 run` (or a built-in nightly task once `[learning] enabled = true`; off by
 default) reviews failed or retried runs. A reflector proposes one playbook
 delta each, and an addition is kept only when the task's check passes twice
@@ -369,8 +382,10 @@ is picked up and re-scanned (M13's hook).
   (`.ferrule/hooks.toml`) need `[hooks] project = true` and `ferrule
   hooks trust`, at a terminal, pinned to the file's SHA-256; any edit
   untrusts them, and the owner is told what won't run.
-- **Hooks run with the owner's privileges, outside the sandbox.** The
-  model can't add, edit or enable one: no tool touches hook config, the
+- **Hooks from the owner's config run with the owner's privileges,
+  outside the sandbox; a workspace's run in the sandbox** (since
+  2026-10-19: the trusted file pins command lines, not the scripts they
+  run, which the model can edit). The model can't add, edit or enable one: no tool touches hook config, the
   trust record is under `private/`, and `trust` needs a terminal.
 - Sub-agents inherit PreToolUse/PostToolUse; SubagentStart/Stop fire in
   the parent. Every run goes to `<data dir>/hooks/runs.jsonl`; `ferrule
@@ -391,7 +406,7 @@ hook blocks a command in a test and the model sees why.
 
 ### M19 — trust & cost
 
-**Status.** Built (`docs/m19-trust-cost.md`; PR open). Caps on tokens and
+**Status.** Built (`docs/m19-trust-cost.md`; merged, PR #9). Caps on tokens and
 dollars per run, per day and per scheduled task, read from the ledger so
 they hold across processes and restarts, with a one-time warning at 80%
 sent to the owner's Telegram chat. A kill switch (`ferrule stop`, `/stop`
@@ -423,7 +438,7 @@ changes nothing before approval.
 
 ### M19b — reliability: never silently deaf
 
-**Status.** Built (`docs/m19b-reliability.md`; PR open). The owner's server
+**Status.** Built (`docs/m19b-reliability.md`; merged, PR #12). The owner's server
 takes no inbound connections, so everything reaches the phone: 👀 on every
 message the gateway admits, before the lane, and one "busy, queued"
 notice; `/status` from any allowed chat while a turn hangs, and `ferrule
@@ -441,8 +456,8 @@ process is down — and a wedged or crashed gateway comes back and says so.
 
 ### M21 — models
 
-**Status.** Built (`docs/m21-models.md`, user guide `docs/models.md`; PR
-open). Several models connected at once, named `provider/model`, by a
+**Status.** Built (`docs/m21-models.md`, user guide `docs/models.md`; merged,
+PR #13). Several models connected at once, named `provider/model`, by a
 provider, an alias or a unique model id, with their own prices, context
 window and profile; old single-model configs unchanged. A default,
 changed from `ferrule setup`, `ferrule model default` or `/model default`
@@ -465,7 +480,7 @@ third; each call's model shows in the ledger, and an outage moves the turn
 to the fallback with one message.
 ### M20 — connections
 
-**Status.** Built (`docs/m20-connections.md`; PR open).
+**Status.** Built (`docs/m20-connections.md`; merged, PR #14).
 - The agent asks for a service; the owner taps one Telegram button and logs in.
 - The login code comes back through the owner's own Cloudflare Worker relay (one
   read, 5 minutes). Else it comes back through a cloudflared quick tunnel (DCR
@@ -534,7 +549,7 @@ the next message works.
 ### M23 — native drivers
 
 **Status.** Built (`docs/m23-drivers.md`; user guide in `docs/models.md`,
-Drivers). PR to `main` open, not merged.
+Drivers). Merged to `main` (PR #17).
 - Three drivers behind the one `Provider` trait: OpenAI-compatible Chat,
   Anthropic's native Messages API, and OpenAI's Responses API, stateless
   (`store: false`, encrypted reasoning).
@@ -555,7 +570,7 @@ driver mid-turn keeps going.
 
 ### M24 — the dashboard's leftovers
 
-**Status.** Built, PR open (`docs/m24-dashboard-2.md`, user guide
+**Status.** Built and merged, PR #18 (`docs/m24-dashboard-2.md`, user guide
 `docs/dashboard.md`).
 - The login survives a gateway restart: sessions are stored hashed, the
   CSRF token is derived, and a live tunnel session gets a new link.
@@ -576,7 +591,7 @@ editing the config by hand.
 ### M25 — routing, Phase 1
 
 **Status.** Built (`docs/m25-routing.md`; user guide `docs/routing.md`).
-PR to `main` open, not merged.
+Merged to `main` (PR #19).
 - `[routing] tiers`, cheap → strong. Every turn starts cheap and moves up
   one tier on a failure signal only: a call failure retrying won't fix,
   invalid tool calls in a row, a failed check, a Stop hook, no progress,
@@ -596,7 +611,7 @@ to `cheap`'s price, and the ledger says why each escalation happened.
 ### M26 — isolation
 
 **Status.** Built (`docs/m26-isolation.md`; user guides `docs/sandbox.md`
-and `docs/windows-sandbox.md`). PR to `main` open, not merged.
+and `docs/windows-sandbox.md`). Merged to `main` (PR #20).
 - Sandboxed reads: ferrule's secrets, the usual credential dirs and
   browser profiles, and the owner's `deny_read` are closed to commands, MCP
   servers and the file tools. `allow_read` re-opens a default.
@@ -615,7 +630,7 @@ confinement as Linux and macOS.
 ### M27 — speed
 
 **Status.** Built (`docs/m27-speed.md`; user guide `docs/speed.md`).
-PR to `main` open, not merged.
+Merged to `main` (PR #21).
 - Read-only tool calls from one response run in parallel (`[agent]
   parallel_tools`, default 4); writes stay ordered barriers, approvals stay
   serial, results keep the model's order.
@@ -635,7 +650,7 @@ several reads takes about as long as its slowest one.
 ### M28 — search and skills
 
 **Status.** Built (`docs/m28-search-skills.md`; user guides
-`docs/web-search.md` and `docs/skills.md`). PR to `main` open, not merged.
+`docs/web-search.md` and `docs/skills.md`). Merged to `main` (PR #22).
 - `web_search`: Brave, Tavily, Exa or SearXNG through the credential
   proxy, off by default, every search in the ledger with a daily cap.
 - Keyword-triggered skills: `triggers:` in SKILL.md loads a skill with the
@@ -652,7 +667,7 @@ owner says its keyword, and never because a web page did.
 ### M29 — edit mechanics
 
 **Status.** Built (`docs/m29-edit-mechanics.md`; user guide
-`docs/editing.md`). PR to `main` open, not merged.
+`docs/editing.md`). Merged to `main` (PR #23).
 - `edit_file`: SEARCH/REPLACE edits that apply all or nothing, never
   fuzzily, keep the file's line endings and encoding, and fail with the
   closest region and what to try next. `write_file` stays in every
@@ -673,7 +688,7 @@ changes arrive as one reviewable, undoable commit.
 ### M30 — vector recall
 
 **Status.** Built (`docs/m30-vector-recall.md`; user guide
-`docs/memory.md`). PR to `main` open, not merged.
+`docs/memory.md`). Merged to `main` (PR #24).
 - Memory recall by meaning as well as keywords: a local multilingual
   model (a 531 MB opt-in download, no key) or any `/v1/embeddings`
   endpoint through the credential proxy, merged with BM25.
@@ -689,7 +704,7 @@ some of the time; and with the embedder unset, nothing differs from M15.
 ### M31 — Discord and Slack
 
 **Status.** Built (`docs/m31-channels.md`; user guides `docs/discord.md`
-and `docs/slack.md`). PR to `main` open, not merged.
+and `docs/slack.md`). Merged to `main` (PR #25).
 - Discord (Gateway v10) and Slack (Socket Mode) adapters, both outbound
   only, run by the same daemon as Telegram.
 - Per-channel allowlists, mention-only shared channels, pairing by a
@@ -706,7 +721,7 @@ and survives a dropped socket. WhatsApp comes next (options in the design,
 ### M32 — WASM tool plugins
 
 **Status.** Built (`docs/m32-wasm-plugins.md`; user guide
-`docs/plugins.md`). PR to `main` open, not merged.
+`docs/plugins.md`). Merged to `main` (PR #26).
 - Tools as small WebAssembly modules run in wasmi. A module can reach
   nothing it wasn't granted: workspace directories, HTTPS domains through
   the credential proxy, secrets as placeholders only, and the clock.
@@ -724,7 +739,7 @@ error, and a plugin never holds a real key.
 ### M33 — ops: egress policy, OTel export, importers
 
 **Status.** Built (`docs/m33-ops.md`; user guides `docs/egress.md`,
-`docs/otel.md`, `docs/migrate.md`). PR to `main` open, not merged.
+`docs/otel.md`, `docs/migrate.md`). Merged to `main` (PR #27).
 - An egress policy in the credential proxy: public hosts by default,
   private ranges and cloud metadata blocked, allow/deny lists, no DNS
   rebinding, a refusal the model can read and the owner can audit.
@@ -744,7 +759,7 @@ allowlists over, twice, with nothing changing the second time.
 ### M34 — SSH workspaces and local-model first run
 
 **Status.** Built (`docs/m34-ssh-local.md`; user guides `docs/ssh.md` and
-`docs/local-models.md`). PR to `main` open, not merged.
+`docs/local-models.md`). Merged to `main` (PR #28).
 - The workspace can be a directory on another machine: the shell and file
   tools run there over the system `ssh`, and everything else stays local.
   Host keys are never trusted silently, a changed key is a hard stop, and
@@ -765,7 +780,7 @@ Ollama either works or says exactly which window or template to fix.
 ### M35 — subscription sign-in: a ChatGPT plan and a Claude plan
 
 **Status.** Built (`docs/m35-subscriptions.md`; user guide
-`docs/subscriptions.md`). PR to `main` open, not merged.
+`docs/subscriptions.md`). Merged to `main` (PR #30).
 - **ChatGPT plan, native.** `ferrule login chatgpt` signs in with the
   Codex CLI's public OAuth client (device code, a loopback browser flow, or
   a pasted redirect), and the Responses driver calls the Codex backend from
@@ -793,7 +808,7 @@ and every Claude-plan model request comes from Claude Code itself.
 ### M36 — self-update and self-repair
 
 **Status.** Built (`docs/m36-self-update.md`; user guide
-`docs/updates.md`). PR to `main` open, not merged.
+`docs/updates.md`). Merged to `main` (PR #31).
 - **The ChatGPT client identity stays current.** The Codex client version
   is learned from npm (then GitHub, then a compiled-in one), cached a day,
   and refreshed at once when the backend refuses a model as "requires a
@@ -820,7 +835,7 @@ words once. Existing v0.5.x installs run the install one-liner once.
 ### M37 — the control room
 
 **Status.** Built (`docs/m37-control-room.md`; user guides
-`docs/dashboard.md`, `docs/connections.md`). PR to `main` open, not merged.
+`docs/dashboard.md`, `docs/connections.md`). Merged to `main` (PR #32).
 - **Notices close** (for a day), each with its fix buttons; hidden ones
   are listed with Show again.
 - **Models are picked, not typed.** The fallback chain is checked, and a
@@ -846,7 +861,7 @@ is a raw shell, which is his decision.
 ### M38 — named instances
 
 **Status.** Built (`docs/m38-instances.md`; user guide
-`docs/instances.md`). PR to `main` open, not merged.
+`docs/instances.md`). Merged to `main` (PR #33).
 - **Several agents, one machine.** `ferrule --instance work …` (or
   `FERRULE_INSTANCE`) gives an agent its own config, data, secrets, bot,
   service and dashboard. The default instance stays exactly as it was.
@@ -869,7 +884,7 @@ restart or removal touches the other.
 ### M39 — more channels
 
 **Status.** Built (`docs/m39-channels.md`; user guide
-`docs/channels.md`). PR to `main` open, not merged.
+`docs/channels.md`). Merged to `main` (PR #35).
 - **Six new ways in:** WhatsApp, Matrix, email, Signal, Mattermost, and an
   HTTP API for scripts, n8n or Zapier, beside Telegram, Discord and Slack.
 - **The same rules everywhere:** an allowlist, mention-only in shared
@@ -890,8 +905,8 @@ with a key, each set up from the phone with Test showing it works.
 
 ### M40 — build diet
 
-**Status.** Built (`docs/m40-build-diet.md`). PR to `main` open, not
-merged.
+**Status.** Built (`docs/m40-build-diet.md`). Merged to `main` (PR
+#36).
 - **Smaller test builds:** a dev profile keeps line tables for our code
   and no debug info for dependencies; backtraces still name file:line.
 - **One test binary per crate:** `tests/it/`, add a module, not a file.
@@ -905,7 +920,7 @@ where a new test goes.
 ### M41 — daily use
 
 **Status.** Built (`docs/m41-daily-use.md`; user docs `docs/channels.md`
-and `docs/backup.md`). PR to `main` open, not merged.
+and `docs/backup.md`). Merged to `main` (PR #37).
 - **`/new`** in every chat: a fresh conversation, the old one kept, memory
   untouched; a conversation that keeps failing the same way suggests it.
 - **Voice messages** reach the agent as text: an OpenAI-compatible
@@ -925,7 +940,7 @@ new machine with two commands.
 
 **Status.** Built (`docs/m44-managed-mode.md`; user docs `docs/docker.md`,
 with additions in `docs/dashboard.md`, `docs/sandbox.md` and
-`docs/channels.md`). PR to `main` open, not merged. Nothing in it has run
+`docs/channels.md`). Merged to `main` (PR #38). Nothing in it has run
 in a real container: there is no Docker daemon in the dev environment.
 - **An image**: one bot per container, a non-root user, `/data` for
   everything, a `-browser` variant, a health check.
@@ -1000,7 +1015,7 @@ in the same chat.
 
 **Status.** Built (`docs/m47-dashboard-redesign.md`; user docs
 `docs/dashboard.md`, with additions in `docs/models.md` and
-`docs/channels.md`). PR to `main` open, not merged. Not tried on a real
+`docs/channels.md`). Merged to `main` (PR #39). Not tried on a real
 phone or with a real vision provider.
 - **A page for people who don't code**: a new visual system (tokens, light
   and dark, icons, two embedded fonts), a Home that puts what needs you
@@ -1023,7 +1038,7 @@ ability the old page had is still reachable.
 ### M48 — self-service from chat and dashboard
 
 **Status.** Built (`docs/m48-self-service.md`; user docs `docs/channels.md`,
-`docs/updates.md`, `docs/dashboard.md`). PR to `main` open, not merged. Not
+`docs/updates.md`, `docs/dashboard.md`). Merged to `main` (PR #40). Not
 tried with a real Telegram client, a real release install or a real systemd
 restart.
 - **The agent changes Ferrule itself**: a `ferrule_admin` tool in the
@@ -1047,7 +1062,7 @@ this command".
 ### M49 — dashboard visual polish
 
 **Status.** Built (`docs/m49-dashboard-polish.md`; user docs
-`docs/dashboard.md`). PR to `main` open, not merged. Not tried on real iOS
+`docs/dashboard.md`). Merged to `main` (PR #41). Not tried on real iOS
 Safari or over a real tunnel.
 - **New fonts**: Inter, Heebo for Hebrew and Geist Mono, one variable woff2
   each, 47 KB in all instead of 129 KB, with the OFL licence in the binary.
@@ -1066,8 +1081,9 @@ and after shots are in the tree; every test passes.
 
 ### M50 — connect everything from the dashboard
 
-**Status.** Built on branch `m50-connect` (`docs/m50-connect.md`; user docs
-`docs/dashboard.md`). Not tried with a real Discord or Slack app, a real
+**Status.** Built (`docs/m50-connect.md`; user docs `docs/dashboard.md`)
+and merged to `main` (PR #43, 2026-10-20), after v0.13.1 was cut, so no
+release has it yet. Not tried with a real Discord or Slack app, a real
 MCP server with a key, or on a phone.
 - **Connect**, one page for the bot's brain, its chat channels and the
   services it can use, each with its state in a word and one search box;
@@ -1193,34 +1209,87 @@ all fail; and `make check` is green on Linux, macOS and Windows.
 
 ## Other open tracks
 
-- **Phase 1 routing** (`docs/research-routing-and-local-models.md`): a
-  rule-based `RouterProvider` that starts cheap and escalates. **Blocked on
-  Max:** what counts as "hard enough to escalate", and which providers become
-  the tiers (it needs a second live provider first). Phases 2–3, a learned
-  router and local LoRA, were dropped (msg 3070).
-- **Native Windows sandbox** (`docs/research-windows-sandbox.md`): Windows has
-  no sandbox backend today. The recommendation is a restricted token with a
-  capability SID inside a Job Object, the same approach as OpenAI Codex's
-  unelevated mode, which needs no admin rights. The main unknown is whether Git
-  Bash and PowerShell start under that token.
-- **Open edges from M10:**
-  - the system-service path (root, systemd) has no end-to-end run yet;
-  - plain HTTP from `web_fetch` goes direct, since the proxy only handles
-    CONNECT;
-  - an unconfined MCP server (`sandbox = false`, or any server on Windows) can
-    still read the saved keys and `/proc/<ppid>/environ`;
-  - the Streamable HTTP transport has no server-initiated stream or resumption.
-    (The Chrome launch check now runs on macOS and Windows in CI, where M11
-    drives a real Chrome.)
-- **Anytime:** parallel read-only tool calls, streaming replies and a stable
-  prompt prefix shipped as M27. Left over: streaming to channels that
-  can't edit, formatting mid-stream, `sendMessageDraft`, and a 1-hour
-  cache TTL.
-- **The strategy backlog** (`docs/research-number-one-harness-strategy.md`
-  §4): a `web_search` tool, keyword-triggered skills, Aider-style edit
-  mechanics (SEARCH/REPLACE edits, a repo map, per-edit lint, atomic
-  commits), local-model first-run polish, migration importers from
-  OpenClaw/Hermes, channels in the order Discord → Slack → WhatsApp, a
-  read-only dashboard, an SSH execution backend, an egress domain policy in
-  the proxy, and OTel export from the ledger. (Importers, egress and OTel
-  shipped as M33.)
+**In flight** (2026-10-21). Who owns which files is in `PLAN.md`'s
+Current State; numbers are claimed there before anything is built.
+
+- **M51–M53, Kimi's** (from its 2026-10-20 research: Harness², the 2026
+  field, media generation, the dashboard Safe) are built and merged to
+  `main` (PR #48; their sections above). Their live checks and named
+  follow-ups are open.
+- **M54, protected autonomous mode.** The owner approved the design on
+  2026-10-20; it is being built on branch
+  `claude/laughing-chebyshev-5cd4a6` (`docs/m54-autonomous.md` there).
+- **M55–M59, from the 2026-10-20 gap analysis** (kept outside the repo,
+  so its items are listed here):
+  - **M55** make `main` green and land the written fixes. M55.1–M55.6
+    are on `autopilot` (PR #47); M55.7, requiring green CI to merge, is a
+    repository setting for the owner.
+  - **M56** the running turn hears the owner and remembers what matters:
+    mid-turn steering, scoped grants, self-administration, proactive
+    memory, restart-safe turns, chat primitives as tools, channel media,
+    keyless search. Built on `autopilot`: M56.1, steering
+    (`docs/channels.md`, "Messages sent while it works"); M56.4,
+    proactive memory, an owner profile and no decay for it, re-recall
+    per message (`docs/memory.md`, "What it keeps about you"); M56.5,
+    restart-safe turns (`docs/channels.md`, "After a restart"); M56.6,
+    `ask_user`, `react` and `edit_message` (`docs/channels.md`, "Asking
+    with buttons, reacting, editing"); M56.7, Telegram's video, voice and
+    audio sends, whole albums and video messages, Discord's file
+    downloads (`docs/channels.md`, "Photos" and "Voice messages");
+    M56.8, keyless DuckDuckGo search by default and as the fallback
+    (`docs/web-search.md`).
+  - **M57** the coding leaders' context and loop hygiene: deferred MCP
+    schemas with `tool_search`, per-file loop detection, a stale-file
+    guard, cache economics, tool-use examples, background processes,
+    fork sub-agents. Built on `autopilot` (`docs/m57-context-hygiene.md`):
+    M57.1, MCP and rare tools sent by name until `tool_search` loads
+    them, loads appended after a stable tool list (`[agent]
+    defer_tools`); M57.2, a note after the sixth change to one file
+    without a passing check, step and token budget notes at a quarter
+    and a tenth left, raised effort on a run's first turn and after a
+    failed check (`[agent] effort_boost`), and `spawn_agent {effort}`;
+    M57.3, `edit_file` refuses a file changed on disk since the agent
+    last read or wrote it, and asks for a re-read (the agent's own hooks
+    and checks don't count); M57.4, a 1-hour prompt-cache TTL on gateway
+    chat lanes (`[gateway] cache_ttl`, its 2× writes priced in the
+    ledger), counted tools and files in every compaction summary, and no
+    idle pre-compaction (the summary call isn't cached); M57.5, short
+    input examples in `edit_file`'s `edits` and four agent tools'
+    descriptions (`ferrule_admin` waits for M54); M57.6,
+    `shell {background: true}` and `shell_job` (status, tail, kill), at
+    most 4 jobs, killed when the session or lane ends, local shell only;
+    M57.7, `spawn_agent {fork: true}`: the child starts from the end of
+    its parent's conversation (at most `[agents] fork_tokens`, 16,000
+    estimated tokens; never cut between a call and its results), logged
+    in its own transcript, then its task.
+  - **M58** simplify, remove or make opt-in: the loop's overlapping
+    seams, per-turn routing, fewer agent tools, the graph runner out of
+    the core, eval as the gate.
+  - **M59** channels not worth chasing yet: personal WhatsApp and
+    iMessage.
+  - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
+    key fields in the dashboard, the Safe page, `secret_request`, safe
+    config editing, a chat paste guard, step-up auth) and to M54
+    (M54.1–M54.7). M52.1 and M52.5 are built on `autopilot`
+    (`docs/m22-dashboard.md`, "Threat model"; `docs/channels.md`, "Keys
+    pasted into a chat").
+
+**Still open from earlier tracks.**
+
+- **M12 part 6**, named long-lived agents, waits on how a chat
+  addresses one.
+- **Streaming leftovers from M27:** streaming to channels that can't
+  edit a message, formatting mid-stream, and Telegram's
+  `sendMessageDraft`. (The 1-hour cache TTL came with M57.4.)
+- **Open edges from M10:** the system-service path (root, systemd) has
+  no end-to-end run, and the Streamable HTTP transport has no
+  server-initiated stream or resumption.
+
+Shipped since these tracks were first written: Phase 1 routing (M25;
+phases 2–3, a learned router and local LoRA, were dropped, msg 3070),
+the native Windows sandbox (M26), plain-HTTP `web_fetch` through the
+proxy and hide-only unconfined MCP servers (M26), and the whole
+strategy backlog: `web_search` and keyword skills (M28), edit mechanics
+and the repo map (M29), Discord and Slack (M31), WhatsApp (M39), egress,
+OTel and the importers (M33), SSH workspaces and local-model first run
+(M34), and the dashboard (M22).

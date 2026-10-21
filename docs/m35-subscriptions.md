@@ -1,6 +1,7 @@
 # M35 — Subscription sign-in: a ChatGPT plan and a Claude plan (design)
 
-Status: built, 2026-09-27, branch `m35-subscriptions`. Written before the
+Status: built, 2026-09-27, branch `m35-subscriptions`; merged to `main`
+(PR #30). Written before the
 code; where the build departs from it, see **As built** at the end.
 User guide: [subscriptions.md](subscriptions.md).
 
@@ -401,31 +402,41 @@ Stdio rather than an HTTP MCP server because claude's HTTP clients honour
 the proxy variables Ferrule sets for egress (§7.7), and a loopback URL
 through the proxy is refused as private for tools.
 
-The bridge offers:
+The bridge offers every tool the agent has except the ones claude has its
+own of (since M55.4; before, a hand list named seven tools that didn't
+exist and missed most that did):
 
 | Tool | Why |
 |---|---|
 | `approve` | the permission-prompt tool (§7.5), never offered to the model |
-| `remember`, `recall`, `forget` | Ferrule's memory is the point of Ferrule; claude has none that the owner sees |
+| `remember`, `recall`, `forget`, `update_memory` | Ferrule's memory is the point of Ferrule; claude has none that the owner sees |
 | `search_history` | past conversations in other chats and runs |
-| `schedule_task`, `list_tasks`, `cancel_task` (whatever the agent has of M3's) | scheduling is Ferrule's, claude can't do it |
-| `send_message` | reach another channel or chat, the gateway's job |
+| `activate_skill`, `read_skill_file` | Ferrule's skills (M5), which the system prompt lists |
 | `send_file` | a workspace file to this chat (M39); only the gateway knows the chat |
+| `ask_user`, `react`, `edit_message` | a question with buttons, a reaction, an edit of the last reply in this chat (M56.6); only the gateway knows the chat. Bridged by the registry rule below with no list change |
 | `web_search` | when configured: one backend, one bill, one egress policy |
-| `spawn_agent` and the board | sub-agents on whatever model they pick |
-| `ferrule_admin` | the owner's chat changes Ferrule (M48) |
+| `spawn_agent`, `wait_agent`, `resume_agent`, `close_agent`, `list_agents`, `board_post`, `board_read`, `task_add`, `task_list`, `task_claim`, `task_done` | sub-agents on whatever model they pick, with their board and task list (M12) |
+| `ferrule_admin` | the owner's chat changes Ferrule, scheduled tasks included (M48) |
 | `connection_request`, `connection_list` | ask the owner for a connection, see what's connected (M20) |
+| the M13 extension tools, `plugin__*` WASM tools, `log_diary` | whatever the agent has, it has here too |
 | every `mcp__*` tool | Ferrule's MCP servers: a connection (Gmail, Google, Jira), an `[mcp]` server, the browser. Claude loads none of its own (`--strict-mcp-config`), so without the bridge it has none of them |
 
-Only tools the agent already has are offered (so a read-only child gets no
-`schedule_task`); the list is `req.tools` filtered by that table
-(`BRIDGED_TOOLS` and the `mcp__` prefix in `claude/engine.rs`). Claude sees
+Only tools the agent already has are offered: the list is `req.tools`
+less `CLAUDE_NATIVE` and `NOT_BRIDGED` (`bridged` in `claude/engine.rs`),
+so a tool added to Ferrule later bridges without a list to update. Claude sees
 a bridged tool under the bridge's server name, so Gmail's `gmail_send`
 (`mcp__gmail__gmail_send` in Ferrule) is `mcp__ferrule__mcp__gmail__gmail_send`
 in claude. The list is fixed when a turn starts: a connection made during a
 turn shows up from the next one.
-Ferrule's own file, shell and web-fetch tools are *not* offered: claude has
-its own, gated by §7.5, and two of each confuses the model.
+Ferrule's own file, shell, fetch, todo and code-search tools (`read_file`,
+`write_file`, `edit_file`, `list_dir`, `shell`, `web_fetch`,
+`write_todos`, `code_search`: `CLAUDE_NATIVE`) are *not* offered: claude
+has its own (`Read`, `Write`, `Edit`, `LS`, `Glob`, `Grep`, `Bash`,
+`WebFetch`, `TodoWrite`), gated by §7.5, and two of each confuses the
+model. `web_search` and `spawn_agent` are offered although claude has
+`WebSearch` and `Task`; claude loses those two when the agent lacks the
+Ferrule tool (§7.5). `NOT_BRIDGED` holds `approve`, so no Ferrule tool can
+shadow the permission prompt.
 
 **How a bridged call runs:** it runs as a normal Ferrule tool call. When
 claude calls `mcp__ferrule__remember`, the engine ends the current

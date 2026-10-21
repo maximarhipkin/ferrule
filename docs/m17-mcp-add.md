@@ -182,7 +182,11 @@ output_caps = { get_issue = 2000 }          # one tool's results
 - **Caps.** A tool's result is capped at the smallest of the session cap
   (`ToolContext::max_output_chars`), `output_caps[tool]` and
   `max_output_chars`. A per-server cap can only make results smaller. It can
-  never let a result past the session's own budget.
+  never let a result past the session's own budget. Since M55.3 nothing
+  over the cap is lost: the whole text is saved to
+  `.ferrule/spill/<id>.log` under the workspace, and the model gets its
+  first and last characters (one fifth and four fifths of the cap, at
+  most 2k and 8k) and that path.
 
 ## 4. Removal
 

@@ -1,6 +1,7 @@
 # M20: connections — the agent connects services itself (design)
 
-Status: design, 2026-09-25, branch `m20-connections`. Follows M17 (hot-add
+Status: merged to `main` (PR #14, 2026-09-25). Written as the design on
+2026-09-25, branch `m20-connections`. Follows M17 (hot-add
 of MCP servers), M19 (trust & cost) and M19b (reliability).
 
 ## Why

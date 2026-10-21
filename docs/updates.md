@@ -60,6 +60,17 @@ binary goes back, the service restarts again, and the bad version is
 **pinned**: it is never tried automatically again. Sending `/update` in your
 chat (or `ferrule update --to <tag>` in a terminal) retries it and unpins it.
 
+If **the restart command itself fails** (`systemctl restart`,
+`launchctl`), that says nothing about the release: the old binary goes
+back and nothing is pinned, so the next run tries it again. On macOS a
+gateway job that was booted out (`launchctl bootout`) isn't found by
+`launchctl kickstart`, so the restart loads it again from its plist
+(`launchctl bootstrap`), as `systemctl restart` starts a stopped unit.
+
+If **the old binary can't be put back**, the event says so and names
+`ferrule.previous` (copy it over the binary and restart the service), the
+service is restarted anyway, and the run ends in that error.
+
 You hear about it once, in your chat:
 
 - "Updated Ferrule 0.7.0 → 0.7.1: <the release notes' first line>"
@@ -108,7 +119,10 @@ The owner can update from the conversation, with no terminal:
 - **Install.** After Allow, the install runs once the turn is over. With the
   update units it asks the apply job (idle wait, swap, watch, rollback as
   above). Without them the gateway swaps the binary itself, checks that the
-  new one starts (`--version`) before the swap, and re-executes.
+  new one starts (`--version`) before the swap, and re-executes. An apply
+  job that installs nothing still answers the chat: "Ferrule wasn't
+  updated: …" with the reason (up to date, turns still running after the
+  wait, a failed check, another update holding the lock).
 - **The promise.** Before it restarts, the gateway writes a small note
   (`<data>/self-service/promise.json`: the chat and what was asked). The next
   gateway reads it, and says where you asked: "Back after the update: now

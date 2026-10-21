@@ -530,6 +530,7 @@ mod tests {
                 Reply::Ok(s) => Ok(CompletionResponse {
                     message: Message::assistant(Some(s.clone()), vec![], None),
                     usage: Usage::default(),
+                    stop_reason: None,
                 }),
                 Reply::Err(e) => Err(CoreError::Provider(e.clone())),
                 Reply::Loop(status) => {
@@ -551,6 +552,7 @@ mod tests {
                     Ok(CompletionResponse {
                         message,
                         usage: Usage::default(),
+                        stop_reason: None,
                     })
                 }
             }

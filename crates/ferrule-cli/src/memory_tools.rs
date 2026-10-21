@@ -79,9 +79,10 @@ pub fn tools_with(
     tools
 }
 
-/// The session-start memory block: facts matching the session's goal,
-/// then the newest, under `[Long-term memory]` (§4). A store that can't be
-/// opened just means no block.
+/// The session-start memory block: the owner's profile, facts matching the
+/// session's goal, then the newest, under `[Long-term memory]` (§4). A
+/// store that can't be opened just means no block. M56.4: a later message
+/// in the session gets the few new facts it brings up.
 pub struct GoalRecall {
     db: PathBuf,
     embedding: Option<Arc<Embedding>>,
@@ -147,6 +148,16 @@ async fn document_vector(
 /// Same budget as the static block it replaced.
 const RECALL_BUDGET_CHARS: usize = 2_000;
 
+/// M56.4: what one later message may add, at most.
+const RECALL_MORE_FACTS: usize = 3;
+const RECALL_MORE_CHARS: usize = 600;
+
+/// Whether `shown` (the blocks a session added) already lists fact `id`.
+fn already_shown(shown: &str, id: i64) -> bool {
+    let line = format!("- #{id} ");
+    shown.lines().any(|l| l.starts_with(&line))
+}
+
 #[async_trait::async_trait]
 impl SessionRecall for GoalRecall {
     async fn recall(&self, goal: &str) -> Option<String> {
@@ -195,6 +206,34 @@ impl SessionRecall for GoalRecall {
             tokio::spawn(async move { emb.catch_up(&db).await });
         }
         (!block.is_empty()).then(|| format!("[Long-term memory]\n{block}"))
+    }
+
+    /// Keyword recall only, so a message costs one local query and never
+    /// an embedding call; facts already shown are left out.
+    async fn recall_more(&self, message: &str, shown: &str) -> Option<String> {
+        let query = ferrule_memory::goal_query(message);
+        if query.is_empty() {
+            return None;
+        }
+        let db = self.db.clone();
+        let hits = tokio::task::spawn_blocking(move || {
+            MemoryStore::open(&db).and_then(|s| s.recall(&query, RECALL_MORE_FACTS * 3))
+        })
+        .await
+        .ok()?
+        .ok()?;
+        let mut lines = Vec::new();
+        let mut used = 0;
+        for m in hits.iter().filter(|m| !already_shown(shown, m.id)) {
+            let line = format!("- #{} {}", m.id, m.content);
+            if lines.len() == RECALL_MORE_FACTS || used + line.len() > RECALL_MORE_CHARS {
+                break;
+            }
+            used += line.len() + 1;
+            lines.push(line);
+        }
+        (!lines.is_empty())
+            .then(|| format!("[Long-term memory, for this message]\n{}", lines.join("\n")))
     }
 }
 
@@ -290,7 +329,7 @@ impl Tool for RememberTool {
     fn definition(&self) -> ToolDefinition {
         let mut properties = json!({
             "content": { "type": "string", "description": "The fact, written to make sense on its own later" },
-            "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional tags" }
+            "tags": { "type": "array", "items": { "type": "string" }, "description": "Optional tags. `profile` (who the person is: names, people, places) and `preference` (how they want things done, standing corrections) never fade and are recalled in every session" }
         });
         let mut description = "Save a fact to long-term memory, kept across sessions. \
                                One self-contained fact per call; facts matching a \

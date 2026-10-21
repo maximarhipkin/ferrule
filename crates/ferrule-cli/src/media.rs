@@ -71,7 +71,6 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<MediaShared>> {
         client,
     ));
     let store = match config::data_dir()
-        .map_err(anyhow::Error::from)
         .and_then(|d| JobStore::open(&d.join("media.db")).map_err(anyhow::Error::from))
     {
         Ok(s) => Arc::new(s),

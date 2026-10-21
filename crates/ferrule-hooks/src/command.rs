@@ -1,11 +1,12 @@
-//! A command hook: the platform's shell runs it as the owner, outside the
-//! sandbox (in owner mode, inside it: see [`ferrule_sandbox::host`]), with
-//! the payload as JSON on stdin. On timeout the whole process tree is
-//! killed, not just the shell at the top.
+//! A command hook: the platform's shell runs it with the payload as JSON
+//! on stdin — as the owner, outside the sandbox, or in the sandbox when it
+//! has one (a workspace's hooks). In owner mode the owner's own hooks run
+//! in the sandbox too (see [`ferrule_sandbox::host`]). On timeout the
+//! whole process tree is killed, not just the shell at the top.
 
 use ferrule_core::lifecycle::{HookHandler, HookInput, HookRun};
 use ferrule_core::tool::ToolContext;
-use ferrule_sandbox::{host, Shell};
+use ferrule_sandbox::{host, Sandbox, Shell};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,6 +24,8 @@ const DRAIN_GRACE: Duration = Duration::from_secs(2);
 pub struct CommandHook {
     pub command: String,
     pub timeout: Duration,
+    /// Where it runs; `None` is as the owner.
+    pub sandbox: Option<Arc<Sandbox>>,
 }
 
 impl CommandHook {
@@ -30,6 +33,7 @@ impl CommandHook {
         CommandHook {
             command: command.into(),
             timeout,
+            sandbox: None,
         }
     }
 }
@@ -43,9 +47,15 @@ impl HookHandler for CommandHook {
     async fn run(&self, input: &HookInput, ctx: &ToolContext) -> HookRun {
         let payload = serde_json::to_vec(input).unwrap_or_default();
         let shell = Shell::get();
-        let std_cmd = match host::command(&shell.program, shell.args(&self.command), &ctx.workspace)
-        {
-            Ok(cmd) => cmd,
+        let args = shell.args(&self.command);
+        let built = match &self.sandbox {
+            Some(sandbox) => sandbox.command(&shell.program, args, &ctx.workspace),
+            // The owner's own hooks: as the owner, or in owner mode through
+            // the host launcher (M54 §4).
+            None => host::command(&shell.program, args, &ctx.workspace),
+        };
+        let mut cmd = match built {
+            Ok(cmd) => Command::from(cmd),
             Err(e) => {
                 return HookRun {
                     spawn_error: Some(e.to_string()),
@@ -53,10 +63,10 @@ impl HookHandler for CommandHook {
                 }
             }
         };
-        let mut cmd = Command::from(std_cmd);
         #[cfg(unix)]
         cmd.process_group(0);
-        cmd.env("FERRULE_PROJECT_DIR", &ctx.workspace)
+        cmd.current_dir(&ctx.workspace)
+            .env("FERRULE_PROJECT_DIR", &ctx.workspace)
             // Claude Code's name for it, so its hook scripts port over.
             .env("CLAUDE_PROJECT_DIR", &ctx.workspace)
             .env("FERRULE_HOOK_EVENT", &input.hook_event_name)

@@ -78,7 +78,16 @@ file is never overwritten.
 **Secrets on restore.** A backup without secrets doesn't take yours away.
 The secret paths above are copied from the data that was moved aside into
 the restored data, so the same keys keep working. On a new machine there
-are none to copy, so run `ferrule setup` to set your keys again.
+are none to copy, so run `ferrule setup` to set your keys again. Either
+way the secret folders (`private/`, `claude-code/`, `ssh/`, `proxy/keys/`)
+end up readable by their owner only (0700).
+
+**A system service (Linux).** `sudo ferrule backup` and `sudo ferrule
+restore` work on the system service's files (`/etc/ferrule/config.toml`
+and `/var/lib/ferrule/data`, or a named instance's), as `sudo ferrule
+doctor` does, whenever that config exists. After a restore there, the
+service's user owns the data again and the config is `root:<user>` 0640,
+as `ferrule setup` leaves them.
 
 **`--dry-run`** does steps 1 and 2 (it reports a running gateway but
 doesn't stop there), prints what a restore would move and where, and

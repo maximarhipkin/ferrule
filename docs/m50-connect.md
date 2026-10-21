@@ -1,7 +1,8 @@
 # M50 — Connect everything from the dashboard
 
 Status: **built** on branch `m50-connect`, one commit per part (parts 0–7,
-plus an OpenRouter fix the walk turned up). "Corrections made while
+plus an OpenRouter fix the walk turned up), and merged to `main` (PR #43,
+2026-10-20; after v0.13.1, so not in a release yet). "Corrections made while
 building" says where the code corrected this plan, and "Verified, and how"
 what was run. Decisions: [below](#decisions-max-2026-10-19).
 

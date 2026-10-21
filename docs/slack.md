@@ -4,8 +4,10 @@ Ferrule can answer you on Slack as well as, or instead of, Telegram. It
 uses **Socket Mode**: it connects out to Slack over a WebSocket, so there is
 no public URL, no request URL and no port to open. The same daemon runs
 every channel that has a token. It's text only: a file without text gets
-"I can only read text". The design, and the reasons behind it, are in
-[m31-channels.md](m31-channels.md).
+"I can only read text". Reading files would need the `files:read` scope
+(not in the manifest below) and a download of each file's
+`url_private_download` with the bot token; it isn't built. The design,
+and the reasons behind it, are in [m31-channels.md](m31-channels.md).
 
 ## Setup
 

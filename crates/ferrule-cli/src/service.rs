@@ -448,7 +448,11 @@ impl Svc {
 
     pub fn restart(&self) -> Result<()> {
         if cfg!(target_os = "macos") {
-            launchctl(&["kickstart", "-k", &self.launchd_target()])?;
+            let target = self.launchd_target();
+            let loaded = launchctl(&["print", &target]).is_ok();
+            let domain = format!("gui/{}", uid());
+            let args = launchd_restart(loaded, &target, &domain, &self.unit_path()?);
+            launchctl(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
             Ok(())
         } else {
             self.systemctl(&["restart", &self.systemd_unit()])
@@ -761,6 +765,21 @@ impl Svc {
 
     fn launchd_target(&self) -> String {
         format!("gui/{}/{}", uid(), self.launchd_label())
+    }
+}
+
+/// What `launchctl` restarts a job with: `kickstart -k` while it's loaded.
+/// One that was booted out isn't found by that, so it's bootstrapped from
+/// its plist, which starts it (`RunAtLoad`).
+fn launchd_restart(loaded: bool, target: &str, domain: &str, plist: &Path) -> Vec<String> {
+    if loaded {
+        vec!["kickstart".into(), "-k".into(), target.into()]
+    } else {
+        vec![
+            "bootstrap".into(),
+            domain.into(),
+            plist.display().to_string(),
+        ]
     }
 }
 
@@ -1897,5 +1916,19 @@ mod tests {
         }
         assert_eq!(names_in_units(dir.path(), false), ["home", "work"]);
         assert_eq!(names_in_units(dir.path(), true), ["mac"]);
+    }
+
+    #[test]
+    fn a_booted_out_launchd_job_is_bootstrapped_not_kickstarted() {
+        let plist = Path::new("/Users/me/Library/LaunchAgents/ai.ferrule.gateway.plist");
+        let target = "gui/501/ai.ferrule.gateway";
+        assert_eq!(
+            launchd_restart(true, target, "gui/501", plist),
+            ["kickstart", "-k", target]
+        );
+        assert_eq!(
+            launchd_restart(false, target, "gui/501", plist),
+            ["bootstrap", "gui/501", &plist.display().to_string()]
+        );
     }
 }

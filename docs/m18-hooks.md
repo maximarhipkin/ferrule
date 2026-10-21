@@ -13,13 +13,15 @@ also follows, wherever that costs nothing. A hook script written for
 Claude Code that reads `tool_name`/`tool_input` and exits 2 works here
 unchanged.
 
-**Hooks run as you, outside the sandbox.** A hook command has the owner's
-full privileges: every file, the network, every secret in the owner's
-environment. The sandbox confines what the *model* runs; hooks are what
-the *owner* runs, so the sandbox doesn't apply to them. Only put commands
-in a hook that you would run yourself. (The built-in `verify_command`
-check is the one exception: it keeps running inside the sandbox, as it
-always has — §6.)
+**Your hooks run as you, outside the sandbox; a workspace's run in it.**
+A hook from your config has the owner's full privileges: every file, the
+network, every secret in the owner's environment. The sandbox confines
+what the *model* runs; those hooks are what the *owner* runs, so the
+sandbox doesn't apply to them. Only put commands in a hook that you would
+run yourself. A workspace's hooks (`.ferrule/hooks.toml`) run in the
+sandbox, like the model's commands, because the scripts they name are
+files the model can edit (§3). The built-in `verify_command` check runs
+in the sandbox too, as it always has (§6).
 
 ## 1. Events
 
@@ -124,8 +126,11 @@ A command hook runs in the shell tool's shell (`sh -c`; on Windows Git
 Bash's `bash -c`, else PowerShell with `-EncodedCommand`) in the
 workspace, with the payload on stdin and `FERRULE_PROJECT_DIR`,
 `CLAUDE_PROJECT_DIR` (so Claude Code hook scripts work unchanged) and
-`FERRULE_HOOK_EVENT` set. It runs as the owner, **outside the sandbox and
-the credential proxy**: whatever the owner can do, a hook can do.
+`FERRULE_HOOK_EVENT` set. A hook from your config runs as the owner,
+**outside the sandbox and the credential proxy**: whatever the owner can
+do, it can do. A workspace hook runs through the same sandbox as the shell
+tool's commands (`Sandbox::command`): the same writable roots and network
+rule, and an environment without secret-looking variables.
 
 ### What the model sees
 
@@ -187,10 +192,11 @@ Workspace hooks run only when both are true:
 
 1. `[hooks] project = true` in the trusted config: the switch, the same
    mechanism as `[skills] project`, with its wording: *Run hooks from the
-   workspace (`.ferrule/hooks.toml`). A cloned repo's hooks run as you,
-   outside the sandbox, so leave this off when pointing the agent at
+   workspace (`.ferrule/hooks.toml`). A cloned repo's hooks run whenever
+   an agent works there, so leave this off when pointing the agent at
    untrusted repos.* It defaults to **off**, unlike skills. A skill is
-   text in a prompt; a hook is code run outside the sandbox.
+   text in a prompt; a hook is code that runs on every matching event and
+   can block the agent's tool calls.
 2. The owner trusted this file as it is now: `ferrule hooks trust`
    (optionally `--workspace DIR`) records the file's SHA-256 against the
    workspace path in `<data dir>/private/hooks-trust.json`. If the file
@@ -208,6 +214,32 @@ Untrusted workspace hooks never run. Each time an agent is built, the
 owner is told, once per process: `ferrule: <workspace>/.ferrule/hooks.toml
 has N hooks that won't run: <why>. Run \`ferrule hooks trust\` if you
 trust them.` `ferrule hooks list` and `ferrule doctor` say the same.
+
+### The fingerprint pins the commands, not the scripts
+
+The SHA-256 covers `.ferrule/hooks.toml`, so the model can't add a hook
+or change a command line. It doesn't cover what a command line runs:
+`command = "./scripts/lint-guard.sh"` names a file in the workspace, and
+the model can rewrite that file. Before 2026-10-19 the rewritten script
+then ran as the owner, outside the sandbox. So workspace hooks now run in
+the sandbox.
+
+The other fix, extending the fingerprint to the files a command names,
+was rejected: it can't follow what those files load. `make guard` runs the
+Makefile, `npm run lint` runs `package.json`'s scripts, a Python guard
+imports modules from the workspace, a shell script sources `./lib.sh`.
+Every one of those is model-editable and none is named on the command
+line. The sandbox doesn't need to know what a hook reads: whatever it
+runs has the model's own access and no more.
+
+What this costs: a workspace hook can't do what the sandbox forbids
+(write outside the workspace and temp dirs, read ferrule's secrets or the
+denied credential dirs, reach the network when `[sandbox] network =
+false`), and it doesn't see your API keys in its environment. A hook that
+needs that belongs in your own `[hooks]` config. And because the model
+can still edit the script, a workspace hook guards only as well as its
+script: put a guard you rely on in your config, not the repo. With
+`[sandbox] mode = "off"` nothing changes: there was no sandbox to escape.
 
 ### The model can't add or enable hooks
 

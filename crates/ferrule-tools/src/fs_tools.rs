@@ -1,4 +1,5 @@
 use ferrule_core::error::CoreError;
+use ferrule_core::stamps::FileStamps;
 use ferrule_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -161,11 +162,22 @@ fn real(path: &Path) -> Option<PathBuf> {
 #[derive(Default)]
 pub struct ReadFileTool {
     hidden: Vec<PathBuf>,
+    stamps: Option<FileStamps>,
 }
 
 impl ReadFileTool {
     pub fn hiding(hidden: Vec<PathBuf>) -> Self {
-        Self { hidden }
+        Self {
+            hidden,
+            stamps: None,
+        }
+    }
+
+    /// M57.3: note what each file held when it was read, for `edit_file`'s
+    /// stale-file guard.
+    pub fn tracking(mut self, stamps: FileStamps) -> Self {
+        self.stamps = Some(stamps);
+        self
     }
 }
 
@@ -202,6 +214,9 @@ impl Tool for ReadFileTool {
                 tool: "read_file".into(),
                 message: format!("{}: {e}", path.display()),
             })?;
+        if let Some(stamps) = &self.stamps {
+            stamps.record(&path, text.as_bytes());
+        }
         Ok(ToolOutput::capped(text, ctx.max_output_chars))
     }
 }
@@ -212,6 +227,7 @@ impl Tool for ReadFileTool {
 pub struct WriteFileTool {
     hidden: Vec<PathBuf>,
     protected: Vec<PathBuf>,
+    stamps: Option<FileStamps>,
 }
 
 impl WriteFileTool {
@@ -225,6 +241,13 @@ impl WriteFileTool {
     /// See [`refuse_protected`].
     pub fn protecting(mut self, protected: Vec<PathBuf>) -> Self {
         self.protected = protected;
+        self
+    }
+
+    /// M57.3: what it writes counts as read, for `edit_file`'s stale-file
+    /// guard.
+    pub fn tracking(mut self, stamps: FileStamps) -> Self {
+        self.stamps = Some(stamps);
         self
     }
 }
@@ -262,6 +285,9 @@ impl Tool for WriteFileTool {
                 tool: "write_file".into(),
                 message: format!("{}: {e}", path.display()),
             })?;
+        if let Some(stamps) = &self.stamps {
+            stamps.record(&path, content.as_bytes());
+        }
         Ok(ToolOutput::ok(format!(
             "wrote {} bytes to {}",
             content.len(),

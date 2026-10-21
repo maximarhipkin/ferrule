@@ -1,6 +1,7 @@
 # M15: the memory update pipeline and reversible compaction (design)
 
-Status: design, 2026-09-24. Builds on the roadmap's M15 section and on
+Status: merged to `main` (PR #4, 2026-09-24). Written as the design on
+2026-09-24. Builds on the roadmap's M15 section and on
 §4.3/§4.4 of `docs/research-number-one-harness-strategy.md`. Where this
 document departs from either, it says so and why.
 
@@ -152,6 +153,13 @@ The system prompt is still byte-stable for the rest of the session. The
 block is added once, before the first provider call, so the prompt-cache
 prefix isn't disturbed. Per-turn re-recall on long sessions is left out on
 purpose (open edge): it would change the prompt mid-session.
+
+M56.4 changed three things (`docs/memory.md`, "What it keeps about you").
+Facts tagged `profile` or `preference` skip the decay and open the block
+(up to 10, whatever the goal). And since a user message after the goal
+doesn't change the prompt's prefix (M27), each later message a person
+sends now gets a re-recall: `SessionRecall::recall_more`, one keyword
+query, up to 3 facts not shown yet, appended after that message.
 
 ## 5. The transcript store behind `search_history`
 

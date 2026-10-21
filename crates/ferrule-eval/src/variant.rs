@@ -135,7 +135,7 @@ pub struct Build<'a> {
 fn engineered_prompt(workspace: &Path, directive: &str) -> String {
     format!(
         "You are an autonomous agent running inside ferrule. Workspace: {}. \
-         Use tools to act on the world; verify with evidence; persist important facts with the remember tool when asked. \
+         Use tools to act on the world; verify with evidence; save lasting facts about the person you work for (names, preferences, standing corrections) with the remember tool on your own, tagged profile or preference, without waiting to be asked. \
          For multi-step work, maintain your task list with write_todos and log decisions with log_diary. {}",
         workspace.display(),
         directive
@@ -156,14 +156,31 @@ pub fn build(b: Build<'_>) -> Agent {
         max_output_chars: 30_000,
     };
     let mut registry = standard_registry();
-    registry.register(Arc::new(ShellTool::sandboxed(b.sandbox.clone())));
+    let shell = ShellTool::sandboxed(b.sandbox.clone());
+    registry.register(Arc::new(shell.job_tool()));
+    registry.register(Arc::new(shell));
     registry.register(Arc::new(WebFetchTool::with_egress(
         b.sandbox.egress().cloned(),
     )));
     let hidden = b.sandbox.read_deny_list(b.workspace);
-    registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(WriteFileTool::hiding(hidden.clone())));
-    registry.register(Arc::new(EditFileTool::hiding(hidden.clone())));
+    // M57.3: as in the CLI; the naive harness has no stale-file guard.
+    let stamps = ferrule_core::FileStamps::default();
+    let (read, write, edit) = (
+        ReadFileTool::hiding(hidden.clone()),
+        WriteFileTool::hiding(hidden.clone()),
+        EditFileTool::hiding(hidden.clone()),
+    );
+    let (read, write, edit) = match b.variant {
+        Variant::Naive => (read, write, edit),
+        _ => (
+            read.tracking(stamps.clone()),
+            write.tracking(stamps.clone()),
+            edit.tracking(stamps.clone()),
+        ),
+    };
+    registry.register(Arc::new(read));
+    registry.register(Arc::new(write));
+    registry.register(Arc::new(edit));
     registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
     if b.edit_tools == EditTools::WriteOnly {
         registry.remove("edit_file");
@@ -252,6 +269,9 @@ pub fn build(b: Build<'_>) -> Agent {
         b.transcript,
     )
     .with_system_prompt(system);
+    if b.variant != Variant::Naive {
+        agent = agent.with_file_stamps(stamps);
+    }
     if let Some(map) = repo_map {
         agent = agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(
             map,

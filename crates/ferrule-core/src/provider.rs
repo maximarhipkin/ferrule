@@ -53,6 +53,21 @@ impl std::fmt::Debug for DeltaSink {
 pub struct CompletionResponse {
     pub message: Message,
     pub usage: Usage,
+    /// Why the model stopped, in its API's own word (`end_turn`,
+    /// `max_tokens`, `length`, `max_output_tokens`, …); `None` when the
+    /// driver isn't told.
+    pub stop_reason: Option<String>,
+}
+
+impl CompletionResponse {
+    /// The reply ran out of output tokens (or of context) mid-way: what it
+    /// says is cut off, not finished.
+    pub fn cut_off(&self) -> bool {
+        matches!(
+            self.stop_reason.as_deref(),
+            Some("max_tokens" | "length" | "max_output_tokens" | "model_context_window_exceeded")
+        )
+    }
 }
 
 /// The model a call actually ran on, for a provider that picks one per
@@ -154,6 +169,53 @@ pub struct CallContext {
     pub guard: Option<std::sync::Arc<dyn crate::guard::Guard>>,
     /// The run's workspace (a sub-agent's worktree, say).
     pub workspace: Option<std::path::PathBuf>,
+    /// M57.1: the run's deferred tools not loaded yet, whole. The request
+    /// offers them only by name, through `tool_search`; a provider that
+    /// offers tools on its own, with its own search, can offer them all.
+    pub deferred_tools: Vec<crate::tool::ToolDefinition>,
+    /// M57.2: the reasoning effort the run wants for every call (a
+    /// sub-agent's `spawn_agent` effort), instead of its model's own.
+    pub effort: Option<String>,
+    /// M57.2: at least this effort for this call (a run's first turn, the
+    /// turn after a failed check).
+    pub effort_floor: Option<String>,
+    /// M57.4: how long the provider should keep this call's prompt cache
+    /// (`"1h"` on a gateway chat lane). `None`: the provider's default (5
+    /// minutes on Anthropic). Only the Anthropic driver reads it.
+    pub cache_ttl: Option<String>,
+}
+
+impl CallContext {
+    /// M57.2: the effort a driver sends, given its model's configured one.
+    /// No configured effort sends none: the model may not take the field,
+    /// and only an owner who set one has said it does. `"none"` (reasoning
+    /// off) stays. Otherwise the run's own level replaces it, and a floor
+    /// raises it; a word [`effort_rank`] doesn't know is left as it is.
+    pub fn effort_for(&self, configured: Option<&str>) -> Option<String> {
+        let configured = configured?;
+        if configured == "none" {
+            return Some(configured.to_string());
+        }
+        let mut effort = self
+            .effort
+            .clone()
+            .unwrap_or_else(|| configured.to_string());
+        if let Some(floor) = &self.effort_floor {
+            if matches!((effort_rank(floor), effort_rank(&effort)), (Some(f), Some(e)) if f > e) {
+                effort = floor.clone();
+            }
+        }
+        Some(effort)
+    }
+}
+
+/// M57.2: where an effort word sits, lowest first, across the Anthropic
+/// (`low`…`max`) and OpenAI (`minimal`…`xhigh`) scales; `None` for a word
+/// neither uses (or `none`, which turns reasoning off).
+pub fn effort_rank(word: &str) -> Option<usize> {
+    ["minimal", "low", "medium", "high", "xhigh", "max"]
+        .iter()
+        .position(|w| *w == word)
 }
 
 impl std::fmt::Debug for CallContext {
@@ -161,6 +223,10 @@ impl std::fmt::Debug for CallContext {
         f.debug_struct("CallContext")
             .field("guard", &self.guard.is_some())
             .field("workspace", &self.workspace)
+            .field("deferred_tools", &self.deferred_tools.len())
+            .field("effort", &self.effort)
+            .field("effort_floor", &self.effort_floor)
+            .field("cache_ttl", &self.cache_ttl)
             .finish()
     }
 }

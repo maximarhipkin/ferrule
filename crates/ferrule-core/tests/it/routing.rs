@@ -54,6 +54,7 @@ impl Provider for Scripted {
                 output_tokens: 10,
                 ..Usage::default()
             },
+            stop_reason: None,
         })
     }
 }

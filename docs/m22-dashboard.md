@@ -1,7 +1,7 @@
 # M22: the dashboard — one page for the whole app (design)
 
-Status: built, 2026-09-25, branch `m22-dashboard` (PR to main, not
-merged). Follows M19b (reliability), M20 (connections) and M21 (models).
+Status: built, 2026-09-25, branch `m22-dashboard` (merged to `main`,
+PR #16). Follows M19b (reliability), M20 (connections) and M21 (models).
 Where the build departs from this design: **As built** at the end. The
 user guide is [dashboard.md](dashboard.md).
 
@@ -53,8 +53,34 @@ says so and gives the local link with the SSH port-forward that reaches it.
   while it's open. Neither gets anything without a login link: every page
   except the static shell and `/api/login` needs a session.
 - **Cloudflare** terminates TLS and sees the traffic (pages, API JSON,
-  cookies). That's the price of no inbound port. What the page shows is
-  already redacted (below), so Cloudflare never sees a key or token.
+  cookies). That's the price of no inbound port. What the page *shows*
+  is redacted (below), so no key or token goes out in a response. What
+  the owner *types* into a key field (the provider, plan, connection,
+  relay, Google client, tool-key, Telegram and channel forms, and the
+  Safe's Rotate from M52) is
+  **sealed in the browser** since M52.1: right before sending, the page
+  asks for a one-time public key (`POST /api/seal`, session and CSRF
+  checked), seals the value to it with M20's key-form scheme (ECDH
+  P-256, HKDF-SHA256, AES-256-GCM, the key id as salt and associated
+  data) and sends `{"sealed": {kid, v, epk, iv, ct}}` in its place. The
+  gateway opens every envelope in memory before any handler runs
+  (`dashboard/sealed.rs`); each key opens one envelope, for the session
+  it was made for, within 10 minutes, and an envelope that doesn't open
+  refuses the whole request, so nothing runs or is saved. Cloudflare,
+  reading passively, sees envelopes, not keys.
+  - **The limit:** the tunnel also serves the page's script and the
+    public key. Whoever can *change* the traffic (Cloudflare itself, or
+    anyone who controls it) can serve a script that sends the key
+    elsewhere, or a public key of their own, and wins. To keep a key
+    away from an active tamperer, enter it on the loopback page through
+    `ssh -L` or over a tailnet, or with `ferrule setup` on the box.
+  - A page without WebCrypto (served over plain `http://` at an address
+    other than this machine's, as a managed panel's `public_url` can be)
+    sends keys as typed, as before. On loopback and through the tunnel
+    the browser has WebCrypto, so keys are always sealed there. The
+    handlers still take a plain value, as before, from anything that
+    isn't the page (a script posting JSON, or the chat's
+    `ferrule_admin`, which calls them without HTTP).
 - **The login link** is the only credential: 32 random bytes, one use,
   10 minutes. It travels in the URL **fragment** (`/login#<token>`), which
   browsers never send, so Telegram's link preview, Cloudflare's logs and
@@ -86,6 +112,18 @@ says so and gives the local link with the SSH port-forward that reaches it.
   cap hit.
   Opening a tunnel takes a few seconds: the reply comes at once ("opening
   a tunnel, the link follows"), and the link follows as a second message.
+  Since M55.5 the link is minted only once the new tunnel answers:
+  cloudflared prints the `trycloudflare.com` address before Cloudflare
+  routes it, so ferrule asks `https://<host>/healthz` with backoff (0.25 s
+  doubling to 2 s) until its own JSON comes back, for up to 20 s. A tunnel
+  still silent then gets its link anyway, with a line saying the page may
+  take a few more seconds. `ferrule dashboard link --remote` waits the
+  same way.
+- **A link is for its host.** A link made for the tunnel and opened on
+  another address (loopback, an older tunnel) is refused and *not* used
+  up (M55.5): the host is checked under the link file's lock before the
+  link is removed, so the owner's next tap on the right address works.
+  The refusal is logged with the host it came in on, never the token.
 - **`/dashboard off`** revokes: every unused link, every session, and the
   tunnel.
 - **`ferrule dashboard link [--remote]`** on the machine mints a link for

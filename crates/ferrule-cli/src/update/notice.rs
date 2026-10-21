@@ -119,9 +119,11 @@ impl Watch {
             if fresh && state::now().saturating_sub(event.at) > RECENT {
                 continue;
             }
-            if event.kind == EventKind::Failed {
+            // A chat waiting on its update hears every answer.
+            let asked = crate::self_service::promise::claim_for(&self.data, event);
+            if event.kind == EventKind::Failed && !event.to.is_empty() {
                 // One line per version that won't install, not one a day.
-                if told.failed.as_deref() == Some(event.to.as_str()) {
+                if asked.is_none() && told.failed.as_deref() == Some(event.to.as_str()) {
                     continue;
                 }
                 told.failed = Some(event.to.clone());
@@ -135,7 +137,7 @@ impl Watch {
             if event.kind == EventKind::ClaudeUpdated {
                 told.claude_failed = None;
             }
-            if let Some(chat) = crate::self_service::promise::claim_for(&self.data, event) {
+            if let Some(chat) = asked {
                 if let Some(text) = chat_text(event, &release::current().to_string()) {
                     owner.tell_in(&chat, text);
                 }
@@ -230,6 +232,10 @@ pub fn event_text(e: &Event) -> Option<String> {
             to = e.to,
             from = e.from
         ),
+        // A request that installed nothing.
+        EventKind::Failed if e.to.is_empty() => {
+            format!("Ferrule wasn't updated: {}", release::clip(&e.notes, 300))
+        }
         EventKind::Failed => format!(
             "Ferrule {} is out but wasn't installed: {}",
             e.to,

@@ -424,6 +424,13 @@ impl Channel for DashboardChannel {
             None => Err(GatewayError::Channel(format!("no message {message_id}"))),
         }
     }
+
+    /// M52.5: the owner's message that looked like a key stays in the
+    /// page's log only as a note that it was taken out.
+    async fn delete(&self, chat_id: &str, message_id: &str) -> Result<(), GatewayError> {
+        self.edit(chat_id, message_id, "(taken out: it looked like a key)")
+            .await
+    }
 }
 
 #[cfg(test)]

@@ -10,897 +10,165 @@ that convention yet — ask before introducing one).
 
 ## Current State
 
-- **Name:** Ferrule (renamed from `agentrust` 2026-09-23). GitHub repo is
-  `maximarhipkin/ferrule`. Crates are `ferrule-{core,providers,tools,memory,gateway,mcp,skills,sandbox,proxy,cli}`,
-  binary is `ferrule`, config file is `ferrule.toml` /
-  `~/.config/ferrule/config.toml`, agent workspace state dir is `.ferrule/`.
-- **What it is today:** a local, single-user CLI agent runtime. `ferrule run`
-  / `ferrule chat` drive a ReAct loop (`ferrule-core::Agent`) against any
-  OpenAI-chat-completions-compatible endpoint (`ferrule-providers`), with a
-  fixed small toolset (fs read/write/list, a sandboxed shell, web fetch,
-  todo/diary, remember/recall) from `ferrule-tools`, and a single-file SQLite memory store
-  (`ferrule-memory`, FTS5 BM25 + time-decay recall), plus any tools exposed
-  by MCP servers (`ferrule-mcp`, M4; by URL too since M10). Since M12
-  (`ferrule-agents`) an agent can start background sub-agents with their
-  own worktrees, a board and a task list — see `docs/agents.md`.
-  **A daemon now exists and is reachable** (`ferrule-gateway`, see Session
-  Log 2026-09-23/24, M1+M2): a `Channel` adapter trait, normalized
-  in/outbound message model, a `Router`/`Gateway` giving one FIFO session
-  lane per (channel, chat) with JSONL-transcript resume, a Telegram
-  long-polling adapter, and a local stdin/stdout adapter — all wired into
-  `ferrule-cli` as `ferrule gateway`, configured via a new `[gateway]`
-  section in `ferrule.toml`. **M3 scheduler exists** (Session Log
-  2026-09-24): SQLite-persisted cron (IANA timezone) + one-shot tasks, each
-  running as a turn on its own resumable session, truthful per-run status
-  rows, optional gate script, no-overlap guard, collapse-to-one missed-run
-  policy — `ferrule tasks add|list|pause|resume|delete|runs|run-now`, and
-  `ferrule gateway` runs the scheduler loop alongside the channels,
-  configured via `[scheduler]`. **M4 stdio MCP client exists** (Session Log
-  2026-09-24, M4): each `[[mcp.servers]]` entry is spawned once per
-  process, its tools are listed and registered as `mcp__<server>__<tool>`,
-  and they're shared by every session. Verified end to end with the real
-  `ferrule run` binary against a mock LLM + mock MCP server. **A per-call
-  ledger exists** (Session Log 2026-09-24, Phase 0): every provider call
-  from `run`/`chat`/gateway sessions/scheduler tasks appends one JSONL row
-  (provider, model, task shape, tokens incl. cached, latency, ok/error,
-  cost if priced) to `<data_dir>/ferrule/ledger.jsonl`; `ferrule ledger
-  [--since 7d]` summarizes it. **Agent Skills exist** (Session Log
-  2026-09-24, M5, `ferrule-skills`): SKILL.md folders in the
-  agentskills.io / Claude format are discovered from the workspace
-  (`.ferrule|.agents|.claude/skills`) and user dirs (`~/.agents/skills`,
-  `~/.claude/skills`, `[skills].paths`), their names and descriptions go
-  into the system prompt, and the model loads one with `activate_skill`
-  and reads its bundled files with `read_skill_file`. Compaction carries
-  activated skill instructions forward verbatim. `ferrule skills` lists
-  what a workspace would load. **Shell commands run in an OS sandbox**
-  (Session Log 2026-09-24, M6, `ferrule-sandbox`): Landlock (+ a seccomp
-  filter when `network = false`) on Linux, Seatbelt on macOS. By default
-  writes are confined to the workspace and temp dirs, the network is on,
-  and secret-looking env vars never reach the command. Configured by
-  `[sandbox]`, checked by `ferrule sandbox`. Memory writes moved from the
-  `ferrule memory` CLI to native `remember`/`recall` tools, since the
-  shell can no longer write ferrule's data dir. **A credential gateway
-  exists** (Session Log 2026-09-24, M7, `ferrule-proxy`): each `[secrets]`
-  entry maps an env var to the hosts allowed to receive it. Shell commands
-  get a same-shaped placeholder in that variable, and a loopback
-  TLS-intercepting proxy swaps the real value in only on requests to
-  those hosts, only in `Authorization` or credential-named headers (the
-  URL too with `in_url = true`, never bodies), and scrubs it back out of
-  their responses. Other hosts get a blind tunnel. Design, threat model,
-  prior art and limits: `docs/research-credential-gateway.md`. **Install
-  and setup are one step** (Session Log 2026-09-24, M8): `curl … install.sh
-  | sh` (Linux/macOS) or `irm … install.ps1 | iex` (Windows) downloads a
-  release archive, checks its sha256 and starts `ferrule setup`, a wizard
-  for the provider and key, Telegram (with a chat allow-list), tool
-  credentials, the sandbox and a systemd/launchd service. Keys live in
-  `<data_dir>/private/secrets.env`, hidden from the shell sandbox and the
-  file tools. `ferrule doctor` checks everything, `ferrule config
-  path|edit|example` covers hand edits. **Windows builds and runs**, and
-  since M26 with a native OS sandbox (a restricted token in a job object,
-  no admin — `docs/windows-sandbox.md`; Git Bash can't start under the
-  token, so the confined shell there is PowerShell). CI
-  (`.github/workflows/ci.yml`) tests Linux, macOS and Windows, all three
-  green since `cee5de1`;
-  `release.yml` builds 5 targets on a `v*` tag. **`v0.1.0` is released**
-  (2026-09-24, msg 3074) and the Linux one-liner was run for real against
-  it while the repo was public. **The repo is public again** (it spent a
-  while private after msg 3076), so installing needs no `GITHUB_TOKEN`
-  and CI minutes no longer count.
-- **Toolchain (Devi/NanoClaw sandbox, updated 2026-09-23 late):** Debian's
-  apt `rustc 1.63`/`cargo 1.65` is installed but **too old** — dependencies
-  (e.g. `clap_builder 4.6`) use edition 2024 and fail to parse. Use the rustup
-  stable toolchain (1.98.1) installed under `/workspace/agent/.cargo-home` +
-  `/workspace/agent/.rustup` (persistent). Env: `RUSTUP_HOME`, `CARGO_HOME`,
-  `CARGO_TARGET_DIR=/workspace/agent/.cargo-target`,
-  `CARGO_HTTP_CAINFO=/tmp/onecli-combined-ca.pem`, prepend `.cargo-home/bin`
-  to `PATH`. **Tests need `NO_PROXY=localhost,127.0.0.1,::1`** — the sandbox's
-  HTTP proxy otherwise swallows the mock-server request in
-  `openai_compat::tests::sends_tools_and_parses_tool_call` (env issue, not a
-  code bug). **Since M4 this is no longer needed**: the provider's and the
-  Telegram adapter's reqwest clients call `.no_proxy()` under `cfg!(test)`,
-  and the suite is green with `NO_PROXY` unset. A *binary* talking to a
-  local endpoint still needs `NO_PROXY` in this sandbox.
-  **Status: `cargo check --workspace --all-targets` clean, `cargo test
-  --workspace` 180/180 green after M8; 232 passed, 2 ignored after M10** (plus 2 `#[ignore]`d: the proxy's
-  live end-to-end test, run with `-- --ignored`, and a sandbox helper),
-  `tests_e2e/setup_wizard.py` and `tests_e2e/hidden_keys.py` pass, and
-  `cargo check --target x86_64-pc-windows-gnu --workspace --all-targets`
-  is clean (C code via `zig cc`; a Windows *link* isn't possible here, CI
-  does it). Earlier M7 counts: 27 tests in `ferrule-proxy`, 23 unit + 4
-  integration,
-  `cargo clippy --workspace
-  --all-targets` has one pre-existing warning in `ferrule-core::agent`
-  (collapsible_if, predates the gateway work) and zero warnings in
-  `ferrule-gateway`/`ferrule-mcp`/`ferrule-skills`/the ledger. `rustup
-  component add clippy rustfmt` now done (was missing, only
-  `cargo`/`rust-std`/`rustc` before).
-- **Branding:** `docs/branding/logo.png` (512x512 mark) and
-  `docs/branding/hero.png` (1600x800 README header), referenced from the top
-  of `README.md`. Generated programmatically with Pillow (geometric
-  metal-band-around-a-rod-bundle mark, steel + copper on near-black) — **not**
-  AI-image-generated, because no `GEMINI_API_KEY` is configured for the
-  `design` skill in this sandbox and `google-genai`/pip installs are blocked
-  (PEP 668 + no root). If a future session has a working Gemini key, an
-  AI-generated pass could replace these with something more polished; keep
-  the same metal-band-binding-a-bundle motif and dark/steel/copper palette if
-  you do, so the brand doesn't drift session to session.
-- **Architectural gaps vs. the "replace NanoClaw and OpenClaw" goal:** the
-  2026-09-24 gap list (see the dated session-log entries below for the
-  full writeup) has essentially all closed since. Channels then were
-  Telegram and local; Discord and Slack shipped as M31 (WhatsApp is still
-  unbuilt — `docs/m31-channels.md` §9). Phase-1 multi-provider routing
-  shipped as M25 (`docs/routing.md`; Phases 2–3, the learned router and
-  local LoRA, were dropped by Max on 2026-09-24, msg 3070). The plugin
-  (code-extension) system shipped as M32 (WASM tools, `docs/plugins.md`).
-  (The cost/observability ledger gap closed 2026-09-24, Phase 0; the
-  skills half of "skills/plugin system" closed the same day, M5; OS
-  sandboxing for the shell tool closed the same day too, M6; M10 put MCP
-  servers under it, and M26 closed the reads side and added the native
-  Windows backend — a restricted token, as the research recommended, not
-  AppContainer; the macOS backend passed on a real Mac in CI. The
-  credential-injection gateway closed the same day, M7; M10 routed
-  `web_fetch` and MCP servers by URL through it, and M26 added plain HTTP.
-  Its remaining open edges are HTTP/2 and websockets on bound hosts, body
-  injection and a real-Mac run. The Telegram sender allow-list closed with
-  M8.)
-- **M9 never stuck is done** (2026-09-24, Session Log): transient provider
-  errors are retried with backoff, a loop gets one warning and then the
-  run stops, every stop (step limit, loop, a check that keeps failing)
-  ends with a status answer instead of an error, `verify_command` is run
-  by ferrule itself, and compaction keeps the request verbatim.
-- **M10 is done** (2026-09-24, Session Log): MCP stdio servers run under
-  the shell's `Sandbox` — the workspace as cwd and writable, a state dir
-  of their own (HOME/XDG/npm/uv caches and TMPDIR moved there when
-  confined), network always on, `sandbox = false` as a flagged opt-out.
-  `web_fetch` and MCP servers by URL (new Streamable HTTP transport, `url`
-  + `headers` with `${VAR}`) send HTTPS through the credential proxy when
-  it runs. As root on Linux, `ferrule setup` installs a **system** unit
-  run as a `ferrule` system user (no login, no sudo) under
-  `NoNewPrivileges`/`ProtectSystem=strict`/`ProtectHome`/`PrivateTmp`,
-  config in `/etc/ferrule`, data and workspace in `/var/lib/ferrule`;
-  `--system`/`--user` choose explicitly, and a user unit as root needs a
-  confirmation. `ferrule doctor` also reports the proxy, finds an
-  installed Chrome/Chromium and tries a headless launch (never
-  downloads), notes Ubuntu's AppArmor userns restriction and warns when
-  the service still runs a binary that was upgraded since it started.
-  **Open edges:** the system-service path has no e2e run (it needs root
-  and systemd; unit text and decisions are unit-tested only); plain HTTP
-  from `web_fetch` goes direct, not through the proxy (it only does
-  CONNECT); an unconfined MCP server (`sandbox = false`, or any server on
-  Windows) can still read the saved keys and `/proc/<ppid>/environ`;
-  Streamable HTTP has no server-initiated GET stream or resumption; the
-  Chrome launch check isn't exercised on Windows or macOS in CI.
-  **Known limits:** `--system` is Linux-only; a system service can't use
-  paths under `/home`, `/root` or `/run/user` (`ProtectHome`); binary
-  drift is judged from `ps` elapsed time and file mtime (±2 s), plus
-  `/proc/<pid>/exe` on Linux. Part 3 of the brief was dropped by Max
-  (msg 3088).
-- **Next milestones** (M11–M13 order approved 2026-09-24, msg 3090; M14–M19
-  adopted 2026-09-24 from `docs/research-number-one-harness-strategy.md` —
-  the six-investigation synthesis; the reader-facing version with scope,
-  security model and done criteria is `docs/roadmap.md`):
-  - **M11 browser**: **done** (2026-09-24, parts 1–3): agent-browser's
-    MCP server driving an installed Chrome, in the sandbox, behind the
-    credential proxy — `crates/ferrule-mcp/src/browser.rs`,
-    `docs/browser.md`. CI drives a real headless Chrome through the MCP
-    client on ubuntu-24.04, macos-14 and windows-latest. **Open edges:**
-    tool results stay text-only — image and other non-text MCP content is
-    replaced by a note naming it, not passed to the model (needs a
-    provider-wide `ToolOutput` change); Windows runs the browser
-    unconfined (no sandbox backend) and depends on a warm-up
-    (`agent-browser get url` before each call) that works around
-    agent-browser 0.38.1's daemon inheriting the CLI's stdout pipe — no
-    upstream issue filed yet; macOS Seatbelt opens Chrome's desktop
-    services and Chrome's own sandbox is off under it (`--no-sandbox`);
-    on Linux `/proc` stays writable to Chrome; the shell can read the
-    browser profile; `read` with a URL bypasses Chrome's proxy flags;
-    the `all` tool set exposes raw CDP.
-  - **M12 multi-agent**: **parts 1–5 shipped** (2026-09-24, branch
-    `m12-multi-agent`, PR #1; see the M12 session-log entry); part 6
-    (named long-lived agents) deferred on an open question. Original
-    scope: an in-process `spawn_agent` tool (background by
-    default, notifies the parent when done, resumable); named long-lived
-    agents from one config line or a Telegram command; a shared board
-    whose entries are tagged with the source agent and an untrusted-origin
-    flag and treated as data, never instructions, plus direct
-    agent-to-agent messages; an automatic git worktree and branch when a
-    child works on a repo; limits on depth, concurrency and budget per
-    agent; children run under the same sandbox and credential proxy.
-    **Design deltas from the strategy research (§5):** a summary contract
-    on child results (~1–2k tokens), effort-scaling rules in the spawn
-    tool description, a verifier-subagent role, routing-by-role (planner
-    strong / workers cheap), `resume_agent`/`wait_agent`/`close_agent` as
-    first-class tools, a task list with dependency edges and
-    self-claiming, and agent-relayed approvals treated as untrusted input.
-  - **M13 self-extension** (was M12): **built** (2026-09-24, parts 1–7 on
-    branch `m13-self-extension`, merged to main as PR #2; CI deferred to
-    the roadmap batch): skills and MCP servers hot-loaded mid-session,
-    self-installed from an **allow-list of approved sources** without
-    asking (msg 3074), anything else queued for the owner
-    (`ferrule extensions pending|approve|deny`) — **with the vetting
-    story (§4.8):** a tool-description poisoning scan before activation
-    (MCPTox: 36.5% average attack success), exact version / commit pins
-    plus surface digests, and a `tools/list_changed` re-scan. New crate
-    `crates/ferrule-extensions`; design `docs/m13-self-extension.md`.
-    Off by default (`[extensions] enabled = false`). **Open edges:** see
-    the 2026-09-24 M13 Session Log entry — the macOS/Windows-sensitive
-    spots there are **unverified on macOS/Windows until the batch CI
-    pass**; no channel (Telegram) approver; the gateway's skill roots are
-    fixed at startup; the approval gate is only as strong as the sandbox
-    (off, or Windows); the scan is heuristic; updates are manual only.
-    **With M12:** sub-agents never get the extension tools — only the
-    root installs; children use installed tools narrowed by role.
-  - **M14 `ferrule eval`**: **parts 1–5 done** (2026-09-24, branch
-    `m14-eval`; see the M14 session-log entry). It was scoped in §4.2:
-    task suites (a prompt, a workspace fixture, a verify_command and/or
-    LLM-rubric grader) run through the real agent, with results written
-    to the ledger with `task_shape="eval"`. Every harness change becomes
-    regression-testable. `ferrule eval run` runs a suite. It does a
-    naive/engineered A/B on one model, from any provider, and prints the
-    diff against the last run. `ferrule eval report` re-prints a saved
-    run. There is a 20-task starter suite with a stdlib mock model.
-    `docs/eval.md` is the user doc; `docs/m14-eval.md` is the design.
-    **Not done:** the measured chart in the README. It needs a real
-    model run, and the README was off-limits for this batch.
-    **Next: the real A/B.** Max's other agent runs it, following the
-    steps in `docs/eval.md` § "Handoff: running the real A/B": the free
-    mock check first, then a dry run, the smoke subset under a small
-    cap, and the full suite with `--repeat 3`.
-  - **M15 memory pipeline + reversible compaction** (§4.3/§4.4): **built**
-    (2026-09-24, parts 1–3 on branch `m15-memory`, PR to main open, not
-    merged; CI deferred to the roadmap batch; see the M15 session-log
-    entry). Design: `docs/m15-memory.md`. `remember` answers NOOP for a
-    known fact and lists similar live ones; `update_memory` supersedes
-    (`superseded_by`, recall maps old wording to the live fact); `forget`
-    hard-deletes a chain with no trace left in FTS or the file; the
-    session-start memory block is picked from the session's goal. Old
-    large tool results are shortened to a preview plus a ref when
-    compaction triggers, and `search_history` reads the session's own
-    transcript by query or by ref. Root: full memory access; writing
-    child: add only; read-only child: recall only. Schema is at
-    `user_version` 1, migrated in place from pre-M15 stores. **Open
-    edges:** no per-turn re-recall on long sessions (it would break the
-    prompt cache); the NOOP/similar heuristics are word-set Jaccard, not
-    embeddings; `search_history` is a linear scan of the transcript;
-    shortening happens only at the compaction trigger; the eval engineered
-    variant gets `search_history` but no session recall (its store is fresh
-    per run, so there's nothing to recall); the mock model never calls
-    `search_history`, so the eval measures shortening only. **Unverified on
-    macOS/Windows until the batch CI pass:** see the M15 session-log entry.
-  - **M16 learning loop** (§4.1): **built** (2026-09-25, parts 1–3 on
-    branch `m16-learning-loop`, PR to main open, not merged; CI deferred
-    to the roadmap batch; see the M16 session-log entry). Design:
-    `docs/m16-learning-loop.md`. A pass (`ferrule learn run`, or the
-    built-in `ferrule-learn` scheduler task when `[learning] enabled`,
-    off by default) reviews failed/incomplete scheduled runs and
-    retried/stopped sessions, has a reflector propose one add/edit/retire
-    per episode, and keeps an add or edit only when the task's check
-    passes twice in a scratch copy. Kept lessons go to
-    `<data>/learn/playbook.md` (the owner's lines untouched) and into
-    every agent's system prompt after `[Skills]`, sub-agents included,
-    read-only. Near-duplicate memories are merged through M15's UPDATE.
-    Ledger caps per pass and per day (`call_kind = "learn"`). Every pass
-    is a folder of files; `ferrule learn show`/`diff`/`revert`. Eval
-    stays hermetic unless a suite sets `owner_playbook = true`. **Open
-    edges and the macOS/Windows-unverified list:** see the M16
-    session-log entry.
-  - **M17 MCP hot-add + `ferrule mcp add`** (§4.5): **parts 1–4 done**
-    (2026-09-24, branch `m17-mcp-add`; see the M17 session-log entry).
-    Guided add with a live `initialize` + `tools/list` smoke test and
-    M13's scan, secrets bound to hosts in the same step, config written
-    via `toml_edit`, registration into a running gateway without a
-    restart (a 2 s config follower), `enabled_tools` and output caps, a
-    setup-wizard MCP step, `ferrule mcp list`/`remove`.
-    `docs/m17-mcp-add.md` is the design.
-  - **M18 lifecycle hooks** (§4.6): **parts 1–4 done** (2026-09-25,
-    branch `m18-hooks`; see the M18 session-log entry). Ten events with
-    Claude Code's payload and exit-code contract (0 proceeds, 2 blocks
-    with stderr as the reason, anything else is logged and shown to the
-    owner only), command hooks with a per-hook timeout and a process-tree
-    kill, `additionalContext` appended after the cached prefix (capped),
-    `verify_command` as the built-in Stop check with its old behaviour,
-    user hooks from the trusted config only, workspace hooks behind
-    `[hooks] project` plus `ferrule hooks trust` pinned to the file's
-    SHA-256, children inheriting PreToolUse/PostToolUse with
-    SubagentStart/Stop in the parent, a JSONL audit log and `ferrule
-    hooks list`. Hooks run as the owner, outside the sandbox.
-    `docs/m18-hooks.md` is the design. **Open edges:** a `--config` inside
-    a writable workspace is trusted; `[sandbox] mode = "off"` lets the
-    shell write the trust record; a workspace hook's relative command
-    runs from the root's workspace even for a child in a worktree;
-    gateway sessions never fire SessionEnd. **Unverified on
-    macOS/Windows until the batch CI pass:** the shell choice (`sh -c`,
-    Git Bash, or PowerShell; `sh -c` vs `cmd /C`/PowerShell), exit codes
-    (2 from PowerShell), killing a timed-out process tree (`killpg` on
-    macOS, `taskkill /T /F` on Windows), stdin/stdout piping of the
-    payload and output, the trust and audit files' permissions, and the
-    `canonicalize`d workspace key; the integration tests are
-    `#[cfg(unix)]`.
-  - **M19 trust & cost** (§4.11–4.13): **built** (2026-09-25, parts 1–6
-    on branch `m19-trust-cost`, PR to main open, not merged; CI deferred
-    to the roadmap batch; see the M19 session-log entry). Design:
-    `docs/m19-trust-cost.md`. A `Guard` seam in the agent loop
-    (`ferrule-core`), the owner's state in a new `ferrule-trust` crate,
-    and thin wiring in the CLI (`trust.rs`, `plan.rs`) and the gateway.
-    Token and dollar caps per run, per day and per scheduled task, read
-    from the ledger; a warning at 80% to the owner's chat; a kill switch
-    (`ferrule stop`, `/stop`, `/resume`) that halts calls in flight and
-    holds the scheduler; approval gates on `rm -r`, force pushes and
-    DELETEs to a bound host (Telegram or the terminal; unattended runs
-    refuse); plan mode (`ferrule run --plan`, `ferrule plan`, `/plan`).
-    Sub-agents share their root's guard. Eval is hermetic unless a suite
-    sets `owner_trust = true`. **Open edges and the macOS/Windows-unverified
-    list:** see the M19 session-log entry.
-  - **M19b reliability — never silently deaf**: **built** (2026-09-25,
-    parts 1–6 on branch `m19b-reliability`, PR to main open, not merged;
-    CI deferred to the roadmap batch; see the M19b session-log entry).
-    Design and as-built notes: `docs/m19b-reliability.md`. From a phone
-    alone: a 👀 receipt on every admitted message (before the lane) and one
-    "busy, queued" notice per busy period; `/status` from any allowed chat,
-    answered while a turn hangs, and `ferrule status` on the box; a turn
-    watchdog (one message to the owner after `watchdog_after_secs` without
-    progress) and `max_turn_minutes`; a running marker and a restart notice
-    naming the interrupted turn (never re-run); systemd's watchdog
-    (`WatchdogSec=120`, pings only while polling works); an optional
-    outbound heartbeat. Eval emits none of it (tested). **Open edges and
-    the macOS/Windows-unverified list:** see the M19b session-log entry.
-  - **M21 — models**: **built** (2026-09-25, parts 1–7 on branch
-    `m21-models`, PR to main open, not merged; see the M21 session-log
-    entry). Design: `docs/m21-models.md`; user guide: `docs/models.md`.
-    Several models connected at once (`provider/model`, a provider, an
-    alias or a unique model id; per-model price, window and profile under
-    `[providers.X.models."m"]`; old configs unchanged), a `[models]`
-    default, fallback and aliases. `models.rs` resolves a ref and picks
-    one-off > role > task > chat pin > default per call through a
-    `RoutedProvider`; `models/admin.rs` is the one `Models` API (`view()`,
-    `set_default`, `pin`/`unpin`, `set_fallback`, `add_model`,
-    `remove_model`, `set_alias`, `test`) behind `ferrule model`, Telegram's
-    owner-only `/model`, setup, and M22's page later. Pins in
-    `<data>/models/pins.json`, a task's model in tasks.db, a sub-agent's in
-    agents.db. Fallback off by default, transient failures only, owner told
-    once. The served model is in the ledger, caps, the audit log and
-    `/status`. `ferrule doctor --ping-models`, `ferrule eval --model`.
-    **Decisions for Max and open edges:** see the M21 session-log entry.
-  - **M20 connections**: **built** (2026-09-25, parts 1–5 on branch
-    `m20-connections`; PR to main open, not merged). Design and as-built
-    notes are in `docs/m20-connections.md`; the relay is in
-    `relay/worker.js`.
-    - The agent can only ask (`connection_request`). The owner taps one
-      Telegram button to connect, and `/connect`, `/connections`,
-      `/disconnect` and `/decline` work from the owner's chat only.
-    - The login code comes back one of three ways:
-      - through the owner's own Cloudflare Worker relay (one Durable
-        Object per slot, one read, 5 min);
-      - else a cloudflared quick tunnel (DCR services only);
-      - else a pasted address.
-    - Tokens are sealed in `<data>/private/connections/` and refreshed
-      per request inside the MCP HTTP transport. The model never sees
-      them.
-    - API keys come in only through a form that encrypts in the browser,
-      or at the terminal.
-    - Access is read-only by default. A connected service's tools that
-      can change something go through M19's gate.
-    - `ferrule connections list|add|remove|catalog|relay deploy|relay
-      check`.
-    - Max's relay is live at `https://ferrule-relay.maximarhipkin.workers.dev`.
-    - **Open edges and the unverified list:** see the M20 session-log
-      entry.
-  - **M19c — live-bot fixes**: **built and merged** (2026-09-25, PR #15;
-    to ship as 0.2.1; see
-    the M19c session-log entry). Design, as-built notes, the owner's
-    "doesn't answer" checklist and the exact messages:
-    `docs/m19c-live-fixes.md`.
-    - Log default `warn,<ferrule crates>=info`, with `without_url()` on
-      every HTTP error.
-    - 409 episodes are told once after `[health] telegram_conflict_secs`
-      (60), with recovery, and exposed through `Channel::problem()`.
-    - A webhook is deleted at start, keeping pending updates.
-    - Captions and non-text messages; ignored chats warned hourly.
-    - `CoreError::plain_words()` and `after_attempts()`, and the lane's
-      rate-limit countdown.
-    - Doctor's webhook, second-gateway (`health::running_gateways`) and
-      `:free` checks; the logs command in doctor and status.
-    **Decisions for Max:** see the M19c session-log entry.
-  - **M22 dashboard**: **built and merged** (2026-09-25, PR #16). Design and as-built
-    notes are in `docs/m22-dashboard.md`; the user guide is
-    `docs/dashboard.md`.
-    - One page, served on 127.0.0.1 only by the gateway (or by `ferrule
-      dashboard` when none runs): health, connections, models with an
-      OpenRouter catalog and recommendations, usage, tasks, logs,
-      extensions and agents.
-    - The owner sends `/dashboard` and gets a one-use, 10-minute link. It
-      is answered by the gateway itself, ahead of every other door, so it
-      works mid-turn, with every model down or the kill switch on. A
-      cloudflared quick tunnel opens on demand and closes when idle;
-      `/dashboard off` revokes everything.
-    - Sessions are cookies (HttpOnly, SameSite=Strict, host-bound, idle
-      and absolute timeouts). Every POST needs CSRF, JSON and a matching
-      Origin. Destructive operations ask to confirm first.
-    - Every change goes through the existing APIs (M21's `Models`, M20's
-      `Connections`, M19's hub) or a new one in the same style:
-      `Router::stop`, `TasksAdmin`, `models::catalog`. Nothing on it calls
-      the model. Every response passes the `Redactor`.
-    - `ferrule dashboard [link [--remote] | off]`, `ferrule model catalog
-      | recommend | fill-prices`; `doctor` warns on unpriced models.
-    - **Decisions for Max and open edges:** see the M22 session-log
-      entry.
-  - **M23 native drivers**: **built** (2026-09-25, branch `m23-drivers`,
-    PR to main open, not merged). Design and as-built notes are in
-    `docs/m23-drivers.md`; the user guide is `docs/models.md`, Drivers.
-    - `ferrule-providers` has three drivers behind `Provider`: Chat
-      (OpenAI-compatible, as before), Anthropic's native Messages API and
-      OpenAI's Responses API (stateless: `store: false` and encrypted
-      reasoning).
-    - `api = "chat" | "anthropic" | "responses"` per provider, inferred
-      from `base_url` (only `api.anthropic.com` → anthropic). `thinking`,
-      `effort` and `max_tokens` per provider or per model.
-    - Provider-native blocks ride on the neutral transcript and are
-      replayed only within the loop, to the same api and model; compaction
-      and cross-driver fallback drop them. Redacted from logs and never
-      shown.
-    - Cache writes are counted and priced (`price_cache_write_per_mtok`,
-      1.25× input by default on the anthropic api). `CoreError::class()`
-      gives M25 its failure classes.
-    - **Decisions for Max and open edges:** see the M23 session-log entry.
-  - **M24 the dashboard's leftovers**: **built, PR open** (2026-09-25,
-    branch `m24-dashboard-2`). Design and as-built notes are in
-    `docs/m24-dashboard-2.md`; the user guide is `docs/dashboard.md`.
-    - The login survives a restart: sessions are stored as hashes in
-      `private/dashboard/sessions.json`, the CSRF token is derived, and
-      local sessions are bound to loopback. A live tunnel session gets a
-      new link after a restart.
-    - Evaluate a candidate from the page or with `ferrule model eval`: an
-      estimate first, a confirm, the owner's caps and kill switch, run in
-      the background with Cancel, the result next to the default's.
-    - Edit from the page, with the same audited ops on Telegram (`/caps`,
-      `/mcp`, `/skills`) and the CLI: caps, MCP disable/enable/remove,
-      skills, hooks trust pinned to the SHA-256 with a diff, a task's
-      schedule and model.
-    - `scripts/dashboard-smoke.sh|.ps1`, and an RTL test (`dir="auto"`,
-      Hebrew unchanged through the API).
-    - **Decisions for Max and open edges:** see the M24 session-log
-      entry.
-  - **M25 routing, Phase 1**: **built** (2026-09-25, branch `m25-routing`,
-    PR to main open, not merged). Design and as-built notes are in
-    `docs/m25-routing.md`; the user guide is `docs/routing.md`.
-    - `[routing] tiers` (two or more connected models, cheap → strong).
-      Every turn starts on the floor and moves up one tier per failure
-      signal: a call failure retrying won't fix, 2 invalid tool calls in a
-      row, a failed verify check, a Stop hook, the same call 3 times, the
-      watchdog, or `/model strong`. Sticky for the turn; back down at the
-      next turn by default. Off by default and byte-identical when off.
-    - Tier refs (`tier:cheap`, `tier:strong`, `tier:N`) as pins, task,
-      role and `spawn_agent` models set the floor; a concrete model isn't
-      routed. M21's fallback applies to whichever tier is chosen.
-    - Ledger rows carry `route: {tier, escalated}`; every call is priced at
-      the model that served it; optional `strong_daily_usd` cap.
-    - Surfaces: `ferrule model route [set|off]`, `/model strong|tiers`,
-      the dashboard's Routing section and API, doctor, setup.
-    - `ferrule eval run <suite> --variant routing --cheap A --strong B`:
-      cheap only vs routed vs strong only; `evals/routing/weak_mock.py`
-      shows it with no model.
-    - **Decisions for Max and open edges:** see the M25 session-log entry.
-  - **M26 isolation**: **built** (2026-09-26, branch `m26-isolation`, PR to
-    main open, not merged). Design and as-built notes are in
-    `docs/m26-isolation.md`; the user guides are `docs/sandbox.md` and
-    `docs/windows-sandbox.md`.
-    - Sandboxed reads: one deny list (ferrule's secrets, now including
-      `<data>/sessions`; `~/.ssh`, the cloud credential dirs and browser
-      profiles by default; the owner's `deny_read`, with `allow_read` to
-      re-open a default). It is enforced by Landlock, Seatbelt, the Windows
-      backend and the file tools.
-    - Windows tier 1, no admin: a launcher starts the command under a
-      restricted token (write-restricted to per-root capability SIDs,
-      Authenticated Users deny-only) inside a job. The job kills the tree,
-      caps the process count and, optionally, the memory. Ferrule's secret
-      dirs and its own process carry a DACL that shuts the sandbox token
-      out. `network = false` isn't enforced there, and doctor says so.
-    - Plain-HTTP `web_fetch` goes through the proxy (absolute-form
-      forwarding). Secrets go over `http://` to loopback only; a bound
-      remote host gets 403.
-    - `sandbox = false` MCP servers run hide-only (writes open, the deny
-      list and ferrule's process still closed), and doctor lists what stays
-      open per server.
-    - **Decisions for Max and open edges:** see the M26 session-log entry.
-  - **M27 speed**: **built** (2026-09-26, branch `m27-speed`, PR to main
-    open, not merged). Design and as-built notes are in
-    `docs/m27-speed.md`; the user guide is `docs/speed.md`.
-    - Read-only tool calls of one response run in parallel segments
-      (`Tool::read_only()`, `[agent] parallel_tools`, default 4); writes
-      are barriers, approvals and hooks stay serial, results keep the
-      model's order; a stdio MCP server takes one call at a time.
-    - `CompletionRequest.stream: Option<DeltaSink>`: all three drivers
-      stream only when given a sink, else byte-for-byte as before. The
-      agent resets the stream at each call and retry.
-    - Telegram replies grow by edits (`StreamingReply` in the gateway,
-      `Channel::post`, `GatewayError::RateLimited`); `ferrule chat` prints
-      as it comes. `[agent] stream`, `[gateway] telegram_stream`.
-    - Recalled memory is a user message after the goal, so the system
-      prompt is the same across sessions; the Anthropic previous-turn
-      breakpoint is one per wire message; a test pins the prefix bytes.
-    - Ledger rows carry an optional `speed` (first token, first reply, tool
-      batch); `ferrule ledger` prints cache hit and speed under the table.
-    - **Decisions for Max and open edges:** see the M27 session-log entry.
-  - **M28 search and skills**: **built** (2026-09-26, branch
-    `m28-search-skills`, PR to main open, not merged). Design and as-built
-    notes are in `docs/m28-search-skills.md`; the user guides are
-    `docs/web-search.md` and `docs/skills.md`.
-    - `web_search` (Brave, Tavily, Exa, SearXNG), off by default. The key
-      stays in the credential proxy; every search is a ledger row, with
-      `[web_search] max_searches_per_day` and an optional price toward the
-      dollar caps. `ferrule setup` and `doctor` cover it.
-    - Keyword-triggered skills: `triggers:` in SKILL.md. Whole words and
-      phrases, Unicode case and accents, Hebrew prefixes, no regex. Only a
-      person's message is matched (`Agent::run_user`); the skill goes in
-      after it, never into the system prompt. At most 2 a message within
-      4000 tokens, re-scanned and lock-checked at every match; project
-      skills only with `project_triggers`.
-    - Fixes: "failed checks fixed" counts only passing task runs;
-      sandboxed commands get `HTTP_PROXY`/`http_proxy`.
-    - **Decisions for Max and open edges:** see the M28 session-log entry.
-  - **M29 edit mechanics**: **built** (2026-09-26, branch
-    `m29-edit-mechanics`, PR to main open, not merged). Design in
-    `docs/m29-edit-mechanics.md`; user guide `docs/editing.md`.
-    - `edit_file`: SEARCH/REPLACE hunks, all or nothing, exact plus two
-      whitespace rungs (never fuzzy on content), errors that show the
-      closest region, CRLF/UTF-16/BOM/Latin-1 preserved, atomic write.
-      `write_file` stays in every profile (now atomic too); the advice is
-      in the tool descriptions. `[agent] edit_file`.
-    - New crate `ferrule-codemap`: tree-sitter tags (Rust, Python,
-      TS/JS, Go, Java, one feature each), an Aider-style PageRank repo map
-      injected through a `TurnContext` seam only when it changes (the
-      prefix stays cached), a per-file tag cache, and `code_search`. Only
-      in a workspace that looks like a code repo. `[agent] repo_map_tokens`.
-    - Per-edit lint as a built-in M18 PostToolUse hook: rustfmt, ruff,
-      gofmt, eslint, tsc, each only when installed and configured by the
-      project; in the sandbox, with a timeout. `[agent] lint`.
-    - Optional auto-commit (`[agent] auto_commit`, off): a `RunObserver`
-      seam around `Agent::run` commits exactly the agent's files on a
-      `ferrule/auto-*` branch (or the current one), in the sandbox, never
-      pushing; `ferrule undo` and `/undo` take it back.
-    - `ferrule eval run … --edit-tools both|write-only`.
-    - **Decisions for Max and open edges:** see the M29 session-log entry.
-  - **M30 vector recall**: **built** (2026-09-26, branch
-    `m30-vector-recall`, PR to main open, not merged). Design and as-built
-    notes are in `docs/m30-vector-recall.md`; the user guide is
-    `docs/memory.md`.
-    - `ferrule-embed`: an `Embedder` trait with a fake, an OpenAI-compatible
-      `/v1/embeddings` backend (key via the credential proxy, a ledger row
-      per request) and a local model2vec backend
-      (`potion-multilingual-128M`, pure Rust, no key). The local backend
-      reads matrix rows from disk and is behind the default-on
-      `local-embed` feature.
-    - The weights are never shipped. `ferrule setup` / `ferrule memory
-      model download` fetch them only on a yes, at a pinned revision and
-      SHA-256.
-    - Memory rows carry a vector plus its model id (with dim); models are
-      never mixed; `user_version` stays 1. Recall merges BM25 with cosine
-      (weighted 0.7, floor 0.3; RRF optional), keeping decay, supersede,
-      `forget` and the budget.
-    - Any embedder failure gives exactly BM25, silently. `ferrule memory
-      reindex` is resumable and paced; doctor shows the state.
-    - Benchmark: 80 facts, 48 queries. All-query MRR goes .358 → .684,
-      paraphrase r@1 .2 → .6, cross-lingual r@5 0 → .3. Default
-      `embedder = "off"`: turning it on is an opt-in download or a paid
-      endpoint.
-    - **Decisions for Max and open edges:** see the M30 session-log entry.
-  - **M31 Discord and Slack**: **built** (2026-09-26, branch
-    `m31-discord-slack`, PR to main open, not merged). Design in
-    `docs/m31-channels.md`; user guides `docs/discord.md` and
-    `docs/slack.md`.
-    - Two new adapters behind the `Channel` trait, both outbound
-      WebSockets (no public URL): Discord's Gateway v10 (heartbeat, resume,
-      close codes, per-route REST buckets) and Slack Socket Mode (ack
-      first, `event_id` de-dup, `disconnect`, Markdown → mrkdwn).
-    - Allowlists per channel (DMs by user, shared channels by mention
-      only), strangers never reach the model; pairing by a six-digit code
-      in `ferrule setup` only.
-    - The owner generalized to `ChatRef` (`[trust] discord_owner`,
-      `slack_owner`, `owner_channel`); Telegram's owner and strings stay
-      as they were. Approvals get Allow/Refuse buttons on Discord/Slack.
-    - One daemon runs every channel; a dead socket or a rejected token
-      shows in `/status`, `ferrule status`, the heartbeat, the watchdog,
-      the dashboard's problems and `ferrule doctor` (reads only), and
-      stops that channel alone.
-    - `ferrule setup` gets Discord and Slack steps (token check, slash
-      commands, invite URL, pairing). Text only.
-    - **Decisions for Max and open edges:** see the M31 session-log entry.
-  - **M32 WASM tool plugins**: **built** (2026-09-26, branch
-    `m32-wasm-plugins`, PR to main open, not merged). Design and as-built
-    notes are in `docs/m32-wasm-plugins.md`; the user guide is
-    `docs/plugins.md`.
-    - `ferrule-plugins`: wasmi 2.0 (an interpreter, +1.2 MB against
-      wasmtime's +9.4 MB), behind the default-on `plugins` feature. A
-      JSON core-module ABI with one import, `ferrule.host_call`; WASI
-      imports are refused at load.
-    - Capabilities are deny by default: workspace-relative file grants
-      under M26's read deny list, HTTPS to granted domains only through
-      `web_fetch`'s client and the credential proxy, `${SECRET}`
-      expanding to the placeholder only, and opt-in clock and random.
-      Fuel, a deadline, a memory cap and an output cap each turn into a
-      tool error.
-    - Tools are `plugin__<plugin>__<tool>`, with the schema checked
-      before the call. Read-only means claimed and no write grant; an
-      `approval` tool goes through M19's gate; http output is fenced as
-      untrusted.
-    - Install through M13's manager: exact pins plus the wasm SHA-256,
-      the scan, the queue, capabilities shown to the owner, re-approval
-      on widening, suspension on tamper, and hot-add. The owner CLI is
-      `ferrule plugins add/list/remove`, the agent's tools are
-      `plugin_add`/`plugin_remove`, and doctor loads each plugin.
-    - `ferrule-plugin-sdk` (`export!`, host wrappers; `publish = false`
-      until there's a license) and two committed, reproducible examples:
-      `unit-convert` and `github-repo`.
-    - **Decisions for Max and open edges:** see the M32 session-log entry.
+Rewritten in place on 2026-10-21 (M55.6) from `git log`, the code and
+`docs/roadmap.md`; the version it replaced stopped at M49 and is in git
+history. Keep this section true **in place**. Everything below it is
+append-only.
 
-  - **M33 ops**: **built** (2026-09-26, branch `m33-ops`, PR to main
-    open, not merged). Design and as-built notes in `docs/m33-ops.md`;
-    user guides `docs/egress.md`, `docs/otel.md`, `docs/migrate.md`.
-    - Egress policy in the credential proxy (`[egress]`): public hosts
-      allowed, private ranges and cloud metadata blocked, `allow`/`deny`
-      host patterns, IPs and CIDRs, `default = "deny"` for an allowlist.
-      Resolve once and connect to the checked address (no DNS
-      rebinding); configured endpoints (providers, MCP, search, the
-      collector) are implicit exceptions. `web_fetch`, `web_search`, MCP
-      over HTTP and plugins always go through it; shell commands only
-      when secrets or rules exist (advisory). A refusal is a 403 the model
-      can read, a ledger row, an audit event, a doctor line and a
-      dashboard count.
-    - Unix-socket allowlist (`[sandbox] unix_sockets`): closes the
-      `docker.sock` escape. Linux: a seccomp user-notification supervisor
-      that checks the real inode and connects it itself (no TOCTOU), plus
-      sockets the command made (by `SO_PEERCRED`). macOS: Seatbelt path
-      rules. Windows: not covered. Where `pidfd_getfd` is refused (Docker's
-      default profile) it says "not enforced"; `require = true` fails.
-    - `ferrule-otel`: OTLP/HTTP JSON traces from the ledger seam, a
-      hand-rolled encoder with no new third-party crates. Session → turn →
-      chat / execute_tool spans with GenAI semconv, sub-agents under the
-      spawning turn; content off by default and scrubbed when on; bounded
-      queue, 512/2 s batches, backoff, 3 s shutdown flush; counters in
-      doctor and `/status`.
-    - `ferrule import openclaw|hermes`: memories (deduped, re-runs
-      supersede, secret-looking entries held back), skills (the M13 review,
-      confirmed one by one), allowlists (a union), providers, and keys by
-      name only (`--bind-secrets` copies values). Dry run by default,
-      idempotent; own JSON5 and YAML-subset readers. `ferrule setup`
-      offers it when it finds either tool.
-    - **Decisions for Max and open edges:** see the M33 session-log entry.
-  - **M34 SSH workspaces and local-model first run**: **built**
-    (2026-09-26, branch `m34-ssh-local`, PR to main open, not merged).
-    Design and as-built notes are in `docs/m34-ssh-local.md`; the user
-    guides are `docs/ssh.md` and `docs/local-models.md`.
-    - `ferrule-ssh`: a remote workspace over the system `ssh` (measured
-      against russh and ssh2: zero growth, 14 ms a command multiplexed).
-      `workspace = "ssh:<name>"` / `[ssh.<name>]` or `ssh://user@host/path`;
-      `shell`, `read_file`, `write_file`, `edit_file` and `list_dir` run
-      there under the same names, limits, deny patterns and M18/M19/M26
-      rules. `code_search`, the repo map, per-edit lint and auto-commit
-      are off, with notes.
-    - Strict host keys: first contact only through setup or `ferrule ssh
-      trust` (fingerprint shown, or `--fingerprint`), a changed key is a
-      hard stop. ferrule never reads a key or passphrase. The remote
-      account is the boundary, and setup, doctor and the docs say so.
-    - A nonce-marked wrapper tells never-started (retried with backoff)
-      from interrupted (never retried); a watchdog kills the remote
-      process group on `/stop` or a timeout. The credential proxy reaches
-      remote commands through `ssh -R`, public API only.
-    - Local models: Ollama, llama.cpp, LM Studio and vLLM are detected;
-      the real window is compared with the planned one, with each
-      server's fix (an Ollama derived model, only on a yes); a tool probe
-      tells "can't call tools" from "template broken";
-      `HarnessProfile::fitted` for small windows; a dated known-good list.
-    - Surfaces: setup steps, `ferrule ssh list|trust|test`, doctor,
-      `/status` and dashboard problems for both.
-    - **Decisions for Max and open edges:** see the M34 session-log entry.
-  - **M35 subscription sign-in**: **built** (2026-09-27, branch
-    `m35-subscriptions`, PR to main open, not merged). Design and as-built
-    notes are in `docs/m35-subscriptions.md`; the user guide is
-    `docs/subscriptions.md`.
-    - `ferrule-plans` (new crate): ChatGPT sign-in (device code, PKCE
-      through a loopback listener, a pasted redirect), the sealed store,
-      refresh with rotation under a cross-process lock, logout that
-      revokes; the plans' usage file.
-    - The Codex flavour of the Responses driver: the plan's token, one
-      refresh on a 401, a usage limit as a wait until the reset (M21 falls
-      back), the rate-limit windows recorded.
-    - The Claude Code engine: each turn runs the unmodified `claude`
-      (never `--bare`) with ferrule's own config dir and `--resume`; the
-      child's env loses every API key and base URL; claude's permission
-      prompts go to ferrule's approvals, and ferrule's own tools are
-      bridged over MCP (a bridged call pauses the turn and runs through the
-      agent's gates); process-group kill, timeout and output cap.
-    - The red line: no ferrule code path calls Anthropic with a plan
-      token. A `sk-ant-oat` key is refused by the Anthropic driver on every
-      call, by setup and by doctor. No Claude sign-in or token paste in any
-      chat.
-    - Surfaces: `ferrule login|logout chatgpt|claude`, `/login chatgpt`
-      (owner chat, device code), the setup model step's four ways, doctor's
-      plan checks, `status`/`/status`/dashboard windows, ledger rows at $0
-      with `plan` and `notional_usd`.
-    - **Decisions for Max and open edges:** see the M35 session-log entry.
-  - **M36 self-update and self-repair**: **built** (2026-09-27, branch
-    `m36-self-update`, PR to main open, not merged). Design and as-built
-    notes are in `docs/m36-self-update.md`; the user guide is
-    `docs/updates.md`.
-    - The ChatGPT plan's Codex client version is learned (npm, then
-      GitHub, then the compiled-in one), cached a day, and refreshed at
-      once when the backend says it's too old.
-    - `ferrule update [--check|--to TAG]`: GitHub releases verified by
-      sha256 and a minisign signature against a compiled-in key; a
-      privileged apply unit (systemd timer + path unit, launchd agent)
-      installs when idle, restarts, and rolls back and pins a version that
-      doesn't come up healthy. The release workflow signs.
-    - The `claude` CLI is kept current by its own install's updater, daily
-      and at once when a turn fails because it's too old (retried once).
-    - Self-repair: a failure classifier; every provider error falls back;
-      plain words plus the raw error in the chat; a last-good config; a
-      15-minute self-check that tells the owner about changes only; a
-      repair log in doctor and the dashboard.
-    - `/dashboard` downloads a checksum-verified `cloudflared` into
-      `<data>/bin` when none is found, so the tunnel link works on a
-      service with a pinned `PATH` and nothing installed.
-    - v0.5.x installs need the install one-liner once.
-    - **Decisions for Max and open edges:** see the M36 session-log entry.
-  - **M37 the control room**: **built** (2026-09-27, branch
-    `m37-control-room`, PR to main open, not merged). The design and
-    as-built notes are in `docs/m37-control-room.md`. The user guides are
-    `docs/dashboard.md` and `docs/connections.md`.
-    - Notices have ids and fix buttons, and close for a day. The kill
-      switch and "no model can answer" never close. There's a hidden list
-      with Show again.
-    - Model pickers are selects. The fallback chain is checked. A provider
-      key is tested before it's saved. Plan sign-in works from the page.
-    - Connections is the one place for credentials:
-      - Atlassian: email + token (native Jira/Confluence), then a Rovo MCP
-        token, then Rovo OAuth.
-      - Google: a Gmail app password (IMAP/SMTP), a service account
-        (Drive/Sheets/Docs/Calendar), then your own OAuth app.
-      - The fixed-callback relay: deployed with a Cloudflare token, or an
-        existing one.
-      - A checklist from real checks, with next actions.
-      - Stuck sign-ins cancelled, and expired after 15 min.
-      - OAuth errors in plain words, with a switch to a key.
-      - Expiring keys in doctor and the banner.
-      - `ferrule connections setup [service]`.
-    - Terminal parity:
-      - a console that runs `ferrule` lines with no shell (classed,
-        audited, the parity matrix tested against every subcommand);
-      - chat in session `dashboard__owner`, with approvals;
-      - the config with secrets hidden, a typed form, check/save/undo.
+- **What it is.** Ferrule is a self-hosted agent runtime for one owner,
+  in Rust. The repo is `maximarhipkin/ferrule` (public), the binary is
+  `ferrule`, the config is `ferrule.toml` or
+  `~/.config/ferrule/config.toml`, keys live in
+  `<data>/private/secrets.env`, and a workspace's state is in
+  `.ferrule/`. `ferrule run` and `ferrule chat` drive the agent loop from
+  a terminal. `ferrule gateway` is the daemon: chat channels, the
+  scheduler and the dashboard. Install is one line (`install.sh`,
+  `install.ps1`) followed by `ferrule setup`; `ferrule doctor` checks the
+  result. The user-facing overview is `README.md`; every milestone's
+  design and status is in `docs/roadmap.md`.
+- **Releases and branches** (checked 2026-10-21):
+  - The latest release is **v0.13.1** (tagged 2026-10-20). It has
+    everything through M49 plus the 2026-10-19 review-pass fixes. Every
+    crate is at 0.13.1 except `ferrule-plugin-sdk`, which keeps 0.1.0.
+  - **`main` is `2ffa669`.** It is v0.13.1 plus M50 (PR #43), three
+    merges from 2026-10-20: #44 ("Allow for this run", a per-run grant
+    for one gated shell command), #45 (`send_file`, the connection tools
+    and MCP tools bridged into the Claude-plan engine) and #46 (Telegram
+    follow-ups merged into one turn, a quieter busy notice, locations,
+    venues and contacts, no link previews), and **PR #48 (Kimi's M51–M53,
+    merged 2026-10-21)**: media generation (`generate_image`,
+    `generate_video` and its poller, the new `ferrule-media` crate), the
+    dashboard Safe (rotate a kept key, move a tool key's sites) and
+    contrastive probing in the learning loop. None of this is released.
+    CI on `dadf357` was red on two flaky tests (fixed by M55.1 on
+    `autopilot`).
+  - **`autopilot` (PR #47, open)** stacks the gap analysis's work on
+    `dadf357`, one commit per item, each with a 2026-10-21 Session Log
+    entry: M55.2 (the four stranded branch stacks: the core-loop and
+    Responses-reasoning stack, four host-side sandbox escapes, the
+    update/restore defects, a test race), M55.3, M55.4, M55.5, M55.1,
+    this rewrite, and the items after it. `main` (`2ffa669`, PR #48) was
+    merged into it on 2026-10-21, after M56.6.
+- **Checks.** `make check` (fmt, clippy, the workspace tests) is the
+  green predicate (`AGENTS.md`). The last full run on `autopilot` before
+  this rewrite: 1869 passed, 0 failed, 28 ignored across 71 test
+  binaries (macOS, 2026-10-21). CI runs on Linux, macOS and Windows;
+  `release.yml` builds and signs five targets on a `v*` tag. Rust stable
+  through rustup, edition 2021.
+- **The 25 crates** (each one's `description` in its `Cargo.toml` says
+  the same):
 
-      No raw shell: a recorded decision for Max.
-    - The UI rebuilt: IBM Plex from the binary, a phone bottom bar and a
-      desktop sidebar, and themes that follow the system. A Node browser
-      check runs in CI on all three OSes.
-    - **Decisions for Max and open edges:** see the M37 session-log entry.
-  - **M38 named instances**: **built** (2026-09-28, branch
-    `m38-instances`, PR to main open, not merged). The design and as-built
-    notes are in `docs/m38-instances.md`. The user guide is
-    `docs/instances.md`.
-    - `--instance <name>` / `FERRULE_INSTANCE` on every command. A name is
-      `[a-z0-9-]`, 1–24, alphanumeric at both ends, never `default`. The
-      default instance's paths, units, labels and hints are 0.8.0's byte
-      for byte (golden fixtures).
-    - A named instance gets `ferrule-<name>` sibling dirs, the
-      `ferrule@<name>` unit, `ferrule-update@<name>` units, the
-      `ai.ferrule.*.<name>` labels, its own system user and relay Worker.
-    - `ferrule instances list | new | remove [--purge]`, and "Another
-      instance" in setup's menu.
-    - Collisions in doctor and setup: the same bot, fixed dashboard port,
-      workspace, SSH workspace or relay.
-    - Updates coordinated per binary: every sibling's lock, pins and
-      `auto = false` count; all restart together, and a rollback pins all.
-    - The dashboard names its instance and acts only on it. `install.sh`
-      refreshes every running instance on the binary it replaced.
-    - **Decisions for Max and open edges:** see the M38 session-log entry.
-  - **M39 more channels**: **built** (2026-09-28, branch `m39-channels`,
-    PR to main open, not merged). The design and as-built notes are in
-    `docs/m39-channels.md`. The user guide is `docs/channels.md`.
-    - Six channels beside Telegram, Discord and Slack: WhatsApp (Cloud
-      API, through the relay's mailbox), Matrix, email (IMAP IDLE +
-      SMTP), Signal (signal-cli's daemon), Mattermost and an HTTP API
-      with a key per program.
-    - Each has a setup step, a dashboard card with Test and a guide,
-      doctor lines, approvals in the channel, files in and out, and a
-      cross-instance clash check; each is tested against a mock on
-      127.0.0.1.
-    - The seams: every Telegram/Discord/Slack list (owners, redaction,
-      health, doctor, cards) is now per channel, and `send_file` sends a
-      workspace file to the session's chat.
-    - **Decisions for Max and open edges:** see the M39 session-log entry.
-  - **M40 build diet**: **built** (2026-09-29, branch `m40-build-diet`,
-    PR to main open, not merged). Design and numbers:
-    `docs/m40-build-diet.md`.
-    - A `[profile.dev]` in `Cargo.toml` (tests inherit it): line tables
-      for our crates, no debug info for dependencies.
-    - Each crate's integration tests are one binary, `tests/it/`: add a
-      module, not a file. Run one with `--test it <file>::`. Four files
-      keep their own process (they set env vars read once per process);
-      CI fails on any other new `tests/*.rs`.
-    - A fresh test build: 10.66 GB → 2.62 GB, 102 → 51 executables. A
-      release used to add ~9.4 GB to a shared target dir; now ~2 GB.
-    - Older sections and session-log entries below name the pre-M40
-      paths (`tests/<file>.rs`, `--test <file>`); read them as
-      `tests/it/<file>.rs` and `--test it <file>::`.
-  - **M41 daily use**: **built** (2026-09-29, branch `m41-daily-use`,
-    PR to main open, not merged). Design and what was verified:
-    `docs/m41-daily-use.md`; user docs `docs/channels.md` (chat commands,
-    voice messages, typing) and `docs/backup.md`.
-    - `/new` (`/reset`) in every chat: stops the lane's turn, drops what
-      waited, keeps the transcript as `<sid>.<stamp>.jsonl`; the same 4xx
-      twice suggests it. `/help`, Telegram's command menu, Discord's
-      `/new` `/help`, and `/new` in `ferrule chat`.
-    - Voice messages transcribed in the router for every channel that
-      saves files (Telegram now downloads voice and audio):
-      `[transcription]` auto/openai/command/off, a ledger row per call, a
-      doctor `voice` line, and the sender told how to turn it on.
-    - A typing indicator while a turn runs (Telegram, Discord, Matrix,
-      WhatsApp), stopped before the reply; `[gateway] typing`.
-    - `ferrule backup` / `ferrule restore`: a checked `.tar.gz`, secrets
-      only on request, the old data moved aside, never deleted; doctor
-      shows the last backup's age.
-  - **M44 managed mode**: **built** (2026-09-30, branch `m44-managed-mode`,
-    PR to main open, not merged). Design, plan and what was verified:
-    `docs/m44-managed-mode.md`; user docs `docs/docker.md`.
-    - A multi-stage `Dockerfile` (runtime and `-browser` targets, tini,
-      uid 10001, `/data`, `HEALTHCHECK ferrule health --probe`) and a
-      release-workflow job. **Never built:** no Docker daemon here.
-    - `FERRULE_MANAGED` + a policy file: `sandbox = "os" | "container"`,
-      no Claude plan, hooks/MCP add/update/setup/ssh/instances closed,
-      config narrowed to the policy, `[sandbox] mode = "off"` refused.
-    - Panel sign-in: an HMAC token per bot, a fail-closed nonce file, the
-      dashboard under `/b/<id>/`, up on boot with `/healthz` and `/busyz`.
-    - Telegram set up from the page; `FERRULE_HTTP_BIND`; a bounded
-      SIGTERM drain, re-exec restarts, backup/restore in a container.
-    - `scripts/m44-measure.sh`: idle 24 MiB, turn peak 26 MiB.
-  - **M47 dashboard redesign**: **built** (2026-09-30, branch
-    `m47-dashboard-redesign`, PR to main open, not merged). Design, plan,
-    corrections and what was verified: `docs/m47-dashboard-redesign.md`;
-    user docs `docs/dashboard.md`, `docs/models.md`, `docs/channels.md`.
-    - A new visual system and navigation (sidebar, phone bottom bar, More
-      sheet, palette, shortcuts), a Home with a first-run checklist,
-      English and Hebrew (right-to-left) from Settings.
-    - Photos: `images` on the provider layer (vision by name or
-      `vision = true|false`), Telegram photos, a Chat photo button.
-    - Memory, a schedule picker with New task, Backup (no secrets),
-      Settings; gzip for the page's own files.
-    - Not verified live: a real phone over the tunnel, real vision
-      providers.
-  - **M48 self-service from chat and dashboard**: **built** (2026-10-01,
-    branch `m48-self-service`, PR to main open, not merged). Design, plan,
-    corrections and what was verified: `docs/m48-self-service.md`; user docs
-    `docs/channels.md`, `docs/updates.md`, `docs/dashboard.md`.
-    - `ferrule_admin` agent tool in the owner's chats, run in the gateway
-      outside the shell sandbox; each change shows a card and waits for one
-      tap (buttons on Telegram), single-use and bound to that change.
-    - `/update`, `/restart`, `/doctor` from a chat, a promise that says
-      where it came back, an in-place re-exec without a service on unix.
-    - One command list for `/help` and Telegram's per-scope `/` menu.
-    - Dashboard: Approvals inbox with countdown, Home update row, Restart
-      without a service; managed bots keep every lock.
-    - Not verified live: a real Telegram client, a real release install, a
-      real systemd restart.
-  - **M49 dashboard visual polish**: **built** (2026-10-01, branch
-    `m49-dashboard-polish`, PR to main open, not merged). Design, plan,
-    corrections and what was verified: `docs/m49-dashboard-polish.md`; user
-    docs `docs/dashboard.md`.
-    - Fonts: Inter, Heebo (Hebrew only) and Geist Mono, one variable woff2
-      each, 47 KB in all instead of 129 KB; the OFL licence ships.
-    - Palette: zinc neutrals and one indigo accent, light and dark designed
-      apart; copper only in the collar mark; contrast tested numerically,
-      field borders and the focus ring included.
-    - Controls: one height, radius and border; custom-styled native select,
-      44 px targets on a phone, a `⋯` overflow menu for rare actions.
-    - Lucide icons as inline SVG, empty states, reduced motion, RTL mirror.
-    - 64 before and 64 after screenshots in `docs/assets/m49/`.
-    - Not verified live: real iOS Safari, a real tunnel, Arabic.
-  - Also standing: a native **Windows sandbox** is being researched
-    (`docs/research-windows-sandbox.md`). Unsequenced small wins from the
-    strategy doc (§4): `web_search`, keyword-triggered skills,
-    `edit_file` SEARCH/REPLACE, a repo map, local-model first-run polish,
-    channels Discord → Slack → WhatsApp, the stuck
-    detector's two missing signatures, gateway lane idle eviction, ledger
-    rotation.
+  | Crate | What it does |
+  |---|---|
+  | `ferrule-core` | The agent loop, the provider and tool traits, harness profiles, compaction and transcripts |
+  | `ferrule-providers` | Model drivers: OpenAI-compatible chat, Anthropic Messages, OpenAI Responses (and its ChatGPT-plan Codex flavour) |
+  | `ferrule-tools` | Workspace tools: files, `edit_file`, the shell, `web_fetch`, `web_search`, the diary; egress through the proxy |
+  | `ferrule-memory` | SQLite memory: FTS5 BM25 with decay, supersede and forget, merged with vector recall |
+  | `ferrule-embed` | Embedders for recall: a local model2vec model (opt-in download) or any `/v1/embeddings` endpoint |
+  | `ferrule-media` | Image and video generation backends (M51): one `MediaBackend` trait, OpenRouter through the credential proxy, a fake for tests, the SQLite table async video jobs live in |
+  | `ferrule-gateway` | The daemon: the `Channel` trait and adapters (Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, an HTTP API, local), the router with one lane per chat, the scheduler, transcription |
+  | `ferrule-mcp` | The MCP client (stdio, sandboxed; Streamable HTTP), and the browser through agent-browser |
+  | `ferrule-skills` | Agent Skills: discovery, the catalog, activation and keyword triggers |
+  | `ferrule-sandbox` | The OS sandbox: Landlock and seccomp on Linux, Seatbelt on macOS, a restricted token in a job on Windows |
+  | `ferrule-proxy` | The credential gateway: placeholders, the TLS-intercepting proxy that swaps in bound keys, scrubbing, the egress policy |
+  | `ferrule-agents` | Sub-agents: spawn, wait, resume and close; the board, the task list, worktrees, limits |
+  | `ferrule-extensions` | Self-extension: allow-listed MCP servers, skills and plugins installed mid-session, pinned, scanned, hot-loaded |
+  | `ferrule-eval` | `ferrule eval`: suites, fixtures, graders, the A/B and its reports |
+  | `ferrule-hooks` | Lifecycle hooks: command hooks, workspace trust, the audit log |
+  | `ferrule-learn` | The learning loop: the gated playbook, memory consolidation, the offline pass |
+  | `ferrule-trust` | Trust and cost: caps from the ledger, the kill switch, approval gates, plan mode, the audit log |
+  | `ferrule-connections` | Connections: OAuth (PKCE, DCR), the relay, API keys through the encrypted form, sealed tokens, the catalog |
+  | `ferrule-codemap` | The tree-sitter repo map and `code_search` |
+  | `ferrule-otel` | OpenTelemetry traces from the ledger seam (OTLP/HTTP JSON) |
+  | `ferrule-plugins` | WASM tool plugins in wasmi: the ABI, capability-checked host calls, fuel and memory limits |
+  | `ferrule-plugin-sdk` | The Rust SDK for writing a plugin |
+  | `ferrule-ssh` | SSH workspaces over the system OpenSSH client |
+  | `ferrule-plans` | Subscription plans: ChatGPT sign-in and its sealed tokens, usage windows, the Claude Code engine |
+  | `ferrule-cli` | The `ferrule` binary and all the wiring: setup, doctor, the dashboard, config, service, update, backup, instances, self-service |
+
+- **Shipped and merged to `main`** (one line each; scope, open edges and
+  "not verified live" lists are in each milestone's doc and Session Log
+  entry):
+  - **M1–M10, Phase 0:** the gateway, Telegram, the scheduler, MCP over
+    stdio, the per-call ledger, Agent Skills, the OS sandbox, the
+    credential gateway, one-line install and setup, never stuck, MCP and
+    `web_fetch` under the sandbox and proxy, the system service.
+  - **M11–M19c:** the browser; sub-agents (M12 parts 1–5; part 6, named
+    long-lived agents, is deferred); self-extension; `ferrule eval`;
+    memory updates and reversible compaction; the learning loop; `mcp
+    add` with hot-add; lifecycle hooks; trust and cost; never silently
+    deaf; the live-bot fixes.
+  - **M20–M30:** connections and the relay; several models with pins
+    and fallback; the dashboard; native drivers; the dashboard's
+    leftovers; routing phase 1 (phases 2–3 were dropped); isolation (the
+    native Windows sandbox, sandboxed reads); speed and streaming;
+    `web_search` and keyword skills; edit mechanics and the repo map;
+    vector recall.
+  - **M31–M41:** Discord and Slack; WASM plugins; ops (egress policy,
+    the Unix-socket allowlist, OTel, OpenClaw and Hermes importers); SSH
+    workspaces and local models; ChatGPT and Claude plan sign-in;
+    self-update and self-repair; the control room; named instances; six
+    more channels (M39: WhatsApp over the Cloud API, Matrix, email,
+    Signal, Mattermost, an HTTP API); the build diet; daily use (`/new`,
+    voice, typing, backup and restore).
+  - **M42–M50:** harness engineering (all seven parts, among them
+    `AGENTS.md`, `make check`, goal loops, agent graphs, pluggable
+    compaction); channels drive loops and graphs; managed mode; the
+    dashboard redesign; self-service from chat and dashboard; visual
+    polish; connect everything from the dashboard (M50, merged after
+    v0.13.1). The numbers M45 and M46 were never used.
+  - After M50, on `main` only: PRs #44, #45 and #46 (above).
+- **In flight** (2026-10-21):
+  - **M54, protected autonomous mode.** The owner approved the design
+    on 2026-10-20 (`docs/m54-autonomous.md`, in the worktree of branch
+    `claude/laughing-chebyshev-5cd4a6`). It is being built there,
+    uncommitted on `dadf357`.
+  - **`autopilot` / PR #47:** the M55 items and the M52 and M56 items
+    this branch's Session Log entries name.
+  - **Kimi's M51–M53** are merged to `main` (PR #48, above; designs in
+    `docs/research-harness2-media.md`, `docs/m51-media.md`,
+    `docs/m52-dashboard-safe.md`, `docs/m53-contrastive-probing.md`).
+    Their named follow-ups (sub-agent media tools, a per-run approval
+    card, the remaining M52.x items) are open.
+  - **M55–M59, from `reports/Ferrule agent gap analysis.md`** (2026-10-20,
+    in the main checkout and git-excluded, so `docs/roadmap.md`'s "Other
+    open tracks" lists its items): M55 make main green and land the
+    written fixes; M56 the running turn hears the owner and remembers
+    what matters; M57 the coding leaders' context and loop hygiene; M58
+    simplify, remove or make opt-in; M59 channels not worth chasing yet
+    (personal WhatsApp, iMessage). The report also amends M52 and M54
+    with numbered items (M52.1–M52.6, M54.1–M54.7); they keep their
+    parent's number.
+- **Milestone numbers are claimed:** M51–M53 Kimi, M54 the autonomy
+  session, M55–M59 the gap analysis. The next free number is **M60**.
+  The first claim wins, and a later collision shifts the unclaimed
+  numbers, never a claimed one.
+- **Sync protocol for concurrent sessions** (from the gap analysis's
+  "Staying synchronized" section and `AGENTS.md`):
+  - **Claim before building.** When a session starts, it appends a dated
+    Session Log line naming its milestone number and its worktree, not
+    only when it ends.
+  - **One owner per surface.** M54 owns `crates/ferrule-sandbox`,
+    `ferrule-trust`'s `guard.rs` and `classify.rs`,
+    `ferrule-cli/src/secrets.rs`, the config guard lists and
+    `self_service/`'s op additions (`secret_request` among them). M52
+    owns the dashboard's keys and Safe pages and the config editor UI.
+    M56.1 owns the gateway's `router.rs` and its inbox. M51 owns its
+    media module and the Telegram send branches. Anyone who must touch
+    another's surface makes the smallest change and says so in their
+    entry.
+  - **Push early.** Push the branch at its first commit; a worktree
+    branch with no upstream is invisible to the other sessions and to
+    CI.
+  - **PLAN.md is append-only** except this section, which is edited in
+    place.
+  - **Merge on green.** A change lands on `main` only when `make check`
+    and the three CI jobs pass. Requiring that in GitHub's branch
+    protection (M55.7) is a repository setting only the owner can turn
+    on.
+- **Branding.** `docs/branding/logo.png` and `docs/branding/hero.png`,
+  drawn with Pillow (a metal band around a rod bundle; steel and copper
+  on near-black). Keep that motif if they're ever redrawn.
 
 ## Session Log
 
@@ -5877,6 +5145,403 @@ Telegram path (a real bot token) wasn't exercised; only the mocks were.
 - MCP stdio: the request write sits outside the timeout, and a cut-off
   write breaks the connection until restart.
 
+### 2026-10-19 — Update and restore defects from the review (Claude, Opus 5.5)
+
+**Scope.** The five update/restore defects the 2026-10-19 review pass
+confirmed (its entry is on main's working tree, not yet committed), one
+commit each, each with a test that failed before the fix. The review's
+other two update fixes (`last_timer`, the stale-promise line) were made
+there and are left alone here: `apply_unit`'s timer arm, `State`'s fields
+and `promise::expire` are untouched, so the two merge.
+
+**Fixes.**
+- **System-scope backup/restore.** `main` pins `FERRULE_CONFIG`/
+  `FERRULE_DATA_DIR` to the system service's for `backup` and `restore`
+  too (`on_system_files`), so `sudo ferrule restore` no longer writes
+  root's own paths. After a restore into the system data dir,
+  `own_system_files` gives the data to the service's user and the config
+  `root:<user>` 0640, as setup does. Every restore makes the secret dirs
+  (`private`, `claude-code`, `ssh`, `proxy/keys`) 0700 again; they came
+  back 0755 from `create_dir_all`. Tests:
+  `sudo_backup_and_restore_use_the_system_services_files`, and the round
+  trip in `tests/it/backup.rs` now asserts `private/` is 0700. The chown
+  itself needs root and a service user, so no test runs it.
+- **`supervised()`** counts only this instance's own job: launchd's
+  `XPC_SERVICE_NAME` equal to its label, or (with `INVOCATION_ID`) a
+  systemd unit, user or system, whose `MainPID` is this process. VS
+  Code's inherited `XPC_SERVICE_NAME` made `/restart` exit a hand-run
+  gateway for good. Test: `only_the_instances_own_job_or_unit_counts_as_supervised`
+  (pure `supervised_by`).
+- **A restart command that fails** (a booted-out launchd job:
+  `kickstart -k` can't find it) rolls back with a `Failed` event and no
+  pin, and `run` returns the error; before, it pinned a good release.
+  `Svc::restart` on macOS bootstraps the plist when `launchctl print`
+  finds no job (`launchd_restart`, unit-tested). Test:
+  `a_restart_that_cant_run_rolls_back_without_pinning`.
+- **A rollback that fails** records a `Failed` event saying so and where
+  `ferrule.previous` is (or that it's gone), restarts the service anyway,
+  then returns the error; before, it returned early with no event, no
+  pin and no restart. Test:
+  `a_rollback_that_fails_is_recorded_and_the_service_restarted`.
+- **A chat's update that installs nothing is answered.** The requested
+  half of `apply_unit` is `requested()`: when its run recorded no ending
+  event (up to date, busy, a failed check, a held lock, a sibling with
+  `auto = false` and nothing newer), it pushes a `Failed` event with an
+  empty `to` and the reason. `promise::claim_for` accepts `Failed`
+  (`EventKind::ends_update`); the watch claims before its once-per-version
+  dedupe; the line is "Ferrule wasn't updated: …"; `report()` skips
+  these answers (no standing warning in /status). Test:
+  `an_update_asked_for_that_installs_nothing_still_answers_the_chat`.
+
+**Decision.** No new `EventKind::NotInstalled`: serde refuses an unknown
+variant, so an older binary (after a downgrade) would read the whole
+state as fresh and lose its pins. A `Failed` event with no `to` reads
+fine in every version.
+
+**Checks.** `make check` exit 0 on the final tree (cli: 432 unit and 168
+integration tests, 2 + 2 ignored). Each earlier commit of the series:
+`cargo fmt --check`, clippy on ferrule-cli and the cli suite, all clean.
+Docs: `docs/updates.md` (restart/rollback failures, the chat's answer),
+`docs/backup.md` (system service, 0700), the supervision wording in
+`docs/m36-self-update.md` and `docs/m37-control-room.md`.
+
+**Not done.** `restart_hint()` on macOS still names `kickstart -k`, which
+fails for a booted-out job; a `ferrule backup` run as root leaves a
+root-owned `backup.json` in the system data dir (readable, harmless).
+
+### 2026-10-19 — four host-side sandbox escapes closed (Claude, Opus 5.5)
+
+**Scope.** The three gaps the 2026-10-19 whole-repo review left under
+"Open" (each needed a design call): ferrule's own git honouring a
+sandbox-written `.git/config`, workspace hooks running model-editable
+scripts as the owner, and the proxy forwarding a compressed body from a
+secret-bound host unscrubbed. Worked from `main` in a worktree; one commit
+per hole, each with a test that failed before the fix.
+
+**Git (`874a57f`).** New `ferrule_sandbox::host_git::git(dir, args)`, now
+the only way `ferrule-agents/src/worktree.rs` and
+`ferrule-eval/src/fixture.rs` run git. It lists the config with
+`--show-scope` and empties `clean`/`smudge`/`process` of every filter
+driver defined outside system/global/command config (git-lfs from `git
+lfs install` keeps working; a repo-level LFS install is off for these
+calls); pins `core.hooksPath=/dev/null` (the old
+`$TMPDIR/ferrule-no-git-hooks` was writable by sandboxed commands — found
+while fixing, covered by the same test), fsmonitor and signing off; kills
+a call after 300 s (a FIFO as `.git/HEAD`). The snapshot diff adds
+`--no-textconv` (an empty textconv override makes git fail, so diff
+drivers are handled by flags, not config). Needs git ≥ 2.26. Tests:
+`worktree::drivers_and_hooks_planted_in_the_repo_never_run_outside_the_sandbox`
+(before: smudge, clean, textconv and the hook all ran),
+`fixture::tests::a_filter_planted_before_git_init_never_runs`, two unit
+tests in `host_git`. Docs: `docs/sandbox.md` "Ferrule's own git".
+
+**Hooks (`eb15f40`).** Chose sandboxing over fingerprinting the named
+scripts: a fingerprint can't follow what a hook loads (`make guard`,
+`npm run lint`, imports, a sourced `lib.sh`). `CommandHook` has an
+optional sandbox; `ferrule_hooks::build` takes one and gives it to
+workspace hooks only; the CLI passes the shared sandbox. Trust prompts
+(CLI, dashboard, self-service card) say they run in the sandbox. Test:
+`tests::workspace_hooks_run_in_the_sandbox_and_user_hooks_as_the_owner`
+(a refusing sandbox: the user hook runs, the workspace hook gets the
+refusal; fails with the routing line reverted). Docs: `docs/m18-hooks.md`
+§3 "The fingerprint pins the commands, not the scripts", roadmap line.
+
+**Proxy (`5fd2a05`).** Fail closed, no decoding: any content or transfer
+coding other than identity/chunked, in any header of either name, gets
+502 with the reason, unless the body is empty (HEAD, 304). Also fixes
+`identity` + `gzip` headers slipping through (only the first was read).
+Tests: `proxy::an_encoded_body_from_a_bound_host_is_withheld` (before:
+200 with the real token), `any_coding_but_identity_or_chunked_is_found`.
+Docs: `docs/research-credential-gateway.md` §2, §3, §5, §6.
+
+**core.worktree (`7a1f431`), found while fixing the above.** A worker
+may write its repo's git dir (so it can commit); with
+`extensions.worktreeConfig` it could set `core.worktree` for its own
+worktree to any directory, and close's host-side `add -A` + commit then
+put that directory's files, read as the owner, on the kept branch. (For
+the main worktree the redirected top usually isn't a repo, so the
+snapshot's `-C top` calls failed rather than leaked; the linked-worktree
+path did leak.) `host_git` now pins `--work-tree` to the directory
+holding the `.git` git found whenever repo-scope config sets
+`core.worktree`; `-c core.worktree` can't override it. Refusing was
+rejected: submodules set `core.worktree = ../../../sub` in their own
+config. Test: `worktree::a_work_tree_moved_by_the_repos_config_doesnt_move_what_close_commits`
+(before: the branch held the outside `creds`, not `lib.rs`/`new.rs`).
+
+**Checks.** `make check` exits 0 on macOS, last run with `7a1f431` in.
+Two earlier runs (before the core.worktree fix) failed only on `ferrule-cli` `managed::sigterm_drains_and_exits_zero`
+(`assert!(marker.exists())`), with load average 10–14 from other
+sessions' builds; the test passes alone, in its full binary, and with
+`--workspace` features, on this branch and on `dc837a7` alike. Linux and
+Windows are left to CI: on Windows the worktree test's filters run
+through Git Bash with forward-slash paths.
+
+**Open (found, not fixed).**
+- `managed::sigterm_drains_and_exits_zero` races under load: the
+  gateway serves `/healthz` once `dash.bind()` returns and writes
+  `dashboard.json` after (`main.rs`, `write_marker`), but the test asserts
+  the marker right after the first healthy answer. Wait for the marker
+  in the test, or write it before serving.
+- This entry's PLAN.md neighbour on `main` (the review entry) is
+  uncommitted there; merging this branch may need the two tails joined.
+
+### 2026-10-19 — managed SIGTERM test no longer races the dashboard marker (Claude, Opus 5.5)
+
+**Scope.** `managed::sigterm_drains_and_exits_zero` failed about 3 runs
+in 11 when the whole cli test binary ran (it failed on `dc837a7` as well,
+so `make check` sometimes failed). Cause: `Dashboard::bind` starts its
+accept loop before it returns the port, and `run_gateway` writes
+`data/gateway/dashboard.json` only after that. The test asserted the
+marker as soon as `/healthz` answered. The marker can't be written
+earlier without moving it into `bind`: the port isn't known before the
+listener is bound, and other callers use `bind` too. So the test
+now waits for the marker, up to 10 s. Product code is unchanged.
+
+**Checks.** `cargo test -p ferrule-cli --test it --locked` ran 10 times
+in a row with 0 failures. `make check` exit 0: 1841 passed, 0 failed,
+28 ignored. That's macOS only; Linux and Windows weren't run locally (CI
+covers them).
+
+### 2026-10-19 — agent-loop defects from the review pass (Claude, Opus 5.5)
+
+**Scope.** The six core/provider defects the 2026-10-19 review pass
+confirmed (its "Open" list, Core line, plus two more). One commit each,
+a test each. Branch `claude/eager-aryabhata-08a80f`.
+
+**Fixed.**
+- **Streams** (`common::client`): the client-wide 600 s `timeout` (which
+  covered the body and cut long healthy streams) is a 600 s
+  `read_timeout`; streams keep their 300 s stall limit. The retry budget
+  (`RetryPolicy::budget`, 120 s) now counts only the waits between tries,
+  so a stall found after 300 s is retried.
+- **Stop reasons**: `CompletionResponse.stop_reason` keeps the API's word
+  (Anthropic, Chat Completions and Responses fill it; every other
+  constructor says `None`); `cut_off()` reads it. An empty final answer
+  or one cut off by the output cap ends the run incomplete
+  (`RunIncomplete`, `Agent::incomplete`); the text so far still goes out.
+- **Anthropic thinking mid-loop**: text pushed after tool results (inbox,
+  stuck nudge, wrap-up, PostCompact) rides in the tool_result wire
+  message, so to the API the tool-use turn goes on and its thinking must
+  come back (platform.claude.com/docs/en/build-with-claude/thinking,
+  "Thinking with tool use", read this session). The driver had taken that
+  text for a new turn and sent the turn neutral; `loop_start` now skips a
+  user message that follows results.
+- **`[agent] compaction_model`**: no longer a `TemplateCompactor`; the CLI
+  sets `Agent::with_compaction_provider`, and the summary goes through
+  `call_provider` (retries, ledger row, budget, fallback). Every
+  compaction, and the wrap-up's status call, now race the kill switch.
+- **"Context too long"**: the estimate adds tool schemas; on
+  `FailureClass::ContextTooLong` the turn (or status) call compacts once
+  regardless of the estimate and tries once more (`call_turn`).
+- **Re-summarizing**: a head that is mostly an earlier summary (the kept
+  tail alone over the trigger) isn't folded again until there's as much
+  new to fold; the comment at the old spot claimed this, no code did it.
+
+**Checks.** Per commit: the touched crates' tests, clippy, rustfmt; then
+`make check` on the result. Its one failure is `ferrule-cli`'s
+`managed::sigterm_drains_and_exits_zero` (managed.rs:485), now and then:
+the gateway serves `/healthz` from `dash.bind()` before `write_marker()`,
+and the test asserts the marker as soon as `/healthz` answers. It fails
+the same way on the base `dc837a7` (3 of 11 runs of the cli test binary
+there, 1 of 5 on this branch in the same alternating loop). The `routing_off` golden was rewritten (its "too long" turn
+now recovers; estimates +27 for its two tool schemas). M24's
+`typical.json` was re-measured (the mock through the real binary, base
+`dc837a7` vs this branch, same paths): three starter tasks moved, all 20
+still pass. release-notes 10 -> 9 calls and incident-report 12 -> 11 (one
+repeat summary fewer each); config-migration 8 -> 11, since with the tool
+schemas counted it now compacts three times — the base never reached
+the trigger on it, though the suite's context tasks are built to
+overflow the 32k window.
+
+**Merging with main's uncommitted review-pass changes.** `compactor.rs`'s
+doc comment conflicts with main's hunk there: keep main's code
+(`temperature: None`, `max_output_tokens: None`) and this doc. This entry
+and main's 2026-10-19 entry both append to PLAN.md: keep both.
+
+**Open.**
+- The Responses driver still uses `common::last_user` for its replay
+  boundary; whether OpenAI wants reasoning items back after text added
+  mid-loop wasn't checked.
+- Replayed native blocks (signed thinking, encrypted reasoning) still
+  aren't in the estimate; the "too long" retry covers a miss.
+- The managed test's startup race (above): wait for the marker, or
+  write it before the page serves.
+
+### 2026-10-19 — Responses: does text pushed mid-loop drop reasoning? (Claude, Opus 5.5)
+
+**Scope.** The previous entry's first Open item. The Responses driver
+replays native items only after `common::last_user`, so text the loop
+pushes after tool results (inbox, stuck nudge, wrap-up, PostCompact)
+makes the loop's assistant turns go out neutral, without their reasoning
+items. Anthropic's fix (`loop_start`, 6fe75de) rests on that API taking
+the text as part of the tool-use turn. Checked whether OpenAI's docs say
+the same; they don't, so no code changed. Branch
+`claude/responses-reasoning-boundary`, on `claude/eager-aryabhata-08a80f`.
+
+**Sources** (all read 2026-10-19):
+- R: developers.openai.com/api/docs/guides/reasoning, "How reasoning
+  works" and "Preserve reasoning across calls" › "Keeping reasoning
+  items in context".
+- C: developers.openai.com/cookbook/examples/responses_api/reasoning_items,
+  "Caching" (marked archived).
+- S: developers.openai.com/api/docs/guides/steering.
+
+**Answer: no error, and nothing lost on models before GPT-5.6.**
+- *Error:* none documented. Neither R nor C says the API rejects input
+  missing a reasoning item, and the driver's neutral `function_call`
+  items carry only `call_id`, no item `id`, so nothing in the input
+  points at a reasoning item that isn't there. The reasoning-400 retry
+  (`plain`) stays as the net.
+- *OpenAI's boundary is the last user message.* R asks for every
+  reasoning, function call and output item "since the last `user`
+  message", the same line `last_user` draws. Anthropic is different
+  because the pushed text rides inside the tool_result wire message;
+  this driver sends it as its own `{"role":"user"}` input item after the
+  `function_call_output`s, so a new turn starts there.
+- *Models before GPT-5.6* default to `reasoning.context = "current_turn"`
+  (R's table): earlier turns' reasoning can stay in the payload but isn't
+  rendered into the next sample. C says the same of the previous turn's
+  reasoning items (ignored and removed; sending them is harmless).
+  Replaying the loop's items in front of the pushed text would change
+  nothing the model sees, so dropping them loses nothing.
+- *Steering* (S), OpenAI's own way to add user input mid-turn, is GPT-6
+  over a WebSocket with `previous_response_id`. It doesn't apply to this
+  stateless HTTP path and says nothing about reasoning.
+
+**A wider gap found on the way (not fixed).** R: the GPT-5.6 family
+defaults to `all_turns`, which renders available, compatible reasoning
+from earlier turns (GPT-6.1 Sol supports it too, default not stated; R
+shows it working with `store: false` when every output item is replayed).
+The driver sends only `reasoning.effort`, never `reasoning.context`, and
+`replayable(…, in_loop)` sends every assistant turn before the last user
+message neutral (M23 design §2). So on GPT-5.6 the model loses its
+earlier reasoning at every user message, not just at mid-loop text;
+`loop_start` would only cover that slice.
+
+**Checks.** No code changed. `make check` on this branch: the first run
+failed only `managed::sigterm_drains_and_exits_zero` (managed.rs:485, the
+startup race in the previous entry); the second exited 0 with 1850
+passed, 0 failed, 28 ignored.
+
+**Open.**
+- GPT-5.6+ under `all_turns`: either replay same-model reasoning across
+  turns (weigh the cached prefix, the estimate, and the size of encrypted
+  items), or send `reasoning.context = "current_turn"` to keep today's
+  design explicit. A design call for the owner.
+
+### 2026-10-20 — Responses replays reasoning across turns (Claude, Opus 5.5)
+
+**Scope.** The previous entry's Open item: GPT-5.6 defaults to
+`reasoning.context = "all_turns"`, but the driver sent every turn before
+the last user message neutral. Max picked option (a): replay the same
+driver's, same model's reasoning on every turn. Branch
+`claude/vigorous-bardeen-9619b8`, on `claude/responses-reasoning-boundary`.
+
+**Sources** (read 2026-10-20): R and C as in the previous entry, and the
+API reference, developers.openai.com/api/reference/resources/responses/methods/create,
+`reasoning.context`: `auto | current_turn | all_turns`, omitted = the
+model's own mode, GPT-5.6 `all_turns`, earlier models `current_turn`.
+Neither page says what an earlier model or another host does when the
+field is sent.
+
+**Why (a), not (b).** (b), sending `current_turn`, changed nothing the
+model saw: no earlier reasoning went out, and R says the setting "does
+not create reasoning items that are not already available". It would only
+add a field that OpenRouter, the ChatGPT-plan backend or an earlier model
+might reject. (a) gives GPT-5.6 its earlier reasoning; earlier models
+drop it unread (C: "including them is harmless"). The previous loop also
+no longer flips from native to neutral at the next user message, so the
+cached prefix stays byte-stable through it.
+
+**Changed.**
+- `responses.rs`: `replayable(m, API, &self.model, true)` for every
+  assistant turn; `reasoning.context` stays unsent (the model's default).
+  The reasoning 400/404 retry without items (`plain`) is unchanged.
+- `common::last_user` is gone (Anthropic uses its own `loop_start`).
+- Test `earlier_turns_reasoning_goes_back_to_the_same_model_only`: after a
+  new user message the turn's output items go back verbatim; another
+  model gets neutral items. The old test's tail, which asserted the
+  opposite, moved into it.
+- `docs/m23-drivers.md` §2 and the risk table say Responses replays every
+  turn, with the sources and the cost.
+
+**Checks.** `cargo test -p ferrule-providers --lib responses` (12
+passed; the new test fails on the base, where the turn went out
+neutral). `make check` exited 0: 1851 passed, 0 failed, 28 ignored. Not
+checked against the live API: no call to GPT-5.6 was made.
+
+**Open.**
+- On GPT-5.6, rendered earlier reasoning takes up context that
+  `est_context_tokens` doesn't count, so compaction fires late and leans
+  on the "too long" compact-and-retry (one failed call each time). Counting
+  it needs a token measure for encrypted items, or the last call's
+  `usage.input_tokens`.
+- Whether OpenAI rejects encrypted reasoning replayed after the prefix
+  changed (recall appended, MCP tools hot-added) is undocumented; the
+  retry without items covers it at one extra call.
+
+### 2026-10-20 — The estimate counts replayed reasoning (Claude, Opus 5.5)
+
+**Scope.** The previous entry's first Open item: on GPT-5.6, rendered
+earlier reasoning wasn't in `est_context_tokens`, so compaction fired
+late and each miss cost a failed call. Branch
+`claude/estimate-native-reasoning`, on `claude/vigorous-bardeen-9619b8`.
+
+**Measure.** The last turn's call count, not a per-item guess. An
+encrypted item's size has no published mapping to tokens, and whether a
+model renders earlier reasoning at all depends on its `reasoning.context`
+(GPT-5.6 `all_turns`, earlier models `current_turn`), which core can't
+see. The provider's count already reflects what the model rendered.
+After a turn's answer is pushed, `Agent::measure` keeps
+`input_tokens + output_tokens` (the prompt, plus the answer the next
+prompt carries back: output tokens include reasoning tokens, OpenAI's
+`output_tokens_details.reasoning_tokens`) less the guess for that
+history. `est_context_tokens` adds that excess while the history it
+counted still stands, checked as the same length and the same guess for
+every message but tool results. A fold or a truncation ends it.
+Shortening and deduping tool results don't, since they leave the
+reasoning in place. The guess is never lowered.
+
+**Only `anthropic` and `responses` answers.** Both drivers report one
+call's usage (`anthropic.rs` sums fresh, cache-read and cache-write
+input; `responses.rs` reads `/input_tokens`). The Claude Code engine's
+usage is the `result` event of a whole `claude -p` run
+(`ferrule-plans/src/claude/engine.rs`), which can take several calls,
+so its answers record nothing. Chat-completions answers carry no native
+blocks and record nothing either. ponytail: picked by api name in core,
+so a new native driver gets added to `measure`.
+
+**Known overcount, bounded.** The count includes the latest answer's
+reasoning. Anthropic, outside the tool loop, and earlier Responses models,
+after a user message, don't render it, so the first check of a new turn
+can run up to one answer's reasoning high. The next call's count
+replaces it.
+
+**Changed.**
+- `agent.rs`: `Measured`, `conversation_est`, `Agent::measure` (called
+  after each turn's answer is pushed), and `est_context_tokens` adds the
+  excess. The ponytail comment saying native blocks aren't counted is gone.
+- Test `a_native_drivers_count_of_replayed_reasoning_moves_compaction_up`:
+  a Responses answer counted at 6,000 against a trigger of 5,000 makes
+  the next turn compact before its call, and the fold's own after-estimate
+  drops back under the trigger. A `claude-code` answer with the same count
+  doesn't compact. With the `measure` call disabled, the test fails at
+  "compacted".
+- `docs/m23-drivers.md` §2: the Responses paragraph says what the
+  estimate counts now.
+
+**Checks.** `make check` exited 0: 1852 passed, 0 failed, 28 ignored
+(one more than the previous entry's 1851: the new test).
+`managed::sigterm_drains_and_exits_zero` passed this run.
+
+**Open.**
+- `Message::native`'s doc in `message.rs` still says blocks go back
+  "inside the tool loop in progress", but Responses has replayed them on
+  every turn since 815cf3d.
+- Not checked against the live API. Whether GPT-5.6's `input_tokens`
+  counts rendered earlier reasoning is assumed from what usage means, not
+  observed.
+
 ### 2026-10-20 — M50 connect everything from the dashboard (Claude, Opus 5.5)
 
 **Scope.** Max: "check the agent dashboard, suggest improvements, maybe
@@ -6240,6 +5905,1160 @@ approval card are the named follow-ups.
 4e60ea3; CI green on ubuntu-24.04, macos-14 and windows-latest. (The one
 CI failure along the way was mine: a test asserted a Unix path
 separator.)
+
+### 2026-10-21 — M55.2: stranded branch stacks landed (Claude, Opus 5.5)
+
+**Scope.** Four local branch stacks held finished fixes that never
+reached main. Their commits were cherry-picked with `-x` (oldest first,
+stack by stack) onto `autopilot`, from `origin/main` `dadf357`. Nothing
+was pushed. Each landed commit names its original SHA, so the SHAs the
+stacks' own entries cite (`874a57f`, `815cf3d`, …) still resolve.
+
+**Landed (original SHAs).**
+1. Core loop. `claude/eager-aryabhata-08a80f` → `claude/responses-reasoning-boundary`
+   → `claude/vigorous-bardeen-9619b8` → `claude/estimate-native-reasoning`:
+   `git merge-base --is-ancestor` confirmed each is an ancestor of the
+   next, so the whole stack is `origin/main..claude/estimate-native-reasoning`:
+   d6afcd7, e8b9fc3, 6fe75de, d542468, e2d3072, 805f9f5, 9beaa9c,
+   c906d53, 815cf3d, e57fce7, 9e794bf, 115295d.
+2. Sandbox escapes, `claude/optimistic-gagarin-4ad269`: 874a57f, eb15f40,
+   5fd2a05, 3b6f9d8, 7a1f431, 8744f75.
+3. Update/restore, `claude/dreamy-sutherland-7fca0d`: 11aa0c8, b38f16f,
+   7dacddb, 43c639f, 92f7908, 8c218b3.
+4. Test race, `claude/musing-merkle-c282d5`: 68d00a0. Only its PLAN.md
+   entry lands (see Conflicts).
+
+**Skipped.** 6b1649f, which merged `origin/main` (dbfbc40) into the
+sandbox branch. Main is already here, and that merge's only conflict was
+PLAN.md order. `git cherry` found no stack commit already on main as a
+patch.
+
+**Conflicts and how they were resolved.**
+- `crates/ferrule-core/src/compactor.rs` (d542468): only
+  `TemplateCompactor`'s doc comment conflicted. Kept the stack's doc,
+  because `compaction_model` now goes through
+  `Agent::with_compaction_provider`, so main's "a cheaper one when
+  compaction_model names it" no longer holds. Kept main's code (84b5f39:
+  `temperature` and `max_output_tokens` unset). `agent.rs` merged without
+  a conflict. Its summary request keeps 84b5f39's
+  `self.config.max_output_tokens`/`temperature`, so `compaction_model`
+  calls now send the main calls' settings too.
+- `crates/ferrule-cli/tests/it/managed.rs` (68d00a0): main's 58272da
+  (M50 part 1) already waits up to 10 s for the dashboard marker. Kept
+  main's loop, so this commit lands only its PLAN.md entry.
+- PLAN.md: every stack entry conflicted with main's tail only because
+  both sides appended. All entries are kept whole, in date order, between
+  main's 2026-10-19 review entry and its 2026-10-20 M50 entry:
+  update/restore, then the four sandbox escapes (with the title as
+  8744f75 left it), then the managed SIGTERM entry, then the core stack's
+  four entries (two dated 10-19, two dated 10-20). The core entries stay
+  together because each one opens with "the previous entry's Open item".
+  The Current State hunks from 3b6f9d8 and e57fce7 applied cleanly.
+
+**A fix the check needed (9bd5ffb, its own commit).** The first
+`make check` stopped at clippy. `router.rs`'s `while person && merges`
+trips `clippy::while_immutable_condition`, which is deny-by-default. The
+loop came from main's 0b4e77d, so `origin/main` fails the same way; the
+stacks didn't cause it (0b4e77d's entry says `make check` wasn't run).
+It is now `if person && merges { loop { … } }`, with the same behaviour.
+
+**Checks.** `make check` on 9bd5ffb exited 0: fmt clean, clippy clean with
+no warnings, and 1869 passed, 0 failed, 28 ignored across 71 test
+binaries. `managed::sigterm_drains_and_exits_zero` passed. This ran on
+macOS only. No tests were added.
+
+**Open.** The stacks' own Open items still stand (see their entries).
+`Message::native`'s doc still says blocks are replayed only inside the
+loop. Nothing was checked against the live GPT-5.6 API. `restart_hint()`
+on macOS still names `kickstart -k`. Two items listed as Open above are
+now closed here: the managed test race (main's 58272da) and the "uncommitted
+neighbour" note in the sandbox entry.
+
+### 2026-10-21 — M55.3: long shell output keeps its tail and exit code (Claude, Opus 5.5)
+
+**Why.** The shell appended `[exit code: N]` and then `ToolOutput::capped`
+kept the *first* 30,000 characters, so a failing `cargo test` with long
+output showed the passing head and hid the failures and the exit code.
+
+**What changed.**
+- `ferrule-core/src/tool.rs`: `ToolOutput::spilled(text, lead, cap,
+  workspace)`. Output that fits comes back whole, exactly as before. Over
+  the cap, the whole text is written to a new
+  `<workspace>/.ferrule/spill/<UTC time>-<8 hex>.log`, and the result is
+  `lead` (the exit-code line), the first ~2k and last ~8k characters (a
+  fifth and four fifths of a smaller cap), a "N characters cut here"
+  marker between them, and a last line naming the file. The write follows
+  the MCP media rules: the dir must resolve inside the workspace (a
+  sandboxed command can plant links there) and the file is
+  `create_new`. A failed write still returns the head and tail, with the
+  reason. The dir gets a `.gitignore` of `*`, so `auto_commit` never
+  commits logs. `ToolOutput::spill_preview` builds the same result for a
+  caller that saves elsewhere.
+- `capped` compared `len()` (bytes) to a character cap, and reported
+  bytes as "chars total"; both are characters now.
+- Local `shell`: uses `spilled`, so the exit code comes first and last.
+- SSH `shell`: the spill goes to `.ferrule/spill/` in the *remote*
+  workspace through the guarded remote write (`missing` guard, so it
+  never overwrites), where the remote file tools can open it.
+- MCP text results: `spilled` with no lead, at the same per-server and
+  per-tool caps.
+- Tests changed because the shape changed: `mcp_client::enabled_tools_…`
+  (now in a temp workspace, so the spill doesn't land in the crate dir)
+  and `sshd::timeouts_and_output_caps_…` (exit code first, the remote
+  spill file holds all 200,015 characters). No new tests.
+- Docs: `m34-ssh-local.md` (the shell's limits), `m17-mcp-add.md` (caps),
+  README's Tools row.
+
+**Secrets.** No known-values scrubber is reachable from `ferrule-core`,
+`ferrule-tools`, `ferrule-ssh` or `ferrule-mcp` (`Proxy::scrub_text` and
+the gateway's `Redactor` live in `ferrule-proxy`/`ferrule-cli`, and
+`ToolContext` carries neither). The spill holds exactly what the command
+printed, which the model would have seen anyway had it fit; commands see
+placeholders, not real keys. Scrubbing spill files with the live value set
+is left to **M54.3**, which plans one scrub call in the tool phase and the
+same call for spill files.
+
+**Checks.** `make check` exited 0: fmt clean, clippy clean, 1869 passed,
+0 failed, 28 ignored across 71 test binaries (macOS; the `sshd::` tests
+ran against the system sshd).
+
+**Open.** Nothing prunes `.ferrule/spill/` (deleting in a dir a sandboxed
+command can relink is a race, so it's the owner's to clean, like
+`.ferrule/mcp-content/`). An MCP result spilled while the workspace is
+remote (SSH) lands in the *local* workspace, out of the remote tools'
+reach, as MCP media already does. The `shell` tool's description still
+says "Output is truncated if very long" (left as is: it's in the prompt
+prefix, and still true).
+
+### 2026-10-21 — M55.4: the Claude engine bridges by registry, not a hand list (Claude, Opus 5.5)
+
+**Why.** `BRIDGED_TOOLS` in `ferrule-plans/src/claude/engine.rs` named
+seven tools that don't exist (`schedule_task`, `list_tasks`,
+`cancel_task`, `send_message`, `board`, `post_to_board`, `read_board`),
+and every tool it didn't name never reached a Claude-plan bot:
+`update_memory`, `activate_skill`/`read_skill_file`, the M12 sub-agent
+tools other than `spawn_agent` (`wait_agent`, `board_post`, `task_add`,
+…), the M13 extension tools, WASM `plugin__*` tools and `log_diary`.
+
+**What changed.**
+- `bridged(req.tools)` now offers every tool the agent has, less
+  `CLAUDE_NATIVE` and `NOT_BRIDGED`; `mcp__*` stays bridged.
+  `CLAUDE_NATIVE` is what claude has its own of: `read_file`,
+  `write_file`, `edit_file`, `list_dir`, `shell`, `web_fetch`, and two
+  the old list also left out, `write_todos` (`TodoWrite`) and
+  `code_search` (`Grep`/`Glob`). `NOT_BRIDGED` is `approve`, the
+  bridge's own permission tool, so no ferrule tool can shadow it now that
+  any registered name can reach the bridge (plugin tools are
+  `plugin__…` and MCP ones `mcp__…`, so none does today).
+- Kept: `send_file`, `connection_request`, `connection_list`,
+  `ferrule_admin`, `web_search`, `spawn_agent` and the memory tools are
+  still bridged (none is native or denied).
+- `disallowed()` is untouched and still reads `req.tools`, so claude
+  still loses `WebSearch`/`Task`/`WebFetch`/`Bash`/the edit tools when
+  the agent lacks the matching ferrule tool; its test passes unchanged.
+- Docs: m35 §7.4's bridge table (real names, the rule, what's left out
+  and why), the guide's "What works" row, and two m48 notes that called
+  the dead names a follow-up.
+
+**Checks.** `make check` exited 0 (1869 passed, 0 failed, 28 ignored,
+71 binaries; macOS) with `GIT_CONFIG_GLOBAL` pointed at an empty file.
+With this machine's global git config, `ferrule-eval`'s
+`starter_suite::every_reference_solution_passes_…` failed: its fixture's
+`git commit` inherits `commit.gpgsign = true` with 1Password SSH
+signing, and the 1Password agent returned an error. That test doesn't
+touch this change and passed in the M55.3 run an hour earlier; it is
+the fixture leaking the owner's git config, not a code failure. No tests
+were added.
+
+**Open.** Not run against a live `claude` turn. The unit test the gap
+analysis suggests (every bridged name resolves in the registry) wasn't
+written, per the no-new-tests rule.
+
+### 2026-10-21 — M55.5: two dashboard login fixes (Claude, Opus 5.5)
+
+**Why.** (a) `tunnel::open` returns as soon as cloudflared prints the
+`trycloudflare.com` address, and `/dashboard` minted and sent the link
+right then, before Cloudflare routed the tunnel, so the first tap often
+failed. (b) `login()` called `Links::consume(token)`, which deleted the
+link, and only then compared its host: a link opened on the wrong address
+(loopback, an older tunnel) was burnt and the right tap then said "used".
+
+**What changed.**
+- (a) `Dashboard::remote_link` returns a `RemoteLink { url, ready }`.
+  `open_tunnel` now also says whether it opened the tunnel; a newly
+  opened one is probed with `tunnel_answers(host, TUNNEL_READY = 20 s)`:
+  `GET https://<host>/healthz`, 5 s per try, backoff 0.25 s doubling to
+  2 s, until the answer is the dashboard's own JSON (`status` and
+  `version` strings; Cloudflare's error pages aren't JSON). Only then is
+  the token minted. If it never answers, the link is still sent, with a
+  line saying the tunnel is still coming up (`door::remote_text`, used by
+  both `/dashboard` paths and the after-restart relink). A tunnel that
+  was already open isn't probed, so the in-chat answer for it stays
+  immediate. `ferrule dashboard link --remote` waits the same way.
+- (b) `Links::consume(token, host)` checks the host under the link
+  file's lock and returns `Consumed::{Used, WrongHost, Invalid}`; a live
+  link made for another host is refused and kept. `login()` answers a
+  wrong host with its own 401 ("made for another address") and logs the
+  host it came in on (Debug-quoted) and the host the link was made for,
+  never the token.
+- Tests changed for the new signature: `auth::tests::a_link_works_once`,
+  `tampered_expired_and_cleared_links_fail`,
+  `sessions_survive_a_restart_…`; and
+  `dashboard::tests::a_link_made_for_the_tunnel_works_only_there`, whose
+  message said the wrong-host try "spent" the link: it now reuses the
+  same token on the right host instead of minting a second one. No new
+  tests.
+- Docs: `m22-dashboard.md` (§1: the wait, and "a link is for its host"),
+  `dashboard.md` (Opening it).
+
+**Checks.** `make check` exited 0 (1869 passed, 0 failed, 28 ignored,
+71 binaries; macOS), with `GIT_CONFIG_GLOBAL` pointed at an empty file
+for the reason in the M55.4 entry.
+
+**Open.** Not tried against a real quick tunnel. The probe goes out from
+the gateway to Cloudflare and back, so a machine that can't reach its own
+tunnel's address (no outbound HTTPS beyond cloudflared's) waits the full
+20 s and then sends the link with the "still coming up" line. A second
+`/dashboard` while the first one's probe runs finds the tunnel open and
+answers without waiting.
+
+### 2026-10-21 — M55.1: the two flaky CI tests, made deterministic (Claude, Opus 5.5)
+
+Both fixes are in the product code, not the tests: each test was
+catching a real race, and the asserted behaviour is unchanged.
+
+**`sshd::the_credential_proxy_reaches_remote_commands` (ubuntu, run
+39489322936 attempt 1).** The failure was curl's exit 7 ("couldn't
+connect") through the proxy forward, with
+`mux_client_request_session: read from master failed: Broken pipe` on
+stderr. Cause: `start_master` put the proxy's `-R` on the master's own
+command line (with `ExitOnForwardFailure=yes`) and called the master
+ready as soon as its control socket existed. ssh opens the control socket
+*before* the server answers that `-R`. Measured here with the system
+ssh/sshd and a port already listening: the socket appeared at 113 ms and
+the master exited at 117 ms with "remote port forwarding failed". So a
+random `rport` that was already taken on the remote (on CI the remote is
+the same busy runner, and `pick_port`'s 20000–59999 overlaps Linux's
+ephemeral range) was never seen as `Failure::Forward`: the "another
+port, up to 3 tries" path never ran, the restarted master kept the same
+port and died again, commands fell back to plain connections without the
+forward, and the first thing that really used it, the test's `curl`,
+couldn't connect.
+- Fix (`ferrule-ssh/src/link.rs`): the master starts without `-R`, and
+  `request_forward` asks for it through the master with `ssh -O forward
+  -R …`, which waits for the server's answer (40 s cap). Measured: a taken
+  port exits 255 with "forwarding request failed: remote port forwarding
+  failed …" (`classify` already maps that to `Failure::Forward`, so
+  `ensure_master` drops that master and tries a fresh port) and the
+  master stays up; a free port exits 0 and is listening on return.
+- All eight `sshd::` tests pass against macOS's sshd with
+  `FERRULE_REQUIRE_SSHD=1`. Not run on Linux.
+
+**`update::tests::a_running_exe_steps_aside_on_windows` (windows, run
+39488885531).** It failed at "moving …\\ferrule.exe aside: The process
+cannot access the file because it is being used by another process (os
+error 32)". Renaming a running exe is allowed on Windows; a sharing
+violation means some other handle held the file without delete sharing
+for a moment (typically an antivirus scanning an exe that was just
+copied and started, as the test does). The real updater can hit the same
+window when it renames the freshly staged copy.
+- Fix (`ferrule-cli/src/update/swap.rs`): Windows' `rename_over` renames
+  through `rename_retrying`, which retries only on
+  `ERROR_SHARING_VIOLATION` (32), backing off 50 ms doubling to 500 ms,
+  for up to 5 s; any other error returns at once.
+- **Not compiled here**: it is `#[cfg(windows)]` and this Mac has no
+  Windows target, so only rustfmt has seen it. Windows CI is its first
+  build.
+
+**Docs.** `m34-ssh-local.md` ("As built": the forward is asked for
+through the master, and why), `m36-self-update.md` §3.3 (the retry).
+
+**Checks.** `make check` exited 0 (1869 passed, 0 failed, 28 ignored, 71
+binaries; macOS), with `GIT_CONFIG_GLOBAL` pointed at an empty file for
+the reason in the M55.4 entry. No tests were added.
+
+**Open.** The Linux and Windows runs are the real proof: push and watch
+both jobs. A master that dies later for any other reason still lets
+commands fall back silently to plain connections without the forward
+(the mux client's own fallback); `/status` would still say "credential
+proxy forwarded" then. M55.7 (require green CI) can follow once both
+jobs pass.
+
+### 2026-10-21 — M55.6: Current State rewritten, stale docs fixed (Claude, Opus 5.5)
+
+**Why.** "Current State" listed 10 crates (there are 24), called about
+25 merged milestones "PR open, not merged", stopped at M49, said
+WhatsApp was unbuilt (it shipped in M39) and quoted test counts from
+M8–M10. Every new session started from that. This is the one dedicated
+in-place rewrite the gap analysis's sync protocol allows; no Session
+Log entry was touched.
+
+**What changed.**
+- `PLAN.md` Current State, rewritten in place and checked against
+  `git log` (PR merges #1–#46, tags v0.1.0–v0.13.1, `git merge-base`
+  for what v0.13.1 contains), the crates' `Cargo.toml` descriptions and
+  `docs/roadmap.md`: what Ferrule is; releases and branches (v0.13.1 has
+  everything through M49 plus the 2026-10-19 review fixes; `main` at
+  `dadf357` adds M50 and PRs #44–#46, unreleased; `autopilot` is PR
+  #47); the check numbers; a table of the 24 crates; the shipped
+  milestones M1–M50 in five lines; what's in flight (M54 on
+  `claude/laughing-chebyshev-5cd4a6`, `autopilot`, Kimi's M51–M53,
+  M55–M59); the number claims (next free: M60); and the sync protocol.
+  The old toolchain notes for the Devi sandbox were dropped (stale; git
+  history has them).
+- `docs/roadmap.md`: M50 is merged (PR #43), not "on branch"; every
+  other "PR open, not merged" status now names its merge PR; the Done
+  table gains M39–M50 and a line on M45/M46 and v0.13.1; "Other open
+  tracks" is rewritten: in flight (M51–M53, M54, M55–M59 with their
+  items, since the report itself is git-excluded), what's still open
+  (M12 part 6, M27's streaming leftovers, two M10 edges, each checked
+  in the code), and what shipped since the list was written.
+- Status lines of 24 shipped milestone docs (m12–m50) that still said
+  "design", "in progress", "PR open" or only "built": each now names its
+  merge PR;
+  `m16-learning-loop.md` says what was built and that it's off until
+  `[learning] enabled`.
+- `docs/m22-dashboard.md` threat model and `docs/dashboard.md`
+  "Security in three lines": the forms POST typed keys as plain JSON,
+  so over a tunnel Cloudflare sees them; use `ssh -L` or `ferrule
+  setup` to keep a key off the tunnel. (M52.1 changes this; its entry
+  updates both.)
+- `docs/m48-self-service.md` D9: notes PR #44's per-run grant for shell
+  gates, and that admin ops still never get one.
+- `docs/research-credential-gateway.md` §5: "only the shell goes
+  through the proxy" is marked as the M7-era state, with what M10, M26
+  and M33 changed and pointers to `sandbox.md`/`egress.md`.
+- `README.md` Project layout lists all 24 crates; the test count is
+  1869.
+
+**Checks.** `make check` exited 0, with `GIT_CONFIG_GLOBAL=/dev/null`
+for the reason in the M55.4 entry (the next entry fixes it). Docs and
+PLAN.md only; no code or tests changed.
+
+**Open.** The roadmap's per-milestone sections keep their open-edge
+lists as they stood at the time (the section's intro says so); they
+weren't re-verified one by one.
+
+### 2026-10-21 — Eval fixtures don't read the owner's git config (Claude, Opus 5.5)
+
+**Why.** `ferrule-eval`'s `starter_suite::every_reference_solution_passes_…`
+failed on a machine whose global git config signs commits
+(`commit.gpgsign = true`, 1Password's SSH signer): the `git-fix-commit`
+task's `solve.sh` commits, and its `git commit` inherited the signer
+(M55.4's entry). The fixture's own commit was already safe, because
+`host_git` pins `commit.gpgsign=false`. The same leak hits real runs:
+an agent's `git commit` in `ferrule eval` inherits the owner's signer,
+hooks, aliases and identity, so a git task's verdict depended on the
+machine, and m14-eval's "the user's git identity is never needed or
+used" was only true of the fixture's first commit.
+
+**What changed.**
+- `ferrule-eval/src/fixture.rs`: `hermetic(sandbox)` returns the sandbox
+  with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` set to the null
+  device (`NUL` on Windows, as `ferrule-extensions`' git and its tests
+  already do) and a `ferrule-eval <eval@ferrule.invalid>` author and
+  committer. `run_command` (setup, graders, checks) always uses it, and
+  `runner.rs` builds the agent (its shell and its check verifier) on it.
+  Decided for real runs too, not just the test: a verdict mustn't
+  depend on the owner's git setup, and a signer can pop a prompt in the
+  middle of an eval.
+- It uses `Sandbox::with_env`, which replaces the extra env. The eval's
+  sandbox has none (`ferrule eval` builds it without the credential
+  broker), and the doc comment says so. `ferrule-sandbox` is untouched.
+- Docs: `m14-eval.md` (Fixture lifecycle, step 3), `eval.md` (Eval is
+  hermetic).
+
+**Checks.** `make check` exited 0 with this machine's normal global git
+config (1Password signing on), no `GIT_CONFIG_GLOBAL` override: 1869
+passed, 0 failed, 28 ignored, 71 binaries (macOS). From here on the
+override isn't needed. No tests were added or changed.
+
+**Open.** Git older than 2.32 ignores `GIT_CONFIG_GLOBAL` and still
+reads the owner's global file. The M16 learning gate builds its agent
+with `variant::build` on its own sandbox, not through a fixture, so its
+re-runs still see the owner's git config.
+
+### 2026-10-21 — M52.1: dashboard key fields are sealed in the browser (Claude, Opus 5.5)
+
+**Why.** Cloudflare terminates a quick tunnel's TLS, and the page POSTed
+every key typed into it (provider, Claude plan, connection, relay,
+Google client, tool key, Telegram, channel forms) as plain JSON, so the
+tunnel operator could read them. M22's threat model said it "never sees
+a key or token" (corrected in M55.6, now true again for a passive
+reader).
+
+**What changed.**
+- `ferrule-connections/src/keyform.rs`: `KeyForm::open` is now
+  `open_text` (decrypt, UTF-8) plus its old API-key checks, so the
+  dashboard can open a field without those checks; the relay form's
+  behaviour is unchanged.
+- `ferrule-cli/src/dashboard/sealed.rs` (new): `Seals`. `issue(session)`
+  makes a one-time `KeyForm` and a 16-byte key id, held in memory for
+  10 minutes, at most 64 at once (oldest dropped). `open_all(session,
+  body)` replaces every `{"sealed": {kid, v, epk, iv, ct}}` anywhere in
+  a body with its text; a key opens one envelope, only for the session
+  (its CSRF token) that asked; anything that doesn't open refuses the
+  request (400), so no handler runs. The warnings it logs name what
+  failed, never a value.
+- `dashboard/mod.rs`: `POST /api/seal` (session, origin, JSON and CSRF
+  checked like every POST) answers `{kid, public}`; every other API POST
+  goes through `open_all` before `api::route`, so no handler changed.
+  `ferrule_admin`'s `api::act` doesn't pass through HTTP and is
+  unchanged.
+- `assets/app.js`: `asSecret(v)` marks a key; `api()` seals each marked
+  value at send time (a fresh key each, so the confirm re-send of `act`
+  works), using a copy of `relay/worker.js`'s `encryptKey` with the key
+  id as salt and associated data. `values()` marks every `data-secret`
+  field; the plan, provider, relay deploy/use, Google client, MCP
+  address, tool key and Telegram senders mark theirs. A marked value that
+  reaches `JSON.stringify` unsealed throws. Without WebCrypto (plain
+  http on a non-local address) the page sends the value as typed, as
+  before; with it, a failed seal fails the action.
+- Ring's ECDH keys are single-use, so the "per-session key" is a
+  one-time key per field, bound to the session; that's the keyform
+  scheme as it stands, with no new dependency.
+- Docs: `m22-dashboard.md` threat model (what's sealed, the active
+  tamperer limit, `ssh -L` or a tailnet for key entry, the no-WebCrypto
+  case), `dashboard.md` "Security in three lines", the roadmap's
+  open-tracks note.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS). No tests were added or changed. The page's JS isn't
+run by `make check`:
+`scripts/dashboard_browser_check.mjs` (CI, all three OSes, real Chrome)
+connects a service with a key through the page, so it exercises the
+seal end to end; it wasn't run here.
+
+**Open.** Kimi's uncommitted `secrets/rotate` in the main checkout
+takes a raw `value` from the page: when it lands, its JS sender should
+wrap the value in `asSecret` (the server side needs nothing). The login
+link's token is still POSTed once as typed (it is one-use). An active
+tamperer still wins (documented).
+
+### 2026-10-21 — M52.5: a key pasted into a chat stops at the gateway (Claude, Opus 5.5)
+
+**Why.** A key pasted into Telegram (or any channel) went into the
+lane: the transcript kept it and the model provider saw it, and a
+refusal from the agent came only after that. The gateway is the one
+place every channel's message passes before anything reads it.
+
+**What changed.**
+- `ferrule-gateway/src/paste_guard.rs` (new): `holds_a_key(text,
+  redactor)` is true for one of this machine's secret values or a token
+  shape the `Redactor` already hides (Telegram and Discord bot tokens,
+  Slack, Meta), or a known prefix at a word's start followed by 20+ key
+  characters with at least 3 letter/digit switches. The prefixes are the
+  credential proxy's `KNOWN_PREFIXES` (now `pub` and re-exported by
+  `ferrule-proxy`, which `ferrule-gateway` now depends on) plus Google's
+  `AIza`. The switch count is what keeps words, versions and
+  `snake_case` names out (`hf_transformers_version_4_40_0` has none).
+  `reply(deleted)` says why, where to put the key (the dashboard's
+  Connect page or `ferrule setup`, until a `secret_request` link
+  exists), and that a real key should be replaced.
+- `gateway.rs`: `handle()` checks first, before `/new`, `/status` and
+  every interceptor, so no door, approval or `/goal` reads it.
+  `stop_pasted_key` logs only the channel ("stopped before the agent;
+  it wasn't kept"), deletes the message where it can, replies (without
+  `reply_to` once deleted) and calls `answered` so the HTTP API closes
+  the request.
+- `Channel::delete` (default unsupported); Telegram's is
+  `deleteMessage`; the dashboard's chat replaces its log entry with
+  "(taken out: it looked like a key)".
+- Docs: `channels.md`, "Keys pasted into a chat" (every channel, the
+  HTTP API included, what counts as a key, what's deleted where);
+  roadmap note.
+
+**Tests changed, none added.** The first `make check` failed two
+`ferrule-cli` integration tests whose stuck turn's message carried the
+provider's configured key (`health::the_heartbeat_names_a_stuck_turn_but_not_its_message`,
+`dashboard::no_page_or_json_response_carries_a_seeded_secret`): the
+guard now stops that message, so no turn hung. Each now sends the
+key-carrying message first (stopped, and still checked never to show)
+and an ordinary `HANG …` message for the stuck turn; every leak
+assertion is unchanged.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS).
+
+**Open.** Discord, Slack and the other channels can't delete (no
+implementation; Discord could with Manage Messages in a server). A key
+in an attached file isn't looked at. Keys with no known prefix and no
+known shape (Brave's, Tavily's, a password) pass unless they are this
+machine's own secret values. When `secret_request` lands (M52.3/M54),
+`reply()` should carry its link.
+
+### 2026-10-21 — M56.1: a message sent mid-turn reaches that turn (Claude, Opus 5.5)
+
+**Why.** A correction sent while a turn ran ("no, the other file") waited
+for the whole turn to end; PR #46 only merged it into the next one. The
+core already drains an `Inbox` before every model call, but only
+sub-agent reports used it, and the supervisor owns the root's inbox.
+
+**What changed.**
+- `ferrule-core` `hooks.rs`: `Inbox::take_messages` (default empty):
+  whole messages, each pushed as it is after `take`'s joined one, so a
+  person's message keeps its photos and isn't framed as agent data.
+  `Inboxes`, several inboxes asked in order. `Agent::add_inbox` chains a
+  second inbox beside the one the factory gave (`with_inbox` still
+  replaces). `deliver_inbox` pushes `take`, then `take_messages`: still
+  after the last tool results and before `maybe_compact` and the model
+  call, so no call/result pair is split and the prefix only grows.
+- `ferrule-gateway/src/steer.rs` (new): `WhileBusy` (`steer`, default;
+  `queue`, PR #46's behaviour) and `Steering`, a lane's inbox. The lane
+  opens it for a turn that answers a person (`person` jobs only: never a
+  scheduled task, a plan or `/goal` turn, or a wake), keyed to that
+  message's `sender_id`, and closes it when `run` returns. A message is
+  framed `[sent while you were working] …` with its photos as
+  `ImageRef`s (file lines are already in its text).
+- `router.rs`: `Router::steer(&msg)` hands a message to the running turn
+  when the mode is `steer`, the channel has busy notices (not the HTTP
+  API), it isn't audio while transcription is set up, nothing is queued
+  in front of it, and the sender matches; otherwise the caller queues it
+  as before. What `close()` returns unread (it arrived during the last
+  model call) is joined into one person job at the front of the lane's
+  `held` (now a `VecDeque`), so it's the next turn and never lost; a
+  person job only merges from the queue while nothing is held, so order
+  holds. Ids the turn read get `answered` with its reply. `/new` and the
+  bot stopping count unread steered messages as dropped and say so.
+  `spawn_lane` adds the steering with `add_inbox`, after the factory's
+  supervisor inbox, so sub-agent reports still arrive.
+- `gateway.rs`: `handle` tries `steer` before `offer`; the busy notice
+  says "I passed your message to the running turn, which reads it at its
+  next step — /stop to end that turn." instead of "queued".
+- `[gateway] while_busy` (`config.rs`, wired in `run_gateway`), the
+  sample config line, `docs/channels.md` "Messages sent while it works",
+  the roadmap's M56 line.
+
+**Tests changed, none added.** `every_message_is_seen_at_once_and_a_queued_one_is_told_once`
+now expects the steered busy notice; the rest of it held unchanged,
+since the held "first" call was already the turn's last, so "second"
+and "third" came back as one next turn (the late path).
+`a_queued_message_hears_about_a_rate_limit_wait` passes `steered:
+false`.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS).
+
+**Open.** Not run against a live chat. A steered voice note waits for
+the next turn (transcription runs in the lane). A steered message
+doesn't load keyword skills (M28) and gets no "can't see photos" notice.
+The mode is gateway-wide, not per chat; no `/queue` override and no
+debounce window. Group chats steer only from the sender of the running
+turn, with no setting to widen it.
+
+### 2026-10-21 — M56.4: proactive memory, an owner profile, decay by kind (Claude, Opus 5.5)
+
+**Why.** The prompt said to remember facts "when asked", so a chat bot
+almost never did. Every fact's score halved every 7 days, so an
+8-week-old name scored 1/256 of a fresh match. Recall ran once per
+agent, from the first message, and a Telegram lane keeps one agent for
+many messages.
+
+**What changed.**
+- The base prompt (`build_agent_from` in `main.rs`, and its copy in
+  `ferrule-eval`'s `engineered_prompt`): "save lasting facts about the
+  person you work for (names, preferences, standing corrections) with
+  the remember tool on your own, tagged profile or preference, without
+  waiting to be asked." A one-time edit; the prefix is stable from here.
+  `remember`'s `tags` description says what the two tags do.
+- `ferrule-memory`: `DURABLE_TAGS` (`profile`, `preference`). Their
+  facts get decay 1 in `rank_heads`; candidates carry the row's tags
+  (`Candidate::durable`, both the BM25 and the vector query). Every other
+  fact still halves every 7 days. `MemoryStore::profile(limit)`, live
+  durable facts newest first; `assemble_for_goal_hybrid` puts up to 10 of
+  them first, then the goal's matches, then the newest, in the same
+  2,000-character budget. A kind column was not added: tags already
+  exist, are indexed by FTS, and need no migration.
+- `ferrule-core`: `SessionRecall::recall_more(message, shown)` (default
+  `None`). On a later run from a person (`run_user`), the agent asks it
+  with every block it already added; a new block is a user message right
+  after that run's goal, where the first block goes (after the stable
+  prefix, append-only). `memory_due` is now the block itself;
+  `memory_more` keeps later blocks, and compaction carries them like the
+  first.
+- `ferrule-cli` `GoalRecall::recall_more`: one keyword query
+  (`goal_query` of the message, no embedding call), up to 3 facts and
+  600 characters not already listed as `- #id` in what was shown, under
+  `[Long-term memory, for this message]`.
+- Docs: `memory.md` "What it keeps about you" and two limits,
+  `m15-memory.md` §4, `m30-vector-recall.md`'s decay line, the roadmap.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS). No tests added or changed.
+
+**Open.** The prompt line is not measured with `ferrule eval` (the gap
+analysis asked for M58.5's gate first; that gate doesn't exist yet).
+Whether the model tags facts `profile`/`preference` is its call; an
+untagged fact about the owner still decays. The per-message recall is
+keyword-only. Re-recall runs per person message, not on a measured topic
+change; with nothing new it adds nothing.
+
+### 2026-10-21 — M56.5: a turn a restart cut short is taken up again (Claude, Opus 5.5)
+
+**Why.** "An interrupted turn is never re-run; the owner re-sends it."
+A self-update or restart stopped running turns after the grace, and a
+crash left only the owner's restart notice; the request itself was gone.
+
+**What changed.**
+- `ferrule-gateway/src/resume.rs` (new): `InFlight` (the message as it
+  arrived, its start, `acted`: the non-read-only tools it called, each
+  once, and `resumed`) and `Marker`, which writes
+  `<sessions>/<sid>.turn.json` atomically when a person's turn starts
+  (before voice notes are heard), adds a tool to `acted` on its first
+  `ToolCallStarted` unless the agent's own registry says `read_only`, and
+  removes the file when the turn ends. `runs_again()` is `acted` empty
+  and not already a second try, so a turn that crashes the process can't
+  loop. `CONTINUE` is `/continue` (`/resume` is the kill switch's).
+- `router.rs`: lanes get a `Marker` (with `agent.tools().clone()`, new
+  accessor in `ferrule-core`). Markers only for `person` jobs on channels
+  with busy notices (not the HTTP API, not scheduled, plan, goal or wake
+  turns). `Router::drain` now calls `stop_for_restart`: a person's turn
+  is stopped with "…; when I'm back I'll pick it up again, or ask you
+  first if it had already changed something" and `TurnGuard` remembers
+  it was a restart; the lane keeps the marker only then (and only if the
+  run came back incomplete). `/new` deletes both files.
+  `Router::interrupted()` renames every `.turn.json` to
+  `.interrupted.json` and returns them; `take_up()` tells each chat and
+  runs the safe ones again at once (`Router::resume`, a `resumed` job
+  whose goal is a "[Resuming after a restart] … It was:\n\n<original>"
+  wrapper; it doesn't merge queued messages), and offers the rest with
+  Resume / Let it go buttons. `drop_interrupted` lets one go.
+  `LaneSnapshot::resumable` and `MarkedTurn::resumable` (serde default)
+  carry it to `running.json`.
+- `gateway.rs`: `/continue` (resume) and `/continue drop|no|cancel`,
+  answered before the interceptors, like `/new`.
+- `health.rs` `restart_notice`: a resumable turn "isn't lost: its chat
+  picks it up again, or asks there first"; the old wording stays for the
+  rest.
+- `main.rs` `run_gateway`: `router.interrupted()` before
+  `gateway.run()` (a new turn would overwrite the same file), then
+  `take_up` in a task.
+- Docs: `channels.md` "After a restart" and the `/continue` row,
+  `m19b-reliability.md` §4, `m44-managed-mode.md`'s drain step,
+  `docker.md`, the roadmap.
+
+**Tests changed, none added.** Struct literals of `MarkedTurn` and
+`LaneSnapshot` in `health.rs` and `ferrule-cli`'s `update/tests.rs` got
+`resumable: false`. `a_killed_gateway_says_what_it_interrupted_and_never_reruns_it`
+now waits for the turn's marker to list `shell` before the kill, expects
+the new notice wording and the chat's offer naming `shell`; it still
+checks the model isn't called again.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS).
+
+**Open.** Not run against a live restart or update. The resumed turn
+re-reads the conversation, which ends with the stop message; whether a
+model reliably skips work already done is untested. A marker whose
+channel isn't on at the next start waits as `.interrupted.json` until
+that channel's `/continue` or `/new`. Pending offers are not repeated
+at a later start. Steered messages a restart cut off are in the
+transcript but not in the marker.
+
+### 2026-10-21 — M56.6: ask_user, react and edit_message as agent tools (Claude, Opus 5.5)
+
+**Why.** The agent could only write text and send files. A question
+whose answer the owner could tap, a quick reaction and a fix to its own
+last reply all meant more messages.
+
+**What changed.**
+- `ferrule-gateway/src/tools/chat.rs` (new), registered next to
+  `send_file` for every chat session (`chat_tools` in `gateway_factory`;
+  any `channels::of_session` chat, remote workspaces included):
+  - `ask_user {question, choices[2..4], timeout_secs?}`: sends the
+    question with one button per choice (`/answer <code> <n>`, under
+    Telegram's 64-byte `callback_data`) through `send_with_buttons`, so a
+    channel without buttons gets them as lines. It waits (default 300 s,
+    clamped 10–540 s, under the watchdog's 600) and returns "They picked:
+    X", "They answered in their own words …" or a truthful "No answer
+    within N s; the question was withdrawn …". A drop guard withdraws the
+    question however the call ends (`/stop` drops the future).
+  - `Questions` (held by `FileOut`, registered as the gateway's first
+    interceptor in `run_gateway`): a tap, a typed number or label, or any
+    other non-command text from that chat while a question waits is the
+    answer, taken before steering (M56.1) could hand it to the blocked
+    turn. A late or unknown `/answer` is told so.
+  - `react {emoji}`: `Channel::react` on the message the turn answers
+    (`Router::turn_message`, from `LaneState::message_id`). Without the
+    `reactions` capability: "reactions aren't supported here".
+  - `edit_message {text}`: `Channel::edit` on the bot's previous reply
+    (`Router::last_reply`). Without `edits`: "not supported here"; with
+    no known id it says so instead of guessing.
+- How the reply's id is known: `Channel::send_with_id` (default: `send`,
+  no id; Telegram's is `deliver_message(…, patient)`, Discord's and
+  Slack's their `deliver`, each exactly what their `send` does). The lane
+  delivers a plain reply with it, and `StreamingReply::finish` now
+  returns the id of the reply's last message (shown and edited, posted,
+  or sent with `send_with_id`); the lane keeps it in `last_reply`.
+- The Claude-plan bridge needed no change: M55.4's `bridged()` passes
+  any tool not in `CLAUDE_NATIVE`/`NOT_BRIDGED`.
+- Docs: `channels.md` "Asking with buttons, reacting, editing",
+  `m35-subscriptions.md` §7.4's table, the roadmap.
+
+**Checks.** `make check` exited 0: 1869 passed, 0 failed, 28 ignored,
+71 binaries (macOS). No tests added or changed.
+
+**Open.** Not tried in a live chat. In a group, any member's message
+answers a waiting question. A typed answer gets no receipt (the turn's
+reply follows). `edit_message` edits only the last part of a reply that
+went out in several, and knows ids only on Telegram, Discord and Slack.
+`/bg <task>` from the gap analysis was not built.
+
+### 2026-10-21 — main (PR #48, M51–M53) merged into `autopilot` (Claude, Opus 5.5)
+
+**Why.** Kimi's PR #48 landed on `main` as `2ffa669` and PR #47 had
+conflicts. Merged, not rebased; every Session Log entry is kept.
+
+**Resolved.**
+- `router.rs`: both sides had rewritten PR #46's merge loop as
+  `if … { loop { … } }`; ours (with M56.1's `held` queue and M56.5's
+  `resumed`) is kept, so main's clippy fix holds.
+- `tools/mod.rs`: both modules, `media` (M51) and `chat` (M56.6).
+- `Cargo.lock`: `ferrule-gateway` depends on `ferrule-media` and
+  `ferrule-proxy`.
+- PLAN.md: Kimi's 2026-10-20 and 2026-10-21 entries go before this
+  branch's 2026-10-21 ones; Current State says `main` is `2ffa669`, M51–M53
+  are merged, and lists the 25th crate, `ferrule-media`.
+- `app.js`: the Safe's Rotate sends its value through M52.1's
+  `asSecret`, so it is sealed like every other key field (the server
+  needed nothing: `open_all` runs before every handler). `m22-dashboard.md`
+  and `m52-dashboard-safe.md` say so; the roadmap's open-tracks line is
+  now "merged".
+- Semantic fixes the merge needed: `tests/it/media.rs`'s
+  `CompletionResponse` gets M55.2's `stop_reason: None`, and rustfmt;
+  `ferrule-cli/src/media.rs` drops a `map_err` clippy calls useless
+  (`config::data_dir` already returns `anyhow::Result`).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+### 2026-10-21 — M56.7: channel media, finished (Claude, Opus 5.5)
+
+**Why.** On Telegram an MP4 or MP3 the agent sent went out as a
+document with no player (M51's generated videos included), an album was
+read as its first photo, and a round video message was "unread". Discord
+and Slack downloaded no files.
+
+**What changed.**
+- Telegram out (`send_file` in `telegram.rs`): `sendVideo` for any
+  `video/*` (with `supports_streaming`), `sendVoice` for `audio/ogg` and
+  `audio/opus`, `sendAudio` for MP3 and M4A, `sendPhoto` as before, else
+  `sendDocument`; a 400 from the specific method sends it again as a
+  document, as photos already did. All within the Bot API's 50 MB.
+  `files::mime_for` learned `webm`, `m4v` and `oga`.
+- Telegram in: `poll_once` is now `fetch_updates` (one `getUpdates`)
+  plus `take_update` (admit, mark a tap, take the file, the unread
+  reply), and joins consecutive items sharing a `media_group_id` into one
+  message (each item's text on its own line, every attachment, the first
+  item's id). A round that ends inside an album polls again with
+  `timeout=1`, up to `ALBUM_ROUNDS` (3), so an album split across rounds
+  still arrives whole. The first-photo-only logic, its `taken` set and
+  the "I only looked at the first photo" reply are gone. `video_note` is
+  taken like a video (`video_note.mp4`).
+- Discord in: `DiscordChannel::with_inbox` (wired in `build_channels`,
+  like Telegram's). Once a message is admitted, each attachment is
+  downloaded from its signed CDN URL (only `cdn.discordapp.com`,
+  `media.discordapp.net` or the API's own host; no token sent), capped by
+  the inbox, saved under `inbox/discord/`, and the message carries the
+  files and M39's lines; a file-only message is read. Only a sticker is
+  still "unread".
+- Slack: not built. Its files need `url_private_download` with the bot
+  token and the `files:read` scope, which `BOT_SCOPES` and the manifest
+  in `docs/slack.md` don't have; adding it would make `doctor` flag every
+  existing install. Documented in `slack.md` and `channels.md`.
+- Docs: `channels.md` "Photos" and "Voice messages", `discord.md`,
+  `slack.md`, `m39-channels.md` §2, `m41-daily-use.md`, `m47`'s
+  out-of-scope line, the roadmap.
+
+**Tests changed, none added.** `vision::an_album_is_read_once` now
+expects one turn with all three photos and no "first photo" reply;
+`live_fixes::messages_that_arent_text_get_plain_words` expects no such
+reply either.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not tried against the real Bot API or Discord. Whether
+Telegram accepts a given WebM or MOV through `sendVideo` is left to its
+400 and the document fallback. A video message's sound isn't
+transcribed. Slack file reading needs the owner to add `files:read`.
+
+### 2026-10-21 — M56.8: keyless web search by default (Claude, Opus 5.5)
+
+**Why.** `web_search` was off until a key or a SearXNG instance was set,
+so "look it up" failed on a fresh install.
+
+**What changed.**
+- `ferrule-tools/src/search.rs`: `SearchProvider::Duckduckgo`
+  (`https://html.duckduckgo.com` + `/html/`, no key; `kp` for safe
+  search, `region` as `kl`, `language` ignored). `parse_ddg` reads the
+  HTML page without a parser crate: each `result__a` link (its `uddg`
+  redirect undone; `/y.js` ads and non-http targets skipped) and the
+  `result__snippet` that follows it. A page with no results and no
+  result markup (DuckDuckGo's challenge when it limits automated
+  searches) is an error saying so, not an empty answer; no retry.
+  Results go through the same `render`: fenced, escaped,
+  `untrusted="true"`.
+- Fallback: `WebSearchTool::new` keeps `SearchSettings::keyless()` for
+  any other provider. When that provider's search fails (anything but the
+  gate), the query goes to DuckDuckGo through `counted()`, which asks the
+  gate first (so `max_searches_per_day` and the kill switch count the
+  fallback as a search) and records its own `SearchCall`; the answer
+  starts with "<provider> failed (<why>); these results are DuckDuckGo's,
+  keyless." If both fail, the error names both. `without_fallback()`
+  for tests.
+- `ferrule-cli`: `[web_search]` with no `provider` is DuckDuckGo;
+  `provider = "off"` (or `"none"`) takes the tool away; the error lists
+  the new names. `web_search::tool` records the fallback at $0 whatever
+  `price_per_search_usd` says. `egress::endpoints` adds the search
+  endpoint only for a provider named in the config, so the implicit
+  default obeys `[egress] default = "deny"` like `web_fetch`. Doctor
+  reports DuckDuckGo without a probe (it would spend one of the searches
+  it tolerates). Setup offers "DuckDuckGo, no key (the default)", and
+  "Turn it off" now writes `provider = "off"` (removing the table means
+  the default).
+- Docs: `web-search.md` (the table, "Keyless search, and its limits":
+  not an API, no terms granting automated use, rate limits and the
+  challenge page, markup that can change, egress), README's tools row,
+  the roadmap, the sample config.
+
+**Tests changed, none added.** `config::web_search_is_off_by_default…`
+became `…keyless_by_default…` (default is DuckDuckGo; `"off"` is
+none). `ferrule-proxy`'s search tests build their tool with
+`without_fallback()`, so their error cases don't leave for the real
+DuckDuckGo, and the mock's provider `match` names `Duckduckgo` as
+unreachable.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not run against the real DuckDuckGo: the parser follows its
+current markup from memory of the page, and no live test was added (the
+owner's rule). Region codes differ by provider, so a fallback drops
+`region` and `language`. Whether owner mode (M54) should gate the
+default is that session's call.
+
+### 2026-10-21 — M57.1: deferred tool schemas and `tool_search` (Claude, Opus 5.5)
+
+**Claim.** M57 (M57.1–M57.7, the gap analysis's context and loop
+hygiene) is built in this worktree (`.claude/worktrees/autopilot`,
+branch `autopilot`), one commit per item. M54's files are not touched.
+
+**Why.** Every request carried every tool's whole schema; a few MCP
+servers mean thousands of tokens per message for tools that turn never
+calls.
+
+**What changed.**
+- `ferrule-core/src/tool.rs`: `Tool::deferrable()` (default false),
+  `DeferTools` (`auto` | `always` | `off`), `DEFER_AUTO_OVER` (10) and
+  `ToolRegistry::defer_tools`. While it defers, `definitions()` is the
+  tools that aren't deferrable plus `tool_search`, sorted by name, then
+  each loaded tool in load order. `tool_search`'s description lists every
+  deferred tool (loaded or not) as `name: first line`, so a load only
+  appends. `tool_search {query, max_results}` takes words (name hits 3
+  points, description hits 1) or `select:a,b`, returns the schemas as JSON
+  lines and loads them. `note_called` loads a deferred tool called by
+  name; `deferred_definitions()` lists the deferred tools not loaded yet.
+  `auto` turns on past 10 deferrable tools and stays on for the session.
+- `agent.rs`: the run loads every deferred tool its history called (a
+  resumed session) and each one the model calls; the call context
+  carries `deferred_tools` (`CallContext`, `provider.rs`).
+- Deferrable: MCP tools (`ferrule-mcp`), the self-extension tools,
+  `connection_request`, and `generate_image`/`generate_video` (M51's
+  `media.rs`: two one-method additions, nothing else there).
+- The Claude engine (`ferrule-plans`) bridges every tool whole, deferred
+  ones from the call context, and leaves `tool_search` out
+  (`with_deferred`): Claude Code has its own tool search.
+- `[agent] defer_tools` (default `auto`) in `config.rs`, set on the
+  registry in `build_agent_from`; the sample config.
+- Docs: new `docs/m57-context-hygiene.md`, `speed.md` (what starts a new
+  cache), README (the MCP row, the docs list), the roadmap.
+
+**Tests changed, none added.** `ferrule-plans`'s
+`claudes_permission_prompt_asks_the_runs_guard` fills the new
+`CallContext` field with `..Default::default()`.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Nothing measured live: the ledger's input and cache rows on a
+session with several MCP servers should show the saving. The threshold
+of 10 is a guess. Search is word matching, not embeddings. The
+dashboard's config form (M52's) doesn't offer `defer_tools`.
+
+### 2026-10-21 — M57.2: per-file loop notes, budget notes, raised effort (Claude, Opus 5.5)
+
+**Why.** `stuck.rs` caught only the same call repeated; a file fixed over
+and over with a different edit each time ran on. The model never heard
+how many steps or tokens it had left. Effort was one level for every
+turn, where LangChain's sandwich (more for planning and verifying)
+scored best.
+
+**What changed.**
+- `stuck.rs`: `EditCounts` and `EDITS_PER_FILE` (6). Each successful
+  `edit_file`/`write_file` counts against its path; the sixth change to
+  one file with no passing check in between returns one note, pushed
+  after that turn's results (and shown as `AgentEvent::Stuck`). A
+  passing check clears the counts. Gated by `detect_stuck`.
+- `agent.rs`: `budget_note` pushes a user message after the turn's
+  results when the steps left reach a quarter and again a tenth, and the
+  same for `Budget::left()` (new, default `None`; `TreeBudget` answers
+  with the tree's `max_tokens` window through
+  `Supervisor::budget_left`). Never in the system prompt.
+- Effort: `HarnessProfile::max_effort` ("high" in all four profiles);
+  `CallContext` carries `effort` (the agent's own level) and
+  `effort_floor` (set on the run's first turn and the turn after a failed
+  check, when `AgentConfig::effort_boost`). `CallContext::effort_for`
+  applies them only to a configured effort, never touches `"none"`, and
+  raises only between known words (`effort_rank`). The Anthropic and
+  Responses (so Codex) drivers use it.
+- `spawn_agent {effort: low|medium|high}`: `SpawnRequest`, `AgentRow`
+  (an `effort` column, added to an older `agents.db` like `model`) and
+  `ChildSpec` carry it; `build_agent_from` holds it to the profile's
+  `max_effort` and calls `Agent::set_effort`. An explicit level wins over
+  the raised turns.
+- `[agent] effort_boost` (default true), the sample config.
+- Docs: `m57-context-hygiene.md` (new section), `models.md`,
+  `m23-drivers.md`, `agents.md` (the effort line; the tool-size table
+  notes the ~230 characters the argument adds), README, the roadmap.
+
+**Tests changed, none added.** The `SpawnRequest` literals in
+`ferrule-agents`' tests (`board.rs`, `supervisor.rs`, `common/mod.rs`,
+`worktree.rs`) and `store.rs`'s test row gained `effort: None`.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not measured on the eval suite. Whether a per-turn change of
+Anthropic's `output_config.effort` costs cache hits isn't documented by
+Anthropic; the ledger's cache rows on a run with `effort` set would show
+it. The owner's M19 spend caps aren't reported to the model.
+
+### 2026-10-21 — M57.3: a stale-file guard on `edit_file` (Claude, Opus 5.5)
+
+**Why.** `edit_file` applied SEARCH blocks to whatever the file held.
+A command, a hook, a sub-agent in the same workspace or an MCP tool
+could have changed it since the model read it, and an exact SEARCH that
+still matched landed in a file the model no longer knew.
+
+**What changed.**
+- `ferrule-core/src/stamps.rs` (new): `FileStamps`, a shared map from a
+  resolved path to the length, FNV-64 hash and modified time of the
+  bytes the agent last read or wrote there. `record`, `changed`,
+  `current` (the stamped files still matching the disk), `adopt` and
+  `adopting` (run work, then re-stamp what it changed in the files that
+  were current before it).
+- `ferrule-tools`: `ReadFileTool`, `WriteFileTool` and `EditFileTool`
+  take `.tracking(stamps)`. `read_file` and `write_file` stamp what they
+  read or wrote; `edit_file` (`edit_path`) refuses, writing nothing,
+  when the bytes it just read differ from the stamp ("changed on disk
+  since you last read it … re-read it with read_file"), and stamps what
+  it wrote. A never-read file has no stamp and stays editable.
+- `agent.rs`: `Agent::with_file_stamps`; `fire` (every hook event) and
+  `run_checks` run under `adopting`, so a formatting hook or a verify
+  command that formats (`cargo fmt && cargo test`) doesn't cause a
+  refusal. The built-in lint (M29) only checks and writes nothing.
+- Wired in `build_agent_from` (every agent: run, chat, gateway lanes,
+  sub-agents) and in the eval's engineered variants (`variant.rs`; the
+  naive one has no guard). The SSH remote tools don't track; their
+  `edit_file` keeps its own read-to-write guard.
+- Docs: `m57-context-hygiene.md` (new section), `m29-edit-mechanics.md`
+  (the errors list), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** A file a sub-agent changes while the parent's hooks or checks
+run is adopted with them (the window is one hook or check run). Not
+measured on the eval suite.
+
+### 2026-10-21 — M57.4: cache economics for chats (Claude, Opus 5.5)
+
+**Why.** Every breakpoint used Anthropic's default 5-minute TTL, so a
+chat reply after a longer pause paid for the whole conversation again.
+A compaction summary only saw message text, so which tools ran and on
+which files was lost at a fold unless the summary model said so.
+
+**What changed.**
+- 1-hour TTL: `CallContext::cache_ttl` (`provider.rs`), set from
+  `Agent::set_cache_ttl` on every call but a compaction summary. The
+  Anthropic driver marks all three breakpoints
+  `{"type": "ephemeral", "ttl": "1h"}` when asked (`cache_control`), and
+  reads `usage.cache_creation.ephemeral_1h_input_tokens` into the new
+  `Usage::cache_write_1h_input_tokens`. The gateway factory sets it on
+  chat lanes only (`channels::of_session`), from `[gateway] cache_ttl`
+  (`"1h"` default, `"5m"` sends no field, as before); sample config.
+- Pricing: `LedgerRecord::cache_write_1h_input_tokens` (serde default,
+  skipped at 0); `ProviderPricing::hour_writes` adds the step from the
+  5-minute write price to 2 × input, in `cost_usd` and in routing's
+  tier-spend count. The learning pass's rows carry it too.
+- Idle pre-compaction: not built. The compactor sends one flattened user
+  message (template and history as text, no tools or system prompt),
+  which reads nothing from the cache; compacting an idle chat would pay
+  full input for the head and a new write, where a reply within the
+  hour reads the cache at 0.1 ×. Written up in the doc.
+- Fold summary: `Touched` (`agent.rs`) adds a block ferrule counts
+  itself after the summary text: `Tools called: \`name\` ×n`, `Files
+  changed:` (`write_file`/`edit_file` that worked) and `Files read:`
+  (`read_file` that worked), 50 most recent each, the rest counted. A
+  later fold parses the earlier block and adds to it.
+- Docs: `m57-context-hygiene.md` (new section), `speed.md`,
+  `m23-drivers.md` (the write price, the follow-up done), the roadmap
+  (M57 line; the M27 leftover struck).
+
+**Tests changed, none added.** Struct literals of `Usage` and
+`LedgerRecord` across the workspace gained the new field (0). The
+golden `crates/ferrule-core/tests/golden/routing_off.json` was
+regenerated (`FERRULE_UPDATE_GOLDEN=1`): its compaction summary now
+carries the counted block, and the estimates after it moved by 23
+tokens.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not measured: whether an hour's writes pay for themselves at
+the owner's pace shows in the ledger's cache rows on a real chat.
+`ferrule chat` keeps 5 minutes. The Claude Code plan engine's 1-hour
+writes aren't split out (its rows are plan-billed). The compactor's
+input still leaves out the calls themselves; only the counted block
+names them.
+
+### 2026-10-21 — Commands off means no shell, not an unsandboxed one (Claude, Opus 5.5)
+
+Found while wiring M57.6. `build_agent_from` starts from
+`standard_registry()`, whose `shell` is `ShellTool::default()` with
+`Sandbox::off()`. When `managed::user_commands_off` says commands are
+off (M44: the sandbox refuses them, or the managed policy has no shell),
+it skipped registering the sandboxed shell but never removed that
+default one, so the agent kept a shell with no sandbox at all. The
+`Some(why)` arm now removes `shell`. `crates/ferrule-cli/src/main.rs`
+only; no test added (owner's rule).
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Worth cherry-picking to `main` on its own: `main` has the
+same code since M44 (`2437941f`).
+
+### 2026-10-21 — M57.5: tool-use examples in tool definitions (Claude, Opus 5.5)
+
+**Why.** Anthropic measured accuracy on complex parameters rising from
+72% to 90% with examples in the tool definitions. Ferrule's schemas said
+what each field is, never how a good call looks.
+
+**What changed.**
+- `ferrule-tools/src/edit.rs`: the `edits` property's description gives
+  two examples (a change with a line of context; an insert repeating the
+  line next to it). The SSH `edit_file` reuses the definition.
+- `ferrule-agents/src/prompts.rs`: an `Example: {…}` line on
+  `spawn_agent`, `wait_agent`, `board_post` and `task_add` (+504
+  characters for an agent that can spawn, +204 at `max_depth`).
+- Fixed text in descriptions, not Anthropic's `input_examples`, so every
+  driver sends them; nothing varies per request.
+- Not done: `ferrule_admin` (its schema is in `self_service/`, M54's).
+- Docs: `m57-context-hygiene.md` (new section), `agents.md` (the size
+  table), `m29-edit-mechanics.md`, the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS).
+
+**Open.** Not run through `ferrule eval` (the gap analysis's M58.5
+gate). `ferrule_admin`'s examples wait for M54.
+
+### 2026-10-21 — M57.6: background processes (Claude, Opus 5.5)
+
+**Why.** The shell waited for every command up to its 120-second
+timeout, so a dev server or a watcher hung the turn and was then killed.
+
+**What changed.**
+- `ferrule-tools/src/jobs.rs` (new): `Jobs`, one table per `ShellTool`
+  (`ShellTool::jobs`), and `ShellJobTool` (`shell_job {id, action:
+  status|tail|kill, lines}`). A job's watcher task records its exit code
+  or the kill; `kill` takes the process group (Unix) and the process
+  (`start_kill`; on Windows the sandbox's job object takes the tree). At
+  most 4 running (`MAX_RUNNING`), 16 finished ones remembered.
+  `Jobs::stop_all` runs from `Tool::session_ended` and from `Drop`.
+- `shell.rs`: `background: true` (schema and call) starts the command in
+  the same sandbox, workspace and process-group setup as a foreground
+  one, stdout and stderr into a new file from
+  `ferrule_core::tool::new_spill_file` (split out of `save_spill`, same
+  checks), and returns the job id and file at once.
+- `ferrule-core`: `Tool::session_ended` (default no-op) and
+  `ToolRegistry::session_ended`, called by `Agent::end_session` after
+  SessionEnd. A dropped agent (a gateway lane, a sub-agent) stops its
+  jobs through `Jobs`' `Drop`.
+- Registered with the shell in `standard_registry`, `build_agent_from`
+  and the eval's variants; removed wherever the shell is, and in an SSH
+  workspace, whose shell refuses `background: true` ("nothing was
+  started"). `shell_job` is deferrable (M57.1).
+- Docs: `m57-context-hygiene.md` (new section, and the deferrable
+  list), README (the Tools row), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS). No new test covers a job; nothing was run by hand
+(the owner's rule): starting, tailing and killing a job are exercised by
+no test yet.
+
+**Open.** A job's output file isn't capped. Lines aren't streamed back;
+the model asks with `tail`. Processes a job's command leaves behind after
+it exits aren't tracked on Unix. A finished sub-agent's jobs run until
+it's closed.
+
+### 2026-10-21 — M57.7: fork sub-agents (Claude, Opus 5.5)
+
+**Why.** A child saw only its brief, so a parent that had just read the
+code or settled a plan restated it in the task, and whatever it left out
+the child read again.
+
+**What changed.**
+- `ferrule-agents/src/fork.rs` (new): `tail(history, budget)`. Leaves
+  out system messages; cuts off the parent's turn in progress (the last
+  assistant message with a call that has no result yet, the
+  `spawn_agent` call itself, and what follows); walks back from the end
+  while `est_tokens` fits the budget, each message's text cut at
+  `budget` characters (about a quarter of it) and its reasoning and
+  native blocks dropped; then skips tool results at the front, so the
+  copy never separates a call from its results.
+- `supervisor.rs`: `SpawnRequest::fork`, `Limits::fork_tokens` (16,000;
+  0 refuses forks). `Supervisor::fork_from` reads the parent's
+  transcript (`<sessions>/<parent session>.jsonl`, folds applied) before
+  anything is inserted, so a refusal leaves nothing behind, and puts
+  `prompts::fork_header` first. `start` takes the fork and logs a
+  `parent` meta line, the header and the copy into the child's
+  transcript before building it; the replay that follows is the usual
+  one, so `resume_agent` (which passes no fork) replays the same copy.
+  The task stays the run's message, so it is the newest user message.
+  The spawn result notes how many messages and about how many tokens the
+  child got, or that none fit. Spawning is still immediate.
+- `tools.rs`, `prompts.rs`: the `fork` boolean in `spawn_agent`'s schema,
+  a sentence in its description (a fork reads its copy on every call),
+  about 320 characters together; `fork_header`.
+- `ferrule-cli/src/config.rs`: `[agents] fork_tokens`, the sample config.
+  `graph.rs` sets `fork: false`.
+- Docs: `m57-context-hygiene.md` (new section), `agents.md` (config, the
+  size table, "Forked children"), `m12-multi-agent.md` (the "sees
+  nothing of your conversation" line), README (the Sub-agents row), the
+  roadmap.
+
+**Tests changed, none added.** The `SpawnRequest` literals in
+`ferrule-agents`' tests (`board.rs`, `supervisor.rs` ×3,
+`common/mod.rs`, `worktree.rs`) gained `fork: false`.
+
+**Checks.** `make check` exited 0 with M57.6 staged and M57.7 in the
+working tree: 1881 passed, 0 failed, 28 ignored, 73 binaries (macOS).
+
+**Open.** No test covers a fork and none was run by hand (the owner's
+rule); not measured through `ferrule eval`. The budget is a fixed token
+count, not a share of the child's context window. Tool-call arguments
+aren't cut, so one huge `write_file` call ends the copy early. A worker's
+worktree is at the parent's HEAD, so the copy may show uncommitted files
+the worktree lacks; the header asks the child to re-read before editing.
 
 ### 2026-10-20 — M54 protected autonomous mode: design and build (Claude, Opus 5.5)
 

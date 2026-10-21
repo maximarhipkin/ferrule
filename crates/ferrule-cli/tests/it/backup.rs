@@ -262,6 +262,16 @@ fn a_round_trip_gives_back_the_same_sessions_memory_tasks_and_ledger() {
         std::fs::read_to_string(data.join("private/secrets.env")).unwrap(),
         "OPENAI_API_KEY=sk-test\n"
     );
+    // Its directory is made again for the owner only, not with the umask.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(data.join("private"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
 
     // Nothing was deleted: the data and config from before are beside.
     let parent = data.parent().unwrap();

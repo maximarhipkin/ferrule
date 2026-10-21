@@ -720,13 +720,7 @@ fn main() -> Result<()> {
         );
     }
     // Root on Linux sets up, and checks, the system service's files.
-    let system_files = match cli.cmd {
-        Cmd::Setup { .. } => true,
-        Cmd::Doctor { .. } | Cmd::Config { .. } | Cmd::Update { .. } | Cmd::Connections { .. } => {
-            svc_names.system_config().exists()
-        }
-        _ => false,
-    };
+    let system_files = on_system_files(&cli.cmd, svc_names.system_config().exists());
     if system_files && service::scope() == service::Scope::System {
         for (name, value) in [
             ("FERRULE_CONFIG", svc_names.system_config()),
@@ -827,6 +821,21 @@ fn managed_gate(cmd: &Cmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Run as root on Linux, the commands that act on the system service's
+/// files (its config and data dir) when there is one; `setup` always.
+fn on_system_files(cmd: &Cmd, system_config: bool) -> bool {
+    match cmd {
+        Cmd::Setup { .. } => true,
+        Cmd::Doctor { .. }
+        | Cmd::Config { .. }
+        | Cmd::Update { .. }
+        | Cmd::Connections { .. }
+        | Cmd::Backup { .. }
+        | Cmd::Restore { .. } => system_config,
+        _ => false,
+    }
 }
 
 async fn dispatch(cmd: Cmd) -> Result<()> {
@@ -1112,7 +1121,19 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
             out,
             include_secrets,
         } => backup::backup(out, include_secrets)?,
-        Cmd::Restore { file, dry_run } => backup::restore(&file, dry_run)?,
+        Cmd::Restore { file, dry_run } => {
+            backup::restore(&file, dry_run)?;
+            // Root put back the system service's files: as setup does, its
+            // user owns the data, the config is root:<user> 0640.
+            let svc = service::Svc::current();
+            if !dry_run
+                && svc.scope == service::Scope::System
+                && config::data_dir_path() == Some(svc.system_data())
+            {
+                svc.own_system_files(None)
+                    .context("restored, but giving the files back to the service's user failed")?;
+            }
+        }
         Cmd::Dashboard { op } => dashboard::cli::cmd(op).await?,
         Cmd::Model { op } => models::cmd(op).await?,
         Cmd::Tasks { op } => {
@@ -1414,8 +1435,16 @@ fn build_agent_from(
     let (read_only, reading_mcp) = agents::narrows(child);
     let broker = shared_broker(&cfg)?;
     match managed::user_commands_off(&sandbox) {
-        None => registry.register(Arc::new(ShellTool::sandboxed(sandbox.clone()))),
+        None => {
+            // M57.6: `shell_job` shares the shell's background jobs.
+            let shell = ShellTool::sandboxed(sandbox.clone());
+            registry.register(Arc::new(shell.job_tool()));
+            registry.register(Arc::new(shell));
+        }
         Some(why) => {
+            // The standard registry's shell has no sandbox at all: it goes
+            // too, or "off" would leave an unconfined shell behind.
+            registry.remove("shell");
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| tracing::warn!("the shell tool is off: {why}"));
         }
@@ -1438,12 +1467,21 @@ fn build_agent_from(
         .into_iter()
         .filter(|p| !tool_ctx.workspace.starts_with(p))
         .collect();
-    registry.register(Arc::new(ReadFileTool::hiding(hidden.clone())));
+    // M57.3: what this agent last read or wrote, for `edit_file`'s
+    // stale-file guard.
+    let stamps = ferrule_core::FileStamps::default();
     registry.register(Arc::new(
-        WriteFileTool::hiding(hidden.clone()).protecting(protected.clone()),
+        ReadFileTool::hiding(hidden.clone()).tracking(stamps.clone()),
     ));
     registry.register(Arc::new(
-        EditFileTool::hiding(hidden.clone()).protecting(protected),
+        WriteFileTool::hiding(hidden.clone())
+            .protecting(protected.clone())
+            .tracking(stamps.clone()),
+    ));
+    registry.register(Arc::new(
+        EditFileTool::hiding(hidden.clone())
+            .protecting(protected)
+            .tracking(stamps.clone()),
     ));
     registry.register(Arc::new(ListDirTool::hiding(hidden.clone())));
     // M34: a remote workspace's shell and file tools replace the local
@@ -1456,6 +1494,11 @@ fn build_agent_from(
         if planning || read_only || sandbox.policy().mode == Mode::ReadOnly {
             registry.remove("shell");
         }
+    }
+    // M57.6: background jobs are the local shell's; without it (or with a
+    // remote one, which refuses `background`) there are none to look at.
+    if remote.is_some() || !registry.contains("shell") {
+        registry.remove("shell_job");
     }
     // M29: `code_search` and the repo map, only in something that looks
     // like a code repo (a home dir gets neither schema nor map), and not
@@ -1551,7 +1594,7 @@ fn build_agent_from(
     };
     let mut system = format!(
         "You are an autonomous agent running inside ferrule. {workspace_line} \
-         Use tools to act on the world; verify with evidence; persist important facts with the remember tool when asked. \
+         Use tools to act on the world; verify with evidence; save lasting facts about the person you work for (names, preferences, standing corrections) with the remember tool on your own, tagged profile or preference, without waiting to be asked. \
          For multi-step work, maintain your task list with write_todos and log decisions with log_diary. {}",
         profile.system_directive
     );
@@ -1678,6 +1721,15 @@ fn build_agent_from(
     )? {
         registry.register(Arc::new(tool));
     }
+    // M57.1: MCP and rare tools by name until `tool_search` loads them.
+    registry.defer_tools(cfg.agent.defer_tools);
+    // M57.2: a sub-agent's `spawn_agent` effort, held to its profile's
+    // highest; a profile without one takes none.
+    let child_effort = child.and_then(|c| c.effort.as_deref()).and_then(|asked| {
+        let max = profile.max_effort.as_deref()?;
+        let rank = ferrule_core::provider::effort_rank;
+        Some(if rank(asked) > rank(max) { max } else { asked }.to_string())
+    });
     let hooks_workspace = tool_ctx.workspace.clone();
     let mut agent = Agent::new(
         provider,
@@ -1687,6 +1739,7 @@ fn build_agent_from(
             max_iterations,
             parallel_tools: cfg.agent.parallel_tools.max(1),
             verify_without_changes: goal.is_some(),
+            effort_boost: cfg.agent.effort_boost,
             ..Default::default()
         },
         tool_ctx,
@@ -1696,13 +1749,16 @@ fn build_agent_from(
     // The memory block is picked on the first run, from the session's goal.
     .with_session_recall(Arc::new(
         memory_tools::GoalRecall::new(memory_db).with_embedding(embedding),
-    ));
+    ))
+    .with_file_stamps(stamps);
+    agent.set_effort(child_effort);
     if let (Some(map), tokens @ 1..) = (repo_map, cfg.agent.repo_map_tokens) {
         agent =
             agent.with_turn_context(Arc::new(ferrule_codemap::RepoMapContext::new(map, tokens)));
     }
     // M42 part 7: compactions summarized by another (cheaper) model — the
-    // built-in checklist template as a strategy on a routed provider.
+    // built-in checklist pipeline on a routed provider, so the call keeps
+    // the agent's retries, ledger row, budget and kill switch.
     if let Some(word) = &cfg.agent.compaction_model {
         models
             .resolve(word)
@@ -1711,7 +1767,7 @@ fn build_agent_from(
             .fixed(Some(word.clone()), "[agent] compaction_model");
         let provider = models::RoutedProvider::new(models.clone(), scope, entry.provider.clone());
         let provider = Arc::new(if guest { provider.guest() } else { provider });
-        agent = agent.with_compactor(Arc::new(ferrule_core::TemplateCompactor::new(provider)));
+        agent = agent.with_compaction_provider(provider);
     }
     agent = agent
         .with_ledger(
@@ -1747,7 +1803,7 @@ fn build_agent_from(
     // A planning run fires none: hooks run as the owner, outside the
     // read-only sandbox plan mode promises (docs/m19-trust-cost.md §13).
     if child.is_none() && !planning {
-        let mut hooks = hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace)?;
+        let mut hooks = hooks_cli::for_agent(&cfg, &cfg_path, &hooks_workspace, &sandbox)?;
         // M29: the project's linter after each edit, built in (so a
         // sub-agent inherits it with the rest), in the sandbox.
         if cfg.agent.lint == config::LintMode::Auto
@@ -2651,10 +2707,18 @@ fn build_channels(
     if let Some(env_var) = &g.discord_token_env {
         let token = channel_token(env_var, "discord_token_env")?;
         let discord: Arc<dyn Channel> = Arc::new(
-            DiscordChannel::with_api(token, g.discord_api_url.clone()).with_allowed(
-                with_owner(cfg, "discord", &g.discord_allowed_users),
-                g.discord_allowed_channels.clone(),
-            ),
+            DiscordChannel::with_api(token, g.discord_api_url.clone())
+                .with_allowed(
+                    with_owner(cfg, "discord", &g.discord_allowed_users),
+                    g.discord_allowed_channels.clone(),
+                )
+                // M56.7: attachments are saved and read, as on Telegram.
+                .with_inbox(workspace.map(|ws| {
+                    ferrule_gateway::channels::files::Inbox::new(
+                        ws,
+                        ferrule_gateway::channels::files::DEFAULT_MAX_MB,
+                    )
+                })),
         );
         named_channels.insert(discord.name().to_string(), discord);
     }
@@ -2780,6 +2844,7 @@ async fn gateway_factory(
     let factory_sup = sup.clone();
     let owner = owner_mode::on(cfg);
     let hub = trust::hub(cfg)?;
+    let chat_cache_ttl = cfg.gateway.cache_ttl.asked();
     let agent_factory: ferrule_gateway::AgentFactory = Arc::new(move |session_id, transcript| {
         let (shape, origin) = ledger::classify_session(session_id);
         let tag = ledger::LedgerTag::new(&ledger_sink, shape, origin);
@@ -2823,6 +2888,15 @@ async fn gateway_factory(
                     hidden_paths(owners),
                 )));
             }
+        }
+        // M56.6: ask with buttons, react, edit its last reply; its own chat only.
+        if channels::of_session(session_id).is_some() {
+            for tool in ferrule_gateway::tools::chat_tools(&files, session_id) {
+                agent.register_tool(tool);
+            }
+            // M57.4: a chat's next message may come after Anthropic's
+            // default 5 minutes; a scheduled task's run doesn't wait.
+            agent.set_cache_ttl(chat_cache_ttl.clone());
         }
         // M48: the owner's own chat can change Ferrule, with the owner's tap.
         if let Some(admin) = &admin {
@@ -2980,6 +3054,7 @@ async fn run_gateway(
             .with_max_turn(health::max_turn(&cfg))
             .with_streaming(streaming_channels(&cfg), StreamPacing::default())
             .with_typing(cfg.gateway.typing())
+            .with_while_busy(cfg.gateway.while_busy)
             .with_transcription(transcription::build(&cfg, ledger::build_sink(&cfg))?),
     );
     files.bind(&router);
@@ -3163,7 +3238,9 @@ async fn run_gateway(
         .with_busy_notice_after(cfg.gateway.busy_notice_after())
         .with_restarts(restarts)
         .with_health(health.clone())
-        .with_redactor(Arc::new(health::redactor(&cfg)));
+        .with_redactor(Arc::new(health::redactor(&cfg)))
+        // M56.6: an answer to `ask_user` goes to it, before any door.
+        .with_interceptor(files.questions());
     if let Some(dash) = &dash {
         gateway = gateway.with_interceptor(Arc::new(dashboard::door::DashboardDoor {
             dash: dash.clone(),
@@ -3221,6 +3298,11 @@ async fn run_gateway(
     }
 
     tracing::info!("gateway starting");
+    // M56.5: the turns the last stop or crash cut short, claimed before
+    // any message can start a turn of its own.
+    let interrupted = router.interrupted();
+    let resumer = router.clone();
+    tokio::spawn(async move { resumer.take_up(interrupted).await });
     // SIGTERM (systemctl stop) and ctrl-c are a clean shutdown: the
     // running marker goes, so the next start sends no restart notice.
     let result = tokio::select! {
@@ -4076,5 +4158,22 @@ mod tests {
         assert_ne!(dotted, mcp_dir_name("a_b"));
         assert_ne!(mcp_dir_name("../x"), "../x");
         assert!(!mcp_dir_name("").is_empty());
+    }
+
+    #[test]
+    fn sudo_backup_and_restore_use_the_system_services_files() {
+        let backup = Cmd::Backup {
+            out: None,
+            include_secrets: false,
+        };
+        let restore = Cmd::Restore {
+            file: "b.tar.gz".into(),
+            dry_run: false,
+        };
+        for cmd in [&backup, &restore] {
+            assert!(on_system_files(cmd, true));
+            // No system service: root's own instance.
+            assert!(!on_system_files(cmd, false));
+        }
     }
 }

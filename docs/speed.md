@@ -67,7 +67,16 @@ What legitimately starts a new cache:
 - installing or removing a skill;
 - a learning pass that changes the playbook;
 - switching model (`/model`, routing's escalation, a fallback);
-- compaction, which rewrites the history.
+- compaction, which rewrites the history;
+- loading a deferred tool with `tool_search` (M57.1): its schema is
+  appended after the tool list, which stays the same bytes before it
+  ([m57-context-hygiene.md](m57-context-hygiene.md)).
+
+How long a cache lives is the provider's call. Anthropic keeps it 5
+minutes after its last use by default; a chat's lane in the gateway asks
+for an hour (`[gateway] cache_ttl`, M57.4), so an answer after a coffee
+still reads the cache
+([m57-context-hygiene.md](m57-context-hygiene.md#cache-economics-for-chats-m574)).
 
 ## Seeing it
 

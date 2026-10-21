@@ -167,12 +167,21 @@ pub struct Usage {
     /// `cached_input_tokens`. 0 where the provider doesn't report writes.
     #[serde(default)]
     pub cache_write_input_tokens: u64,
+    /// M57.4: the part of `cache_write_input_tokens` written with the
+    /// 1-hour TTL (Anthropic's `cache_creation.ephemeral_1h_input_tokens`),
+    /// which costs 2 × input instead of the 5-minute 1.25 ×.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_1h_input_tokens: u64,
     /// What the call would have cost at API prices, when the provider
     /// knows better than the price table: the Claude Code engine's own
     /// figure for a plan turn (M35). Ledger rows carry it as
     /// `notional_usd`; it is never money spent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notional_usd: Option<f64>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[cfg(test)]

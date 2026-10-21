@@ -507,6 +507,12 @@ fn a_killed_gateway_says_what_it_interrupted_and_never_reruns_it() {
         let mut gw = gateway(dir.path());
         tg.say(-100, "HANG please");
         wait_for_file(&marker, "HANG please");
+        // M56.5: the turn's own marker has its `shell` call, so the next
+        // start asks before running it again.
+        wait_for_file(
+            &dir.path().join("data/sessions/telegram__-100.turn.json"),
+            "\"shell\"",
+        );
         // SIGKILL: no chance to clean up, like a crash or the OOM killer.
         gw.0.kill().unwrap();
         gw.0.wait().unwrap();
@@ -517,9 +523,11 @@ fn a_killed_gateway_says_what_it_interrupted_and_never_reruns_it() {
     let _gw = gateway(dir.path());
     let (_, notice) = tg.wait_for(42, "I restarted at ", 0);
     assert!(
-        notice.ends_with("; the turn for telegram chat -100 was interrupted while handling: 'HANG please'. It won't be re-run — send it again if it's still needed."),
+        notice.ends_with("; the turn for telegram chat -100 was interrupted while handling: 'HANG please'. It isn't lost: its chat picks it up again, or asks there first."),
         "{notice}"
     );
+    let (_, offer) = tg.wait_for(-100, "A restart interrupted your request 'HANG please'.", 0);
+    assert!(offer.contains("It had already used `shell`"), "{offer}");
     std::thread::sleep(std::time::Duration::from_secs(1));
     assert_eq!(seen.lock().unwrap().len(), calls, "the turn was re-run");
     assert_eq!(
@@ -674,7 +682,10 @@ fn the_heartbeat_names_a_stuck_turn_but_not_its_message() {
     assert_eq!(ok["version"], env!("CARGO_PKG_VERSION"));
     assert!(ok["uptime_secs"].is_u64(), "{ok}");
 
-    tg.say(42, "HANG with my password hunter2-private and sk-test");
+    // The provider's key in a message never makes a turn (M52.5's paste
+    // guard stops it); the stuck turn is the second message's.
+    tg.say(42, "HANG with my key sk-test");
+    tg.say(42, "HANG with my password hunter2-private");
     let bad = wait(&|v| v["status"] == "degraded");
     let reason = bad["reason"].as_str().unwrap();
     assert!(

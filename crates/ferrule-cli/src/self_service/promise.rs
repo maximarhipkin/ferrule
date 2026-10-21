@@ -3,7 +3,7 @@
 //! and deleted by whoever keeps the promise.
 
 use crate::update::notice::Owner;
-use crate::update::state::{Event, EventKind};
+use crate::update::state::Event;
 use ferrule_trust::ChatRef;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -95,7 +95,7 @@ pub fn on_start(data: &Path, owner: &dyn Owner) {
 /// The chat an update promise belongs to, when `event` is what it waited
 /// for; the promise is used up.
 pub fn claim_for(data: &Path, event: &Event) -> Option<ChatRef> {
-    if !matches!(event.kind, EventKind::Updated | EventKind::RolledBack) {
+    if !event.kind.ends_update() {
         return None;
     }
     let p = read(data)?;
@@ -127,7 +127,7 @@ pub fn expire(data: &Path, owner: &dyn Owner) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::update::state::now;
+    use crate::update::state::{now, EventKind};
     use async_trait::async_trait;
     use std::sync::Mutex;
 
@@ -196,7 +196,10 @@ mod tests {
         assert!(said.0.lock().unwrap().is_empty());
         // An older event, or another kind, doesn't claim it.
         assert_eq!(claim_for(dir.path(), &event(4, EventKind::Updated)), None);
-        assert_eq!(claim_for(dir.path(), &event(5, EventKind::Failed)), None);
+        assert_eq!(
+            claim_for(dir.path(), &event(5, EventKind::ClaudeUpdated)),
+            None
+        );
         assert!(exists(dir.path()));
         // The new event does, once.
         assert_eq!(
@@ -204,6 +207,20 @@ mod tests {
             Some(here())
         );
         assert_eq!(claim_for(dir.path(), &event(6, EventKind::Updated)), None);
+        // An update that failed answers it too.
+        make(
+            dir.path(),
+            &here(),
+            Kind::Update {
+                from: "0.5.1".into(),
+                after: 6,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            claim_for(dir.path(), &event(7, EventKind::Failed)),
+            Some(here())
+        );
     }
 
     #[test]
