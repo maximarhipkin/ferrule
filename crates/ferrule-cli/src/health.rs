@@ -65,13 +65,13 @@ pub fn known_secrets(cfg: &Config) -> Vec<(String, String)> {
             .filter_map(|p| p.key_var())
             .map(String::from),
     );
-    names.extend(crate::secrets::loaded_names().iter().cloned());
+    names.extend(crate::secrets::loaded_names());
     names.sort();
     names.dedup();
     names
         .into_iter()
         .filter_map(|n| {
-            let value = std::env::var(&n).ok().filter(|v| !v.is_empty())?;
+            let value = crate::secrets::non_empty(&n)?;
             Some((n, value))
         })
         .collect()

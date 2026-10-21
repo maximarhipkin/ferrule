@@ -1301,6 +1301,12 @@ all fail; and `make check` is green on Linux, macOS and Windows.
   the confused deputy the proxy would otherwise be (`[trust]
   untrusted_send_gate`, default on, guarded; `docs/m19-trust-cost.md`
   §6b).
+- **M54.2, the secrets file out of the environment**: its keys are held
+  in ferrule's memory, not set into the process environment, so no
+  other process of the account reads them from ferrule and no child
+  inherits them; a child gets one only by name (`env_passthrough`, an
+  owner hook's `env`), and an exported variable still wins
+  (`docs/sandbox.md`, "Env").
 
 ## Other open tracks
 

@@ -35,6 +35,7 @@ pub mod launch;
 #[cfg(target_os = "linux")]
 mod linux;
 pub mod seatbelt;
+pub mod secret_env;
 mod shell;
 #[cfg(target_os = "linux")]
 mod supervisor;
@@ -511,7 +512,18 @@ impl Sandbox {
         if self.policy.scrub_secret_env && self.is_secret_var(name) {
             return None;
         }
-        std::env::var(name).ok()
+        // M54.2: a held key reaches a child only by name.
+        match secret_env::held(name) {
+            Some(v) => self.passes_held(name).then_some(v),
+            None => std::env::var(name).ok(),
+        }
+    }
+
+    /// Whether a command gets the held value of `name` ([`secret_env`]):
+    /// named in `env_passthrough`, or any with `scrub_secret_env = false`.
+    /// No other held value reaches a child.
+    fn passes_held(&self, name: &str) -> bool {
+        !self.policy.scrub_secret_env || self.policy.env_passthrough.iter().any(|p| p == name)
     }
 
     /// A `Command` for `program args…` that runs in `workspace` under the
@@ -580,6 +592,11 @@ impl Sandbox {
         cmd.current_dir(workspace);
         for name in self.scrubbed_vars() {
             cmd.env_remove(name);
+        }
+        for (name, value) in secret_env::pairs() {
+            if self.passes_held(&name) {
+                cmd.env(name, value);
+            }
         }
         cmd.envs(self.extra_env.iter().map(|(k, v)| (k, v)));
         #[cfg(target_os = "linux")]
@@ -799,17 +816,23 @@ impl Sandbox {
         canonical_existing(&out)
     }
 
-    /// Names of the variables in this process's environment that sandboxed
-    /// commands won't see. Names only — values are never exposed.
+    /// Names of the variables this process holds, in its environment or
+    /// [`secret_env`], that sandboxed commands won't see. Names only —
+    /// values are never exposed.
     pub fn scrubbed_vars(&self) -> Vec<String> {
-        if !self.policy.scrub_secret_env {
-            return Vec::new();
-        }
-        let mut names: Vec<String> = std::env::vars_os()
-            .filter_map(|(k, _)| k.into_string().ok())
-            .filter(|k| self.is_secret_var(k))
+        let mut names: Vec<String> = secret_env::names()
+            .into_iter()
+            .filter(|k| !self.passes_held(k))
             .collect();
+        if self.policy.scrub_secret_env {
+            names.extend(
+                std::env::vars_os()
+                    .filter_map(|(k, _)| k.into_string().ok())
+                    .filter(|k| self.is_secret_var(k)),
+            );
+        }
         names.sort();
+        names.dedup();
         names
     }
 

@@ -163,12 +163,9 @@ impl OpenAiTranscriber {
             )
             .body(body);
         if let Some(var) = &self.key_env {
-            let key = std::env::var(var)
-                .ok()
-                .filter(|k| !k.is_empty())
-                .ok_or_else(|| {
-                    format!("{var} isn't set, so there's no key for the transcription service")
-                })?;
+            let key = ferrule_sandbox::secret_env::non_empty(var).ok_or_else(|| {
+                format!("{var} isn't set, so there's no key for the transcription service")
+            })?;
             req = req.bearer_auth(key);
         }
         let resp = req.send().await.map_err(|e| {

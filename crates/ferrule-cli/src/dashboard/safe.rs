@@ -344,7 +344,7 @@ fn groups(ctx: &Ctx, cfg: &Config, place: &crate::connections_setup::Place) -> V
             "Sealing key",
             "seals connections and plan sign-ins at rest",
         );
-        let from_env = std::env::var_os(ferrule_connections::seal::KEY_ENV).is_some();
+        let from_env = crate::secrets::var(ferrule_connections::seal::KEY_ENV).is_some();
         it.stored = if from_env {
             format!("${}", ferrule_connections::seal::KEY_ENV)
         } else {
@@ -668,7 +668,7 @@ fn delete_value(
     }
     // This process read it from the file at start (or a rotation put it
     // there): it goes now, and the proxy stops swapping it in.
-    std::env::remove_var(name);
+    ferrule_sandbox::secret_env::forget(name);
     let unbound = crate::shared_broker(cfg)
         .ok()
         .flatten()

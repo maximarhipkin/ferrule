@@ -3864,9 +3864,10 @@ command = "echo hi"
                 .1,
             NEW
         );
-        // In use from the next call: the running process's env has it.
-        assert_eq!(std::env::var("M52PROVIDERKEY").as_deref(), Ok(NEW));
-        std::env::remove_var("M52PROVIDERKEY");
+        // In use from the next call: the running process holds it (M54.2).
+        assert_eq!(crate::secrets::var("M52PROVIDERKEY").as_deref(), Some(NEW));
+        assert!(std::env::var_os("M52PROVIDERKEY").is_none());
+        ferrule_sandbox::secret_env::forget("M52PROVIDERKEY");
 
         // Hosts: only a page-shaped tool key, only real site names, asked first.
         let (s, v) = call(

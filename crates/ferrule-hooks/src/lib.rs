@@ -45,6 +45,10 @@ fn add(
     for (event, entry) in entries {
         let mut hook = CommandHook::new(entry.command.clone(), config.timeout(entry));
         hook.sandbox = sandbox.cloned();
+        // A workspace hook (in the sandbox) never gets a key by name.
+        if sandbox.is_none() {
+            hook.env = entry.env.clone();
+        }
         set.add(Hook::new(
             event,
             Matcher::parse(entry.matcher.as_deref()),

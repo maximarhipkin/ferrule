@@ -26,6 +26,9 @@ pub struct CommandHook {
     pub timeout: Duration,
     /// Where it runs; `None` is as the owner.
     pub sandbox: Option<Arc<Sandbox>>,
+    /// Names whose value ([`ferrule_sandbox::secret_env::var`]) the hook
+    /// gets in its environment: the owner's hook's `env`.
+    pub env: Vec<String>,
 }
 
 impl CommandHook {
@@ -34,6 +37,7 @@ impl CommandHook {
             command: command.into(),
             timeout,
             sandbox: None,
+            env: Vec::new(),
         }
     }
 }
@@ -70,6 +74,11 @@ impl HookHandler for CommandHook {
             // Claude Code's name for it, so its hook scripts port over.
             .env("CLAUDE_PROJECT_DIR", &ctx.workspace)
             .env("FERRULE_HOOK_EVENT", &input.hook_event_name)
+            .envs(
+                self.env
+                    .iter()
+                    .filter_map(|n| Some((n, ferrule_sandbox::secret_env::var(n)?))),
+            )
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

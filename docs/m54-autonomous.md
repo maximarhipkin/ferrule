@@ -160,7 +160,7 @@ A fourth `Mode`. It is built on the existing hide-only sandbox
   Landlock ptrace scope). With `require` on and §4 in place, nothing the
   model can influence runs outside a sandbox. So owner mode doesn't move
   the keys out of the process environment; that stays a separate
-  hardening item.
+  hardening item. (Done since: amendment 5, M54.2.)
 - **Read-only cases map to `ReadOnly`**, as `WorkspaceWrite` does: a
   read-only sub-agent (`for_child`) and plan mode (`for_planning`).
 - **Other people's chats keep the stricter sandbox.** A session gets
@@ -814,6 +814,30 @@ and a privacy hole found on review. Code paths are under `crates/`.
    `trust::equip` only while owner mode runs. The question names the
    source; a shell command keeps "Allow for this run"; a scheduled task
    is refused. User docs: `m19-trust-cost.md` §6b.
+5. **The secrets file stays out of the environment (M54.2).** §3 left
+   the keys in the gateway's environment, relying on `require` and
+   Landlock's ptrace scope; on macOS whether Seatbelt stops `ps eww` is
+   unverified, and every child inherited the keys. Now
+   `secrets::load` puts the file into `ferrule_sandbox::secret_env`, an
+   in-memory store, instead of `set_var`. Every reader goes through
+   `secret_env::var` (`secrets::var` in `ferrule-cli`): a value saved
+   since start, else the real environment, else the file's, so an
+   exported variable still wins. The providers' keys
+   (`config.rs`, `models.rs` `Entry::key`, which replaces the old
+   `SAVED_KEYS`), the proxy's binding (`shared_broker`, `mcp_add`), the
+   channel tokens, transcription (`ferrule-gateway` `transcribe.rs`),
+   the sealing key (`ferrule-connections` `seal.rs`), the plugin host's
+   real-value check, the claude plan's exported token, doctor and setup
+   read it there; the dashboard's rotate and delete change the store,
+   no longer `set_var`/`remove_var` with threads running. No child
+   inherits a held value: `Sandbox::command` passes one only for an
+   `env_passthrough` name (or all with `scrub_secret_env = false`),
+   `child_env_var` agrees, and an owner's hook gets its `env` names
+   (`ferrule-hooks`). Left: the owner's other spawns (gate scripts, a
+   transcription command) get the real environment only, a behaviour
+   change documented in `sandbox.md` "Env"; the store is plain memory,
+   not locked or encrypted, and the file isn't sealed under a keychain
+   key. User docs: `sandbox.md` "Env", `m18-hooks.md` §1–2.
 
 ## Build plan
 

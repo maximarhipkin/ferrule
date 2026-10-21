@@ -533,7 +533,7 @@ fn keys(r: &mut Report, path: &Path) {
 }
 
 fn key(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    secrets::non_empty(name)
 }
 
 async fn providers(
@@ -1560,7 +1560,7 @@ fn proxy(r: &mut Report, cfg: &config::Config) {
     let set = cfg
         .secrets
         .keys()
-        .filter(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+        .filter(|name| secrets::non_empty(name).is_some())
         .count();
     if !cfg.secrets.is_empty() && set == 0 {
         let names: Vec<&str> = cfg.secrets.keys().map(String::as_str).collect();
@@ -1667,7 +1667,7 @@ fn telemetry_check(r: &mut Report, cfg: &config::Config) {
 fn set_secrets(cfg: &config::Config) -> bool {
     cfg.secrets
         .keys()
-        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+        .any(|name| secrets::non_empty(name).is_some())
 }
 
 /// M28: `[web_search]` without a paid call: the key is set and bound to the

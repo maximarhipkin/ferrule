@@ -8192,3 +8192,65 @@ read and then send are refused in owner mode. Not seen as outside
 content: a fetch through `python`, `git clone`, an `mcp_add` server's
 reads (and its writes aren't classified), a forwarded message. No live
 run.
+
+### 2026-10-21 — M54.2: the secrets file out of the process environment (Claude, Opus 5.5)
+
+**Why.** Startup put every key in `private/secrets.env` into the process
+environment with `set_var`. Any process of the same account could read
+them from `/proc/<pid>/environ` (on macOS, whether Seatbelt stops
+`ps eww` is unverified), every child inherited them, and the dashboard's
+rotate and delete called `set_var`/`remove_var` with threads running.
+One sandbox bypass meant every key.
+
+**What changed.**
+- `ferrule-sandbox` `secret_env`: a process-wide in-memory store
+  (`load`, `var`, `non_empty`, `held`, `names`, `pairs`, `set`,
+  `forget`). `var` is a value saved since start, else the real
+  environment's, else the file's: an exported variable still wins, as
+  before, and a dashboard save wins over both, as `set_var` did.
+- `ferrule-cli` `secrets::load` (was `load_into_env`) fills it;
+  `secrets::var`/`non_empty` wrap it; `source` and `loaded_names` read
+  it. Converted readers: provider keys (`config.rs` `resolve`,
+  `models.rs` `Entry::key`, whose `SAVED_KEYS` the store replaces;
+  `remember_key` now sets the store), the model catalog, the proxy's
+  bindings (`shared_broker`, `mcp_add`), the channel tokens,
+  `transcription.rs`, doctor, setup, the importer, `health::known_secrets`,
+  the sandbox self-check, the panel secret, and the dashboard's rotate
+  (`secret_env::set`) and delete (`forget`). Elsewhere:
+  `ferrule-gateway` `transcribe.rs`, `ferrule-connections` `seal.rs`,
+  `ferrule-plugins` `host.rs` (the "would go out as its real value"
+  check), `ferrule-plans` `exported_token`.
+- Children: `Sandbox::command` passes a held value only for an
+  `env_passthrough` name (all of them with `scrub_secret_env = false`);
+  `scrubbed_vars` lists held names too, and `child_env_var` returns what
+  a command would get. `ferrule-hooks`: an owner hook's `env = [...]`
+  names the keys it gets; a workspace hook's is ignored.
+  `instance::child_for` no longer strips names (nothing is there).
+- Kept reading the real environment on purpose: the dashboard's "set in
+  the environment ferrule was started with" notes, the claude plan's
+  "outranking" warning, `config_follow::secret_value` and
+  `connections_setup::Place::get` (they read the file directly), the
+  managed-mode and proxy variables.
+- Docs: `sandbox.md` "Env" (the behaviour change and its migration) and
+  owner mode's open list, `m18-hooks.md` §1–2 (`env`),
+  `m54-autonomous.md` amendment 5, `research-credential-gateway.md`'s
+  macOS note, the config template's `env_passthrough` line, the
+  roadmap.
+
+**Behaviour change.** The owner's spawns outside the sandbox (hooks,
+gate scripts, a `[transcription] command`, the tunnel) and sandboxed
+commands no longer inherit the file's keys (before, a sandboxed command
+got those whose names don't look secret). Migration in `sandbox.md`
+"Env": a hook's `env`, `env_passthrough`, or the service environment.
+
+**Tests changed, none added.** The dashboard's rotate test now checks
+the store, not the environment.
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** The store is plain process memory (not `mlock`ed or
+encrypted), and the file isn't sealed under a keychain key (the
+report's optional half). Gate scripts and a transcription command have
+no `env` of their own. No live run (Linux `/proc/<pid>/environ`, macOS
+`ps eww`).

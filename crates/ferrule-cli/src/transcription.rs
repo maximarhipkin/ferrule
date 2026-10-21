@@ -223,7 +223,7 @@ pub fn build(cfg: &Config, sink: Option<Arc<dyn LedgerSink>>) -> Result<Transcri
         sink: sink.clone(),
         price_per_minute: Some(price),
     };
-    Ok(match t.choice(&cfg.providers, |v| std::env::var(v).ok())? {
+    Ok(match t.choice(&cfg.providers, crate::secrets::var)? {
         Choice::Off { plan_only, .. } => Transcription::Off {
             how: how_to_turn_on(plan_only),
         },
@@ -261,7 +261,7 @@ pub fn build(cfg: &Config, sink: Option<Arc<dyn LedgerSink>>) -> Result<Transcri
 pub fn doctor_line(cfg: &Config) -> (bool, String) {
     match cfg
         .transcription
-        .choice(&cfg.providers, |v| std::env::var(v).ok())
+        .choice(&cfg.providers, crate::secrets::var)
     {
         Err(e) => (false, format!("voice transcription: {e:#}")),
         Ok(Choice::OpenAi {
@@ -270,7 +270,7 @@ pub fn doctor_line(cfg: &Config) -> (bool, String) {
             why,
         }) => {
             let key = match &key_env {
-                Some(var) if std::env::var(var).is_ok_and(|v| !v.is_empty()) => {
+                Some(var) if crate::secrets::non_empty(var).is_some() => {
                     format!("key {var}")
                 }
                 Some(var) => {

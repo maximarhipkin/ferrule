@@ -21,6 +21,11 @@ pub struct HookEntry {
     /// Overrides `[hooks] timeout_secs`; capped at 600.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Keys from the secrets file this hook gets in its environment, by
+    /// name (M54.2: no child inherits them). Only the owner's hooks; a
+    /// workspace hook's `env` is ignored.
+    #[serde(default)]
+    pub env: Vec<String>,
 }
 
 /// Defines a struct with the given fields plus one `Vec<HookEntry>` per

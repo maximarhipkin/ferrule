@@ -571,9 +571,10 @@ static PANEL: OnceLock<Vec<u8>> = OnceLock::new();
 /// process inherits it) and keeps it in memory. Call before any thread
 /// starts. A secret under 32 bytes is refused.
 pub fn take_panel_secret() {
-    let v = std::env::var(PANEL_SECRET_ENV).ok();
+    let v = crate::secrets::var(PANEL_SECRET_ENV);
     // `main` calls this before the runtime or any thread starts.
     std::env::remove_var(PANEL_SECRET_ENV);
+    ferrule_sandbox::secret_env::forget(PANEL_SECRET_ENV);
     match v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
         Some(v) if v.len() >= 32 => {
             let _ = PANEL.set(v.into_bytes());

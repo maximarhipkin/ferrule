@@ -230,12 +230,7 @@ pub async fn load_all(sources: &[Source], dir: &Path, force: bool) -> Vec<Listin
 
 async fn fetch(src: &Source) -> Result<Vec<Listed>, String> {
     let mut req = crate::probe::client().get(&src.url);
-    if let Some(key) = src
-        .key_env
-        .as_deref()
-        .and_then(|k| std::env::var(k).ok())
-        .filter(|k| !k.is_empty())
-    {
+    if let Some(key) = src.key_env.as_deref().and_then(crate::secrets::non_empty) {
         req = req.bearer_auth(key);
     }
     let resp = req.send().await.map_err(|e| e.without_url().to_string())?;

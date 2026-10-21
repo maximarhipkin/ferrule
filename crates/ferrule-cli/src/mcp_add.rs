@@ -278,7 +278,7 @@ fn resolve_secrets(a: &AddArgs, cfg: &config::Config, interactive: bool) -> Resu
         };
         let (value, save) = match saved_secret(&name) {
             Some(v) => (v, false),
-            None => match std::env::var(&name).ok().filter(|v| !v.is_empty()) {
+            None => match secrets::non_empty(&name) {
                 Some(v) => (v, true),
                 None if interactive => match ask_secret(&format!("{name} value"), false, no_shape)?
                 {
@@ -371,7 +371,7 @@ fn probe_sandbox(
         values
             .get(name)
             .map(|v| v.to_string())
-            .or_else(|| std::env::var(name).ok())
+            .or_else(|| secrets::var(name))
     })?;
     if let Some(broker) = &broker {
         sandbox = sandbox

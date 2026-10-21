@@ -202,6 +202,33 @@ Variables whose name looks secret (`*KEY*`, `*SECRET*`, `*TOKEN*`,
 `scrub_secret_env = false` keeps them all. With `[secrets]`, the command
 gets a same-shaped placeholder in their place.
 
+**The secrets file isn't in the environment (M54.2).** Ferrule loads
+`private/secrets.env` into its own memory (`ferrule_sandbox::secret_env`),
+not into the process environment. Another process of the same account
+can't read those keys from `/proc/<ferrule>/environ` or `ps eww`, and no
+child inherits them, whatever its sandbox. Ferrule reads a key from the
+real environment first, so an `export`ed variable still wins over the
+file, and a key saved from the dashboard wins over both until restart.
+A key from the file reaches a child only by name:
+
+- a sandboxed command (the shell, a stdio MCP server, a workspace hook)
+  gets it when it's in `env_passthrough`, or every one with
+  `scrub_secret_env = false`; with `[secrets]` it gets the placeholder
+  instead, as before;
+- an owner's hook gets the names in its `env` (`docs/m18-hooks.md` §2);
+- `${NAME}` in an MCP server's or telemetry's headers expands to what a
+  command would get.
+
+**Changed for helpers outside the sandbox.** Until M54.2 the owner's own
+spawns (hooks, scheduled tasks' gate scripts, a `[transcription]
+command`, the tunnel) inherited every key in the file, and a sandboxed
+command inherited the file's keys whose names don't look secret. Now
+they get the real environment only. If one of yours used a key from the
+file: list it in the hook's `env`; or in `env_passthrough` for a
+command; or set it in the environment ferrule starts with (the service
+file's `Environment=`, a launchd plist, your shell), which they inherit
+as before.
+
 **Tool results.** Whatever a command, an MCP server or any other tool
 prints, the agent loop takes the values of the keys ferrule holds out of
 the result before the transcript, the model, a hook or the trace sees it
@@ -516,7 +543,8 @@ session, or a workspace per guest, is the follow-up.
   `owner mode needs Linux; this is macOS` (or Windows).
 - **Existing limits:** file names inside a hidden directory stay
   listable, and a bind mount of a hidden path isn't covered.
-- **An owner hook that needs the keys** stops working here.
+- **An owner hook that needs the keys** gets only the names in its
+  `env` (M54.2), in the sandbox like the rest.
 - **The bot's `ferrule status` from its shell** may show less (the
   gateway's state dir is hidden); it uses `ferrule_admin status`.
 

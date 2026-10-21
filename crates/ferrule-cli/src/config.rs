@@ -1766,7 +1766,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 #                            # for build caches; relative = inside the workspace
 # tmp = true                 # /tmp and $TMPDIR stay writable
 # scrub_secret_env = true    # drop *KEY*/*TOKEN*/*SECRET*… and api_key_env vars
-# env_passthrough = []       # names to keep anyway, e.g. ["GITHUB_TOKEN"]
+# env_passthrough = []       # names to keep (or pass from the secrets file), e.g. ["GITHUB_TOKEN"]
 # deny_read = []             # extra paths commands and the file tools can't
 #                            # read, e.g. ["~/work/.env.production"]
 # deny_default_reads = true  # ~/.ssh, cloud credential dirs, browser profiles
@@ -2059,7 +2059,7 @@ impl Config {
             // A plan's credential is read per call from its own store.
             return Ok((name, cfg, String::new()));
         }
-        let key = std::env::var(&cfg.api_key_env).with_context(|| {
+        let key = crate::secrets::var(&cfg.api_key_env).with_context(|| {
             format!(
                 "env var `{}` not set (needed by provider `{name}`) — run `ferrule setup`, or export it",
                 cfg.api_key_env

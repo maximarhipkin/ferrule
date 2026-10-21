@@ -654,8 +654,9 @@ fn log_filter(daemon: bool) -> tracing_subscriber::EnvFilter {
     EnvFilter::new(directives)
 }
 
-/// Sync on purpose: `--config` and the secrets file go into the environment
-/// before the runtime starts any thread, since `set_var` isn't thread-safe.
+/// Sync on purpose: `--config` goes into the environment before the
+/// runtime starts any thread, since `set_var` isn't thread-safe. The
+/// secrets file goes into memory, not the environment (M54.2).
 fn main() -> Result<()> {
     // On Windows, ferrule is also the sandbox's launcher (M26): run as
     // `ferrule __sandbox-launch <program> <args…>`, it never gets here.
@@ -732,7 +733,7 @@ fn main() -> Result<()> {
             }
         }
     }
-    secrets::load_into_env();
+    secrets::load();
     // M44: the panel's secret leaves the environment before any thread
     // starts, so no child inherits it.
     managed::take_panel_secret();
@@ -2127,7 +2128,7 @@ pub(crate) fn shared_broker(cfg: &config::Config) -> Result<Option<&'static Brok
     if let Some(broker) = BROKER.get() {
         return Ok(broker.as_ref());
     }
-    let broker = Broker::start(broker_config(cfg)?, |name| std::env::var(name).ok())?;
+    let broker = Broker::start(broker_config(cfg)?, secrets::var)?;
     if let Some(b) = &broker {
         egress::report_denials(b, ledger::build_sink(cfg));
         // M52.2: the Safe's "last used" (name and host, never a value).
@@ -2721,7 +2722,7 @@ fn streaming_channels(cfg: &config::Config) -> Vec<String> {
 
 /// A token from the env var `[gateway] <key>` names.
 fn channel_token(env_var: &str, key: &str) -> Result<String> {
-    std::env::var(env_var).map_err(|_| {
+    secrets::var(env_var).ok_or_else(|| {
         anyhow!("env var `{env_var}` not set (needed by [gateway].{key}) — run `ferrule setup`, or export it")
     })
 }
@@ -2755,7 +2756,7 @@ fn build_channels(
     }
 
     if let Some(env_var) = &cfg.gateway.telegram_token_env {
-        let token = std::env::var(env_var).map_err(|_| {
+        let token = secrets::var(env_var).ok_or_else(|| {
             anyhow!("env var `{env_var}` not set (needed by [gateway].telegram_token_env) — run `ferrule setup`, or export it")
         })?;
         let telegram: Arc<dyn Channel> = Arc::new(
@@ -3993,7 +3994,7 @@ fn sandbox_cmd(workspace: PathBuf) -> Result<()> {
         let placeholders_only = broker.secrets().iter().all(|s| {
             env.lines()
                 .any(|l| l == format!("{}={}", s.name, s.placeholder))
-                && std::env::var(&s.name).map_or(true, |real| !env.contains(&real))
+                && secrets::var(&s.name).is_none_or(|real| !env.contains(&real))
         });
         report(
             "[secrets] reach commands as placeholders only",

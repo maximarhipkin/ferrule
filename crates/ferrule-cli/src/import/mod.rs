@@ -1311,7 +1311,7 @@ fn scan_verdict(findings: &[ferrule_extensions::Finding]) -> String {
 // ── The command ────────────────────────────────────────────────────────
 
 fn env_var(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    secrets::non_empty(name)
 }
 
 /// The plan for a command, reading the real environment.

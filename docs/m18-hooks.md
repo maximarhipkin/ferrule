@@ -132,6 +132,14 @@ do, it can do. A workspace hook runs through the same sandbox as the shell
 tool's commands (`Sandbox::command`): the same writable roots and network
 rule, and an environment without secret-looking variables.
 
+Since M54.2 no hook inherits a key from the secrets file: ferrule holds
+those in memory, not in its environment (`docs/sandbox.md`, "Env"). A
+hook from your config gets the ones its `env` names (§2). Before, it
+inherited all of them; a hook that relied on that needs its `env` line,
+or the variable set in the environment ferrule starts with. A workspace
+hook's `env` is ignored: it runs in the sandbox, where scripts the model
+can edit would read the value.
+
 ### What the model sees
 
 - A Stop block: a user message ``[hook: Stop] This isn't done yet:\n\n<reason>``
@@ -161,6 +169,10 @@ timeout_secs = 10
 
 [[hooks.Stop]]
 command = "notify-send 'ferrule finished'"
+
+[[hooks.Stop]]
+command = "~/.config/ferrule/hooks/post-to-slack.sh"
+env = ["SLACK_WEBHOOK_URL"]   # from the secrets file, by name (M54.2)
 ```
 
 User hooks are read **only from a trusted config**: the global config
@@ -182,8 +194,10 @@ It can't set `project`, the default timeout or the caps: a repo can't
 raise its own limits. Any entry's `timeout_secs`, user or workspace, is
 capped at 600s.
 
-An entry has `command` (required), `matcher` (optional) and
-`timeout_secs` (optional). An unknown key or event name is a config
+An entry has `command` (required), `matcher` (optional),
+`timeout_secs` (optional) and `env` (optional: names whose values the
+hook gets in its environment, from the real environment or the secrets
+file; only a user hook's counts). An unknown key or event name is a config
 error, not a hook that silently never fires.
 
 ## 3. Trust for workspace hooks

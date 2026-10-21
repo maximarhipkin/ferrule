@@ -103,12 +103,12 @@ pub fn take_exported() {
 }
 
 /// The exported token [`take_exported`] kept, or the variable itself when
-/// nothing took it (tests, a library caller).
+/// nothing took it (tests, a library caller, the secrets file's, which is
+/// held in memory: M54.2).
 pub fn exported_token() -> Option<Token> {
     let held = exported().lock().unwrap_or_else(|e| e.into_inner()).clone();
     held.or_else(|| {
-        std::env::var(TOKEN_VAR)
-            .ok()
+        ferrule_sandbox::secret_env::var(TOKEN_VAR)
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .map(Token)

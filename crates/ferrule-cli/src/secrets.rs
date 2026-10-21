@@ -1,15 +1,17 @@
 //! The secrets file: `NAME=value` lines in `<data dir>/private/secrets.env`,
 //! written by `ferrule setup` so nobody has to export API keys by hand.
 //!
-//! It's loaded into the process environment at startup, before any thread
-//! exists, and a variable already set in the real environment wins — so
-//! everything downstream keeps reading env vars, and `export X=…` still
+//! It's loaded at startup into memory, [`ferrule_sandbox::secret_env`],
+//! not into the process environment (M54.2): another process of the same
+//! account can't read it from `/proc/<pid>/environ`, and no child inherits
+//! it. Everything that needs a key reads it through [`var`], and a
+//! variable set in the real environment wins, so `export X=…` still
 //! overrides the file. The file is 0600 in a 0700 directory, and the
 //! sandbox hides the directory from the shell tool's commands.
 
 use anyhow::{bail, Context, Result};
+use ferrule_sandbox::secret_env;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 /// Everything sandboxed commands must never read: the secrets file's
 /// directory. Kept apart from the rest of the data dir so the memory
@@ -30,48 +32,49 @@ pub enum Source {
     Missing,
 }
 
-static LOADED: OnceLock<Vec<String>> = OnceLock::new();
-
 pub fn source(name: &str) -> Source {
-    if std::env::var_os(name).is_none_or(|v| v.is_empty()) {
-        Source::Missing
-    } else if LOADED.get().is_some_and(|l| l.iter().any(|n| n == name)) {
+    if secret_env::held(name).is_some_and(|v| !v.is_empty()) {
         Source::File
-    } else {
+    } else if std::env::var_os(name).is_some_and(|v| !v.is_empty()) {
         Source::Env
+    } else {
+        Source::Missing
     }
 }
 
-/// The variables [`load_into_env`] set: a child for another instance
-/// mustn't inherit them (M38).
-pub fn loaded_names() -> &'static [String] {
-    LOADED.get().map_or(&[], Vec::as_slice)
+/// A key's value for this process: saved from the dashboard since it
+/// started, else the real environment's, else the secrets file's.
+pub fn var(name: &str) -> Option<String> {
+    secret_env::var(name)
 }
 
-/// Load the secrets file into the environment. Must run before the tokio
-/// runtime (or any other thread) starts: `set_var` isn't thread-safe.
-/// Problems are warnings — a broken secrets file shouldn't stop `ferrule
-/// doctor` from saying so.
-pub fn load_into_env() {
-    let mut loaded = Vec::new();
+/// [`var`], without an empty value.
+pub fn non_empty(name: &str) -> Option<String> {
+    secret_env::non_empty(name)
+}
+
+/// The names the secrets file gave this process (the real environment had
+/// none of them).
+pub fn loaded_names() -> Vec<String> {
+    secret_env::names()
+}
+
+/// Load the secrets file into memory ([`secret_env`]). Problems are
+/// warnings — a broken secrets file shouldn't stop `ferrule doctor` from
+/// saying so.
+pub fn load() {
     match path() {
         Ok(path) => match read(&path) {
             Ok(entries) => {
                 if !entries.is_empty() {
                     warn_if_loose(&path);
                 }
-                for (name, value) in entries {
-                    if std::env::var_os(&name).is_none() {
-                        std::env::set_var(&name, value);
-                        loaded.push(name);
-                    }
-                }
+                secret_env::load(entries);
             }
             Err(e) => eprintln!("ferrule: can't read {}: {e:#}", path.display()),
         },
         Err(e) => eprintln!("ferrule: no data dir for the secrets file: {e:#}"),
     }
-    let _ = LOADED.set(loaded);
 }
 
 #[cfg(unix)]

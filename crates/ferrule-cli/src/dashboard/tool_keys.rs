@@ -240,10 +240,10 @@ pub fn rotate(ctx: &Ctx, body: &Value) -> Answer {
             format!("the key couldn't be replaced: {e:#}. The old one is still in place."),
         );
     }
-    // Providers and connections read their key_env per call, the process
-    // environment first (`models.rs`'s `key()`): put the new value there
-    // too, so the change works without a restart.
-    std::env::set_var(name, value);
+    // Providers and connections read their key_env per call through the
+    // held keys (`secrets::var`, M54.2): put the new value there too, so
+    // the change works without a restart.
+    ferrule_sandbox::secret_env::set(name, value);
     // M52.2: a tool key the proxy swaps in takes the new value now; the
     // old placeholder keeps working for commands started before.
     // Only a `[secrets]` name: the proxy isn't started for anything else.
