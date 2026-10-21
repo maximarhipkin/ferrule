@@ -387,3 +387,79 @@ from before the gateway's last start, or on a piece of a reply split
 over several messages other than the last, isn't matched. The probe
 re-runs the reacted request alone, without the chat's earlier turns.
 `learn/reactions/` is never pruned.
+
+## M53.7 — an opt-in blind selection node
+
+Built 2026-10-21 on `autopilot`, from the gap analysis's M53.7.
+
+**Why.** Some outputs have no check to run: a briefing, a summary of a
+contract, an answer the owner will act on. When one of those is costly to
+get wrong, asking several agents and picking the best is worth paying
+for. Harness²'s selector does that with anonymized, shuffled candidates
+([selection.py](https://github.com/google-research/harness2/blob/1cfe254e8d25b15f37048c3730134686abe60335/harness2/core/selection.py#L71-L111),
+as the gap analysis reads it).
+
+**Why it isn't a default.** It costs k + 1 agents for one answer.
+Ferrule's routing research found no source showing best-of-n beating a
+well-tuned cascade on cost-adjusted quality, and keeps it "a tool for
+specific high-stakes decisions, not a routing default"
+(`docs/research-routing-and-local-models.md`, "What's hype"). A selector
+also errs: the gap analysis cites Harness²'s choosing a 55 over a 95
+([arXiv App. E.6](https://arxiv.org/html/2610.14224)). Where a check
+exists, a `check` node (or `verify_command`) is the judge, not this.
+
+**The node** (`crates/ferrule-cli/src/graph.rs`):
+
+```toml
+[[nodes]]
+id = "brief"
+kind = "select"
+task = "Write the board briefing on {{goal}} from docs/q3/*.md"
+k = 3                 # 2 to 5, default 3
+# seed = 42           # the shuffle's; default a fresh one, in the report
+# model = "…"         # the candidates', as `spawn_agent`'s rules
+# judge_model = "…"   # the verifier's; default its role's model
+# role = "planner"    # worker (default) or planner
+```
+
+1. **Candidates.** k agents (`<id>-1` … `<id>-k`) start at once on the
+   same rendered task, each in its own worktree when the workspace is a
+   git repo, and are waited for with the node's `timeout_secs`. One that
+   couldn't start fails the node and
+   closes the rest (k must fit `[agents] max_children`, 4 by default,
+   beside whatever else the graph runs then). A candidate that failed,
+   timed out or reported nothing is left off the slate and named in the
+   result; none delivered fails the node.
+2. **Blind slate.** The deliverables (each agent's report) are shuffled
+   with the seed (splitmix64, Fisher-Yates) and labelled A, B, C… The
+   verifier sees no agent id, name, model or order. A deliverable over
+   16,000 characters keeps its head and tail, the cut marked as the
+   runner's.
+3. **The verifier** (`<id>-pick`, role verifier, on its own snapshot of
+   the workspace when it is a git repo) is given the task, the
+   deliverables and Harness²'s checklist, in order,
+   an earlier item outweighing every later one: delivered; matches the
+   requested shape; facts match the source (it is told to read the
+   sources itself); internally consistent; usable; finished. It must end
+   with `PICK: <label>`, or `PICK: none`.
+4. **Fail-closed parse** (`pick_of`). Every `PICK:` line must name the
+   same one label. No such line, `none`, a label that isn't on the slate,
+   two different picks, or a verifier that didn't finish: the node fails,
+   nothing is picked, and the result says so with the seed and the
+   verifier's last line.
+5. **Picked.** The node passes with "picked B (agent …, branch …) of 3
+   delivered, seed …" and the deliverable, which `{{prev}}` carries on.
+   The verifier and every other candidate (delivered or not) are closed
+   (a closed worker's leftover work is committed to its branch, kept
+   only if it holds work); the picked one stays, as an agent node's
+   does. When nothing is picked, every candidate is closed. A verifier
+   that times out is closed and said to have.
+
+A select node counts as one step against `max_steps` and takes
+`max_attempts` like any node. Select nodes run beside the batch's agent
+nodes; two that are ready at once take turns.
+
+**Not done.** No real run yet. The deliverable is each agent's report:
+a task whose output is files should have its agents put the result, or
+where it is, in the report. Nothing measures how often the verifier
+picks the best one.

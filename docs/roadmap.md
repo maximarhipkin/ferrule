@@ -1191,6 +1191,12 @@ each in `docs/m53-contrastive-probing.md`):
   with learning on, the owner's 👎 on a Telegram reply becomes an episode
   cut at that reply, judged knowing the owner reacted, and a later 👍 in
   the chat marks it fixed. Learning stays off by default.
+- **M53.7**, an opt-in blind selection node: `kind = "select"` in
+  `ferrule graph` runs k agents (default 3, 2 to 5) on one task, shuffles
+  their deliverables under seeded anonymous labels, and a verifier agent
+  picks one against Harness²'s ordered checklist with `PICK: <label>`;
+  an unclear pick fails the node. For rare check-less, high-stakes
+  outputs; best-of-n stays out of every default path.
 
 ### M54 — protected autonomous mode
 

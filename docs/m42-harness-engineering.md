@@ -163,6 +163,11 @@ from = "verify" to = "ship" on = "pass"
   satisfied (the batch waits for *all*, not the first).
 - **Verifier agents** end with `VERDICT: PASS|FAIL`; anything unclear
   fails closed.
+- **Select nodes** (M53.7, opt-in, for rare check-less, high-stakes
+  outputs): `kind = "select"` runs `k` agents (default 3, 2 to 5) on the
+  same `task`, and a verifier agent picks one deliverable, shown under
+  seeded anonymous labels, with `PICK: <label>`; no clear pick fails
+  closed (`docs/m53-contrastive-probing.md`, "M53.7").
 - **Success**: `succeed_when = "<node>"`, or every terminal node (no
   non-feedback way out) passing. The report is truthful per node:
   pass/fail/never ran, exit 0 or 2.

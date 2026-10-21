@@ -7711,3 +7711,41 @@ button, the lines). Only Telegram's reactions are read; a reaction on a
 reply from before the gateway's last start, or on an earlier piece of a
 split reply, is dropped. The probe re-runs the reacted request without
 the chat's earlier turns. `learn/reactions/` is never pruned.
+
+### 2026-10-21 — M53.7: an opt-in blind selection node (Claude, Opus 5.5)
+
+**Why.** Some outputs have no check (a briefing, a contract summary) and
+cost a lot when wrong. Harness²'s selector picks among candidates shown
+anonymously in a shuffled order. Ferrule's routing research keeps
+best-of-n out of the defaults (k + 1 agents per answer, no source shows
+it paying off), and the selector errs, so this is a node a graph opts
+into, nothing more.
+
+**What changed.**
+- `ferrule-cli/src/graph.rs`: `kind = "select"` with `task`, `k`
+  (default 3, 2 to 5, checked at parse), `seed`, `judge_model`, and
+  `role` (worker or planner). It starts k agents on the same task, keeps
+  those that delivered, shuffles them by the seed (splitmix64,
+  Fisher-Yates) under labels A, B, C…, and spawns a verifier with the
+  task, the deliverables (16,000 characters each at most, head and tail,
+  the cut marked) and Harness²'s ordered checklist: delivered, matches
+  the requested shape, facts match the source, internally consistent,
+  usable, finished. `pick_of` reads `PICK: <label>`; no line, `none`,
+  an unknown label or two different picks fail the node, with the seed
+  and the verifier's last line. The pick passes with its agent, branch
+  and deliverable; every other candidate and the verifier are closed (all
+  of them when nothing is picked). `wait_all`
+  is the wait `wait_agents` used, shared. Select nodes run beside the
+  batch's agent nodes and take turns with each other.
+- Docs: `m53-contrastive-probing.md` ("M53.7", with why it isn't a
+  default), `m42-harness-engineering.md` (Part 6), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** No real run. The deliverable is each agent's report, not its
+files. k must fit `[agents] max_children` (4 by default) beside the
+graph's other running agents. Nothing measures how often the verifier
+picks the best one.
