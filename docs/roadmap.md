@@ -1289,6 +1289,11 @@ all fail; and `make check` is green on Linux, macOS and Windows.
   `[redacted]` before the transcript or the model sees it; `ferrule
   doctor`'s `history` line counts known values left in `sessions/` and
   `learn/` (`docs/sandbox.md`, "Env").
+- **M54.6, a danger notice while the box is open**: owner mode, the
+  sandbox off and the gates off each get a `ferrule doctor` warning and
+  a red notice on the dashboard's Home that says what's open, with an
+  "Ask me first" button; only owner mode's closes, for a day
+  (`docs/sandbox.md`, "Turn it on and off").
 
 ## Other open tracks
 

@@ -236,7 +236,9 @@ limits what can be written at all, and the credential proxy (M7) decides
 which hosts get real keys. Its false positives cost one approval; its
 false negatives are what the sandbox is for.
 
-`[trust] gates = false` turns the classifier off.
+`[trust] gates = false` turns the classifier off. While it is,
+`ferrule doctor` warns (`open`) and the dashboard's Home shows a red
+notice that can't be closed, with "Ask me first" as the fix (M54.6).
 
 ## 7. The approval round-trip
 

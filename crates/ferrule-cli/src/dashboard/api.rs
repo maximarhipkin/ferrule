@@ -268,6 +268,28 @@ pub fn health(ctx: &Ctx) -> Value {
     if let Some(name) = crate::instance::current() {
         out["instance"] = json!(name);
     }
+    // M54.6: red while the box is open; only owner mode, a choice the
+    // dashboard offers, closes for a day.
+    if let Some(cfg) = config(ctx) {
+        for open in crate::owner_mode::openings(&cfg) {
+            let fixes = if crate::managed::on() {
+                json!([])
+            } else {
+                json!([
+                    { "label": "Ask me first", "action": "sandbox/mode", "body": { "mode": "ask" } },
+                    { "label": "Open Settings", "section": "settings" },
+                ])
+            };
+            problems.push(json!({
+                "id": open.id,
+                "fixes": fixes,
+                "what": open.what,
+                "fix": open.close,
+                "section": "health",
+                "top": true,
+            }));
+        }
+    }
     if let Some(live) = &ctx.live {
         let h = &live.health;
         let lanes = live

@@ -784,6 +784,19 @@ and a privacy hole found on review. Code paths are under `crates/`.
    loop, values under 6 characters are skipped, connection OAuth tokens
    aren't in the list, and the values are read once at startup (a
    `[secrets]` key bound later is covered by the proxy).
+3. **A danger notice while the box is open (M54.6).** §8 gave the owner
+   a switch but nothing that says the box is open, and the old stopgap
+   showed how a "temporary" setting outlives its reason.
+   `owner_mode::openings(cfg)` lists owner mode running (`on`, so not
+   after a fallback), `[sandbox] mode = "off"` and `[trust] gates =
+   false`, each with what it opens and how to close it. `ferrule doctor`
+   warns once per opening (`open`), with the way to close it as the hint.
+   The dashboard's Home (`api.rs` `health`) shows each as a red (`top`)
+   notice with "Ask me first" (`sandbox/mode {mode: "ask"}`, which also
+   drops `gates = false`) and "Open Settings"; a managed bot gets no
+   buttons. The sandbox-off and gates-off notices can't be closed
+   (`notices::unclosable`); owner mode's closes for a day, as it's a
+   choice the dashboard offers, and comes back while still true.
 
 ## Build plan
 

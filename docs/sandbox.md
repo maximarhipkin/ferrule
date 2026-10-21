@@ -281,6 +281,12 @@ It is opt-in. The default stays `workspace-write`.
   the bot can't change (`ferrule_admin config_set` refuses it), and the
   dashboard's switch has no chat route. `config_restore` from the chat refuses a restore that
   would bring back a guarded field.
+- **You can't forget it's on** (M54.6). While owner mode runs,
+  `ferrule doctor` warns (`open`) and the dashboard's Home shows a red
+  notice saying what's open, with an "Ask me first" button; it can be
+  closed for a day and comes back while still true. `mode = "off"` and
+  `[trust] gates = false` get the same, except that their notices can't
+  be closed (`owner_mode::openings`).
 
 ### What commands can read and write
 

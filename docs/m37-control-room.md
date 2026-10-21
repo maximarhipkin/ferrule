@@ -56,7 +56,7 @@ problem also carries:
 | field | meaning |
 |---|---|
 | `id` | stable: `kind:subject` where the code knows the kind (`kill`, `model-down:<ref>`, `channel:<name>`, `cap:<name>`, `update`, `selfcheck:<key>`, `local`, `workspace`, `stuck:<session>`, `prices`). Anything else: `h:` + the first 16 hex of BLAKE2 over `section + what`. |
-| `closable` | false for the kill switch and for "no model can answer". |
+| `closable` | false for the kill switch, for "no model can answer", and for the sandbox off and the gates off (M54.6: `open-sandbox-off`, `open-gates-off`). |
 | `fixes` | `[{label, action, body}]`, each a POST the page can make. |
 
 Other strips the page draws (a section that can't load, the connection
@@ -94,8 +94,9 @@ written atomically (temp file + rename):
   notice: the `what` hash in the entry no longer matches.
 - **Pruned.** An entry whose notice is gone at the next health read, or
   that is older than 7 days, is dropped.
-- **Never hidden for good:** the kill switch and "no model can answer"
-  (the default and every fallback down or keyless). The API refuses to
+- **Never hidden for good:** the kill switch, "no model can answer"
+  (the default and every fallback down or keyless), and M54.6's sandbox
+  off and gates off. The API refuses to
   dismiss them (`409`, "this one can't be hidden: …"); the page has no ×.
 
 ### 1.3 Fix buttons

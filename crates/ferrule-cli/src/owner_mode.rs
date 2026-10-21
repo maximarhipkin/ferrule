@@ -108,6 +108,53 @@ pub fn protected_paths() -> Vec<PathBuf> {
     paths
 }
 
+/// M54.6: one way the box is open, and how to close it.
+pub struct Opening {
+    /// Stable, for the dashboard's notices.
+    pub id: &'static str,
+    pub what: String,
+    pub close: &'static str,
+}
+
+/// M54.6: what's open while it is, for `ferrule doctor` and the
+/// dashboard's Home: owner mode running, the sandbox off, the approval
+/// gates off. Each says what it opens and how to close it.
+pub fn openings(cfg: &Config) -> Vec<Opening> {
+    let mut out = Vec::new();
+    if on(cfg) {
+        out.push(Opening {
+            id: "open-owner",
+            what: "Owner mode is on: the bot's commands can write everywhere your account can \
+                   except the keys and ferrule's own files, the network is open, and nothing \
+                   asks you first."
+                .into(),
+            close: "Settings → Autonomy → Ask me first closes it (the gateway restarts).",
+        });
+    }
+    if cfg.sandbox.mode == Mode::Off {
+        out.push(Opening {
+            id: "open-sandbox-off",
+            what: "The sandbox is off ([sandbox] mode = \"off\"): the bot's commands can read \
+                   your saved keys and rewrite ferrule's config and binary."
+                .into(),
+            close: "Settings → Autonomy → Ask me first (or Protected autonomous) turns it back \
+                    on; on the machine, set [sandbox] mode = \"workspace-write\" and restart.",
+        });
+    }
+    if !cfg.trust.gates {
+        out.push(Opening {
+            id: "open-gates-off",
+            what: "Approval gates are off ([trust] gates = false): recursive deletes, \
+                   force-pushes, DELETEs to bound hosts and sends through connected services \
+                   run without asking."
+                .into(),
+            close: "Settings → Autonomy → Ask me first removes it; on the machine, delete \
+                    gates = false under [trust] and restart.",
+        });
+    }
+    out
+}
+
 /// The session transcripts and the learning loop's notes: hidden from
 /// every command outside owner mode, and in owner mode from everyone's but
 /// the owner's (§7).

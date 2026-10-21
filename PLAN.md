@@ -8122,3 +8122,34 @@ through the loop. Values under 6 characters are skipped, connection
 OAuth tokens aren't in the list, and the non-proxy values are read once
 per process. The doctor scan reads every file whole (slow on a very
 large `sessions/`). No live run.
+
+### 2026-10-21 — M54.6: a danger notice while the box is open (Claude, Opus 5.5)
+
+**Why.** Nothing said the box was open. The owner's own stopgap
+(`mode = "off"` plus `gates = false`) showed how a "temporary" setting
+outlives its reason, and owner mode, deliberately ungated, had no
+reminder either.
+
+**What changed.**
+- `owner_mode::openings(cfg)`: owner mode running (`on`, not after a
+  fallback), `[sandbox] mode = "off"`, `[trust] gates = false`; each
+  with an id, what it opens and how to close it.
+- `ferrule doctor`: `open_box_check`, a warning per opening (`open`),
+  the way to close it as the hint, right after the sandbox lines.
+- Dashboard Home (`api.rs` `health`): a red (`top`) notice per opening,
+  with "Ask me first" (`sandbox/mode {mode: "ask"}`, which drops
+  `gates = false` too) and "Open Settings"; none on a managed bot.
+  `notices::unclosable` keeps the sandbox-off and gates-off notices up;
+  owner mode's closes for a day and comes back while still true.
+- Docs: `sandbox.md` ("Turn it on and off"), `m19-trust-cost.md` §6,
+  `m37-control-room.md` (closable ids), `m54-autonomous.md`
+  "Amendments after the build" (3), the roadmap.
+
+**Tests changed, none added.**
+
+**Checks.** `make check` exited 0: 1881 passed, 0 failed, 28 ignored,
+73 binaries (macOS), clippy clean.
+
+**Open.** The Home notice reads the config file, so an edit not yet
+applied by a restart shows early (owner mode itself follows this
+process's fallback). The notice text isn't translated. No live run.

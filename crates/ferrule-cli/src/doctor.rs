@@ -172,6 +172,7 @@ pub async fn run(offline: bool, ping_models: bool, json: bool) -> Result<bool> {
     let chat_on =
         telegram_on || discord_on || slack_on || m39_channels(&mut r, &cfg, offline).await;
     let backend = sandbox(&mut r, &cfg, &secrets_path);
+    open_box_check(&mut r, &cfg);
     managed_check(&mut r, &cfg);
     let confined = backend != Backend::None;
     mcp(&mut r, &cfg, backend);
@@ -1244,6 +1245,15 @@ fn sandbox(r: &mut Report, cfg: &config::Config, secrets_path: &Path) -> Backend
         }
     }
     sandbox.backend()
+}
+
+/// M54.6: a warning per way the box is open (owner mode, the sandbox off,
+/// the gates off), with how to close it.
+fn open_box_check(r: &mut Report, cfg: &config::Config) {
+    for open in crate::owner_mode::openings(cfg) {
+        r.warn("open", open.what);
+        r.hint(open.close);
+    }
 }
 
 /// MCP servers that run outside the sandbox. Only the config is read: the
