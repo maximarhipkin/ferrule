@@ -2801,12 +2801,13 @@ async fn gateway_factory(
         // workspace's files aren't here to send. Sub-agents don't get it:
         // their answer goes to their parent, which sends the file.
         if channels::of_session(session_id).is_some() && remote::current().is_none() {
+            // M54 §7: another person's chat sends no transcript.
+            let owners = owner && owner_mode::owner_tree(&hub, session_id);
             agent.append_system_prompt(ferrule_agents::prompts::CHAT_FILES);
             agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
                 files.clone(),
                 session_id,
-                // M54 §7: another person's chat sends no transcript.
-                hidden_paths(owner && owner_mode::owner_tree(&hub, session_id)),
+                hidden_paths(owners),
             )));
             // M51: media generation, bound to the same chat.
             if let Some(media) = &media {
@@ -2814,12 +2815,12 @@ async fn gateway_factory(
                 agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateImageTool::new(
                     media.clone(),
                     session_id,
-                    hidden_paths(),
+                    hidden_paths(owners),
                 )));
                 agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
                     media.clone(),
                     session_id,
-                    hidden_paths(),
+                    hidden_paths(owners),
                 )));
             }
         }
