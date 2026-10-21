@@ -2392,51 +2392,17 @@ impl Agent {
             .filter(|(name, _)| !in_tail.iter().any(|(n, _)| n == name))
             .map(|(_, block)| block)
             .collect();
-
-        let transcript_text = head
-            .iter()
-            .map(|m| {
-                let role = format!("{:?}", m.role).to_lowercase();
-                let body = m.content.clone().unwrap_or_default();
-                let body = if may_hold_skill(m) {
-                    elide_skill_blocks(&body)
-                } else {
-                    body
-                };
-                format!("{role}: {body}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        // Owned, so the summary calls below can borrow `self`. No system
+        // prompt; tool calls and capped results are in the text (M62).
+        let rendered = crate::summary::render_for_summary(head);
 
         let mut input = self.hook_input();
         input.trigger = Some("auto".into());
         self.fire(tx, HookEvent::PreCompact, input.clone()).await;
 
-        // A strategy (M42 part 7) shapes the request and may name its
-        // model; either way the call is the agent's, through
-        // `call_provider` like every other (M58.1).
-        let summary_req = match &self.compactor {
-            Some(compactor) => compactor.request(&transcript_text),
-            None => CompletionRequest {
-                messages: vec![Message::user(format!(
-                    "{COMPACTION_TEMPLATE}{transcript_text}"
-                ))],
-                tools: vec![],
-                // The main calls' own settings: a reasoning model
-                // (OpenAI's gpt-5, o-series) refuses `temperature: 0`
-                // and `max_tokens` with a 400, and a compaction that
-                // fails fails again on every later turn.
-                max_output_tokens: self.config.max_output_tokens,
-                temperature: self.config.temperature,
-                stream: None,
-            },
-        };
-        let summary = self
-            .call_provider(tx, summary_req, iteration, "compaction")
-            .await?
-            .message
-            .content
-            .unwrap_or_default();
+        // A failure folds an extract instead of ending the run with the
+        // history unchanged.
+        let summary = self.summarize_head(tx, iteration, rendered).await;
 
         let mut rebuilt = Vec::with_capacity(keep + 2);
         if let Some(sys) = self
@@ -2522,6 +2488,112 @@ impl Agent {
             self.push(Message::user(format!("[hook: PostCompact]\n{note}")));
         }
         Ok(true)
+    }
+
+    /// The summary that replaces `head`. One model call when the rendered
+    /// head fits the window; several, oldest first, when it does not. A
+    /// call the model rejects as too long is retried in smaller pieces.
+    /// Any failure, including a smaller compaction model that still
+    /// cannot take the piece, becomes an extract: the history still
+    /// shrinks, and the run says the model did not write the summary.
+    async fn summarize_head(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iteration: usize,
+        rendered: String,
+    ) -> String {
+        if rendered.trim().is_empty() {
+            return "(no earlier conversation to summarize)".into();
+        }
+        let mut budget = crate::summary::summary_budget_chars(
+            self.profile.context_window,
+            self.profile.output_reserve,
+        );
+        let mut last_err = None;
+        for attempt in 0..4 {
+            match self
+                .summarize_chunks(tx, iteration, &rendered, budget)
+                .await
+            {
+                Ok(text) => return text,
+                Err(e) if e.class() == FailureClass::ContextTooLong && attempt < 3 => {
+                    let next = (budget / 2).max(crate::summary::MIN_SUMMARY_BUDGET_CHARS);
+                    if next >= budget {
+                        last_err = Some(e);
+                        break;
+                    }
+                    warn!(
+                        budget,
+                        next, "summary request was too long; trying smaller pieces"
+                    );
+                    budget = next;
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    warn!("summary call failed; folding an extract instead: {e}");
+                    return crate::summary::extractive_summary(&rendered, &e.to_string());
+                }
+            }
+        }
+        let why = last_err
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "prompt is too long".into());
+        warn!("summary request stayed too long; folding an extract instead: {why}");
+        crate::summary::extractive_summary(&rendered, &why)
+    }
+
+    /// Summarize `rendered` in pieces of at most `budget` characters.
+    /// The first failure is returned; the caller shrinks or falls back.
+    async fn summarize_chunks(
+        &mut self,
+        tx: &mpsc::Sender<AgentEvent>,
+        iteration: usize,
+        rendered: &str,
+        budget: usize,
+    ) -> Result<String, CoreError> {
+        let chunks = crate::summary::chunk_transcript(rendered, budget.max(1));
+        if chunks.is_empty() {
+            return Ok(String::new());
+        }
+        if chunks.len() > 1 {
+            info!(
+                chunks = chunks.len(),
+                budget, "summarizing the folded head in pieces"
+            );
+        }
+        let mut prior = None;
+        for chunk in &chunks {
+            let piece = crate::summary::progressive_piece(prior.as_deref(), chunk, budget);
+            let text = self
+                .call_provider(tx, self.summary_request(&piece), iteration, "compaction")
+                .await?
+                .message
+                .content
+                .unwrap_or_default();
+            prior = Some(text);
+        }
+        Ok(prior.unwrap_or_default())
+    }
+
+    /// A strategy (M42 part 7) shapes the request and may name its model;
+    /// either way the call is the agent's, through `call_provider` like
+    /// every other (M58.1). The main calls' own settings: a reasoning
+    /// model (OpenAI's gpt-5, o-series) refuses `temperature: 0` and
+    /// `max_tokens` with a 400, so those stay unset unless the owner set them.
+    fn summary_request(&self, transcript_text: &str) -> CompletionRequest {
+        match &self.compactor {
+            Some(compactor) => compactor.request(transcript_text),
+            None => CompletionRequest {
+                messages: vec![Message::user(format!(
+                    "{COMPACTION_TEMPLATE}{transcript_text}"
+                ))],
+                tools: vec![],
+                max_output_tokens: self.config.max_output_tokens,
+                temperature: self.config.temperature,
+                stream: None,
+            },
+        }
     }
 
     /// Where the summary ends and the verbatim tail starts, near `want`.
@@ -2918,7 +2990,7 @@ fn listed(line: &str, files: &mut Vec<String>) -> u64 {
 
 /// Whether a tool result says its call worked: not an error, a refusal,
 /// a call that never ran, or a result replaced by a later identical one.
-fn worked(result: &str) -> bool {
+pub(crate) fn worked(result: &str) -> bool {
     let text = match result.strip_prefix(SHORTENED_PREFIX) {
         Some(rest) => rest.split_once("It began:\n").map_or(rest, |(_, r)| r),
         None => result,
@@ -2936,7 +3008,7 @@ fn worked(result: &str) -> bool {
 
 /// Skill blocks arrive as tool results and, after a compaction, inside the
 /// summary (a user message). Anything else quoting the tag is left alone.
-fn may_hold_skill(m: &Message) -> bool {
+pub(crate) fn may_hold_skill(m: &Message) -> bool {
     matches!(
         m.role,
         crate::message::Role::Tool | crate::message::Role::User
@@ -2984,7 +3056,7 @@ fn skill_blocks(messages: &[Message]) -> Vec<(String, String)> {
     blocks
 }
 
-fn elide_skill_blocks(text: &str) -> String {
+pub(crate) fn elide_skill_blocks(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut pos = 0;
     for (range, name) in skill_spans(text) {
@@ -3583,6 +3655,268 @@ mod tests {
         let second = summary_text(&agent);
         assert_eq!(second.matches(&block).count(), 1, "{second}");
         assert_eq!(provider.prompts.lock().unwrap().len(), 2);
+    }
+
+    /// M62: the summarizer sees tool names, arguments and results, and
+    /// does not see the system prompt.
+    #[tokio::test]
+    async fn compaction_summarizer_sees_tool_calls_and_not_the_system_prompt() {
+        let provider = Arc::new(CapturingProvider {
+            prompts: Mutex::new(Vec::new()),
+        });
+        let (profile, config) = compacting();
+        let mut agent = Agent::new(
+            provider.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_system_prompt("SYSTEM-PROMPT-MUST-NOT-BE-SUMMARIZED");
+        let call = crate::message::ToolCall {
+            id: "1".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({"command": "rm -rf build_PROBE"}),
+        };
+        agent
+            .messages
+            .push(Message::user("delete the build directory"));
+        agent.messages.push(Message::assistant(
+            Some("removing it".into()),
+            vec![call],
+            None,
+        ));
+        agent
+            .messages
+            .push(Message::tool_result("1", "error: build_PROBE is missing"));
+        agent.messages.extend(fillers());
+
+        let (tx, _rx) = events();
+        agent.maybe_compact(&tx, 0).await.unwrap();
+        let prompts = provider.prompts.lock().unwrap();
+        assert!(!prompts.is_empty(), "a summary was requested");
+        let joined = prompts.join("\n");
+        assert!(
+            joined.contains("shell") && joined.contains("rm -rf build_PROBE"),
+            "tool name and arguments must reach the summarizer:\n{joined}"
+        );
+        assert!(
+            joined.contains("build_PROBE is missing"),
+            "the tool error must reach the summarizer:\n{joined}"
+        );
+        assert!(joined.contains("delete the build directory"), "{joined}");
+        assert!(
+            !joined.contains("SYSTEM-PROMPT-MUST-NOT-BE-SUMMARIZED"),
+            "the system prompt is not part of the summary request:\n{joined}"
+        );
+        assert!(joined.contains("## All User Requests"), "{joined}");
+        assert!(joined.contains("## Errors and Fixes"), "{joined}");
+        assert!(joined.contains("## Pending Tasks"), "{joined}");
+        assert!(joined.contains("## Current State"), "{joined}");
+    }
+
+    /// Accepts a prompt only up to `max_chars`. A summary request over
+    /// that is the "prompt is too long" failure a small window returns.
+    struct Windowed {
+        prompts: Mutex<Vec<String>>,
+        max_chars: usize,
+        /// Every summary request fails, whatever its size.
+        reject_summaries: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Windowed {
+        fn name(&self) -> &str {
+            "windowed"
+        }
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, CoreError> {
+            let text = req
+                .messages
+                .iter()
+                .filter_map(|m| m.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.prompts.lock().unwrap().push(text.clone());
+            let summary = text.starts_with(COMPACTION_TEMPLATE);
+            if (self.reject_summaries && summary) || text.chars().count() > self.max_chars {
+                return Err(too_long());
+            }
+            Ok(CompletionResponse {
+                message: say(if summary { "SUMMARY" } else { "done" }),
+                usage: Usage::default(),
+                stop_reason: None,
+            })
+        }
+    }
+
+    fn huge_tool_history(agent: &mut Agent) {
+        let call = crate::message::ToolCall {
+            id: "1".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({"command": "rm -rf build_PROBE"}),
+        };
+        agent
+            .messages
+            .push(Message::user("delete the build directory"));
+        agent.messages.push(Message::assistant(
+            Some("removing it".into()),
+            vec![call],
+            None,
+        ));
+        agent.messages.push(Message::tool_result(
+            "1",
+            format!(
+                "RESULT-GIST-START\n{}\nRESULT-GIST-END",
+                "X".repeat(200_000)
+            ),
+        ));
+        agent.messages.push(Message::user("still working"));
+        agent.messages.push(Message::user("tail"));
+    }
+
+    /// M62: a history whose tool result is far past the window still
+    /// compacts. The summary request stays inside a bound the old
+    /// unbounded transcript would blow, and the run continues.
+    #[tokio::test]
+    async fn oversized_history_compacts_inside_the_summary_window() {
+        const MAX_CHARS: usize = 40_000;
+        let provider = Arc::new(Windowed {
+            prompts: Mutex::new(Vec::new()),
+            max_chars: MAX_CHARS,
+            reject_summaries: false,
+        });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 8_000;
+        profile.output_reserve = 1_024;
+        profile.compaction_threshold = 0.5;
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            retry: fast_retry(1),
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_system_prompt("SYSTEM-PROMPT-MUST-NOT-BE-SUMMARIZED");
+        huge_tool_history(&mut agent);
+
+        let (tx, _rx) = events();
+        let answer = agent.run("continue", tx).await.unwrap();
+        assert_eq!(answer, "done");
+        let prompts = provider.prompts.lock().unwrap().clone();
+        let summaries: Vec<_> = prompts
+            .iter()
+            .filter(|p| p.starts_with(COMPACTION_TEMPLATE))
+            .cloned()
+            .collect();
+        assert!(
+            !summaries.is_empty(),
+            "compaction must summarize, not only truncate: {prompts:?}"
+        );
+        for prompt in &summaries {
+            let n = prompt.chars().count();
+            assert!(
+                n <= MAX_CHARS,
+                "summary request is {n} chars, over the {MAX_CHARS} bound"
+            );
+            assert!(
+                !prompt.contains("SYSTEM-PROMPT-MUST-NOT-BE-SUMMARIZED"),
+                "system prompt leaked into the summary request"
+            );
+        }
+        let joined = summaries.join("\n");
+        assert!(
+            joined.contains("shell") && joined.contains("rm -rf build_PROBE"),
+            "{joined}"
+        );
+        assert!(joined.contains("RESULT-GIST-START"), "{joined}");
+        assert!(
+            !joined.contains(&"X".repeat(20_000)),
+            "the tool result must be truncated before it is summarized"
+        );
+        let live = agent
+            .messages
+            .iter()
+            .filter_map(|m| m.content.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !live.contains(&"X".repeat(20_000)),
+            "the oversized tool result must leave the live history"
+        );
+    }
+
+    /// M62: the summary model refuses every summary request (its window
+    /// is smaller than the budget, or the call fails outright). The run
+    /// still folds the history and continues, with an extract that keeps
+    /// the request and the tool call.
+    #[tokio::test]
+    async fn a_failed_summary_call_still_compacts() {
+        let provider = Arc::new(Windowed {
+            prompts: Mutex::new(Vec::new()),
+            max_chars: usize::MAX,
+            reject_summaries: true,
+        });
+        let mut profile = HarnessProfile::generic();
+        profile.context_window = 8_000;
+        profile.output_reserve = 1_024;
+        profile.compaction_threshold = 0.5;
+        let config = AgentConfig {
+            compaction_keep_last: 2,
+            retry: fast_retry(1),
+            ..Default::default()
+        };
+        let mut agent = Agent::new(
+            provider.clone(),
+            ToolRegistry::new(),
+            profile,
+            config,
+            ToolContext::default(),
+            None,
+        )
+        .with_system_prompt("SYSTEM-PROMPT-MUST-NOT-BE-SUMMARIZED");
+        huge_tool_history(&mut agent);
+
+        let (tx, _rx) = events();
+        let answer = agent.run("continue", tx).await.unwrap();
+        assert_eq!(answer, "done");
+        let summary = agent
+            .messages
+            .iter()
+            .find_map(|m| {
+                m.content
+                    .as_deref()
+                    .filter(|c| c.starts_with(SUMMARY_HEADER))
+                    .map(str::to_string)
+            })
+            .expect("a summary message");
+        assert!(summary.contains("the summary model failed"), "{summary}");
+        assert!(summary.contains("delete the build directory"), "{summary}");
+        assert!(
+            summary.contains("shell") && summary.contains("rm -rf build_PROBE"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("RESULT-GIST-START") || summary.contains("error"),
+            "{summary}"
+        );
+        assert!(!summary.contains(&"X".repeat(20_000)), "{summary}");
+        assert!(!summary.contains("SYSTEM-PROMPT-MUST-NOT-BE-SUMMARIZED"));
+        let prompts = provider.prompts.lock().unwrap();
+        assert!(
+            prompts.iter().any(|p| p.starts_with(COMPACTION_TEMPLATE)),
+            "the summary was attempted"
+        );
+        assert!(
+            prompts.iter().any(|p| !p.starts_with(COMPACTION_TEMPLATE)),
+            "the turn ran after the failed summary"
+        );
     }
 
     #[tokio::test]
