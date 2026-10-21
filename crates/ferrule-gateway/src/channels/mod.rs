@@ -3,6 +3,7 @@
 //! trait definition in `crate::channel`.
 
 pub mod access;
+pub mod bluebubbles;
 pub mod discord;
 pub mod email;
 pub mod files;
@@ -14,9 +15,11 @@ pub mod mattermost;
 pub mod signal;
 pub mod slack;
 pub mod telegram;
+pub mod waha;
 pub mod whatsapp;
 pub mod ws;
 
+pub use bluebubbles::BlueBubblesChannel;
 pub use discord::DiscordChannel;
 pub use email::EmailChannel;
 pub use http::HttpChannel;
@@ -26,4 +29,5 @@ pub use mattermost::MattermostChannel;
 pub use signal::SignalChannel;
 pub use slack::SlackChannel;
 pub use telegram::TelegramChannel;
+pub use waha::WahaChannel;
 pub use whatsapp::WhatsAppChannel;

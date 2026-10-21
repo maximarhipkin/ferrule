@@ -1403,7 +1403,14 @@ Current State; numbers are claimed there before anything is built.
     converter (`evals/terminal-bench/convert.py`, not yet run on real
     tasks), and the A/B-before-landing policy (`docs/eval.md`).
   - **M59** channels not worth chasing yet: personal WhatsApp and
-    iMessage.
+    iMessage. Built on `autopilot` as two opt-in channels that talk to a
+    bridge the owner runs, never a protocol client in ferrule:
+    `[gateway.whatsapp_personal]` through WAHA (its REST API out, its
+    WebSocket in; the terms-of-service risk stated plainly) and
+    `[gateway.imessage]` through BlueBubbles Server on a Mac (its REST
+    API, polled). Allow-lists, keys in `secrets.env`, setup steps,
+    dashboard cards and doctor lines; not run against a live bridge
+    (`docs/m59-channels.md`).
   - The report also adds numbered items to M52 (M52.1–M52.6: encrypted
     key fields in the dashboard, the Safe page, `secret_request`, safe
     config editing, a chat paste guard, step-up auth) and to M54

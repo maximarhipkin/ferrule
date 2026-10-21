@@ -20,7 +20,8 @@ channel that has credentials. Every channel keeps the same rules:
 Telegram is set up by `ferrule setup` or the dashboard's Telegram panel
 and described in the README; Discord and Slack in [discord.md](discord.md)
 and [slack.md](slack.md), and since M50 they have dashboard cards too. This page covers the
-channels added in M39. The design, and the reasons behind it, are in
+channels added in M39, and the two bridge channels added in M59
+([personal WhatsApp](#personal-whatsapp) and [iMessage](#imessage)). The design, and the reasons behind it, are in
 [m39-channels.md](m39-channels.md). What works in every chat, whichever
 channel it's on, is at the end: [chat commands](#chat-commands),
 [voice messages](#voice-messages), [the typing
@@ -39,6 +40,8 @@ chat](#keys-pasted-into-a-chat).
 | End-to-end encryption to your phone, with no company account or webhook | Signal (a spare number, and signal-cli on the machine) |
 | The team chat your company already runs itself | Mattermost (a bot account on your server) |
 | A script, n8n, Zapier or another service talking to it, or task results pushed to a URL | The HTTP API (a key per program) |
+| Your contacts on a personal WhatsApp number, accepting an unofficial bridge's risk | WhatsApp (personal), through WAHA you run |
+| Your contacts on iMessage, with a Mac that stays on | iMessage, through BlueBubbles Server on that Mac |
 
 ## WhatsApp
 
@@ -975,6 +978,51 @@ the `reply` as the text.
 ferrule's realm), whether the port is free, or what else is on it. It
 counts the keys and webhooks, and warns when there's no key. With
 `public = "tunnel"`, it says whether cloudflared is here.
+
+## Personal WhatsApp
+
+M59. Ferrule answers on a personal WhatsApp number through
+[WAHA](https://waha.devlike.pro), a WhatsApp Web bridge you run in
+Docker and pair by scanning its QR code. **This is unofficial
+automation:** WhatsApp's terms don't allow it, and the number can be
+banned. Use a number you can lose, or the [WhatsApp](#whatsapp) channel
+with a Business number instead. The full guide, the risks and why WAHA:
+[m59-channels.md](m59-channels.md).
+
+```toml
+[gateway.whatsapp_personal]
+url = "http://127.0.0.1:3000"     # WAHA, bound to this machine
+allowed_users = ["972501234567"]   # digits with the country code
+# allowed_groups = ["…@g.us"]      # a mention of the number reaches it
+```
+
+WAHA's API key goes in `secrets.env` as `WAHA_API_KEY`. `ferrule setup`
+→ WhatsApp (personal) and the dashboard's card do both. Strangers are
+never answered; your own number on the list allows your "Message
+yourself" chat. Text, photos and files both ways and "typing…"; no
+buttons, edits or 👀. `ferrule doctor` says whether WAHA's session is
+paired and working.
+
+## iMessage
+
+M59. Ferrule answers iMessage through [BlueBubbles
+Server](https://bluebubbles.app), which you run on a Mac that is signed
+in to Messages and stays awake. The full guide:
+[m59-channels.md](m59-channels.md#imessage).
+
+```toml
+[gateway.imessage]
+url = "http://192.168.1.20:1234"           # BlueBubbles Server on the Mac
+allowed_users = ["+15551234567", "max@icloud.com"]
+# private_api = true                         # typing and quoted replies
+```
+
+The server password goes in `secrets.env` as `BLUEBUBBLES_PASSWORD`;
+`ferrule setup` → iMessage and the dashboard's card do both. Ferrule
+polls the server every 3 seconds, so nothing listens on its side.
+One-to-one conversations with allowed numbers and Apple IDs only: group
+chats, the Mac's own messages and strangers are ignored. Text and
+attachments both ways. `ferrule doctor` checks the server answers.
 
 ## Chat commands
 

@@ -33,7 +33,8 @@ Ferrule is an AI agent that runs on your machine, on your terms. Give it a
 model — an API key, a ChatGPT or Claude plan you already pay for, or a
 local Ollama — and it works where you are: the terminal, Telegram, Discord,
 Slack, WhatsApp, Matrix, email, Signal, Mattermost, an HTTP API, a cron
-schedule, or its own web dashboard. It can edit code,
+schedule, or its own web dashboard (and, through bridges you run, a
+personal WhatsApp number or iMessage). It can edit code,
 run commands, browse and search the web, drive your installed Chrome, work
 in a directory on another machine over SSH, connect Jira, Gmail, Notion
 and friends, and split big jobs across sub-agents — inside an OS sandbox,
@@ -249,7 +250,7 @@ and [`docs/research-credential-gateway.md`](docs/research-credential-gateway.md)
 | **Skills** | Agent Skills (`SKILL.md` folders, Claude-compatible), loaded on demand. Add `triggers: [ship it, release]` and the skill loads when your message says so, Hebrew included; only what a person types counts, never a web page or tool output ([`docs/skills.md`](docs/skills.md)). |
 | **Memory** | One SQLite file: FTS5 BM25 with time decay and token-budgeted recall, plus optional meaning-based recall (a local multilingual model or any OpenAI-compatible `/v1/embeddings` endpoint) merged with it ([`docs/memory.md`](docs/memory.md)). `update_memory` supersedes a fact and `forget` deletes it; compaction keeps a ref to every large tool result, and `search_history` brings it back ([`docs/m15-memory.md`](docs/m15-memory.md)). |
 | **Learning loop** | `ferrule learn run` (or a nightly task, off by default) turns failed runs into playbook lessons or learned skills with scripts, kept only when the task passes twice with the change, or, with no check, when a judge prefers a probe re-run; each kept change is a "Learned" line in the owner's chat with an Undo, and the owner's 👎 on a Telegram reply is reviewed like a failure ([`docs/m16-learning-loop.md`](docs/m16-learning-loop.md), [`docs/m53-contrastive-probing.md`](docs/m53-contrastive-probing.md)). |
-| **Gateway** | A long-running daemon with Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, an HTTP API and local channels, all at once ([`docs/channels.md`](docs/channels.md)), one session lane per chat, resumed across restarts. Discord and Slack connect out over a WebSocket (no public URL) and approve with buttons ([`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md)). Telegram replies grow as they're written, edited about once a second (`[gateway] telegram_stream`). Never silently deaf: 👀 on every message it accepts, a typing indicator while it works (Telegram, Discord, Matrix, WhatsApp), `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a file it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). `/new` (or `/reset`) starts a fresh conversation and keeps the old one; `/help` lists the commands ([`docs/channels.md`](docs/channels.md#chat-commands)). Voice messages are transcribed through any OpenAI-compatible endpoint or a local command such as whisper.cpp, in any language ([`docs/channels.md`](docs/channels.md#voice-messages)). |
+| **Gateway** | A long-running daemon with Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, an HTTP API and local channels, all at once ([`docs/channels.md`](docs/channels.md)), plus personal WhatsApp through a WAHA bridge and iMessage through BlueBubbles Server on a Mac, both opt-in ([`docs/m59-channels.md`](docs/m59-channels.md)), one session lane per chat, resumed across restarts. Discord and Slack connect out over a WebSocket (no public URL) and approve with buttons ([`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md)). Telegram replies grow as they're written, edited about once a second (`[gateway] telegram_stream`). Never silently deaf: 👀 on every message it accepts, a typing indicator while it works (Telegram, Discord, Matrix, WhatsApp), `/status` and `/stop` answered mid-turn, a no-progress watchdog, `max_turn_minutes`, a systemd watchdog and an optional heartbeat ([`docs/m19b-reliability.md`](docs/m19b-reliability.md)). When it does go quiet it says why in Telegram: another program polling the same token (409), a webhook (removed at start), a file it can't read, a model with no tool support, a rate limit with a countdown in `/status`. `ferrule doctor` catches a second gateway and `:free` models, and no log line carries the bot token ([`docs/m19c-live-fixes.md`](docs/m19c-live-fixes.md)). `/new` (or `/reset`) starts a fresh conversation and keeps the old one; `/help` lists the commands ([`docs/channels.md`](docs/channels.md#chat-commands)). Voice messages are transcribed through any OpenAI-compatible endpoint or a local command such as whisper.cpp, in any language ([`docs/channels.md`](docs/channels.md#voice-messages)). |
 | **Dashboard** | One page for the whole app: health first, connections, models with an OpenRouter catalog, prices and recommendations, usage, tasks, logs, extensions and sub-agents. Send `/dashboard` and get a one-use 10-minute link; a `cloudflared` quick tunnel opens on demand (downloaded and checksum-checked the first time if the machine has none) and `/dashboard off` revokes it all. Everything the terminal does is there too: a console runs any `ferrule` command (as an argument list, never a shell), a chat pane talks to the agent, and the config has a form per section with a checked, atomic save. Notices close for a day and carry fix buttons; models are picked from lists, the fallback chain included; connections are tiles with key-based ways in where OAuth is hard (Jira/Confluence by API token, Gmail by app password, Google Drive/Sheets/Calendar by service account) and a fixed callback address deployed to your own Cloudflare account ([`docs/connections.md`](docs/connections.md)). Caps, MCP servers, skills, hooks and task schedules are edited from the page, a candidate model can be evaluated on the starter suite (cost shown first), and the login survives a restart. It never calls the model, so it works when every model is down ([`docs/dashboard.md`](docs/dashboard.md)). |
 | **Scheduler** | Cron (with IANA timezone) and one-shot tasks, with gate scripts, no overlapping runs, and a truthful status per run. |
 | **OS sandbox** | Every shell command and stdio MCP server runs under Landlock (+ seccomp) on Linux or Seatbelt on macOS. Writes are confined to the workspace, secret env vars are stripped, and reads of ferrule's secrets, credential dirs and your `deny_read` paths are denied. On Windows: a restricted token in a job object, no admin rights; commands need PowerShell there, since Git Bash can't start under the token ([below](#windows), [`docs/sandbox.md`](docs/sandbox.md)). |
@@ -307,8 +308,8 @@ enter them:
 2. **Telegram** (optional): paste the token from
    [@BotFather](https://t.me/BotFather), then message the bot. Your chat
    goes on the bot's allow-list; it ignores everyone else. **Discord**,
-   **Slack**, WhatsApp, Matrix, Mattermost, email, Signal and the HTTP API
-   are the next steps, each optional ([`docs/discord.md`](docs/discord.md),
+   **Slack**, WhatsApp, Matrix, Mattermost, email, Signal, WhatsApp
+   (personal), iMessage and the HTTP API are the next steps, each optional ([`docs/discord.md`](docs/discord.md),
    [`docs/slack.md`](docs/slack.md), [`docs/channels.md`](docs/channels.md)).
 3. **Tool credentials** (optional): tokens the agent's commands may use,
    such as `GITHUB_TOKEN`, each bound to the hosts it's for (see the
@@ -601,7 +602,7 @@ crates/
   ferrule-tools       fs / edit_file / shell / web_fetch / web_search / diary tools, proxied egress
   ferrule-memory      SQLite + FTS5 memory with time decay, merged with vector recall
   ferrule-embed       embedders: local model2vec, OpenAI-compatible /v1/embeddings
-  ferrule-gateway     daemon: channels (Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, HTTP API, local), session router, scheduler
+  ferrule-gateway     daemon: channels (Telegram, Discord, Slack, WhatsApp, Matrix, email, Signal, Mattermost, HTTP API, local; WAHA and BlueBubbles bridges), session router, scheduler
   ferrule-mcp         MCP client: sandboxed stdio servers, Streamable HTTP servers, the browser
   ferrule-skills      Agent Skills discovery, loading and keyword triggers
   ferrule-agents      sub-agents: spawn/wait/resume/close, a board, a task list, worktrees, limits
@@ -698,6 +699,8 @@ and a dated entry for every session.
   [`instances.md`](docs/instances.md) (several agents on one machine) ·
   [`backup.md`](docs/backup.md) (backup and restore) ·
   [`discord.md`](docs/discord.md) · [`slack.md`](docs/slack.md) ·
+  [`m59-channels.md`](docs/m59-channels.md) (personal WhatsApp through
+  WAHA, iMessage through BlueBubbles; the risks) ·
   [`m18-hooks.md`](docs/m18-hooks.md) ·
   [`m19-trust-cost.md`](docs/m19-trust-cost.md) (caps, approvals, kill
   switch, plan mode) · [`m19b-reliability.md`](docs/m19b-reliability.md)

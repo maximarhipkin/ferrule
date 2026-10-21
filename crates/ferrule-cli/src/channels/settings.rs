@@ -200,6 +200,76 @@ impl Mattermost {
     }
 }
 
+/// `[gateway.whatsapp_personal]` (M59): a personal WhatsApp number through
+/// a WAHA bridge the owner runs.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WhatsAppPersonal {
+    /// WAHA's address, `http://127.0.0.1:3000`.
+    #[serde(default = "WhatsAppPersonal::default_url")]
+    pub url: String,
+    /// The WAHA session paired with the number.
+    #[serde(default = "WhatsAppPersonal::default_session")]
+    pub session: String,
+    /// The env var holding WAHA's API key (`X-Api-Key`).
+    #[serde(default = "WhatsAppPersonal::default_api_key_env")]
+    pub api_key_env: String,
+    /// Numbers (digits with the country code) whose DMs reach the agent;
+    /// the account's own number allows its "Message yourself" chat.
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    /// Group ids (`…@g.us`) where a mention reaches the agent.
+    #[serde(default)]
+    pub allowed_groups: Vec<String>,
+    #[serde(default = "default_max_file_mb")]
+    pub max_file_mb: u64,
+}
+
+impl WhatsAppPersonal {
+    fn default_url() -> String {
+        "http://127.0.0.1:3000".into()
+    }
+    fn default_session() -> String {
+        "default".into()
+    }
+    fn default_api_key_env() -> String {
+        "WAHA_API_KEY".into()
+    }
+}
+
+/// `[gateway.imessage]` (M59): iMessage through BlueBubbles Server on a
+/// Mac.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct IMessage {
+    /// The server's address, `http://192.168.1.20:1234`.
+    pub url: String,
+    /// The env var holding the server password.
+    #[serde(default = "IMessage::default_password_env")]
+    pub password_env: String,
+    /// BlueBubbles' Private API is set up: typing and quoted replies.
+    #[serde(default)]
+    pub private_api: bool,
+    /// How often to look for new messages.
+    #[serde(default = "IMessage::default_poll_secs")]
+    pub poll_secs: u64,
+    /// Phone numbers (`+1555…`) and Apple ID emails whose messages reach
+    /// the agent.
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
+    #[serde(default = "default_max_file_mb")]
+    pub max_file_mb: u64,
+}
+
+impl IMessage {
+    fn default_password_env() -> String {
+        "BLUEBUBBLES_PASSWORD".into()
+    }
+    fn default_poll_secs() -> u64 {
+        3
+    }
+}
+
 /// `[gateway.http]`: the HTTP API for programs (M39 §8).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]

@@ -12,6 +12,8 @@ pub const OWNER_CHANNELS: &[&str] = &[
     "mattermost",
     "signal",
     "email",
+    "whatsapp_personal",
+    "imessage",
     "http",
 ];
 
@@ -50,6 +52,10 @@ pub struct TrustConfig {
     pub signal_owner: Option<String>,
     /// M39: the owner's email address.
     pub email_owner: Option<String>,
+    /// M59: the owner's number on the personal WhatsApp bridge (digits).
+    pub whatsapp_personal_owner: Option<String>,
+    /// M59: the owner's iMessage address (`+1555…` or an Apple ID email).
+    pub imessage_owner: Option<String>,
     /// M39: the HTTP API client (by name) that is the owner.
     pub http_owner: Option<String>,
     /// M31: which owner chat gets approvals and warnings, one of
@@ -88,6 +94,8 @@ impl Default for TrustConfig {
             mattermost_owner: None,
             signal_owner: None,
             email_owner: None,
+            whatsapp_personal_owner: None,
+            imessage_owner: None,
             http_owner: None,
             owner_channel: None,
             approval_timeout_secs: 600,
@@ -110,6 +118,8 @@ impl TrustConfig {
             "mattermost" => self.mattermost_owner.as_ref(),
             "signal" => self.signal_owner.as_ref(),
             "email" => self.email_owner.as_ref(),
+            "whatsapp_personal" => self.whatsapp_personal_owner.as_ref(),
+            "imessage" => self.imessage_owner.as_ref(),
             "http" => self.http_owner.as_ref(),
             _ => None,
         }

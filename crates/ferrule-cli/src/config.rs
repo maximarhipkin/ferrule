@@ -581,6 +581,12 @@ pub struct GatewayConfig {
     /// M39: `[gateway.http]`, `POST /v1/messages` for your own programs.
     #[serde(default)]
     pub http: Option<crate::channels::settings::HttpApi>,
+    /// M59: `[gateway.whatsapp_personal]`, a personal number through WAHA.
+    #[serde(default)]
+    pub whatsapp_personal: Option<crate::channels::settings::WhatsAppPersonal>,
+    /// M59: `[gateway.imessage]`, through BlueBubbles Server on a Mac.
+    #[serde(default)]
+    pub imessage: Option<crate::channels::settings::IMessage>,
 }
 
 /// `[gateway] cache_ttl` (M57.4).

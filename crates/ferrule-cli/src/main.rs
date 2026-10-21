@@ -2880,6 +2880,25 @@ fn build_channels(
         named_channels.insert(sig.name().to_string(), sig);
     }
 
+    // M59: the bridges the owner runs.
+    if let Some(w) = &g.whatsapp_personal {
+        let wa = ferrule_gateway::WahaChannel::new(channels::bridges::waha_config(w, workspace)?)
+            .with_allowed(
+                with_owner(cfg, "whatsapp_personal", &w.allowed_users),
+                w.allowed_groups.clone(),
+            );
+        let wa: Arc<dyn Channel> = Arc::new(wa);
+        named_channels.insert(wa.name().to_string(), wa);
+    }
+
+    if let Some(m) = &g.imessage {
+        let im =
+            ferrule_gateway::BlueBubblesChannel::new(channels::bridges::bb_config(m, workspace)?)
+                .with_allowed(with_owner(cfg, "imessage", &m.allowed_users));
+        let im: Arc<dyn Channel> = Arc::new(im);
+        named_channels.insert(im.name().to_string(), im);
+    }
+
     Ok(named_channels)
 }
 
@@ -3108,7 +3127,7 @@ async fn run_gateway(
         });
     }
     if named_channels.is_empty() && !managed::on() {
-        bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true`, `telegram_token_env`, `discord_token_env`, `slack_bot_token_env` or a `[gateway.<channel>]` table (whatsapp, matrix, email, signal, mattermost, http) in the config");
+        bail!("no channel enabled in [gateway] — run `ferrule setup`, or set `local = true`, `telegram_token_env`, `discord_token_env`, `slack_bot_token_env` or a `[gateway.<channel>]` table (whatsapp, matrix, email, signal, mattermost, http, whatsapp_personal, imessage) in the config");
     }
     let owners = trust::owners(&cfg);
     for c in channels::CHANNELS {
