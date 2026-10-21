@@ -2311,7 +2311,7 @@
         el("h2", { text: "Skills" }),
         !x.skills_enabled ? empty("Skills are off", "Turn them on in the config to let your bot learn how-to guides.")
           : x.skills.length ? el("div", { class: "plain-list" }, x.skills.map((s) => el("div", { class: "item" + (s.disabled ? " dead" : "") },
-            el("div", { class: "grow" }, el("div", { class: "t mono", text: s.name }), el("div", { class: "d" }, text(s.description))),
+            el("div", { class: "grow" }, el("div", { class: "t mono" }, s.name, s.scope === "bundled" ? frag(" ", tag("bundled")) : null), el("div", { class: "d" }, text(s.description))),
             switchFor(s.name, s.disabled, "skills/enable", "skills/disable")))) : empty("No skills found", "A skill is a how-to guide your bot reads when it needs it."),
         x.skills_disabled.length ? el("p", { class: "muted small" }, "Disabled in the config: ",
           x.skills_disabled.map((n, i) => frag(i ? " · " : "", n, " ", btn("Enable", "skills/enable", { name: n })))) : null,

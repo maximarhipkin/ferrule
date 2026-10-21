@@ -707,6 +707,9 @@ pub struct SkillsConfig {
     /// Whether the workspace's own skills may trigger. Off: a cloned repo
     /// mustn't make its skills load on common words.
     pub project_triggers: bool,
+    /// M63.1: the skills ferrule ships (weather, news, …); `disabled`
+    /// turns off one of them.
+    pub bundled: bool,
 }
 
 impl Default for SkillsConfig {
@@ -720,6 +723,7 @@ impl Default for SkillsConfig {
             max_triggered: 2,
             trigger_budget_tokens: 4000,
             project_triggers: false,
+            bundled: true,
         }
     }
 }
@@ -1748,6 +1752,8 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # max_triggered = 2          # skills one message loads that way
 # trigger_budget_tokens = 4000   # their combined size
 # project_triggers = false   # let the workspace's skills trigger too
+# bundled = true             # ferrule's own (weather, news, hacker-news, maps,
+#                            # exchange-rates, home-assistant); `disabled` drops one
 
 # [web_search]              # The web_search tool (docs/web-search.md). With no
 # provider = "brave"         # provider: keyless DuckDuckGo (light use, rate-limited).

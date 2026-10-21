@@ -3782,8 +3782,9 @@ fn retirer(lanes: std::sync::Weak<Router>) -> models::Retire {
 fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skills::SkillSet {
     let paths: Vec<PathBuf> = cfg.paths.iter().map(|p| expand_home(p)).collect();
     let mut roots = ferrule_skills::default_roots(workspace, cfg.project, &paths);
-    // M53.3: the learning pass's skills, listed as `learned`.
     if let Ok(data) = config::data_dir() {
+        roots.extend(bundled_skills(cfg, &data));
+        // M53.3: the learning pass's skills, listed as `learned`.
         roots.push(ferrule_skills::SkillRoot {
             dir: data.join(ferrule_learn::skills::DIR),
             scope: ferrule_skills::Scope::Learned,
@@ -3794,6 +3795,26 @@ fn discover_skills(cfg: &config::SkillsConfig, workspace: &Path) -> ferrule_skil
         tracing::debug!(path = %d.path.display(), severity = ?d.severity, "skill: {}", d.message);
     }
     set
+}
+
+/// M63.1: the skills ferrule ships, written from the binary to
+/// `<data>/bundled-skills` first (a failed write is logged, and what is
+/// there is used), or `None` with `[skills] bundled = false`.
+fn bundled_skills(cfg: &config::SkillsConfig, data: &Path) -> Option<ferrule_skills::SkillRoot> {
+    if !cfg.bundled {
+        return None;
+    }
+    let dir = data.join(ferrule_skills::bundled::DIR);
+    if let Err(e) = ferrule_skills::bundled::install(&dir) {
+        tracing::warn!(
+            "bundled skills couldn't be written to {}: {e}",
+            dir.display()
+        );
+    }
+    Some(ferrule_skills::SkillRoot {
+        dir,
+        scope: ferrule_skills::Scope::Bundled,
+    })
 }
 
 fn expand_home(path: &Path) -> PathBuf {
@@ -3852,6 +3873,13 @@ fn skills_cmd(workspace: PathBuf) {
     }
     if set.skills.iter().any(|s| !s.model_invocable) {
         println!("  (hidden = `disable-model-invocation: true`; not in the catalog, no tool can load it)");
+    }
+    if set
+        .skills
+        .iter()
+        .any(|s| s.scope == ferrule_skills::Scope::Bundled)
+    {
+        println!("  (bundled = ships with ferrule, written again at each start; `ferrule skills disable <name>` turns one off, `[skills] bundled = false` all)");
     }
     if !set.diagnostics.is_empty() {
         println!("\n{} note(s):", set.diagnostics.len());

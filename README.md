@@ -671,7 +671,10 @@ and a dated entry for every session.
   photos, and the images tools return, such as `read_file` on a PNG or a
   browser screenshot).
 - The agent's reach: [`skills.md`](docs/skills.md) (Agent Skills, keyword
-  triggers) · [`plugins.md`](docs/plugins.md) (WASM, capability-gated) ·
+  triggers, the bundled ones) ·
+  [`m63-connections-wave-b.md`](docs/m63-connections-wave-b.md) (the
+  bundled skills pack: weather, news, Hacker News, exchange rates, maps,
+  Home Assistant) · [`plugins.md`](docs/plugins.md) (WASM, capability-gated) ·
   [`m17-mcp-add.md`](docs/m17-mcp-add.md) (add an MCP server without a
   restart) · [`m13-self-extension.md`](docs/m13-self-extension.md) (the
   agent installing vetted extensions itself) ·

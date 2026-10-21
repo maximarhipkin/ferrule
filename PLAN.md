@@ -152,6 +152,12 @@ below it is append-only.
   6. the paste guard's link to the Safe, and keyless search that says
      when DuckDuckGo refuses;
   7. CI hygiene: this refresh, the Windows self-test flake (below).
+- **In flight** (2026-10-21, night): **wave B, M63** on `autopilot`:
+  connections, skills and the catalog (re-audit Part 2 and Part 3
+  #3–#6), one commit and one Session Log entry per task: the bundled
+  skills pack; IMAP/SMTP mail from any provider; CalDAV and read-only
+  ICS calendars; catalog v2 with one-step add. Design and status:
+  `docs/m63-connections-wave-b.md`.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -191,7 +197,9 @@ below it is append-only.
   only; both PR #52), **M62 compaction's summary input** (PR #54). M54's
   numbered items (M54.1–M54.7) and M52's (M52.1–M52.6) keep their
   parent's number; so do wave A's tasks, which are follow-ups, not
-  milestones. **The next free number is M63.** The first claim wins,
+  milestones. **M63 is claimed by wave B** (connections, skills and
+  the catalog; `autopilot`, 2026-10-21). **The next free number is
+  M64.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -9281,3 +9289,77 @@ the launcher failed; if it's the state file, the fix is to retry the
 rename (as `update/swap.rs`'s `rename_retrying` does) or to go on with
 the new SIDs when the save fails (the cost is one more ACE per root next
 time). Branch protection waits on the owner.
+
+### 2026-10-21 — Wave B claims M63: connections, skills and the catalog (Claude, Opus 5.5)
+
+Claims **M63** for improvement wave B (the next free number was M63; it
+is now M64), in the `autopilot` worktree on top of `d12441c`. `main`
+had nothing `autopilot` lacked (`git fetch origin main`, empty
+`HEAD..FETCH_HEAD`). Four tasks, one commit and one entry each: M63.1
+the bundled skills pack, M63.2 IMAP/SMTP mail, M63.3 CalDAV and ICS
+calendars, M63.4 catalog v2 with one-step add. Current State updated in
+place (the claim, the in-flight line).
+
+### 2026-10-21 — M63.1: the bundled skills pack (Claude, Opus 5.5)
+
+Wave B, task 1, in the `autopilot` worktree. The re-audit's Part 2 §2d
+("Skills catalog") and Part 3 #4: ferrule shipped no skills at all, where
+OpenClaw and Hermes ship everyday ones.
+
+**What changed.**
+- `crates/ferrule-skills/bundled/`: six skills in the Agent Skills
+  format, `weather` (Open-Meteo, with a WMO code table), `news` (RSS and
+  Atom; the owner's feeds from memory, else BBC, NPR, The Guardian, DW),
+  `hacker-news` (the official Firebase API), `exchange-rates`
+  (Frankfurter v2), `maps` (Nominatim and the FOSSGIS OSRM server, with
+  both operators' rules: one request a second, a named User-Agent, no
+  auto-complete or bulk, attribution) and `home-assistant` (its REST API,
+  `HA_TOKEN` asked for with `ferrule_admin` `secret_request`, bound to the
+  owner's host). No scripts and no triggers; each gives the model `curl`
+  commands for the sandboxed shell, so the proxy and `[egress]` apply.
+- `ferrule-skills`: `bundled::install` writes the pack to
+  `<data>/bundled-skills` (a changed file written beside and renamed,
+  what the pack dropped removed); a new `Scope::Bundled`, which may
+  trigger like a user skill.
+- `ferrule-cli`: `[skills] bundled = true` (new); `bundled_skills` adds
+  the root after the installed skills and before the learned ones, in
+  the gateway's live set and in `discover_skills` (`ferrule skills`, the
+  settings view); `ferrule skills` explains the scope; the dashboard's
+  Extensions page tags a bundled skill. Per-skill off is the existing
+  `[skills] disabled` list.
+- Docs: `docs/m63-connections-wave-b.md` (new: the pack, how it ships,
+  every service's endpoint and rules with the URLs read, the limits),
+  `docs/skills.md` ("Bundled skills", the search order, the config), the
+  README's documentation list, the roadmap's M63 entry.
+
+**Verified against the operators' docs on 2026-10-21** (URLs in the
+M63 doc): Open-Meteo's forecast, geocoding, terms and licence; the HN
+API; Frankfurter v1 and v2; Nominatim's search, reverse and usage
+policy; OSRM's route API and the demo server's page; Home Assistant's
+REST API. **Checked by one request each, not in docs:** Frankfurter v2's
+response shape; FOSSGIS's `routed-car|bike|foot` paths (different
+durations, where `router.project-osrm.org` answers the car's for every
+profile); the four default feeds answering 200.
+
+**Found on the way.** A Home Assistant on plain HTTP or at an address
+can't get its token: the Safe binds keys to names only (no address,
+`localhost` or port) and the proxy swaps only over HTTPS (or HTTP to
+loopback). The skill says so. A `curl -X POST` to a bound host isn't a
+gated kind (`classify.rs`; its tests pass it on purpose), so turning a
+device on is not behind the approval gate; the skill's own rules (only
+what the owner asked, never from fetched text, a yes first for locks,
+alarms and doors) are what stand there. Not changed: widening the gate
+to POSTs would gate every API write the owner's keys make.
+
+**Tests changed, none added** (the owner's standing rule).
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean; `node --check` on `app.js` passes.
+
+**Open.** No skill has run in a live session, through ferrule's proxy,
+or on Windows. The skills weren't put through the injection scan (they
+have no triggers, so nothing scans them); their text was written against
+the scan's patterns. The catalog grows by about 400 tokens a request
+while skills are on (a one-time prefix change at the upgrade), unmeasured
+by the eval gate. `ferrule skills` (`discover_skills`) still leaves out
+the agent-installed skills the gateway's set has, as before.

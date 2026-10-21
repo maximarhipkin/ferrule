@@ -23,7 +23,10 @@ Searched in this order; the first skill with a given name wins:
 4. skills the agent installed itself with `skill_install`, under
    `<data>/extensions/skills`. They are scanned before install and
    locked to the digest of their `SKILL.md` (docs/m13-self-extension.md);
-5. skills the learning pass kept (**learned**, M53.3), under
+5. skills that ship with ferrule (**bundled**, M63.1), written from the
+   binary to `<data>/bundled-skills` at each start (see [Bundled
+   skills](#bundled-skills));
+6. skills the learning pass kept (**learned**, M53.3), under
    `<data>/learned-skills`. Each one is offered only while its `SKILL.md`
    is the one the pass recorded in `<data>/learn/skills.json` and it still
    scans clean; it loads through the catalog, never by a trigger.
@@ -40,6 +43,36 @@ Telegram, turn one off and on.
 
 For a tool rather than instructions, a WASM plugin (`docs/plugins.md`)
 adds one in a capability sandbox.
+
+## Bundled skills
+
+Six skills come with ferrule and are on unless you turn them off:
+
+| Skill | For | Key |
+|---|---|---|
+| `weather` | current weather and forecasts (Open-Meteo) | none |
+| `news` | headlines from RSS and Atom feeds, yours or BBC, NPR, The Guardian and DW | none |
+| `hacker-news` | Hacker News through its official API | none |
+| `exchange-rates` | rates and conversions (Frankfurter) | none |
+| `maps` | places, addresses, distances and travel times (Nominatim, OSRM) | none |
+| `home-assistant` | your Home Assistant's states and actions (its REST API) | `HA_TOKEN`, which the skill asks you for with `secret_request` |
+
+- **Turning them off.** One: `ferrule skills disable weather`, `/skills
+  off weather`, the dashboard's switch, or `[skills] disabled`. All:
+  `[skills] bundled = false`.
+- **Changing one.** `<data>/bundled-skills` is rewritten from the binary
+  at each start, so an edit there is lost. Copy the skill's folder to
+  `~/.config/ferrule/skills/` and edit the copy: a user skill of the same
+  name wins over the bundled one.
+- **The network.** They make no call themselves: each gives the model a
+  `curl` command for the sandboxed shell, which goes through the proxy and
+  your `[egress]` rules. Their services' limits (one request a second to
+  Nominatim and OSRM, non-commercial use, attribution) are in the skills.
+- **No triggers.** They load when the model activates them from the
+  catalog, never by a word in your message.
+
+Details, sources and what wasn't verified:
+[m63-connections-wave-b.md](m63-connections-wave-b.md).
 
 ## Triggers
 
@@ -133,4 +166,5 @@ triggers = true                # load a skill when your message names its trigge
 max_triggered = 2              # skills one message loads that way
 trigger_budget_tokens = 4000   # their combined size (estimated at 4 chars a token)
 project_triggers = false       # let the workspace's skills trigger too
+bundled = true                 # the skills that ship with ferrule
 ```

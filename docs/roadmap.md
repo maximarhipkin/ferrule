@@ -1506,6 +1506,20 @@ Current State; numbers are claimed there before anything is built.
     M63, the open follow-ups). Requiring green CI on `main` (M55.7) is
     the owner's repository setting, still off.
 
+- **M63, wave B: connections, skills and the catalog** (one commit per
+  task on `autopilot`; the re-audit's Part 2 and Part 3 #3–#6;
+  `docs/m63-connections-wave-b.md`):
+  - **M63.1, the bundled skills pack**: `weather` (Open-Meteo),
+    `news` (RSS and Atom), `hacker-news` (the official API),
+    `exchange-rates` (Frankfurter), `maps` (Nominatim and FOSSGIS OSRM)
+    and `home-assistant` (its REST API, `HA_TOKEN` through
+    `secret_request`), compiled in and written to `<data>/bundled-skills`
+    at each start as the `bundled` scope, after every other skill but the
+    learned ones; on by default, off one by one (`[skills] disabled`) or
+    all (`[skills] bundled = false`); tagged in `ferrule skills` and on
+    the dashboard; no triggers; network only through the sandboxed shell
+    and the proxy. Not run live.
+
 **Still open from earlier tracks.**
 
 - **M12 part 6**, named long-lived agents, waits on how a chat

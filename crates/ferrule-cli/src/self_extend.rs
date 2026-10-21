@@ -280,6 +280,7 @@ fn skills_handle(cfg: &config::SkillsConfig, workspace: &Path, layout: &Layout) 
         dir: layout.skills_dir(),
         scope: Scope::User,
     });
+    roots.extend(crate::bundled_skills(cfg, layout.data_dir()));
     // M53.3: the learning pass's, last; each agent's view keeps only those
     // the pass kept as they are (`learn::skill_view`).
     roots.push(SkillRoot {
