@@ -1527,6 +1527,16 @@ Current State; numbers are claimed there before anything is built.
     `preset` table) for iCloud Mail, Fastmail and Yahoo Mail on a Mail
     tile, plus "any other mailbox"; Outlook.com left out (OAuth2 only).
     Reads are untrusted, sends connected writes. Not run live.
+  - **M63.3, calendars without a Cloud project**: a native CalDAV
+    connection (RFC 6764 discovery, `calendar-query` with server-side
+    `expand`, `event_create`/`event_update`/`event_delete` as gated
+    writes with `If-None-Match`/`If-Match`) with iCloud, Fastmail and
+    Nextcloud presets and any server; and a read-only secret `.ics`
+    address (Google Calendar's "Secret address in iCal format"), sealed
+    and scrubbed as a secret, its common repeats worked out by ferrule.
+    The credential goes only to the saved hosts; redirects elsewhere are
+    refused. A small XML and iCalendar reader, no new dependency. Not run
+    live.
 
 **Still open from earlier tracks.**
 

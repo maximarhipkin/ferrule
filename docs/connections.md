@@ -34,6 +34,8 @@ A few rules hold for every connection:
 | Gmail: search, read, send | **Google → Gmail with an app password** | 2-Step Verification on the account | no |
 | iCloud, Fastmail or Yahoo mail: search, read, send | **Mail → the provider's tile option** | an app password from the provider | no |
 | any other mailbox over IMAP and SMTP | Mail → Any other mailbox | its servers, and an app password if it has them | no |
+| iCloud, Fastmail, Nextcloud or any CalDAV calendar: read and change events | **Calendar → the provider's option** | an app password | no |
+| a Google calendar (or any published one), read-only, no Cloud project | **Calendar → A calendar's secret address** | the calendar's secret iCal address | no |
 | Drive, Sheets, Docs, Calendar (what you share) | **Google → service account** | a Google Cloud project and a JSON key | no |
 | Drive, Sheets, Docs, Calendar as you (everything you see) | Google → Advanced: your own OAuth app | the relay, plus an OAuth client in Google Cloud | **yes** |
 | Google's own Gmail/Drive MCP servers | Google → Preview | the above, plus preview enrolment | **yes** |
@@ -214,6 +216,37 @@ password, for any provider:
   ("Modern Auth") for their IMAP and SMTP, so an app password can't sign
   in ([Microsoft's settings
   page](https://support.microsoft.com/en-us/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040)).
+
+## Calendars over CalDAV, and a secret address (M63.3)
+
+The **Calendar** tile reaches calendars without a Google Cloud project:
+
+| option | address | the password |
+|---|---|---|
+| iCloud Calendar | `https://caldav.icloud.com/` (fixed) | an app-specific password, with your Apple Account email |
+| Fastmail Calendar | `https://caldav.fastmail.com/` (fixed) | an app password with calendar access, with your Fastmail address |
+| Nextcloud | yours, like `https://cloud.example.com/remote.php/dav` | an app password (Settings → Security) |
+| Any other CalDAV server | its CalDAV address (`/.well-known/caldav` is tried) | its password, an app password if it has them |
+| A calendar's secret address | Google Calendar's "Secret address in iCal format", or any `.ics`/`webcal://` address | the address itself is the secret |
+
+- **CalDAV tools.** `calendars_list`; `events_list` (a calendar, from and
+  to dates, a week by default, the server working out repeats); and on a
+  connection with "allow changes" `event_create`, `event_update` and
+  `event_delete`, each a write that asks you first. A start can be a day
+  (all day), a time (that time wherever you are) or a time with its offset
+  (`2026-10-22T09:00+03:00`). Changing or deleting a repeating event changes
+  the whole series.
+- **The secret address is read-only**: `events_list` only, the common
+  repeats (daily, weekly, monthly on a day or a weekday like the third
+  Tuesday, yearly) worked out by ferrule; a rarer rule is shown once, with
+  the rule. The address is a credential (anyone with it reads the
+  calendar), so it's a secret field: sealed, never shown again, hidden from
+  tool results like a password. If it leaks, Reset it in Google Calendar.
+- **Bound to its hosts.** The password or address goes only to the host it
+  was saved with (iCloud also `*.icloud.com`, where its calendars live). A
+  redirect anywhere else is refused, not followed.
+- **What's read is outside content.** An event's title and notes are
+  whoever made it; a write after reading them asks you first (M54.5).
 
 ## Any MCP server with a key
 

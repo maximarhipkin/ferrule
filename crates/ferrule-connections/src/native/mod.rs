@@ -7,8 +7,10 @@
 //! any server's, gated and read-only-hinted the same way, and the
 //! credential never leaves this process.
 
+pub mod caldav;
 pub mod gmail;
 pub mod google;
+pub mod ical;
 pub mod imap;
 pub mod jira;
 pub mod jwt;
@@ -16,6 +18,7 @@ pub mod mail;
 pub mod mime;
 pub mod net;
 pub mod smtp;
+pub mod xml;
 
 use crate::catalog::Service;
 use ferrule_mcp::local::LocalServer;
@@ -25,7 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// `native = "…"` in the catalog.
-pub const KINDS: &[&str] = &["jira", "gmail", "google", "mail"];
+pub const KINDS: &[&str] = &["jira", "gmail", "google", "mail", "caldav", "ics"];
 
 /// Where the native connections go. Tests point them at local mocks.
 #[derive(Debug, Clone)]
@@ -118,6 +121,20 @@ pub fn normalize(
             Ok(())
         }
         "mail" => normalize_mail(fields, ep),
+        "caldav" => {
+            let url = caldav::address(field(fields, "url")?, ep)?;
+            fields.insert("url".into(), url.to_string());
+            field(fields, "username")?;
+            field(fields, "app_password")?;
+            Ok(())
+        }
+        "ics" => {
+            let url = caldav::address(field(fields, "secret_url")?, ep).map_err(|e| {
+                format!("the calendar's secret address: {e} (Google's starts https://calendar.google.com/calendar/ical/)")
+            })?;
+            fields.insert("secret_url".into(), url.to_string());
+            Ok(())
+        }
         other => Err(format!("`{other}` isn't a native connection")),
     }
 }
@@ -221,6 +238,13 @@ pub fn hosts(kind: &str, fields: &BTreeMap<String, String>, ep: &Endpoints) -> V
             hosts.dedup();
             hosts
         }
+        "caldav" => caldav::caldav_hosts(fields),
+        "ics" => fields
+            .get("secret_url")
+            .and_then(|u| url::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -260,6 +284,11 @@ pub async fn probe(
                 fields.get("imap_host").map_or("the mail server", |h| h)
             )
         }),
+        "caldav" => caldav::CalDav::new("probe", fields, false, ep)?
+            .check()
+            .await
+            .map(|found| format!("signed in; {found}")),
+        "ics" => caldav::Ics::new("probe", fields, ep)?.check().await,
         "google" => {
             let g = google::Google::new(
                 "probe",
@@ -312,6 +341,8 @@ pub fn server(
             ep,
             service.key_url.as_deref(),
         )?),
+        ("caldav", Some(f)) => Arc::new(caldav::CalDav::new(id, f, write, ep)?),
+        ("ics", Some(f)) => Arc::new(caldav::Ics::new(id, f, ep)?),
         ("google", _) => Arc::new(google::Google::new(
             id,
             service.clone(),

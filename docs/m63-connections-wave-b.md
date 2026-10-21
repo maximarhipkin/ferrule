@@ -10,7 +10,7 @@ those four gaps, one commit per task:
 
 1. [A bundled first-party skills pack](#1-the-bundled-skills-pack) (M63.1).
 2. [Email from any provider over IMAP and SMTP](#2-mail-from-any-provider) (M63.2).
-3. Calendars over CalDAV, and read-only ICS (M63.3).
+3. [Calendars over CalDAV, and read-only ICS](#3-calendars-caldav-and-a-secret-address) (M63.3).
 4. Catalog v2 and one-step add (M63.4).
 
 The rules every task keeps: keys come through `secret_request` (or the
@@ -298,3 +298,100 @@ STARTTLS path are untested live. The existing Gmail test (mock IMAP and
 SMTP) passes unchanged through the new code; the generic flavour has no
 test of its own (the owner's rule: no new tests). The email channel's
 `use_connection` still takes a Gmail connection only.
+
+## 3. Calendars: CalDAV and a secret address
+
+Google Calendar was the only calendar, and it needed a service account or
+an OAuth client plus the relay. Two native connections now cover the
+everyday cases (`crates/ferrule-connections/src/native/caldav.rs`), on a
+new **Calendar** tile.
+
+### CalDAV (`native = "caldav"`)
+
+- **Finding the calendars** (RFC 6764 §6, RFC 5397, RFC 4791 §6.2.1): a
+  `PROPFIND` for `current-user-principal` at the address given, then at
+  `/.well-known/caldav`; a `PROPFIND` of the principal for
+  `calendar-home-set`; a `Depth: 1` `PROPFIND` of the home for each
+  collection's `resourcetype`, `displayname` and
+  `supported-calendar-component-set` (task lists are left out). Kept ten
+  minutes.
+- **Listing events**: a `calendar-query` `REPORT` with a `time-range` and
+  `calendar-data` with `expand`, so the server returns one component per
+  occurrence (RFC 4791 §7.8, §9.6.5, §9.9: "date with UTC time"). A server
+  that doesn't expand gets ferrule's own expansion (below).
+- **Changes** (write connections only, connected writes behind the gate):
+  `event_create` is a `PUT` of a new `<uid>.ics` with `If-None-Match: *`
+  (§5.3.2); `event_update` fetches the event, rewrites only the series'
+  own `SUMMARY`, `DTSTART`, `DTEND`, `LOCATION` and `DESCRIPTION` lines
+  (not an alarm's, not an override's; a moved start keeps the length) and
+  puts it back with `If-Match` on its `ETag`; `event_delete` is a
+  `DELETE`, marked destructive. An event id is its path, and one outside
+  this account's calendars is refused.
+- **Times.** A day is all-day (`VALUE=DATE`); a time with an offset or `Z`
+  is stored in UTC; a time without one is floating, "that time wherever
+  the owner is" (RFC 5545 §3.3.5). No `TZID` is written: RFC 5545 wants a
+  `VTIMEZONE` for each, and ferrule has no time zone database.
+- **The credential's hosts** are the address's host plus a preset's
+  `extra_hosts` (`*.icloud.com`); every request, redirects included, is
+  checked against them, and a redirect elsewhere is refused with the host
+  named. Redirects are followed by ferrule, not by the HTTP client.
+- **Parsing**: a small XML reader for multistatus answers (`xml.rs`: local
+  names, entities, CDATA) and an iCalendar reader and writer (`ical.rs`:
+  unfolding, parameters, escaped text, dates, durations, `RRULE`,
+  `EXDATE`, `RECURRENCE-ID`, lines folded at 75 octets). No new
+  dependency.
+
+### A secret address (`native = "ics"`)
+
+- One field, `secret_url`: the field name has "secret" in it, so the
+  value is among the connection secrets the tool-result scrub hides
+  (`Store::secret_values`), and the page treats it as a password (sealed,
+  never sent back). `webcal://` is read as `https://`. Error messages
+  name the host, never the address.
+- `events_list` downloads the calendar (at most 20 MB), and works out the
+  occurrences in the range itself: `DAILY`, `WEEKLY` with plain `BYDAY`,
+  `MONTHLY` on the start's day or one `BYDAY` like `3TU` or `-1FR`,
+  `YEARLY` on the start's date, with `INTERVAL`, `COUNT`, `UNTIL` and
+  `EXDATE`; an override (`RECURRENCE-ID`) replaces its occurrence; a
+  `CANCELLED` event is left out. Any other rule is shown once, with the
+  rule, saying its dates weren't worked out. Times are compared on each
+  event's own clock (no time zone database), so an event at the edge of a
+  range can be a few hours off.
+- Read-only whatever "allow changes" says: there is nothing to write to.
+
+### The providers, checked on 2026-10-21
+
+- **iCloud**: app-specific passwords at account.apple.com → Sign-In and
+  Security → App-Specific Passwords, with two-factor authentication:
+  <https://support.apple.com/en-us/102654>. **Not in Apple's docs:**
+  `caldav.icloud.com` as the CalDAV address and its calendars living on
+  `pNN-caldav.icloud.com`; both are from third-party guides (for example
+  <https://www.onecal.io/blog/how-to-integrate-icloud-calendar-api-into-your-app>,
+  <https://www.busymac.com/docs/busycal/70630-using-busycal-with-icloud>),
+  hence `extra_hosts = "*.icloud.com"`.
+- **Fastmail**: CalDAV at `https://caldav.fastmail.com/`, the full address
+  as user name, an app password required:
+  <https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports>.
+- **Nextcloud**: `https://<host>/remote.php/dav` is the form the manual's
+  sync guide shows
+  (<https://docs.nextcloud.com/server/stable/user_manual/en/groupware/sync_windows10.html>);
+  app passwords with two-factor sign-in, under the settings' Security
+  section (the exact menu words are from the guide's older version).
+- **Google Calendar's secret address**: Settings → Settings for my
+  calendars → the calendar → Integrate calendar → "Secret address in iCal
+  format"; "Only you should know", "Do not share this address", Reset
+  makes a new one, and it is "a read-only view of one calendar":
+  <https://support.google.com/calendar/answer/37648>.
+- **The protocols**: <https://www.rfc-editor.org/rfc/rfc4791>,
+  <https://www.rfc-editor.org/rfc/rfc6764>,
+  <https://www.rfc-editor.org/rfc/rfc5397>,
+  <https://www.rfc-editor.org/rfc/rfc5545>.
+
+### Not verified
+
+Nothing was run against a real server: not iCloud's discovery or its
+`pNN` hosts, not Fastmail's or Nextcloud's, not whether each server honours
+`expand`, not Google's secret address. The XML and iCalendar readers and
+the repeat expansion have no tests (the owner's rule: no new tests); the
+existing suite only checks that the catalog parses. Time zones are not
+converted: a range is compared on each event's own clock.

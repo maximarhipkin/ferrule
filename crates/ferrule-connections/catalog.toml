@@ -312,6 +312,149 @@ label = "User name"
 optional = true
 hint = "Only if it isn't the email address."
 
+# ── Calendars over CalDAV, and a calendar's secret address (M63.3).
+# Checked on 2026-10-21 (`docs`); iCloud's CalDAV address is from
+# third-party clients' guides, Apple doesn't publish it.
+
+[[service]]
+name = "icloud_calendar"
+title = "iCloud Calendar (app-specific password)"
+url = "https://caldav.icloud.com"
+auth = "api_key"
+native = "caldav"
+read_only = "tools"
+tile = "calendar"
+option = "iCloud Calendar"
+covers = "Your iCloud calendars: list events (repeats worked out); create, change and delete events (writes, which ask you first)."
+key_url = "https://account.apple.com"
+docs = "https://support.apple.com/en-us/102654"
+revoke_note = "Revoke the app-specific password at https://account.apple.com (Sign-In and Security → App-Specific Passwords) to cut it off at Apple too."
+guide = [
+  "The Apple Account needs two-factor authentication.",
+  "Open https://account.apple.com → Sign-In and Security → App-Specific Passwords, and generate one named ferrule.",
+  "Paste it below with your Apple Account's email. ferrule finds your calendars to test it before saving.",
+]
+preset = { url = "https://caldav.icloud.com/", extra_hosts = "*.icloud.com" }
+[[service.fields]]
+name = "username"
+label = "Apple Account email"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App-specific password"
+secret = true
+kind = "password"
+placeholder = "abcd-efgh-ijkl-mnop"
+
+[[service]]
+name = "fastmail_calendar"
+title = "Fastmail Calendar (app password)"
+url = "https://caldav.fastmail.com"
+auth = "api_key"
+native = "caldav"
+read_only = "tools"
+tile = "calendar"
+option = "Fastmail Calendar"
+covers = "Your Fastmail calendars: list events; create, change and delete events (writes, which ask you first)."
+key_url = "https://www.fastmail.help/hc/en-us/articles/360058752854"
+docs = "https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports"
+revoke_note = "Delete the app password in Fastmail (Settings → Privacy & Security → Manage app passwords and access) to cut it off at Fastmail too."
+guide = [
+  "In Fastmail: Settings → Privacy & Security → Manage app passwords and access → New app password, with calendar access.",
+  "Paste it below with your full Fastmail address.",
+]
+preset = { url = "https://caldav.fastmail.com/" }
+[[service.fields]]
+name = "username"
+label = "Fastmail address"
+kind = "email"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+
+[[service]]
+name = "nextcloud_calendar"
+title = "Nextcloud Calendar"
+url = "https://nextcloud.com"
+auth = "api_key"
+native = "caldav"
+read_only = "tools"
+tile = "calendar"
+option = "Nextcloud"
+covers = "Your Nextcloud's calendars: list events; create, change and delete events (writes, which ask you first)."
+docs = "https://docs.nextcloud.com/server/stable/user_manual/en/groupware/sync_windows10.html"
+guide = [
+  "The address is your Nextcloud's, followed by /remote.php/dav (like https://cloud.example.com/remote.php/dav).",
+  "Make an app password in Nextcloud: your settings → Security → Devices & sessions → Create new app password (needed with two-factor sign-in, better anyway).",
+  "Paste it below with your Nextcloud user name.",
+]
+[[service.fields]]
+name = "url"
+label = "CalDAV address"
+placeholder = "https://cloud.example.com/remote.php/dav"
+[[service.fields]]
+name = "username"
+label = "User name"
+[[service.fields]]
+name = "app_password"
+label = "App password"
+secret = true
+kind = "password"
+
+[[service]]
+name = "caldav"
+title = "Any CalDAV calendar"
+url = "https://www.rfc-editor.org/rfc/rfc4791"
+auth = "api_key"
+native = "caldav"
+read_only = "tools"
+tile = "calendar"
+option = "Any other CalDAV server"
+covers = "Calendars on any CalDAV server over https: list events; create, change and delete events (writes, which ask you first)."
+guide = [
+  "Find your provider's CalDAV address in its help pages (the server's own address often works: ferrule tries /.well-known/caldav).",
+  "Make an app password if the provider has them.",
+  "Fill in below. The password only ever goes to that address's host.",
+]
+[[service.fields]]
+name = "url"
+label = "CalDAV address"
+placeholder = "https://dav.example.com/"
+[[service.fields]]
+name = "username"
+label = "User name"
+[[service.fields]]
+name = "app_password"
+label = "Password (an app password if your provider has them)"
+secret = true
+kind = "password"
+
+[[service]]
+name = "ics_calendar"
+title = "A calendar's secret address (read-only)"
+url = "https://calendar.google.com"
+auth = "api_key"
+native = "ics"
+read_only = "tools"
+tile = "calendar"
+option = "A calendar's secret address (read-only), like Google Calendar's"
+covers = "One calendar, read-only: list its events (common repeats worked out). Google Calendar without a Cloud project, or any calendar published as an .ics address. Nothing can be changed this way."
+docs = "https://support.google.com/calendar/answer/37648"
+revoke_note = "To cut it off, reset the secret address where you copied it (Google: Integrate calendar → Secret address in iCal format → Reset)."
+guide = [
+  "Google Calendar on a computer: Settings → under Settings for my calendars, your calendar → Integrate calendar → Secret address in iCal format → copy.",
+  "Other calendars: copy the .ics (or webcal://) address the service gives for publishing or subscribing.",
+  "Paste it below. Anyone with it can read the calendar, so ferrule keeps it sealed like a password and never shows it; if it ever leaks, Reset it where you copied it.",
+]
+[[service.fields]]
+name = "secret_url"
+label = "The calendar's secret address"
+secret = true
+kind = "password"
+placeholder = "https://calendar.google.com/calendar/ical/…/basic.ics"
+
 [[service]]
 name = "google"
 title = "Google Drive, Sheets, Docs, Calendar (service account)"

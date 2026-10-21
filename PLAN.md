@@ -9418,3 +9418,63 @@ has no test. The email channel's `use_connection` still takes a Gmail
 connection only. A connection's reads count as untrusted only while
 `[connections] gate_writes` is on (the default), as for every
 connection: that switch also empties the hub's `connected` list.
+
+### 2026-10-21 — M63.3: calendars over CalDAV, and a calendar's secret address (Claude, Opus 5.5)
+
+Wave B, task 3, in the `autopilot` worktree. The re-audit's Part 2 §2c #1
+and Part 3 #6: Google was the only calendar, and only through a service
+account or an OAuth client plus the relay.
+
+**What changed.**
+- `ferrule-connections` `native/caldav.rs` (new): `CalDav` (kind
+  `caldav`): RFC 6764/5397/4791 discovery (`current-user-principal` at
+  the address, then `/.well-known/caldav`; `calendar-home-set`; the
+  home's calendars, task lists left out; kept 10 minutes);
+  `calendars_list`, `events_list` (`calendar-query` with `expand`, a week
+  by default, at most a year), and on a write connection `event_create`
+  (`PUT` with `If-None-Match: *`), `event_update` (only the series' own
+  lines rewritten, `If-Match` on the ETag; a moved start keeps its length)
+  and `event_delete` (destructive). Event ids are paths inside the
+  account's calendars; others are refused. `Ics` (kind `ics`): a secret
+  `.ics` address, read-only, `events_list` only. Both send the credential
+  only to the saved hosts and follow redirects themselves, refusing one
+  elsewhere.
+- `native/ical.rs` (new): an iCalendar reader and writer (unfolding,
+  parameters, escaped text, dates, durations) and repeat expansion
+  (DAILY, WEEKLY with BYDAY, MONTHLY on the day or an nth weekday,
+  YEARLY; INTERVAL, COUNT, UNTIL, EXDATE, RECURRENCE-ID overrides;
+  anything else shown once with its rule). `native/xml.rs` (new): a small
+  reader for multistatus answers. No new dependency.
+- `native/mod.rs`: kinds `caldav` and `ics` (normalize: https only,
+  `webcal://` read as https; hosts: the address's plus a preset's
+  `extra_hosts`; probe: discovery, or one download).
+- `catalog.toml`: a Calendar tile: iCloud (`caldav.icloud.com`,
+  `extra_hosts = "*.icloud.com"`), Fastmail (`caldav.fastmail.com`),
+  Nextcloud and any CalDAV server, and "A calendar's secret address"
+  (`secret_url`, a secret field, so `Store::secret_values` hands it to the
+  tool-result scrub).
+- Docs: `connections.md` ("Calendars over CalDAV, and a secret address",
+  the option table), `m63-connections-wave-b.md` §3 (the protocol steps
+  with the RFC sections, the providers with their URLs, what isn't
+  verified), the roadmap's M63.3 line.
+
+**Verified against docs on 2026-10-21:** RFC 4791 (calendar-home-set,
+time-range in UTC, expand, PUT with If-None-Match), RFC 6764 (the
+well-known redirect, principal discovery), Fastmail's CalDAV address,
+Apple's app-specific passwords, Google's secret iCal address. **Not in
+the vendors' docs:** `caldav.icloud.com` and its `pNN-caldav` hosts
+(third-party guides); Nextcloud's `remote.php/dav` is the form its sync
+guide shows.
+
+**Tests changed, none added** (the owner's standing rule):
+`the_built_in_catalog_parses_and_checks` lists the five new names.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Nothing ran against a real CalDAV server or a real secret
+address. The XML reader, the iCalendar reader and the repeat expansion
+have no tests. No time zone conversion: ranges are compared on each
+event's own clock, and no `TZID` is written (floating or UTC times only).
+Updating or deleting one occurrence of a repeating event isn't offered
+(the whole series changes). CardDAV contacts (re-audit #9) are not here.
