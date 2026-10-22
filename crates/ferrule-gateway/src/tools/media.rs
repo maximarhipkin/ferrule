@@ -75,6 +75,12 @@ pub struct MediaShared {
     limits: OnceLock<MediaLimits>,
     /// The trust hub's dollar caps; unset, none.
     spend: OnceLock<Arc<dyn MediaSpend>>,
+    /// M65 §0: the vision helper's model (`[media] vision_model`); unset,
+    /// no helper.
+    vision: OnceLock<String>,
+    /// M65 §0: what the helper said, by image, modification time and task,
+    /// so the same file isn't paid for twice.
+    pub(super) looks: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl MediaShared {
@@ -97,7 +103,30 @@ impl MediaShared {
             speech: OnceLock::new(),
             limits: OnceLock::new(),
             spend: OnceLock::new(),
+            vision: OnceLock::new(),
+            looks: Default::default(),
         })
+    }
+
+    /// M65 §0: turn the vision helper on with `model`. The first call wins.
+    pub fn set_vision(&self, model: String) {
+        let _ = self.vision.set(model);
+    }
+
+    /// M65 §0: the vision helper for one session whose model can't see,
+    /// charged to `tree`; `None` when `[media] vision_model` is off.
+    pub fn looker(
+        self: &Arc<Self>,
+        session_id: &str,
+        tree: &str,
+    ) -> Option<Arc<dyn ferrule_core::vision::Looker>> {
+        let model = self.vision.get()?.clone();
+        Some(Arc::new(super::look::VisionHelper::new(
+            self.clone(),
+            model,
+            session_id,
+            tree,
+        )))
     }
 
     /// The allow-lists and dollar limits (set once, before the tools are
@@ -178,7 +207,7 @@ impl MediaShared {
 
     /// Refuses a paid call once `tree`'s run, day or task has no dollars
     /// left (what it costs isn't known before an image or a voice reply).
-    fn check_budget(&self, tree: &str) -> Result<Option<f64>, String> {
+    pub(super) fn check_budget(&self, tree: &str) -> Result<Option<f64>, String> {
         let left = self.usd_left(tree)?;
         if left.is_some_and(|l| l <= 0.0) {
             return Err(
@@ -247,7 +276,7 @@ impl MediaShared {
     /// its dollars when they're known. `run`: the tree a tool call's row
     /// is charged to (the poller's settling rows charge no run; the day
     /// and task caps read them from the ledger).
-    fn ledger(&self, row: Row<'_>, run: Option<&str>) {
+    pub(super) fn ledger(&self, row: Row<'_>, run: Option<&str>) {
         let record = row.record();
         if let (Some(tree), Some(spend)) = (run, self.spend.get()) {
             spend.charge(tree, &record);
@@ -268,15 +297,15 @@ fn midnight() -> i64 {
 }
 
 /// What one media ledger row says.
-struct Row<'a> {
-    session_id: &'a str,
+pub(super) struct Row<'a> {
+    pub(super) session_id: &'a str,
     /// The run tree, so a scheduled task's media spend counts toward its
     /// own cap.
-    tree: Option<&'a str>,
-    model: &'a str,
-    latency_ms: u64,
-    err: Option<&'a str>,
-    cost_usd: Option<f64>,
+    pub(super) tree: Option<&'a str>,
+    pub(super) model: &'a str,
+    pub(super) latency_ms: u64,
+    pub(super) err: Option<&'a str>,
+    pub(super) cost_usd: Option<f64>,
 }
 
 impl Row<'_> {

@@ -10209,3 +10209,59 @@ entry (all four entries are dated 2026-10-22). Current State now names
 `main` `1c9fee1`, M65 in flight on `autopilot`, and M66 as the next free
 number. The build follows the design's order, §0 to §6, one commit and
 one entry each, in worktree `.claude/worktrees/autopilot`.
+
+### 2026-10-22 — M65 §0: a vision helper for a chat model that can't see (Claude, Opus 5.5)
+
+The owner's chat model is the Claude plan through Claude Code, which never
+sees images (`Entry::sees_images`), so "the agent looks" needs a second
+model that looks and says what it saw (`docs/m65-video.md` §0, owner
+decision 1).
+
+**Built.**
+- `ferrule-core`: `vision::Looker` (a model name, and `look(image, task,
+  reference)` answering in words), the tasks `PHOTO_TASK` and
+  `TOOL_TASK`, and the stand-in lines `[image <name>, described by
+  <model>: …]` or, when the helper fails, one that says nothing has
+  checked it. `ImageRef` gains `described` (that line, kept in history so
+  later turns don't ask again) and `check` (a task and a reference image a
+  tool can ask for instead of a plain description; §4 uses it), and
+  derives `Default` (17 literals take `..Default::default()`). The agent
+  gets `set_looker` and `understands_images`; `push_seen` describes the
+  images of the goal message, every tool result and each steered message
+  before they're added, only when the model doesn't see and there is a
+  helper. `note_for(TextOnly)` returns the described line.
+- `ferrule-media`: `MediaBackend::look` (default: no vision model) and
+  OpenRouter's, a `/chat/completions` call with the task and the images
+  as data URLs, `usage.include` for the cost.
+- `ferrule-gateway`: `tools/look.rs`, `VisionHelper`: refuses a file that
+  isn't an image under the 3.5 MB cap, checks the `[trust]` dollars left
+  before the call, writes a `media` ledger row charged to the run, keeps
+  answers by path, modification time and task (256, then it starts over).
+  `MediaShared::set_vision` and `looker(session, tree)`; the M51 module
+  only gained those, the cache and `pub(super)` on `check_budget`,
+  `ledger` and `Row` (M51's surface, the smallest change). The router
+  sends its "can't see photos" notice only when the agent neither sees
+  nor has a helper.
+- `ferrule-plans`: the Claude engine's bridged tool results and recap
+  carry `text_with_notes` (the described lines, or the plain note) where
+  they carried only the text.
+- `ferrule-cli`: `[media] vision_model`, default `google/gemini-3.8-flash`
+  (OpenRouter's model list read 2026-10-22: the newest Gemini Flash,
+  $0.825 per million input tokens); a chat agent and a sub-agent whose
+  model doesn't see get the helper at construction (`gateway_factory`,
+  `child_builder`), charged to the session's tree or the child's root.
+
+**Decided here (left to the builder).** The description is made in the
+agent as a message is added (one place for photos, steered photos and
+tool images) behind a core trait the CLI wires; the helper is off when
+`[media]` is off (it rides the media backend and its key); a failed look
+leaves a line saying the image is unchecked, not the old "can't see"
+note, so the model knows why.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests (the owner's rule).
+
+**Open.** Not run live (an OpenRouter vision call costs cents). The
+description is decided per agent at construction and per call through
+`sees_images()`; a fallback to a seeing model mid-chat sends pixels as
+before.

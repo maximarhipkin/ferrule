@@ -1295,6 +1295,10 @@ pub struct MediaConfig {
     pub speech_model: String,
     /// `speak`'s voice (the model's own names); unset, the model's default.
     pub voice: Option<String>,
+    /// M65 §0: the vision helper, a cheap model that sees images and
+    /// describes them for a chat model that can't (the Claude plan). Used
+    /// only for such a chat; empty turns it off.
+    pub vision_model: String,
     /// Generations per day (images, video submits and spoken replies
     /// together); 0 = no cap. Fail-closed: a store that can't be counted
     /// refuses.
@@ -1321,6 +1325,9 @@ impl Default for MediaConfig {
             // OpenRouter's speech list, 2026-10-21: cheap, multilingual.
             speech_model: "google/gemini-3.8-flash-tts".into(),
             voice: None,
+            // OpenRouter's model list, 2026-10-22: the newest Gemini Flash,
+            // $0.825 per million input tokens (an image is about 1,300).
+            vision_model: "google/gemini-3.8-flash".into(),
             max_per_day: 20,
             max_videos_per_day: 3,
             max_usd_per_video: 1.0,

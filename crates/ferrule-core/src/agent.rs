@@ -7,7 +7,7 @@ use crate::ledger::{
     LedgerContext, LedgerRecord, LedgerSink, SpeedStats, ToolBatch, TraceEvent, TraceLevel,
 };
 use crate::lifecycle::{Fired, Hook, HookEvent, HookInput, HookSet, Verdict};
-use crate::message::{ImageRef, Message, ToolCall, Usage};
+use crate::message::{ImageRef, Message, Role, ToolCall, Usage};
 use crate::profile::{HarnessProfile, COMPACTION_TEMPLATE};
 use crate::provider::{CompletionRequest, CompletionResponse, Delta, DeltaSink, Provider};
 use crate::routing::Signal;
@@ -331,6 +331,8 @@ pub struct Agent {
     inbox: Option<Arc<dyn Inbox>>,
     /// Photos for the next goal message (M47); see [`Agent::attach_images`].
     pending_images: Vec<crate::message::ImageRef>,
+    /// M65 §0: the vision helper, for a model that can't see.
+    looker: Option<Arc<dyn crate::vision::Looker>>,
     stop: Option<StopFlag>,
     guard: Option<Arc<dyn Guard>>,
     session_recall: Option<Arc<dyn SessionRecall>>,
@@ -417,6 +419,7 @@ impl Agent {
             budget: None,
             inbox: None,
             pending_images: Vec::new(),
+            looker: None,
             stop: None,
             guard: None,
             session_recall: None,
@@ -544,6 +547,61 @@ impl Agent {
     /// Whether the model that serves the next call sees images.
     pub fn sees_images(&self) -> bool {
         self.provider.sees_images()
+    }
+
+    /// M65 §0: a vision helper for a model that can't see. Each photo and
+    /// each tool image is described once, as its message is added, and
+    /// the description takes the image's place for this model.
+    pub fn set_looker(&mut self, looker: Arc<dyn crate::vision::Looker>) {
+        self.looker = Some(looker);
+    }
+
+    /// Whether images reach the model at all: as pixels, or (M65 §0) in
+    /// the vision helper's words.
+    pub fn understands_images(&self) -> bool {
+        self.sees_images() || self.looker.is_some()
+    }
+
+    /// M65 §0: `msg`'s images in the vision helper's words, when the model
+    /// can't see them and there is a helper. A check the tool asked for
+    /// (a generated image against its request) is made instead of a plain
+    /// description; an image already described isn't asked about again.
+    async fn describe_images(&self, msg: &mut Message) {
+        let Some(looker) = self.looker.clone() else {
+            return;
+        };
+        if msg.images.iter().all(|i| i.described.is_some()) || self.sees_images() {
+            return;
+        }
+        let model = looker.model();
+        let plain = if msg.role == Role::Tool {
+            crate::vision::TOOL_TASK
+        } else {
+            crate::vision::PHOTO_TASK
+        };
+        for img in msg.images.iter_mut().filter(|i| i.described.is_none()) {
+            let (task, reference) = match &img.check {
+                Some(c) => (c.task.clone(), c.reference.clone()),
+                None => (plain.to_string(), None),
+            };
+            let seen = looker
+                .look(
+                    std::path::Path::new(&img.path),
+                    &task,
+                    reference.as_deref().map(std::path::Path::new),
+                )
+                .await;
+            img.described = Some(match seen {
+                Ok(text) => crate::vision::described_as(img, &model, &text),
+                Err(why) => crate::vision::not_described(img, &model, &why),
+            });
+        }
+    }
+
+    /// [`Agent::push`] for a message that may carry images (M65 §0).
+    async fn push_seen(&mut self, mut msg: Message) {
+        self.describe_images(&mut msg).await;
+        self.push(msg);
     }
 
     /// Stop at the next step once `flag` is set; see [`StopFlag`].
@@ -1293,7 +1351,8 @@ impl Agent {
         self.goal = Some(goal.to_string());
         self.incomplete = None;
         let images = std::mem::take(&mut self.pending_images);
-        self.push(Message::user_with_images(goal, images));
+        self.push_seen(Message::user_with_images(goal, images))
+            .await;
         if let Some(memory) = self.memory_due.take() {
             self.push(Message::user(memory));
         }
@@ -1356,7 +1415,7 @@ impl Agent {
             if let Some(why) = self.budget.as_ref().and_then(|b| b.exhausted()) {
                 return self.wrap_up(&tx, iteration, StopReason::Budget(why)).await;
             }
-            self.deliver_inbox();
+            self.deliver_inbox().await;
             self.boost_now = std::mem::take(&mut boost);
             let guard = self.guard.clone();
             // A compaction calls a model too: the kill switch reaches it.
@@ -1606,7 +1665,8 @@ impl Agent {
                             },
                         )
                         .await;
-                        self.push(Message::tool_result(&call.id, content).with_images(images));
+                        self.push_seen(Message::tool_result(&call.id, content).with_images(images))
+                            .await;
                     }
                     return self
                         .abandon_rest(&tx, &[], &calls[end..], interrupt, iteration + 1)
@@ -1652,9 +1712,10 @@ impl Agent {
                                     },
                                 )
                                 .await;
-                                self.push(
+                                self.push_seen(
                                     Message::tool_result(&call.id, content).with_images(images),
-                                );
+                                )
+                                .await;
                                 // The rest of the segment ran, but its
                                 // PostToolUse hooks didn't: not run, as a
                                 // halt mid-call is.
@@ -1684,7 +1745,8 @@ impl Agent {
                     if ok && self.config.detect_stuck {
                         edit_notes.extend(edits.record(&call.name, &call.arguments));
                     }
-                    self.push(Message::tool_result(&call.id, content).with_images(images));
+                    self.push_seen(Message::tool_result(&call.id, content).with_images(images))
+                        .await;
                     if routes {
                         let misfit = self.tools.misfit(&call.name, &call.arguments);
                         let step = steps.last().expect("pushed above");
@@ -2083,7 +2145,7 @@ impl Agent {
 
     /// Whatever reached the inbox since the last model call, as one user
     /// message, then its whole messages (M56.1) one by one.
-    fn deliver_inbox(&mut self) {
+    async fn deliver_inbox(&mut self) {
         let Some(inbox) = self.inbox.clone() else {
             return;
         };
@@ -2092,7 +2154,7 @@ impl Agent {
             self.push(Message::user(items.join("\n\n")));
         }
         for msg in inbox.take_messages() {
-            self.push(msg);
+            self.push_seen(msg).await;
         }
     }
 
@@ -3314,6 +3376,7 @@ mod tests {
             path: "inbox/a.jpg".into(),
             mime: "image/jpeg".into(),
             name: Some("a.jpg".into()),
+            ..Default::default()
         };
         assert!(!agent.sees_images(), "the scripted provider is text-only");
         agent.attach_images(vec![photo.clone()]);

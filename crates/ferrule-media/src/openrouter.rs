@@ -1,13 +1,14 @@
 //! OpenRouter's media endpoints: `POST {base}/images/generations`
 //! (OpenAI-compatible, sync), `POST {base}/videos` + `GET
 //! {base}/videos/{id}` (async jobs) and `POST {base}/audio/speech` (M51.4,
-//! sync, raw audio back). Reached through ferrule's credential
+//! sync, raw audio back), and M65's vision helper on `POST
+//! {base}/chat/completions`. Reached through ferrule's credential
 //! proxy: the caller hands over the proxy's placeholder key and an egress
 //! client from `ferrule_tools::egress::client_builder`, never a real key.
 
 use crate::{
-    AudioOut, ImageOut, ImageReq, MediaBackend, MediaError, SpeechReq, VideoJob, VideoPrice,
-    VideoReq, VideoState,
+    AudioOut, ImageOut, ImageReq, LookOut, LookReq, MediaBackend, MediaError, SpeechReq, VideoJob,
+    VideoPrice, VideoReq, VideoState,
 };
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -345,6 +346,46 @@ impl MediaBackend for OpenRouterMedia {
         Ok(AudioOut {
             bytes,
             format: "mp3".into(),
+        })
+    }
+
+    async fn look(&self, req: LookReq) -> Result<LookOut, MediaError> {
+        let mut content = vec![json!({ "type": "text", "text": req.task })];
+        for image in &req.images {
+            content.push(
+                json!({ "type": "image_url", "image_url": { "url": Self::data_url(image)? } }),
+            );
+        }
+        let body = json!({
+            "model": req.model,
+            "messages": [{ "role": "user", "content": content }],
+            "max_tokens": 800,
+            // OpenRouter's usage accounting: the answer says what it cost.
+            "usage": { "include": true },
+        });
+        let answer = self
+            .checked(self.post(self.url("/chat/completions"), &body))
+            .await?;
+        let message = &answer["choices"][0]["message"]["content"];
+        let text = match message {
+            Value::String(t) => t.clone(),
+            // Some models answer in parts.
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        };
+        if text.trim().is_empty() {
+            return Err(MediaError::BadAnswer(format!(
+                "{} said nothing about the image",
+                req.model
+            )));
+        }
+        Ok(LookOut {
+            text,
+            cost_usd: cost(&answer),
         })
     }
 

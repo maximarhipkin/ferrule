@@ -7,11 +7,56 @@
 //! newest few; a one-line note otherwise. This module is the part that
 //! doesn't depend on a driver: which images are new enough, what the notes
 //! say, and which files a tool may hand over as images.
+//!
+//! M65 §0: for a model that can't see, a [`Looker`] (a second, cheap model
+//! that can) looks at each image once, when its message is added, and
+//! what it says takes the image's place ([`ImageRef::described`]).
 
 use std::collections::HashSet;
 use std::path::Path;
 
 use crate::message::{ImageRef, Message, Role};
+
+/// M65 §0: a vision helper. A second model that sees looks at an image
+/// for a chat model that can't, and answers in words. Wired by the CLI
+/// only for an agent whose model doesn't see images.
+#[async_trait::async_trait]
+pub trait Looker: Send + Sync {
+    /// The helper's model, named in what it says.
+    fn model(&self) -> String;
+    /// What `image` shows, for `task`; `reference` is a second image to
+    /// compare it with. `Err` is why it couldn't look, in plain words.
+    async fn look(
+        &self,
+        image: &Path,
+        task: &str,
+        reference: Option<&Path>,
+    ) -> Result<String, String>;
+}
+
+/// M65 §0: what the helper is asked about a photo someone sent.
+pub const PHOTO_TASK: &str = "Someone sent this photo to an assistant that can't see images. Describe it so the assistant can answer about it and act on it: what it shows, any text in it word for word, the people in it (how they look, their expression, what they wear and do; never guess who they are), the setting, and anything unusual. Plain sentences, no preamble, at most 200 words.";
+
+/// M65 §0: what it is asked about an image a tool returned.
+pub const TOOL_TASK: &str = "A tool returned this image (a file it read, a screenshot, a picture or a contact sheet it made) to an assistant that can't see images. Describe it so the assistant can act on it: what it shows, any text in it word for word (all of it, for a screenshot of a page or an app), the people in it (how they look; never guess who they are), and anything wrong or unusual. For a grid of video frames, go tile by tile in reading order. Plain sentences, no preamble, at most 300 words.";
+
+/// M65 §0: the line that takes an image's place once the helper has
+/// looked at it.
+pub fn described_as(img: &ImageRef, model: &str, text: &str) -> String {
+    format!(
+        "[image {}, described by {model}: {}]",
+        name_of(img),
+        text.trim()
+    )
+}
+
+/// M65 §0: the line that takes its place when the helper couldn't look.
+pub fn not_described(img: &ImageRef, model: &str, why: &str) -> String {
+    format!(
+        "[image {}: the vision helper ({model}) couldn't look at it ({why}), and this model can't see images, so nothing has checked it.]",
+        name_of(img)
+    )
+}
 
 /// The most an image may weigh on the wire. The dashboard shrinks photos
 /// to well under this; for a tool's image (M60) it's the cap, refused
@@ -65,6 +110,10 @@ pub fn text_with_notes(msg: &Message, why: NoteWhy) -> String {
 /// The note for one of `msg`'s images: a photo someone sent, or (M60) an
 /// image a tool returned.
 pub fn note_for(msg: &Message, img: &ImageRef, why: NoteWhy) -> String {
+    // M65 §0: what the helper said stands in for the pixels.
+    if let (NoteWhy::TextOnly, Some(described)) = (why, &img.described) {
+        return described.clone();
+    }
     if msg.role == Role::Tool {
         tool_note(img, why)
     } else {
@@ -109,6 +158,7 @@ pub fn image_file(path: &Path) -> Option<Result<ImageRef, String>> {
         path: path.to_string_lossy().into_owned(),
         mime: mime.to_string(),
         name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
+        ..Default::default()
     }))
 }
 
@@ -167,6 +217,7 @@ mod tests {
             path: format!("inbox/p{n}.jpg"),
             mime: "image/jpeg".into(),
             name: Some(format!("p{n}.jpg")),
+            ..Default::default()
         }
     }
 
@@ -196,6 +247,7 @@ mod tests {
             path: "inbox/x/y.png".into(),
             mime: "image/png".into(),
             name: None,
+            ..Default::default()
         };
         assert!(
             note(&bare, NoteWhy::Older).contains("y.png"),

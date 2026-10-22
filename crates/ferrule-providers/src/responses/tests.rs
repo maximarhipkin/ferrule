@@ -348,6 +348,7 @@ fn a_photo_goes_as_input_image() {
         path: path.to_string_lossy().into_owned(),
         mime: "image/jpeg".into(),
         name: Some("cat.jpg".into()),
+        ..Default::default()
     };
     let msgs = vec![Message::user_with_images("what is this?", vec![img])];
     let b = with(DriverOptions::default())

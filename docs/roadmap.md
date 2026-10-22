@@ -1640,6 +1640,23 @@ Current State; numbers are claimed there before anything is built.
     settings write goes the Config page's way (base hash, loader check,
     guard, version) and the pass's task follows at once. Not run live.
 
+- **M65, video it understands, edits and checks** (one commit per task
+  on `autopilot`; `docs/m65-video.md`):
+  - **§0, a vision helper for a chat model that can't see**: `[media]
+    vision_model` (default `google/gemini-3.8-flash`, `""` turns it off)
+    on the `[media]` backend (`MediaBackend::look`, OpenRouter's
+    `/chat/completions`). An agent whose model doesn't see images (the
+    Claude plan) gets a `Looker` at construction; each photo, steered
+    photo and tool image is described once, as its message is added, and
+    the line `[image <name>, described by <model>: …]` takes its place
+    (`ImageRef::described`, kept in history). A tool may ask for a check
+    instead (`ImageRef::check`, a task and a reference image). Each call
+    is a `media` ledger row charged to the run under the `[trust]` dollar
+    caps; answers are cached by path, modification time and task. The
+    chat's "can't see photos" notice is skipped when there's a helper,
+    and the Claude engine's bridged tool results carry the lines. Not run
+    live.
+
 **Still open from earlier tracks.**
 
 - **M12 part 6**, named long-lived agents, waits on how a chat

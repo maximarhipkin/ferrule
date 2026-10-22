@@ -58,6 +58,23 @@ pub struct SpeechReq {
     pub voice: Option<String>,
 }
 
+/// M65 §0: images for a vision model to look at, and what to say about
+/// them: the vision helper for a chat model that can't see.
+#[derive(Debug, Clone, Default)]
+pub struct LookReq {
+    pub model: String,
+    pub task: String,
+    /// Workspace images, in order: the one looked at, then any reference.
+    pub images: Vec<std::path::PathBuf>,
+}
+
+/// What the vision model said, and what the provider says it charged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LookOut {
+    pub text: String,
+    pub cost_usd: Option<f64>,
+}
+
 /// Spoken audio.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioOut {
@@ -190,6 +207,12 @@ pub trait MediaBackend: Send + Sync {
     async fn download(&self, url: &str, dest: &Path) -> Result<(), MediaError>;
     /// M51.4: text to speech, sync (seconds, like an image).
     async fn speak(&self, req: SpeechReq) -> Result<AudioOut, MediaError>;
+    /// M65 §0: a vision model looks at images and answers in words.
+    async fn look(&self, _req: LookReq) -> Result<LookOut, MediaError> {
+        Err(MediaError::BadAnswer(
+            "this media backend has no vision model".into(),
+        ))
+    }
     /// A video model's list price, from a cached price list. `None` when
     /// the backend has no list or the model isn't priced per second.
     async fn video_price(&self, _model: &str) -> Result<Option<VideoPrice>, MediaError> {

@@ -111,6 +111,7 @@ fn framed(msg: InboundMessage) -> Message {
             path: a.url.clone(),
             mime: a.kind.clone(),
             name: a.name.clone(),
+            ..Default::default()
         })
         .collect();
     let text = if msg.text.trim().is_empty() {

@@ -681,7 +681,12 @@ impl Provider for ClaudeCode {
                 .as_deref()
                 .and_then(|id| turn.pending.remove(id))
             {
-                let _ = reply.send(Reply::ok(m.content.clone().unwrap_or_default()));
+                // M65 §0: a tool's images go as what the vision helper
+                // said, or a note; claude's own turn can't take pixels.
+                let _ = reply.send(Reply::ok(ferrule_core::vision::text_with_notes(
+                    m,
+                    ferrule_core::vision::NoteWhy::TextOnly,
+                )));
             }
         }
         for (_, reply) in turn.pending.drain() {
@@ -930,10 +935,12 @@ pub fn prompt(messages: &[Message], resuming: bool) -> String {
                 ferrule_core::vision::NoteWhy::TextOnly,
             ))
             .filter(|t| !t.is_empty()),
-            Role::Tool => m
-                .content
-                .as_deref()
-                .map(|c| format!("(A tool result from before: {})", clip(c, 2000))),
+            Role::Tool => Some(ferrule_core::vision::text_with_notes(
+                m,
+                ferrule_core::vision::NoteWhy::TextOnly,
+            ))
+            .filter(|c| !c.is_empty())
+            .map(|c| format!("(A tool result from before: {})", clip(&c, 2000))),
             _ => None,
         })
         .collect();
@@ -1008,6 +1015,7 @@ mod tests {
             path: "/w/inbox/cat.jpg".into(),
             mime: "image/jpeg".into(),
             name: Some("cat.jpg".into()),
+            ..Default::default()
         };
         let msgs = vec![
             Message::system("s"),

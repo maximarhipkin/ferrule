@@ -1312,6 +1312,9 @@ pub(crate) fn child_builder(
     media: Option<Arc<ferrule_gateway::tools::MediaShared>>,
 ) -> agents::Build {
     Arc::new(move |scope, spec, tag| {
+        // M65 §0: a child whose model can't see gets the vision helper,
+        // charged to its root's run.
+        let looker = media.as_ref().and_then(|m| m.looker(&spec.id, &spec.tree));
         let media = match (spec.role, &media) {
             (ferrule_agents::Role::Media, None) => bail!(
                 "a media agent needs the media tools, and this process has none: they run in the gateway with [media] on (docs/m51-media.md). Spawn a worker instead"
@@ -1329,6 +1332,9 @@ pub(crate) fn child_builder(
             Some(spec),
             None,
         )?;
+        if let Some(looker) = looker.filter(|_| !agent.sees_images()) {
+            agent.set_looker(looker);
+        }
         if let Some(media) = media {
             // No chat: the tools save into the parent's workspace and say
             // so; the parent sends the files. References resolve with every
@@ -3010,6 +3016,16 @@ async fn gateway_factory(
             None,
         )
         .map_err(|e| fail(e.to_string()))?;
+        // M65 §0: a model that can't see gets the vision helper: photos and
+        // tool images reach it as what a cheap vision model says of them.
+        if !agent.sees_images() {
+            if let Some(looker) = media
+                .as_ref()
+                .and_then(|m| m.looker(session_id, session_id))
+            {
+                agent.set_looker(looker);
+            }
+        }
         // M39: a chat's agent sends files to its own chat; a remote
         // workspace's files aren't here to send. Sub-agents don't get it:
         // their answer goes to their parent, which sends the file.
