@@ -39,8 +39,10 @@ const PROBE_LIMIT: Duration = Duration::from_secs(30);
 const SHEET_LIMIT: Duration = Duration::from_secs(120);
 const AUDIO_LIMIT: Duration = Duration::from_secs(180);
 
-/// ffmpeg and ffprobe, found once: on `PATH`, or in Homebrew's dirs. They
-/// run in the sandbox, like ones the shell would run.
+/// ffmpeg and ffprobe, found once: on `PATH`, in Homebrew's dirs, or in
+/// ferrule's own `<data>/bin` (where a service whose `PATH` dirs are all
+/// read-only can still have them). They run in the sandbox, like ones the
+/// shell would run.
 #[derive(Debug, Clone)]
 pub struct Ffmpeg {
     pub ffmpeg: PathBuf,
@@ -48,17 +50,19 @@ pub struct Ffmpeg {
 }
 
 impl Ffmpeg {
-    /// Both programs, or `None` when either is missing.
-    pub fn find() -> Option<Self> {
+    /// Both programs, or `None` when either is missing. `bin_dir` is
+    /// `<data>/bin`.
+    pub fn find(bin_dir: Option<&Path>) -> Option<Self> {
         Some(Self {
-            ffmpeg: program("ffmpeg")?,
-            ffprobe: program("ffprobe")?,
+            ffmpeg: program("ffmpeg", bin_dir)?,
+            ffprobe: program("ffprobe", bin_dir)?,
         })
     }
 }
 
-/// `name` on `PATH` or in Homebrew's dirs (`.exe` on Windows).
-pub fn program(name: &str) -> Option<PathBuf> {
+/// `name` on `PATH`, in Homebrew's dirs, or in `bin_dir` (`<data>/bin`),
+/// in that order (`.exe` on Windows).
+pub fn program(name: &str, bin_dir: Option<&Path>) -> Option<PathBuf> {
     let file = if cfg!(windows) {
         format!("{name}.exe")
     } else {
@@ -67,12 +71,13 @@ pub fn program(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
         .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
+        .chain(bin_dir.map(Path::to_path_buf))
         .map(|d| d.join(&file))
         .find(|p| p.is_file())
 }
 
 /// The sentence a video tool says when there's no ffmpeg.
-pub const NO_FFMPEG: &str = "ffmpeg (with ffprobe) isn't installed on the machine ferrule runs on, so videos can't be watched or edited; the owner installs it with `brew install ffmpeg` or `apt install ffmpeg`";
+pub const NO_FFMPEG: &str = "ffmpeg (with ffprobe) isn't installed on the machine ferrule runs on, so videos can't be watched or edited; the owner installs it with `brew install ffmpeg` or `apt install ffmpeg`, or, where the service can't see the system's, puts static `ffmpeg` and `ffprobe` builds in ferrule's data dir under `bin/` and restarts it";
 
 pub struct WatchVideoTool {
     sandbox: Arc<Sandbox>,
@@ -707,5 +712,28 @@ impl Tool for WatchVideoTool {
             text.push_str("\nTo look closer at a part, call again with a narrower start and end.");
         }
         Ok(ToolOutput::ok(text).with_images(images))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A program in `<data>/bin` is found when it's nowhere else, and
+    /// nothing is found without it.
+    #[test]
+    fn a_program_in_the_data_dirs_bin_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "ferrule-test-no-such-ffmpeg";
+        assert_eq!(program(name, Some(dir.path())), None);
+        assert_eq!(program(name, None), None);
+        let file = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        std::fs::write(dir.path().join(&file), b"").unwrap();
+        assert_eq!(program(name, Some(dir.path())), Some(dir.path().join(&file)));
+        assert_eq!(program(name, None), None);
     }
 }

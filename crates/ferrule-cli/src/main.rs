@@ -3004,9 +3004,10 @@ async fn gateway_factory(
     // M61: the owner's own screen, view only, when `[screen]` is on and
     // there's a desktop to see.
     let screen = screen::Screen::offered(&cfg.screen, trust::hub(cfg)?, sandbox.clone());
-    // M65 §1: `watch_video` where ffmpeg and ffprobe are, in the sandbox
-    // the session's commands get, with the gateway's transcription.
-    let video = ferrule_gateway::tools::Ffmpeg::find();
+    // M65 §1: `watch_video` where ffmpeg and ffprobe are (on PATH or in
+    // `<data>/bin`), in the sandbox the session's commands get, with the
+    // gateway's transcription.
+    let video = ferrule_gateway::tools::Ffmpeg::find(config::bin_dir().as_deref());
     let video_sandbox = sandbox.clone();
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     mcp_tools.ask_the_owner(trust::hub(cfg)?);
@@ -3480,7 +3481,7 @@ async fn run_gateway(
         media.as_ref().map(|m| m.store.clone()),
         shared_sandbox(&cfg)
             .ok()
-            .zip(ferrule_gateway::tools::Ffmpeg::find()),
+            .zip(ferrule_gateway::tools::Ffmpeg::find(config::bin_dir().as_deref())),
     ));
     let make_ctx = || dashboard::Ctx {
         live: Some(live.clone()),

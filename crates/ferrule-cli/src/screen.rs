@@ -310,14 +310,11 @@ fn rel(path: &Path) -> String {
     format!("{DIR}/{name}")
 }
 
-/// An `ffmpeg` on `PATH` or in Homebrew's dirs. It runs in the sandbox,
-/// like one the shell would run.
+/// An `ffmpeg` where `watch_video` finds one: on `PATH`, in Homebrew's
+/// dirs or in `<data>/bin`. It runs in the sandbox, like one the shell
+/// would run.
 fn ffmpeg() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from))
-        .map(|d| d.join("ffmpeg"))
-        .find(|p| p.is_file())
+    ferrule_gateway::tools::watch::program("ffmpeg", crate::config::bin_dir().as_deref())
 }
 
 /// `ferrule doctor`'s check: one capture to a temporary file, in the

@@ -2231,6 +2231,12 @@ pub fn data_dir_path() -> Option<PathBuf> {
     Some(crate::instance::Roots::get()?.data_dir(crate::instance::current().as_deref()))
 }
 
+/// `<data>/bin`: ferrule's own programs (a fetched cloudflared), and an
+/// ffmpeg and ffprobe a service can't otherwise see.
+pub fn bin_dir() -> Option<PathBuf> {
+    data_dir_path().map(|d| d.join("bin"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

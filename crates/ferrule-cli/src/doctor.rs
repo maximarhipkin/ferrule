@@ -2925,12 +2925,26 @@ fn binary(r: &mut Report) {
 /// M51.4: whether the shell can cut and convert media (ferrule ships no
 /// ffmpeg), and burn subtitles (the `subtitles` filter exists only in an
 /// ffmpeg built with libass). M65: `watch_video` needs ffmpeg and ffprobe.
-/// Informational only.
+/// Both are looked for where the gateway looks: on PATH, in Homebrew's
+/// dirs and in `<data>/bin`. Informational only.
 fn ffmpeg_check(r: &mut Report) {
-    let ffmpeg = ferrule_sandbox::host::system_program("ffmpeg");
+    let bin = config::bin_dir();
+    let Some(ffmpeg) = ferrule_gateway::tools::watch::program("ffmpeg", bin.as_deref()) else {
+        r.note(
+            "media",
+            "ffmpeg isn't on your PATH or in ferrule's data dir (bin/): the agent can't watch videos (watch_video) or trim, convert and re-encode audio and video through the shell",
+        );
+        r.hint(format!(
+            "brew install ffmpeg, or apt install ffmpeg; where the service can't see those, put static ffmpeg and ffprobe builds in {}",
+            bin.as_deref().map_or_else(|| "<data>/bin".to_string(), tilde)
+        ));
+        return;
+    };
+    // In owner mode this runs in the sandbox, like the gateway's own
+    // spawns: the copy found may be one the bot can write.
     let run = |arg: &str| {
-        std::process::Command::new(&ffmpeg)
-            .args(["-hide_banner", arg])
+        ferrule_sandbox::host::command(&ffmpeg, ["-hide_banner", arg], Path::new("."))
+            .ok()?
             .stdin(std::process::Stdio::null())
             .output()
             .ok()
@@ -2940,9 +2954,11 @@ fn ffmpeg_check(r: &mut Report) {
     let Some(version) = run("-version") else {
         r.note(
             "media",
-            "ffmpeg isn't on your PATH: the agent can't watch videos (watch_video) or trim, convert and re-encode audio and video through the shell",
+            format!(
+                "{} doesn't run: the agent can't watch videos (watch_video) or trim, convert and re-encode audio and video through the shell",
+                tilde(&ffmpeg)
+            ),
         );
-        r.hint("brew install ffmpeg, or apt install ffmpeg");
         return;
     };
     let which = version
@@ -2961,11 +2977,12 @@ fn ffmpeg_check(r: &mut Report) {
             format!("ffmpeg{which} without libass: the shell can trim and convert; burning subtitles needs an ffmpeg built with libass")
         },
     );
-    // M65 §1: the gateway looks for both on PATH and in Homebrew's dirs.
-    if ferrule_gateway::tools::Ffmpeg::find().is_none() {
+    // M65 §1: the gateway looks for both on PATH, in Homebrew's dirs and in
+    // `<data>/bin`.
+    if ferrule_gateway::tools::Ffmpeg::find(bin.as_deref()).is_none() {
         r.note(
             "media",
-            "ffprobe or ffmpeg isn't on the gateway's PATH or in Homebrew's dirs, so chats aren't offered watch_video",
+            "ffprobe isn't on the gateway's PATH, in Homebrew's dirs or in ferrule's data dir (bin/), so chats aren't offered watch_video",
         );
     }
 }
