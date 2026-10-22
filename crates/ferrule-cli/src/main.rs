@@ -1142,7 +1142,7 @@ async fn dispatch(cmd: Cmd) -> Result<()> {
         Cmd::Restore { file, dry_run } => {
             backup::restore(&file, dry_run)?;
             // Root put back the system service's files: as setup does, its
-            // user owns the data, the config is root:<user> 0640.
+            // user owns the data and the config, its directory root:<user> 1770.
             let svc = service::Svc::current();
             if !dry_run
                 && svc.scope == service::Scope::System
@@ -3384,6 +3384,7 @@ async fn run_gateway(
     }
     // M36: a line per update or rollback, and what's out (docs/updates.md).
     if !managed::on() {
+        update::ask_heal(&config::data_dir()?);
         update::notice::spawn(
             update::notice::Watch::new(
                 config::data_dir()?,

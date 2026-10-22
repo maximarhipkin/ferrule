@@ -936,9 +936,12 @@ fn write_prices(
 
 /// Connected models the ledger can't cost, for `ferrule doctor` and the
 /// page: no prices at all, or all three zero on a model that isn't free.
+/// A plan's models are left out: their calls are $0 on top of the plan
+/// (M35), so the caps have nothing to count either way.
 pub fn unpriced(cat: &Catalog) -> Vec<String> {
     cat.entries
         .iter()
+        .filter(|e| e.plan.is_none())
         .filter_map(|e| match e.pricing {
             None => Some(format!(
                 "{} has no prices, so its cost shows as unknown and the spending caps can't count it",

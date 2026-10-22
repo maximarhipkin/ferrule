@@ -160,6 +160,9 @@ pub struct Request {
     /// Echoed back in the state's `claude_answered` once the unit has run
     /// claude's update, so the gateway knows its answer is in.
     pub id: u64,
+    /// `claude` was asked for by the owner's `update`, not a failed turn:
+    /// updated only when npm has a newer one.
+    pub owner: bool,
 }
 
 /// Ask the apply unit to run now: the path unit watches for this file.

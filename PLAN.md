@@ -10673,3 +10673,55 @@ there is fixed forward in a 0.14.3.
 
 **Open.** Nothing in M65 has run live (OpenRouter, real ffmpeg video,
 uploads through a tunnel).
+
+### 2026-10-22 — A system service saves its settings; `update` covers `claude`; no price warning for plan models (Claude, Opus 5.5)
+
+No milestone claimed (fixes). Branch `fix-system-config-writes` from
+`main` at `f398476`, one PR.
+
+**Why.** The owner's own bot (a Linux system service on the Claude plan,
+0.14.1) couldn't change a single setting: `model_default`, the
+dashboard's model picker, adding Opus and turning the sandbox on all
+failed with `taking /etc/ferrule/config.toml.lock: Read-only file system
+(os error 30)`, and the bot guessed at a restart. The unit's
+`ProtectSystem=strict` let it write only data and workspace, and
+`/etc/ferrule` was `root:ferrule 750`/`640`. Asked to "update the Claude
+SDK", it could only say Ferrule was current: neither `update_check` nor
+`update` looked at `claude`. And every `claude-code/*` model was reported
+as unpriced, though a plan call is $0 by design (M35).
+
+**What changed.**
+- `service.rs`: the system unit's `ReadWritePaths` gains the config's
+  directory; `own_system_files` makes it `root:<user> 1770` (sticky, so
+  the service can't replace root's files there) and the config
+  `<user>:<user> 0640`; `system_problems` refuses a config sitting directly
+  in a system directory such as `/etc`, which would otherwise become
+  writable. `system_unit_locks_config` says whether an installed unit
+  predates this.
+- `update/mod.rs`: `heal_unit` at the start of every root apply run
+  rewrites such a unit (`setup --refresh-service`, which restarts the
+  service); `ask_heal` at gateway start drops a request so the apply unit
+  runs at once. A server on 0.14.2 or older heals itself after the update
+  that brings this, without a terminal.
+- `filewrite.rs`: a lock on a read-only filesystem fails at once with what
+  happened and what fixes it, instead of `os error 30` after 5 s.
+- `update/claude.rs`: `check` (the line for `update_check`),
+  `update_for_owner`, and `update_where` shared with the failed-turn
+  repairer; `Request.owner` marks the owner's ask, so the apply unit
+  updates only a `claude` that's behind and doesn't record it as "after a
+  turn failed". `self_service/update.rs`: `check_all`, `update_claude`;
+  the card and `/update` offer a `claude` update even when Ferrule is
+  current, and `update` runs it first.
+- `models/catalog.rs`: `unpriced` skips a plan's models.
+- Docs: README (system service), `updates.md`, `backup.md`,
+  `m38-instances.md`, `m20-connections.md`.
+
+**Trade-off.** With the sandbox off, the bot's commands on a system
+service can now write its config, as they already could on a user
+service; with it on, the config stays out of their writable roots (owner
+mode protects its directory, M54 §2).
+
+**Not done.** The dashboard's own update button (`dashboard/api.rs`)
+still updates only Ferrule. Claude plan models stay the `sonnet`/`opus`/
+`haiku` aliases; a current `claude` maps `sonnet` to the newest Sonnet,
+so pinning a version wasn't added. Nothing ran on a real system service.

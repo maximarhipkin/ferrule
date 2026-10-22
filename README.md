@@ -320,8 +320,12 @@ enter them:
    Run as root on Linux (`sudo ferrule setup`, or `--system`), it's a
    system service instead, run as a `ferrule` user of its own (no login,
    no sudo) under `ProtectSystem=strict`/`ProtectHome=yes`, with config in
-   `/etc/ferrule` and data and workspace in `/var/lib/ferrule`. The
-   installer, as root, puts the binary in `/usr/local/bin` for it.
+   `/etc/ferrule` and data and workspace in `/var/lib/ferrule`; it may
+   write only those, so the dashboard and the chat can save settings. A
+   service set up by Ferrule 0.14.2 or older kept `/etc/ferrule`
+   read-only; its next update rewrites the unit by itself (or `sudo
+   ferrule setup --refresh-service`). The installer, as root, puts the
+   binary in `/usr/local/bin` for it.
 
 Run it again any time to change one part: it opens on a menu with what's
 set now. Keys go into a private file (0600, in a directory the agent's

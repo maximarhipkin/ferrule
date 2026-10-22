@@ -876,7 +876,8 @@ fn a_request_is_read_once_never_through_a_link_and_never_picks_a_version() {
             ferrule: true,
             claude: false,
             to: None,
-            id: 0
+            id: 0,
+            owner: false
         }
     );
     assert!(!path.exists());
@@ -1503,6 +1504,7 @@ async fn the_gateway_asks_the_unit_to_update_claude_and_waits_for_its_answer() {
                 &state_dir,
                 Duration::from_secs(60),
                 Duration::from_millis(20),
+                false,
             )
             .await
         }
@@ -1543,6 +1545,7 @@ async fn the_gateway_asks_the_unit_to_update_claude_and_waits_for_its_answer() {
         &state_dir,
         Duration::from_secs(60),
         Duration::from_millis(20),
+        false,
     )
     .await
     .unwrap_err();
@@ -1555,6 +1558,7 @@ async fn the_gateway_asks_the_unit_to_update_claude_and_waits_for_its_answer() {
         &state_dir,
         Duration::from_millis(100),
         Duration::from_millis(20),
+        false,
     )
     .await
     .unwrap_err();

@@ -610,8 +610,8 @@ impl Svc {
         Ok(())
     }
 
-    /// The system unit: create the account if needed, hand it its data dir
-    /// and workspace, and let it read (only read) the config.
+    /// The system unit: create the account if needed, hand it its data dir,
+    /// its workspace and its config.
     fn install_system(&self, spec: &Spec, data: &Path) -> Result<Vec<String>> {
         let problems = system_problems(spec, data);
         if !problems.is_empty() {
@@ -698,14 +698,17 @@ impl Svc {
         for dir in mine {
             run(Command::new("chown").arg("-R").arg(&owner).arg(dir))?;
         }
+        // The service saves settings into its config (the dashboard, the
+        // chat): it owns the file, and may add files to the directory but,
+        // with the sticky bit, not replace or remove root's.
         let config = self.system_config();
         let group = format!("root:{user}");
         if let Some(dir) = config.parent().filter(|d| d.exists()) {
             run(Command::new("chown").arg(&group).arg(dir))?;
-            run(Command::new("chmod").arg("750").arg(dir))?;
+            run(Command::new("chmod").arg("1770").arg(dir))?;
         }
         if config.exists() {
-            run(Command::new("chown").arg(&group).arg(&config))?;
+            run(Command::new("chown").arg(&owner).arg(&config))?;
             run(Command::new("chmod").arg("640").arg(&config))?;
         }
         Ok(())
@@ -1239,6 +1242,15 @@ pub fn system_problems(spec: &Spec, data: &Path) -> Vec<String> {
             spec.workspace.display()
         ));
     }
+    // The service may write its config's directory (`system_unit`).
+    let dir = config_dir(&spec.config);
+    if system_dirs.iter().any(|d| dir == Path::new(d)) {
+        problems.push(format!(
+            "the config is directly in {}, which the service would then write; \
+             give it a directory of its own, like /etc/ferrule",
+            dir.display()
+        ));
+    }
     problems
 }
 
@@ -1308,7 +1320,7 @@ pub fn system_unit(spec: &Spec, data: &Path) -> String {
          ProtectSystem=strict\n\
          ProtectHome=yes\n\
          PrivateTmp=yes\n\
-         ReadWritePaths={} {}\n\
+         ReadWritePaths={} {} {}\n\
          Restart=always\n\
          RestartSec=5\n\
          WatchdogSec=120\n\
@@ -1326,7 +1338,33 @@ pub fn system_unit(spec: &Spec, data: &Path) -> String {
         env("PATH", &spec.path_env),
         path(data),
         path(&spec.workspace),
+        // The dashboard and the chat save settings there (`system_problems`
+        // keeps it a directory of its own).
+        path(config_dir(&spec.config)),
     )
+}
+
+/// The directory a system service's config lives in, and that the service
+/// may write.
+fn config_dir(config: &Path) -> &Path {
+    config.parent().unwrap_or(config)
+}
+
+/// A system unit from before the config's directory was in its
+/// `ReadWritePaths`: the service can't save a setting until root writes the
+/// unit again (the apply unit does, `update::heal_unit`).
+pub fn system_unit_locks_config(instance: Option<&str>) -> bool {
+    let svc = Svc::new(instance, Scope::System);
+    let Ok(unit) = std::fs::read_to_string(svc.system_unit_path()) else {
+        return false;
+    };
+    let Some((config, _)) = parse_unit(&unit) else {
+        return false;
+    };
+    let dir = systemd_quote(&config_dir(&config).to_string_lossy(), false);
+    !unit
+        .lines()
+        .any(|l| l.starts_with("ReadWritePaths=") && l.contains(&dir))
 }
 
 pub fn systemd_unit(spec: &Spec) -> String {
@@ -1587,7 +1625,7 @@ mod tests {
             "ProtectSystem=strict",
             "ProtectHome=yes",
             "PrivateTmp=yes",
-            "ReadWritePaths=\"/var/lib/ferrule/data\" \"/var/lib/ferrule/workspace\"",
+            "ReadWritePaths=\"/var/lib/ferrule/data\" \"/var/lib/ferrule/workspace\" \"/etc/ferrule\"",
             "Environment=\"FERRULE_DATA_DIR=/var/lib/ferrule/data\"",
             "Environment=\"FERRULE_CONFIG=/etc/ferrule/config.toml\"",
             "ExecStart=\"/usr/local/bin/ferrule\" gateway --workspace \"/var/lib/ferrule/workspace\"",
@@ -1609,7 +1647,9 @@ mod tests {
         let mut spec = system_spec();
         spec.workspace = "/srv/my ws 100%".into();
         let unit = system_unit(&spec, Path::new("/var/lib/ferrule/da ta"));
-        assert!(unit.contains("ReadWritePaths=\"/var/lib/ferrule/da ta\" \"/srv/my ws 100%%\"\n"));
+        assert!(unit.contains(
+            "ReadWritePaths=\"/var/lib/ferrule/da ta\" \"/srv/my ws 100%%\" \"/etc/ferrule\"\n"
+        ));
         assert_eq!(parse_unit(&unit).unwrap().1, spec.workspace);
     }
 
@@ -1744,6 +1784,15 @@ mod tests {
             .replace("\r\n", "\n")
     }
 
+    /// 0.8.0's system unit with the one change since: the service may write
+    /// its config's directory.
+    fn system_unit_now() -> String {
+        fixture("system_unit").replace(
+            "ReadWritePaths=\"/var/lib/ferrule/data\" \"/srv/ws\"\n",
+            "ReadWritePaths=\"/var/lib/ferrule/data\" \"/srv/ws\" \"/etc/ferrule\"\n",
+        )
+    }
+
     #[test]
     fn the_default_instances_units_are_0_8_0s_byte_for_byte() {
         let s = golden_spec(None);
@@ -1785,11 +1834,11 @@ mod tests {
                 ),
             ),
         ] {
-            assert_eq!(
-                text,
-                fixture(name),
-                "{name} changed for the default instance"
-            );
+            let want = match name {
+                "system_unit" => system_unit_now(),
+                _ => fixture(name),
+            };
+            assert_eq!(text, want, "{name} changed for the default instance");
         }
     }
 
@@ -1869,7 +1918,7 @@ mod tests {
             .replace(env, "")
             .replace(" (work)", "")
             .replace("ferrule-work", "ferrule");
-        assert_eq!(without, fixture("system_unit"));
+        assert_eq!(without, system_unit_now());
         for text in [
             systemd_unit(&s),
             system_update_unit(&s, data),

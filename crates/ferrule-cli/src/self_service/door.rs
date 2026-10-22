@@ -52,10 +52,8 @@ impl SelfServiceDoor {
             .ctx()
             .ok_or("Ferrule is still starting; try again in a few seconds.")?;
         let (apply, _) = admin.apply(ctx)?;
-        match update::check(&apply).await? {
-            Some(_) => Ok(None),
-            None => Ok(Some(update::check_text(&apply.current, None))),
-        }
+        let (text, any) = update::check_all(&apply).await?;
+        Ok((!any).then_some(text))
     }
 
     async fn ask(admin: &Admin, here: &ChatRef, session: &str, op: Op) {
