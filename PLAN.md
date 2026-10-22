@@ -38,9 +38,9 @@ below it is append-only.
     `ferrule-plugin-sdk`, which keeps 0.1.0. Before it: **v0.14.0**
     (2026-10-22, from `main` at `ea88e4a`: everything through M64.3,
     PRs #43–#56) and v0.13.1 (2026-10-20, through M49).
-  - **`main` is `0714a42`** (PR #59, the Windows sandbox fix, 2026-10-22;
-    before it #55 wave A, #56 wave B and M64.0–M64.3, #57 the 0.14.0
-    release). PRs **#44–#54 are all merged** too:
+  - **`main` is `1c9fee1`** (PR #58: M64.4, M64.5, wave C and the 0.14.1
+    release, 2026-10-22; before it #59 the Windows sandbox fix, #55 wave
+    A, #56 wave B and M64.0–M64.3, #57 the 0.14.0 release). PRs **#44–#54 are all merged** too:
     #44 "Allow for this run", #45 the Claude plan engine's bridged tools,
     #46 Telegram follow-ups (all 2026-10-20); #48 Kimi's M51–M53; #47,
     #49, #51, #52 and #53 the `autopilot` stacks (the gap analysis's
@@ -49,9 +49,9 @@ below it is append-only.
     owner's Telegram groups; #54 M62, compaction's summary input (a
     Cursor session on `cursor/compaction-summary-m62-a6a4`). CI was
     green on all three OSes for #53's and #54's merges.
-  - **`autopilot`** (open as PR #58) carries M64.4, M64.5 and wave C
-    (below), one commit per task, with `main` merged in through
-    `0714a42`; the coordinator pushes.
+  - **`autopilot`** is `main` (`1c9fee1`, PR #58 merged) plus M65:
+    the design branch `m65-video` merged in (2026-10-22), then its build,
+    one commit per task (below); the coordinator pushes.
 - **What landed on 2026-10-21:** M51–M53's follow-ups (media's poller,
   the media role and voice; the Safe's inventory, rotate, edit-hosts and
   config editing; learning's evidence clipping, learned skills, scopes,
@@ -186,6 +186,12 @@ below it is append-only.
   `ferrule-mcp` speaks MCP 2026-07-28 next to 2025-06-18, finding a
   server's era once (`server/discover` probe on stdio, a first modern
   request over HTTP).
+- **M65, video it understands, edits and checks** (2026-10-22) on
+  `autopilot`, after the 0.14.1 merge, one commit and one Session Log
+  entry per task, in `docs/m65-video.md`'s order: §0 a vision helper for
+  a chat model that can't see; §1 `watch_video`; §2 the `video-editing`
+  skill; §3 the same person (references, the avatar); §4 check before
+  sending; §5 big uploads and the Files page; §6 docs.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -232,8 +238,10 @@ below it is append-only.
   parent's number; so do wave A's tasks, which are follow-ups, not
   milestones. **M63 is claimed by wave B** (connections, skills and
   the catalog; `autopilot`, 2026-10-21). **M64 is claimed by the
-  proactive agent** (`autopilot`, 2026-10-21). **The next free number
-  is M65.** The first claim wins,
+  proactive agent** (`autopilot`, 2026-10-21). **M65 is claimed by video
+  understanding, editing and checking** (designed on `m65-video`,
+  2026-10-22, `docs/m65-video.md`; merged into `autopilot` and being
+  built there). **The next free number is M66.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -10167,3 +10175,37 @@ tag; nothing here runs the binaries. The owner's server should get
 `ferrule doctor` and a short live check after the update (owner mode's
 Linux code, the proxy binding and the proactive heartbeat have never run
 live).
+
+### 2026-10-22 — M65 claimed: video it understands, edits and checks (Claude, Opus 5.5)
+
+Claims **M65** (Current State updated: the next free number is M66), on
+branch `m65-video` from `main` at `08d53ed` (v0.14.0). Design only so far:
+`docs/m65-video.md`, written with the owner and read by a fresh builder
+check. Nothing is built.
+
+**Why.** The owner: asked for an image or a video "with the same person"
+from a photo or video sent in the chat, the agent makes bad ones and sends
+them without checking. In the code, `generate_image` sends before the
+model sees its result, the video poller sends finished clips with no model
+call, `generate_video` carries no reference images, a sent video reaches
+the agent as a path, and the owner's chat model (the Claude plan through
+Claude Code) can't see images at all.
+
+**Decided by the owner.** The chat model is the Claude plan, so a cheap
+vision helper looks for it. Strong video models are allowed and the caps
+raised (3 → 10 videos a day, $1 → $3 a video); plain videos keep
+`veo-3.1-lite`.
+
+**Open.** The owner's approval of the design, then a plan, then the build.
+
+### 2026-10-22 — M65's build starts on `autopilot` (Claude, Opus 5.5)
+
+The owner: "resolve the m65 its the next plan merge it and execute it".
+`autopilot` fast-forwarded to `main` at `1c9fee1` (PR #58 merged; no
+merge commit was needed), then `origin/m65-video` (`b944b49`, the design
+and its claim) merged in, signed. The one conflict was this file's
+Session Log tail: both sides kept, the claim after the 0.14.1 release
+entry (all four entries are dated 2026-10-22). Current State now names
+`main` `1c9fee1`, M65 in flight on `autopilot`, and M66 as the next free
+number. The build follows the design's order, §0 to §6, one commit and
+one entry each, in worktree `.claude/worktrees/autopilot`.
