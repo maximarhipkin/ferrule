@@ -199,12 +199,19 @@ endpoint speaks OpenRouter's media API (`/images/generations`,
 `docs/m51-media.md`):
 
 - **`generate_image`** makes (or, with `reference` paths, edits) an
-  image, saves it under `media/` in the workspace and sends it to the
-  chat.
-- **`generate_video`** starts an async render, answers at once with a
-  job id, and the built-in `ferrule-media` task (every minute on the
-  scheduler) delivers the MP4 when it's done — a restart loses nothing,
-  and a failure is said in the chat.
+  image and saves it under `media/` in the workspace. Since M65 it
+  doesn't send it: the image comes back to the model to look at against
+  the request (and the reference), and `send_file` sends it when it's
+  right.
+- **`generate_video`** starts an async render and answers at once with a
+  job id. The built-in `ferrule-media` task (every minute on the
+  scheduler) fetches the MP4 when it's done and, since M65, wakes the
+  chat's session to watch it (`watch_video`) and send it — a restart
+  loses nothing, a failure is said in the chat, and a clip nobody checked
+  within 30 minutes gets a note in the chat saying where it is.
+- **`watch_video`** (M65) watches a video in the workspace: its length,
+  size and format, one contact sheet of frames, and what is said (through
+  `[transcription]`). It needs ffmpeg and ffprobe on the machine.
 - **`speak`** (M51.4) turns text into speech (MP3), saves it under
   `media/` and sends it to the chat; Telegram shows it as a voice
   message. `[media] speech_model = ""` turns it off.
@@ -223,7 +230,34 @@ A"). A model billed per video token (Seedance) is asked for 720p and
 priced at a 720p frame, 24 frames a second.
 Sub-agents get the tools only in the `media` role (M51.3,
 `docs/agents.md`): they save the files in the parent's workspace and
-the parent sends them.
+the parent sends them, after watching them.
+
+**Checked before it's sent (M65).** `send_file` refuses an image or video
+the agent made or changed until the chat's model has looked at it since
+it last changed: `generate_image`'s result, `read_file` on the image, or
+`watch_video` on the video. What you sent in (`uploads/`, `inbox/`) and
+screen captures (`media/screen/`) go as they are. Where looking can't be
+done (no ffmpeg, a model that can't see and no vision helper), the agent
+passes `unchecked` with why, and the file arrives captioned "Not
+checked: …". The prompt allows two retries per request before the agent
+reports what's wrong. Details: [m65-video.md](m65-video.md).
+
+**The same person (M65).** `generate_image` keeps a person when their
+photo is a `reference` and the prompt says what must stay the same.
+`generate_video`'s `reference` sends photos as `input_references`, in
+your own chats only, and only to a model in `[media] reference_models`
+(by default Seedance 2.5, 2.0 and 2.0 Fast, Wan 3.0 and HeyGen Video 1):
+OpenRouter's list doesn't say which models take them, and a reference to
+any other is refused rather than billed without the face. A video's
+reference comes from a still taken from it (the bundled `video-editing`
+skill says how). The talking avatar (HeyGen's Avatar IV) isn't wired:
+OpenRouter's listing doesn't say which field carries its script.
+
+**Editing (M65).** The bundled `video-editing` skill gives the agent
+ffmpeg recipes for the sandboxed shell: trim, join, crop to 9:16, 1:1 or
+16:9, speed, subtitles, music and voice-overs (`speak` with `send:
+false`), fades, GIFs, stills and compressing to a size
+([skills.md](skills.md)).
 
 ## Photos: which models see them
 A photo sent in a chat (Telegram, WhatsApp, the dashboard and the other
@@ -238,6 +272,14 @@ fallback takes over:
 - **A model that doesn't** gets a plain note with the saved file's path,
   and the agent can open the file with its tools. The chat is told once
   that "the model I'm using can't see images".
+- **A model that doesn't, with the vision helper (M65)**: with `[media]`
+  on, `[media] vision_model` (default `google/gemini-3.8-flash`, `""`
+  turns it off) looks at each photo and each image a tool returns, once,
+  and its description takes the image's place: `[image <name>, described
+  by <model>: …]`. The chat isn't told it can't see. Each look is a
+  `media` ledger row under the `[trust]` dollar caps. The Claude plan
+  engine gets the descriptions too. Details:
+  [vision.md](vision.md#models-that-cant-see-images).
 
 Whether a model sees photos comes from `vision` in the config when you set
 it, and otherwise from its name:

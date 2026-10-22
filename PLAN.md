@@ -190,8 +190,10 @@ below it is append-only.
   `autopilot`, after the 0.14.1 merge, one commit and one Session Log
   entry per task, in `docs/m65-video.md`'s order: §0 a vision helper for
   a chat model that can't see; §1 `watch_video`; §2 the `video-editing`
-  skill; §3 the same person (references, the avatar); §4 check before
-  sending; §5 big uploads and the Files page; §6 docs.
+  skill; §3 the same person (references; the talking avatar left out,
+  its script field unconfirmed); §4 check before sending, enforced in
+  `send_file`; §5 big uploads and the Files page; §6 docs. All seven
+  built, `make check` green, nothing run live; waits for the next PR.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -199,8 +201,10 @@ below it is append-only.
   1. **Nothing has run live**: above all M54 owner mode on Linux and
      M54.4's binding (CI-compiled only), M56.1 steering, M56.5 resume,
      M56.6 buttons, M56.7 Telegram media, M51.4 voice, M53.5 reactions,
-     all of wave A, and M64 (the proactive pass has never met a model, a
-     bot, a calendar or a mailbox). The owner's go-ahead is needed (the global "don't
+     all of wave A, M64 (the proactive pass has never met a model, a
+     bot, a calendar or a mailbox), and M65 (no vision-helper call, no
+     real video through ffmpeg, no reference sent, no upload through a
+     tunnel). The owner's go-ahead is needed (the global "don't
      run" rule).
   2. **The eval gate has never gated** (M58.5): M56.4's prompt line,
      M58.3's tool cut, M57.5's examples and M57.1's threshold sit in the
@@ -240,8 +244,8 @@ below it is append-only.
   the catalog; `autopilot`, 2026-10-21). **M64 is claimed by the
   proactive agent** (`autopilot`, 2026-10-21). **M65 is claimed by video
   understanding, editing and checking** (designed on `m65-video`,
-  2026-10-22, `docs/m65-video.md`; merged into `autopilot` and being
-  built there). **The next free number is M66.** The first claim wins,
+  2026-10-22, `docs/m65-video.md`; merged into `autopilot` and built
+  there, §0–§6). **The next free number is M66.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -10596,3 +10600,51 @@ new section. No new tests.
 has played a video through the `Range` answers, and no Telegram chat has
 been woken by an upload. A `HEAD` on a file is answered with the whole
 body.
+
+### 2026-10-22 — M65 §6: docs (Claude, Opus 5.5)
+
+The design's §6: every page that describes what M65 changed says it now,
+each claim against the code of §0–§5.
+
+**Written.**
+- `docs/models.md`: "Making media" says `generate_image` no longer sends,
+  a finished video wakes the chat to watch it (and the 30-minute note),
+  `watch_video`, the check `send_file` enforces and its `unchecked`
+  fallback, the same person (`reference`, `[media] reference_models` and
+  why it's a list), the talking avatar left out and why, the
+  `video-editing` skill; the caps line was updated in §3. "Photos" gains
+  the vision helper.
+- `docs/vision.md`: `watch_video` among the tools that return images,
+  `generate_image`'s result now unsent, "The vision helper" (config, when
+  it's wired, the line, checks, the ledger and cache) and "What the model
+  has looked at" (`Looked`, `send_file`), and the Claude engine's bridged
+  results.
+- `docs/dashboard.md`: Files on the list of sections, and a "Files (M65)"
+  section (uploading, from a chat, the library, actions, safety,
+  `max_upload_mb`).
+- `docs/housekeeping.md`: the `thumbs` and `trash` rows.
+- `docs/m51-media.md`: a "Since M65" note under its status, so its body
+  reads as M51 as built.
+- `README.md`: `m65-video.md` in the Guides list.
+- `docs/m65-video.md`: status "built, nothing run live" and "As built":
+  per section what was built, the departures (the avatar, Seedance's
+  `resolution` as inferred, the `send_file` rule's scope and when
+  `unchecked` is taken, the upload's start and finish calls, the link in
+  text, `cost_usd`, `Range`), and "Done means" as it stands.
+- `docs/skills.md` was updated in §2.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS).
+
+**Open for M65 as a whole.**
+- Nothing ran live, by the owner's rule: the first vision-helper call,
+  the first `watch_video` on a real file, the first reference sent to
+  Seedance (about $1–2 a clip), the first 500 MB upload through a
+  tunnel and the first woken chat. `ferrule doctor` says whether ffmpeg
+  and ffprobe are where the gateway looks.
+- The talking avatar waits on where Avatar IV's script goes.
+- Seedance's `resolution` field is inferred; a live clip settles it (the
+  delivery row records the real bill either way).
+- No eval A/B was run (the owner said not to for now); `CHAT_VIDEO` and
+  the new `CHAT_MEDIA` are in the prompt prefix unmeasured, like M58.5's
+  list.

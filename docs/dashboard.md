@@ -103,6 +103,9 @@ ferrule dashboard                 # a link, or the page served from here when no
   version** / **Untrust**. See [Editing from the page](#editing-from-the-page).
 - **Memory** (M47): what your bot remembers, newest first, searched by
   keyword (never by a model). **Forget** removes one.
+- **Files** (M65): upload big files for the agent, and what was uploaded,
+  sent in your chats and made by the agent, with **Open**, **Download**,
+  **Use in chat** and **Delete**. See [Files](#files-m65).
 - **Settings** (M47): look, language, backup, the checklist and sign out.
 - **Agents** (running sub-agents): read-only.
 
@@ -118,6 +121,42 @@ User content (message previews, task names, log lines, skill
 descriptions, the hooks file) sits in elements marked `dir="auto"`, so
 Hebrew or Arabic reads right to left inside the left-to-right page, and
 the log filter takes Hebrew as it is.
+
+## Files (M65)
+
+Telegram bots download at most 20 MB, so a long video can't come in
+through the chat; the Files page takes it instead. Design and as-built
+notes: [m65-video.md](m65-video.md) §5.
+
+- **Uploading.** **Upload a file** sends it in 32 MB pieces (a Cloudflare
+  tunnel refuses a request over 100 MB), each with the page's session and
+  CSRF check. A dropped connection carries on from where the server got
+  to; choosing the same file again after a reload does too. It lands in
+  `uploads/<day>/<name>` in the workspace. Afterwards a box takes a few
+  words, and **Send to the chat** hands the file and the words to the
+  page's chat.
+- **From a chat.** A file too big for your own chat gets you a one-time
+  login link to this page; once the upload is done, that chat's session
+  is woken with where the file is, and the agent carries on with what you
+  asked.
+- **The library**, newest first: `uploads/`, `inbox/` (what chats sent)
+  and `media/` (what the agent made, and screen captures), filtered by
+  kind and by where it came from. Images show themselves; a video shows a
+  frame made once with ffmpeg (none without it). For what the agent made:
+  the request, the model, the cost and whether it was checked and sent.
+- **Actions.** **Open** (images in place, video and audio in the
+  browser's player, seeking included), **Download**, **Use in chat** (the
+  chat, with the file's path in the box), **Delete** (asked first; it
+  moves to `.ferrule/trash/`, which housekeeping empties after 7 days).
+- **Safety.** Only files under those three folders, with no symlink on
+  the way; images, video and audio play here, anything else only
+  downloads, so an uploaded web page never runs on the dashboard's
+  address. Files go out in pieces, never read whole into memory.
+
+```toml
+[dashboard]
+max_upload_mb = 2048   # the biggest upload; one that would leave under 1 GB free is refused
+```
 
 ## A page for people who don't code (M47)
 

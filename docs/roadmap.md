@@ -1733,6 +1733,12 @@ Current State; numbers are claimed there before anything is built.
     Use in chat, Delete (to `.ferrule/trash/`, emptied after 7 days by
     housekeeping). Only images, video and audio show inline; anything
     else downloads. Not run live.
+  - **§6, docs**: `docs/models.md` ("Making media": the checks,
+    references, the avatar left out, editing; "Photos": the vision
+    helper), `docs/vision.md` (`watch_video`, the helper, `Looked`),
+    `docs/dashboard.md` (Files), `docs/housekeeping.md` (posters, the
+    trash), a note atop `docs/m51-media.md`, the README's link, and
+    `docs/m65-video.md`'s "As built".
 
 **Still open from earlier tracks.**
 

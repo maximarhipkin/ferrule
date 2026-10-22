@@ -681,6 +681,9 @@ and a dated entry for every session.
   [`browser.md`](docs/browser.md) · [`web-search.md`](docs/web-search.md) ·
   [`m61-screen.md`](docs/m61-screen.md) (screenshots and short
   recordings of the owner's own Mac screen, view only) ·
+  [`m65-video.md`](docs/m65-video.md) (video the agent watches, edits and
+  checks before sending; a vision helper for a model that can't see; big
+  uploads and a media library in the dashboard) ·
   [`connections.md`](docs/connections.md) (Jira, Gmail, Google, Notion…:
   which way in, step by step) ·
   [`ssh.md`](docs/ssh.md) (workspaces on other machines).
