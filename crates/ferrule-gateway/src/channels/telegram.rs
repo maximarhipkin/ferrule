@@ -7,7 +7,9 @@
 //! Anyone can find a bot and message it, so only the chats in
 //! `allowed_chats` reach the agent. With none configured the bot answers
 //! each new chat once with that chat's id — the id is what goes into the
-//! allow-list — and forwards nothing.
+//! allow-list — and forwards nothing. With an owner and somewhere to save
+//! (`with_allow_saver`), a group the bot is added to or a person who
+//! writes to it is put to the owner instead: Allow lets it in at once.
 //!
 //! A bot that stops answering is the worst failure there is: the owner can't
 //! see why from the chat. So every request has a deadline (a half-open
@@ -113,9 +115,15 @@ pub struct TelegramChannel {
     /// so Telegram doesn't redeliver already-processed updates.
     offset: AtomicI64,
     /// Chats whose messages are forwarded. A group id admits the whole group.
-    allowed_chats: Vec<i64>,
+    /// The owner's Allow adds to it while the bot runs.
+    allowed_chats: Mutex<Vec<i64>>,
     /// Chats already told their id, while `allowed_chats` is empty.
     told: Mutex<HashSet<i64>>,
+    /// Where a chat the owner allows is saved; with none the owner isn't
+    /// asked.
+    saver: Option<AllowSaver>,
+    /// Chats the owner was asked about this run.
+    asked: Mutex<HashSet<i64>>,
     poll_deadline: Duration,
     backoff_min: Duration,
     backoff_max: Duration,
@@ -143,12 +151,20 @@ pub struct TelegramChannel {
     reactions: Option<ReactionSink>,
 }
 
-/// `getUpdates`' `allowed_updates`, URL-encoded: messages and button taps,
-/// and (M53.5) reactions when something reads them.
-const UPDATES: &str = "%5B%22message%22%2C%22callback_query%22%5D";
+/// `getUpdates`' `allowed_updates`, URL-encoded: messages, button taps and
+/// the bot being added to a group, and (M53.5) reactions when something
+/// reads them.
+const UPDATES: &str = "%5B%22message%22%2C%22callback_query%22%2C%22my_chat_member%22%5D";
 const UPDATES_WITH_REACTIONS: &str =
-    "%5B%22message%22%2C%22callback_query%22%2C%22message_reaction%22%5D";
+    "%5B%22message%22%2C%22callback_query%22%2C%22my_chat_member%22%2C%22message_reaction%22%5D";
 
+/// Saves a chat the owner allowed into the config, so it stays allowed
+/// after a restart; `Err` says why it couldn't.
+pub type AllowSaver = std::sync::Arc<dyn Fn(i64) -> Result<(), String> + Send + Sync>;
+
+/// The owner's buttons on a new chat: the data is this and the chat's id.
+const ALLOW: &str = "ferrule:allow:";
+const IGNORE: &str = "ferrule:ignore:";
 impl TelegramChannel {
     /// Real usage: talks to `https://api.telegram.org`.
     pub fn new(token: impl Into<String>) -> Self {
@@ -172,8 +188,10 @@ impl TelegramChannel {
             token: token.into(),
             client: builder.build().expect("reqwest client"),
             offset: AtomicI64::new(0),
-            allowed_chats: Vec::new(),
+            allowed_chats: Mutex::new(Vec::new()),
             told: Mutex::new(HashSet::new()),
+            saver: None,
+            asked: Mutex::new(HashSet::new()),
             poll_deadline: POLL_DEADLINE,
             backoff_min: BACKOFF_MIN,
             backoff_max: BACKOFF_MAX,
@@ -217,7 +235,15 @@ impl TelegramChannel {
 
     /// The chats this bot answers; everyone else is ignored.
     pub fn with_allowed_chats(mut self, chats: Vec<i64>) -> Self {
-        self.allowed_chats = chats;
+        self.allowed_chats = Mutex::new(chats);
+        self
+    }
+
+    /// A group the bot is added to, or a person who writes to it, is put
+    /// to the owner (Allow / Ignore in their private chat); Allow lets the
+    /// chat in at once and hands it to `saver`. Needs an owner.
+    pub fn with_allow_saver(mut self, saver: Option<AllowSaver>) -> Self {
+        self.saver = saver;
         self
     }
 
@@ -250,14 +276,19 @@ impl TelegramChannel {
         self
     }
 
-    /// Whether `msg` may reach the agent. A refused chat gets one reply with
-    /// its id while no chat is allowed yet (so setup can finish), and
-    /// silence once the list is in use.
-    async fn admits(&self, msg: &InboundMessage) -> bool {
+    fn allowed(&self, chat: i64) -> bool {
+        self.allowed_chats.lock().unwrap().contains(&chat)
+    }
+
+    /// Whether `msg` (from `update`) may reach the agent. A refused chat is
+    /// put to the owner when there's one to ask; else it gets one reply
+    /// with its id while no chat is allowed yet (so setup can finish). Once
+    /// the list is in use the chat itself hears nothing.
+    async fn admits(&self, msg: &InboundMessage, update: &Value) -> bool {
         let Ok(chat) = msg.chat_id.parse::<i64>() else {
             return false;
         };
-        if self.allowed_chats.contains(&chat) {
+        if self.allowed(chat) {
             let from_owner = self
                 .owner
                 .is_some_and(|o| msg.sender_id.as_deref() == Some(o.to_string().as_str()));
@@ -286,22 +317,103 @@ impl TelegramChannel {
                 "telegram: ignored a message from chat {chat}: it isn't in telegram_allowed_chats — add it there if this chat should reach the agent (logged once an hour per chat)"
             );
         }
-        if self.allowed_chats.is_empty() && self.told.lock().unwrap().insert(chat) {
+        let m = &update["message"];
+        if !self.ask_owner(chat, &m["chat"], &m["from"]).await
+            && self.allowed_chats.lock().unwrap().is_empty()
+            && self.told.lock().unwrap().insert(chat)
+        {
             let text = format!(
                 "This bot is private. Your chat id is {chat} — add it to telegram_allowed_chats in the ferrule config, or run `ferrule setup`."
             );
-            let reply = OutboundMessage {
-                channel: "telegram".into(),
-                chat_id: msg.chat_id.clone(),
-                text,
-                reply_to: None,
-                attachments: vec![],
-            };
-            if let Err(e) = self.send(reply).await {
-                tracing::warn!(error = %e, "telegram: couldn't tell a chat its id");
-            }
+            self.say(chat, &text).await;
         }
         false
+    }
+
+    /// Puts `chat` to the owner, once a run: Allow or Ignore, in their
+    /// private chat. `true` when the question went out just now.
+    // ponytail: once per chat per run, uncapped; add a rate cap if strangers flood the owner.
+    async fn ask_owner(&self, chat: i64, about: &Value, from: &Value) -> bool {
+        let Some(owner) = self.owner.filter(|_| self.saver.is_some()) else {
+            return false;
+        };
+        if !self.asked.lock().unwrap().insert(chat) {
+            return false;
+        }
+        let mut text = format!(
+            "New chat: {}. Let it talk to your agent?",
+            describe(chat, about, from)
+        );
+        if chat < 0 && self.only_owner_in_groups {
+            text.push_str(" Owner mode is on, so only your own messages there reach it.");
+        }
+        let keyboard = json!({ "inline_keyboard": [[
+            { "text": "Allow", "callback_data": format!("{ALLOW}{chat}") },
+            { "text": "Ignore", "callback_data": format!("{IGNORE}{chat}") },
+        ]] });
+        let payload = json!({ "chat_id": owner, "text": text, "reply_markup": keyboard,
+                              "link_preview_options": no_preview() });
+        let sent = self.deliver("sendMessage", &payload).await;
+        if let Err(e) = &sent {
+            tracing::warn!(error = %e, "telegram: couldn't ask the owner about chat {chat}");
+            self.asked.lock().unwrap().remove(&chat);
+        }
+        sent.is_ok()
+    }
+
+    /// The owner's Allow or Ignore on a new chat: `true` when `q` was one,
+    /// and then it never reaches the agent. Only the owner's own tap, in
+    /// their private chat, decides.
+    async fn decide(&self, q: &Value) -> bool {
+        let data = q["data"].as_str().unwrap_or_default();
+        let (allow, id) = match (data.strip_prefix(ALLOW), data.strip_prefix(IGNORE)) {
+            (Some(id), _) => (true, id),
+            (_, Some(id)) => (false, id),
+            _ => return false,
+        };
+        let by_owner = self.owner.is_some_and(|o| {
+            q["from"]["id"].as_i64() == Some(o) && q["message"]["chat"]["id"].as_i64() == Some(o)
+        });
+        let Some(chat) = id.parse::<i64>().ok().filter(|_| by_owner) else {
+            return true;
+        };
+        self.mark_choice(q).await;
+        if !allow {
+            return true;
+        }
+        {
+            let mut allowed = self.allowed_chats.lock().unwrap();
+            if !allowed.contains(&chat) {
+                allowed.push(chat);
+            }
+        }
+        tracing::info!("telegram: the owner allowed chat {chat}");
+        if let Some(Err(e)) = self.saver.as_ref().map(|save| save(chat)) {
+            self.tell_owner(format!(
+                "Chat {chat} can talk to the agent until the bot restarts, but it couldn't be saved to the config: {e}"
+            ))
+            .await;
+        }
+        self.say(
+            chat,
+            "✅ Connected: this chat can talk to your ferrule agent.",
+        )
+        .await;
+        true
+    }
+
+    /// `text` to `chat`, best effort.
+    async fn say(&self, chat: i64, text: &str) {
+        let msg = OutboundMessage {
+            channel: "telegram".into(),
+            chat_id: chat.to_string(),
+            text: text.to_string(),
+            reply_to: None,
+            attachments: vec![],
+        };
+        if let Err(e) = self.send(msg).await {
+            tracing::warn!(error = %e, "telegram: couldn't write to chat {chat}");
+        }
     }
 
     /// One `getUpdates` round: forwards what's admitted, advances the offset.
@@ -367,22 +479,37 @@ impl TelegramChannel {
     async fn take_update(&self, update: &Value) -> Option<Parsed> {
         if let Some(r) = update.get("message_reaction") {
             if let (Some(sink), Some(r)) = (&self.reactions, Self::parse_reaction(r)) {
-                if r.chat_id
-                    .parse::<i64>()
-                    .is_ok_and(|c| self.allowed_chats.contains(&c))
-                {
+                if r.chat_id.parse::<i64>().is_ok_and(|c| self.allowed(c)) {
                     sink(r);
                 }
             }
             return None;
         }
-        if let Some(id) = update["callback_query"]["id"].as_str() {
+        if let Some(m) = update.get("my_chat_member") {
+            // Added to a group: the owner is asked before anyone writes there.
+            let chat = m["chat"]["id"].as_i64().unwrap_or_default();
+            let joined = matches!(
+                m["new_chat_member"]["status"].as_str(),
+                Some("member" | "administrator")
+            );
+            if chat < 0 && joined && !self.allowed(chat) {
+                self.ask_owner(chat, &m["chat"], &m["from"]).await;
+            }
+            return None;
+        }
+        if let Some(q) = update.get("callback_query") {
             // Stops the button's spinner; the tap itself is handled
-            // like typed text below.
-            self.answer_callback(id);
+            // like typed text below, unless it's the owner's answer
+            // about a new chat.
+            if let Some(id) = q["id"].as_str() {
+                self.answer_callback(id);
+            }
+            if self.decide(q).await {
+                return None;
+            }
         }
         let parsed = Self::parse_update(update)?;
-        if !self.admits(&parsed.msg).await {
+        if !self.admits(&parsed.msg, update).await {
             return None;
         }
         if let Some(q) = update.get("callback_query") {
@@ -996,6 +1123,27 @@ fn unread_kind(message: &Value) -> Option<&'static str> {
 /// What every message the bot sends or edits says about link previews.
 fn no_preview() -> Value {
     json!({ "is_disabled": true })
+}
+
+/// A new chat as the owner reads it: a group by its title, a person by
+/// name and @username, with who wrote or added the bot, and the id.
+fn describe(chat: i64, about: &Value, from: &Value) -> String {
+    let name = [from["first_name"].as_str(), from["last_name"].as_str()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let who = match from["username"].as_str() {
+        Some(u) if name.is_empty() => format!("@{u}"),
+        Some(u) => format!("{name} (@{u})"),
+        None => name,
+    };
+    match (about["title"].as_str(), who.is_empty()) {
+        (Some(title), true) => format!("the group «{title}» (id {chat})"),
+        (Some(title), false) => format!("the group «{title}» (id {chat}), via {who}"),
+        (None, false) => format!("{who} (id {chat})"),
+        (None, true) => format!("chat {chat}"),
+    }
 }
 
 /// A shared venue, location or contact as text; Telegram sends no text
@@ -1793,7 +1941,7 @@ mod tests {
             ts: 0,
         };
         for chat in ["5", "5", "6", "5"] {
-            assert!(!channel.admits(&msg(chat)).await);
+            assert!(!channel.admits(&msg(chat), &Value::Null).await);
         }
         let sent = sent.lock().unwrap();
         let chats: Vec<&str> = sent
@@ -1900,9 +2048,9 @@ mod tests {
             .expect("the tap is answered");
         assert!(answer.1.contains(r#""callback_query_id":"cb-1""#));
         let poll = calls.iter().find(|(m, _)| m == "getUpdates").unwrap();
-        assert!(poll
-            .1
-            .contains("allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"));
+        assert!(poll.1.contains(
+            "allowed_updates=%5B%22message%22%2C%22callback_query%22%2C%22my_chat_member%22%5D"
+        ));
     }
 
     #[tokio::test]
@@ -2595,7 +2743,7 @@ mod tests {
             ts: 0,
         };
         for chat in ["5", "5", "6", "5"] {
-            assert!(!channel.admits(&msg(chat)).await);
+            assert!(!channel.admits(&msg(chat), &Value::Null).await);
         }
         let warns: Vec<String> = lines
             .lock()

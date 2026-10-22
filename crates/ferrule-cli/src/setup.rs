@@ -1936,6 +1936,18 @@ pub(crate) fn save_allowed(t: &mut Target, ids: &[i64]) -> Result<()> {
     t.save()
 }
 
+/// One more chat in `telegram_allowed_chats` as the file has it now: the
+/// owner's Allow in Telegram while the bot runs.
+pub(crate) fn allow_chat(path: PathBuf, id: i64) -> Result<()> {
+    let mut t = Target::load(path)?;
+    let mut ids = t.config()?.gateway.telegram_allowed_chats;
+    if ids.contains(&id) {
+        return Ok(());
+    }
+    ids.push(id);
+    save_allowed(&mut t, &ids)
+}
+
 // ── Tool credentials ───────────────────────────────────────────────────
 
 struct TokenPreset {

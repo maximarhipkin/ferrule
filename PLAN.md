@@ -30,11 +30,13 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - **v0.14.3** (2026-10-22, PR #62): a system service saves its settings
+  - **v0.14.4** (2026-10-22, PR #64): the owner allows new Telegram
+    groups and people from the chat, with Allow / Ignore buttons. Every
+    crate is at 0.14.4 except `ferrule-plugin-sdk`.
+  - Before it, **v0.14.3** (2026-10-22, PR #62): a system service saves its settings
     (the config directory is writable to it; an older unit heals itself),
     `update` and the dashboard's Install cover the `claude` CLI, connect any
-    MCP URL from the chat, no price warning for plan models. Every crate is
-    at 0.14.3 except `ferrule-plugin-sdk`.
+    MCP URL from the chat, no price warning for plan models.
   - Before it, **v0.14.2** (2026-10-22, tagged on `main`
     after PR #61): M65 (video it understands, edits and checks before
     sending; the vision helper; the dashboard Files page), on top of
@@ -10762,3 +10764,56 @@ run after it updates, so the update itself is what unlocks its config.
 merge.
 
 **Open.** Nothing ran on a real system service yet.
+
+### 2026-10-22 — Telegram: the owner allows new groups and people from the chat (Claude, Opus 5.5)
+
+No milestone claimed. On `telegram-owner-allows-chats`.
+
+**Why.** Max's bot runs as a system service. Once it was live, the only
+way to let in another group or person was editing `telegram_allowed_chats`
+on the server: the Config page refuses `*allowed*` fields by design
+(`guarded_key`), and the dashboard's Telegram "allow a chat" step returns
+409 while the bot polls.
+
+**What changed.**
+- `ferrule-gateway` `channels/telegram.rs`: `allowed_chats` is a
+  `Mutex<Vec<i64>>` the owner can add to while the bot runs.
+  `with_allow_saver` sets an `AllowSaver`. With an owner chat and a saver,
+  a group the bot joins (`my_chat_member` is now in `allowed_updates`) or
+  an unknown chat that writes to it is put to the owner once per run, with
+  **Allow / Ignore** buttons (`ferrule:allow:<id>` / `ferrule:ignore:<id>`).
+  The new chat itself still hears nothing (a stranger gets silence, as
+  before). Only the owner's own tap in
+  their private chat decides, and the tap never reaches the agent. Allow
+  admits the chat live, saves it, says hello there, and tells the owner if
+  the save failed.
+- `ferrule-cli`: `main.rs` `telegram_allow_saver` writes through
+  `setup::allow_chat` (re-reads the file, appends, `save_allowed`) and
+  audits `channel.chat_allowed`. The Config page's refusal
+  (`config_page::refusal`) now names where a refused field can be changed,
+  and for `telegram_allowed_chats` it points to the Telegram flow.
+- README: a short paragraph under the allow-list rule.
+
+**Not done.** Owner mode still admits only the owner in a group, so
+allowing a group lets others in only when owner mode is off (the question
+says so). Ignore isn't remembered across restarts. No new tests (Max's
+rule); the existing `allowed_updates` assertion and two `admits` calls
+in `telegram.rs`'s tests follow the new code.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored
+across 73 test binaries (macOS). Not tried against real Telegram.
+
+### 2026-10-22 — Release 0.14.4 (Claude, Opus 5.5)
+
+No milestone claimed. On `telegram-owner-allows-chats` (PR #64), as its
+last commit, the way 0.14.3 went out.
+
+**What changed.** Every crate goes from 0.14.3 to 0.14.4
+(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
+--workspace --offline`: only the 24 ferrule versions move), the README's
+badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
+A patch release: the Telegram change in the entry above, no breaking
+config change. `v0.14.4` is tagged on `main` after the merge.
+
+**Checks.** `make check` green before the tag; CI on the PR before the
+merge.

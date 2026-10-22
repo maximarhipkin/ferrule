@@ -2796,6 +2796,25 @@ fn with_owner(cfg: &config::Config, channel: &str, users: &[String]) -> Vec<Stri
     users
 }
 
+/// Where the owner's Allow in Telegram goes: the config file in use,
+/// audited as the dashboard's Allow is.
+fn telegram_allow_saver() -> Option<ferrule_gateway::channels::telegram::AllowSaver> {
+    let path = config::config_path().ok().flatten()?;
+    Some(Arc::new(move |id: i64| -> Result<(), String> {
+        setup::allow_chat(path.clone(), id).map_err(|e| format!("{e:#}"))?;
+        if let Some(hub) = trust::existing_hub() {
+            hub.audit().record(
+                chrono::Utc::now(),
+                "channel.chat_allowed",
+                None,
+                None,
+                serde_json::json!({ "channel": "telegram", "chat": id, "by": "owner (Telegram)" }),
+            );
+        }
+        Ok(())
+    }))
+}
+
 /// Builds every channel enabled in `[gateway]`, keyed by channel name. Shared
 /// by the long-lived daemon (`run_gateway`) and `ferrule tasks run-now` (which
 /// needs the same destination channels available to deliver its one result,
@@ -2820,6 +2839,8 @@ fn build_channels(
             TelegramChannel::with_base_url(token, cfg.gateway.telegram_base_url.clone())
                 .with_allowed_chats(cfg.gateway.telegram_allowed_chats.clone())
                 .with_owner(trust::owner_chat(cfg))
+                // New groups and people are put to the owner in Telegram.
+                .with_allow_saver(telegram_allow_saver())
                 // M54: owner mode treats a group as the owner's chat.
                 .with_only_owner_in_groups(owner_mode::wanted(cfg))
                 .with_menu(self_service::menu::all(cfg.dashboard.enabled))

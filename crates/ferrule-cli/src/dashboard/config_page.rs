@@ -196,6 +196,18 @@ fn twice_named(table: &toml_edit::Table, path: &str) -> Option<String> {
     })
 }
 
+/// Why `field` can't be changed here, and where it can.
+fn refusal(field: &str) -> String {
+    let telegram = if field.starts_with("gateway.telegram_allowed_chats") {
+        " To let a Telegram group or person in, add the bot to the group or have them write to it: the bot asks you in Telegram."
+    } else {
+        ""
+    };
+    format!(
+        "`{field}` can't be changed from the chat or the Config page: it runs something on the machine, lets someone in, or decides where a secret goes. Channels, hooks and keys have their own pages on the dashboard.{telegram}"
+    )
+}
+
 /// The first field the page may not change that `new` changes.
 pub(crate) fn guarded_change(old: &DocumentMut, new: &DocumentMut) -> Option<String> {
     if let Some(twice) = twice_named(new.as_table(), "") {
@@ -547,13 +559,7 @@ pub(super) fn commit(
     let old = old.unwrap_or(&empty);
     if guard {
         if let Some(field) = guarded_change(old, new) {
-            return Some((
-                403,
-                json!({
-                    "error": format!("`{field}` can't be changed from the chat or the Config page: it runs something on the machine, lets someone in, or decides where a secret goes. Channels, hooks and keys have their own pages on the dashboard."),
-                    "field": field,
-                }),
-            ));
+            return Some((403, json!({ "error": refusal(&field), "field": field })));
         }
         if let Some(why) = key_moved(old, new) {
             return bad(403, why);
@@ -864,9 +870,7 @@ pub fn check(ctx: &Ctx, body: &Value) -> Answer {
     let empty = DocumentMut::new();
     let old = old.as_ref().unwrap_or(&empty);
     if let Some(field) = guarded_change(old, &new) {
-        return ok(
-            json!({ "ok": false, "field": field, "error": format!("`{field}` can't be changed from the page") }),
-        );
+        return ok(json!({ "ok": false, "error": refusal(&field), "field": field }));
     }
     if let Some(why) = key_moved(old, &new) {
         return ok(json!({ "ok": false, "error": why }));
