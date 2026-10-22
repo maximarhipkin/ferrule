@@ -177,7 +177,10 @@ below it is append-only.
   blind seeded A/B judge, weak evidence kept only with the owner's 👍;
   (2) OAuth clients in the MCP spec's order: the owner's own app, a Client
   ID Metadata Document (the relay's `/client.json`), then DCR; Home
-  Assistant by its address, Slack, Asana and Dropbox in the catalog.
+  Assistant by its address, Slack, Asana and Dropbox in the catalog; (3)
+  `ferrule-mcp` speaks MCP 2026-07-28 next to 2025-06-18, finding a
+  server's era once (`server/discover` probe on stdio, a first modern
+  request over HTTP).
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -200,7 +203,8 @@ below it is append-only.
      with a small $ cap is the next step.
   5. **CIMD and pre-registered OAuth clients**: built in wave C, task 2
      (Home Assistant, Slack, Asana, Dropbox), never signed in live. **MCP
-     2026-07-28** (`server/discover`, stateless): wave C, task 3.
+     2026-07-28**: built in wave C, task 3; no modern server tried live,
+     and `subscriptions/listen` isn't opened.
   6. **Small polish**: M56.1's queue and interrupt, steered voice notes;
      M56.3's Undo and M56.5's pending offers lost on restart; Slack
      inbound files; `/bg`; keys without a prefix (Brave's, Tavily's)
@@ -10010,3 +10014,48 @@ document, not Slack's `scope` on its `v2_user` endpoint, not Asana's
 redeployed. The owner's app isn't keyed by the authorization server's
 `issuer` (SEP-2352). The dashboard has no form for a non-Google owner
 app. `node --test relay/` wasn't run here (CI runs it).
+
+### 2026-10-22 — Wave C, task 3: MCP 2026-07-28 next to 2025-06-18 (Claude, Opus 5.5)
+
+Wave C's third task, in the `autopilot` worktree (re-audit Part 3 #14).
+
+**Why.** MCP 2026-07-28 drops `initialize` and HTTP sessions, puts the
+version and the client's identity in every request's `_meta`, adds
+`server/discover` and standard request headers. Vendor servers will move
+to it; a client that only does the handshake fails against a modern-only
+server ("Legacy client, modern server: fails", the spec's matrix).
+
+**What changed** (`ferrule-mcp`).
+- `era.rs` (new): `Era` (modern or legacy), `with_meta`, `era_of` (a
+  probe's answer: a `DiscoverResult` or a modern error is modern, anything
+  else legacy, never keyed to one code), the modern error codes,
+  `complete` (`resultType: "input_required"` fails plainly),
+  `header_value` (the `=?base64?…?=` encoding), and `x-mcp-header`
+  parsing and checking.
+- `client.rs`: a fresh stdio process is probed with `server/discover`
+  (10 s, or a late answer after a refused `initialize`); a legacy one gets
+  `initialize`, a modern one `_meta` on every request; the era is kept
+  across respawns; a server that exits on the probe is restarted once as
+  legacy. Over HTTP, tools with bad `x-mcp-header` marks are left out and
+  the rest's marked parameters become `Mcp-Param-*` headers. A list's
+  `ttlMs` schedules one re-list (at least five minutes on).
+- `http.rs`: the first request to an address is a modern
+  `server/discover`; a `4xx` without a modern error body means legacy,
+  and the old session path runs. Modern requests carry
+  `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, no session; a failed
+  status with a JSON-RPC error body comes back as that error; a later
+  -32022 re-asks once.
+- Docs: `m17-mcp-add.md` §8 (every rule cited to the spec's pages),
+  `roadmap.md` (M17).
+
+**Tests changed, none added** (the owner's standing rule). Every
+existing MCP test (stdio and HTTP mocks, all legacy) passes unchanged.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** No modern server tried live and no test drives one.
+`subscriptions/listen`, per-request log levels, the tasks extension,
+MRTR answers and `notifications/cancelled` aren't built. The handshake
+still asks for 2025-06-18. A legacy stdio server that ignores unknown
+requests costs its first spawn 10 s.

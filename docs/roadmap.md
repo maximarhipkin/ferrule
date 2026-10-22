@@ -345,6 +345,12 @@ run follows the recorded lesson — visible as a playbook diff.
   mid-session `list_changed` is re-scanned.
 - `ferrule mcp list`/`remove`, and an "MCP servers" step in `ferrule setup`
   on the same code.
+- Wave C (2026-10-22, `docs/m17-mcp-add.md` §8): MCP 2026-07-28 next to
+  2025-06-18. A `server/discover` probe (stdio) or a first modern request
+  (HTTP) finds the era once per server; a modern server gets `_meta` on
+  every request, the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` and
+  `Mcp-Param-*` headers and no session; legacy servers keep `initialize`.
+  No modern server tried live.
 
 **Goal.** Connecting a server is one guided command, not a hand-edited
 TOML file and a restart.

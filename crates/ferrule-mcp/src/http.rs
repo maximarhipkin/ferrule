@@ -1,9 +1,19 @@
 //! MCP's Streamable HTTP transport, the client half: each JSON-RPC message
 //! is a POST, answered with JSON or a short SSE stream. Only what tool
 //! calls need — no server-initiated GET stream, no resumption.
+//!
+//! Wave C: both eras (`crate::era`). The first request to an address is a
+//! `server/discover` in the 2026-07-28 shape; a `DiscoverResult` or a
+//! modern error means a modern server, spoken to with `_meta` on every
+//! request and the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name`
+//! headers, no session; anything else (a `4xx` whose body isn't a modern
+//! JSON-RPC error, a `-32601`, an empty answer) means a legacy one, opened
+//! with `initialize` and a session, as before
+//! ([Streamable HTTP, "Backward Compatibility"](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#backward-compatibility)).
 
 use crate::auth::Auth;
 use crate::client::PROTOCOL_VERSION;
+use crate::era::{self, Era};
 use crate::error::McpError;
 use ferrule_sandbox::Egress;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
@@ -16,11 +26,17 @@ use tokio::sync::Mutex as AsyncMutex;
 
 const SESSION_HEADER: &str = "mcp-session-id";
 
+/// Headers one request carries beyond the configured ones.
+type Extra = Vec<(HeaderName, HeaderValue)>;
+
 pub(crate) struct HttpTransport {
     client: reqwest::Client,
     url: String,
     headers: HeaderMap,
     startup_timeout: Duration,
+    /// Which era the server speaks, found by the first request (wave C).
+    era: AsyncMutex<Option<Era>>,
+    /// A legacy server's session.
     session: AsyncMutex<Option<Session>>,
     /// Asked for a credential per request (a connection's token).
     auth: Option<Auth>,
@@ -70,14 +86,139 @@ impl HttpTransport {
             url: url.to_string(),
             headers: map,
             startup_timeout,
+            era: AsyncMutex::new(None),
             session: AsyncMutex::new(None),
             auth,
         })
     }
 
-    /// One request, answered within `timeout`. A session the server has
-    /// forgotten (404) is started again, once.
+    /// One request, answered within `timeout`. `params_headers` are a tool
+    /// call's `Mcp-Param-*` headers, sent to a modern server. A legacy
+    /// session the server has forgotten (404) is started again, once; a
+    /// modern server that stops speaking ferrule's version is asked again,
+    /// once.
     pub(crate) async fn request(
+        &self,
+        next_id: &AtomicU64,
+        method: &str,
+        params: Value,
+        params_headers: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<Value, McpError> {
+        for attempt in 0..2 {
+            match self.era(next_id).await? {
+                Era::Legacy => return self.legacy(next_id, method, params, timeout).await,
+                Era::Modern(version) => {
+                    let resp = self
+                        .modern(
+                            next_id,
+                            &version,
+                            method,
+                            params.clone(),
+                            params_headers,
+                            timeout,
+                        )
+                        .await?;
+                    if attempt == 0 && era::error_code(&resp) == Some(era::UNSUPPORTED_VERSION) {
+                        *self.era.lock().await = None;
+                        continue;
+                    }
+                    return Ok(resp);
+                }
+            }
+        }
+        Err(McpError::Http(
+            "the server keeps refusing ferrule's protocol version".into(),
+        ))
+    }
+
+    /// The server's era, found once per address: concurrent first requests
+    /// wait for the one probe.
+    async fn era(&self, next_id: &AtomicU64) -> Result<Era, McpError> {
+        let mut guard = self.era.lock().await;
+        if let Some(era) = guard.as_ref() {
+            return Ok(era.clone());
+        }
+        let era = self.probe(next_id).await?;
+        tracing::debug!(url = %self.url, "mcp server era: {era:?}");
+        *guard = Some(era.clone());
+        Ok(era)
+    }
+
+    /// `server/discover` in the modern shape. A `DiscoverResult` or a
+    /// modern error is a modern server; a `4xx` whose body is anything else,
+    /// or an answer without either, a legacy one. A refused credential, a
+    /// denial by the egress policy, a `5xx` or no answer is an error, not a
+    /// guess.
+    async fn probe(&self, next_id: &AtomicU64) -> Result<Era, McpError> {
+        let id = next_id.fetch_add(1, Ordering::SeqCst);
+        let method = "server/discover";
+        let params = era::with_meta(json!({}), era::MODERN_VERSION);
+        let headers = modern_headers(era::MODERN_VERSION, method, &params, &[])?;
+        let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        let call = async {
+            let (resp, raw) = self.send(&msg, &headers).await?;
+            let status = resp.status();
+            if ferrule_tools::egress::is_denial(&resp) {
+                let why = resp.text().await.unwrap_or_default();
+                return Err(McpError::Http(why.trim().to_string()));
+            }
+            if status.is_success() {
+                let value = if is_sse(&resp) {
+                    read_sse(resp, id).await?
+                } else {
+                    resp.json::<Value>()
+                        .await
+                        .ok()
+                        .and_then(|body| find_response(body, id))
+                        .unwrap_or(Value::Null)
+                };
+                return era::era_of(&value);
+            }
+            if status == StatusCode::UNAUTHORIZED && raw.is_some() {
+                return Err(McpError::Http(format!(
+                    "HTTP {status}: the service refused the connection's credential \
+                     even after a refresh; the owner may need to reconnect it"
+                )));
+            }
+            if status.is_client_error() {
+                let body = resp.text().await.unwrap_or_default();
+                let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                return era::era_of(&value);
+            }
+            Err(McpError::Http(format!("HTTP {status} to {method}")))
+        };
+        tokio::time::timeout(self.startup_timeout, call)
+            .await
+            .map_err(|_| McpError::Timeout)?
+    }
+
+    /// One request to a modern server: `_meta` in the body, the version,
+    /// method and name in headers (Streamable HTTP, "Request Metadata").
+    async fn modern(
+        &self,
+        next_id: &AtomicU64,
+        version: &str,
+        method: &str,
+        params: Value,
+        params_headers: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<Value, McpError> {
+        let id = next_id.fetch_add(1, Ordering::SeqCst);
+        let params = era::with_meta(params, version);
+        let headers = modern_headers(version, method, &params, params_headers)?;
+        let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        match self
+            .exchange(&msg, &headers, false, true, id, timeout)
+            .await
+        {
+            Ok(result) => result.map(|(value, _)| value),
+            Err(Expired) => Err(McpError::Http("the server dropped the request".into())),
+        }
+    }
+
+    /// One request to a legacy server, in its session.
+    async fn legacy(
         &self,
         next_id: &AtomicU64,
         method: &str,
@@ -88,7 +229,11 @@ impl HttpTransport {
             let session = self.session(next_id).await?;
             let id = next_id.fetch_add(1, Ordering::SeqCst);
             let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-            match self.exchange(&msg, Some(&session), id, timeout).await {
+            let headers = legacy_headers(&session)?;
+            match self
+                .exchange(&msg, &headers, session.id.is_some(), false, id, timeout)
+                .await
+            {
                 Err(Expired) if attempt == 0 => {
                     *self.session.lock().await = None;
                 }
@@ -120,7 +265,7 @@ impl HttpTransport {
             },
         });
         let (resp, session_id) = self
-            .exchange(&init, None, id, self.startup_timeout)
+            .exchange(&init, &[], false, false, id, self.startup_timeout)
             .await
             .map_err(|Expired| McpError::Handshake("404 on initialize".into()))?
             .map_err(|e| McpError::Handshake(e.to_string()))?;
@@ -136,7 +281,7 @@ impl HttpTransport {
         };
         let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}});
         let (sent, _) = self
-            .send(&note, Some(&session))
+            .send(&note, &legacy_headers(&session)?)
             .await
             .map_err(|e| McpError::Handshake(e.to_string()))?;
         if !sent.status().is_success() {
@@ -155,15 +300,15 @@ impl HttpTransport {
     async fn send(
         &self,
         msg: &Value,
-        session: Option<&Session>,
+        extra: &[(HeaderName, HeaderValue)],
     ) -> Result<(reqwest::Response, Option<String>), McpError> {
         let Some(auth) = &self.auth else {
-            let resp = self.post(msg, session, None).send().await;
+            let resp = self.post(msg, extra, None).send().await;
             return Ok((resp.map_err(http_error)?, None));
         };
         let cred = credential(auth.0.header().await)?;
         let resp = self
-            .post(msg, session, Some(&cred))
+            .post(msg, extra, Some(&cred))
             .send()
             .await
             .map_err(|e| scrubbed(http_error(e), &cred.raw))?;
@@ -172,7 +317,7 @@ impl HttpTransport {
         }
         let fresh = credential(auth.0.refreshed(&cred.raw).await)?;
         let resp = self
-            .post(msg, session, Some(&fresh))
+            .post(msg, extra, Some(&fresh))
             .send()
             .await
             .map_err(|e| scrubbed(http_error(e), &fresh.raw))?;
@@ -182,7 +327,7 @@ impl HttpTransport {
     fn post(
         &self,
         msg: &Value,
-        session: Option<&Session>,
+        extra: &[(HeaderName, HeaderValue)],
         cred: Option<&Credential>,
     ) -> reqwest::RequestBuilder {
         let mut req = self
@@ -194,29 +339,29 @@ impl HttpTransport {
         if let Some(cred) = cred {
             req = req.header(cred.name.clone(), cred.value.clone());
         }
-        if let Some(session) = session {
-            req = req.header("mcp-protocol-version", &session.protocol);
-            if let Some(id) = &session.id {
-                req = req.header(SESSION_HEADER, id);
-            }
+        for (name, value) in extra {
+            req = req.header(name.clone(), value.clone());
         }
         req
     }
 
     /// POST `msg` and wait for the response with `id`, plus the session id
-    /// the server handed out, if any.
+    /// the server handed out, if any. `expiring`: a 404 means the session
+    /// is gone. `rpc_errors`: a failed status whose body is a JSON-RPC
+    /// error comes back as that error (a modern server's way).
     async fn exchange(
         &self,
         msg: &Value,
-        session: Option<&Session>,
+        extra: &[(HeaderName, HeaderValue)],
+        expiring: bool,
+        rpc_errors: bool,
         id: u64,
         timeout: Duration,
     ) -> Result<Result<(Value, Option<String>), McpError>, Expired> {
-        let has_session = session.and_then(|s| s.id.as_ref()).is_some();
         let call = async {
-            let (resp, raw) = self.send(msg, session).await?;
+            let (resp, raw) = self.send(msg, extra).await?;
             let status = resp.status();
-            if status == StatusCode::NOT_FOUND && has_session {
+            if status == StatusCode::NOT_FOUND && expiring {
                 return Ok(Err(Expired));
             }
             if ferrule_tools::egress::is_denial(&resp) {
@@ -224,18 +369,26 @@ impl HttpTransport {
                 return Err(McpError::Http(why.trim().to_string()));
             }
             if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                let body = match &raw {
-                    Some(raw) => scrub(&body, raw),
-                    None => body,
-                };
-                let body: String = body.chars().take(300).collect();
                 if status == StatusCode::UNAUTHORIZED && raw.is_some() {
                     return Err(McpError::Http(format!(
                         "HTTP {status}: the service refused the connection's credential \
                          even after a refresh; the owner may need to reconnect it"
                     )));
                 }
+                let body = resp.text().await.unwrap_or_default();
+                let body = match &raw {
+                    Some(raw) => scrub(&body, raw),
+                    None => body,
+                };
+                if rpc_errors {
+                    if let Some(err) = serde_json::from_str::<Value>(&body)
+                        .ok()
+                        .filter(|v| v.get("error").is_some())
+                    {
+                        return Ok(Ok((err, None)));
+                    }
+                }
+                let body: String = body.chars().take(300).collect();
                 return Err(McpError::Http(format!("HTTP {status}: {body}")));
             }
             let session_id = resp
@@ -243,12 +396,7 @@ impl HttpTransport {
                 .get(SESSION_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .map(String::from);
-            let is_sse = resp
-                .headers()
-                .get(CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|ct| ct.starts_with("text/event-stream"));
-            let value = if is_sse {
+            let value = if is_sse(&resp) {
                 read_sse(resp, id).await?
             } else {
                 let body: Value = resp.json().await.map_err(http_error)?;
@@ -265,6 +413,57 @@ impl HttpTransport {
             Err(_) => Ok(Err(McpError::Timeout)),
         }
     }
+}
+
+fn is_sse(resp: &reqwest::Response) -> bool {
+    resp.headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("text/event-stream"))
+}
+
+fn header(name: &str, value: &str) -> Result<(HeaderName, HeaderValue), McpError> {
+    let name = HeaderName::from_bytes(name.as_bytes())
+        .map_err(|_| McpError::Config(format!("header `{name}`: not a header name")))?;
+    let value = HeaderValue::from_str(value)
+        .map_err(|_| McpError::Config(format!("header `{name}`: not a header value")))?;
+    Ok((name, value))
+}
+
+/// A legacy session's headers: the negotiated version and its id.
+fn legacy_headers(session: &Session) -> Result<Extra, McpError> {
+    let mut out = vec![header("mcp-protocol-version", &session.protocol)?];
+    if let Some(id) = &session.id {
+        out.push(header(SESSION_HEADER, id)?);
+    }
+    Ok(out)
+}
+
+/// A modern request's headers: `MCP-Protocol-Version`, `Mcp-Method`, and
+/// for `tools/call`, `prompts/get` and `resources/read` `Mcp-Name`, plus a
+/// tool call's `Mcp-Param-*` (Streamable HTTP, "Standard Request Headers").
+fn modern_headers(
+    version: &str,
+    method: &str,
+    params: &Value,
+    params_headers: &[(String, String)],
+) -> Result<Extra, McpError> {
+    let mut out = vec![
+        header("mcp-protocol-version", version)?,
+        header("mcp-method", method)?,
+    ];
+    let name = match method {
+        "tools/call" | "prompts/get" => params.get("name").and_then(Value::as_str),
+        "resources/read" => params.get("uri").and_then(Value::as_str),
+        _ => None,
+    };
+    if let Some(name) = name {
+        out.push(header("mcp-name", &era::header_value(name))?);
+    }
+    for (name, value) in params_headers {
+        out.push(header(name, value)?);
+    }
+    Ok(out)
 }
 
 /// The server no longer knows our session.
