@@ -30,8 +30,11 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - The latest release is **v0.14.1** (2026-10-22, tagged on `main`
-    after PR #58): M64.4–M64.5 (the proactive heartbeat, feedback,
+  - The latest release is **v0.14.2** (2026-10-22, tagged on `main`
+    after PR #61): M65 (video it understands, edits and checks before
+    sending; the vision helper; the dashboard Files page), on top of
+    v0.14.1. Every crate is at 0.14.2 except `ferrule-plugin-sdk`.
+    Before it, **v0.14.1** (2026-10-22, tagged on `main` after PR #58): M64.4–M64.5 (the proactive heartbeat, feedback,
     `/proactive` and its page), wave C (M53.1's contrast gate, OAuth
     clients for more MCP servers, MCP 2026-07-28) and PR #59's Windows
     fix, on top of v0.14.0. Every crate is at 0.14.1 except
@@ -10648,3 +10651,25 @@ each claim against the code of §0–§5.
 - No eval A/B was run (the owner said not to for now); `CHAT_VIDEO` and
   the new `CHAT_MEDIA` are in the prompt prefix unmeasured, like M58.5's
   list.
+
+### 2026-10-22 — Release 0.14.2 (Claude, Opus 5.5)
+
+No milestone claimed. On `autopilot` (PR #61), as its last commit.
+
+**What changed.** Every crate's version goes from 0.14.1 to 0.14.2
+(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
+--workspace --offline`: only the 24 ferrule versions move), the README's
+badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
+A patch bump: M65 (the vision helper, `watch_video`, the video-editing
+skill, references for the same person, the check before sending, the
+dashboard Files page) with no breaking config change; M65 raises the
+owner's video defaults (10 a day, $3 a video).
+
+**Checks.** On the owner's instruction ("push the change and push the new
+release, don't wait for the CI"), PR #61 is merged and the tag pushed
+without waiting for its CI run. Every M65 commit passed `make check` on
+macOS; Linux and Windows CI run on `main` after the merge, and a failure
+there is fixed forward in a 0.14.3.
+
+**Open.** Nothing in M65 has run live (OpenRouter, real ffmpeg video,
+uploads through a tunnel).
