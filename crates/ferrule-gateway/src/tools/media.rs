@@ -521,6 +521,7 @@ impl Tool for GenerateImageTool {
         job.tree = Some(self.tree.clone());
         // M65 §4: made, not sent; `send_file` makes it `done`.
         job.state = "checking".into();
+        job.cost_usd = out.cost_usd;
         job.references = references_shown(&ctx.workspace, compare.iter());
         self.shared
             .store
@@ -1196,6 +1197,11 @@ impl BuiltinJob for MediaPoller {
                     // the ledger's sum what the provider billed.
                     let settle = cost_usd.map(|billed| billed - job.estimate_usd.unwrap_or(0.0));
                     let out = std::path::Path::new(&job.out_path);
+                    if let Some(billed) = cost_usd {
+                        if let Err(e) = self.shared.store.set_cost(&job.id, billed) {
+                            tracing::warn!(job = %job.id, "couldn't keep the video's bill: {e}");
+                        }
+                    }
                     match self.shared.backend.download(&url, out).await {
                         Ok(()) => {
                             // M65 §4: the session that asked watches it

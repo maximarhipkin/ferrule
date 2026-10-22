@@ -341,8 +341,9 @@ fn stem(video: &Path) -> String {
 }
 
 /// Runs `program args…` in the sandbox, up to `limit`; `Ok` is its stdout,
-/// `Err` its last line of stderr or why it didn't run.
-async fn run(
+/// `Err` its last line of stderr or why it didn't run. M65 §5's posters
+/// run the same way.
+pub async fn run(
     sandbox: &Sandbox,
     program: &Path,
     args: &[OsString],

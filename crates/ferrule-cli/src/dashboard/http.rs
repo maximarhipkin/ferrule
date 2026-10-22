@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 const MAX_HEAD: usize = 16 * 1024;
@@ -89,6 +89,10 @@ pub struct Response {
     pub body: Vec<u8>,
     /// A file sent from disk instead of `body` (a backup, M47).
     pub file: Option<std::path::PathBuf>,
+    /// M65 §5: only these bytes of `file`, first to last (a `Range`
+    /// request: a video's player seeks, and Safari on an iPhone won't play
+    /// one without it).
+    pub range: Option<(u64, u64)>,
 }
 
 impl Response {
@@ -99,7 +103,15 @@ impl Response {
             headers: Vec::new(),
             body: body.into(),
             file: None,
+            range: None,
         }
+    }
+
+    /// M65 §5: bytes `first..=last` of the file, as a 206.
+    pub fn with_range(mut self, first: u64, last: u64) -> Self {
+        self.status = 206;
+        self.range = Some((first, last));
+        self
     }
 
     /// `path`'s bytes, streamed. Never cached: it is the owner's data.
@@ -127,6 +139,7 @@ fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
         202 => "Accepted",
+        206 => "Partial Content",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -135,6 +148,7 @@ fn reason(status: u16) -> &'static str {
         408 => "Request Timeout",
         409 => "Conflict",
         413 => "Payload Too Large",
+        416 => "Range Not Satisfiable",
         421 => "Misdirected Request",
         500 => "Internal Server Error",
         503 => "Service Unavailable",
@@ -330,6 +344,19 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
         },
         None => (None, resp.body.len() as u64),
     };
+    // M65 §5: a range is sent from its first byte, as many as it holds.
+    let mut extra = String::new();
+    let length = match (resp.range, file.as_mut()) {
+        (Some((first, last)), Some(f)) if first <= last && last < length => {
+            if f.seek(std::io::SeekFrom::Start(first)).await.is_err() {
+                return Box::pin(write(stream, Response::text(500, "the file can't be read")))
+                    .await;
+            }
+            extra = format!("Content-Range: bytes {first}-{last}/{length}\r\n");
+            last - first + 1
+        }
+        _ => length,
+    };
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\
          {}X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\
@@ -341,6 +368,7 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
         length,
         if cached { "" } else { "Cache-Control: no-store\r\n" },
     );
+    head.push_str(&extra);
     for (k, v) in &resp.headers {
         head.push_str(&format!("{k}: {v}\r\n"));
     }
@@ -348,7 +376,7 @@ pub async fn write(stream: &mut TcpStream, resp: Response) {
     let _ = stream.write_all(head.as_bytes()).await;
     match file.as_mut() {
         Some(f) => {
-            let _ = tokio::io::copy(f, stream).await;
+            let _ = tokio::io::copy(&mut f.take(length), stream).await;
         }
         None => {
             let _ = stream.write_all(&resp.body).await;

@@ -10506,3 +10506,93 @@ changed to the new behaviour (two renamed to say what they check).
 **Open.** Not run live. A woken turn reads like any wake (sub-agents'
 reports use the same path); whether the model follows it through to
 `send_file` is for the owner's first real video to show.
+
+### 2026-10-22 — M65 §5: big files and a media library in the dashboard (Claude, Opus 5.5)
+
+Asked for by the owner after the first draft: upload big files for the
+agent from the dashboard (Telegram bots download at most 20 MB, and a
+Cloudflare tunnel refuses a request over 100 MB), and a files and media
+library there (`docs/m65-video.md` §5).
+
+**Built.**
+- `ferrule-cli/src/dashboard/files_page.rs` (new), the `Library` in the
+  page's `Ctx` (the gateway's only):
+  - **Uploads.** `POST /api/files/upload/start {name, size, for?}` (the
+    name made safe, the size under `[dashboard] max_upload_mb`, default
+    2048, and refused when it would leave the disk under 1 GB, by
+    `selfcheck::free_space`) makes `uploads/.part/<id>` and its note;
+    `PUT /api/files/upload/<id>?offset=` appends one piece of at most
+    32 MB, answering 409 with the offset it has for any other, and cuts a
+    half-written piece back; `GET /api/files/upload?id=` says how far one
+    got; `POST /api/files/upload/finish {id}` checks the size and moves it
+    to `uploads/<day>/<name>` (`-2`, `-3` … when taken). Parts older than
+    a day go whenever an upload starts. Appends and finishes take one
+    lock.
+  - **From a chat.** `TooBigDoor`, an interceptor: a message in the
+    owner's own chat whose file was refused for its size
+    (`files::has_too_big`, beside the line it reads) gets the owner a
+    one-time login link (`door::send_link_with`, `?for=<ticket>`), and
+    the message still goes on to the agent. The ticket ties the upload to
+    that chat for a day; its finish wakes the chat's session
+    (`Router::wake`) with the path and size.
+  - **The library.** `GET /api/files?kind=&from=`: `uploads/`, `inbox/`
+    and `media/`, five levels deep, hidden names and symlinks skipped,
+    newest 500, with each one's kind, source (uploaded, from which chat,
+    made, screen) and, from `media_jobs`, the prompt, model, cost (or the
+    estimate) and state in words. `GET /api/files/raw?path=` and
+    `thumb?path=` are answered in `Dashboard::handle` like the backup
+    download; `POST files/delete` (to `.ferrule/trash/`) and `files/say`
+    (the file and words to the page's chat, `DashboardChannel::say_file`).
+  - **Serving safely.** A path is taken only under those three folders,
+    with no `..` and no symlink anywhere along it, and must resolve under
+    the workspace; part files are never served. Only images (the four
+    types `mime_for` names; SVG isn't one), video and audio go inline;
+    anything else is `application/octet-stream` as an attachment.
+    `nosniff` was already on every answer. `Range` is answered (206 with
+    `Content-Range`, 416 when it can't be met), and a file is copied from
+    disk, never read whole (`http.rs` gains `Response::with_range`).
+  - **Posters.** An image is its own; a video's is made once with ffmpeg
+    in the gateway's sandbox (`-protocol_whitelist file`, from 1 s, else
+    0 s, 360 px wide), two at a time, kept under `.ferrule/thumbs/` by
+    path and modification time; none without ffmpeg (the page shows an
+    icon).
+- `limit_for` lets a signed-in, same-origin, CSRF-carrying `PUT
+  /api/files/upload/…` with `application/octet-stream` bring 32 MB in
+  600 s; `handle` checks the same before the piece is written (a PUT
+  isn't JSON, so it's answered before the POST checks).
+- The page (`app.js`): a Files section in Everyday; Upload a file (one at
+  a time, a progress bar, Stop; resumes from the server's offset after a
+  drop, and from where it stopped when the same file is chosen again,
+  the id kept in `localStorage` by name, size and date); after an upload,
+  a box for words and "Send to the chat", or, for a chat's too-big file,
+  that the chat was told; filters by kind and source; tiles with a
+  poster, name, size, age, source, and for made media the request,
+  model, cost and state; Open (an image, the browser's video or audio
+  player), Download, Use in chat (the chat with the path in its box),
+  Delete (asked first). A login link with `?for=` opens it. Two Hebrew
+  strings (the section's name and line).
+- `media_jobs` gains `cost_usd` (an image's bill at once, a video's when
+  fetched); `send_file` marks a job `unchecked` when it went "Not
+  checked" (M51's and §4's code, small changes).
+- Housekeeping prunes `.ferrule/thumbs/` with the rest and empties
+  `.ferrule/trash/` after 7 days (`TRASH_DAYS`), whatever `keep_days`.
+
+**Decided here.** Start and finish calls around the design's `PUT` (the
+name and size have to come first, the check last); the link is in the
+message's text, not an inline button (the login link only ever goes out
+through the hub's own message, which is text, so it never reaches a
+model or a transcript); a ticket lives in memory a day, so a restart
+loses the wake but not the file; uploads resume across a reload only for
+the same file chosen again; a too-big file in any of the owner's chat
+channels gets the link, not only Telegram; the poster is 360 px from the
+first second.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS); `node --check` on `app.js` passes. The
+dashboard's page tests (icons, routes used, Hebrew strings) pass with the
+new section. No new tests.
+
+**Open.** Not run live: no 500 MB upload has crossed a tunnel, no iPhone
+has played a video through the `Range` answers, and no Telegram chat has
+been woken by an upload. A `HEAD` on a file is answered with the whole
+body.

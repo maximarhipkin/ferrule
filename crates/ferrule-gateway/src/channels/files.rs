@@ -49,7 +49,7 @@ impl Inbox {
         Refused {
             name: name.to_string(),
             why: format!(
-                "it is {}, over the {} limit (max_file_mb)",
+                "it is {}, over the {} {TOO_BIG}",
                 human(bytes),
                 human(self.max_bytes)
             ),
@@ -105,6 +105,18 @@ pub fn note(saved: &Saved) -> String {
     )
 }
 
+/// How a file refused for its size ends its reason ([`Inbox::too_big`],
+/// [`read_capped`]).
+const TOO_BIG: &str = "limit (max_file_mb)";
+
+/// M65 §5: whether a message's text says a file was refused for its size
+/// (the line [`refused_note`] writes), so the owner can be offered the
+/// dashboard's upload instead.
+pub fn has_too_big(text: &str) -> bool {
+    text.lines()
+        .any(|l| l.contains("which wasn't saved:") && l.contains(TOO_BIG))
+}
+
 /// The line the agent reads for a file that wasn't saved.
 pub fn refused_note(r: &Refused) -> String {
     format!(
@@ -139,7 +151,7 @@ pub async fn read_capped(mut resp: reqwest::Response, max: u64) -> Result<Vec<u8
     if let Some(len) = resp.content_length() {
         if len > max {
             return Err(format!(
-                "it is {}, over the {} limit (max_file_mb)",
+                "it is {}, over the {} {TOO_BIG}",
                 human(len),
                 human(max)
             ));
@@ -151,7 +163,7 @@ pub async fn read_capped(mut resp: reqwest::Response, max: u64) -> Result<Vec<u8
             Ok(Some(c)) => {
                 out.extend_from_slice(&c);
                 if out.len() as u64 > max {
-                    return Err(format!("it is over the {} limit (max_file_mb)", human(max)));
+                    return Err(format!("it is over the {} {TOO_BIG}", human(max)));
                 }
             }
             Ok(None) => return Ok(out),

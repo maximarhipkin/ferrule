@@ -1713,6 +1713,26 @@ Current State; numbers are claimed there before anything is built.
     marked "Not checked: …" only where looking can't be done; a `noted`
     video goes when the owner asks; a sent file's job becomes `done`.
     `CHAT_MEDIA` says so, with the retry budget (two). Not run live.
+  - **§5, big files and a media library in the dashboard**: a Files
+    page. Uploads go up in 32 MB pieces (`PUT
+    /api/files/upload/<id>?offset=`, the session, origin and CSRF checks
+    of a POST, one piece in memory through the existing big-body slots),
+    resume from the server's offset after a dropped connection (and from
+    the same file chosen again), and land in `uploads/<day>/` once the
+    size checks; `[dashboard] max_upload_mb` (2048), refused under 1 GB
+    free, parts gone after a day. A file too big for the owner's own
+    chat gets a one-time login link to the page tied to that chat, which
+    is woken with the path when the upload ends; from the page itself,
+    words go with the file to its chat. The library lists `uploads/`,
+    `inbox/` and `media/` newest first, filtered by kind and source, with
+    posters (an image itself, a video's frame made once with ffmpeg in
+    the sandbox under `.ferrule/thumbs/`), and for what the agent made
+    its prompt, model, cost (`media_jobs` gains `cost_usd`) and whether
+    it was checked and sent (`unchecked` when it went marked). Open (in
+    the browser's player, `Range` answered, never read whole), Download,
+    Use in chat, Delete (to `.ferrule/trash/`, emptied after 7 days by
+    housekeeping). Only images, video and audio show inline; anything
+    else downloads. Not run live.
 
 **Still open from earlier tracks.**
 

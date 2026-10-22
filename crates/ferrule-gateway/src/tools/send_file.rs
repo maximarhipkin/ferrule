@@ -64,13 +64,15 @@ impl FileOut {
             .collect()
     }
 
-    /// `path` was sent: its rows are `done`.
-    fn settle(&self, workspace: &Path, path: &Path) {
+    /// `path` was sent: its rows are `done`, or (M65 §5) `unchecked` when
+    /// it went marked as not checked.
+    fn settle(&self, workspace: &Path, path: &Path, unchecked: bool) {
         let Some(media) = self.media.get().and_then(Weak::upgrade) else {
             return;
         };
+        let state = if unchecked { "unchecked" } else { "done" };
         for job in self.unsent_as(workspace, path) {
-            if let Err(e) = media.store.mark(&job.id, "done", None) {
+            if let Err(e) = media.store.mark(&job.id, state, None) {
                 tracing::warn!(job = %job.id, "couldn't mark a sent media job done: {e}");
             }
         }
@@ -214,6 +216,7 @@ impl Tool for SendFileTool {
             .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
         let mime = files::mime_for(&name);
         let mut caption = args["caption"].as_str().unwrap_or("").to_string();
+        let mut unseen = false;
         // M65 §4: nothing made goes out unseen.
         let video = mime.starts_with("video/");
         if let Some(check) = self
@@ -262,6 +265,7 @@ impl Tool for SendFileTool {
                     )))
                 }
             };
+            unseen = true;
             caption = if caption.trim().is_empty() {
                 format!("Not checked: {why}.")
             } else {
@@ -283,7 +287,7 @@ impl Tool for SendFileTool {
             .send(msg)
             .await
             .map_err(|e| failed(format!("sending {name} failed: {e}")))?;
-        self.out.settle(&ctx.workspace, &path);
+        self.out.settle(&ctx.workspace, &path, unseen);
         Ok(ToolOutput::ok(format!(
             "Sent {name} ({}) to this chat.",
             files::human(meta.len())

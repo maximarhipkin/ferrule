@@ -1497,6 +1497,10 @@ pub struct DashboardConfig {
     /// `Tailscale-User-Login` (set by Serve, which strips a client's own)
     /// is one of these logins. Empty: no such check.
     pub tailscale_users: Vec<String>,
+    /// M65 §5: the biggest file the Files page takes, in MB. It goes up
+    /// in 32 MB pieces, so a tunnel's 100 MB cap on one request doesn't
+    /// apply; one that would leave the disk under 1 GB free is refused.
+    pub max_upload_mb: u64,
 }
 
 impl Default for DashboardConfig {
@@ -1511,6 +1515,7 @@ impl Default for DashboardConfig {
             session_hours: 12,
             link_minutes: 10,
             tailscale_users: Vec::new(),
+            max_upload_mb: 2048,
         }
     }
 }
@@ -1748,6 +1753,7 @@ pub const EXAMPLE_CONFIG: &str = r#"# ferrule configuration — `ferrule setup` 
 # public_url = "https://bots.example.com/b/b_4f2a/"   # behind a proxy (FERRULE_PUBLIC_URL)
 # tailscale_users = ["you@example.com"]  # through Tailscale Serve only: off this
 #                            # machine, only these tailnet logins (docs/m52-dashboard-safe.md)
+# max_upload_mb = 2048       # the Files page's biggest upload (M65), in 32 MB pieces
 
 # [scheduler]
 # tick_interval_secs = 30   # how often to check for due tasks

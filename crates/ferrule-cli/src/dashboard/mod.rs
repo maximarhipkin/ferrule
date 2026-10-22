@@ -12,6 +12,7 @@ pub mod cli;
 pub mod config_page;
 pub mod console;
 pub mod door;
+pub mod files_page;
 mod healthz;
 pub mod http;
 pub mod memory;
@@ -112,6 +113,9 @@ pub struct Ctx {
     pub chat: Option<Arc<chat::DashboardChannel>>,
     /// The backup started from the page, if one is running (M47).
     pub backups: backup_page::Job,
+    /// M65 §5: the Files page's uploads and library; `None` outside the
+    /// gateway.
+    pub files: Option<Arc<files_page::Library>>,
 }
 
 impl Ctx {
@@ -139,6 +143,7 @@ impl Ctx {
             runs: Arc::default(),
             chat: None,
             backups: Arc::default(),
+            files: None,
         }
     }
 
@@ -163,6 +168,7 @@ impl Ctx {
             runs: Arc::default(),
             chat: None,
             backups: Arc::default(),
+            files: None,
         }
     }
 }
@@ -748,17 +754,23 @@ impl Dashboard {
     /// the usual refusal, and none of their body is read.
     fn limit_for(&self, head: &http::Head) -> http::Limit {
         let usual = http::Limit::default();
-        if head.method != "POST"
-            || self.strip_base(&head.path) != "/api/chat/photo"
+        let path = self.strip_base(&head.path);
+        // M65 §5: one piece of a big upload, raw bytes.
+        let piece = head.method == "PUT" && path.starts_with("/api/files/upload/");
+        if !(piece || head.method == "POST" && path == "/api/chat/photo")
             || self.health_only.load(Ordering::Relaxed)
         {
             return usual;
         }
         let host = head.header("host").unwrap_or("").to_ascii_lowercase();
         let same_origin = head.header("origin") == Some(self.origin_for(&host).as_str());
-        let json = head
-            .header("content-type")
-            .is_some_and(|c| c.starts_with("application/json"));
+        let json = head.header("content-type").is_some_and(|c| {
+            c.starts_with(if piece {
+                "application/octet-stream"
+            } else {
+                "application/json"
+            })
+        });
         let granted = self.sessions.check(
             head.cookie(self.cookie_name(&host)),
             &host,
@@ -769,9 +781,17 @@ impl Dashboard {
             Some(g)
                 if self.host_allowed(&host) && same_origin && json && auth::same(csrf, &g.csrf) =>
             {
-                http::Limit {
-                    body: chat::MAX_PHOTO_BODY,
-                    deadline: Duration::from_secs(60),
+                if piece {
+                    // 32 MB over a slow phone link.
+                    http::Limit {
+                        body: files_page::CHUNK,
+                        deadline: Duration::from_secs(600),
+                    }
+                } else {
+                    http::Limit {
+                        body: chat::MAX_PHOTO_BODY,
+                        deadline: Duration::from_secs(60),
+                    }
                 }
             }
             _ => usual,
@@ -869,6 +889,26 @@ impl Dashboard {
         if !req.path.starts_with("/api/") {
             return Response::text(404, "not found");
         }
+        // M65 §5: a piece of a big upload: raw bytes, so not JSON, with the
+        // checks every POST gets.
+        if req.method == "PUT" {
+            if let Some(id) = req.path.strip_prefix("/api/files/upload/") {
+                if req.header("origin") != Some(self.origin_for(&host).as_str()) {
+                    return refuse(403, "wrong origin");
+                }
+                let cookie = req.cookie(self.cookie_name(&host));
+                let Some(granted) = self.sessions.check(cookie, &host, self.links.revoked_ms())
+                else {
+                    return refuse(401, "not logged in: ask for a new link with /dashboard");
+                };
+                if !auth::same(req.header(auth::CSRF_HEADER).unwrap_or(""), &granted.csrf) {
+                    return refuse(403, "missing or wrong CSRF token");
+                }
+                self.touch();
+                let id = id.to_string();
+                return files_page::put_chunk(&self.ctx, &id, &req).await;
+            }
+        }
         if !get && req.method != "POST" {
             return Response::text(405, "method not allowed");
         }
@@ -934,6 +974,9 @@ impl Dashboard {
                 }),
             ),
             (true, "/api/backups/download") => backup_page::download(&self.ctx, &req),
+            // M65 §5: the library's files and posters, as bytes.
+            (true, "/api/files/raw") => files_page::raw(&self.ctx, &req),
+            (true, "/api/files/thumb") => files_page::thumb(&self.ctx, &req).await,
             (false, "/api/seal") => match self.seals.issue(&granted.csrf) {
                 Ok(key) => Response::json(200, &key),
                 Err(e) => {

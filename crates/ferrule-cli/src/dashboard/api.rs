@@ -141,6 +141,8 @@ pub async fn route(ctx: &Ctx, get: bool, req: &Request, body: &Value) -> Answer 
             "memory" => super::memory::list(ctx, req).await,
             "backups" => super::backup_page::list(ctx),
             "proactive" => super::proactive_page::view(ctx),
+            "files" => super::files_page::list(ctx, req),
+            "files/upload" => super::files_page::upload_status(ctx, req),
             _ => None,
         };
     }
@@ -173,6 +175,11 @@ pub(crate) async fn act(ctx: &Ctx, path: &str, body: &Value, by: &str) -> Answer
 async fn post(ctx: &Ctx, path: &str, body: &Value) -> Answer {
     match path {
         "turn/stop" => stop_turn(ctx, body),
+        // M65 §5: the Files page.
+        "files/upload/start" => super::files_page::upload_start(ctx, body),
+        "files/upload/finish" => super::files_page::upload_finish(ctx, body).await,
+        "files/delete" => super::files_page::delete(ctx, body),
+        "files/say" => super::files_page::say(ctx, body).await,
         "kill/on" | "kill/off" => kill(ctx, path == "kill/on", body),
         "models/default" | "models/pin" | "models/unpin" | "models/fallback" | "models/add"
         | "models/remove" | "models/test" => model_op(ctx, path, body).await,

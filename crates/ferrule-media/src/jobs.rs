@@ -54,9 +54,12 @@ pub struct MediaJob {
     pub references: Vec<String>,
     /// M65 §4: when a finished video's session was woken to check it.
     pub woken_at: Option<i64>,
+    /// M65 §5: what the provider billed (dollars), when it said: an
+    /// image's at once, a video's when it was fetched.
+    pub cost_usd: Option<f64>,
 }
 
-const COLUMNS: &str = "id, kind, created_at, model, prompt, out_path, channel, chat_id, state, error, tree, estimate_usd, refs, woken_at";
+const COLUMNS: &str = "id, kind, created_at, model, prompt, out_path, channel, chat_id, state, error, tree, estimate_usd, refs, woken_at, cost_usd";
 
 /// A row as a [`MediaJob`], in [`COLUMNS`]' order.
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MediaJob> {
@@ -78,6 +81,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MediaJob> {
             .map(|r| r.lines().map(str::to_string).collect())
             .unwrap_or_default(),
         woken_at: r.get(13)?,
+        cost_usd: r.get(14)?,
     })
 }
 
@@ -114,6 +118,7 @@ impl JobStore {
             ("estimate_usd", "REAL"),
             ("refs", "TEXT"),
             ("woken_at", "INTEGER"),
+            ("cost_usd", "REAL"),
         ] {
             let has = conn
                 .prepare("SELECT name FROM pragma_table_info('media_jobs') WHERE name = ?1")
@@ -138,7 +143,7 @@ impl JobStore {
             .execute(
                 &format!(
                     "INSERT INTO media_jobs ({COLUMNS})
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
                 ),
                 params![
                     job.id,
@@ -154,7 +159,8 @@ impl JobStore {
                     job.tree,
                     job.estimate_usd,
                     (!job.references.is_empty()).then(|| job.references.join("\n")),
-                    job.woken_at
+                    job.woken_at,
+                    job.cost_usd
                 ],
             )
             .map_err(|e| MediaError::Store(e.to_string()))?;
@@ -255,6 +261,24 @@ impl JobStore {
         self.select("state IN ('checking', 'noted')", &[], 500)
     }
 
+    /// M65 §5: what the provider billed for a job, once it's known.
+    pub fn set_cost(&self, id: &str, usd: f64) -> Result<(), MediaError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE media_jobs SET cost_usd = ?2 WHERE id = ?1",
+                params![id, usd],
+            )
+            .map_err(|e| MediaError::Store(e.to_string()))?;
+        Ok(())
+    }
+
+    /// M65 §5: the newest rows, for the dashboard's library.
+    pub fn recent(&self, limit: u32) -> Result<Vec<MediaJob>, MediaError> {
+        self.select("1 = 1", &[], limit)
+    }
+
     /// M65 §4: the newest row whose result is `out_path` (as stored), so
     /// `watch_video` knows what a generated video was asked to be.
     pub fn made_as(&self, out_path: &str) -> Result<Option<MediaJob>, MediaError> {
@@ -289,6 +313,7 @@ impl JobStore {
             estimate_usd: None,
             references: Vec::new(),
             woken_at: None,
+            cost_usd: None,
         }
     }
 

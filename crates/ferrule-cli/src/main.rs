@@ -3451,9 +3451,19 @@ async fn run_gateway(
             .ok()
             .and_then(|s| s.refusal().map(str::to_string)),
     };
+    // M65 §5: the Files page's uploads and library.
+    let library = Arc::new(dashboard::files_page::Library::new(
+        workspace.clone(),
+        cfg.dashboard.max_upload_mb,
+        media.as_ref().map(|m| m.store.clone()),
+        shared_sandbox(&cfg)
+            .ok()
+            .zip(ferrule_gateway::tools::Ffmpeg::find()),
+    ));
     let make_ctx = || dashboard::Ctx {
         live: Some(live.clone()),
         chat: page_chat.clone(),
+        files: Some(library.clone()),
         ..dashboard::Ctx::from_config(&cfg)
     };
     let dash = if cfg.dashboard.enabled {
@@ -3501,6 +3511,12 @@ async fn run_gateway(
         .with_interceptor(files.questions());
     if let Some(dash) = &dash {
         gateway = gateway.with_interceptor(Arc::new(dashboard::door::DashboardDoor {
+            dash: dash.clone(),
+            hub: hub.clone(),
+        }));
+        // M65 §5: a file too big for the owner's chat gets a link to the
+        // Files page; the message still goes on to the agent.
+        gateway = gateway.with_interceptor(Arc::new(dashboard::files_page::TooBigDoor {
             dash: dash.clone(),
             hub: hub.clone(),
         }));

@@ -579,6 +579,7 @@
     logs: "M3 5h1M3 12h1M3 19h1M8 5h1M8 12h1M8 19h1M13 5h8M13 12h8M13 19h8",
     extensions: "M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z",
     agents: "M12 8V4H8M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2zM2 14h2M20 14h2M15 13v2M9 13v2",
+    files: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z",
     memory: "M12 18V5M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5M17.997 5.125a4 4 0 0 1 2.526 5.77M18 18a4 4 0 0 0 2-7.464M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517M6 18a4 4 0 0 1-2-7.464M6.003 5.125a4 4 0 0 0-2.526 5.77",
     settings: "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
     // things a button does
@@ -3607,21 +3608,225 @@
   };
 
 
+  // ---- Files (M65 §5): big uploads, and what was uploaded, sent and made --
+  // A file goes up in the pieces the server names (32 MB), each a PUT with
+  // the CSRF header; a piece the server didn't expect is answered with the
+  // offset it has, and the upload carries on from there. The same file
+  // chosen again (same name, size and date) resumes where it stopped.
+
+  const fileUrl = (what, path, extra) => BASE + "/api/files/" + what + "?" + new URLSearchParams(Object.assign({ path }, extra || {}));
+
+  sections.files = {
+    every: 0,
+    kind: "",
+    from: "",
+    busy: null,
+    done: null,
+    ticket: null,
+    mount(root) {
+      this.up = el("div", { class: "stack" });
+      this.box = el("div", { class: "stack" });
+      this.picker = el("input", { type: "file", hidden: true, "aria-hidden": "true", tabindex: "-1" });
+      this.picker.addEventListener("change", () => {
+        const f = this.picker.files && this.picker.files[0];
+        this.picker.value = "";
+        if (f) this.upload(f);
+      });
+      root.append(secHead(tr("Files"), tr("uploads and media"),
+        button("Upload a file", { kind: "primary", icon: "up", onclick: () => this.picker.click() })),
+        this.picker, this.up, this.box);
+      this.drawUp();
+    },
+    async load() {
+      let r;
+      try { r = await api("/api/files?" + new URLSearchParams({ kind: this.kind, from: this.from })); } catch (e) { return sectionError(this.box, e); }
+      this.r = r;
+      this.draw();
+    },
+    async upload(file) {
+      if (this.busy) { toast("One upload at a time: wait for this one to finish.", true); return; }
+      this.done = null;
+      this.busy = { file, sent: 0, stop: false };
+      this.drawUp();
+      const key = "ferrule-upload:" + [file.name, file.size, file.lastModified].join("|");
+      const forget = () => { try { localStorage.removeItem(key); } catch (_) { /* private mode */ } };
+      let id = null;
+      let offset = 0;
+      let chunk = 32 * 1024 * 1024;
+      try {
+        try { id = localStorage.getItem(key); } catch (_) { id = null; }
+        if (id) {
+          try {
+            const st = await api("/api/files/upload?" + new URLSearchParams({ id }));
+            if (st.size === file.size) offset = st.offset; else id = null;
+          } catch (_) { id = null; }
+        }
+        if (!id) {
+          const r = await api("/api/files/upload/start", { name: file.name, size: file.size, for: this.ticket || undefined });
+          id = r.id;
+          offset = r.offset || 0;
+          chunk = r.chunk || chunk;
+          try { localStorage.setItem(key, id); } catch (_) { /* private mode */ }
+        }
+        let tries = 0;
+        while (offset < file.size) {
+          if (this.busy.stop) throw new Error("Stopped. Choose the same file again to carry on where it stopped.");
+          this.busy.sent = offset;
+          this.drawUp();
+          let r = null;
+          let data = {};
+          try {
+            r = await fetch(BASE + "/api/files/upload/" + id + "?offset=" + offset, {
+              method: "PUT",
+              credentials: "same-origin",
+              headers: { "Content-Type": "application/octet-stream", "X-Ferrule-Csrf": csrf },
+              body: file.slice(offset, Math.min(offset + chunk, file.size)),
+            });
+            try { data = await r.json(); } catch (_) { /* not JSON */ }
+          } catch (_) { r = null; }
+          if (r && r.ok) { offset = data.offset; tries = 0; continue; }
+          if (r && r.status === 401) { loggedOut(data.error); return; }
+          if (r && r.status === 409 && typeof data.offset === "number") { offset = data.offset; continue; }
+          if (r && r.status === 404) { forget(); throw new Error(data.error || "That upload is gone: choose the file again."); }
+          // A dropped connection: wait a little, ask where the server is, go on.
+          if (++tries > 5) throw new Error("The connection keeps dropping. Choose the same file again to carry on where it stopped.");
+          await new Promise((done) => setTimeout(done, 1000 * tries));
+          try { offset = (await api("/api/files/upload?" + new URLSearchParams({ id }))).offset; } catch (_) { /* the same piece again */ }
+        }
+        this.busy.sent = offset;
+        this.drawUp();
+        const done = await api("/api/files/upload/finish", { id });
+        forget();
+        this.busy = null;
+        this.done = done;
+        this.ticket = null;
+        this.drawUp();
+        this.load();
+      } catch (e) {
+        this.busy = null;
+        this.drawUp();
+        toast(e.message, true);
+      }
+    },
+    drawUp() {
+      if (!this.up) return;
+      const b = this.busy;
+      if (b) {
+        const pct = b.file.size ? Math.floor((b.sent / b.file.size) * 100) : 0;
+        setKids(this.up, el("div", { class: "card" },
+          el("div", { class: "row" },
+            el("strong", { class: "grow msg", dir: "auto", text: b.file.name }),
+            el("span", { class: "muted small", text: pct + "%" }),
+            button("Stop", { kind: "ghost", onclick: () => { b.stop = true; } })),
+          el("progress", { max: "100", value: String(pct), "aria-label": "Upload progress" }),
+          el("p", { class: "muted small", text: "It goes up in pieces, and a dropped connection carries on where it stopped. Keep this page open until it's done." })));
+        return;
+      }
+      const d = this.done;
+      if (d) {
+        const close = button("Close", { kind: "ghost", onclick: () => { this.done = null; this.drawUp(); } });
+        const told = d.woke === true ? " The chat that couldn't take it is told where it is."
+          : d.woke === false ? " The chat that couldn't take it wasn't reached: tell it there where the file is." : "";
+        let form = null;
+        if (d.woke === null || d.woke === undefined) {
+          const words = el("textarea", { rows: 2, dir: "auto", placeholder: "What should the agent do with it? (optional)" });
+          const send = button("Send to the chat", { kind: "primary", icon: "send" });
+          send.onclick = async () => {
+            const r = await act("files/say", { path: d.path, text: words.value.trim() }, send);
+            if (r) { this.done = null; show("chat"); }
+          };
+          form = frag(words, el("div", { class: "row" }, send, close));
+        }
+        setKids(this.up, el("div", { class: "card stack" },
+          el("p", { class: "said ok msg", dir: "auto", text: "Uploaded: " + d.path + " (" + d.size_text + ")." + told }),
+          form || el("div", { class: "row" }, close)));
+        return;
+      }
+      setKids(this.up, this.ticket ? el("div", { class: "alert warn" }, icon("info"),
+        el("div", { class: "body" },
+          el("div", { class: "what", text: "Upload the file your chat couldn't take: once it's up, that chat is told where it is and carries on." }),
+          el("div", { class: "row" }, button("Choose the file", { kind: "primary", icon: "up", onclick: () => this.picker.click() })))) : null);
+    },
+    draw() {
+      const r = this.r;
+      const items = r.items || [];
+      setKids(this.box,
+        el("div", { class: "row" },
+          chips("Kind", [["", "All"], ["photo", "Photos"], ["video", "Videos"], ["audio", "Audio"], ["other", "Other"]], this.kind, (v) => { this.kind = v; this.load(); }),
+          chips("From", [["", "Anywhere"], ["upload", "Uploaded"], ["chat", "From chats"], ["made", "Made by the agent"], ["screen", "Screen"]], this.from, (v) => { this.from = v; this.load(); })),
+        items.length ? el("div", { class: "lib" }, items.map((it) => this.item(it)))
+          : empty("Nothing here yet", "What you upload here, files sent in your chats and what the agent makes show up here."),
+        r.total > items.length ? el("p", { class: "muted small", text: "The newest " + items.length + " of " + r.total + "." }) : null,
+        el("p", { class: "muted small", text: "Uploads up to " + r.max_upload_text + ". A deleted file waits in the trash for 7 days." }));
+    },
+    item(it) {
+      const glyph = it.kind === "video" ? "play" : it.kind === "photo" ? "image" : "file";
+      const plain = () => el("div", { class: "thumb none" }, icon(glyph));
+      let pic = plain();
+      if (it.kind === "photo" || (it.kind === "video" && this.r.posters)) {
+        pic = el("img", { class: "thumb", src: fileUrl("thumb", it.path), alt: "", loading: "lazy" });
+        pic.addEventListener("error", () => pic.replaceWith(plain()));
+      }
+      const where = it.from === "upload" ? "uploaded" : it.from === "chat" ? "from " + (it.channel || "a chat")
+        : it.from === "screen" ? "a screen capture" : "made by the agent";
+      const j = it.job;
+      return el("div", { class: "card item" },
+        el("button", { type: "button", class: "thumb-btn", "aria-label": "Open " + it.name, onclick: () => this.open(it) }, pic),
+        el("div", { class: "t msg", dir: "auto", text: it.name }),
+        el("div", { class: "muted small", text: it.size_text + " · " + ago(it.modified) + " · " + where }),
+        j ? el("div", { class: "small msg", dir: "auto" }, el("span", { class: "muted", text: "Asked for: " }), j.prompt) : null,
+        j ? el("div", { class: "muted small", text: j.model + " · " + (j.cost_usd !== null && j.cost_usd !== undefined ? usd(j.cost_usd) + (j.estimated ? " (estimate)" : "") + " · " : "") + j.state }) : null,
+        el("div", { class: "row" },
+          button("Open", { kind: "ghost", onclick: () => this.open(it) }),
+          el("a", { class: "btn ghost", href: fileUrl("raw", it.path, { download: "1" }), download: it.name }, icon("download"), el("span", { text: "Download" })),
+          menu("More for " + it.name, [
+            { label: "Use in chat", icon: "chat", onclick: () => this.use(it) },
+            { label: "Delete", icon: "trash", kind: "danger", onclick: (b) => this.del(it, b) },
+          ])));
+    },
+    open(it) {
+      const src = fileUrl("raw", it.path);
+      const media = it.kind === "photo" ? el("img", { src, alt: it.name })
+        : it.kind === "video" ? el("video", { src, controls: true, playsinline: true, preload: "metadata" })
+          : it.kind === "audio" ? el("audio", { src, controls: true, preload: "metadata" }) : null;
+      if (!media) { location.href = fileUrl("raw", it.path, { download: "1" }); return; }
+      const back = document.activeElement;
+      const d = el("dialog", { class: "dlg viewer", "aria-labelledby": "viewer-title" });
+      d.append(el("div", { class: "cp-head" },
+        el("h2", { id: "viewer-title", dir: "auto", text: it.name }),
+        el("button", { type: "button", class: "ghost icon", "aria-label": "Close", title: "Close", onclick: () => d.close() }, icon("x"))),
+      media);
+      d.addEventListener("close", () => { if (media.pause) media.pause(); d.remove(); if (back && back.focus) back.focus(); });
+      document.body.append(d);
+      d.showModal();
+    },
+    use(it) {
+      show("chat");
+      const c = sections.chat;
+      if (c.input) { c.input.value = "About " + it.path + ": "; c.input.dataset.dirty = "1"; c.input.focus(); }
+    },
+    async del(it, b) {
+      const yes = await ask({ title: "Delete " + it.name + "?", text: "It goes to the trash, and housekeeping removes it for good after 7 days.", confirm: "Delete", danger: true });
+      if (!yes) return;
+      if (await act("files/delete", { path: it.path }, b)) this.load();
+    },
+  };
+
   // ---- navigation and polling --------------------------------------------
   // A phone gets a bottom bar of five (the rest in a sheet under "More");
   // from 900 px, a sidebar with everything. Same sections, same URLs.
   // The groups put what a beginner touches daily first (D3).
 
   const GROUPS = [
-    [/*tr*/"Everyday", ["health", "chat", "tasks", "proactive", "memory", "usage"]],
+    [/*tr*/"Everyday", ["health", "chat", "files", "tasks", "proactive", "memory", "usage"]],
     [/*tr*/"Setup", ["connect", "channels", "connections", "models"]],
     [/*tr*/"Advanced", ["logs", "agents", "extensions", "routing", "console", "config", "settings"]],
   ];
   const order = GROUPS.flatMap((g) => g[1]).filter((s) => sections[s]);
   const TABS = ["health", "chat", "connect", "tasks"];
   const ICON_OF = { health: "health" };
-  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", tasks: /*tr*/"things it does on a schedule", proactive: /*tr*/"what it brings up by itself", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
-  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", tasks: /*tr*/"Tasks", proactive: /*tr*/"Proactive", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
+  const SUB = { health: /*tr*/"how the bot is doing", chat: /*tr*/"talk to it here", files: /*tr*/"uploads and media", tasks: /*tr*/"things it does on a schedule", proactive: /*tr*/"what it brings up by itself", memory: /*tr*/"what it remembers", usage: /*tr*/"spend and caps", connect: /*tr*/"everything it can reach", channels: /*tr*/"where people reach the agent", connections: /*tr*/"services it can use", models: /*tr*/"which brain it thinks with", logs: /*tr*/"what happened", agents: /*tr*/"sub-agents", extensions: /*tr*/"skills, tools, MCP", routing: /*tr*/"which model for what", console: /*tr*/"ferrule commands", config: /*tr*/"the file, secrets hidden", settings: /*tr*/"look, language, backup" };
+  const NAMES = { health: /*tr*/"Home", chat: /*tr*/"Chat", files: /*tr*/"Files", tasks: /*tr*/"Tasks", proactive: /*tr*/"Proactive", memory: /*tr*/"Memory", usage: /*tr*/"Usage", connect: /*tr*/"Connect", channels: /*tr*/"Channels", connections: /*tr*/"Connections", models: /*tr*/"Models", logs: /*tr*/"Logs", agents: /*tr*/"Agents", extensions: /*tr*/"Extensions", routing: /*tr*/"Routing", console: /*tr*/"Console", config: /*tr*/"Config", settings: /*tr*/"Settings" };
   let current = "health";
   let MANAGED = { on: false };
   // What /api/login or /api/session said: the CSRF token and the session's limits.
@@ -3956,8 +4161,13 @@
     // name after '#' is just navigation, from a saved tab.
     const hash = location.hash.length > 1 ? location.hash.slice(1) : "";
     let asked = null;
+    let upFor = null;
     if (hash && !order.includes(hash)) {
       asked = keyAsked();
+      // M65 §5: a file too big for a chat brings `?for=TICKET`: the Files
+      // page opens, tied to that chat.
+      const t = new URLSearchParams(location.search).get("for") || "";
+      if (/^[0-9a-f]{32}$/.test(t)) upFor = t;
       history.replaceState(null, "", BASE + "/");
       try {
         SESSION = await api("/api/login", { token: hash });
@@ -3976,7 +4186,10 @@
     document.getElementById("find").hidden = false;
     MANAGED = await api("/api/managed").catch(() => ({ on: false }));
     buildNav();
-    if (asked && sections.connect) {
+    if (upFor && sections.files) {
+      sections.files.ticket = upFor;
+      show("files", { focus: false });
+    } else if (asked && sections.connect) {
       show("connect", { focus: false });
       sections.connect.toolKeyPanel(asked);
     } else show(order.includes(hash) ? hash : "health", { focus: false });

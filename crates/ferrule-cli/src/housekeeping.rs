@@ -1,9 +1,11 @@
 //! Wave A: the daily pass that prunes what an always-on bot keeps making
 //! (docs/housekeeping.md). Files under the workspace's `.ferrule/spill/`
 //! (long tool output and background-job logs), `.ferrule/mcp-content/`
-//! (MCP servers' images and files) and `media/screen/` (M61's captures),
-//! the data dir's `learn/reactions/` (M53.5's 👎 transcript cuts), by age
-//! and then by size; and the trust audit log's lines by age. Nothing else
+//! (MCP servers' images and files), `.ferrule/thumbs/` (M65's video
+//! posters) and `media/screen/` (M61's captures), the data dir's
+//! `learn/reactions/` (M53.5's 👎 transcript cuts), by age and then by
+//! size; `.ferrule/trash/` (what the Files page deleted) after 7 days; and
+//! the trust audit log's lines by age. Nothing else
 //! is looked at: never a transcript, memory, the ledger, the config or a
 //! key.
 
@@ -70,8 +72,14 @@ pub fn targets(workspace: &Path, data: &Path) -> Vec<Target> {
         at("mcp-content", workspace, ferrule_mcp::client::MEDIA_DIR),
         at("screen", workspace, crate::screen::DIR),
         at("reactions", data, "learn/reactions"),
+        // M65 §5: the Files page's video posters (made again on demand).
+        at("thumbs", workspace, crate::dashboard::files_page::THUMBS),
     ]
 }
+
+/// M65 §5: what the Files page deleted waits here this many days, then
+/// goes, whatever `keep_days` says.
+pub const TRASH_DAYS: u64 = 7;
 
 /// The trust audit log (`<data>/trust/audit.jsonl`).
 fn audit_path(data: &Path) -> PathBuf {
@@ -215,13 +223,19 @@ fn days_ago(days: u64) -> Option<SystemTime> {
 pub fn run(hk: &HousekeepingConfig, workspace: &Path, data: &Path, dry: bool) -> Report {
     let cutoff = days_ago(hk.keep_days);
     let max = (hk.max_mb > 0).then(|| hk.max_mb * 1024 * 1024);
-    let dirs = targets(workspace, data)
+    let mut dirs: Vec<_> = targets(workspace, data)
         .into_iter()
         .map(|t| {
             let pruned = real_dir(&t.base, t.rel).map(|dir| prune_dir(&dir, cutoff, max, dry));
             (t.name, t.rel, pruned)
         })
         .collect();
+    let trash = crate::dashboard::files_page::TRASH;
+    dirs.push((
+        "trash",
+        trash,
+        real_dir(workspace, trash).map(|dir| prune_dir(&dir, days_ago(TRASH_DAYS), None, dry)),
+    ));
     Report {
         dirs,
         audit: prune_audit(hk, data, dry),

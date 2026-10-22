@@ -187,6 +187,43 @@ impl DashboardChannel {
             .map_err(|_| "the agent stopped listening; restart the service".to_string())
     }
 
+    /// M65 §5: the owner's words with a file already in the workspace (one
+    /// just uploaded on the Files page), handed to the agent the way a
+    /// photo is: the file's line in the text, the file as an attachment.
+    pub async fn say_file(&self, text: &str, saved: files::Saved) -> Result<(), String> {
+        let tx = self
+            .tx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .filter(|tx| !tx.is_closed())
+            .ok_or("the agent isn't listening here: chat works when the dashboard runs inside the gateway (the service)")?;
+        let shown = if text.trim().is_empty() {
+            saved.rel.clone()
+        } else {
+            format!("{text}\n{}", saved.rel)
+        };
+        let id = self.push(true, &shown, Vec::new());
+        let msg = InboundMessage {
+            channel: CHANNEL.into(),
+            chat_id: CHAT.into(),
+            sender: "owner".into(),
+            sender_id: Some(CHAT.into()),
+            message_id: id.to_string(),
+            text: files::with_notes(text, std::slice::from_ref(&saved), &[]),
+            attachments: vec![Attachment {
+                kind: saved.mime.clone(),
+                url: saved.path.to_string_lossy().into_owned(),
+                name: Some(saved.rel.clone()),
+            }],
+            reply_to: None,
+            ts: chrono::Utc::now().timestamp(),
+        };
+        tx.send(msg)
+            .await
+            .map_err(|_| "the agent stopped listening; restart the service".to_string())
+    }
+
     /// Everything changed after revision `from`, and the revision to ask
     /// from next. An entry comes again whole when it was edited.
     pub fn since(&self, from: u64) -> Value {
