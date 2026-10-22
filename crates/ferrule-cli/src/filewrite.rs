@@ -50,6 +50,17 @@ impl Lock {
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
+                // Read-only for as long as this process runs: waiting won't
+                // help, and the raw "os error 30" says nothing about why.
+                Err(e) if e.kind() == ErrorKind::ReadOnlyFilesystem => {
+                    anyhow::bail!(
+                        "{} is read-only to Ferrule, so nothing was saved. On a system \
+                         service set up by an older Ferrule that is its config's directory: \
+                         the next update fixes the service by itself, and `sudo ferrule \
+                         setup --refresh-service` on the machine fixes it now",
+                        lk.parent().unwrap_or(&lk).display()
+                    );
+                }
                 Err(e) => {
                     // A lock we can't even create (a read-only dir, or
                     // Windows' access denied on a file being deleted):

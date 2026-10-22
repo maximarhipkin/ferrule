@@ -1,6 +1,7 @@
 //! `update_check` and `update` from the chat: the same check and the same
 //! signed, verified install `ferrule update` does, started by the owner's
-//! tap instead of a terminal.
+//! tap instead of a terminal. With the Claude plan, the `claude` CLI too:
+//! its version in the check, its own updater first when npm has a newer one.
 
 use super::promise::{self, Kind};
 use crate::update::apply::{self, Apply, Outcome, Want};
@@ -8,7 +9,7 @@ use crate::update::release::{Release, Source};
 use crate::update::state::{self, Request, State};
 use crate::update::{others_running, someone_elses, state_dir};
 use ferrule_trust::ChatRef;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// How long an install waits for running turns.
@@ -70,6 +71,41 @@ pub fn check_text(current: &semver::Version, found: Option<&Release>) -> String 
             )
         }
     }
+}
+
+/// The Claude plan's `claude`, when Ferrule keeps it current here
+/// (`[update] claude`).
+fn claude(data: &Path) -> Option<crate::update::claude::Claude> {
+    let (cfg, _) = crate::config::Config::load().ok()?;
+    crate::update::claude::Claude::from_config(&cfg, data)
+}
+
+/// claude's line for a check, and `(installed, newest)` when it's behind;
+/// `None` without the Claude plan.
+pub async fn claude_check(data: &Path) -> Option<(String, Option<(String, String)>)> {
+    let c = claude(data)?;
+    Some(crate::update::claude::check(&c).await)
+}
+
+/// `update_check`'s answer, Ferrule's line then claude's, and whether
+/// `update` has anything to install.
+pub async fn check_all(apply: &Apply<'_>) -> Result<(String, bool), String> {
+    let found = check(apply).await?;
+    let mut text = check_text(&apply.current, found.as_ref());
+    let mut any = found.is_some();
+    if let Some((line, behind)) = claude_check(&apply.data).await {
+        text = format!("{text}\n{line}");
+        any |= behind.is_some();
+    }
+    Ok((text, any))
+}
+
+/// `update`'s part for claude, when npm has a newer one: what to tell the
+/// owner, or `None` when there was nothing to do.
+pub async fn update_claude(data: &Path) -> Option<String> {
+    let c = claude(data)?;
+    crate::update::claude::check(&c).await.1?;
+    Some(crate::update::claude::update_for_owner(data, &c).await)
 }
 
 fn waited(d: Duration) -> String {
@@ -172,8 +208,14 @@ pub async fn install(apply: Apply<'_>, units: bool, chat: &ChatRef) -> Applied {
 pub async fn card(apply: &Apply<'_>, units: bool) -> Result<String, String> {
     let found = check(apply)
         .await
-        .map_err(|e| format!("Couldn't check for a new Ferrule: {e}"))?
-        .ok_or_else(|| newest(&apply.current))?;
+        .map_err(|e| format!("Couldn't check for a new Ferrule: {e}"))?;
+    let behind = claude_check(&apply.data).await.and_then(|(_, b)| b);
+    let claude = behind.map(|(have, new)| {
+        format!("Update the claude CLI the Claude plan runs from {have} to {new}, with its own updater.")
+    });
+    let Some(found) = found else {
+        return claude.ok_or_else(|| newest(&apply.current));
+    };
     let headline = found.headline();
     let how = if units {
         "The updater installs it when no turn is running, and goes back to the old one if the \
@@ -183,14 +225,15 @@ pub async fn card(apply: &Apply<'_>, units: bool) -> Result<String, String> {
          and tell you here when I'm back. The old file is kept beside it."
     };
     Ok(format!(
-        "Install Ferrule {} (this is {}){}. {how}",
+        "Install Ferrule {} (this is {}){}. {how}{}",
         found.tag,
         apply.current,
         if headline.is_empty() {
             String::new()
         } else {
             format!(": {headline}")
-        }
+        },
+        claude.map(|c| format!(" First: {c}")).unwrap_or_default()
     ))
 }
 

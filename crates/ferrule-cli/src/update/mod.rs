@@ -212,15 +212,46 @@ pub async fn cli(args: Args) -> Result<()> {
 
 /// `update --apply`, from the units: a request from the gateway, or the
 /// daily timer.
+/// The root half of fixing a system unit that keeps the config read-only
+/// to the service (`service::system_unit_locks_config`): written again, as
+/// `setup --refresh-service` does, which restarts the service. At the start
+/// of every apply run; a no-op once the unit is current.
+fn heal_unit() {
+    if service::scope() != service::Scope::System
+        || !service::system_unit_locks_config(crate::instance::current().as_deref())
+    {
+        return;
+    }
+    match crate::setup::refresh_service_with(None) {
+        Ok(()) => println!("rewrote the service's unit: it can save its settings now"),
+        Err(e) => println!("the service still can't save its settings: {e:#}"),
+    }
+}
+
+/// The gateway's half, once per start: ask the apply unit to run, so a
+/// server set up by an older Ferrule fixes itself without a terminal.
+pub fn ask_heal(data: &Path) {
+    if units_installed() && service::system_unit_locks_config(crate::instance::current().as_deref())
+    {
+        if let Err(e) = state::write_request(data, &state::Request::default()) {
+            tracing::warn!("couldn't ask the updater to rewrite the service's unit: {e:#}");
+        }
+    }
+}
+
 async fn apply_unit(
     settings: &crate::config::UpdateConfig,
     data: &Path,
     exe: &Path,
     claude: Option<&claude::Claude>,
 ) -> Result<()> {
+    heal_unit();
     let state_dir = state_dir(data);
     let request = state::take_request(data);
     let asked = request.as_ref().is_some_and(|r| r.claude);
+    // The owner's `update` from the chat runs only when claude is behind;
+    // a failed turn's runs anyway.
+    let failed_turn = asked && !request.as_ref().is_some_and(|r| r.owner);
     let due = match &request {
         Some(r) => r.claude,
         None => !state::State::load(&state_dir)
@@ -229,7 +260,7 @@ async fn apply_unit(
     };
     match claude.filter(|_| due) {
         Some(c) => {
-            let why = asked.then_some("after a turn failed");
+            let why = failed_turn.then_some("after a turn failed");
             match claude::run(&state_dir, c, why).await {
                 Ok(Some(u)) => println!("claude updated {} → {}", u.from, u.to),
                 Ok(None) => println!("claude is current"),

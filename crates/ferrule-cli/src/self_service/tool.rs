@@ -142,8 +142,7 @@ async fn read_op(
             return Err(why);
         }
         let (apply, _) = admin.apply(ctx)?;
-        let found = update::check(&apply).await?;
-        return Ok(update::check_text(&apply.current, found.as_ref()));
+        return update::check_all(&apply).await.map(|(text, _)| text);
     }
     run(op, ctx, "chat", here).await
 }
@@ -330,6 +329,12 @@ fn start_update(admin: &Admin, ctx: &Ctx, here: &ChatRef, session: &str) -> Resu
     let (chat, session) = (here.clone(), session.to_string());
     tokio::spawn(async move {
         restart::turn_over(&router, &session).await;
+        let current = apply.current.clone();
+        let claude = update::update_claude(&apply.data).await;
+        let told = claude.is_some();
+        if let Some(said) = claude {
+            hub.tell_in(&chat, said);
+        }
         match update::install(apply, units, &chat).await {
             update::Applied::Restarting { exe, .. } => {
                 crate::lifecycle::set_reexec_path(exe);
@@ -341,12 +346,14 @@ fn start_update(admin: &Admin, ctx: &Ctx, here: &ChatRef, session: &str) -> Resu
                     }
                 });
             }
+            // Only claude was behind: "Ferrule is the newest" adds nothing.
+            update::Applied::Said(text) if told && text == update::newest(&current) => {}
             update::Applied::Said(text) => hub.tell_in(&chat, text),
         }
     });
     Ok(
-        "Installing the new Ferrule now; I restart when this turn ends and tell the owner here \
-        when it's back. Finish your reply now."
+        "Updating now, once this turn ends; if Ferrule itself changes I restart and tell the \
+        owner here when it's back. Finish your reply now."
             .into(),
     )
 }

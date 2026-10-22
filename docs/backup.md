@@ -86,8 +86,8 @@ end up readable by their owner only (0700).
 restore` work on the system service's files (`/etc/ferrule/config.toml`
 and `/var/lib/ferrule/data`, or a named instance's), as `sudo ferrule
 doctor` does, whenever that config exists. After a restore there, the
-service's user owns the data again and the config is `root:<user>` 0640,
-as `ferrule setup` leaves them.
+service's user owns the data and the config again (the config's
+directory `root:<user>` 1770), as `ferrule setup` leaves them.
 
 **`--dry-run`** does steps 1 and 2 (it reports a running gateway but
 doesn't stop there), prints what a restore would move and where, and

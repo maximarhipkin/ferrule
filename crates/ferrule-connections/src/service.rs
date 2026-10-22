@@ -105,6 +105,9 @@ pub type Secrets = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 struct Ask {
     write: bool,
     chat: Chat,
+    /// What the agent asked for: a service it named by URL isn't in the
+    /// catalog, and its Connect button carries only the short name.
+    service: Service,
 }
 
 enum Kind {
@@ -794,6 +797,7 @@ impl Connections {
                 Ask {
                     write,
                     chat: chat.clone(),
+                    service: service.clone(),
                 },
             );
         }
@@ -880,7 +884,7 @@ impl Connections {
                     )),
                     Some(what) => {
                         let write = args.get(1).is_some_and(|w| *w == "write");
-                        if let Ok(service) = self.catalog.resolve(what) {
+                        if let Ok(service) = self.resolve(what) {
                             let live = self.live_relay().await.is_some();
                             if let Some(reply) = self.blocked(&service, live) {
                                 return Some(reply);
@@ -1074,6 +1078,17 @@ impl Connections {
 
     // ---- flows ---------------------------------------------------------
 
+    /// A catalog name or an MCP URL, or the short name of a service the
+    /// agent asked for by URL: Telegram's buttons hold 64 bytes, so its
+    /// Connect button says `/connect <name>`.
+    fn resolve(&self, what: &str) -> Result<Service> {
+        self.catalog.resolve(what).or_else(|e| {
+            let inner = self.inner.lock().unwrap();
+            let asked = inner.asks.get(&what.to_ascii_lowercase());
+            asked.map(|a| a.service.clone()).ok_or(e)
+        })
+    }
+
     /// Start connecting `what`. Only the owner (or the terminal) can.
     pub async fn start(
         self: &Arc<Self>,
@@ -1086,7 +1101,7 @@ impl Connections {
             Actor::Terminal => None,
             _ => bail!("only the owner can connect a service"),
         };
-        let service = self.catalog.resolve(what)?;
+        let service = self.resolve(what)?;
         not_a_connection(&service)?;
         let name = service.name.clone();
         let (ask_chat, requested_by, write) = {

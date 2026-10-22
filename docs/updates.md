@@ -163,7 +163,10 @@ The Claude plan runs Anthropic's `claude`, and a new model or a changed
 stream format needs a recent one. With `[update] claude = true` (the
 default) Ferrule updates it daily when npm's `latest` is newer, and at once
 when a turn fails because it's too old or broken; that turn is then retried
-once.
+once. From the chat, `update_check` gives its installed and newest
+versions under Ferrule's, and `update` (and the dashboard's **Install**)
+runs its updater first when it's behind, even when Ferrule itself is
+current.
 
 Ferrule never touches `claude`'s files itself. It tells how `claude` was
 installed by where the binary lives and runs that install's own updater, as

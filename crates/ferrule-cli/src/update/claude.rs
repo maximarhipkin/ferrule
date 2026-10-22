@@ -67,14 +67,7 @@ fn client() -> reqwest::Client {
 /// it), recording what happened in the update state. `Ok(None)`: nothing to
 /// do.
 pub async fn run(state_dir: &Path, claude: &Claude, why: Option<&str>) -> Result<Option<Updated>> {
-    let binary = claude.binary.clone();
-    let install = tokio::task::spawn_blocking(move || update::detect(&binary)).await??;
-    let (found, config_dir) = (install.found.clone(), claude.config_dir.clone());
-    let sandbox = claude.sandbox.clone();
-    let installed =
-        tokio::task::spawn_blocking(move || cli::version(&found, &config_dir, sandbox.as_ref()))
-            .await?;
-    let latest = update::latest(&client(), &claude.npm).await;
+    let (install, installed, latest) = read(claude).await?;
     let mut st = State::load(state_dir);
     st.claude_checked = Some(state::now());
     if let Ok(v) = &installed {
@@ -152,6 +145,72 @@ pub async fn run(state_dir: &Path, claude: &Claude, why: Option<&str>) -> Result
     result.map(Some)
 }
 
+/// How claude was installed, its version and npm's newest.
+async fn read(claude: &Claude) -> Result<(Install, Result<String>, Result<String>)> {
+    let binary = claude.binary.clone();
+    let install = tokio::task::spawn_blocking(move || update::detect(&binary)).await??;
+    let (found, config_dir) = (install.found.clone(), claude.config_dir.clone());
+    let sandbox = claude.sandbox.clone();
+    let installed =
+        tokio::task::spawn_blocking(move || cli::version(&found, &config_dir, sandbox.as_ref()))
+            .await?;
+    let latest = update::latest(&client(), &claude.npm).await;
+    Ok((install, installed, latest))
+}
+
+/// `update_check`'s line for claude, read now, and `(installed, newest)`
+/// when npm has a newer one.
+pub async fn check(claude: &Claude) -> (String, Option<(String, String)>) {
+    match read(claude).await {
+        Err(e) => (format!("The claude CLI wasn't found: {e:#}."), None),
+        Ok((_, Err(e), _)) => (
+            format!("The claude CLI's version couldn't be read: {e:#}."),
+            None,
+        ),
+        Ok((_, Ok(have), Ok(new))) if update::is_newer(&new, &have) => (
+            format!("The claude CLI {new} is out (this is {have}); `update` installs it."),
+            Some((have, new)),
+        ),
+        Ok((_, Ok(have), Ok(_))) => (format!("The claude CLI {have} is the newest."), None),
+        Ok((_, Ok(have), Err(e))) => (
+            format!("The claude CLI is {have}; npm's newest couldn't be read: {e:#}."),
+            None,
+        ),
+    }
+}
+
+/// The owner's `update` from the chat, for claude: what to tell them.
+pub async fn update_for_owner(data: &Path, claude: &Claude) -> String {
+    match update_where(data, claude, None).await {
+        Ok(Some(v)) => format!("The claude CLI is {v} now."),
+        Ok(None) => "The claude CLI is the newest already.".into(),
+        Err(e) => format!("The claude CLI wasn't updated: {e:#}"),
+    }
+}
+
+/// Claude's update, here when this user can run it, else by the apply
+/// unit. `why`: a failed turn's reason, which updates even a current
+/// claude; `None`, the owner's ask, only a behind one. The version it is
+/// now, when that's known.
+async fn update_where(data: &Path, claude: &Claude, why: Option<&str>) -> Result<Option<String>> {
+    let state_dir = super::state_dir(data);
+    let binary = claude.binary.clone();
+    let install = tokio::task::spawn_blocking(move || update::detect(&binary)).await??;
+    if can_run_here(&install) {
+        return Ok(run(&state_dir, claude, why).await?.map(|u| u.to));
+    }
+    if !super::units_installed() {
+        bail!(
+            "claude is a {} ferrule can't update from here: {}",
+            install.method.name(),
+            install.method.manual(&install.found)
+        );
+    }
+    let poll = Duration::from_secs(2);
+    ask_unit(data, &state_dir, WAIT, poll, why.is_none()).await?;
+    Ok(State::load(&state_dir).claude_installed)
+}
+
 /// The gateway can't write the system service's state; the apply unit
 /// records it there instead.
 fn save(st: &State, dir: &Path) {
@@ -193,7 +252,9 @@ impl ferrule_plans::claude::Repairer for Fixer {
             *last = Some(Instant::now());
         }
         tracing::info!(why = %super::release::clip(why, 200), "claude looks outdated; updating it");
-        let done = self.update(why).await;
+        let done = update_where(&self.data, &self.claude, Some(why))
+            .await
+            .map(|_| ());
         let detail = match &done {
             Ok(()) => {
                 let st = State::load(&super::state_dir(&self.data));
@@ -214,27 +275,15 @@ impl ferrule_plans::claude::Repairer for Fixer {
     }
 }
 
-impl Fixer {
-    async fn update(&self, why: &str) -> Result<()> {
-        let state_dir = super::state_dir(&self.data);
-        let binary = self.claude.binary.clone();
-        let install = tokio::task::spawn_blocking(move || update::detect(&binary)).await??;
-        if can_run_here(&install) {
-            return run(&state_dir, &self.claude, Some(why)).await.map(|_| ());
-        }
-        if !super::units_installed() {
-            bail!(
-                "claude is a {} ferrule can't update from here: {}",
-                install.method.name(),
-                install.method.manual(&install.found)
-            );
-        }
-        ask_unit(&self.data, &state_dir, WAIT, Duration::from_secs(2)).await
-    }
-}
-
-/// Write the request, then wait for the apply unit's claude run.
-pub async fn ask_unit(data: &Path, state_dir: &Path, wait: Duration, poll: Duration) -> Result<()> {
+/// Write the request, then wait for the apply unit's claude run. `owner`:
+/// the owner's `update`, not a failed turn ([`Request::owner`]).
+pub async fn ask_unit(
+    data: &Path,
+    state_dir: &Path,
+    wait: Duration,
+    poll: Duration,
+    owner: bool,
+) -> Result<()> {
     let seen = State::load(state_dir).events.last().map_or(0, |e| e.id);
     let id = u64::from(uuid::Uuid::new_v4().as_u128() as u32) + 1;
     state::write_request(
@@ -242,6 +291,7 @@ pub async fn ask_unit(data: &Path, state_dir: &Path, wait: Duration, poll: Durat
         &Request {
             claude: true,
             id,
+            owner,
             ..Request::default()
         },
     )?;

@@ -286,7 +286,8 @@ setup, `--refresh-service` and a named instance's setup don't ask.
   would silently reuse the first one's Telegram token (the 409 in §6) and
   keys.
 - **System instances are separate accounts.** `ferrule-<name>` owns only
-  its home, data and workspace; the config is `root:ferrule-<name> 640`.
+  its home, data, workspace and config (the config's directory is
+  `root:ferrule-<name> 1770`, so it can't replace root's files there).
   One agent's commands can't read another's secrets or memory.
 - **User instances share a Unix account**, so they share a trust
   boundary: an agent's commands run as that user and could read the

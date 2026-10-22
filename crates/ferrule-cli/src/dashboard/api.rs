@@ -1345,13 +1345,23 @@ async fn update_check(ctx: &Ctx, body: &Value) -> Answer {
         Err(e) => return bad(409, e),
     };
     match crate::self_service::update::check(&apply).await {
-        Ok(found) => ok(json!({
-            "ok": true,
-            "said": crate::self_service::update::check_text(&apply.current, found.as_ref()),
-            "current": apply.current.to_string(),
-            "found": found.as_ref().map(|r| r.tag.clone()),
-            "headline": found.as_ref().map(|r| r.headline()).unwrap_or_default(),
-        })),
+        Ok(found) => {
+            let mut said = crate::self_service::update::check_text(&apply.current, found.as_ref());
+            let claude = crate::self_service::update::claude_check(&apply.data).await;
+            if let Some((line, _)) = &claude {
+                said = format!("{said}\n{line}");
+            }
+            let behind = claude.and_then(|(_, b)| b);
+            ok(json!({
+                "ok": true,
+                "said": said,
+                "current": apply.current.to_string(),
+                "found": found.as_ref().map(|r| r.tag.clone()),
+                "headline": found.as_ref().map(|r| r.headline()).unwrap_or_default(),
+                // The claude CLI the Claude plan runs, when npm has a newer one.
+                "claude": behind.map(|(have, new)| json!({ "have": have, "new": new })),
+            }))
+        }
         Err(_) if body["quiet"].as_bool() == Some(true) => {
             ok(json!({ "ok": true, "found": null, "offline": true }))
         }
@@ -1390,23 +1400,37 @@ async fn update_start(ctx: &Ctx, body: &Value) -> Answer {
         Err(e) => return bad(409, e),
     };
     let found = match update::check(&apply).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return ok(json!({ "ok": true, "said": update::newest(&apply.current) })),
+        Ok(found) => found,
         Err(e) => return bad(502, ctx.redactor.redact(&e)),
     };
-    need!(confirmed(
-        body,
-        format!(
+    let claude = update::claude_check(&apply.data).await.and_then(|(_, b)| b);
+    let mut asks = Vec::new();
+    if let Some((have, new)) = &claude {
+        asks.push(format!("Update the claude CLI from {have} to {new}?"));
+    }
+    if let Some(r) = &found {
+        asks.push(format!(
             "Install Ferrule {}? Running turns get up to 10 minutes to finish, then it restarts. \
              This page reconnects by itself.",
-            found.tag
-        )
-    ));
+            r.tag
+        ));
+    }
+    if asks.is_empty() {
+        return ok(json!({ "ok": true, "said": update::newest(&apply.current) }));
+    }
+    need!(confirmed(body, asks.join(" ")));
     let chat = ctx
         .hub
         .as_ref()
         .and_then(|h| h.primary())
         .unwrap_or_else(|| ferrule_trust::ChatRef::new("dashboard", "owner"));
+    let said = match &found {
+        Some(r) => format!(
+            "Installing Ferrule {}; this page reconnects when it's back.",
+            r.tag
+        ),
+        None => "Updating the claude CLI; the result comes in the chat.".to_string(),
+    };
     let hub = ctx.hub.clone();
     let units = crate::update::units_installed();
     tokio::spawn(async move {
@@ -1415,6 +1439,14 @@ async fn update_start(ctx: &Ctx, body: &Value) -> Answer {
                 h.tell_in(&chat, text);
             }
         };
+        if claude.is_some() {
+            if let Some(said) = update::update_claude(&apply.data).await {
+                tell(said);
+            }
+        }
+        if found.is_none() {
+            return;
+        }
         match update::install(apply, units, &chat).await {
             update::Applied::Restarting { exe, .. } => {
                 crate::lifecycle::set_reexec_path(exe);
@@ -1426,10 +1458,7 @@ async fn update_start(ctx: &Ctx, body: &Value) -> Answer {
             update::Applied::Said(text) => tell(text),
         }
     });
-    ok(json!({
-        "ok": true,
-        "said": format!("Installing Ferrule {}; this page reconnects when it's back.", found.tag),
-    }))
+    ok(json!({ "ok": true, "said": said }))
 }
 
 /// The same clean shutdown as `systemctl stop`, which the service follows

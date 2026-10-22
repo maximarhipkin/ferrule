@@ -1016,7 +1016,7 @@
       this.checking = true;
       try {
         const r = await api("/api/update/check", { quiet: true });
-        this.update = { at: Date.now(), found: r.found, current: r.current, headline: r.headline };
+        this.update = { at: Date.now(), found: r.found, current: r.current, headline: r.headline, claude: r.claude || null };
       } catch (e) {
         this.update = { at: Date.now(), found: null };
       }
@@ -1025,10 +1025,13 @@
     },
     updateRow() {
       const u = this.update;
-      if (!u || !u.found) return null;
+      if (!u || (!u.found && !u.claude)) return null;
+      const lines = [];
+      if (u.found) lines.push("Ferrule " + u.found + " is out (this is v" + u.current + ")" + (u.headline ? ": " + u.headline : ""));
+      if (u.claude) lines.push("The claude CLI " + u.claude.new + " is out (this is " + u.claude.have + ")");
       return el("div", { class: "card" },
         el("div", { class: "row" },
-          el("p", { class: "lead grow", dir: "auto", text: "Ferrule " + u.found + " is out (this is v" + u.current + ")" + (u.headline ? ": " + u.headline : "") }),
+          el("p", { class: "lead grow", dir: "auto", text: lines.join(". ") }),
           btn("Install", "update/start", {}, "primary")));
     },
     draw() {

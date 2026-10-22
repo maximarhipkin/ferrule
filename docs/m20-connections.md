@@ -219,8 +219,8 @@ refresh token.
   of the store, out of `grep`, and out of anything that copies the JSON;
   it doesn't stop someone who can read the private dir as the ferrule
   user.
-- Not in the config: a system service's `/etc/ferrule` is read-only to it,
-  and the config is meant to be shareable.
+- Not in the config: the config is meant to be shareable (and a system
+  service set up by Ferrule 0.14.2 or older can't write `/etc/ferrule`).
 - **Refresh** happens before expiry (60 s early) and once on a 401. A
   refresh is serialized across processes by a lock file next to the store,
   and re-reads the store first: if another process already refreshed, its

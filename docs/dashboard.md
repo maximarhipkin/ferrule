@@ -340,9 +340,10 @@ M37 made the page the place you run your agent from. The design is in
   out; the Chat tab in the navigation carries a count badge while any are
   waiting. A line starting with `/` goes to the same commands a chat has
   (`/update`, `/restart`, `/doctor`, …).
-- **Updates and Restart.** Home shows a row when a newer Ferrule is out
-  (looked up once every ten minutes), with **Install**: it asks first, runs
-  the same install as `/update` ([updates.md](updates.md#from-a-chat)), and
+- **Updates and Restart.** Home shows a row when a newer Ferrule is out,
+  or a newer claude CLI for the Claude plan (looked up once every ten
+  minutes), with **Install**: it asks first, runs the same update as
+  `/update` ([updates.md](updates.md#from-a-chat)), claude first, and
   the page reconnects by itself when the gateway is back. The Doctor's
   updates finding has **Check for an update**. **Restart** (Home, and the
   Telegram card) now also works with no service manager on Linux and macOS,
