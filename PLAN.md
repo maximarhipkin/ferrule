@@ -30,11 +30,14 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - The latest release is **v0.14.0** (2026-10-22, from `main` at
-    `ea88e4a` plus the version bump): everything through M64, PRs
-    #43–#56. Every crate is at 0.14.0 except `ferrule-plugin-sdk`, which
-    keeps 0.1.0. The one before it was v0.13.1 (2026-10-20, through
-    M49).
+  - The latest release is **v0.14.1** (2026-10-22, tagged on `main`
+    after PR #58): M64.4–M64.5 (the proactive heartbeat, feedback,
+    `/proactive` and its page), wave C (M53.1's contrast gate, OAuth
+    clients for more MCP servers, MCP 2026-07-28) and PR #59's Windows
+    fix, on top of v0.14.0. Every crate is at 0.14.1 except
+    `ferrule-plugin-sdk`, which keeps 0.1.0. Before it: **v0.14.0**
+    (2026-10-22, from `main` at `ea88e4a`: everything through M64.3,
+    PRs #43–#56) and v0.13.1 (2026-10-20, through M49).
   - **`main` is `0714a42`** (PR #59, the Windows sandbox fix, 2026-10-22;
     before it #55 wave A, #56 wave B and M64.0–M64.3, #57 the 0.14.0
     release). PRs **#44–#54 are all merged** too:
@@ -10137,3 +10140,30 @@ binaries (macOS), clippy clean.
 MRTR answers and `notifications/cancelled` aren't built. The handshake
 still asks for 2025-06-18. A legacy stdio server that ignores unknown
 requests costs its first spawn 10 s.
+
+### 2026-10-22 — Release 0.14.1 (Claude, Opus 5.5)
+
+No milestone claimed. On `autopilot` (PR #58), as its last commit, so
+CI checks the features and the bump together and the tag goes on the
+merge commit.
+
+**What changed.** Every crate's version goes from 0.14.0 to 0.14.1
+(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
+--workspace --offline`: only the 24 ferrule versions move), the README's
+badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
+Current State's release line says so. A patch bump: since v0.14.0 the
+branch adds the rest of M64 (the heartbeat, feedback, `/proactive` and
+its dashboard page), wave C (M53.1's contrast gate with a control run,
+OAuth clients via the owner's app or a Client ID Metadata Document, MCP
+2026-07-28 next to 2025-06-18) and PR #59's Windows sandbox fix, with no
+breaking config change.
+
+**Checks.** Not run locally for the bump itself (mechanical; the PR's CI
+on Linux, macOS and Windows is the gate, and the tag goes on `main` only
+after it is green). Every feature commit before it passed `make check`.
+
+**Open.** The release build (`release.yml`, five targets) runs on the
+tag; nothing here runs the binaries. The owner's server should get
+`ferrule doctor` and a short live check after the update (owner mode's
+Linux code, the proxy binding and the proactive heartbeat have never run
+live).
