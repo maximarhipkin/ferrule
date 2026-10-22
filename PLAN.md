@@ -232,8 +232,9 @@ below it is append-only.
   parent's number; so do wave A's tasks, which are follow-ups, not
   milestones. **M63 is claimed by wave B** (connections, skills and
   the catalog; `autopilot`, 2026-10-21). **M64 is claimed by the
-  proactive agent** (`autopilot`, 2026-10-21). **The next free number
-  is M65.** The first claim wins,
+  proactive agent** (`autopilot`, 2026-10-21). **M65 is claimed by video
+  understanding, editing and checking** (`m65-video`, 2026-10-22,
+  `docs/m65-video.md`). **The next free number is M66.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -9911,259 +9912,24 @@ macOS and on the same tree on `autopilot`: a flake, not fixed here.
 **Open.** The release build (`release.yml`, five targets) runs on the
 tag; nothing here runs the binaries.
 
-### 2026-10-22 — The Windows "workspace write works" flake: roots grant the user too (Claude, Opus 5.5)
+### 2026-10-22 — M65 claimed: video it understands, edits and checks (Claude, Opus 5.5)
 
-Asked from the session that unblocked PR #57 (release 0.14.0) by
-re-running its Windows job. Touches `crates/ferrule-sandbox/src/windows.rs`
-(`grant`), which is **M54's surface**: the smallest change, one function
-and its caller. Also `docs/m26-isolation.md` (the Grants bullet), the CI
-self-test step, and Current State item 8, in place.
+Claims **M65** (Current State updated: the next free number is M66), on
+branch `m65-video` from `main` at `08d53ed` (v0.14.0). Design only so far:
+`docs/m65-video.md`, written with the owner and read by a fresh builder
+check. Nothing is built.
 
-**What the failures showed.** Runs 39632001271 and 39738890901 (job
-119691050044): `FAIL workspace write works`, `exit 1: Access is denied.`,
-every other check `ok`. Exit 1 with cmd's own message is a write the
-token refused, not the launcher (which exits 125 and says why). Same
-runner image (`20261007.264.1`) as passing runs; the checks took about
-40 ms each, as when they pass.
+**Why.** The owner: asked for an image or a video "with the same person"
+from a photo or video sent in the chat, the agent makes bad ones and sends
+them without checking. In the code, `generate_image` sends before the
+model sees its result, the video poller sends finished clips with no model
+call, `generate_video` carries no reference images, a sent video reaches
+the agent as a path, and the owner's chat model (the Claude plan through
+Claude Code) can't see images at all.
 
-**What a probe run showed** (a throwaway branch, `ci.yml` replaced by a
-Windows-only job, dispatched twice; runs 39741671825, 39743427064):
-- UAC is on (`EnableLUA` 1). Inside the sandbox token (`whoami /groups`
-  under the launcher), **Administrators and Authenticated Users are both
-  deny-only**: AU by design (§2.3), Administrators through `LUA_TOKEN`.
-  So the normal half of the write check can use neither.
-- `ferrule sandbox` in 40 fresh dirs each: `$RUNNER_TEMP\wsN` 0/40
-  failed, `C:\wscN` **40/40 failed** with exactly CI's signature (and a
-  second run in the same dir failed too), `%USERPROFILE%\wsuN` 0/40.
-  Same with the whole test suite run first (a second job). So it isn't
-  a race in a run: a root refuses every write when the user can write
-  it only through AU or Administrators. `C:\` grants AU modify; the
-  profile names the user.
-- `D:\a\_temp\ws` was writable only through `BUILTIN\Users:(CI)(WD)` and
-  `(CI)(AD)`, inherited from `D:\`'s root, whose ACL matches a newly
-  formatted volume's default (`D:` is the VM's temp disk, labelled
-  "Temp"). Nothing else on it grants the sandbox token's normal identity
-  a file add.
-- Defender's real-time protection is off and `C:\`, `D:\` are excluded:
-  not AV.
+**Decided by the owner.** The chat model is the Claude plan, so a cheap
+vision helper looks for it. Strong video models are allowed and the caps
+raised (3 → 10 videos a day, $1 → $3 a video); plain videos keep
+`veo-3.1-lite`.
 
-**The cause.** The grant gave each root's capability SID modify rights
-(the restricted half) and relied on the user already having them (the
-normal half). In the sandbox token that half loses everything that comes
-through AU or Administrators. **Inferred, not shown:** the two failing
-VMs' `D:` lacked the `Users` write ACEs (formatted another way), so the
-CI workspace fell into the `C:\` case. Their logs didn't capture the ACL.
-
-**What changed.**
-- `windows.rs` `grant`: two inheritable ACEs per root, each added when
-  the DACL lacks it: the capability SID's (as before) and the user's,
-  same rights, conditional on AU being off
-  (`(XA;OICI;0x1301ff;;;<user>;(Not_Member_of {SID(AU)}))`). Every normal
-  logon token has AU enabled, so only sandbox tokens get it; outside the
-  sandbox nothing changes. Built from SDDL (each ACE parsed and written
-  back, so the check finds it as Windows writes it) instead of
-  `SetEntriesInAclW`, which can't make a conditional ACE. Roots granted
-  before get the user's ACE on their next launch (one more propagation
-  on a big tree, once).
-- CI's "Sandbox self-test": on a failure it prints `icacls .` of the
-  workspace (Windows), so a recurrence says which half refused.
-- `docs/m26-isolation.md`: the Grants bullet says so.
-
-**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
-binaries (macOS, which doesn't compile `windows.rs`), clippy clean. On
-the Windows probe run with the change: `ferrule sandbox` 0/40 failed in
-each of `$RUNNER_TEMP`, `C:\` and the profile (`C:\` was 40/40 before);
-`cargo test -p ferrule-sandbox --test windows --test windows_git_bash`
-9 passed (saved keys and denied paths still unreadable, read-only still
-refuses the workspace, writes outside the roots still refused). The PR's
-own CI is the full suite.
-
-**Tests changed, none added** (the owner's standing rule). The probe
-branch `claude/sandbox-flake-probe` is deleted.
-
-**Open.** Whether the failing VMs' `D:` really lacked the `Users` ACEs.
-A `ferrule sandbox` run in a `C:\` folder would guard the fix in CI on
-every run; not added (the no-new-tests rule).
-
-### 2026-10-22 — Wave C, task 1: M53.1's contrast gate, fixed (Claude, Opus 5.5)
-
-Wave C's first task, in the `autopilot` worktree, after merging `main`
-(PR #57, 0.14.0) into it (`3ad69e8`; `make check` green on the merge:
-1891 passed, 0 failed, 28 ignored, 73 binaries).
-
-**Why.** The re-audit (Part 1 "M53.1", Part 3 #12) found the probe gate
-"done differently, not fine": one re-run with the lesson was judged
-against the original failed run, labelled "Original" and "Second run
-(with the lesson)". A fresh draw beats a stochastic failure often on its
-own, so lessons got credit for noise, and the labels told the judge
-which run to prefer. Checked episodes kept a lesson that passed twice
-with no sign it failed without.
-
-**What changed** (`ferrule-learn`).
-- `pass.rs`: `judged` is replaced by `contrast_gate`. The episode
-  re-runs with the change, then (when `Meter::room_for` says the caps
-  hold another run of what that one cost) a control without it: the
-  playbook as it stands, no draft skill. Without a check, `judge` asks
-  one blind call; with a check, the control must fail it. Without room
-  for the control the evidence is weak (`weak`): kept only when the
-  episode is an owner's 👎 with a later 👍 in the same chat.
-- `judge.rs`: a new prompt (no lesson shown, labels A/B, "neither" is
-  the default), `Slate` (FNV-1a seed from pass id and gate number,
-  splitmix64, low bit), `Contrast` (better, worse, confounded), and a
-  parser for `{"better":"A"|"B"|"neither","why":…}`; anything unreadable
-  is confounded.
-- `gate.rs`: `GateRun::control` (derive `Clone`); a control's transcript
-  is `control-<n>`, its scratch dir `control-<pass>-<n>`, its check runs
-  once, and its reasons say "without the lesson". Probe tails are
-  rendered without the system prompt (`episode::render_run`), which
-  holds the playbook.
-- `budget.rs`: `Spent::since`, `Meter::room_for`.
-- `pass/skill.rs`: skills take the same path; the control is the same
-  playbook without the draft.
-- Ledger origins gain `control:<n>`; the pass log gains `"judge"` lines
-  with the seed, the change's label and what it was compared with.
-- Docs: `m53-contrastive-probing.md` ("M53.1 — the contrast gate,
-  fixed", and a pointer at the top), `m16-learning-loop.md` §5 (step 1,
-  step 4, "What the gate doesn't prove"), `roadmap.md` (M53's list).
-
-**Tests changed, none added** (the owner's standing rule): the judge's
-parse test takes the new answer; `pass/tests.rs`'s fake gate fails its
-control, the probe fake marks which run it is, and the queue provider
-can answer as a judge picking the run holding a word
-(`@pick:<needle>`); `ferrule-cli`'s learn story counts the control's
-scratch dir as a gate run and doesn't write the result there.
-
-**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
-binaries (macOS), clippy clean.
-
-**Open.** Never run against a real model. One draw per arm: the
-contrast removes the "against a failure" bias, not run-to-run noise.
-The 👍 corroboration is coarse: it says the chat ended well, not that
-the lesson did. A big first re-run leaves later episodes in the pass on
-weak evidence, so they keep nothing; the caps are the dial.
-
-### 2026-10-22 — Wave C, task 2: OAuth clients for more MCP servers (Claude, Opus 5.5)
-
-Wave C's second task, in the `autopilot` worktree (re-audit Part 3 #11).
-
-**Why.** ferrule could only register itself (DCR) or use Google's owner
-client. Home Assistant's MCP server takes a Client ID Metadata Document
-and no DCR; Slack's and Asana's take only an app the owner registers;
-Dropbox registers only clients it lists. The MCP authorization spec
-(2025-11-25 and 2026-07-28) orders the three ways: pre-registered, then
-metadata documents where the server advertises them, then DCR.
-
-**What changed.**
-- `ferrule-connections/src/oauth.rs`: `client` follows that order and
-  says which it used (`ClientVia`); `owner_client` (id required, secret
-  optional); `check_cimd` (https with a path, `client_id` equal to the
-  URL, a `client_name`, the callback in `redirect_uris`); `Endpoints`
-  gains `cimd` and `issuer`; DCR sends `application_type` (SEP-837);
-  Slack's `200 {"ok": false}` is a refusal.
-- `service.rs`: `cimd_for` (the owner's `[connections]
-  client_metadata_url`, else the relay's `/client.json` when the
-  callback is the relay's); `has_client` needs only the id; a present
-  `iss` must match the metadata's `issuer` (SEP-2468; tunnel and
-  paste-back now keep `iss`); `blocked` explains an owner app for any
-  service, and its fixed-callback text and buttons are no longer
-  Google's or Atlassian's for everyone; `resource` from the entry.
-- `catalog.rs`: `client_env_name` (default `<NAME>_OAUTH_CLIENT`), a
-  `resource` override, and `client = "owner"` no longer needs pinned
-  endpoints. `catalog.toml`: `slack`, `asana`, `dropbox` (owner app,
-  fixed callback), checked against each vendor's docs and live OAuth
-  metadata on 2026-10-22.
-- `relay/worker.js`: `GET /client.json`, the document, built from the
-  Worker's own origin.
-- `ferrule-cli`: `ferrule connections setup <service>` asks for an owner
-  app's id and secret; `ferrule_admin` `mcp_add` takes `client_id` and
-  `client_secret` with `catalog` or an OAuth `url` (the id saved, the
-  secret asked for with `secret_request` bound to the token and
-  revocation hosts, then the Sign in button); the tool's description
-  and schema say so.
-- Docs: `m20-connections.md` §3.6 and the relay's contract,
-  `m63-connections-wave-b.md` (the left-out list), `roadmap.md` (M20).
-
-**Tests changed, none added** (the owner's standing rule): the catalog's
-names list gains the three entries.
-
-**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
-binaries (macOS), clippy clean.
-
-**Open.** Nothing signed in live: not Home Assistant through the relay's
-document, not Slack's `scope` on its `v2_user` endpoint, not Asana's
-`resource`. A relay deployed before today serves no `/client.json` until
-redeployed. The owner's app isn't keyed by the authorization server's
-`issuer` (SEP-2352). The dashboard has no form for a non-Google owner
-app. `node --test relay/` wasn't run here (CI runs it).
-
-### 2026-10-22 — Wave C, task 3: MCP 2026-07-28 next to 2025-06-18 (Claude, Opus 5.5)
-
-Wave C's third task, in the `autopilot` worktree (re-audit Part 3 #14).
-
-**Why.** MCP 2026-07-28 drops `initialize` and HTTP sessions, puts the
-version and the client's identity in every request's `_meta`, adds
-`server/discover` and standard request headers. Vendor servers will move
-to it; a client that only does the handshake fails against a modern-only
-server ("Legacy client, modern server: fails", the spec's matrix).
-
-**What changed** (`ferrule-mcp`).
-- `era.rs` (new): `Era` (modern or legacy), `with_meta`, `era_of` (a
-  probe's answer: a `DiscoverResult` or a modern error is modern, anything
-  else legacy, never keyed to one code), the modern error codes,
-  `complete` (`resultType: "input_required"` fails plainly),
-  `header_value` (the `=?base64?…?=` encoding), and `x-mcp-header`
-  parsing and checking.
-- `client.rs`: a fresh stdio process is probed with `server/discover`
-  (10 s, or a late answer after a refused `initialize`); a legacy one gets
-  `initialize`, a modern one `_meta` on every request; the era is kept
-  across respawns; a server that exits on the probe is restarted once as
-  legacy. Over HTTP, tools with bad `x-mcp-header` marks are left out and
-  the rest's marked parameters become `Mcp-Param-*` headers. A list's
-  `ttlMs` schedules one re-list (at least five minutes on).
-- `http.rs`: the first request to an address is a modern
-  `server/discover`; a `4xx` without a modern error body means legacy,
-  and the old session path runs. Modern requests carry
-  `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, no session; a failed
-  status with a JSON-RPC error body comes back as that error; a later
-  -32022 re-asks once.
-- Docs: `m17-mcp-add.md` §8 (every rule cited to the spec's pages),
-  `roadmap.md` (M17).
-
-**Tests changed, none added** (the owner's standing rule). Every
-existing MCP test (stdio and HTTP mocks, all legacy) passes unchanged.
-
-**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
-binaries (macOS), clippy clean.
-
-**Open.** No modern server tried live and no test drives one.
-`subscriptions/listen`, per-request log levels, the tasks extension,
-MRTR answers and `notifications/cancelled` aren't built. The handshake
-still asks for 2025-06-18. A legacy stdio server that ignores unknown
-requests costs its first spawn 10 s.
-
-### 2026-10-22 — Release 0.14.1 (Claude, Opus 5.5)
-
-No milestone claimed. On `autopilot` (PR #58), as its last commit, so
-CI checks the features and the bump together and the tag goes on the
-merge commit.
-
-**What changed.** Every crate's version goes from 0.14.0 to 0.14.1
-(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
---workspace --offline`: only the 24 ferrule versions move), the README's
-badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
-Current State's release line says so. A patch bump: since v0.14.0 the
-branch adds the rest of M64 (the heartbeat, feedback, `/proactive` and
-its dashboard page), wave C (M53.1's contrast gate with a control run,
-OAuth clients via the owner's app or a Client ID Metadata Document, MCP
-2026-07-28 next to 2025-06-18) and PR #59's Windows sandbox fix, with no
-breaking config change.
-
-**Checks.** Not run locally for the bump itself (mechanical; the PR's CI
-on Linux, macOS and Windows is the gate, and the tag goes on `main` only
-after it is green). Every feature commit before it passed `make check`.
-
-**Open.** The release build (`release.yml`, five targets) runs on the
-tag; nothing here runs the binaries. The owner's server should get
-`ferrule doctor` and a short live check after the update (owner mode's
-Linux code, the proxy binding and the proactive heartbeat have never run
-live).
+**Open.** The owner's approval of the design, then a plan, then the build.
