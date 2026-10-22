@@ -80,6 +80,9 @@ pub struct WatchVideoTool {
     transcriber: Option<Arc<dyn Transcriber>>,
     session_id: String,
     hidden: Vec<PathBuf>,
+    /// M65 §4: the media jobs, so a generated video is checked against
+    /// what it was asked to be.
+    media: Option<Arc<super::media::MediaShared>>,
 }
 
 impl WatchVideoTool {
@@ -96,7 +99,25 @@ impl WatchVideoTool {
             transcriber,
             session_id: session_id.into(),
             hidden,
+            media: None,
         }
+    }
+
+    /// M65 §4: know the generated videos' requests and references.
+    pub fn with_media(mut self, media: Option<Arc<super::media::MediaShared>>) -> Self {
+        self.media = media;
+        self
+    }
+
+    /// The job that made `path`, if one did: its request and references.
+    fn made(&self, workspace: &Path, path: &Path) -> Option<ferrule_media::MediaJob> {
+        let store = &self.media.as_ref()?.store;
+        let rel = path.strip_prefix(workspace).unwrap_or(path);
+        store
+            .made_as(&path.to_string_lossy())
+            .ok()
+            .flatten()
+            .or_else(|| store.made_as(&rel.to_string_lossy()).ok().flatten())
     }
 }
 
@@ -548,13 +569,47 @@ impl Tool for WatchVideoTool {
                         );
                         text.push_str(&format!("\nThe image is {lead}."));
                         // M65 §0: what the vision helper is asked, for a
-                        // model that can't see the sheet itself.
+                        // model that can't see the sheet itself; for a
+                        // generated video (M65 §4), against its request and
+                        // the person's reference.
+                        let made = self.made(&ctx.workspace, &path);
+                        let reference = made
+                            .as_ref()
+                            .and_then(|j| j.references.first())
+                            .map(|r| ctx.workspace.join(r).to_string_lossy().into_owned());
+                        let against = match &made {
+                            Some(job) => {
+                                text.push_str(&format!(
+                                    "\nIt was generated for: \"{}\"{}. Compare it with that before you send it.",
+                                    job.prompt,
+                                    if job.references.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(", keeping the person in {}", job.references.join(", "))
+                                    }
+                                ));
+                                format!(
+                                    " It was generated for this request: \"{}\".{} Start with OK or NOT OK against the request{}, then each problem you see.",
+                                    job.prompt,
+                                    if reference.is_some() {
+                                        " The second image is the reference: the person in it must be the same in the video (face, hair, skin tone, build, age)."
+                                    } else {
+                                        ""
+                                    },
+                                    if reference.is_some() { " and the reference" } else { "" }
+                                )
+                            }
+                            None => String::new(),
+                        };
                         image.check = Some(ImageCheck {
                             task: format!(
-                                "This is {lead}. Describe the video from it for an assistant that can't see images: tile by tile, what is on screen and what changes (people and how they look, never guessing who they are; actions; text on screen word for word; the setting), then what the clip as a whole shows, and anything that looks wrong (warped faces or hands, garbled text, glitches, black or frozen frames). Plain sentences, no preamble, at most 400 words."
+                                "This is {lead}.{against} Describe the video from it for an assistant that can't see images: tile by tile, what is on screen and what changes (people and how they look, never guessing who they are; actions; text on screen word for word; the setting), then what the clip as a whole shows, and anything that looks wrong (warped faces or hands, garbled text, glitches, black or frozen frames). Plain sentences, no preamble, at most 400 words."
                             ),
-                            reference: None,
+                            reference,
                         });
+                        // M65 §4: looking at the sheet is looking at the
+                        // video, for `send_file`.
+                        image.shows = Some(path.to_string_lossy().into_owned());
                         images.push(image);
                     }
                     Some(Err(why)) => {

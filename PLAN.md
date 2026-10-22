@@ -10436,3 +10436,73 @@ frame and nothing else (`docs/m65-video.md` §3).
 about $1–2). A request with no `seconds` is priced at the model's longest
 (30 s for Seedance 2.5, about $6.93), over the $3 cap, so the agent has
 to name a length.
+
+### 2026-10-22 — M65 §4: check before sending (Claude, Opus 5.5)
+
+The owner: the agent "creates very bad videos and sending them and not
+really checks them". `generate_image` sent before the model saw its
+result, and the poller sent finished clips with no model call
+(`docs/m65-video.md` §4).
+
+**Built.**
+- **Images.** `generate_image` saves, records the job as `checking`, and
+  returns the image with "Not sent: look at it against the request (and
+  the reference) first … send it with send_file; if it isn't, try again
+  (at most two retries in all) or say what's wrong". Its `ImageRef::check`
+  carries `check_task` (OK or NOT OK, then a different person from the
+  reference, warped faces, hands or text, framing, what's missing) and
+  the first reference, which the §0 helper uses for a model that can't
+  see. M51's `deliver` is gone (nothing calls it).
+- **Videos.** When the poller has downloaded a clip whose job has a chat,
+  it wakes the job's session (its `tree`, the session id for a chat's own
+  call) with the job, the file, the prompt and the references, telling it
+  to `watch_video`, compare, then `send_file`, retry or report, or send
+  it `unchecked` where videos can't be watched; the job is `checking`
+  with `woken_at`. A session that can't be woken gets the note at once
+  and the job is `noted`; each poll also notes every video `checking`
+  for over 30 minutes (`CHECK_FOR`), so a failed, stopped or restarted
+  turn still ends in a truthful message: "The video for "…" finished but
+  wasn't checked, so it wasn't sent. It's at …. Say "send it" and I'll
+  send it as it is." A sub-agent's clip (no chat) is `done` as before.
+  `media_jobs` gains `refs` and `woken_at` (added to an old table empty);
+  `JobStore::mark_checking`, `stale_checking`, `unsent`, `made_as`.
+- **`watch_video`** marks its sheet `shows` the video, and when the video
+  is a job's result, its text names the request and the reference, and
+  the helper's check gets both (the reference as the second image).
+- **Enforced.** `ferrule_core::vision::Looked`: the agent records, as a
+  tool's result is added, each image the model got (pixels, or the
+  helper's words) and the file a sheet shows, with its modification time,
+  or that the look couldn't be made. `send_file` (`.checking(looked,
+  sees_images, watches_video)`, in every chat) refuses an image or video
+  outside `uploads/`, `inbox/` and `media/screen/` not looked at since it
+  last changed, saying how to look. `unchecked` is taken only where
+  looking can't be done (no `watch_video`, a model that can't see and no
+  helper, or the last look failed), and the file goes captioned "Not
+  checked: <why>." A `noted` video goes when asked (the owner's "send
+  it"), marked the same way. A sent file's `checking`/`noted` rows become
+  `done` (`FileOut::bind_media`).
+- `CHAT_MEDIA` says nothing is sent on its own, to look then
+  `send_file`, that a finished video wakes the session to watch it, and
+  the retry budget; `generate_video`'s description and answers say the
+  same and ask for `seconds`.
+- Existing tests changed to match: the gateway's media tests now check
+  that an image comes back unsent and that a finished video leaves its
+  job `checking` and wakes the chat, with nothing attached.
+
+**Decided here.** Which files the rule covers: every image or video by its
+extension except what the owner provided (`uploads/`, `inbox/`) and
+captures of the owner's screen (`media/screen/`, a faithful recording,
+nothing generated), rather than "under `media/` or written by this
+session": edits made by ffmpeg in the shell can't be told from other
+files, so anything not the owner's needs a look. Looking at a part of a
+video (a narrowed sheet) counts. The note keeps the job's absolute path.
+No attempts counter (the design's call): the prompt's two retries are
+backed by the media caps.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests; the four gateway media tests were
+changed to the new behaviour (two renamed to say what they check).
+
+**Open.** Not run live. A woken turn reads like any wake (sub-agents'
+reports use the same path); whether the model follows it through to
+`send_file` is for the owner's first real video to show.

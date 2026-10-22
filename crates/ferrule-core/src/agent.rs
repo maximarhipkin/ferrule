@@ -333,6 +333,8 @@ pub struct Agent {
     pending_images: Vec<crate::message::ImageRef>,
     /// M65 §0: the vision helper, for a model that can't see.
     looker: Option<Arc<dyn crate::vision::Looker>>,
+    /// M65 §4: what this session's model has looked at, for `send_file`.
+    looked: Option<crate::vision::Looked>,
     stop: Option<StopFlag>,
     guard: Option<Arc<dyn Guard>>,
     session_recall: Option<Arc<dyn SessionRecall>>,
@@ -420,6 +422,7 @@ impl Agent {
             inbox: None,
             pending_images: Vec::new(),
             looker: None,
+            looked: None,
             stop: None,
             guard: None,
             session_recall: None,
@@ -556,6 +559,12 @@ impl Agent {
         self.looker = Some(looker);
     }
 
+    /// M65 §4: record in `looked` each file a tool's image showed this
+    /// model (pixels, or the helper's words), and each it couldn't.
+    pub fn set_looked(&mut self, looked: crate::vision::Looked) {
+        self.looked = Some(looked);
+    }
+
     /// Whether images reach the model at all: as pixels, or (M65 §0) in
     /// the vision helper's words.
     pub fn understands_images(&self) -> bool {
@@ -566,12 +575,17 @@ impl Agent {
     /// can't see them and there is a helper. A check the tool asked for
     /// (a generated image against its request) is made instead of a plain
     /// description; an image already described isn't asked about again.
-    async fn describe_images(&self, msg: &mut Message) {
+    /// Returns, per image, whether the model now has it (pixels or words).
+    async fn describe_images(&self, msg: &mut Message) -> Vec<bool> {
+        if self.sees_images() {
+            return vec![true; msg.images.len()];
+        }
         let Some(looker) = self.looker.clone() else {
-            return;
+            return vec![false; msg.images.len()];
         };
-        if msg.images.iter().all(|i| i.described.is_some()) || self.sees_images() {
-            return;
+        let mut had: Vec<bool> = msg.images.iter().map(|i| i.described.is_some()).collect();
+        if had.iter().all(|h| *h) {
+            return had;
         }
         let model = looker.model();
         let plain = if msg.role == Role::Tool {
@@ -579,7 +593,10 @@ impl Agent {
         } else {
             crate::vision::PHOTO_TASK
         };
-        for img in msg.images.iter_mut().filter(|i| i.described.is_none()) {
+        for (img, had) in msg.images.iter_mut().zip(had.iter_mut()) {
+            if img.described.is_some() {
+                continue;
+            }
             let (task, reference) = match &img.check {
                 Some(c) => (c.task.clone(), c.reference.clone()),
                 None => (plain.to_string(), None),
@@ -591,16 +608,33 @@ impl Agent {
                     reference.as_deref().map(std::path::Path::new),
                 )
                 .await;
+            *had = seen.is_ok();
             img.described = Some(match seen {
                 Ok(text) => crate::vision::described_as(img, &model, &text),
                 Err(why) => crate::vision::not_described(img, &model, &why),
             });
         }
+        had
     }
 
-    /// [`Agent::push`] for a message that may carry images (M65 §0).
+    /// [`Agent::push`] for a message that may carry images (M65 §0). A
+    /// tool's images (M65 §4) are recorded as looked at, or not.
     async fn push_seen(&mut self, mut msg: Message) {
-        self.describe_images(&mut msg).await;
+        if !msg.images.is_empty() {
+            let had = self.describe_images(&mut msg).await;
+            if let (Some(looked), Role::Tool) = (&self.looked, &msg.role) {
+                for (img, had) in msg.images.iter().zip(had) {
+                    let files = std::iter::once(img.path.as_str()).chain(img.shows.as_deref());
+                    for file in files.map(std::path::Path::new) {
+                        if had {
+                            looked.seen(file);
+                        } else {
+                            looked.failed(file);
+                        }
+                    }
+                }
+            }
+        }
         self.push(msg);
     }
 

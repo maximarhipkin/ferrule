@@ -1695,6 +1695,24 @@ Current State; numbers are claimed there before anything is built.
     model billed per video token is priced at 720p, 24 fps, and asked
     for 720p (`resolution`). HeyGen's Avatar IV is left out: the listing
     doesn't say where its script goes. Not run live.
+  - **§4, check before sending**: `generate_image` no longer sends; the
+    image comes back with "Not sent: look at it against the request (and
+    the reference)", and, for a model that can't see, a check task for
+    the §0 helper (OK or NOT OK, a different person, warped faces, hands
+    or text, framing, what's missing). The poller no longer sends a
+    finished video: it wakes the session that asked (`Router::wake`) to
+    `watch_video` it (whose sheet is checked against the job's request
+    and reference) and `send_file` it, and the job is `checking`; still
+    `checking` 30 minutes later, or no lane to wake, the chat gets a text
+    note (where it is, "send it" sends it as is) and the job is `noted`.
+    `media_jobs` gains `refs` and `woken_at`. `send_file` refuses an
+    image or video outside `uploads/`, `inbox/` and `media/screen/` that
+    this session's model hasn't looked at since it last changed
+    (`vision::Looked`, recorded by the agent as tool images reach the
+    model, a contact sheet counting for its video); `unchecked` sends one
+    marked "Not checked: …" only where looking can't be done; a `noted`
+    video goes when the owner asks; a sent file's job becomes `done`.
+    `CHAT_MEDIA` says so, with the retry budget (two). Not run live.
 
 **Still open from earlier tracks.**
 

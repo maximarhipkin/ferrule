@@ -1,10 +1,12 @@
 //! M51: `generate_image` and `generate_video`, chat-bound like
 //! [`SendFileTool`], plus the poller that delivers finished videos
 //! (`docs/m51-media.md`). Images are a sync call: generated, saved under
-//! `media/` in the workspace, sent to the session's chat. Videos are an
-//! async job: submitted, one row in the `media_jobs` table, an immediate
-//! answer; the [`MediaPoller`] built-in task polls, downloads and delivers.
-//! M51.4: `speak`, a sync call like an image, sent as a voice note.
+//! `media/` in the workspace, and (M65 §4) handed back to the model to
+//! look at, not sent. Videos are an async job: submitted, one row in the
+//! `media_jobs` table, an immediate answer; the [`MediaPoller`] built-in
+//! task polls and downloads, then (M65 §4) wakes the session that asked to
+//! watch the clip before it sends it. M51.4: `speak`, a sync call like an
+//! image, sent as a voice note.
 //!
 //! Spend honesty: the daily cap (`[media] max_per_day`) is checked before
 //! every call from the store — fail-closed — and every call and delivery
@@ -399,7 +401,7 @@ impl Tool for GenerateImageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "generate_image".into(),
-            description: "Create an image with an image model and save it in the workspace under media/ (and send it to this chat when there is one). With `reference` paths it edits those images instead. To keep a person's face and look (from a photo sent in the chat), pass that photo in `reference` and say in the prompt what must stay the same: the face, hair, build, skin tone, clothes. Each call spends money — say so before a big batch.".into(),
+            description: "Create an image with an image model and save it in the workspace under media/. It isn't sent: you get it back to look at against the request (and the reference); send it with send_file when it's right. With `reference` paths it edits those images instead. To keep a person's face and look (from a photo sent in the chat), pass that photo in `reference` and say in the prompt what must stay the same: the face, hair, build, skin tone, clothes. Each call spends money — say so before a big batch.".into(),
             parameters: {
                 let mut p = json!({
                     "type": "object",
@@ -446,6 +448,8 @@ impl Tool for GenerateImageTool {
                 )?);
             }
         }
+        // M65 §4: the first reference is what the check holds it against.
+        let compare = references.first().cloned();
         let model = self
             .shared
             .pick(JobKind::Image, args["model"].as_str())
@@ -515,33 +519,73 @@ impl Tool for GenerateImageTool {
             job.chat_id = Some(chat_id.clone());
         }
         job.tree = Some(self.tree.clone());
+        // M65 §4: made, not sent; `send_file` makes it `done`.
+        job.state = "checking".into();
+        job.references = references_shown(&ctx.workspace, compare.iter());
         self.shared
             .store
             .record(&job)
             .map_err(|e| failed("generate_image", e.to_string()))?;
-        // M60: the model sees what it made (a note if it can't see images).
+        // M60: the model sees what it made (a note if it can't see images);
+        // M65 §0: for one that can't, the vision helper checks it against
+        // the request and the reference instead.
         let (shown, unshown) = match ferrule_core::vision::image_file(&path) {
-            Some(Ok(image)) => (vec![image], String::new()),
+            Some(Ok(mut image)) => {
+                image.check = Some(ferrule_core::message::ImageCheck {
+                    task: check_task(&prompt, compare.is_some()),
+                    reference: compare.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                });
+                (vec![image], String::new())
+            }
             Some(Err(why)) => (Vec::new(), format!(" It isn't shown to you: {why}.")),
             None => (Vec::new(), String::new()),
         };
-        if let Some((channel_name, chat_id)) = chat {
-            if let Err(e) = deliver(&self.shared, &channel_name, &chat_id, &path, &prompt).await {
-                return Ok(ToolOutput::ok(format!(
-                    "Saved {rel}, but sending it to the chat failed: {e}. The file is there.{unshown}"
-                ))
-                .with_images(shown));
-            }
-            return Ok(
-                ToolOutput::ok(format!("Saved {rel} and sent it to this chat.{unshown}"))
-                    .with_images(shown),
-            );
-        }
+        let against = if compare.is_some() {
+            "the request and the reference (the same person?)"
+        } else {
+            "the request"
+        };
+        let next = if chat.is_some() {
+            "If it's right, send it with send_file"
+        } else {
+            "This session has no chat: if it's right, report its path"
+        };
         Ok(ToolOutput::ok(format!(
-            "Saved {rel}. This session has no chat to send it to; send_file can deliver it where needed.{unshown}"
+            "Saved {rel}. Not sent: look at it against {against} first.{unshown} {next}; if it isn't, try again (at most two retries in all) or say what's wrong."
         ))
         .with_images(shown))
     }
+}
+
+/// M65 §4: what the vision helper is asked about a generated image (or
+/// video sheet), for a model that can't see it: a verdict against the
+/// request and, with a reference, the person in it.
+pub fn check_task(prompt: &str, with_reference: bool) -> String {
+    let (reference, same) = if with_reference {
+        (
+            " The second image is the reference: the person or thing in it must be the same in the first.",
+            " a different person from the reference (face, hair, skin tone, build, age);",
+        )
+    } else {
+        ("", "")
+    };
+    format!(
+        "The first image was just generated for this request: \"{prompt}\".{reference} Check it before it is sent. First line: OK or NOT OK. Then each problem you see, and where:{same} warped or extra faces, hands or fingers; garbled or misspelled text; wrong framing or cropping; anything the request asked for that is missing or different. Then one or two sentences on what it shows. Plain sentences, no preamble."
+    )
+}
+
+/// The workspace-relative paths of `refs`, for the jobs table.
+fn references_shown<'a>(
+    workspace: &std::path::Path,
+    refs: impl Iterator<Item = &'a PathBuf>,
+) -> Vec<String> {
+    refs.map(|p| {
+        p.strip_prefix(workspace)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .into_owned()
+    })
+    .collect()
 }
 
 pub struct GenerateVideoTool {
@@ -631,7 +675,7 @@ impl Tool for GenerateVideoTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "generate_video".into(),
-            description: "Start a video generation job (text-to-video, or image-to-video with `first_frame`). Answers right away with a job id — the render takes minutes and the file is sent to this chat when it's done. A video costs dollars, not cents: say the price class before you start one.".into(),
+            description: "Start a video generation job (text-to-video, or image-to-video with `first_frame`). Answers right away with a job id — the render takes minutes; when it's done you're woken to watch it, and you send it once it's right. Give `seconds`: without it the price is reckoned at the model's longest. A video costs dollars, not cents: say the price class before you start one.".into(),
             parameters: {
                 let mut p = json!({
                     "type": "object",
@@ -800,7 +844,7 @@ impl Tool for GenerateVideoTool {
                 seconds,
                 aspect: args["aspect"].as_str().map(str::to_string),
                 first_frame,
-                references,
+                references: references.clone(),
                 resolution: estimate
                     .as_ref()
                     .and_then(|e| e.resolution)
@@ -857,6 +901,7 @@ impl Tool for GenerateVideoTool {
         }
         row.tree = Some(self.tree.clone());
         row.estimate_usd = estimate_usd;
+        row.references = references_shown(&ctx.workspace, references.iter());
         self.shared
             .store
             .record(&row)
@@ -869,12 +914,12 @@ impl Tool for GenerateVideoTool {
             // M51.3: a sub-agent (or a run with no chat) gets the file,
             // not a delivery.
             return Ok(ToolOutput::ok(format!(
-                "Making it — job {} on {model}{cost}. A render takes minutes; the gateway saves it as {rel} when it's done. This session has no chat to send it to: report that path, and send_file can deliver it once it's there.",
+                "Making it — job {} on {model}{cost}. A render takes minutes; the gateway saves it as {rel} when it's done. This session has no chat to send it to: report that path; whoever sends it watches it first.",
                 job.id
             )));
         }
         Ok(ToolOutput::ok(format!(
-            "Making it — job {} on {model}{cost}. A render takes minutes; I'll send {rel} here when it's done.",
+            "Making it — job {} on {model}{cost}. A render takes minutes; when {rel} is done, this chat's session is woken to watch it before it's sent. Don't wait for it.",
             job.id
         )))
     }
@@ -1058,17 +1103,6 @@ impl Tool for SpeakTool {
     }
 }
 
-/// Send a finished file to a chat, the way `send_file` does.
-async fn deliver(
-    shared: &MediaShared,
-    channel_name: &str,
-    chat_id: &str,
-    path: &std::path::Path,
-    caption: &str,
-) -> Result<(), String> {
-    send_out(shared, channel_name, chat_id, path, caption, false).await
-}
-
 /// `voice`: the attachment's kind is `voice`, which Telegram sends with
 /// `sendVoice` (M51.4); other channels send it by its file type.
 async fn send_out(
@@ -1104,11 +1138,44 @@ async fn send_out(
     channel.send(msg).await.map_err(|e| format!("{e}"))
 }
 
-/// The built-in task that polls pending video jobs, downloads finished
-/// clips and delivers them to their chats (`ferrule-media` on the
-/// scheduler, every minute). No model call is ever made here.
+/// The built-in task that polls pending video jobs and downloads finished
+/// clips (`ferrule-media` on the scheduler, every minute). No model call
+/// is made here, and (M65 §4) no clip is sent: the session that asked is
+/// woken to watch it and send it. A clip still unchecked after
+/// [`CHECK_FOR`], or one whose session can't be woken, gets a text note in
+/// its chat instead: where it is, and that "send it" sends it as is.
 pub struct MediaPoller {
     pub shared: Arc<MediaShared>,
+}
+
+/// M65 §4: how long a woken session has to check a finished video.
+pub const CHECK_FOR: i64 = 30 * 60;
+
+/// M65 §4: what the session that asked for a video is woken with.
+fn wake_text(job: &ferrule_media::MediaJob) -> String {
+    let refs = if job.references.is_empty() {
+        String::new()
+    } else {
+        format!(" The reference: {}.", job.references.join(", "))
+    };
+    let against = if job.references.is_empty() {
+        "the request"
+    } else {
+        "the request and the reference (is it the same person?)"
+    };
+    format!(
+        "[ferrule] The video you started is ready and not sent yet: job {} on {}, saved as {}. It was asked for: \"{}\".{refs} Watch it with watch_video and compare it with {against}. If it's right, send it with send_file. If it isn't, try again (at most two retries in all) or tell the owner what's wrong and what you tried. If videos can't be watched here, send it with send_file and `unchecked` saying why.",
+        job.id, job.model, job.out_path, job.prompt
+    )
+}
+
+/// M65 §4: the note a chat gets for a video nobody checked.
+fn unchecked_note(job: &ferrule_media::MediaJob) -> String {
+    format!(
+        "The video for \"{}\" finished but wasn't checked, so it wasn't sent. It's at {}. Say \"send it\" and I'll send it as it is.",
+        job.prompt.chars().take(80).collect::<String>(),
+        job.out_path
+    )
 }
 
 #[async_trait::async_trait]
@@ -1131,26 +1198,47 @@ impl BuiltinJob for MediaPoller {
                     let out = std::path::Path::new(&job.out_path);
                     match self.shared.backend.download(&url, out).await {
                         Ok(()) => {
-                            let mut note = format!("{} is here.", job.out_path);
-                            if let (Some(channel), Some(chat_id)) = (&job.channel, &job.chat_id) {
-                                match deliver(&self.shared, channel, chat_id, out, &job.prompt)
-                                    .await
-                                {
-                                    Ok(()) => {
-                                        note = format!("{} delivered to {channel}.", job.out_path)
-                                    }
-                                    Err(e) => {
-                                        note = format!(
-                                            "{} is saved but couldn't be sent: {e}",
+                            // M65 §4: the session that asked watches it
+                            // first; a sub-agent's clip has no chat, and its
+                            // parent watches it before sending.
+                            let note = match (&job.channel, &job.chat_id) {
+                                (Some(channel), Some(chat_id)) => {
+                                    let session = job.tree.clone().unwrap_or_default();
+                                    let woke = self.shared.router().is_some_and(|r| {
+                                        r.can_wake(&session) && r.wake(&session, wake_text(&job))
+                                    });
+                                    if woke {
+                                        self.shared
+                                            .store
+                                            .mark_checking(&job.id, now_unix())
+                                            .map_err(|e| e.to_string())?;
+                                        format!(
+                                            "{} is here; {session} is woken to check it.",
                                             job.out_path
                                         )
+                                    } else {
+                                        let _ = say(
+                                            &self.shared,
+                                            channel,
+                                            chat_id,
+                                            &unchecked_note(&job),
+                                        )
+                                        .await;
+                                        self.shared
+                                            .store
+                                            .mark(&job.id, "noted", None)
+                                            .map_err(|e| e.to_string())?;
+                                        format!("{} is here; its session can't be woken, so {channel} was told where.", job.out_path)
                                     }
                                 }
-                            }
-                            self.shared
-                                .store
-                                .mark(&job.id, "done", None)
-                                .map_err(|e| e.to_string())?;
+                                _ => {
+                                    self.shared
+                                        .store
+                                        .mark(&job.id, "done", None)
+                                        .map_err(|e| e.to_string())?;
+                                    format!("{} is here.", job.out_path)
+                                }
+                            };
                             self.shared.ledger(
                                 Row {
                                     session_id: &job.id,
@@ -1219,8 +1307,29 @@ impl BuiltinJob for MediaPoller {
                 }
             }
         }
+        // M65 §4: a woken session that didn't check its video in time (a
+        // failed turn, `/stop`, a restart) leaves the chat a note instead.
+        let mut noted = 0usize;
+        for job in self
+            .shared
+            .store
+            .stale_checking(now_unix() - CHECK_FOR)
+            .map_err(|e| e.to_string())?
+        {
+            if let (Some(channel), Some(chat_id)) = (&job.channel, &job.chat_id) {
+                let _ = say(&self.shared, channel, chat_id, &unchecked_note(&job)).await;
+            }
+            self.shared
+                .store
+                .mark(&job.id, "noted", None)
+                .map_err(|e| e.to_string())?;
+            noted += 1;
+        }
         Ok(JobReport {
-            summary: format!("media poller: {done} delivered, {failed_n} failed"),
+            summary: format!(
+                "media poller: {done} finished, {failed_n} failed, {noted} unchecked after {} minutes",
+                CHECK_FOR / 60
+            ),
             incomplete: None,
         })
     }

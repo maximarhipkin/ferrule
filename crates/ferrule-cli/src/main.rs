@@ -3047,11 +3047,18 @@ async fn gateway_factory(
             // every mode none of the owner's memory or learned skills.
             let owners = owner_mode::owner_tree(&tree_cfg, &hub, session_id);
             agent.append_system_prompt(ferrule_agents::prompts::CHAT_FILES);
-            agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
-                files.clone(),
-                session_id,
-                session_hidden(owner, owners, &workspace),
-            )));
+            // M65 §4: an image or video the agent made goes once its model
+            // has looked at it (pixels, or the vision helper's words).
+            let looked = ferrule_core::vision::Looked::default();
+            agent.set_looked(looked.clone());
+            agent.register_tool(Arc::new(
+                ferrule_gateway::tools::SendFileTool::new(
+                    files.clone(),
+                    session_id,
+                    session_hidden(owner, owners, &workspace),
+                )
+                .checking(looked, agent.understands_images(), video.is_some()),
+            ));
             // M51: media generation, bound to the same chat.
             if let Some(media) = &media {
                 agent.append_system_prompt(ferrule_agents::prompts::CHAT_MEDIA);
@@ -3087,13 +3094,16 @@ async fn gateway_factory(
                 } else {
                     Arc::new(video_sandbox.narrowed(&owner_mode::guest_hidden(&workspace)))
                 };
-                agent.register_tool(Arc::new(ferrule_gateway::tools::WatchVideoTool::new(
-                    sandbox,
-                    ffmpeg.clone(),
-                    transcriber.clone(),
-                    session_id,
-                    session_hidden(owner, owners, &workspace),
-                )));
+                agent.register_tool(Arc::new(
+                    ferrule_gateway::tools::WatchVideoTool::new(
+                        sandbox,
+                        ffmpeg.clone(),
+                        transcriber.clone(),
+                        session_id,
+                        session_hidden(owner, owners, &workspace),
+                    )
+                    .with_media(media.clone()),
+                ));
             }
             // M61: screenshots and recordings of the owner's screen, in the
             // owner's own chats only. The card goes to this chat (from an
@@ -3297,6 +3307,8 @@ async fn run_gateway(
     files.bind(&router);
     if let Some(m) = &media {
         m.bind(&router);
+        // M65 §4: a sent file settles its media job.
+        files.bind_media(m);
     }
     admin.bind_router(Arc::downgrade(&router));
     // A chat whose agents report while it's idle is run again, and its

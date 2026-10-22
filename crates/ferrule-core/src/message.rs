@@ -69,6 +69,10 @@ pub struct ImageRef {
     /// description. A model that sees gets the pixels and ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<ImageCheck>,
+    /// M65 §4: the file this image is a view of (a video's contact sheet
+    /// shows the video): looking at the image counts as looking at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shows: Option<String>,
 }
 
 /// M65 §0: a check the vision helper makes of a tool's image: the task,

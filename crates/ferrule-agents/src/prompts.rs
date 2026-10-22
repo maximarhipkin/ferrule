@@ -59,10 +59,13 @@ and call `send_file`. If this channel can't take files, the tool says so; then s
 /// Added to a chat session's system prompt with the media tools (M51).
 /// Constant per session, so the prompt prefix stays byte-stable.
 pub const CHAT_MEDIA: &str = "## Making images and video\n\
-To create an image, call `generate_image` (with `reference` paths it edits those images). To create a video, \
-call `generate_video`: it answers at once with a job id, and the finished clip is sent to this chat when it's \
-done — never wait on it. Every generation spends the owner's money, video most of all: say the price class \
-before a big batch, and stop when the daily cap says it's reached.";
+To create an image, call `generate_image` (with `reference` paths it edits those images, or keeps the person in a \
+photo). Nothing it makes is sent on its own: look at the image you get back against the request (and the \
+reference), then send it with `send_file`. To create a video, call `generate_video`: it answers at once with a \
+job id, and when the clip is done you're woken to watch it with `watch_video` and send it — never wait on it. \
+When a result is wrong, try again at most twice, then say what's wrong and what you tried. Every generation \
+spends the owner's money, video most of all: say the price class before a big batch, and stop when the daily \
+cap says it's reached.";
 
 /// Added to a chat session's system prompt with M51.4's `speak`. Constant
 /// per session, so the prompt prefix stays byte-stable.
