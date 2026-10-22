@@ -135,6 +135,12 @@ pub struct TelegramChannel {
     /// M54 owner mode: a group runs with the owner's reach, so only the
     /// owner's own messages there reach the agent.
     only_owner_in_groups: bool,
+    /// In an allowed group, admit only messages addressed to the bot: an
+    /// `@username` in the text or caption, a mention of it, or a reply to
+    /// one of its messages. Everything else there never reaches the agent.
+    mention_only_in_groups: bool,
+    /// The bot's own id and username (`getMe`), fetched once when needed.
+    me: tokio::sync::OnceCell<Option<(i64, String)>>,
     /// What `setMyCommands` registers (M48).
     menu: Vec<crate::menu::Command>,
     conflict_after: Duration,
@@ -198,6 +204,8 @@ impl TelegramChannel {
             last_ok_poll: Mutex::new(None),
             owner: None,
             only_owner_in_groups: false,
+            mention_only_in_groups: false,
+            me: tokio::sync::OnceCell::new(),
             menu: crate::menu::BUILT_IN.to_vec(),
             conflict_after: CONFLICT_AFTER,
             conflict: Mutex::new(None),
@@ -263,6 +271,32 @@ impl TelegramChannel {
         self
     }
 
+    /// In an allowed group, admit only messages addressed to the bot
+    /// (`[gateway] telegram_group_mention_only`).
+    pub fn with_mention_only_in_groups(mut self, on: bool) -> Self {
+        self.mention_only_in_groups = on;
+        self
+    }
+
+    /// The bot's id and username, from `getMe` once; `None` when it failed.
+    async fn me(&self) -> Option<(i64, String)> {
+        self.me
+            .get_or_init(|| async {
+                match self.call("getMe", json!({})).await {
+                    Ok(me) => Some((
+                        me["id"].as_i64().unwrap_or_default(),
+                        me["username"].as_str().unwrap_or_default().to_string(),
+                    )),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "telegram: getMe failed; group messages aren't filtered by mention");
+                        None
+                    }
+                }
+            })
+            .await
+            .clone()
+    }
+
     /// The commands under the `/` button: the owner's private chat gets
     /// all of them, a group only the ones anyone may send.
     pub fn with_menu(mut self, cmds: Vec<crate::menu::Command>) -> Self {
@@ -298,6 +332,18 @@ impl TelegramChannel {
                     "telegram: ignored a message in group {chat}: owner mode answers only the owner there"
                 );
                 return false;
+            }
+            if chat < 0 && self.mention_only_in_groups {
+                // Fails open: without getMe the bot would go deaf in groups.
+                if let Some((id, username)) = self.me().await {
+                    if !addressed_to(&update["message"], id, &username) {
+                        tracing::debug!(
+                            sender = %msg.sender,
+                            "telegram: ignored a message in group {chat}: it isn't addressed to the bot"
+                        );
+                        return false;
+                    }
+                }
             }
             return true;
         }
@@ -1126,6 +1172,35 @@ fn no_preview() -> Value {
 }
 
 /// A new chat as the owner reads it: a group by its title, a person by
+/// Whether a group message `m` is addressed to the bot `id` / `username`:
+/// `@username` in its text or caption (any case, also `/cmd@username`), a
+/// `text_mention` of the bot, or a reply to one of the bot's messages.
+fn addressed_to(m: &Value, id: i64, username: &str) -> bool {
+    if m["reply_to_message"]["from"]["id"].as_i64() == Some(id) {
+        return true;
+    }
+    let text = m["text"].as_str().or_else(|| m["caption"].as_str()).unwrap_or_default();
+    if !username.is_empty() {
+        let tag = format!("@{}", username.to_lowercase());
+        let lower = text.to_lowercase();
+        let mut from = 0;
+        while let Some(at) = lower[from..].find(&tag) {
+            let end = from + at + tag.len();
+            // `@bot` but not `@botfriend`.
+            if !lower[end..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                return true;
+            }
+            from = end;
+        }
+    }
+    ["entities", "caption_entities"].iter().any(|k| {
+        m[*k].as_array().is_some_and(|es| {
+            es.iter()
+                .any(|e| e["type"] == "text_mention" && e["user"]["id"].as_i64() == Some(id))
+        })
+    })
+}
+
 /// name and @username, with who wrote or added the bot, and the id.
 fn describe(chat: i64, about: &Value, from: &Value) -> String {
     let name = [from["first_name"].as_str(), from["last_name"].as_str()]
@@ -1747,6 +1822,24 @@ impl Channel for TelegramChannel {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn addressed_to_needs_a_mention_or_a_reply() {
+        use super::addressed_to;
+        use serde_json::json;
+        let me = (42, "oriArhBot");
+        let at = |m: serde_json::Value| addressed_to(&m, me.0, me.1);
+        assert!(at(json!({"text": "@oriArhBot make the video"})));
+        assert!(at(json!({"text": "hey @ORIARHBOT."})));
+        assert!(at(json!({"text": "/status@oriArhBot"})));
+        assert!(at(json!({"caption": "for @oriArhBot"})));
+        assert!(at(json!({"text": "ok", "reply_to_message": {"from": {"id": 42}}})));
+        assert!(at(json!({"text": "you", "entities": [{"type": "text_mention", "user": {"id": 42}}]})));
+        assert!(!at(json!({"text": "@KimiArhBot make the video"})));
+        assert!(!at(json!({"text": "@oriArhBotx hi"})));
+        assert!(!at(json!({"text": "ok", "reply_to_message": {"from": {"id": 7}}})));
+        assert!(!at(json!({"photo": []})));
+    }
+
     use super::*;
 
     #[test]

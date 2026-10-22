@@ -651,6 +651,12 @@ const FORM: &[Field] = &[
         help: "Stream in Telegram",
     },
     Field {
+        key: "gateway.telegram_group_mention_only",
+        kind: "bool",
+        choices: &[],
+        help: "Telegram groups: answer only an @mention or a reply",
+    },
+    Field {
         key: "gateway.discord_stream",
         kind: "bool",
         choices: &[],
