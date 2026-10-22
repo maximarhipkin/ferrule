@@ -49,7 +49,7 @@ impl Inbox {
         Refused {
             name: name.to_string(),
             why: format!(
-                "it is {}, over the {} limit (max_file_mb)",
+                "it is {}, over the {} {TOO_BIG}",
                 human(bytes),
                 human(self.max_bytes)
             ),
@@ -89,10 +89,12 @@ pub fn note(saved: &Saved) -> String {
     // A photo is handed to the model as pixels when it can see (M47); when
     // it can't, the provider layer adds that to its own note. So this line
     // doesn't claim either.
-    let then = if kind == "photo" {
-        ""
-    } else {
-        " Open it with your tools if you need it; you can't see images."
+    let then = match kind {
+        "photo" => "",
+        // M65 §1: a video is watched, frames and sound, when the tool is
+        // there.
+        "video" => " Watch it with watch_video (when you have it) before you answer about it.",
+        _ => " Open it with your tools if you need it; you can't see images.",
     };
     format!(
         "[The sender attached {} {kind}: {} ({}, {}).{then}]",
@@ -101,6 +103,18 @@ pub fn note(saved: &Saved) -> String {
         saved.mime,
         human(saved.bytes)
     )
+}
+
+/// How a file refused for its size ends its reason ([`Inbox::too_big`],
+/// [`read_capped`]).
+const TOO_BIG: &str = "limit (max_file_mb)";
+
+/// M65 §5: whether a message's text says a file was refused for its size
+/// (the line [`refused_note`] writes), so the owner can be offered the
+/// dashboard's upload instead.
+pub fn has_too_big(text: &str) -> bool {
+    text.lines()
+        .any(|l| l.contains("which wasn't saved:") && l.contains(TOO_BIG))
 }
 
 /// The line the agent reads for a file that wasn't saved.
@@ -137,7 +151,7 @@ pub async fn read_capped(mut resp: reqwest::Response, max: u64) -> Result<Vec<u8
     if let Some(len) = resp.content_length() {
         if len > max {
             return Err(format!(
-                "it is {}, over the {} limit (max_file_mb)",
+                "it is {}, over the {} {TOO_BIG}",
                 human(len),
                 human(max)
             ));
@@ -149,7 +163,7 @@ pub async fn read_capped(mut resp: reqwest::Response, max: u64) -> Result<Vec<u8
             Ok(Some(c)) => {
                 out.extend_from_slice(&c);
                 if out.len() as u64 > max {
-                    return Err(format!("it is over the {} limit (max_file_mb)", human(max)));
+                    return Err(format!("it is over the {} {TOO_BIG}", human(max)));
                 }
             }
             Ok(None) => return Ok(out),

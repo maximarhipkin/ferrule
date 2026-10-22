@@ -3,6 +3,16 @@
 **Status.** Built 2026-10-21. Source: `docs/research-harness2-media.md`
 §4 (M51). Deviations below the design.
 
+**Since M65** ([m65-video.md](m65-video.md), 2026-10-22): nothing this
+milestone makes reaches a chat on its own. `generate_image` hands the
+image back to the model to check and `send_file` sends it; the poller
+fetches a finished video and wakes the chat's session to watch it with
+`watch_video`, and a clip still unchecked after 30 minutes gets a note in
+the chat instead. `generate_video` takes reference images in the owner's
+chats, the caps are 10 videos a day and $3 a video, and Seedance (billed
+per video token) is priced at 720p. What's below describes M51 as it was
+built.
+
 ## What changes
 
 The agent can **create** media, not only see it. Two chat-bound tools,

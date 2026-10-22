@@ -1,6 +1,7 @@
 //! M51: what `[media]` becomes at gateway start (`docs/m51-media.md`) —
 //! the shared backend + jobs table behind `generate_image`,
-//! `generate_video`, M51.4's `speak` and the video poller. Off unless `[media] provider`
+//! `generate_video`, M51.4's `speak`, the video poller and M65's vision
+//! helper. Off unless `[media] provider`
 //! names a connected provider with an OpenRouter-compatible media
 //! endpoint.
 
@@ -96,6 +97,7 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<MediaShared>> {
         video_models: cfg.media.video_models.clone(),
         max_videos_per_day: cfg.media.max_videos_per_day,
         max_usd_per_video: cfg.media.max_usd_per_video,
+        reference_models: cfg.media.reference_models.clone(),
     });
     // Media dollars answer to [trust]'s caps and count toward them.
     match crate::trust::hub(cfg) {
@@ -106,6 +108,11 @@ pub fn shared(cfg: &config::Config) -> Option<Arc<MediaShared>> {
             ));
             return None;
         }
+    }
+    // M65 §0: the vision helper unless its model is set to "".
+    let vision = cfg.media.vision_model.trim();
+    if !vision.is_empty() {
+        shared.set_vision(vision.to_string());
     }
     // M51.4: `speak` unless the speech model is set to "".
     let speech = cfg.media.speech_model.trim();

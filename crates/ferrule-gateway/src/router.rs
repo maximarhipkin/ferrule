@@ -1168,7 +1168,8 @@ async fn run_lane(
             _ => None,
         };
         // M47: a photo the adapter saved goes to a model that can see as
-        // pixels; for one that can't, the provider layer turns it into a note.
+        // pixels; for one that can't, the provider layer turns it into a note,
+        // or (M65 §0) the agent's vision helper describes it.
         let photos: Vec<ImageRef> = inbound
             .attachments
             .iter()
@@ -1177,10 +1178,11 @@ async fn run_lane(
                 path: a.url.clone(),
                 mime: a.kind.clone(),
                 name: a.name.clone(),
+                ..Default::default()
             })
             .collect();
         if !photos.is_empty() {
-            if !told_no_vision && !agent.sees_images() {
+            if !told_no_vision && !agent.understands_images() {
                 told_no_vision = true;
                 if let Some(ch) = &channel {
                     let msg = OutboundMessage {

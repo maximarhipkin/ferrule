@@ -1640,6 +1640,106 @@ Current State; numbers are claimed there before anything is built.
     settings write goes the Config page's way (base hash, loader check,
     guard, version) and the pass's task follows at once. Not run live.
 
+- **M65, video it understands, edits and checks** (one commit per task
+  on `autopilot`; `docs/m65-video.md`):
+  - **§0, a vision helper for a chat model that can't see**: `[media]
+    vision_model` (default `google/gemini-3.8-flash`, `""` turns it off)
+    on the `[media]` backend (`MediaBackend::look`, OpenRouter's
+    `/chat/completions`). An agent whose model doesn't see images (the
+    Claude plan) gets a `Looker` at construction; each photo, steered
+    photo and tool image is described once, as its message is added, and
+    the line `[image <name>, described by <model>: …]` takes its place
+    (`ImageRef::described`, kept in history). A tool may ask for a check
+    instead (`ImageRef::check`, a task and a reference image). Each call
+    is a `media` ledger row charged to the run under the `[trust]` dollar
+    caps; answers are cached by path, modification time and task. The
+    chat's "can't see photos" notice is skipped when there's a helper,
+    and the Claude engine's bridged tool results carry the lines. Not run
+    live.
+  - **§1, `watch_video {path, start?, end?, frames?}`**: ffprobe's facts
+    (length, size, container, picture size with a phone's rotation, fps,
+    codecs, sound or not); one contact sheet, 12 frames by default (1–16)
+    spread evenly over the window, each seeked with `-ss` before its
+    input and tiled with `concat` and `tile` into one JPEG at most 2048 px
+    a side, the timestamps listed in reading order; the sound (at most 10
+    minutes a call) as AAC to the gateway's `Transcriber`, or a sentence
+    that transcription is off. ffmpeg and ffprobe run through the
+    session's sandbox (a guest's narrowed) with `-protocol_whitelist
+    file`, a timeout and stderr's last line as the error; files under
+    `.ferrule/watch/`, pruned after a day. For a model that can't see,
+    the sheet carries a check task for the §0 helper. Offered in chats
+    where both programs are found (on `PATH` or in Homebrew's dirs), with
+    a `CHAT_VIDEO` prompt line; an inbound video's line points at it;
+    `ferrule doctor` says when it isn't offered. Not run live.
+  - **§2, editing as a bundled skill**: `video-editing` in
+    `crates/ferrule-skills/bundled/` (M63.1's format), ffmpeg recipes for
+    the sandboxed shell: probe, trim (stream copy vs re-encode), cut,
+    join (the concat demuxer, the concat filter for clips that differ,
+    silence for a silent clip), crop and resize to 9:16, 1:1 and 16:9
+    (filled, or on a blurred pad), speed, subtitles (burned with libass,
+    else a soft track), a voice-over, music ducked under it
+    (`sidechaincompress`), fades, mute, the sound alone, a GIF, a
+    full-size still for a reference, compressing to a size (two passes,
+    Telegram's 50 MB), PowerShell's differences; watch, then send, at
+    most two retries. `speak` gains `send: false` (save the MP3 only,
+    for a voice-over). Not run live.
+  - **§3, the same person**: `generate_video` gains `reference`
+    (workspace images sent as `input_references` beside `first_frame`),
+    offered and taken only in the owner's chats and the owner's
+    sub-agents, refused for a model not in `[media] reference_models`
+    (OpenRouter's listing doesn't say which take them; default Seedance
+    2.5, 2.0 and 2.0 Fast, Wan 3.0, HeyGen Video 1) with the models that
+    do named. `generate_image`'s description says how to keep a person.
+    The owner's caps: `video_models` default Seedance 2.5 and Veo 3.1
+    Fast, `max_videos_per_day` 3 → 10, `max_usd_per_video` $1 → $3. A
+    model billed per video token is priced at 720p, 24 fps, and asked
+    for 720p (`resolution`). HeyGen's Avatar IV is left out: the listing
+    doesn't say where its script goes. Not run live.
+  - **§4, check before sending**: `generate_image` no longer sends; the
+    image comes back with "Not sent: look at it against the request (and
+    the reference)", and, for a model that can't see, a check task for
+    the §0 helper (OK or NOT OK, a different person, warped faces, hands
+    or text, framing, what's missing). The poller no longer sends a
+    finished video: it wakes the session that asked (`Router::wake`) to
+    `watch_video` it (whose sheet is checked against the job's request
+    and reference) and `send_file` it, and the job is `checking`; still
+    `checking` 30 minutes later, or no lane to wake, the chat gets a text
+    note (where it is, "send it" sends it as is) and the job is `noted`.
+    `media_jobs` gains `refs` and `woken_at`. `send_file` refuses an
+    image or video outside `uploads/`, `inbox/` and `media/screen/` that
+    this session's model hasn't looked at since it last changed
+    (`vision::Looked`, recorded by the agent as tool images reach the
+    model, a contact sheet counting for its video); `unchecked` sends one
+    marked "Not checked: …" only where looking can't be done; a `noted`
+    video goes when the owner asks; a sent file's job becomes `done`.
+    `CHAT_MEDIA` says so, with the retry budget (two). Not run live.
+  - **§5, big files and a media library in the dashboard**: a Files
+    page. Uploads go up in 32 MB pieces (`PUT
+    /api/files/upload/<id>?offset=`, the session, origin and CSRF checks
+    of a POST, one piece in memory through the existing big-body slots),
+    resume from the server's offset after a dropped connection (and from
+    the same file chosen again), and land in `uploads/<day>/` once the
+    size checks; `[dashboard] max_upload_mb` (2048), refused under 1 GB
+    free, parts gone after a day. A file too big for the owner's own
+    chat gets a one-time login link to the page tied to that chat, which
+    is woken with the path when the upload ends; from the page itself,
+    words go with the file to its chat. The library lists `uploads/`,
+    `inbox/` and `media/` newest first, filtered by kind and source, with
+    posters (an image itself, a video's frame made once with ffmpeg in
+    the sandbox under `.ferrule/thumbs/`), and for what the agent made
+    its prompt, model, cost (`media_jobs` gains `cost_usd`) and whether
+    it was checked and sent (`unchecked` when it went marked). Open (in
+    the browser's player, `Range` answered, never read whole), Download,
+    Use in chat, Delete (to `.ferrule/trash/`, emptied after 7 days by
+    housekeeping). Only images, video and audio show inline; anything
+    else downloads. Not run live.
+  - **§6, docs**: `docs/models.md` ("Making media": the checks,
+    references, the avatar left out, editing; "Photos": the vision
+    helper), `docs/vision.md` (`watch_video`, the helper, `Looked`),
+    `docs/dashboard.md` (Files), `docs/housekeeping.md` (posters, the
+    trash), a note atop `docs/m51-media.md`, the README's link, and
+    `docs/m65-video.md`'s "As built".
+
 **Still open from earlier tracks.**
 
 - **M12 part 6**, named long-lived agents, waits on how a chat

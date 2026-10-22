@@ -26,7 +26,10 @@ impl JobKind {
     }
 }
 
-/// One row. `state`: `pending` | `done` | `failed`.
+/// One row. `state`: `pending` | `done` | `failed`; M65 §4 adds
+/// `checking` (made, not yet sent: a video's session was woken to watch
+/// it, an image went back to the model) and `noted` (the owner was told a
+/// video finished unchecked, and where it is). `done` is sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaJob {
     pub id: String,
@@ -47,10 +50,40 @@ pub struct MediaJob {
     /// A video's cost as estimated at submit (dollars), which its submit
     /// row charged; the delivery row settles it to the provider's bill.
     pub estimate_usd: Option<f64>,
+    /// M65 §4: the reference images it was asked to keep (workspace paths).
+    pub references: Vec<String>,
+    /// M65 §4: when a finished video's session was woken to check it.
+    pub woken_at: Option<i64>,
+    /// M65 §5: what the provider billed (dollars), when it said: an
+    /// image's at once, a video's when it was fetched.
+    pub cost_usd: Option<f64>,
 }
 
-const COLUMNS: &str =
-    "id, kind, created_at, model, prompt, out_path, channel, chat_id, state, error, tree, estimate_usd";
+const COLUMNS: &str = "id, kind, created_at, model, prompt, out_path, channel, chat_id, state, error, tree, estimate_usd, refs, woken_at, cost_usd";
+
+/// A row as a [`MediaJob`], in [`COLUMNS`]' order.
+fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MediaJob> {
+    let refs: Option<String> = r.get(12)?;
+    Ok(MediaJob {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        created_at: r.get(2)?,
+        model: r.get(3)?,
+        prompt: r.get(4)?,
+        out_path: r.get(5)?,
+        channel: r.get(6)?,
+        chat_id: r.get(7)?,
+        state: r.get(8)?,
+        error: r.get(9)?,
+        tree: r.get(10)?,
+        estimate_usd: r.get(11)?,
+        references: refs
+            .map(|r| r.lines().map(str::to_string).collect())
+            .unwrap_or_default(),
+        woken_at: r.get(13)?,
+        cost_usd: r.get(14)?,
+    })
+}
 
 pub struct JobStore {
     conn: Mutex<Connection>,
@@ -80,7 +113,13 @@ impl JobStore {
         )
         .map_err(|e| MediaError::Store(e.to_string()))?;
         // Columns added after M51: a table from before gets them empty.
-        for (column, ty) in [("tree", "TEXT"), ("estimate_usd", "REAL")] {
+        for (column, ty) in [
+            ("tree", "TEXT"),
+            ("estimate_usd", "REAL"),
+            ("refs", "TEXT"),
+            ("woken_at", "INTEGER"),
+            ("cost_usd", "REAL"),
+        ] {
             let has = conn
                 .prepare("SELECT name FROM pragma_table_info('media_jobs') WHERE name = ?1")
                 .and_then(|mut st| st.exists(params![column]))
@@ -104,7 +143,7 @@ impl JobStore {
             .execute(
                 &format!(
                     "INSERT INTO media_jobs ({COLUMNS})
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
                 ),
                 params![
                     job.id,
@@ -118,7 +157,10 @@ impl JobStore {
                     job.state,
                     job.error,
                     job.tree,
-                    job.estimate_usd
+                    job.estimate_usd,
+                    (!job.references.is_empty()).then(|| job.references.join("\n")),
+                    job.woken_at,
+                    job.cost_usd
                 ],
             )
             .map_err(|e| MediaError::Store(e.to_string()))?;
@@ -164,25 +206,83 @@ impl JobStore {
             ))
             .map_err(|e| MediaError::Store(e.to_string()))?;
         let rows = st
-            .query_map([], |r| {
-                Ok(MediaJob {
-                    id: r.get(0)?,
-                    kind: r.get(1)?,
-                    created_at: r.get(2)?,
-                    model: r.get(3)?,
-                    prompt: r.get(4)?,
-                    out_path: r.get(5)?,
-                    channel: r.get(6)?,
-                    chat_id: r.get(7)?,
-                    state: r.get(8)?,
-                    error: r.get(9)?,
-                    tree: r.get(10)?,
-                    estimate_usd: r.get(11)?,
-                })
-            })
+            .query_map([], row)
             .map_err(|e| MediaError::Store(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| MediaError::Store(e.to_string()))
+    }
+
+    /// Rows matching `filter` (an SQL condition over the columns), newest
+    /// first, at most `limit`.
+    fn select(
+        &self,
+        filter: &str,
+        args: &[&dyn rusqlite::ToSql],
+        limit: u32,
+    ) -> Result<Vec<MediaJob>, MediaError> {
+        let conn = self.conn.lock().unwrap();
+        let mut st = conn
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM media_jobs WHERE {filter} ORDER BY created_at DESC LIMIT {limit}"
+            ))
+            .map_err(|e| MediaError::Store(e.to_string()))?;
+        let rows = st
+            .query_map(args, row)
+            .map_err(|e| MediaError::Store(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| MediaError::Store(e.to_string()))
+    }
+
+    /// M65 §4: a finished video's session was woken to check it.
+    pub fn mark_checking(&self, id: &str, at: i64) -> Result<(), MediaError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE media_jobs SET state = 'checking', woken_at = ?2 WHERE id = ?1",
+                params![id, at],
+            )
+            .map_err(|e| MediaError::Store(e.to_string()))?;
+        Ok(())
+    }
+
+    /// M65 §4: videos still `checking` since before `before` (unix).
+    pub fn stale_checking(&self, before: i64) -> Result<Vec<MediaJob>, MediaError> {
+        self.select(
+            "kind = 'video' AND state = 'checking' AND woken_at < ?1",
+            &[&before],
+            100,
+        )
+    }
+
+    /// M65 §4: the made-but-unsent rows (`checking` or `noted`), for
+    /// `send_file` to settle and to know the owner's "send it".
+    pub fn unsent(&self) -> Result<Vec<MediaJob>, MediaError> {
+        self.select("state IN ('checking', 'noted')", &[], 500)
+    }
+
+    /// M65 §5: what the provider billed for a job, once it's known.
+    pub fn set_cost(&self, id: &str, usd: f64) -> Result<(), MediaError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE media_jobs SET cost_usd = ?2 WHERE id = ?1",
+                params![id, usd],
+            )
+            .map_err(|e| MediaError::Store(e.to_string()))?;
+        Ok(())
+    }
+
+    /// M65 §5: the newest rows, for the dashboard's library.
+    pub fn recent(&self, limit: u32) -> Result<Vec<MediaJob>, MediaError> {
+        self.select("1 = 1", &[], limit)
+    }
+
+    /// M65 §4: the newest row whose result is `out_path` (as stored), so
+    /// `watch_video` knows what a generated video was asked to be.
+    pub fn made_as(&self, out_path: &str) -> Result<Option<MediaJob>, MediaError> {
+        Ok(self.select("out_path = ?1", &[&out_path], 1)?.pop())
     }
 
     pub fn mark(&self, id: &str, state: &str, error: Option<&str>) -> Result<(), MediaError> {
@@ -211,6 +311,9 @@ impl JobStore {
             error: None,
             tree: None,
             estimate_usd: None,
+            references: Vec::new(),
+            woken_at: None,
+            cost_usd: None,
         }
     }
 

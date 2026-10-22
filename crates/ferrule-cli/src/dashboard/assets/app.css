@@ -700,3 +700,13 @@ dialog.dlg.wide{width:min(520px,calc(100vw - 24px))}
   input[type=checkbox],input[type=radio]{inline-size:20px;block-size:20px}
 }
 @media (max-width:899px){input[type=search]{inline-size:100%}}
+
+/* M65 §5: the Files page */
+.lib{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:var(--sp-3)}
+.lib .item{display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-2);margin:0}
+.lib .thumb-btn{display:block;width:100%;padding:0;border:0;background:none;cursor:pointer}
+.lib .thumb{display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:var(--r-sm);background:var(--panel-3);color:var(--muted)}
+.lib .t{font-weight:var(--fw-strong);overflow-wrap:anywhere}
+.viewer img,.viewer video{display:block;max-width:100%;max-height:70vh;margin:0 auto}
+.viewer audio{width:100%}
+progress{width:100%}

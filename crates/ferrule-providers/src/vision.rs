@@ -258,6 +258,7 @@ mod tests {
             path: p.to_string_lossy().into_owned(),
             mime: "image/jpeg".into(),
             name: Some(name.into()),
+            ..Default::default()
         }
     }
 
@@ -284,6 +285,7 @@ mod tests {
             path: dir.path().join("nope.jpg").to_string_lossy().into_owned(),
             mime: "image/jpeg".into(),
             name: None,
+            ..Default::default()
         };
         assert_eq!(load(&gone), Err(NoteWhy::Missing));
     }

@@ -48,7 +48,7 @@ pub struct Message {
 
 /// An image saved on disk that a user message (a photo) or a tool result
 /// (M60) carries.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ImageRef {
     /// Where the file is (a photo: inside the workspace's inbox; a tool's
     /// image: the absolute path it was read or saved at).
@@ -58,6 +58,30 @@ pub struct ImageRef {
     /// What to call it in a note: the file name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// M65 §0: for a model that can't see, what the vision helper said
+    /// about it, the whole line that takes its place
+    /// ([`crate::vision::Looker`]). Set once, when the message is added,
+    /// so the helper isn't asked again on later turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub described: Option<String>,
+    /// M65 §0: what the tool that returned it wants the helper to check
+    /// (a generated image against its request), instead of a plain
+    /// description. A model that sees gets the pixels and ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<ImageCheck>,
+    /// M65 §4: the file this image is a view of (a video's contact sheet
+    /// shows the video): looking at the image counts as looking at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shows: Option<String>,
+}
+
+/// M65 §0: a check the vision helper makes of a tool's image: the task,
+/// and a second image to hold it against (the person's photo).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ImageCheck {
+    pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// Opaque provider blocks carried with an assistant message (see
@@ -243,6 +267,7 @@ mod tests {
                 path: "inbox/a.png".into(),
                 mime: "image/png".into(),
                 name: None,
+                ..Default::default()
             }],
         );
         let back: Message = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();

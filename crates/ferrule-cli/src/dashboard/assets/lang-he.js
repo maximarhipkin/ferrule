@@ -89,6 +89,8 @@ window.FERRULE_HE = {
   "Search what your bot remembers": "חיפוש בזיכרון של הבוט",
   "Memory": "זיכרון",
   "what it remembers": "מה שהבוט זוכר",
+  "Files": "קבצים",
+  "uploads and media": "העלאות ומדיה",
   "Nothing remembered yet": "עוד לא נשמר כלום",
   "Your bot remembers what you tell it to (\"remember that I like my coffee black\") and what it learns while it works.": "הבוט זוכר מה שתבקשו ממנו (\"תזכור שאני שותה קפה שחור\") ומה שהוא לומד תוך כדי עבודה.",
   "Nothing matches that": "אין התאמה",

@@ -561,6 +561,7 @@ fn a_photo_reaches_the_codex_backend_as_a_typed_message() {
         path: path.to_string_lossy().into_owned(),
         mime: "image/jpeg".into(),
         name: Some("cat.jpg".into()),
+        ..Default::default()
     };
     let p = provider("http://127.0.0.1:1/v1", fake());
     let mut r = req();

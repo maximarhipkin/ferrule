@@ -1312,6 +1312,9 @@ pub(crate) fn child_builder(
     media: Option<Arc<ferrule_gateway::tools::MediaShared>>,
 ) -> agents::Build {
     Arc::new(move |scope, spec, tag| {
+        // M65 §0: a child whose model can't see gets the vision helper,
+        // charged to its root's run.
+        let looker = media.as_ref().and_then(|m| m.looker(&spec.id, &spec.tree));
         let media = match (spec.role, &media) {
             (ferrule_agents::Role::Media, None) => bail!(
                 "a media agent needs the media tools, and this process has none: they run in the gateway with [media] on (docs/m51-media.md). Spawn a worker instead"
@@ -1329,7 +1332,14 @@ pub(crate) fn child_builder(
             Some(spec),
             None,
         )?;
+        if let Some(looker) = looker.filter(|_| !agent.sees_images()) {
+            agent.set_looker(looker);
+        }
         if let Some(media) = media {
+            // M65 §3: a person's photo goes into a clip only for a child of
+            // the owner's own tree.
+            let (cfg, _) = config::Config::load()?;
+            let owners = owner_mode::owner_tree(&cfg, &*trust::hub(&cfg)?, &spec.tree);
             // No chat: the tools save into the parent's workspace and say
             // so; the parent sends the files. References resolve with every
             // hidden path a guest's would (the strictest list).
@@ -1348,7 +1358,8 @@ pub(crate) fn child_builder(
                     &spec.id,
                     session_hidden(false, false, &spec.workspace),
                 )
-                .in_tree(&spec.tree),
+                .in_tree(&spec.tree)
+                .with_references(owners),
             ));
             if media.speaks() {
                 agent.register_tool(Arc::new(
@@ -2972,9 +2983,17 @@ async fn gateway_factory(
     // M61: the owner's own screen, view only, when `[screen]` is on and
     // there's a desktop to see.
     let screen = screen::Screen::offered(&cfg.screen, trust::hub(cfg)?, sandbox.clone());
+    // M65 §1: `watch_video` where ffmpeg and ffprobe are, in the sandbox
+    // the session's commands get, with the gateway's transcription.
+    let video = ferrule_gateway::tools::Ffmpeg::find();
+    let video_sandbox = sandbox.clone();
     let mcp_tools = connect_mcp_servers(&mcp_servers(cfg), sandbox, &workspace).await?;
     mcp_tools.ask_the_owner(trust::hub(cfg)?);
     let ledger_sink = ledger::build_sink(cfg);
+    let transcriber = match transcription::build(cfg, ledger_sink.clone()) {
+        Ok(ferrule_gateway::Transcription::On(t)) => Some(t),
+        _ => None,
+    };
     // M21: a scheduled task's own model, read per call from tasks.db so
     // `ferrule tasks model` reaches a lane that's already running.
     let tasks = TaskStore::open(config::data_dir()?.join("tasks.db"))?;
@@ -3010,6 +3029,16 @@ async fn gateway_factory(
             None,
         )
         .map_err(|e| fail(e.to_string()))?;
+        // M65 §0: a model that can't see gets the vision helper: photos and
+        // tool images reach it as what a cheap vision model says of them.
+        if !agent.sees_images() {
+            if let Some(looker) = media
+                .as_ref()
+                .and_then(|m| m.looker(session_id, session_id))
+            {
+                agent.set_looker(looker);
+            }
+        }
         // M39: a chat's agent sends files to its own chat; a remote
         // workspace's files aren't here to send. Sub-agents don't get it:
         // their answer goes to their parent, which sends the file.
@@ -3018,11 +3047,18 @@ async fn gateway_factory(
             // every mode none of the owner's memory or learned skills.
             let owners = owner_mode::owner_tree(&tree_cfg, &hub, session_id);
             agent.append_system_prompt(ferrule_agents::prompts::CHAT_FILES);
-            agent.register_tool(Arc::new(ferrule_gateway::tools::SendFileTool::new(
-                files.clone(),
-                session_id,
-                session_hidden(owner, owners, &workspace),
-            )));
+            // M65 §4: an image or video the agent made goes once its model
+            // has looked at it (pixels, or the vision helper's words).
+            let looked = ferrule_core::vision::Looked::default();
+            agent.set_looked(looked.clone());
+            agent.register_tool(Arc::new(
+                ferrule_gateway::tools::SendFileTool::new(
+                    files.clone(),
+                    session_id,
+                    session_hidden(owner, owners, &workspace),
+                )
+                .checking(looked, agent.understands_images(), video.is_some()),
+            ));
             // M51: media generation, bound to the same chat.
             if let Some(media) = &media {
                 agent.append_system_prompt(ferrule_agents::prompts::CHAT_MEDIA);
@@ -3031,11 +3067,16 @@ async fn gateway_factory(
                     session_id,
                     session_hidden(owner, owners, &workspace),
                 )));
-                agent.register_tool(Arc::new(ferrule_gateway::tools::GenerateVideoTool::new(
-                    media.clone(),
-                    session_id,
-                    session_hidden(owner, owners, &workspace),
-                )));
+                // M65 §3: a person's photo goes into a clip only for the
+                // owner's own chats.
+                agent.register_tool(Arc::new(
+                    ferrule_gateway::tools::GenerateVideoTool::new(
+                        media.clone(),
+                        session_id,
+                        session_hidden(owner, owners, &workspace),
+                    )
+                    .with_references(owners),
+                ));
                 // M51.4: a voice reply.
                 if media.speaks() {
                     agent.append_system_prompt(ferrule_agents::prompts::CHAT_VOICE);
@@ -3044,6 +3085,25 @@ async fn gateway_factory(
                         session_id,
                     )));
                 }
+            }
+            // M65 §1: watching a video, frames and sound.
+            if let Some(ffmpeg) = &video {
+                agent.append_system_prompt(ferrule_agents::prompts::CHAT_VIDEO);
+                let sandbox = if owners {
+                    video_sandbox.clone()
+                } else {
+                    Arc::new(video_sandbox.narrowed(&owner_mode::guest_hidden(&workspace)))
+                };
+                agent.register_tool(Arc::new(
+                    ferrule_gateway::tools::WatchVideoTool::new(
+                        sandbox,
+                        ffmpeg.clone(),
+                        transcriber.clone(),
+                        session_id,
+                        session_hidden(owner, owners, &workspace),
+                    )
+                    .with_media(media.clone()),
+                ));
             }
             // M61: screenshots and recordings of the owner's screen, in the
             // owner's own chats only. The card goes to this chat (from an
@@ -3247,6 +3307,8 @@ async fn run_gateway(
     files.bind(&router);
     if let Some(m) = &media {
         m.bind(&router);
+        // M65 §4: a sent file settles its media job.
+        files.bind_media(m);
     }
     admin.bind_router(Arc::downgrade(&router));
     // A chat whose agents report while it's idle is run again, and its
@@ -3389,9 +3451,19 @@ async fn run_gateway(
             .ok()
             .and_then(|s| s.refusal().map(str::to_string)),
     };
+    // M65 §5: the Files page's uploads and library.
+    let library = Arc::new(dashboard::files_page::Library::new(
+        workspace.clone(),
+        cfg.dashboard.max_upload_mb,
+        media.as_ref().map(|m| m.store.clone()),
+        shared_sandbox(&cfg)
+            .ok()
+            .zip(ferrule_gateway::tools::Ffmpeg::find()),
+    ));
     let make_ctx = || dashboard::Ctx {
         live: Some(live.clone()),
         chat: page_chat.clone(),
+        files: Some(library.clone()),
         ..dashboard::Ctx::from_config(&cfg)
     };
     let dash = if cfg.dashboard.enabled {
@@ -3439,6 +3511,12 @@ async fn run_gateway(
         .with_interceptor(files.questions());
     if let Some(dash) = &dash {
         gateway = gateway.with_interceptor(Arc::new(dashboard::door::DashboardDoor {
+            dash: dash.clone(),
+            hub: hub.clone(),
+        }));
+        // M65 §5: a file too big for the owner's chat gets a link to the
+        // Files page; the message still goes on to the agent.
+        gateway = gateway.with_interceptor(Arc::new(dashboard::files_page::TooBigDoor {
             dash: dash.clone(),
             hub: hub.clone(),
         }));

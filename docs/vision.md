@@ -21,11 +21,16 @@ decides what goes on the wire: the pixels, or a one-line note.
   ([browser.md](browser.md), "Limits"); each saved part that is an image
   now goes to the model too.
 - **`generate_image`** ([models.md](models.md), "Making media"): the image
-  it saved under `media/`, so the model can check what it made before
-  saying so. That costs an image's tokens per call.
+  it saved under `media/`, so the model can check what it made before it
+  sends it (since M65 it isn't sent by the tool). That costs an image's
+  tokens per call.
 - **`screenshot`** (M61, [m61-screen.md](m61-screen.md)): a capture of
   the owner's own Mac screen, offered only in the owner's chats with
   `[screen]` on.
+- **`watch_video`** (M65, [m65-video.md](m65-video.md)): one contact
+  sheet of a video's frames (12 by default, at most 16, tiled into one
+  JPEG at most 2048 pixels a side), so a video uses one of the four pixel
+  slots; the text lists each tile's time and what is said.
 
 A tool adds an image with `ToolOutput::with_images`; the agent puts the
 images on the tool's result message (`Message::images`).
@@ -65,6 +70,44 @@ each image, after the tool's own text:
 If a provider answers a request with a 400 that names images, the request
 is sent once more with notes, and that provider gets notes from then on
 (M47's rule, now covering tool images as well).
+
+### The vision helper (M65)
+
+A chat model that can't see (the Claude plan, run through Claude Code, is
+one) gets a second model to look for it when `[media]` is on:
+
+```toml
+[media]
+vision_model = "google/gemini-3.8-flash"   # the default; "" turns it off
+```
+
+It is wired when the chat's agent is built, only for a model that doesn't
+see (`Agent::set_looker`). As a message is added (a photo, a photo sent
+while the agent works, a tool's result), each of its images goes to the
+helper once, with a task, and the answer is kept in the history in the
+image's place (`ImageRef::described`):
+
+```
+[image 1761060000-0.png, described by google/gemini-3.8-flash: …]
+```
+
+A tool can ask for a check instead of a description (`ImageRef::check`):
+`generate_image` asks for OK or NOT OK against its request and, with a
+reference, whether it's the same person (the reference goes as a second
+image); `watch_video`'s sheet asks for a tile-by-tile account and what
+looks wrong, against the request and reference when the video was
+generated. When the helper fails, the line says the image is unchecked
+and why. Each look is a ledger row (`call_kind = "media"`) charged to the
+run under the `[trust]` dollar caps, and answers are kept by the file's
+path, modification time and task, so the same file isn't paid for twice.
+
+### What the model has looked at (M65)
+
+As a tool's result is added, the agent records each image the model got
+(pixels, or the helper's words) and the video a contact sheet shows
+(`vision::Looked`, with the file's modification time). `send_file` reads
+it: an image or video the agent made goes only once it was looked at
+since it last changed ([models.md](models.md), "Making media").
 
 ## Only the newest few, as pixels
 
@@ -125,6 +168,8 @@ image with a 400 whose message names images, the retry above applies.
 ## Not covered
 
 - The Claude Code plan engine is text-only: its own tools run inside it.
+  Ferrule's tools it calls through the bridge return their text and,
+  since M65, the image notes or the vision helper's descriptions.
 - The dashboard's chat doesn't show a tool's images.
 - No live run against the providers yet: the wire shapes are checked by
   the code paths above, not by a real Anthropic, OpenAI or ChatGPT-plan

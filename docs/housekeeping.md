@@ -13,6 +13,8 @@ transcript, memory, the ledger, the config or a key.**
 | `mcp-content` | `<workspace>/.ferrule/mcp-content/` | images and files MCP servers returned (the browser's screenshots) | same |
 | `screen` | `<workspace>/media/screen/` | M61's screenshots and recordings | same |
 | `reactions` | `<data>/learn/reactions/` | M53.5's transcript cuts kept for a 👎 | same |
+| `thumbs` | `<workspace>/.ferrule/thumbs/` | the Files page's video posters (M65, made again when asked for) | same |
+| `trash` | `<workspace>/.ferrule/trash/` | what the Files page deleted (M65) | files older than 7 days, whatever `keep_days` says |
 | `audit` | `<data>/trust/audit.jsonl` | the trust audit log | `egress` and `egress_denied` lines older than `keep_days`; every other event older than `audit_keep_days` |
 
 `<workspace>` is the gateway's workspace (for `ferrule housekeeping run`,

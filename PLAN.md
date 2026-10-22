@@ -30,17 +30,20 @@ below it is append-only.
   result. The user-facing overview is `README.md`; every milestone's
   design and status is in `docs/roadmap.md`.
 - **Releases and branches** (checked 2026-10-21, evening):
-  - The latest release is **v0.14.1** (2026-10-22, tagged on `main`
-    after PR #58): M64.4–M64.5 (the proactive heartbeat, feedback,
+  - The latest release is **v0.14.2** (2026-10-22, tagged on `main`
+    after PR #61): M65 (video it understands, edits and checks before
+    sending; the vision helper; the dashboard Files page), on top of
+    v0.14.1. Every crate is at 0.14.2 except `ferrule-plugin-sdk`.
+    Before it, **v0.14.1** (2026-10-22, tagged on `main` after PR #58): M64.4–M64.5 (the proactive heartbeat, feedback,
     `/proactive` and its page), wave C (M53.1's contrast gate, OAuth
     clients for more MCP servers, MCP 2026-07-28) and PR #59's Windows
     fix, on top of v0.14.0. Every crate is at 0.14.1 except
     `ferrule-plugin-sdk`, which keeps 0.1.0. Before it: **v0.14.0**
     (2026-10-22, from `main` at `ea88e4a`: everything through M64.3,
     PRs #43–#56) and v0.13.1 (2026-10-20, through M49).
-  - **`main` is `0714a42`** (PR #59, the Windows sandbox fix, 2026-10-22;
-    before it #55 wave A, #56 wave B and M64.0–M64.3, #57 the 0.14.0
-    release). PRs **#44–#54 are all merged** too:
+  - **`main` is `1c9fee1`** (PR #58: M64.4, M64.5, wave C and the 0.14.1
+    release, 2026-10-22; before it #59 the Windows sandbox fix, #55 wave
+    A, #56 wave B and M64.0–M64.3, #57 the 0.14.0 release). PRs **#44–#54 are all merged** too:
     #44 "Allow for this run", #45 the Claude plan engine's bridged tools,
     #46 Telegram follow-ups (all 2026-10-20); #48 Kimi's M51–M53; #47,
     #49, #51, #52 and #53 the `autopilot` stacks (the gap analysis's
@@ -49,9 +52,9 @@ below it is append-only.
     owner's Telegram groups; #54 M62, compaction's summary input (a
     Cursor session on `cursor/compaction-summary-m62-a6a4`). CI was
     green on all three OSes for #53's and #54's merges.
-  - **`autopilot`** (open as PR #58) carries M64.4, M64.5 and wave C
-    (below), one commit per task, with `main` merged in through
-    `0714a42`; the coordinator pushes.
+  - **`autopilot`** is `main` (`1c9fee1`, PR #58 merged) plus M65:
+    the design branch `m65-video` merged in (2026-10-22), then its build,
+    one commit per task (below); the coordinator pushes.
 - **What landed on 2026-10-21:** M51–M53's follow-ups (media's poller,
   the media role and voice; the Safe's inventory, rotate, edit-hosts and
   config editing; learning's evidence clipping, learned skills, scopes,
@@ -186,6 +189,14 @@ below it is append-only.
   `ferrule-mcp` speaks MCP 2026-07-28 next to 2025-06-18, finding a
   server's era once (`server/discover` probe on stdio, a first modern
   request over HTTP).
+- **M65, video it understands, edits and checks** (2026-10-22) on
+  `autopilot`, after the 0.14.1 merge, one commit and one Session Log
+  entry per task, in `docs/m65-video.md`'s order: §0 a vision helper for
+  a chat model that can't see; §1 `watch_video`; §2 the `video-editing`
+  skill; §3 the same person (references; the talking avatar left out,
+  its script field unconfirmed); §4 check before sending, enforced in
+  `send_file`; §5 big uploads and the Files page; §6 docs. All seven
+  built, `make check` green, nothing run live; waits for the next PR.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -193,8 +204,10 @@ below it is append-only.
   1. **Nothing has run live**: above all M54 owner mode on Linux and
      M54.4's binding (CI-compiled only), M56.1 steering, M56.5 resume,
      M56.6 buttons, M56.7 Telegram media, M51.4 voice, M53.5 reactions,
-     all of wave A, and M64 (the proactive pass has never met a model, a
-     bot, a calendar or a mailbox). The owner's go-ahead is needed (the global "don't
+     all of wave A, M64 (the proactive pass has never met a model, a
+     bot, a calendar or a mailbox), and M65 (no vision-helper call, no
+     real video through ffmpeg, no reference sent, no upload through a
+     tunnel). The owner's go-ahead is needed (the global "don't
      run" rule).
   2. **The eval gate has never gated** (M58.5): M56.4's prompt line,
      M58.3's tool cut, M57.5's examples and M57.1's threshold sit in the
@@ -233,8 +246,9 @@ below it is append-only.
   milestones. **M63 is claimed by wave B** (connections, skills and
   the catalog; `autopilot`, 2026-10-21). **M64 is claimed by the
   proactive agent** (`autopilot`, 2026-10-21). **M65 is claimed by video
-  understanding, editing and checking** (`m65-video`, 2026-10-22,
-  `docs/m65-video.md`). **The next free number is M66.** The first claim wins,
+  understanding, editing and checking** (designed on `m65-video`,
+  2026-10-22, `docs/m65-video.md`; merged into `autopilot` and built
+  there, §0–§6). **The next free number is M66.** The first claim wins,
   and a later collision shifts the unclaimed numbers, never a claimed
   one.
 - **Sync protocol for concurrent sessions** (from the gap analysis's
@@ -9912,6 +9926,263 @@ macOS and on the same tree on `autopilot`: a flake, not fixed here.
 **Open.** The release build (`release.yml`, five targets) runs on the
 tag; nothing here runs the binaries.
 
+### 2026-10-22 — The Windows "workspace write works" flake: roots grant the user too (Claude, Opus 5.5)
+
+Asked from the session that unblocked PR #57 (release 0.14.0) by
+re-running its Windows job. Touches `crates/ferrule-sandbox/src/windows.rs`
+(`grant`), which is **M54's surface**: the smallest change, one function
+and its caller. Also `docs/m26-isolation.md` (the Grants bullet), the CI
+self-test step, and Current State item 8, in place.
+
+**What the failures showed.** Runs 39632001271 and 39738890901 (job
+119691050044): `FAIL workspace write works`, `exit 1: Access is denied.`,
+every other check `ok`. Exit 1 with cmd's own message is a write the
+token refused, not the launcher (which exits 125 and says why). Same
+runner image (`20261007.264.1`) as passing runs; the checks took about
+40 ms each, as when they pass.
+
+**What a probe run showed** (a throwaway branch, `ci.yml` replaced by a
+Windows-only job, dispatched twice; runs 39741671825, 39743427064):
+- UAC is on (`EnableLUA` 1). Inside the sandbox token (`whoami /groups`
+  under the launcher), **Administrators and Authenticated Users are both
+  deny-only**: AU by design (§2.3), Administrators through `LUA_TOKEN`.
+  So the normal half of the write check can use neither.
+- `ferrule sandbox` in 40 fresh dirs each: `$RUNNER_TEMP\wsN` 0/40
+  failed, `C:\wscN` **40/40 failed** with exactly CI's signature (and a
+  second run in the same dir failed too), `%USERPROFILE%\wsuN` 0/40.
+  Same with the whole test suite run first (a second job). So it isn't
+  a race in a run: a root refuses every write when the user can write
+  it only through AU or Administrators. `C:\` grants AU modify; the
+  profile names the user.
+- `D:\a\_temp\ws` was writable only through `BUILTIN\Users:(CI)(WD)` and
+  `(CI)(AD)`, inherited from `D:\`'s root, whose ACL matches a newly
+  formatted volume's default (`D:` is the VM's temp disk, labelled
+  "Temp"). Nothing else on it grants the sandbox token's normal identity
+  a file add.
+- Defender's real-time protection is off and `C:\`, `D:\` are excluded:
+  not AV.
+
+**The cause.** The grant gave each root's capability SID modify rights
+(the restricted half) and relied on the user already having them (the
+normal half). In the sandbox token that half loses everything that comes
+through AU or Administrators. **Inferred, not shown:** the two failing
+VMs' `D:` lacked the `Users` write ACEs (formatted another way), so the
+CI workspace fell into the `C:\` case. Their logs didn't capture the ACL.
+
+**What changed.**
+- `windows.rs` `grant`: two inheritable ACEs per root, each added when
+  the DACL lacks it: the capability SID's (as before) and the user's,
+  same rights, conditional on AU being off
+  (`(XA;OICI;0x1301ff;;;<user>;(Not_Member_of {SID(AU)}))`). Every normal
+  logon token has AU enabled, so only sandbox tokens get it; outside the
+  sandbox nothing changes. Built from SDDL (each ACE parsed and written
+  back, so the check finds it as Windows writes it) instead of
+  `SetEntriesInAclW`, which can't make a conditional ACE. Roots granted
+  before get the user's ACE on their next launch (one more propagation
+  on a big tree, once).
+- CI's "Sandbox self-test": on a failure it prints `icacls .` of the
+  workspace (Windows), so a recurrence says which half refused.
+- `docs/m26-isolation.md`: the Grants bullet says so.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS, which doesn't compile `windows.rs`), clippy clean. On
+the Windows probe run with the change: `ferrule sandbox` 0/40 failed in
+each of `$RUNNER_TEMP`, `C:\` and the profile (`C:\` was 40/40 before);
+`cargo test -p ferrule-sandbox --test windows --test windows_git_bash`
+9 passed (saved keys and denied paths still unreadable, read-only still
+refuses the workspace, writes outside the roots still refused). The PR's
+own CI is the full suite.
+
+**Tests changed, none added** (the owner's standing rule). The probe
+branch `claude/sandbox-flake-probe` is deleted.
+
+**Open.** Whether the failing VMs' `D:` really lacked the `Users` ACEs.
+A `ferrule sandbox` run in a `C:\` folder would guard the fix in CI on
+every run; not added (the no-new-tests rule).
+
+### 2026-10-22 — Wave C, task 1: M53.1's contrast gate, fixed (Claude, Opus 5.5)
+
+Wave C's first task, in the `autopilot` worktree, after merging `main`
+(PR #57, 0.14.0) into it (`3ad69e8`; `make check` green on the merge:
+1891 passed, 0 failed, 28 ignored, 73 binaries).
+
+**Why.** The re-audit (Part 1 "M53.1", Part 3 #12) found the probe gate
+"done differently, not fine": one re-run with the lesson was judged
+against the original failed run, labelled "Original" and "Second run
+(with the lesson)". A fresh draw beats a stochastic failure often on its
+own, so lessons got credit for noise, and the labels told the judge
+which run to prefer. Checked episodes kept a lesson that passed twice
+with no sign it failed without.
+
+**What changed** (`ferrule-learn`).
+- `pass.rs`: `judged` is replaced by `contrast_gate`. The episode
+  re-runs with the change, then (when `Meter::room_for` says the caps
+  hold another run of what that one cost) a control without it: the
+  playbook as it stands, no draft skill. Without a check, `judge` asks
+  one blind call; with a check, the control must fail it. Without room
+  for the control the evidence is weak (`weak`): kept only when the
+  episode is an owner's 👎 with a later 👍 in the same chat.
+- `judge.rs`: a new prompt (no lesson shown, labels A/B, "neither" is
+  the default), `Slate` (FNV-1a seed from pass id and gate number,
+  splitmix64, low bit), `Contrast` (better, worse, confounded), and a
+  parser for `{"better":"A"|"B"|"neither","why":…}`; anything unreadable
+  is confounded.
+- `gate.rs`: `GateRun::control` (derive `Clone`); a control's transcript
+  is `control-<n>`, its scratch dir `control-<pass>-<n>`, its check runs
+  once, and its reasons say "without the lesson". Probe tails are
+  rendered without the system prompt (`episode::render_run`), which
+  holds the playbook.
+- `budget.rs`: `Spent::since`, `Meter::room_for`.
+- `pass/skill.rs`: skills take the same path; the control is the same
+  playbook without the draft.
+- Ledger origins gain `control:<n>`; the pass log gains `"judge"` lines
+  with the seed, the change's label and what it was compared with.
+- Docs: `m53-contrastive-probing.md` ("M53.1 — the contrast gate,
+  fixed", and a pointer at the top), `m16-learning-loop.md` §5 (step 1,
+  step 4, "What the gate doesn't prove"), `roadmap.md` (M53's list).
+
+**Tests changed, none added** (the owner's standing rule): the judge's
+parse test takes the new answer; `pass/tests.rs`'s fake gate fails its
+control, the probe fake marks which run it is, and the queue provider
+can answer as a judge picking the run holding a word
+(`@pick:<needle>`); `ferrule-cli`'s learn story counts the control's
+scratch dir as a gate run and doesn't write the result there.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Never run against a real model. One draw per arm: the
+contrast removes the "against a failure" bias, not run-to-run noise.
+The 👍 corroboration is coarse: it says the chat ended well, not that
+the lesson did. A big first re-run leaves later episodes in the pass on
+weak evidence, so they keep nothing; the caps are the dial.
+
+### 2026-10-22 — Wave C, task 2: OAuth clients for more MCP servers (Claude, Opus 5.5)
+
+Wave C's second task, in the `autopilot` worktree (re-audit Part 3 #11).
+
+**Why.** ferrule could only register itself (DCR) or use Google's owner
+client. Home Assistant's MCP server takes a Client ID Metadata Document
+and no DCR; Slack's and Asana's take only an app the owner registers;
+Dropbox registers only clients it lists. The MCP authorization spec
+(2025-11-25 and 2026-07-28) orders the three ways: pre-registered, then
+metadata documents where the server advertises them, then DCR.
+
+**What changed.**
+- `ferrule-connections/src/oauth.rs`: `client` follows that order and
+  says which it used (`ClientVia`); `owner_client` (id required, secret
+  optional); `check_cimd` (https with a path, `client_id` equal to the
+  URL, a `client_name`, the callback in `redirect_uris`); `Endpoints`
+  gains `cimd` and `issuer`; DCR sends `application_type` (SEP-837);
+  Slack's `200 {"ok": false}` is a refusal.
+- `service.rs`: `cimd_for` (the owner's `[connections]
+  client_metadata_url`, else the relay's `/client.json` when the
+  callback is the relay's); `has_client` needs only the id; a present
+  `iss` must match the metadata's `issuer` (SEP-2468; tunnel and
+  paste-back now keep `iss`); `blocked` explains an owner app for any
+  service, and its fixed-callback text and buttons are no longer
+  Google's or Atlassian's for everyone; `resource` from the entry.
+- `catalog.rs`: `client_env_name` (default `<NAME>_OAUTH_CLIENT`), a
+  `resource` override, and `client = "owner"` no longer needs pinned
+  endpoints. `catalog.toml`: `slack`, `asana`, `dropbox` (owner app,
+  fixed callback), checked against each vendor's docs and live OAuth
+  metadata on 2026-10-22.
+- `relay/worker.js`: `GET /client.json`, the document, built from the
+  Worker's own origin.
+- `ferrule-cli`: `ferrule connections setup <service>` asks for an owner
+  app's id and secret; `ferrule_admin` `mcp_add` takes `client_id` and
+  `client_secret` with `catalog` or an OAuth `url` (the id saved, the
+  secret asked for with `secret_request` bound to the token and
+  revocation hosts, then the Sign in button); the tool's description
+  and schema say so.
+- Docs: `m20-connections.md` §3.6 and the relay's contract,
+  `m63-connections-wave-b.md` (the left-out list), `roadmap.md` (M20).
+
+**Tests changed, none added** (the owner's standing rule): the catalog's
+names list gains the three entries.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Nothing signed in live: not Home Assistant through the relay's
+document, not Slack's `scope` on its `v2_user` endpoint, not Asana's
+`resource`. A relay deployed before today serves no `/client.json` until
+redeployed. The owner's app isn't keyed by the authorization server's
+`issuer` (SEP-2352). The dashboard has no form for a non-Google owner
+app. `node --test relay/` wasn't run here (CI runs it).
+
+### 2026-10-22 — Wave C, task 3: MCP 2026-07-28 next to 2025-06-18 (Claude, Opus 5.5)
+
+Wave C's third task, in the `autopilot` worktree (re-audit Part 3 #14).
+
+**Why.** MCP 2026-07-28 drops `initialize` and HTTP sessions, puts the
+version and the client's identity in every request's `_meta`, adds
+`server/discover` and standard request headers. Vendor servers will move
+to it; a client that only does the handshake fails against a modern-only
+server ("Legacy client, modern server: fails", the spec's matrix).
+
+**What changed** (`ferrule-mcp`).
+- `era.rs` (new): `Era` (modern or legacy), `with_meta`, `era_of` (a
+  probe's answer: a `DiscoverResult` or a modern error is modern, anything
+  else legacy, never keyed to one code), the modern error codes,
+  `complete` (`resultType: "input_required"` fails plainly),
+  `header_value` (the `=?base64?…?=` encoding), and `x-mcp-header`
+  parsing and checking.
+- `client.rs`: a fresh stdio process is probed with `server/discover`
+  (10 s, or a late answer after a refused `initialize`); a legacy one gets
+  `initialize`, a modern one `_meta` on every request; the era is kept
+  across respawns; a server that exits on the probe is restarted once as
+  legacy. Over HTTP, tools with bad `x-mcp-header` marks are left out and
+  the rest's marked parameters become `Mcp-Param-*` headers. A list's
+  `ttlMs` schedules one re-list (at least five minutes on).
+- `http.rs`: the first request to an address is a modern
+  `server/discover`; a `4xx` without a modern error body means legacy,
+  and the old session path runs. Modern requests carry
+  `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`, no session; a failed
+  status with a JSON-RPC error body comes back as that error; a later
+  -32022 re-asks once.
+- Docs: `m17-mcp-add.md` §8 (every rule cited to the spec's pages),
+  `roadmap.md` (M17).
+
+**Tests changed, none added** (the owner's standing rule). Every
+existing MCP test (stdio and HTTP mocks, all legacy) passes unchanged.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** No modern server tried live and no test drives one.
+`subscriptions/listen`, per-request log levels, the tasks extension,
+MRTR answers and `notifications/cancelled` aren't built. The handshake
+still asks for 2025-06-18. A legacy stdio server that ignores unknown
+requests costs its first spawn 10 s.
+
+### 2026-10-22 — Release 0.14.1 (Claude, Opus 5.5)
+
+No milestone claimed. On `autopilot` (PR #58), as its last commit, so
+CI checks the features and the bump together and the tag goes on the
+merge commit.
+
+**What changed.** Every crate's version goes from 0.14.0 to 0.14.1
+(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
+--workspace --offline`: only the 24 ferrule versions move), the README's
+badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
+Current State's release line says so. A patch bump: since v0.14.0 the
+branch adds the rest of M64 (the heartbeat, feedback, `/proactive` and
+its dashboard page), wave C (M53.1's contrast gate with a control run,
+OAuth clients via the owner's app or a Client ID Metadata Document, MCP
+2026-07-28 next to 2025-06-18) and PR #59's Windows sandbox fix, with no
+breaking config change.
+
+**Checks.** Not run locally for the bump itself (mechanical; the PR's CI
+on Linux, macOS and Windows is the gate, and the tag goes on `main` only
+after it is green). Every feature commit before it passed `make check`.
+
+**Open.** The release build (`release.yml`, five targets) runs on the
+tag; nothing here runs the binaries. The owner's server should get
+`ferrule doctor` and a short live check after the update (owner mode's
+Linux code, the proxy binding and the proactive heartbeat have never run
+live).
+
 ### 2026-10-22 — M65 claimed: video it understands, edits and checks (Claude, Opus 5.5)
 
 Claims **M65** (Current State updated: the next free number is M66), on
@@ -9933,3 +10204,472 @@ raised (3 → 10 videos a day, $1 → $3 a video); plain videos keep
 `veo-3.1-lite`.
 
 **Open.** The owner's approval of the design, then a plan, then the build.
+
+### 2026-10-22 — M65's build starts on `autopilot` (Claude, Opus 5.5)
+
+The owner: "resolve the m65 its the next plan merge it and execute it".
+`autopilot` fast-forwarded to `main` at `1c9fee1` (PR #58 merged; no
+merge commit was needed), then `origin/m65-video` (`b944b49`, the design
+and its claim) merged in, signed. The one conflict was this file's
+Session Log tail: both sides kept, the claim after the 0.14.1 release
+entry (all four entries are dated 2026-10-22). Current State now names
+`main` `1c9fee1`, M65 in flight on `autopilot`, and M66 as the next free
+number. The build follows the design's order, §0 to §6, one commit and
+one entry each, in worktree `.claude/worktrees/autopilot`.
+
+### 2026-10-22 — M65 §0: a vision helper for a chat model that can't see (Claude, Opus 5.5)
+
+The owner's chat model is the Claude plan through Claude Code, which never
+sees images (`Entry::sees_images`), so "the agent looks" needs a second
+model that looks and says what it saw (`docs/m65-video.md` §0, owner
+decision 1).
+
+**Built.**
+- `ferrule-core`: `vision::Looker` (a model name, and `look(image, task,
+  reference)` answering in words), the tasks `PHOTO_TASK` and
+  `TOOL_TASK`, and the stand-in lines `[image <name>, described by
+  <model>: …]` or, when the helper fails, one that says nothing has
+  checked it. `ImageRef` gains `described` (that line, kept in history so
+  later turns don't ask again) and `check` (a task and a reference image a
+  tool can ask for instead of a plain description; §4 uses it), and
+  derives `Default` (17 literals take `..Default::default()`). The agent
+  gets `set_looker` and `understands_images`; `push_seen` describes the
+  images of the goal message, every tool result and each steered message
+  before they're added, only when the model doesn't see and there is a
+  helper. `note_for(TextOnly)` returns the described line.
+- `ferrule-media`: `MediaBackend::look` (default: no vision model) and
+  OpenRouter's, a `/chat/completions` call with the task and the images
+  as data URLs, `usage.include` for the cost.
+- `ferrule-gateway`: `tools/look.rs`, `VisionHelper`: refuses a file that
+  isn't an image under the 3.5 MB cap, checks the `[trust]` dollars left
+  before the call, writes a `media` ledger row charged to the run, keeps
+  answers by path, modification time and task (256, then it starts over).
+  `MediaShared::set_vision` and `looker(session, tree)`; the M51 module
+  only gained those, the cache and `pub(super)` on `check_budget`,
+  `ledger` and `Row` (M51's surface, the smallest change). The router
+  sends its "can't see photos" notice only when the agent neither sees
+  nor has a helper.
+- `ferrule-plans`: the Claude engine's bridged tool results and recap
+  carry `text_with_notes` (the described lines, or the plain note) where
+  they carried only the text.
+- `ferrule-cli`: `[media] vision_model`, default `google/gemini-3.8-flash`
+  (OpenRouter's model list read 2026-10-22: the newest Gemini Flash,
+  $0.825 per million input tokens); a chat agent and a sub-agent whose
+  model doesn't see get the helper at construction (`gateway_factory`,
+  `child_builder`), charged to the session's tree or the child's root.
+
+**Decided here (left to the builder).** The description is made in the
+agent as a message is added (one place for photos, steered photos and
+tool images) behind a core trait the CLI wires; the helper is off when
+`[media]` is off (it rides the media backend and its key); a failed look
+leaves a line saying the image is unchecked, not the old "can't see"
+note, so the model knows why.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests (the owner's rule).
+
+**Open.** Not run live (an OpenRouter vision call costs cents). The
+description is decided per agent at construction and per call through
+`sees_images()`; a fallback to a seeing model mid-chat sends pixels as
+before.
+
+### 2026-10-22 — M65 §1: `watch_video` (Claude, Opus 5.5)
+
+A video sent in the chat reached the agent as a path, and nothing could
+look at a finished render (`docs/m65-video.md` §1). Now the agent can
+watch one.
+
+**Built.**
+- `ferrule-gateway/src/tools/watch.rs`: `watch_video {path, start?, end?,
+  frames?}`. ffprobe's JSON gives the facts (length, size, container,
+  picture size with a phone's rotation applied, fps, video codec, the
+  sound's codec, rate and channels). The contact sheet is one ffmpeg run:
+  each frame's input is seeked with `-ss` (fast on a long file), then
+  `trim`, `scale`+`pad` to one tile size, `concat`, and `tile` with
+  `nb_frames`, into one JPEG (`-q:v 4`). Frames sit at the middles of `n`
+  equal slices of the window; the grid is ⌈√n⌉ across; a tile is at most
+  512 px wide and the sheet at most 2048 px a side, so it stays far under
+  the 3.5 MB image cap. The text lists each tile's time in reading order.
+  The sound: `-ss`/`-to` input options, mono 16 kHz AAC 48 kb/s in an
+  `.m4a` (`audio/mp4`, which the OpenAI-style endpoint takes and every
+  ffmpeg can write), sent to the gateway's `Transcriber`, at most 10
+  minutes a call (the text says where to start the next call), deleted
+  after. No sound, transcription off, or a failed step: a sentence says
+  so and the rest still comes back. Files under `.ferrule/watch/`,
+  refused if that leads outside the workspace, older than a day removed
+  on each call. For a model that can't see, the sheet's `ImageRef::check`
+  asks the §0 helper to go tile by tile and name what looks wrong.
+- ffmpeg and ffprobe run through `Sandbox::command` in the session's
+  sandbox (a guest's narrowed with `guest_hidden`, as its shell's is),
+  with `-protocol_whitelist file` before every input (a crafted playlist
+  in the workspace can't make ffmpeg fetch anything), a timeout (30 s
+  probe, 120 s sheet, 180 s sound) and stderr's last line as the error.
+- `ferrule-cli`: `Ffmpeg::find()` (both on `PATH` or in Homebrew's dirs)
+  once per gateway; chats get the tool and the `CHAT_VIDEO` prompt line
+  (constant per process, so the prefix stays byte-stable); the gateway's
+  `Transcriber` is built once more for it. `ferrule doctor` notes when
+  either program is missing.
+- An inbound video's line now says to watch it with `watch_video` (when
+  the agent has it). M61's surface, the smallest change: `CHAT_SCREEN`
+  and `record_screen`'s texts no longer say a recording can't be
+  watched.
+
+**Decided here (left to the builder).** 12 frames by default (the design's
+default), at most 16; the grid and tile sizes above; no timestamps drawn
+on the tiles (`drawtext` needs fonts an ffmpeg build may lack), listed in
+the text instead; the window's frames at slice middles, so none falls on
+the last frame; `.ferrule/watch/` kept a day; the transcript's timing
+isn't used (`Heard` has no segments). Times are taken as seconds or
+`m:ss`.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests.
+
+**Open.** Not run live: no real video has gone through the filter graph,
+and the 500 MB case waits for §5. In `read-only` sandbox mode ffmpeg
+can't write the sheet, and the tool says ffmpeg's error. Sub-agents don't
+get the tool (their parent watches before it sends, §4).
+
+### 2026-10-22 — M65 §2: editing as a bundled skill (Claude, Opus 5.5)
+
+The owner wants the agent "skilled with video editing" (`docs/m65-video.md`
+§2). The design's call, kept: a skill on top of the sandboxed shell, not
+an `edit_video` tool.
+
+**Built.**
+- `crates/ferrule-skills/bundled/video-editing/SKILL.md`, in the pack
+  (`bundled.rs`), so `<data>/bundled-skills` gets it at the next start and
+  the model finds it in the skill catalog. General rules first (watch the
+  input; never overwrite it; results under `media/`; quiet ffmpeg; one
+  set of H.264/AAC options that plays in Telegram and on an iPhone, with
+  the fallbacks for a build without libx264; long encodes in the shell's
+  background; text files through `write_file`), then the recipes: trim
+  by stream copy or re-encode and when each is right, cutting a part out,
+  joining by the concat demuxer or the concat filter (with sizes, rates
+  and sample rates brought together, and silence for a silent clip), crop
+  to fill or fit on a blurred pad for 9:16, 1:1 and 16:9, speed
+  (`setpts` with `atempo`, chained on an old ffmpeg), subtitles (an
+  `.srt` burned in with libass, else a `mov_text` track, and that the
+  transcript has no timings), a voice-over, music ducked under it with
+  `sidechaincompress` and looped with `-stream_loop`, fades, mute, the
+  sound alone, a GIF with a palette, a full-size still frame (how §3's
+  references are taken from a video), compressing to a size with the
+  arithmetic and two passes (Telegram bots upload at most 50 MB), and
+  PowerShell's differences. Its last rule: `watch_video` the result,
+  compare, then `send_file`; after two attempts that don't come out
+  right, say what's wrong instead of sending.
+- `speak` gains `send: false` (M51's surface, the smallest change): the
+  MP3 is saved and not sent, so a voice-over for an edit doesn't land in
+  the chat as a voice message.
+- `docs/skills.md` lists seven bundled skills; the example config's
+  comment names it.
+
+**Decided here.** The placeholder for the encoder options is `<h264>`, not
+a shell variable, so a model that types it literally fails loudly rather
+than encoding with ffmpeg's defaults. Not added to the connections
+catalog (`catalog.toml` lists services; this needs no connecting).
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests.
+
+**Open.** No recipe has been run here (the owner's "don't run" rule);
+they follow ffmpeg's documented options. `amix`'s `normalize` needs
+ffmpeg 4.4 or later, and the skill says what to do without it.
+
+### 2026-10-22 — M65 §3: the same person (Claude, Opus 5.5)
+
+"The same person" was a text description: `VideoReq` carried one first
+frame and nothing else (`docs/m65-video.md` §3).
+
+**Built.**
+- `ferrule-media`: `VideoReq` gains `references` (sent as
+  `input_references`, each a data URL `image_url`, beside `frame_images`)
+  and `resolution`. `VideoPrice::of` prices a model billed per video
+  token when it has no per-second price: the dearest token price that
+  names no resolution × 1280×720×24/1024 = 21,600 tokens a second
+  (ByteDance's formula, a 16:9 frame at 24 fps), at 720p when the model
+  lists it, else 480p; the price then carries that `resolution`, which
+  the request asks for. Seedance 2.5 comes to $0.231/s, 2.0 to $0.151/s,
+  2.0 Fast to $0.091/s.
+- `ferrule-gateway`: `generate_video`'s `reference` parameter, listed only
+  when the tool was built `with_references(true)` and an allowed model
+  takes references, naming those models. A call checks each reference
+  (inside the workspace, a real image under the cap) and the model
+  against `[media] reference_models` before anything is counted or
+  spent; a reference to another model is refused with the models that
+  can, so OpenRouter can't drop the field and bill a clip without the
+  face. `generate_image`'s description says how to keep a person (the
+  photo in `reference`, and what must stay the same in the prompt); its
+  `reference` stays open to everyone it's offered to (M51's edit path).
+  `MediaLimits` gains `reference_models`.
+- `ferrule-cli`: `[media] reference_models` (default
+  `bytedance/seedance-2.5`, `bytedance/seedance-2.0`,
+  `bytedance/seedance-2.0-fast`, `alibaba/wan-3.0`,
+  `heygen/heygen-video-1`); the owner's decision 2: `video_models`
+  defaults to Seedance 2.5 and Veo 3.1 Fast, `max_videos_per_day` 3 → 10,
+  `max_usd_per_video` $1 → $3 (the example config and
+  `docs/models.md` follow; setup and doctor say nothing about these caps,
+  so nothing there changed). References are on for the owner's chats
+  (`owner_tree`, as the screen tools) and for media sub-agents of the
+  owner's tree.
+
+**Decided here.**
+- OpenRouter's `/videos/models` listing (read 2026-10-22, free) has no
+  field saying a model takes `input_references`, so the list is config
+  (the design's fallback), defaulting to the design's models.
+- **The talking avatar is left out.** The listing gives `heygen/avatar-iv`
+  a per-second price ($0.05) and passthrough parameters (`voice_id`,
+  `motion_prompt`, …), and its page says the speech comes from "a text
+  script … or a supplied audio track", but neither names the request
+  field the script or the audio goes in, and `supported_frame_images` is
+  null. The design says to leave it out unless that's confirmed, so it
+  isn't in `video_models` or `reference_models`; the owner can add it to
+  both to try it with the prompt as the script, once a paid test or
+  OpenRouter's docs say so.
+- Seedance is priced per video token, which the old estimate couldn't
+  read, so it was refused under any dollar cap. Asking for `resolution`
+  is inferred from the listing's `supported_resolutions`, the same naming
+  as `aspect_ratio` and `duration` that ferrule already sends; it isn't
+  confirmed live. If OpenRouter ignored it and rendered larger, the
+  delivery row would settle to the real bill.
+- The owner-only check is per agent at construction; a guest's call with
+  a reference (the parameter isn't even offered) is refused in words.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests.
+
+**Open.** Nothing sent live: references, the token estimate and the
+`resolution` field wait for the owner's go-ahead (a Seedance clip costs
+about $1–2). A request with no `seconds` is priced at the model's longest
+(30 s for Seedance 2.5, about $6.93), over the $3 cap, so the agent has
+to name a length.
+
+### 2026-10-22 — M65 §4: check before sending (Claude, Opus 5.5)
+
+The owner: the agent "creates very bad videos and sending them and not
+really checks them". `generate_image` sent before the model saw its
+result, and the poller sent finished clips with no model call
+(`docs/m65-video.md` §4).
+
+**Built.**
+- **Images.** `generate_image` saves, records the job as `checking`, and
+  returns the image with "Not sent: look at it against the request (and
+  the reference) first … send it with send_file; if it isn't, try again
+  (at most two retries in all) or say what's wrong". Its `ImageRef::check`
+  carries `check_task` (OK or NOT OK, then a different person from the
+  reference, warped faces, hands or text, framing, what's missing) and
+  the first reference, which the §0 helper uses for a model that can't
+  see. M51's `deliver` is gone (nothing calls it).
+- **Videos.** When the poller has downloaded a clip whose job has a chat,
+  it wakes the job's session (its `tree`, the session id for a chat's own
+  call) with the job, the file, the prompt and the references, telling it
+  to `watch_video`, compare, then `send_file`, retry or report, or send
+  it `unchecked` where videos can't be watched; the job is `checking`
+  with `woken_at`. A session that can't be woken gets the note at once
+  and the job is `noted`; each poll also notes every video `checking`
+  for over 30 minutes (`CHECK_FOR`), so a failed, stopped or restarted
+  turn still ends in a truthful message: "The video for "…" finished but
+  wasn't checked, so it wasn't sent. It's at …. Say "send it" and I'll
+  send it as it is." A sub-agent's clip (no chat) is `done` as before.
+  `media_jobs` gains `refs` and `woken_at` (added to an old table empty);
+  `JobStore::mark_checking`, `stale_checking`, `unsent`, `made_as`.
+- **`watch_video`** marks its sheet `shows` the video, and when the video
+  is a job's result, its text names the request and the reference, and
+  the helper's check gets both (the reference as the second image).
+- **Enforced.** `ferrule_core::vision::Looked`: the agent records, as a
+  tool's result is added, each image the model got (pixels, or the
+  helper's words) and the file a sheet shows, with its modification time,
+  or that the look couldn't be made. `send_file` (`.checking(looked,
+  sees_images, watches_video)`, in every chat) refuses an image or video
+  outside `uploads/`, `inbox/` and `media/screen/` not looked at since it
+  last changed, saying how to look. `unchecked` is taken only where
+  looking can't be done (no `watch_video`, a model that can't see and no
+  helper, or the last look failed), and the file goes captioned "Not
+  checked: <why>." A `noted` video goes when asked (the owner's "send
+  it"), marked the same way. A sent file's `checking`/`noted` rows become
+  `done` (`FileOut::bind_media`).
+- `CHAT_MEDIA` says nothing is sent on its own, to look then
+  `send_file`, that a finished video wakes the session to watch it, and
+  the retry budget; `generate_video`'s description and answers say the
+  same and ask for `seconds`.
+- Existing tests changed to match: the gateway's media tests now check
+  that an image comes back unsent and that a finished video leaves its
+  job `checking` and wakes the chat, with nothing attached.
+
+**Decided here.** Which files the rule covers: every image or video by its
+extension except what the owner provided (`uploads/`, `inbox/`) and
+captures of the owner's screen (`media/screen/`, a faithful recording,
+nothing generated), rather than "under `media/` or written by this
+session": edits made by ffmpeg in the shell can't be told from other
+files, so anything not the owner's needs a look. Looking at a part of a
+video (a narrowed sheet) counts. The note keeps the job's absolute path.
+No attempts counter (the design's call): the prompt's two retries are
+backed by the media caps.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS). No new tests; the four gateway media tests were
+changed to the new behaviour (two renamed to say what they check).
+
+**Open.** Not run live. A woken turn reads like any wake (sub-agents'
+reports use the same path); whether the model follows it through to
+`send_file` is for the owner's first real video to show.
+
+### 2026-10-22 — M65 §5: big files and a media library in the dashboard (Claude, Opus 5.5)
+
+Asked for by the owner after the first draft: upload big files for the
+agent from the dashboard (Telegram bots download at most 20 MB, and a
+Cloudflare tunnel refuses a request over 100 MB), and a files and media
+library there (`docs/m65-video.md` §5).
+
+**Built.**
+- `ferrule-cli/src/dashboard/files_page.rs` (new), the `Library` in the
+  page's `Ctx` (the gateway's only):
+  - **Uploads.** `POST /api/files/upload/start {name, size, for?}` (the
+    name made safe, the size under `[dashboard] max_upload_mb`, default
+    2048, and refused when it would leave the disk under 1 GB, by
+    `selfcheck::free_space`) makes `uploads/.part/<id>` and its note;
+    `PUT /api/files/upload/<id>?offset=` appends one piece of at most
+    32 MB, answering 409 with the offset it has for any other, and cuts a
+    half-written piece back; `GET /api/files/upload?id=` says how far one
+    got; `POST /api/files/upload/finish {id}` checks the size and moves it
+    to `uploads/<day>/<name>` (`-2`, `-3` … when taken). Parts older than
+    a day go whenever an upload starts. Appends and finishes take one
+    lock.
+  - **From a chat.** `TooBigDoor`, an interceptor: a message in the
+    owner's own chat whose file was refused for its size
+    (`files::has_too_big`, beside the line it reads) gets the owner a
+    one-time login link (`door::send_link_with`, `?for=<ticket>`), and
+    the message still goes on to the agent. The ticket ties the upload to
+    that chat for a day; its finish wakes the chat's session
+    (`Router::wake`) with the path and size.
+  - **The library.** `GET /api/files?kind=&from=`: `uploads/`, `inbox/`
+    and `media/`, five levels deep, hidden names and symlinks skipped,
+    newest 500, with each one's kind, source (uploaded, from which chat,
+    made, screen) and, from `media_jobs`, the prompt, model, cost (or the
+    estimate) and state in words. `GET /api/files/raw?path=` and
+    `thumb?path=` are answered in `Dashboard::handle` like the backup
+    download; `POST files/delete` (to `.ferrule/trash/`) and `files/say`
+    (the file and words to the page's chat, `DashboardChannel::say_file`).
+  - **Serving safely.** A path is taken only under those three folders,
+    with no `..` and no symlink anywhere along it, and must resolve under
+    the workspace; part files are never served. Only images (the four
+    types `mime_for` names; SVG isn't one), video and audio go inline;
+    anything else is `application/octet-stream` as an attachment.
+    `nosniff` was already on every answer. `Range` is answered (206 with
+    `Content-Range`, 416 when it can't be met), and a file is copied from
+    disk, never read whole (`http.rs` gains `Response::with_range`).
+  - **Posters.** An image is its own; a video's is made once with ffmpeg
+    in the gateway's sandbox (`-protocol_whitelist file`, from 1 s, else
+    0 s, 360 px wide), two at a time, kept under `.ferrule/thumbs/` by
+    path and modification time; none without ffmpeg (the page shows an
+    icon).
+- `limit_for` lets a signed-in, same-origin, CSRF-carrying `PUT
+  /api/files/upload/…` with `application/octet-stream` bring 32 MB in
+  600 s; `handle` checks the same before the piece is written (a PUT
+  isn't JSON, so it's answered before the POST checks).
+- The page (`app.js`): a Files section in Everyday; Upload a file (one at
+  a time, a progress bar, Stop; resumes from the server's offset after a
+  drop, and from where it stopped when the same file is chosen again,
+  the id kept in `localStorage` by name, size and date); after an upload,
+  a box for words and "Send to the chat", or, for a chat's too-big file,
+  that the chat was told; filters by kind and source; tiles with a
+  poster, name, size, age, source, and for made media the request,
+  model, cost and state; Open (an image, the browser's video or audio
+  player), Download, Use in chat (the chat with the path in its box),
+  Delete (asked first). A login link with `?for=` opens it. Two Hebrew
+  strings (the section's name and line).
+- `media_jobs` gains `cost_usd` (an image's bill at once, a video's when
+  fetched); `send_file` marks a job `unchecked` when it went "Not
+  checked" (M51's and §4's code, small changes).
+- Housekeeping prunes `.ferrule/thumbs/` with the rest and empties
+  `.ferrule/trash/` after 7 days (`TRASH_DAYS`), whatever `keep_days`.
+
+**Decided here.** Start and finish calls around the design's `PUT` (the
+name and size have to come first, the check last); the link is in the
+message's text, not an inline button (the login link only ever goes out
+through the hub's own message, which is text, so it never reaches a
+model or a transcript); a ticket lives in memory a day, so a restart
+loses the wake but not the file; uploads resume across a reload only for
+the same file chosen again; a too-big file in any of the owner's chat
+channels gets the link, not only Telegram; the poster is 360 px from the
+first second.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS); `node --check` on `app.js` passes. The
+dashboard's page tests (icons, routes used, Hebrew strings) pass with the
+new section. No new tests.
+
+**Open.** Not run live: no 500 MB upload has crossed a tunnel, no iPhone
+has played a video through the `Range` answers, and no Telegram chat has
+been woken by an upload. A `HEAD` on a file is answered with the whole
+body.
+
+### 2026-10-22 — M65 §6: docs (Claude, Opus 5.5)
+
+The design's §6: every page that describes what M65 changed says it now,
+each claim against the code of §0–§5.
+
+**Written.**
+- `docs/models.md`: "Making media" says `generate_image` no longer sends,
+  a finished video wakes the chat to watch it (and the 30-minute note),
+  `watch_video`, the check `send_file` enforces and its `unchecked`
+  fallback, the same person (`reference`, `[media] reference_models` and
+  why it's a list), the talking avatar left out and why, the
+  `video-editing` skill; the caps line was updated in §3. "Photos" gains
+  the vision helper.
+- `docs/vision.md`: `watch_video` among the tools that return images,
+  `generate_image`'s result now unsent, "The vision helper" (config, when
+  it's wired, the line, checks, the ledger and cache) and "What the model
+  has looked at" (`Looked`, `send_file`), and the Claude engine's bridged
+  results.
+- `docs/dashboard.md`: Files on the list of sections, and a "Files (M65)"
+  section (uploading, from a chat, the library, actions, safety,
+  `max_upload_mb`).
+- `docs/housekeeping.md`: the `thumbs` and `trash` rows.
+- `docs/m51-media.md`: a "Since M65" note under its status, so its body
+  reads as M51 as built.
+- `README.md`: `m65-video.md` in the Guides list.
+- `docs/m65-video.md`: status "built, nothing run live" and "As built":
+  per section what was built, the departures (the avatar, Seedance's
+  `resolution` as inferred, the `send_file` rule's scope and when
+  `unchecked` is taken, the upload's start and finish calls, the link in
+  text, `cost_usd`, `Range`), and "Done means" as it stands.
+- `docs/skills.md` was updated in §2.
+
+**Checks.** `make check` green: 1891 passed, 0 failed, 28 ignored across
+73 test binaries (macOS).
+
+**Open for M65 as a whole.**
+- Nothing ran live, by the owner's rule: the first vision-helper call,
+  the first `watch_video` on a real file, the first reference sent to
+  Seedance (about $1–2 a clip), the first 500 MB upload through a
+  tunnel and the first woken chat. `ferrule doctor` says whether ffmpeg
+  and ffprobe are where the gateway looks.
+- The talking avatar waits on where Avatar IV's script goes.
+- Seedance's `resolution` field is inferred; a live clip settles it (the
+  delivery row records the real bill either way).
+- No eval A/B was run (the owner said not to for now); `CHAT_VIDEO` and
+  the new `CHAT_MEDIA` are in the prompt prefix unmeasured, like M58.5's
+  list.
+
+### 2026-10-22 — Release 0.14.2 (Claude, Opus 5.5)
+
+No milestone claimed. On `autopilot` (PR #61), as its last commit.
+
+**What changed.** Every crate's version goes from 0.14.1 to 0.14.2
+(`ferrule-plugin-sdk` keeps 0.1.0), `Cargo.lock` follows (`cargo update
+--workspace --offline`: only the 24 ferrule versions move), the README's
+badge and the `FERRULE_VERSION` examples in the README and `install.sh`.
+A patch bump: M65 (the vision helper, `watch_video`, the video-editing
+skill, references for the same person, the check before sending, the
+dashboard Files page) with no breaking config change; M65 raises the
+owner's video defaults (10 a day, $3 a video).
+
+**Checks.** On the owner's instruction ("push the change and push the new
+release, don't wait for the CI"), PR #61 is merged and the tag pushed
+without waiting for its CI run. Every M65 commit passed `make check` on
+macOS; Linux and Windows CI run on `main` after the merge, and a failure
+there is fixed forward in a 0.14.3.
+
+**Open.** Nothing in M65 has run live (OpenRouter, real ffmpeg video,
+uploads through a tunnel).

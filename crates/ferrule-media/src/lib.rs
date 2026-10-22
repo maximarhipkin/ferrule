@@ -46,6 +46,12 @@ pub struct VideoReq {
     pub aspect: Option<String>,
     /// First frame: image-to-video.
     pub first_frame: Option<std::path::PathBuf>,
+    /// M65 §3: workspace images of a person or thing to keep, sent as
+    /// `input_references` (subject and identity), beside the first frame.
+    pub references: Vec<std::path::PathBuf>,
+    /// M65 §3: the resolution asked for (`720p`), when the price estimate
+    /// depends on it (a model billed per video token).
+    pub resolution: Option<String>,
 }
 
 /// M51.4: text to speak, for a voice reply.
@@ -56,6 +62,23 @@ pub struct SpeechReq {
     pub model: Option<String>,
     /// A voice the model knows; `None` = the model's own default.
     pub voice: Option<String>,
+}
+
+/// M65 §0: images for a vision model to look at, and what to say about
+/// them: the vision helper for a chat model that can't see.
+#[derive(Debug, Clone, Default)]
+pub struct LookReq {
+    pub model: String,
+    pub task: String,
+    /// Workspace images, in order: the one looked at, then any reference.
+    pub images: Vec<std::path::PathBuf>,
+}
+
+/// What the vision model said, and what the provider says it charged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LookOut {
+    pub text: String,
+    pub cost_usd: Option<f64>,
 }
 
 /// Spoken audio.
@@ -132,7 +155,17 @@ pub struct VideoPrice {
     /// The longest clip the model makes, for a request that names no
     /// length.
     pub longest_seconds: Option<u32>,
+    /// M65 §3: the resolution the price is for, which the request must
+    /// then ask for: set only for a model billed per video token.
+    pub resolution: Option<&'static str>,
 }
+
+/// M65 §3: what a model billed per video token is asked for and priced
+/// at: a 16:9 frame at 24 frames a second, `width × height × fps / 1024`
+/// tokens a second (ByteDance's Seedance formula), at 720p when the model
+/// lists it, else 480p.
+const TOKEN_RESOLUTIONS: [(&str, f64); 2] = [("720p", 1280.0 * 720.0), ("480p", 854.0 * 480.0)];
+const TOKEN_FPS: f64 = 24.0;
 
 impl VideoPrice {
     /// From one entry of OpenRouter's `/videos/models` list: its
@@ -169,12 +202,53 @@ impl VideoPrice {
                 plain = Some(plain.map_or(usd, |a: f64| a.max(usd)));
             }
         }
+        let longest_seconds = entry["supported_durations"]
+            .as_array()
+            .and_then(|d| d.iter().filter_map(|s| s.as_u64()).max())
+            .map(|s| s as u32);
+        if let Some(usd_per_second) = plain.or(any) {
+            return Some(Self {
+                usd_per_second,
+                longest_seconds,
+                resolution: None,
+            });
+        }
+        Self::per_token(entry, skus, longest_seconds)
+    }
+
+    /// M65 §3: a model billed per video token (no per-second price): the
+    /// dearest token price that names no resolution, times the tokens a
+    /// second of [`TOKEN_RESOLUTIONS`]' first listed size.
+    fn per_token(
+        entry: &serde_json::Value,
+        skus: &serde_json::Map<String, serde_json::Value>,
+        longest_seconds: Option<u32>,
+    ) -> Option<Self> {
+        let sized = ["480p", "720p", "1080p", "4k", "1440p", "2160p"];
+        let per_token = skus
+            .iter()
+            .filter(|(k, _)| {
+                let k = k.to_ascii_lowercase();
+                k.starts_with("video_tokens") && !sized.iter().any(|r| k.contains(r))
+            })
+            .filter_map(|(_, v)| {
+                v.as_str()
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+                    .or_else(|| v.as_f64())
+            })
+            .filter(|p| p.is_finite() && *p >= 0.0)
+            .fold(None, |a: Option<f64>, p| Some(a.map_or(p, |a| a.max(p))))?;
+        let listed: Vec<&str> = entry["supported_resolutions"]
+            .as_array()
+            .map(|l| l.iter().filter_map(|r| r.as_str()).collect())
+            .unwrap_or_default();
+        let (resolution, pixels) = TOKEN_RESOLUTIONS
+            .iter()
+            .find(|(r, _)| listed.iter().any(|l| l.eq_ignore_ascii_case(r)))?;
         Some(Self {
-            usd_per_second: plain.or(any)?,
-            longest_seconds: entry["supported_durations"]
-                .as_array()
-                .and_then(|d| d.iter().filter_map(|s| s.as_u64()).max())
-                .map(|s| s as u32),
+            usd_per_second: per_token * pixels * TOKEN_FPS / 1024.0,
+            longest_seconds,
+            resolution: Some(resolution),
         })
     }
 }
@@ -190,6 +264,12 @@ pub trait MediaBackend: Send + Sync {
     async fn download(&self, url: &str, dest: &Path) -> Result<(), MediaError>;
     /// M51.4: text to speech, sync (seconds, like an image).
     async fn speak(&self, req: SpeechReq) -> Result<AudioOut, MediaError>;
+    /// M65 §0: a vision model looks at images and answers in words.
+    async fn look(&self, _req: LookReq) -> Result<LookOut, MediaError> {
+        Err(MediaError::BadAnswer(
+            "this media backend has no vision model".into(),
+        ))
+    }
     /// A video model's list price, from a cached price list. `None` when
     /// the backend has no list or the model isn't priced per second.
     async fn video_price(&self, _model: &str) -> Result<Option<VideoPrice>, MediaError> {

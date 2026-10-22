@@ -1,7 +1,9 @@
-//! M51: `generate_image` saves and sends a generated image to the session's
-//! own chat and counts it against the daily cap; `generate_video` answers
-//! at once with a job id and the built-in poller delivers the clip minutes
-//! later — or says why it failed. All against FakeMedia; no real network.
+//! M51: `generate_image` saves a generated image and counts it against the
+//! daily cap; `generate_video` answers at once with a job id and the
+//! built-in poller fetches the clip minutes later — or says why it failed.
+//! M65 §4: neither sends on its own: the image goes back to the model, and
+//! the finished clip wakes the session to watch it. All against FakeMedia;
+//! no real network.
 
 use async_trait::async_trait;
 use ferrule_core::provider::{CompletionRequest, CompletionResponse};
@@ -214,7 +216,7 @@ fn poll_task(store_dir: &std::path::Path) -> ferrule_gateway::scheduler::Task {
 }
 
 #[tokio::test]
-async fn an_image_is_saved_sent_and_counted() {
+async fn an_image_is_saved_counted_and_handed_back_unsent() {
     let ws = tempfile::tempdir().unwrap();
     let r = rig(
         ws.path().to_path_buf(),
@@ -224,18 +226,13 @@ async fn an_image_is_saved_sent_and_counted() {
         20,
     );
     let told = turn(&r, "draw me a logo").await;
-    assert!(told.contains("and sent it to this chat"), "{told}");
-    let sent = r.rec.sent.lock().unwrap().clone();
-    let with_file: Vec<_> = sent.iter().filter(|m| !m.attachments.is_empty()).collect();
-    assert_eq!(with_file.len(), 1, "{sent:?}");
+    assert!(told.contains("Not sent"), "{told}");
     assert!(
-        with_file[0].attachments[0]
-            .url
-            .replace('\\', "/")
-            .contains("media/"),
-        "{}",
-        with_file[0].attachments[0].url
+        told.contains("media/") || told.contains("media\\\\"),
+        "{told}"
     );
+    let sent = r.rec.sent.lock().unwrap().clone();
+    assert!(sent.iter().all(|m| m.attachments.is_empty()), "{sent:?}");
     let saved = std::fs::read_dir(ws.path().join("media")).unwrap();
     assert_eq!(saved.count(), 1);
     // Counted for the cap and ledgered as media.
@@ -259,15 +256,15 @@ async fn the_daily_cap_refuses_in_words() {
         1,
     );
     let first = turn_in(&r, "c7", "one").await;
-    assert!(first.contains("sent it to this chat"), "{first}");
+    assert!(first.contains("Saved media"), "{first}");
     let second = turn_in(&r, "c8", "two").await;
     assert!(second.contains("daily media cap"), "{second}");
-    assert!(!second.contains("sent it to this chat"), "{second}");
+    assert!(!second.contains("Saved media"), "{second}");
     assert_eq!(r.shared.store.count_since(0).unwrap(), 1);
 }
 
 #[tokio::test]
-async fn a_video_is_answered_now_and_delivered_by_the_poller() {
+async fn a_video_is_answered_now_and_its_session_woken_to_check_it() {
     let ws = tempfile::tempdir().unwrap();
     let r = rig(
         ws.path().to_path_buf(),
@@ -300,13 +297,37 @@ async fn a_video_is_answered_now_and_delivered_by_the_poller() {
         .unwrap()
         .iter()
         .all(|m| m.attachments.is_empty()));
-    // Second poll: done — downloaded and delivered.
+    // Second poll: done — downloaded, not sent, and the session that
+    // asked is woken to watch it (M65 §4).
     poller.run(&task).await.unwrap();
-    let sent = r.rec.sent.lock().unwrap().clone();
-    let with_file: Vec<_> = sent.iter().filter(|m| !m.attachments.is_empty()).collect();
-    assert_eq!(with_file.len(), 1, "{sent:?}");
-    assert!(with_file[0].attachments[0].url.ends_with(".mp4"));
     assert_eq!(r.shared.store.pending_videos().unwrap().len(), 0);
+    let unsent = r.shared.store.unsent().unwrap();
+    assert_eq!(unsent.len(), 1, "{unsent:?}");
+    assert_eq!(unsent[0].state, "checking");
+    assert!(std::path::Path::new(&unsent[0].out_path).is_file());
+    // The woken turn answers in the chat (the Caller echoes the wake).
+    let mut woke = false;
+    for _ in 0..100 {
+        woke = r
+            .rec
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m.text.contains("watch_video"));
+        if woke {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(woke, "{:?}", r.rec.sent.lock().unwrap());
+    assert!(r
+        .rec
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|m| m.attachments.is_empty()));
 }
 
 #[tokio::test]

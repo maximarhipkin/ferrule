@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml"><img src="https://github.com/maximarhipkin/ferrule/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.14.1-c4764a" alt="release v0.14.1"></a>
+  <a href="https://github.com/maximarhipkin/ferrule/releases"><img src="https://img.shields.io/badge/release-v0.14.2-c4764a" alt="release v0.14.2"></a>
   <img src="https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-8a929a" alt="platforms: Linux, macOS, Windows">
   <img src="https://img.shields.io/badge/download-~10_MB-8a929a" alt="download: about 10 MB">
   <img src="https://img.shields.io/badge/tests-1628-8a929a" alt="1628 workspace tests">
@@ -292,7 +292,7 @@ from v0.6.0 or older runs the one-liner once to get there.
 | macOS | `~/.local/bin/ferrule` | Apple silicon, Intel |
 | Windows | `%LOCALAPPDATA%\Programs\ferrule\ferrule.exe`, added to your PATH | x86-64 (ARM64 runs it under emulation) |
 
-Both scripts read `FERRULE_VERSION` (a tag such as `v0.14.1`; default the
+Both scripts read `FERRULE_VERSION` (a tag such as `v0.14.2`; default the
 latest), `FERRULE_INSTALL_DIR` and `FERRULE_NO_SETUP=1` (install only).
 
 ### Setup
@@ -681,6 +681,9 @@ and a dated entry for every session.
   [`browser.md`](docs/browser.md) · [`web-search.md`](docs/web-search.md) ·
   [`m61-screen.md`](docs/m61-screen.md) (screenshots and short
   recordings of the owner's own Mac screen, view only) ·
+  [`m65-video.md`](docs/m65-video.md) (video the agent watches, edits and
+  checks before sending; a vision helper for a model that can't see; big
+  uploads and a media library in the dashboard) ·
   [`connections.md`](docs/connections.md) (Jira, Gmail, Google, Notion…:
   which way in, step by step) ·
   [`ssh.md`](docs/ssh.md) (workspaces on other machines).

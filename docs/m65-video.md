@@ -1,6 +1,7 @@
 # M65 — video it understands, edits and checks before sending
 
-Status: **design, not built** (2026-10-22). Claims M65.
+Status: **built** on `autopilot` (2026-10-22), one commit per section;
+**nothing run live** (see "As built" at the end). Claims M65.
 
 ## Why
 
@@ -392,3 +393,119 @@ skill's exact recipes; how the transcript's timing is used for subtitles
    (`media.rs`, the estimate check).
 3. **Big files through the dashboard, and a media library there**
    (asked for after the first draft). Hence part 5.
+
+## As built (2026-10-22)
+
+Built in the design's order on `autopilot`, one commit per section, each
+with `make check` green on macOS (1891 passed, 0 failed, 28 ignored, 73
+test binaries). No new tests (the owner's rule); the gateway's four media
+tests were changed to the new behaviour. Nothing was run live: no
+OpenRouter call, no real video through ffmpeg, no upload through a
+tunnel. PLAN.md has one Session Log entry per section with the detail.
+
+**§0, the vision helper.** `ferrule_core::vision::Looker`, wired by the
+CLI for an agent whose model doesn't see (`gateway_factory`,
+`child_builder`); the agent describes images as their message is added
+(`push_seen`): the goal's photos, photos sent while it works, every tool
+result's images. The line is kept on `ImageRef::described`, so later
+turns don't ask again; `ImageRef::check` lets a tool ask for a check
+instead. The helper is `ferrule-gateway/src/tools/look.rs` on
+`MediaBackend::look` (OpenRouter's `/chat/completions`), a `media`
+ledger row charged to the run, answers cached by path, modification time
+and task. `[media] vision_model` defaults to `google/gemini-3.8-flash`
+(OpenRouter's list, 2026-10-22). The router skips its "can't see photos"
+notice when there's a helper; the Claude engine's bridged tool results
+carry the lines.
+
+**§1, `watch_video`.** `ferrule-gateway/src/tools/watch.rs`: ffprobe's
+facts; one sheet from one ffmpeg run (`-ss` before each input, `trim`,
+`scale`+`pad`, `concat`, `tile` with `nb_frames`), 12 frames by default
+(1–16) at the middles of equal slices, tiles at most 512 px wide and the
+sheet at most 2048 px a side, the times listed in the text (not drawn:
+`drawtext` needs fonts a build may lack); the sound as AAC to the
+gateway's `Transcriber`, at most 10 minutes a call. ffmpeg and ffprobe
+run in the session's sandbox with `-protocol_whitelist file`, a timeout
+and stderr's last line as the error; files in `.ferrule/watch/` for a
+day. Offered in chats where both programs are found, with `CHAT_VIDEO`.
+
+**§2, editing.** `crates/ferrule-skills/bundled/video-editing/SKILL.md`,
+in the bundled pack, with every recipe the design lists and its last rule
+(watch, then send; two retries). `speak` gained `send: false` so a
+voice-over isn't sent to the chat as a voice message.
+
+**§3, the same person.** `generate_video`'s `reference` (sent as
+`input_references`), offered and taken only in the owner's chats and the
+owner's sub-agents, refused for a model not in `[media] reference_models`
+with the models that take them named. OpenRouter's `/videos/models`
+listing (read 2026-10-22) has no field for this, so the list is config,
+the design's fallback. The owner's caps and models are the defaults:
+`video_models` Seedance 2.5 and Veo 3.1 Fast, 10 videos a day, $3 a
+video. Seedance is billed per video token, which the old estimate
+couldn't read; ferrule now asks for `resolution: "720p"` and prices a
+16:9 720p frame at 24 fps (21,600 tokens a second): Seedance 2.5 about
+$0.23/s. That `resolution` is the request field is inferred from the
+listing's `supported_resolutions` (the same naming as `aspect_ratio` and
+`duration`), not confirmed live.
+
+- **The talking avatar is left out.** The listing gives
+  `heygen/avatar-iv` a per-second price ($0.05) and passthrough
+  parameters (`voice_id`, `motion_prompt`, …), and its page says the
+  speech comes from "a text script … or a supplied audio track", but
+  neither names the request field the script or the audio goes in, and
+  it lists no frame images. So it isn't in `video_models` or
+  `reference_models`. The owner can add it to both to try it with the
+  prompt as the script, once a paid test or OpenRouter's docs settle it.
+
+**§4, check before sending.** `generate_image` hands the image back,
+not sent, with a check task for the helper; the poller wakes the
+session that asked for a finished video (its job is `checking`), and a
+video still `checking` after 30 minutes, or whose session can't be
+woken, gets the note (`noted`); `media_jobs` gained `refs` and
+`woken_at`. `send_file` enforces it through `vision::Looked`, which the
+agent fills as tool images reach the model. Two departures:
+
+- The rule covers every image or video except what the owner provided
+  (`uploads/`, `inbox/`) and screen captures (`media/screen/`, a faithful
+  recording, nothing generated), not "under `media/` or written by this
+  session": an edit ffmpeg made in the shell can't be told from any other
+  file, so anything not the owner's needs a look.
+- `unchecked` is taken only where looking can't be done (no
+  `watch_video`, a model that can't see and no helper, or the last look
+  failed), or for a video the owner was told about and asked for.
+
+**§5, the Files page.** `crates/ferrule-cli/src/dashboard/files_page.rs`
+and a Files section in `app.js`. Departures and choices:
+
+- A `start` call (name, size, the chat's ticket) and a `finish` call
+  (the size check, the move) around the design's `PUT`, and a status
+  `GET` for resuming; the same file chosen again after a reload resumes.
+- The link for a too-big file is in the message's text, not an inline
+  button: the login link only ever goes out as the hub's own message, so
+  it never reaches a model or a transcript. Any of the owner's chat
+  channels gets it, not only Telegram; the ticket lives in memory for a
+  day.
+- `media_jobs` gained `cost_usd` (an image's bill, a video's when
+  fetched) for the library, and `send_file` marks a job `unchecked` when
+  it went marked "Not checked".
+- `http.rs` gained `Range` answers (206, 416). A `HEAD` on a file is
+  answered with its whole body.
+
+**§6, docs.** [models.md](models.md) ("Making media", "Photos"),
+[vision.md](vision.md) (`watch_video`, the helper, `Looked`),
+[dashboard.md](dashboard.md#files-m65), [skills.md](skills.md),
+[housekeeping.md](housekeeping.md), the note at the top of
+[m51-media.md](m51-media.md), the README, the roadmap and this section.
+
+**Done means, as it stands.**
+
+| | |
+|---|---|
+| A photo on the Claude plan is described | built (§0); not run live |
+| A video sent in Telegram can be described | built (§1, with §0 for a model that can't see); not run live |
+| Nothing generated reaches a chat unseen, except the marked fallback | built and enforced in `send_file` (§4); not run live |
+| `generate_video` carries references, and refuses plainly | built (§3); not sent live |
+| The talking avatar works, or the doc says why not | left out, said above |
+| `video-editing` is bundled and discoverable | built (§2) |
+| A 500 MB video from an iPhone, the chat woken, played on the page | built (§5); not run live |
+| `make check` green on all three CI platforms | green on macOS at every commit; CI runs when the branch is pushed |
+
