@@ -18,6 +18,14 @@ This is Propose–Probe–Compose scoped to ferrule's spine: K=1,
 sequential, offline, inside the existing pass. No benchmark
 infrastructure, no new subsystem.
 
+**Fixed since** (wave C, "M53.1 — the contrast gate, fixed" below): the
+probe as first built compared one re-run *with* the lesson against the
+*original* failed run, under the labels "Original" and "Second run (with
+the lesson)". A fresh run beats a stochastic failure often enough on its
+own, so lessons were credited for noise, and the labels told the judge
+which run to favour. The gate now runs a control without the lesson and
+judges the pair blind. Parts 1–3 below describe the first build.
+
 ## What is deliberately not in it
 
 - **Online, mid-run harness editing** (Harness²'s task-level recursion
@@ -125,6 +133,85 @@ mode, judge ensembles, natural-language rubrics from the owner. If
 probing proves itself on the nightly pass, the *next* milestone after
 this one can consider a `/probe` chat door — the M43 pattern — that
 runs one contrastive probe on demand for a task the owner names.
+
+## M53.1 — the contrast gate, fixed
+
+Built 2026-10-22 on `autopilot` (wave C), from the re-audit
+(`research_notes/Ferrule agent gap analysis/reaudit_2026-10-21.md`,
+Part 1 "M53.1" and Part 3 #12), which found the first build "done
+differently, not fine".
+
+**Why.** Comparing a fresh re-run with the lesson against the episode's
+own failed run measures the lesson plus luck: the failure was one draw,
+and a second draw often goes better without any lesson. And a judge told
+which run had the lesson, and shown it second, is invited to prefer it.
+The fix is the ordinary one for an A/B: a control run, and a blind judge.
+
+**The runs** (`ferrule-learn/src/pass.rs`, `contrast_gate`; `gate.rs`).
+For each add, edit, promotion or skill, the episode's task re-runs in a
+scratch copy twice:
+1. **with the change**: the candidate playbook, or the draft skill;
+2. **the control, without it**: the playbook as it stands, no draft
+   (`GateRun::control`; transcript `control-<n>.jsonl`, scratch dir
+   `control-<pass>-<n>`, ledger origin `control:<n>`).
+
+The run with the change goes first. The control runs only when the
+`[learning]` caps (per pass and per day, tokens and dollars) leave room
+for another run of what the first one cost (`Meter::room_for`, with
+`Spent::since`).
+
+**No check: a blind judge** (`judge.rs`). The judge sees the task and
+the two transcript tails, labelled A and B. A seed from the pass id and
+the gate's number (FNV-1a, one splitmix64 step, its low bit) picks which
+run is A (`Slate`). The tails are rendered without the system prompt
+(`episode::render_run`), since the prompt holds the playbook and the
+skill catalog; a run that stopped early says so in its header, for
+either label alike. Nothing in the message names the change. The rubric
+is the first build's, in order: finished; fewer retries and errors (for
+a chat request, a visibly better final reply); a truthful final status;
+no new damage. The answer is `{"better":"A"|"B"|"neither","why":…}`:
+- the run with the change → **better**: kept ("kept by the judge: the
+  run with the change beat a control run without it (blind A/B, seed …,
+  the change as B): …");
+- the control → **worse**: rejected;
+- neither, an unreadable answer → **no difference or confounded**, the
+  default: rejected. A failed judge call rejects too.
+
+The seed, the change's label and what it was compared with go into the
+pass's `log.jsonl` (`"judge"` lines), so the order can be checked.
+
+**A check: it must fail without the change** (`WorkspaceGate::run`). The
+run with the change must finish and pass the check twice, as before.
+Then the control runs the check once: if the task passes without the
+change too, nothing shows the change helped, and it is rejected ("…; but
+the task finished without the lesson and `<check>` passed: nothing shows
+the lesson helped"). A control that fails the check, or stops before
+finishing, keeps it ("…; without it, `<check>` fails without the lesson:
+…").
+
+**One re-run only: weak evidence.** When the caps leave no room for the
+control, the evidence is what the first build had: the check alone, or
+the judge comparing the run with the change against the episode's own
+run (blind and seeded the same way). That is marked **weak evidence**
+and not kept, unless the owner's 👍 corroborates it (`weak`): the episode
+is an owner's 👎 on a chat reply (M53.5) and the owner reacted 👍 to a
+later reply in the same chat (the episode's `fixed`). That says the chat
+ended well, not that the change did, and it is the only word from the
+owner the pass has; a task or session episode on weak evidence is never
+kept. The reason says which: "kept on weak evidence (…), corroborated by
+the owner's 👍 …" or "weak evidence, not kept without the owner's 👍
+(…)". The proposed text stays in the changelog either way.
+
+**Cost.** A gated change now costs up to two task re-runs and, without a
+check, one judge call, all `call_kind = "learn"` inside the caps. With
+the defaults (300,000 tokens a pass), a pass whose first re-runs are
+large will judge later episodes on weak evidence and keep none of them;
+the cap is the owner's dial.
+
+**Not done.** Still one draw per arm (K=1): the contrast removes the
+"compared with a failure" bias, not the run-to-run noise, and a lesson
+that helps a little is often "no difference". Nothing has run against a
+real model. The 👍 corroboration is coarse, as said above.
 
 ## M53.2 — evidence discipline and honest clipping
 

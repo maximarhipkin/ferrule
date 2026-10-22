@@ -1,7 +1,8 @@
 //! The success gate (`docs/m16-learning-loop.md` §5): an added or edited
 //! lesson is kept only if the episode's goal, re-run in a scratch copy of
 //! the workspace with the candidate playbook in its prompt, finishes and
-//! then passes the check twice.
+//! then passes the check twice, and (M53.1, wave C) a control re-run
+//! without it doesn't pass.
 
 use crate::budget::Meter;
 use crate::episode::Episode;
@@ -22,6 +23,7 @@ pub const MAX_BYTES: u64 = 200 * 1024 * 1024;
 const SKIP_DIRS: &[&str] = &["target", "node_modules"];
 
 /// One gate run.
+#[derive(Clone)]
 pub struct GateRun<'a> {
     /// The proposal's number within the pass: `gate-<n>`.
     pub n: usize,
@@ -36,6 +38,10 @@ pub struct GateRun<'a> {
     pub meter: Arc<Meter>,
     /// Where the gate agent's transcript goes.
     pub pass_dir: &'a Path,
+    /// M53.1: the control run, without the candidate change (the playbook
+    /// as it stands, no draft skill). Its transcript is `control-<n>`, and
+    /// its check runs once: one pass shows the task passes without it.
+    pub control: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,9 +65,10 @@ pub trait Gate: Send + Sync {
     /// unless the gate also [`probe`](Gate::probe)s.
     fn check(&self) -> Option<String>;
     async fn run(&self, run: GateRun<'_>) -> GateVerdict;
-    /// M53: re-run the episode with the candidate lesson, no check, and
-    /// bring back the probe's transcript tail for the judge. `None` =
-    /// this gate can't probe (the default).
+    /// M53: re-run the episode as `run` says (with the candidate lesson,
+    /// or the control without it), no check, and bring back the run's
+    /// transcript tail for the judge. `None` = this gate can't probe (the
+    /// default).
     async fn probe(&self, run: GateRun<'_>) -> Option<ProbeOut> {
         let _ = run;
         None
@@ -80,7 +87,8 @@ pub struct ProbeOut {
     pub finished: bool,
     /// Why it didn't, when it didn't.
     pub incomplete: Option<String>,
-    /// The probe transcript's tail, rendered for the judge.
+    /// The probe transcript's tail, rendered for the judge without the
+    /// system prompt (`episode::render_run`).
     pub tail: String,
 }
 
@@ -121,7 +129,8 @@ impl Gate for WorkspaceGate {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("pass");
-        let scratch = self.scratch_root.join(format!("scratch-{pass}-{}", r.n));
+        let kind = if r.control { "control" } else { "scratch" };
+        let scratch = self.scratch_root.join(format!("{kind}-{pass}-{}", r.n));
         let _ = fs::remove_dir_all(&scratch);
         let verdict = self.run_in(&scratch, &check, r).await;
         let _ = fs::remove_dir_all(&scratch);
@@ -134,9 +143,10 @@ impl Gate for WorkspaceGate {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("pass");
-        let scratch = self.scratch_root.join(format!("probe-{pass}-{}", r.n));
+        let kind = if r.control { "control" } else { "probe" };
+        let scratch = self.scratch_root.join(format!("{kind}-{pass}-{}", r.n));
         let _ = fs::remove_dir_all(&scratch);
-        let name = format!("probe-{}", r.n);
+        let name = format!("{kind}-{}", r.n);
         let ran = self.run_agent(&scratch, &name, None, &r).await;
         let _ = fs::remove_dir_all(&scratch);
         let (transcript, incomplete) = match ran {
@@ -153,7 +163,7 @@ impl Gate for WorkspaceGate {
         Some(ProbeOut {
             finished,
             incomplete,
-            tail: crate::episode::render_tail(&transcript),
+            tail: crate::episode::render_run(&transcript),
         })
     }
 }
@@ -226,8 +236,13 @@ impl WorkspaceGate {
 
     async fn run_in(&self, scratch: &Path, check: &str, r: GateRun<'_>) -> GateVerdict {
         let workspace = scratch.join("workspace");
+        let (name, with) = if r.control {
+            ("control", "without the lesson")
+        } else {
+            ("gate", "with the lesson")
+        };
         let (_, incomplete) = match self
-            .run_agent(scratch, &format!("gate-{}", r.n), Some(check), &r)
+            .run_agent(scratch, &format!("{name}-{}", r.n), Some(check), &r)
             .await
         {
             Ok(t) => t,
@@ -237,7 +252,9 @@ impl WorkspaceGate {
             if r.meter.exceeded().is_some() {
                 return GateVerdict::fail("budget reached during the gate");
             }
-            return GateVerdict::fail(format!("the gate run stopped before finishing: {why}"));
+            return GateVerdict::fail(format!(
+                "the {name} run {with} stopped before finishing: {why}"
+            ));
         }
 
         let verifier = CommandVerifier::new(check, self.sandbox.clone(), self.check_timeout);
@@ -245,11 +262,12 @@ impl WorkspaceGate {
             workspace: workspace.clone(),
             max_output_chars: 800,
         };
-        for round in 1..=2 {
+        let rounds = if r.control { 1 } else { 2 };
+        for round in 1..=rounds {
             if let Err(out) = verifier.verify(&ctx).await {
                 let out = out.trim().replace('\n', " | ");
                 return GateVerdict::fail(if round == 1 {
-                    format!("`{check}` fails with the lesson: {out}")
+                    format!("`{check}` fails {with}: {out}")
                 } else {
                     format!("`{check}` passed once, then failed (flaky): {out}")
                 });
@@ -257,7 +275,11 @@ impl WorkspaceGate {
         }
         GateVerdict {
             passed: true,
-            reason: format!("the task finished with the lesson and `{check}` passed twice"),
+            reason: if r.control {
+                format!("the task finished {with} and `{check}` passed")
+            } else {
+                format!("the task finished {with} and `{check}` passed twice")
+            },
         }
     }
 }

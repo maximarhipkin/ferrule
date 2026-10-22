@@ -39,6 +39,16 @@ impl Spent {
         }
     }
 
+    /// What was spent since `before` was read from the same meter.
+    pub fn since(&self, before: Spent) -> Spent {
+        Spent {
+            usd: (self.usd - before.usd).max(0.0),
+            tokens: self.tokens.saturating_sub(before.tokens),
+            calls: self.calls.saturating_sub(before.calls),
+            unpriced: self.unpriced.saturating_sub(before.unpriced),
+        }
+    }
+
     /// What the rows at or after `since` spent, counting only the pass's.
     pub fn from_rows<'a>(rows: impl IntoIterator<Item = &'a LedgerRecord>) -> Self {
         let mut s = Spent::default();
@@ -81,6 +91,20 @@ impl Meter {
 
     pub fn charge(&self, r: &LedgerRecord) {
         self.pass.lock().unwrap().add(r);
+    }
+
+    /// M53.1: whether `more` on top of what is spent stays under every
+    /// cap, per pass and per day. The pass asks before a control run, with
+    /// what the run before it cost.
+    pub fn room_for(&self, more: Spent) -> bool {
+        let p = self.spent();
+        let c = self.caps;
+        let tokens = p.tokens + more.tokens;
+        let usd = p.usd + more.usd;
+        tokens < c.tokens_per_pass
+            && usd < c.usd_per_pass
+            && self.day_before.tokens + tokens < c.tokens_per_day
+            && self.day_before.usd + usd < c.usd_per_day
     }
 
     /// `Some(why)` once a cap is reached: nothing more may be spent.

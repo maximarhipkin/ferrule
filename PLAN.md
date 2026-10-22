@@ -171,6 +171,10 @@ below it is append-only.
   live. PR #56 merged M64.0–M64.3 (`main` is its merge, `ea88e4a`);
   M64.4 and M64.5 wait for the next PR. Owner-only, off by default,
   every action through the existing gates and caps.
+- **Wave C** (2026-10-22) on `autopilot` (PR #58), after M64 and the
+  0.14.0 merge, one commit and one Session Log entry per task: (1)
+  M53.1's contrast gate fixed: a control run without the change, a
+  blind seeded A/B judge, weak evidence kept only with the owner's 👍.
 - **Open follow-ups that matter most** (the re-audit's ranking, minus
   what wave A closed: media dollars, scheduled read-then-send,
   housekeeping, connection tokens in the scrub, M52.5's link, a refusal
@@ -188,8 +192,9 @@ below it is append-only.
      Todoist's DCR, the Microsoft 365 server's sign-in in the sandbox,
      iCloud's CalDAV discovery and the mail presets; CardDAV contacts and
      Outlook.com mail (OAuth only) are still missing.
-  4. **M53.1's evidence**: no control run without the lesson, unblinded
-     labels; fix before offering learning in owner mode.
+  4. **M53.1's evidence**: fixed in wave C (control run, blind A/B);
+     never run against a real model. Offering learning in owner mode
+     with a small $ cap is the next step.
   5. **CIMD and pre-registered OAuth clients; MCP 2026-07-28**
      (`server/discover`, stateless): Home Assistant's official MCP,
      Slack, Asana and Dropbox wait on them.
@@ -9891,3 +9896,60 @@ macOS and on the same tree on `autopilot`: a flake, not fixed here.
 
 **Open.** The release build (`release.yml`, five targets) runs on the
 tag; nothing here runs the binaries.
+
+### 2026-10-22 — Wave C, task 1: M53.1's contrast gate, fixed (Claude, Opus 5.5)
+
+Wave C's first task, in the `autopilot` worktree, after merging `main`
+(PR #57, 0.14.0) into it (`3ad69e8`; `make check` green on the merge:
+1891 passed, 0 failed, 28 ignored, 73 binaries).
+
+**Why.** The re-audit (Part 1 "M53.1", Part 3 #12) found the probe gate
+"done differently, not fine": one re-run with the lesson was judged
+against the original failed run, labelled "Original" and "Second run
+(with the lesson)". A fresh draw beats a stochastic failure often on its
+own, so lessons got credit for noise, and the labels told the judge
+which run to prefer. Checked episodes kept a lesson that passed twice
+with no sign it failed without.
+
+**What changed** (`ferrule-learn`).
+- `pass.rs`: `judged` is replaced by `contrast_gate`. The episode
+  re-runs with the change, then (when `Meter::room_for` says the caps
+  hold another run of what that one cost) a control without it: the
+  playbook as it stands, no draft skill. Without a check, `judge` asks
+  one blind call; with a check, the control must fail it. Without room
+  for the control the evidence is weak (`weak`): kept only when the
+  episode is an owner's 👎 with a later 👍 in the same chat.
+- `judge.rs`: a new prompt (no lesson shown, labels A/B, "neither" is
+  the default), `Slate` (FNV-1a seed from pass id and gate number,
+  splitmix64, low bit), `Contrast` (better, worse, confounded), and a
+  parser for `{"better":"A"|"B"|"neither","why":…}`; anything unreadable
+  is confounded.
+- `gate.rs`: `GateRun::control` (derive `Clone`); a control's transcript
+  is `control-<n>`, its scratch dir `control-<pass>-<n>`, its check runs
+  once, and its reasons say "without the lesson". Probe tails are
+  rendered without the system prompt (`episode::render_run`), which
+  holds the playbook.
+- `budget.rs`: `Spent::since`, `Meter::room_for`.
+- `pass/skill.rs`: skills take the same path; the control is the same
+  playbook without the draft.
+- Ledger origins gain `control:<n>`; the pass log gains `"judge"` lines
+  with the seed, the change's label and what it was compared with.
+- Docs: `m53-contrastive-probing.md` ("M53.1 — the contrast gate,
+  fixed", and a pointer at the top), `m16-learning-loop.md` §5 (step 1,
+  step 4, "What the gate doesn't prove"), `roadmap.md` (M53's list).
+
+**Tests changed, none added** (the owner's standing rule): the judge's
+parse test takes the new answer; `pass/tests.rs`'s fake gate fails its
+control, the probe fake marks which run it is, and the queue provider
+can answer as a judge picking the run holding a word
+(`@pick:<needle>`); `ferrule-cli`'s learn story counts the control's
+scratch dir as a gate run and doesn't write the result there.
+
+**Checks.** `make check` exited 0: 1891 passed, 0 failed, 28 ignored, 73
+binaries (macOS), clippy clean.
+
+**Open.** Never run against a real model. One draw per arm: the
+contrast removes the "against a failure" bias, not run-to-run noise.
+The 👍 corroboration is coarse: it says the chat ended well, not that
+the lesson did. A big first re-run leaves later episodes in the pass on
+weak evidence, so they keep nothing; the caps are the dial.

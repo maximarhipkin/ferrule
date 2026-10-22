@@ -1199,6 +1199,13 @@ every lesson stays readable and revertible the M16 way.
 
 **Follow-ups from the gap analysis** (built on `autopilot`, one section
 each in `docs/m53-contrastive-probing.md`):
+- **M53.1's fix** (wave C, 2026-10-22): the gate re-runs the episode
+  with the change and again without it (a control, when the caps leave
+  room for a second run); without a check, the judge compares the pair
+  blind under seeded A/B labels and says better, worse or neither
+  (neither is the default), and only "better" keeps; with a check, the
+  control must fail it. One re-run only is weak evidence, kept only when
+  the owner's 👍 corroborates it.
 - **M53.2**, evidence discipline and honest clipping: tool results
   clipped at 10,000 characters (head and tail) in a 40,000-character
   window, every cut marked as the renderer's, and a reflector that must
